@@ -224,11 +224,29 @@ while (failing_tests > 0):
     if still fails: debug, fix, repeat
 ```
 
-Track progress with a dashboard:
-- Total tests: N
-- Passing: X
-- Failing: Y
-- Skipped (intentionally unsupported): Z
+### Progress Dashboard: "Are We Next Yet?"
+
+Inspired by Vercel's [areweturboyet.com](https://areweturboyet.com/) - their
+public dashboard tracking Turbopack's pass rate against Next.js's own test
+suite. They were asking "is Turbopack ready to replace Webpack inside Next?"
+We're asking the inverse: "is Vite ready to replace all of Next?"
+
+We build the same thing: a public site (arewenextyet.com?) that:
+
+- Shows a single headline pass rate (e.g. "37% of Next.js e2e tests passing")
+- Breaks down by category with progress bars:
+  - App Router: 45/365 passing
+  - Pages Router: 12/120 passing
+  - Middleware: 0/30 passing
+  - Production: 8/30 passing
+  - Development/HMR: 3/30 passing
+- Color-coded: green (passing), red (failing), gray (skipped/not applicable)
+- Links each test to its source so contributors can pick one and work on it
+- Auto-updates from CI on every commit (run the full suite nightly or on PR)
+
+This serves double duty: progress tracking for us, and a public signal to the
+community that this is a serious effort with measurable, transparent progress.
+It also makes contribution dead simple - find a red test, make it green.
 
 ### Test Categories to Prioritize
 
