@@ -13,27 +13,92 @@ Not a "Vite-flavored alternative." A direct, API-compatible reimplementation
 where existing Next.js apps can `npm uninstall next && npm install nextcompat`
 and largely Just Work.
 
+## Why This Matters: The Deployment Problem
+
+Next.js is effectively locked to Vercel. Running it anywhere else is a
+nightmare. The [OpenNext](https://opennext.js.org/) project exists solely to
+bridge this gap, with separate adapters maintained by different teams:
+
+- **AWS adapter** (maintained by SST community)
+- **Cloudflare adapter** (maintained by Cloudflare team)
+- **Netlify adapter** (maintained by Netlify team)
+
+Each adapter is constantly chasing Next.js updates, reimplementing internal
+behaviors that Vercel changes without notice. NHS England, Udacity, Gymshark
+all use OpenNext because there's no other option.
+
+**If we rebuild on Vite, this problem disappears.** Vite's ecosystem already
+has deployment adapters everywhere. The build output is standard, portable,
+and understood by every hosting platform. No more reverse-engineering Vercel's
+proprietary server runtime. A Next.js-compatible app built on Vite deploys
+anywhere Vite deploys - which is everywhere.
+
+This is arguably the strongest practical motivation: not just cleaner
+internals, but **liberating Next.js apps from vendor lock-in**.
+
 ## Why This Might Actually Work
 
 - Vite already handles JSX/TSX, CSS Modules, HMR, code splitting, SSR
-- React Server Components have a spec independent of Next.js
+- **`@vitejs/plugin-rsc` exists** - official Vite team RSC plugin (v0.5.19,
+  60k weekly downloads, maintained by Evan You / patak / antfu). Handles the
+  entire RSC pipeline: server/client component boundaries, `'use server'` /
+  `'use client'` directives, SSR streaming, HMR for server components, CSS
+  code-splitting across environments. This eliminates what was previously the
+  single hardest technical risk.
 - Most of Next's "magic" is file-system conventions + a rendering pipeline
 - The hard parts (bundling, transforms, dev server) are what Vite is best at
 - Next.js's test suite is public and comprehensive - we have a concrete target
+- OpenNext proves there's real demand for Next.js portability
 
 ## Architecture
 
+Built on `@vitejs/plugin-rsc` which provides the RSC foundation (three Vite
+environments: `rsc`, `ssr`, `client`). We layer Next.js conventions on top.
+
 ```
-nextcompat (Vite plugin)
-├── vite-plugin-nextcompat     # Core Vite plugin
-│   ├── routing/               # File-system router (app/ and pages/ conventions)
-│   ├── rendering/             # SSR + RSC rendering pipeline
-│   ├── server/                # Dev server + production server
-│   ├── api/                   # API route handlers
-│   └── shims/                 # next/* module shims (next/link, next/image, etc.)
-├── nextcompat-cli             # `nextcompat dev`, `nextcompat build`, `nextcompat start`
-└── test-harness/              # Adapted Next.js e2e test runner
+nextcompat
+├── vite-plugin-nextcompat          # Core Vite plugin
+│   ├── routing/                    # File-system router (app/ and pages/ conventions)
+│   │   ├── app-router.ts           # app/ directory scanning + route generation
+│   │   ├── pages-router.ts         # pages/ directory scanning (legacy)
+│   │   └── manifest.ts             # Route manifest generation
+│   ├── entries/                    # Vite environment entry points
+│   │   ├── entry.rsc.tsx           # RSC environment: routes -> React tree -> RSC stream
+│   │   ├── entry.ssr.tsx           # SSR environment: RSC stream -> HTML
+│   │   └── entry.browser.tsx       # Client: hydration + client-side navigation
+│   ├── server/                     # Request handling
+│   │   ├── dev-server.ts           # Dev server (wraps Vite dev)
+│   │   ├── prod-server.ts          # Production server
+│   │   ├── api-handler.ts          # route.ts handler (GET/POST/etc)
+│   │   └── middleware.ts           # middleware.ts runner
+│   ├── shims/                      # next/* module shims
+│   │   ├── link.tsx                # next/link -> client nav component
+│   │   ├── image.tsx               # next/image -> optimized image component
+│   │   ├── head.tsx                # next/head -> document head
+│   │   ├── navigation.ts           # next/navigation -> useRouter, usePathname, etc.
+│   │   ├── headers.ts              # next/headers -> cookies(), headers()
+│   │   └── server.ts               # next/server -> NextRequest, NextResponse
+│   └── config/                     # next.config.js parser + transformer
+├── nextcompat-cli                  # `nextcompat dev`, `nextcompat build`, `nextcompat start`
+├── test-harness/                   # Adapted Next.js e2e test runner
+└── areweviteyet/                   # Progress dashboard site
 ```
+
+### How It Maps to `@vitejs/plugin-rsc`
+
+The plugin-rsc provides three Vite environments with distinct module
+resolution (e.g. `rsc` uses `react-server` condition). Our job:
+
+- **`rsc` entry**: Scan `app/` directory, build route tree, render matched
+  route to RSC stream via `renderToReadableStream`. Handle `route.ts` API
+  endpoints directly.
+- **`ssr` entry**: Receive RSC stream, render to HTML via `react-dom/server`.
+  Inject bootstrap script for client hydration.
+- **`client` entry**: Hydrate the page, handle client-side navigation
+  (intercepting `<Link>` clicks, calling back to RSC endpoint for new pages).
+- **CSS**: Handled automatically by plugin-rsc's `loadCss()` infrastructure.
+- **HMR**: Plugin-rsc provides `rsc:update` events; we wire those to trigger
+  RSC re-fetch on the client.
 
 ## API Surface Inventory
 
@@ -224,14 +289,14 @@ while (failing_tests > 0):
     if still fails: debug, fix, repeat
 ```
 
-### Progress Dashboard: "Are We Next Yet?"
+### Progress Dashboard: "Are We Vite Yet?"
 
 Inspired by Vercel's [areweturboyet.com](https://areweturboyet.com/) - their
 public dashboard tracking Turbopack's pass rate against Next.js's own test
 suite. They were asking "is Turbopack ready to replace Webpack inside Next?"
 We're asking the inverse: "is Vite ready to replace all of Next?"
 
-We build the same thing: a public site (arewenextyet.com?) that:
+We build the same thing: a public site (areweviteyet.com) that:
 
 - Shows a single headline pass rate (e.g. "37% of Next.js e2e tests passing")
 - Breaks down by category with progress bars:
@@ -258,10 +323,12 @@ It also makes contribution dead simple - find a red test, make it green.
 
 ## Open Questions
 
-1. **RSC bundling**: Vite doesn't natively handle the RSC wire format.
-   Do we use `react-server-dom-webpack` (which has a Vite-compatible layer
-   via `@vitejs/plugin-react`)? Or do we need a custom RSC bundler plugin?
-   This is probably the single hardest technical challenge.
+1. ~~**RSC bundling**~~ **RESOLVED**: `@vitejs/plugin-rsc` (official Vite
+   plugin) handles the full RSC pipeline. It provides three environments
+   (`rsc`, `ssr`, `client`), handles `'use server'`/`'use client'` directive
+   boundaries, RSC stream serialization/deserialization, CSS code-splitting
+   across server/client, and HMR for server components. We build on top of
+   this rather than rolling our own. It even supports `"use cache"` already.
 
 2. **Scope of Pages Router support**: Do we go full compat, or declare it
    out of scope and focus on App Router only? Pages Router is legacy but
