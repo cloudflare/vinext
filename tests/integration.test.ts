@@ -4026,6 +4026,100 @@ describe("next/image enhancements", () => {
     expect(result.props.width).toBe(1200);
     expect(result.props.height).toBe(800);
   });
+
+  it("getImageProps generates srcSet for local images with width", async () => {
+    const { getImageProps } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Test",
+      width: 1200,
+      height: 800,
+    });
+    expect(result.props.srcSet).toBeDefined();
+    expect(result.props.srcSet).toContain("/photo.jpg");
+    expect(result.props.srcSet).toContain("w");
+  });
+
+  it("getImageProps does not generate srcSet for fill images", async () => {
+    const { getImageProps } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/bg.jpg",
+      alt: "Background",
+      fill: true,
+    });
+    expect(result.props.srcSet).toBeUndefined();
+    expect(result.props.sizes).toBe("100vw"); // fill implies 100vw
+  });
+
+  it("getImageProps includes fetchPriority for priority images", async () => {
+    const { getImageProps } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/hero.jpg",
+      alt: "Hero",
+      width: 1200,
+      height: 800,
+      priority: true,
+    });
+    expect(result.props.fetchPriority).toBe("high");
+    expect(result.props.loading).toBe("eager");
+  });
+
+  it("getImageProps includes data-nimg attribute", async () => {
+    const { getImageProps } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Photo",
+      width: 800,
+      height: 600,
+    });
+    expect((result.props as any)["data-nimg"]).toBe("1");
+
+    const fillResult = getImageProps({
+      src: "/bg.jpg",
+      alt: "BG",
+      fill: true,
+    });
+    expect((fillResult.props as any)["data-nimg"]).toBe("fill");
+  });
+
+  it("getImageProps includes blur placeholder background styles", async () => {
+    const { getImageProps } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+    );
+    const blurUrl = "data:image/jpeg;base64,/9j/4AAQ";
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Blurry",
+      width: 800,
+      height: 600,
+      placeholder: "blur",
+      blurDataURL: blurUrl,
+    });
+    expect(result.props.style?.backgroundImage).toContain(blurUrl);
+    expect(result.props.style?.backgroundSize).toBe("cover");
+  });
+
+  it("getImageProps uses custom loader function", async () => {
+    const { getImageProps } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Custom",
+      width: 800,
+      height: 600,
+      loader: ({ src, width, quality }) => `https://cdn.example.com${src}?w=${width}&q=${quality}`,
+    });
+    expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=800&q=75");
+  });
 });
 
 // ─── next/navigation enhancements (ReadonlyURLSearchParams, useServerInsertedHTML) ──

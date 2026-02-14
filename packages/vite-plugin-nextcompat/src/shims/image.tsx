@@ -46,6 +46,27 @@ function isRemoteUrl(src: string): boolean {
   return src.startsWith("http://") || src.startsWith("https://") || src.startsWith("//");
 }
 
+/**
+ * Common responsive image widths matching Next.js's default device sizes + image sizes.
+ * These are the breakpoints used for srcSet generation.
+ */
+const RESPONSIVE_WIDTHS = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+
+/**
+ * Generate a srcSet string for responsive images.
+ *
+ * For local images in development, the src stays the same (Vite serves the
+ * original). The srcSet hints help the browser's responsive image selection.
+ * In production with vite-imagetools, these would point to resized variants.
+ *
+ * Only includes widths <= 2x the original image width.
+ */
+function generateSrcSet(src: string, originalWidth: number): string {
+  const widths = RESPONSIVE_WIDTHS.filter((w) => w <= originalWidth * 2);
+  if (widths.length === 0) return `${src} ${originalWidth}w`;
+  return widths.map((w) => `${src} ${w}w`).join(", ");
+}
+
 const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   {
     src: srcProp,
@@ -138,7 +159,25 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     // (unpic requires them for constrained layout)
   }
 
-  // For local images, render a standard <img> tag.
+  // Build srcSet for responsive local images (common breakpoints).
+  // Vite serves images at original resolution; srcSet hints help browsers
+  // pick the right size for their viewport. No actual resizing happens at
+  // runtime — Vite's asset pipeline handles that at build time.
+  const srcSet = imgWidth && !fill
+    ? generateSrcSet(src, imgWidth)
+    : undefined;
+
+  // Blur placeholder: show a low-quality background while the image loads
+  const blurStyle = placeholder === "blur" && imgBlurDataURL
+    ? {
+        backgroundImage: `url(${imgBlurDataURL})`,
+        backgroundSize: "cover",
+        backgroundRepeat: "no-repeat",
+        backgroundPosition: "center",
+      }
+    : undefined;
+
+  // For local images, render a standard <img> tag with srcSet and blur support.
   // In production, vite-imagetools would optimize these at build time.
   return (
     <img
@@ -148,13 +187,16 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       width={fill ? undefined : imgWidth}
       height={fill ? undefined : imgHeight}
       loading={priority ? "eager" : (loading ?? "lazy")}
+      fetchPriority={priority ? "high" : undefined}
       decoding="async"
-      sizes={sizes}
+      srcSet={srcSet}
+      sizes={sizes ?? (fill ? "100vw" : undefined)}
       className={className}
+      data-nimg={fill ? "fill" : "1"}
       style={
         fill
-          ? { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", ...style }
-          : style
+          ? { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover", ...blurStyle, ...style }
+          : { ...blurStyle, ...style }
       }
       {...rest}
     />
@@ -176,9 +218,9 @@ export function getImageProps(props: ImageProps): {
     fill,
     priority,
     quality: _quality,
-    placeholder: _placeholder,
-    blurDataURL: _blurDataURL,
-    loader: _loader,
+    placeholder,
+    blurDataURL: blurDataURLProp,
+    loader,
     sizes,
     className,
     style,
@@ -191,22 +233,46 @@ export function getImageProps(props: ImageProps): {
   const src = typeof srcProp === "string" ? srcProp : srcProp.src;
   const imgWidth = width ?? (typeof srcProp === "object" ? srcProp.width : undefined);
   const imgHeight = height ?? (typeof srcProp === "object" ? srcProp.height : undefined);
+  const imgBlurDataURL = blurDataURLProp ?? (typeof srcProp === "object" ? srcProp.blurDataURL : undefined);
+
+  // Resolve src through custom loader if provided
+  const resolvedSrc = loader
+    ? loader({ src, width: imgWidth ?? 0, quality: _quality ?? 75 })
+    : src;
+
+  // Build srcSet for local images
+  const srcSet = imgWidth && !fill && !isRemoteUrl(resolvedSrc)
+    ? generateSrcSet(resolvedSrc, imgWidth)
+    : undefined;
+
+  // Blur placeholder styles
+  const blurStyle = placeholder === "blur" && imgBlurDataURL
+    ? {
+        backgroundImage: `url(${imgBlurDataURL})`,
+        backgroundSize: "cover",
+        backgroundRepeat: "no-repeat" as const,
+        backgroundPosition: "center" as const,
+      }
+    : undefined;
 
   return {
     props: {
-      src,
+      src: resolvedSrc,
       alt,
       width: fill ? undefined : imgWidth,
       height: fill ? undefined : imgHeight,
       loading: priority ? "eager" : (loading ?? "lazy"),
+      fetchPriority: priority ? ("high" as const) : undefined,
       decoding: "async" as const,
-      sizes,
+      srcSet,
+      sizes: sizes ?? (fill ? "100vw" : undefined),
       className,
+      "data-nimg": fill ? "fill" : "1",
       style: fill
-        ? { position: "absolute" as const, inset: 0, width: "100%", height: "100%", objectFit: "cover" as const, ...style }
-        : style,
+        ? { position: "absolute" as const, inset: 0, width: "100%", height: "100%", objectFit: "cover" as const, ...blurStyle, ...style }
+        : { ...blurStyle, ...style },
       ...rest,
-    },
+    } as React.ImgHTMLAttributes<HTMLImageElement>,
   };
 }
 
