@@ -322,5 +322,20 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **Uses `'use cache'` extensively**: File-level and function-level caching directives. We strip these with a custom Vite plugin (not yet supported).
 - **Uses `#/*` path aliases**: tsconfig `paths` maps `#/*` to project root. Handled via Vite `resolve.alias`.
 - **`server-only` package** needs an empty shim module — it's a build-time guard that throws if imported in client bundles.
-- **MDX support** via `@next/mdx` + CodeHike — not yet replicated. Pages importing `.mdx` files will error.
+- **MDX support** via `@next/mdx` + CodeHike — replaced with `@mdx-js/rollup` Vite plugin. Simple MDX (markdown without codehike annotations) renders fine. CodeHike-specific syntax would need `codehike` dep.
 - **`connection()` from `next/server`** already shimmed as a no-op (forces dynamic rendering).
+
+## SSR Navigation Context for "use client" Components (2026-02-14)
+
+- **Critical discovery**: `"use client"` components that use `usePathname()`, `useSearchParams()`, or `useSelectedLayoutSegment()` during SSR were failing with "called outside of request context" because the SSR Vite environment has a **separate module instance** of `next/navigation` from the RSC environment. Even though we set `setNavigationContext()` in the RSC entry, the SSR entry's copy was never initialized.
+- **Fix**: Pass the current navigation context (pathname, searchParams, params) from the RSC entry to the SSR entry via the `handleSsr(rscStream, navContext)` call. The SSR entry calls `setNavigationContext(navContext)` before rendering and cleans up afterward.
+- **Pattern**: Any per-request state that needs to be shared between RSC and SSR environments must be explicitly passed across the environment boundary — they don't share module state.
+
+## App Router Playground Results (2026-02-14)
+
+- **10 out of 11 top-level routes render successfully** on first try after the nav context fix.
+- **All dynamic sub-routes work**: `/layouts/electronics`, `/layouts/electronics/phones`, `/loading/electronics`, `/error/electronics`, `/not-found/electronics` — all 200.
+- **`/view-transitions` fails** because it imports `ViewTransition` from `react`, which is only in React 19 canary builds, not the stable release.
+- **`workspace:*` protocol** is pnpm-specific and doesn't work with npm. Changed to `"*"` and added `fixtures/ecosystem/*` to root workspaces.
+- **bare `app/` imports** from tsconfig `baseUrl: "."` need a Vite `resolve.alias` mapping (`"app": path.resolve(__dirname, "app")`).
+- **`codehike` dependency** was too heavy for a demo fixture. Replaced `ui/codehike.tsx` with a simplified shim that provides the same exports (`Grid`, `Mdx`) without `codehike/blocks`, `codehike/code`, `zod`, or `mdx/types` dependencies.

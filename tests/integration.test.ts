@@ -906,6 +906,18 @@ describe("App Router integration", () => {
     expect(html).toContain("Increment");
   });
 
+  it("SSR renders 'use client' components that use usePathname/useSearchParams", async () => {
+    const res = await fetch(`${baseUrl}/client-nav-test?q=hello`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // The "use client" component should render the pathname and search params
+    // during SSR via the nav context propagation from RSC to SSR environment
+    expect(html).toContain("client-nav-info");
+    expect(html).toContain("/client-nav-test");
+    expect(html).toContain("hello");
+  });
+
   it("applies nested layouts (dashboard layout wraps dashboard pages)", async () => {
     const res = await fetch(`${baseUrl}/dashboard`);
     expect(res.status).toBe(200);
