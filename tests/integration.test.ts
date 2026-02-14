@@ -236,6 +236,23 @@ describe("Pages Router integration", () => {
     expect(res.status).toBe(404);
   });
 
+  it("renders pre-listed paths with getStaticPaths fallback: blocking", async () => {
+    const res = await fetch(`${baseUrl}/articles/1`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("First Article");
+    expect(html).toMatch(/Article ID:\s*(<!--\s*-->)?\s*1/);
+  });
+
+  it("renders unlisted paths with getStaticPaths fallback: blocking (on-demand SSR)", async () => {
+    // Article 99 is not in getStaticPaths but fallback: blocking allows rendering
+    const res = await fetch(`${baseUrl}/articles/99`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Article 99");
+    expect(html).toMatch(/Article ID:\s*(<!--\s*-->)?\s*99/);
+  });
+
   // --- next/dynamic ---
 
   it("renders dynamically imported components during SSR", async () => {
