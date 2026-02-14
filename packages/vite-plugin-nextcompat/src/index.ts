@@ -57,6 +57,9 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
 
+  // Shim alias map — populated in config(), used by resolveId() for .js variants
+  let nextShimMap: Record<string, string> = {};
+
   /**
    * Generate the virtual SSR server entry module.
    * This is the entry point for `vite build --ssr`.
@@ -551,6 +554,53 @@ hydrate();
           nextConfig.basePath,
         );
 
+        // Build the shim alias map — used by both resolve.alias and resolveId
+        // (resolveId handles .js extension variants for libraries like nuqs)
+        nextShimMap = {
+          "next/link": path.join(shimsDir, "link"),
+          "next/head": path.join(shimsDir, "head"),
+          "next/router": path.join(shimsDir, "router"),
+          "next/image": path.join(shimsDir, "image"),
+          "next/legacy/image": path.join(shimsDir, "legacy-image"),
+          "next/dynamic": path.join(shimsDir, "dynamic"),
+          "next/app": path.join(shimsDir, "app"),
+          "next/document": path.join(shimsDir, "document"),
+          "next/config": path.join(shimsDir, "config"),
+          "next/script": path.join(shimsDir, "script"),
+          "next/server": path.join(shimsDir, "server"),
+          "next/navigation": path.join(shimsDir, "navigation"),
+          "next/headers": path.join(shimsDir, "headers"),
+          "next/font/google": path.join(shimsDir, "font-google"),
+          "next/font/local": path.join(shimsDir, "font-local"),
+          "next/cache": path.join(shimsDir, "cache"),
+          "next/form": path.join(shimsDir, "form"),
+          "next/og": path.join(shimsDir, "og"),
+          "next/web-vitals": path.join(shimsDir, "web-vitals"),
+          "next/amp": path.join(shimsDir, "amp"),
+          "next/error": path.join(shimsDir, "error"),
+          "next/constants": path.join(shimsDir, "constants"),
+          // Internal next/dist/* paths used by popular libraries
+          // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
+          "next/dist/shared/lib/app-router-context.shared-runtime": path.join(shimsDir, "internal", "app-router-context"),
+          "next/dist/shared/lib/app-router-context": path.join(shimsDir, "internal", "app-router-context"),
+          "next/dist/shared/lib/router-context.shared-runtime": path.join(shimsDir, "internal", "router-context"),
+          "next/dist/shared/lib/utils": path.join(shimsDir, "internal", "utils"),
+          "next/dist/server/api-utils": path.join(shimsDir, "internal", "api-utils"),
+          "next/dist/server/web/spec-extension/cookies": path.join(shimsDir, "internal", "cookies"),
+          "next/dist/compiled/@edge-runtime/cookies": path.join(shimsDir, "internal", "cookies"),
+          "next/dist/server/app-render/work-unit-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
+          "next/dist/client/components/work-unit-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
+          "next/dist/client/components/request-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
+          "next/dist/client/components/request-async-storage": path.join(shimsDir, "internal", "work-unit-async-storage"),
+          // Re-export public modules for internal path imports
+          "next/dist/client/components/navigation": path.join(shimsDir, "navigation"),
+          "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
+          "nextcompat/error-boundary": path.join(shimsDir, "error-boundary"),
+          "nextcompat/metadata": path.join(shimsDir, "metadata"),
+          "nextcompat/fetch-cache": path.join(shimsDir, "fetch-cache"),
+          "nextcompat/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
+        };
+
         const viteConfig: Record<string, any> = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
@@ -560,50 +610,7 @@ hydrate();
             external: ["react", "react-dom", "react-dom/server"],
           },
           resolve: {
-            alias: {
-              "next/link": path.join(shimsDir, "link"),
-              "next/head": path.join(shimsDir, "head"),
-              "next/router": path.join(shimsDir, "router"),
-              "next/image": path.join(shimsDir, "image"),
-              "next/legacy/image": path.join(shimsDir, "legacy-image"),
-              "next/dynamic": path.join(shimsDir, "dynamic"),
-              "next/app": path.join(shimsDir, "app"),
-              "next/document": path.join(shimsDir, "document"),
-              "next/config": path.join(shimsDir, "config"),
-              "next/script": path.join(shimsDir, "script"),
-              "next/server": path.join(shimsDir, "server"),
-              "next/navigation": path.join(shimsDir, "navigation"),
-              "next/headers": path.join(shimsDir, "headers"),
-              "next/font/google": path.join(shimsDir, "font-google"),
-              "next/font/local": path.join(shimsDir, "font-local"),
-              "next/cache": path.join(shimsDir, "cache"),
-              "next/form": path.join(shimsDir, "form"),
-              "next/og": path.join(shimsDir, "og"),
-              "next/web-vitals": path.join(shimsDir, "web-vitals"),
-              "next/amp": path.join(shimsDir, "amp"),
-              "next/error": path.join(shimsDir, "error"),
-              "next/constants": path.join(shimsDir, "constants"),
-              // Internal next/dist/* paths used by popular libraries
-              // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
-              "next/dist/shared/lib/app-router-context.shared-runtime": path.join(shimsDir, "internal", "app-router-context"),
-              "next/dist/shared/lib/app-router-context": path.join(shimsDir, "internal", "app-router-context"),
-              "next/dist/shared/lib/router-context.shared-runtime": path.join(shimsDir, "internal", "router-context"),
-              "next/dist/shared/lib/utils": path.join(shimsDir, "internal", "utils"),
-              "next/dist/server/api-utils": path.join(shimsDir, "internal", "api-utils"),
-              "next/dist/server/web/spec-extension/cookies": path.join(shimsDir, "internal", "cookies"),
-              "next/dist/compiled/@edge-runtime/cookies": path.join(shimsDir, "internal", "cookies"),
-              "next/dist/server/app-render/work-unit-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
-              "next/dist/client/components/work-unit-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
-              "next/dist/client/components/request-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
-              "next/dist/client/components/request-async-storage": path.join(shimsDir, "internal", "work-unit-async-storage"),
-              // Re-export public modules for internal path imports
-              "next/dist/client/components/navigation": path.join(shimsDir, "navigation"),
-              "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
-              "nextcompat/error-boundary": path.join(shimsDir, "error-boundary"),
-              "nextcompat/metadata": path.join(shimsDir, "metadata"),
-              "nextcompat/fetch-cache": path.join(shimsDir, "fetch-cache"),
-              "nextcompat/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
-            },
+            alias: nextShimMap,
           },
           // Enable JSX in .tsx/.jsx files
           esbuild: {
@@ -663,6 +670,19 @@ hydrate();
         // ID (with \0 prefix). We need to re-resolve it so the client
         // environment's import-analysis can find it.
         const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+
+        // Handle next/* imports with .js extension (e.g. "next/navigation.js")
+        // Libraries like nuqs import "next/navigation.js" which doesn't match
+        // our resolve.alias for "next/navigation". Strip the .js and resolve
+        // through our shim map, appending .js to the resolved path.
+        if (cleanId.startsWith("next/") && cleanId.endsWith(".js")) {
+          const withoutExt = cleanId.slice(0, -3);
+          if (nextShimMap[withoutExt]) {
+            const shimPath = nextShimMap[withoutExt];
+            // Alias values don't include .js — append it for resolveId
+            return shimPath.endsWith(".js") ? shimPath : shimPath + ".js";
+          }
+        }
 
         // Pages Router virtual modules
         if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;

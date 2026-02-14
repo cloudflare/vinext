@@ -1,0 +1,10 @@
+{
+  "HomePage": {
+    "title": "Hello World",
+    "description": "This page uses next-intl for internationalization."
+  },
+  "Navigation": {
+    "home": "Home",
+    "about": "About"
+  }
+}

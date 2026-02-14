@@ -339,3 +339,21 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **`workspace:*` protocol** is pnpm-specific and doesn't work with npm. Changed to `"*"` and added `fixtures/ecosystem/*` to root workspaces.
 - **bare `app/` imports** from tsconfig `baseUrl: "."` need a Vite `resolve.alias` mapping (`"app": path.resolve(__dirname, "app")`).
 - **`codehike` dependency** was too heavy for a demo fixture. Replaced `ui/codehike.tsx` with a simplified shim that provides the same exports (`Grid`, `Mdx`) without `codehike/blocks`, `codehike/code`, `zod`, or `mdx/types` dependencies.
+
+## Benchmarks (Phase 5)
+
+- **nextcompat builds 2.6x faster** than Next.js 16 with Turbopack (2.09s vs 5.43s, 33-route App Router app).
+- **nextcompat produces 55% smaller client bundles** (75.4 KB vs 168.9 KB gzipped).
+- **Dev server cold start 33% faster** (1.16s vs 1.72s).
+- **Memory usage identical** (~88 MB peak RSS for both).
+- **nextcompat builds are more consistent** (stddev 13ms vs 99ms for Next.js).
+- **Symlinks don't work with Next.js/Turbopack** — must copy shared app directories. Our `generate-app.mjs` now copies to both project directories.
+- **`turbopack.root`** must be set in next.config.ts if there are multiple lockfiles in parent directories, otherwise Turbopack picks the wrong workspace root.
+- **`process.cwd()` works** but Node ESM imports (`import { dirname }`) crash in next.config.ts because Next.js 16 compiles configs as CJS (`exports is not defined in ES module scope`).
+
+## Ecosystem Libraries
+
+- **`next/navigation.js` (with .js extension)** — Libraries like nuqs import `next/navigation.js` rather than `next/navigation`. Vite's `resolve.alias` does exact string matching, so `"next/navigation"` doesn't match `"next/navigation.js"`. Fixed by adding a `resolveId` hook that strips `.js` from `next/*` imports and redirects through our shim map.
+- **next-themes works out of the box** — ThemeProvider, `useTheme`, SSR script injection, flash-free theme detection all work. 4/4 tests pass.
+- **nuqs works via `npx vite`** (confirmed SSR output with correct default state) but fails in vitest's `createServer` because the RSC module runner's customization hooks bypass Vite's `resolveId` for `next` package resolution. This is a test infrastructure limitation, not a plugin bug.
+- **next-intl requires deep integration** — it expects a plugin from `next.config.ts` that injects config at build time (via `createNextIntlPlugin`). Simply installing and importing doesn't work — we'd need to shim `next-intl`'s config resolution mechanism.
