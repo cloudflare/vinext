@@ -1,5 +1,5 @@
 import type { Plugin, ViteDevServer } from "vite";
-import { pagesRouter, apiRouter, invalidateRouteCache } from "./routing/pages-router.js";
+import { pagesRouter, apiRouter, invalidateRouteCache, type Route } from "./routing/pages-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import {
@@ -11,8 +11,13 @@ import {
 } from "./config/next-config.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Virtual module IDs for the production build
+const VIRTUAL_SERVER_ENTRY = "virtual:nextcompat-server-entry";
+const RESOLVED_SERVER_ENTRY = "\0" + VIRTUAL_SERVER_ENTRY;
 
 export interface NextcompatOptions {
   /** Root directory of the Next.js app (default: Vite root) */
@@ -26,6 +31,293 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
+
+  /**
+   * Generate the virtual SSR server entry module.
+   * This is the entry point for `vite build --ssr`.
+   */
+  async function generateServerEntry(): Promise<string> {
+    const pageRoutes = await pagesRouter(pagesDir);
+    const apiRoutes = await apiRouter(pagesDir);
+
+    // Generate import statements using absolute paths since virtual
+    // modules don't have a real file location for relative resolution.
+    const pageImports = pageRoutes.map((r: Route, i: number) => {
+      const absPath = r.filePath.replace(/\\/g, "/");
+      return `import * as page_${i} from ${JSON.stringify(absPath)};`;
+    });
+
+    const apiImports = apiRoutes.map((r: Route, i: number) => {
+      const absPath = r.filePath.replace(/\\/g, "/");
+      return `import * as api_${i} from ${JSON.stringify(absPath)};`;
+    });
+
+    // Build the route table
+    const pageRouteEntries = pageRoutes.map((r: Route, i: number) => {
+      return `  { pattern: ${JSON.stringify(r.pattern)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i} }`;
+    });
+
+    const apiRouteEntries = apiRoutes.map((r: Route, i: number) => {
+      return `  { pattern: ${JSON.stringify(r.pattern)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`;
+    });
+
+    // Check for _app and _document
+    const hasApp = fs.existsSync(path.join(pagesDir, "_app.tsx")) || fs.existsSync(path.join(pagesDir, "_app.jsx")) || fs.existsSync(path.join(pagesDir, "_app.ts")) || fs.existsSync(path.join(pagesDir, "_app.js"));
+    const hasDoc = fs.existsSync(path.join(pagesDir, "_document.tsx")) || fs.existsSync(path.join(pagesDir, "_document.jsx")) || fs.existsSync(path.join(pagesDir, "_document.ts")) || fs.existsSync(path.join(pagesDir, "_document.js"));
+
+    // Use absolute paths for _app and _document too
+    const appFileBase = path.join(pagesDir, "_app").replace(/\\/g, "/");
+    const docFileBase = path.join(pagesDir, "_document").replace(/\\/g, "/");
+
+    const appImportCode = hasApp
+      ? `import { default as AppComponent } from ${JSON.stringify(appFileBase)};`
+      : `const AppComponent = null;`;
+
+    const docImportCode = hasDoc
+      ? `import { default as DocumentComponent } from ${JSON.stringify(docFileBase)};`
+      : `const DocumentComponent = null;`;
+
+    // The server entry is a self-contained module. It uses template literals
+    // with escaped backticks for string construction in the generated code.
+    return `
+import React from "react";
+import ReactDOMServer from "react-dom/server";
+import { resetSSRHead, getSSRHeadHTML } from "next/head";
+import { flushPreloads } from "next/dynamic";
+import { setSSRContext } from "next/router";
+
+${pageImports.join("\n")}
+${apiImports.join("\n")}
+
+${appImportCode}
+${docImportCode}
+
+const pageRoutes = [
+${pageRouteEntries.join(",\n")}
+];
+
+const apiRoutes = [
+${apiRouteEntries.join(",\n")}
+];
+
+function matchRoute(url, routes) {
+  const pathname = url.split("?")[0];
+  const normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
+  for (const route of routes) {
+    const params = matchPattern(normalizedUrl, route.pattern);
+    if (params !== null) return { route, params };
+  }
+  return null;
+}
+
+function matchPattern(url, pattern) {
+  const urlParts = url.split("/").filter(Boolean);
+  const patternParts = pattern.split("/").filter(Boolean);
+  const params = {};
+  for (let i = 0; i < patternParts.length; i++) {
+    const pp = patternParts[i];
+    if (pp.endsWith("+")) {
+      const paramName = pp.slice(1, -1);
+      const remaining = urlParts.slice(i);
+      if (remaining.length === 0) return null;
+      params[paramName] = remaining;
+      return params;
+    }
+    if (pp.endsWith("*")) {
+      const paramName = pp.slice(1, -1);
+      params[paramName] = urlParts.slice(i);
+      return params;
+    }
+    if (pp.startsWith(":")) {
+      if (i >= urlParts.length) return null;
+      params[pp.slice(1)] = urlParts[i];
+      continue;
+    }
+    if (i >= urlParts.length || urlParts[i] !== pp) return null;
+  }
+  if (urlParts.length !== patternParts.length) return null;
+  return params;
+}
+
+function parseQuery(url) {
+  const qs = url.split("?")[1];
+  if (!qs) return {};
+  const p = new URLSearchParams(qs);
+  const q = {};
+  for (const [k, v] of p) q[k] = v;
+  return q;
+}
+
+function collectAssetTags(manifest) {
+  if (!manifest) return "";
+  const tags = [];
+  const seen = new Set();
+  for (const files of Object.values(manifest)) {
+    for (const file of files) {
+      if (seen.has(file)) continue;
+      seen.add(file);
+      if (file.endsWith(".css")) {
+        tags.push('<link rel="stylesheet" href="/' + file + '" />');
+      } else if (file.endsWith(".js")) {
+        tags.push('<script type="module" src="/' + file + '"></script>');
+      }
+    }
+  }
+  return tags.join("\\n  ");
+}
+
+export async function renderPage(req, res, url, manifest) {
+  const match = matchRoute(url, pageRoutes);
+  if (!match) {
+    res.writeHead(404, { "Content-Type": "text/html" });
+    res.end("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>");
+    return;
+  }
+
+  const { route, params } = match;
+  try {
+    if (typeof setSSRContext === "function") {
+      setSSRContext({ pathname: url.split("?")[0], query: { ...params, ...parseQuery(url) }, asPath: url });
+    }
+
+    const pageModule = route.module;
+    const PageComponent = pageModule.default;
+    if (!PageComponent) {
+      res.writeHead(500);
+      res.end("Page has no default export");
+      return;
+    }
+
+    let pageProps = {};
+    if (typeof pageModule.getServerSideProps === "function") {
+      const ctx = { params, req, res, query: parseQuery(url), resolvedUrl: url };
+      const result = await pageModule.getServerSideProps(ctx);
+      if (result && result.props) pageProps = result.props;
+      if (result && result.redirect) {
+        res.writeHead(result.redirect.permanent ? 308 : 307, { Location: result.redirect.destination });
+        res.end();
+        return;
+      }
+      if (result && result.notFound) { res.writeHead(404); res.end("404"); return; }
+    }
+    if (typeof pageModule.getStaticProps === "function") {
+      const ctx = { params };
+      const result = await pageModule.getStaticProps(ctx);
+      if (result && result.props) pageProps = result.props;
+      if (result && result.redirect) {
+        res.writeHead(result.redirect.permanent ? 308 : 307, { Location: result.redirect.destination });
+        res.end();
+        return;
+      }
+      if (result && result.notFound) { res.writeHead(404); res.end("404"); return; }
+    }
+
+    let element;
+    if (AppComponent) {
+      element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+    } else {
+      element = React.createElement(PageComponent, pageProps);
+    }
+
+    if (typeof resetSSRHead === "function") resetSSRHead();
+    if (typeof flushPreloads === "function") await flushPreloads();
+
+    const bodyHtml = ReactDOMServer.renderToString(element);
+    const ssrHeadHTML = typeof getSSRHeadHTML === "function" ? getSSRHeadHTML() : "";
+    const assetTags = collectAssetTags(manifest);
+    const nextDataScript = "<script>window.__NEXT_DATA__ = " + JSON.stringify({
+      props: { pageProps }, page: route.pattern, query: params
+    }) + "</script>";
+
+    let html;
+    if (DocumentComponent) {
+      const docElement = React.createElement(DocumentComponent);
+      html = "<!DOCTYPE html>" + ReactDOMServer.renderToString(docElement);
+      html = html.replace("__NEXT_MAIN__", bodyHtml);
+      if (ssrHeadHTML || assetTags) {
+        html = html.replace("</head>", "  " + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>");
+      }
+      html = html.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
+      if (!html.includes("__NEXT_DATA__")) {
+        html = html.replace("</body>", "  " + nextDataScript + "\\n</body>");
+      }
+    } else {
+      html = "<!DOCTYPE html>\\n<html>\\n<head>\\n  <meta charset=\\"utf-8\\" />\\n  <meta name=\\"viewport\\" content=\\"width=device-width, initial-scale=1\\" />\\n  " + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>\\n<body>\\n  <div id=\\"__next\\">" + bodyHtml + "</div>\\n  " + nextDataScript + "\\n</body>\\n</html>";
+    }
+
+    if (typeof setSSRContext === "function") setSSRContext(null);
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(html);
+  } catch (e) {
+    console.error("[nextcompat] SSR error:", e);
+    res.writeHead(500);
+    res.end("Internal Server Error: " + (e && e.message ? e.message : String(e)));
+  }
+}
+
+export async function handleApiRoute(req, res, url) {
+  const match = matchRoute(url, apiRoutes);
+  if (!match) {
+    res.writeHead(404);
+    res.end("404 - API route not found");
+    return;
+  }
+
+  const { route, params } = match;
+  const handler = route.module.default;
+  if (typeof handler !== "function") {
+    res.writeHead(500);
+    res.end("API route does not export a default function");
+    return;
+  }
+
+  const query = { ...params };
+  const qs = url.split("?")[1];
+  if (qs) { for (const [k, v] of new URLSearchParams(qs)) query[k] = v; }
+
+  const body = await new Promise((resolve) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf-8");
+      if (!raw) return resolve(undefined);
+      const ct = req.headers["content-type"] || "";
+      if (ct.includes("application/json")) {
+        try { resolve(JSON.parse(raw)); } catch { resolve(raw); }
+      } else resolve(raw);
+    });
+  });
+
+  req.query = query;
+  req.body = body;
+  const cookieHeader = req.headers.cookie || "";
+  req.cookies = {};
+  for (const part of cookieHeader.split(";")) {
+    const [key, ...rest] = part.split("=");
+    if (key) req.cookies[key.trim()] = rest.join("=").trim();
+  }
+  res.status = function(code) { this.statusCode = code; return this; };
+  res.json = function(data) { this.setHeader("Content-Type", "application/json"); this.end(JSON.stringify(data)); };
+  res.send = function(data) {
+    if (typeof data === "object" && data !== null) { this.json(data); }
+    else { if (!this.getHeader("Content-Type")) this.setHeader("Content-Type", "text/plain"); this.end(String(data)); }
+  };
+  res.redirect = function(statusOrUrl, url2) {
+    if (typeof statusOrUrl === "string") { this.writeHead(307, { Location: statusOrUrl }); }
+    else { this.writeHead(statusOrUrl, { Location: url2 }); }
+    this.end();
+  };
+
+  try {
+    await handler(req, res);
+  } catch (e) {
+    console.error("[nextcompat] API error:", e);
+    res.writeHead(500);
+    res.end("API Error: " + (e && e.message ? e.message : String(e)));
+  }
+}
+`;
+  }
 
   return [
     {
@@ -75,13 +367,26 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
           ...(nextConfig.basePath ? { base: nextConfig.basePath + "/" } : {}),
         };
       },
+
+      resolveId(id) {
+        if (id === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
+        // Vite SSR build may resolve the entry relative to root
+        if (id.endsWith("/" + VIRTUAL_SERVER_ENTRY) || id.endsWith("\\" + VIRTUAL_SERVER_ENTRY)) {
+          return RESOLVED_SERVER_ENTRY;
+        }
+      },
+
+      async load(id) {
+        if (id === RESOLVED_SERVER_ENTRY) {
+          return await generateServerEntry();
+        }
+      },
     },
     {
       name: "nextcompat:pages-router",
 
       configureServer(server: ViteDevServer) {
         // Watch pages directory for file additions/removals to invalidate route cache.
-        // Content changes don't affect routing, only new/deleted files do.
         const pageExtensions = /\.(tsx?|jsx?)$/;
         server.watcher.on("add", (filePath: string) => {
           if (filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
@@ -194,7 +499,6 @@ function matchConfigPattern(
   pathname: string,
   pattern: string,
 ): Record<string, string> | null {
-  // Convert Next.js-style :param to regex
   const parts = pattern.split("/");
   const pathParts = pathname.split("/");
 
@@ -223,7 +527,6 @@ function applyRedirects(
   for (const redirect of redirects) {
     const params = matchConfigPattern(pathname, redirect.source);
     if (params) {
-      // Replace :param placeholders in destination
       let dest = redirect.destination;
       for (const [key, value] of Object.entries(params)) {
         dest = dest.replace(`:${key}`, value);
@@ -266,8 +569,6 @@ function applyHeaders(
   headers: Array<{ source: string; headers: Array<{ key: string; value: string }> }>,
 ): void {
   for (const rule of headers) {
-    // Simple match: exact or glob-like (just check if source matches)
-    // Next.js uses path-to-regexp for matching; we use a simpler approach
     const sourceRegex = new RegExp(
       "^" + rule.source.replace(/\*/g, ".*").replace(/:\w+/g, "[^/]+") + "$",
     );

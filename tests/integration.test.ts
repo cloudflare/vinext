@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createServer, type ViteDevServer } from "vite";
+import { createServer, build, type ViteDevServer } from "vite";
 import path from "node:path";
+import fs from "node:fs";
 import nextcompat from "../packages/vite-plugin-nextcompat/src/index.js";
 
 const FIXTURE_DIR = path.resolve(
@@ -253,5 +254,45 @@ describe("Pages Router integration", () => {
     // The proxy module should contain our hydration imports
     expect(scriptContent).toContain("hydrateRoot");
     expect(scriptContent).toContain("__NEXT_DATA__");
+  });
+});
+
+describe("Production build", () => {
+  const outDir = path.resolve(FIXTURE_DIR, "dist");
+
+  afterAll(() => {
+    // Clean up build output
+    fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  it("produces SSR server entry via vite build --ssr", async () => {
+    // Build the SSR bundle using the virtual server entry
+    await build({
+      root: FIXTURE_DIR,
+      configFile: false,
+      plugins: [nextcompat()],
+      logLevel: "silent",
+      build: {
+        outDir: path.join(outDir, "server"),
+        ssr: "virtual:nextcompat-server-entry",
+        rollupOptions: {
+          output: {
+            entryFileNames: "entry.js",
+          },
+        },
+      },
+    });
+
+    // Verify the server entry was produced
+    const entryPath = path.join(outDir, "server", "entry.js");
+    expect(fs.existsSync(entryPath)).toBe(true);
+
+    const entryContent = fs.readFileSync(entryPath, "utf-8");
+    // Should export renderPage and handleApiRoute
+    expect(entryContent).toContain("renderPage");
+    expect(entryContent).toContain("handleApiRoute");
+    // Should contain route patterns from our fixture pages
+    expect(entryContent).toContain("/about");
+    expect(entryContent).toContain("/ssr");
   });
 });

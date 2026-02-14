@@ -58,28 +58,38 @@ async function dev() {
 
 async function buildApp() {
   console.log(`\n  nextcompat build\n`);
+  const appRoot = process.cwd();
 
-  // Client build
+  // Step 1: Client build — produces hashed assets + SSR manifest
   console.log("  Building client...");
   await build({
-    root: process.cwd(),
+    root: appRoot,
     plugins: [nextcompat()],
     build: {
       outDir: "dist/client",
       ssrManifest: true,
+      // We need an HTML entry for the client build. Since we use appType: "custom",
+      // Vite won't find index.html. We use a minimal one or rollup input.
+      rollupOptions: {
+        // Use a dummy entry — the actual page JS is referenced via SSR manifest.
+        // We need at least one entry for the build to work.
+        input: path.resolve(appRoot, "pages"),
+      },
     },
   });
 
-  // SSR build
+  // Step 2: SSR build — produces the server entry bundle
   console.log("  Building server...");
   await build({
-    root: process.cwd(),
+    root: appRoot,
     plugins: [nextcompat()],
     build: {
       outDir: "dist/server",
-      ssr: true,
+      ssr: "virtual:nextcompat-server-entry",
       rollupOptions: {
-        input: path.resolve(process.cwd(), "pages"),
+        output: {
+          entryFileNames: "entry.js",
+        },
       },
     },
   });
@@ -94,6 +104,7 @@ async function start() {
 
   console.log(`\n  nextcompat start\n`);
 
+  // Import prod server dynamically to avoid bundling issues
   const { startProdServer } = await import(
     "vite-plugin-nextcompat/server/prod-server"
   );
