@@ -12,7 +12,7 @@
  */
 import React, { lazy, Suspense, type ComponentType, useState, useEffect } from "react";
 
-interface DynamicOptions<P = object> {
+interface DynamicOptions {
   loading?: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>;
   ssr?: boolean;
 }
@@ -41,7 +41,7 @@ function resolveComponent<P>(mod: { default: ComponentType<P> } | ComponentType<
 
 function dynamic<P extends object = object>(
   loader: Loader<P>,
-  options?: DynamicOptions<P>,
+  options?: DynamicOptions,
 ): ComponentType<P> {
   const { loading: LoadingComponent, ssr = true } = options ?? {};
 

@@ -11,6 +11,6 @@
   },
   "dependencies": {
     "vite": "^7.0.0",
-    "vite-plugin-nextcompat": "workspace:*"
+    "vite-plugin-nextcompat": "*"
   }
 }

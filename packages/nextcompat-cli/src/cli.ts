@@ -104,10 +104,10 @@ async function start() {
 
   console.log(`\n  nextcompat start\n`);
 
-  // Import prod server dynamically to avoid bundling issues
+  // Import prod server dynamically
   const { startProdServer } = await import(
-    "vite-plugin-nextcompat/server/prod-server"
-  );
+    /* @vite-ignore */ "vite-plugin-nextcompat/server/prod-server"
+  ) as { startProdServer: (opts: { port: number; host: string; outDir: string }) => Promise<unknown> };
 
   await startProdServer({
     port,

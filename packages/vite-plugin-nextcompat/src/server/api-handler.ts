@@ -9,7 +9,6 @@
  */
 import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import path from "node:path";
 import { type Route, matchRoute } from "../routing/pages-router.js";
 
 /**

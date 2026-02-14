@@ -257,6 +257,30 @@ describe("Pages Router integration", () => {
   });
 });
 
+describe("Virtual server entry generation", () => {
+  it("generates valid JavaScript for the server entry", async () => {
+    // Create a minimal server just to access the plugin's virtual module
+    const testServer = await createServer({
+      root: FIXTURE_DIR,
+      configFile: false,
+      plugins: [nextcompat()],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    try {
+      // Load the virtual module through Vite's SSR pipeline
+      const entry = await testServer.ssrLoadModule("virtual:nextcompat-server-entry");
+
+      // Verify it exports the expected functions
+      expect(typeof entry.renderPage).toBe("function");
+      expect(typeof entry.handleApiRoute).toBe("function");
+    } finally {
+      await testServer.close();
+    }
+  });
+});
+
 describe("Production build", () => {
   const outDir = path.resolve(FIXTURE_DIR, "dist");
 

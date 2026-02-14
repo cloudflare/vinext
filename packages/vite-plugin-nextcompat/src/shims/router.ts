@@ -56,8 +56,9 @@ interface TransitionOptions {
   locale?: string;
 }
 
-type RouteChangeHandler = (url: string) => void;
-type RouteErrorHandler = (err: Error, url: string) => void;
+// Route event handler types (used by consumers via router.events)
+type _RouteChangeHandler = (url: string) => void;
+type _RouteErrorHandler = (err: Error, url: string) => void;
 
 interface RouterEvents {
   on(event: string, handler: (...args: unknown[]) => void): void;
@@ -231,7 +232,7 @@ export function useRouter(): NextRouter {
 
   // Listen for custom navigation events from Link component
   useEffect(() => {
-    const onNavigate = ((e: CustomEvent) => {
+    const onNavigate = ((_e: CustomEvent) => {
       setState(getPathnameAndQuery());
     }) as EventListener;
     window.addEventListener("nextcompat:navigate", onNavigate);
