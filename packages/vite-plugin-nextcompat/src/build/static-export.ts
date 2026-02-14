@@ -534,6 +534,94 @@ function getOutputPath(urlPath: string, trailingSlash: boolean): string {
   return `${clean}.html`;
 }
 
+/**
+ * Resolve parent dynamic segment params for a route.
+ *
+ * Implements Next.js's top-down params passing for generateStaticParams().
+ * Walks up the route hierarchy to find parent dynamic segments that have their
+ * own generateStaticParams. Collects parent params by calling each parent's
+ * generateStaticParams in order, merging results top-down.
+ *
+ * Returns an array of parent param combinations. If empty, the child should
+ * be called with `{ params: {} }` (bottom-up approach).
+ */
+async function resolveParentParams(
+  childRoute: AppRoute,
+  allRoutes: AppRoute[],
+  server: ViteDevServer,
+): Promise<Record<string, string | string[]>[]> {
+  // Extract the dynamic segment names from the pattern
+  const patternParts = childRoute.pattern.split("/").filter(Boolean);
+
+  // Identify parent dynamic segments: each :param in the pattern except the last one(s)
+  // that belong to the leaf page's directory.
+  // Strategy: find ancestor routes (layout-level) that export generateStaticParams.
+  // An ancestor route's pattern is a prefix of the child's pattern.
+
+  // Collect parent segments with generateStaticParams by looking at page modules
+  // along the ancestor path. We look for pages/layouts that define generateStaticParams
+  // at each level of the path hierarchy.
+  type ParentSegment = {
+    params: string[];
+    generateStaticParams: (opts: { params: Record<string, string | string[]> }) => Promise<Record<string, string | string[]>[]>;
+  };
+
+  const parentSegments: ParentSegment[] = [];
+
+  // Walk pattern parts to find intermediate dynamic segments
+  // For /products/:category/:id, we look for a route or layout at /products/:category
+  // that has generateStaticParams
+  for (let i = 0; i < patternParts.length; i++) {
+    const part = patternParts[i];
+    if (!part.startsWith(":")) continue;
+
+    // Check if this is not the last dynamic param (i.e., it's a parent segment)
+    const isLastDynamicPart = !patternParts.slice(i + 1).some((p) => p.startsWith(":"));
+    if (isLastDynamicPart) break; // This is the child's own segment
+
+    // Build the prefix pattern up to this segment
+    const prefixPattern = "/" + patternParts.slice(0, i + 1).join("/");
+
+    // Find a route at this prefix that has generateStaticParams
+    const parentRoute = allRoutes.find((r) => r.pattern === prefixPattern);
+    if (parentRoute?.pagePath) {
+      try {
+        const parentModule = await server.ssrLoadModule(parentRoute.pagePath);
+        if (typeof parentModule.generateStaticParams === "function") {
+          const paramName = part.replace(/^:/, "").replace(/[+*]$/, "");
+          parentSegments.push({
+            params: [paramName],
+            generateStaticParams: parentModule.generateStaticParams,
+          });
+        }
+      } catch {
+        // Skip — parent module couldn't be loaded
+      }
+    }
+  }
+
+  if (parentSegments.length === 0) return [];
+
+  // Top-down resolution: call each parent's generateStaticParams in order,
+  // accumulating params
+  let currentParams: Record<string, string | string[]>[] = [{}];
+
+  for (const segment of parentSegments) {
+    const nextParams: Record<string, string | string[]>[] = [];
+    for (const parentParams of currentParams) {
+      const results = await segment.generateStaticParams({ params: parentParams });
+      if (Array.isArray(results)) {
+        for (const result of results) {
+          nextParams.push({ ...parentParams, ...result });
+        }
+      }
+    }
+    currentParams = nextParams;
+  }
+
+  return currentParams;
+}
+
 // -------------------------------------------------------------------
 // App Router static export
 // -------------------------------------------------------------------
@@ -599,7 +687,28 @@ export async function staticExportApp(
           continue;
         }
 
-        const paramSets = await pageModule.generateStaticParams();
+        // Resolve parent dynamic segments for top-down params passing.
+        // Find all other routes whose patterns are prefixes of this route's pattern
+        // and that have dynamic params, then collect their generateStaticParams.
+        const parentParamSets = await resolveParentParams(route, routes, server);
+
+        let paramSets: Record<string, string | string[]>[];
+        if (parentParamSets.length > 0) {
+          // Top-down: call child's generateStaticParams for each parent param set
+          paramSets = [];
+          for (const parentParams of parentParamSets) {
+            const childResults = await pageModule.generateStaticParams({ params: parentParams });
+            if (Array.isArray(childResults)) {
+              for (const childParams of childResults) {
+                paramSets.push({ ...parentParams, ...childParams });
+              }
+            }
+          }
+        } else {
+          // Bottom-up: no parent params, call with empty params
+          paramSets = await pageModule.generateStaticParams({ params: {} });
+        }
+
         if (!Array.isArray(paramSets) || paramSets.length === 0) {
           result.warnings.push(
             `generateStaticParams() for ${route.pattern} returned empty array — no pages generated`,

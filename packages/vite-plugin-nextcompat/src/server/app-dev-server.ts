@@ -827,13 +827,18 @@ export default async function handler(request) {
   // dynamicParams = false: only params from generateStaticParams are allowed
   if (dynamicParamsConfig === false && route.isDynamic && typeof route.page?.generateStaticParams === "function") {
     try {
-      const staticParams = await route.page.generateStaticParams();
+      // Pass parent params to generateStaticParams (Next.js top-down params passing).
+      // Parent params = all matched params that DON'T belong to the leaf page's own dynamic segments.
+      // We pass the full matched params; the function uses only what it needs.
+      const staticParams = await route.page.generateStaticParams({ params });
       if (Array.isArray(staticParams)) {
         const paramKeys = Object.keys(params);
         const isAllowed = staticParams.some(sp =>
           paramKeys.every(key => {
             const val = params[key];
             const staticVal = sp[key];
+            // Allow parent params to not be in the returned set (they're inherited)
+            if (staticVal === undefined) return true;
             if (Array.isArray(val)) return JSON.stringify(val) === JSON.stringify(staticVal);
             return String(val) === String(staticVal);
           })

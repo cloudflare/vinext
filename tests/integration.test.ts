@@ -1490,6 +1490,28 @@ describe("App Router integration", () => {
     expect(html).toContain("any-random-slug");
   });
 
+  it("generateStaticParams receives parent params in nested dynamic routes", async () => {
+    // /shop/[category]/[item] — the item page's generateStaticParams receives { category }
+    const res = await fetch(`${baseUrl}/shop/electronics/phone`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // React SSR inserts <!-- --> comments between text and expressions
+    expect(html).toMatch(/Item:\s*(<!--\s*-->)?\s*phone\s*(<!--\s*-->)?\s*in\s*(<!--\s*-->)?\s*electronics/);
+  });
+
+  it("nested dynamic route serves all parent-derived paths", async () => {
+    // Test multiple combinations from parent params
+    const res1 = await fetch(`${baseUrl}/shop/clothing/shirt`);
+    expect(res1.status).toBe(200);
+    const html1 = await res1.text();
+    expect(html1).toMatch(/Item:\s*(<!--\s*-->)?\s*shirt\s*(<!--\s*-->)?\s*in\s*(<!--\s*-->)?\s*clothing/);
+
+    const res2 = await fetch(`${baseUrl}/shop/electronics/laptop`);
+    expect(res2.status).toBe(200);
+    const html2 = await res2.text();
+    expect(html2).toMatch(/Item:\s*(<!--\s*-->)?\s*laptop\s*(<!--\s*-->)?\s*in\s*(<!--\s*-->)?\s*electronics/);
+  });
+
   it("export const revalidate sets ISR Cache-Control header", async () => {
     const res = await fetch(`${baseUrl}/revalidate-test`);
     expect(res.status).toBe(200);

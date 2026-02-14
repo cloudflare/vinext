@@ -23,7 +23,7 @@ describe("pagesRouter - route discovery", () => {
   it("discovers dynamic routes", async () => {
     const routes = await pagesRouter(FIXTURE_DIR);
 
-    const dynamicRoute = routes.find((r) => r.pattern.includes(":id"));
+    const dynamicRoute = routes.find((r) => r.pattern === "/posts/:id");
     expect(dynamicRoute).toBeDefined();
     expect(dynamicRoute!.pattern).toBe("/posts/:id");
     expect(dynamicRoute!.isDynamic).toBe(true);
