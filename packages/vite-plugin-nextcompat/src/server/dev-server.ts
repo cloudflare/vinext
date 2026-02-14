@@ -195,8 +195,7 @@ export function createSSRHandler(
         : null;
 
       // Hydration entry: inline script that imports the page and hydrates.
-      // Uses bare specifiers (react, react-dom/client) which Vite's dev
-      // server resolves via its dependency pre-bundling.
+      // Stores the React root and page loader for client-side navigation.
       const hydrationScript = `
 <script type="module">
 import React from "react";
@@ -214,13 +213,15 @@ async function hydrate() {
       ? `
   const appModule = await import("${appModuleUrl}");
   const AppComponent = appModule.default;
+  window.__NEXTCOMPAT_APP__ = AppComponent;
   element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
   `
       : `
   element = React.createElement(PageComponent, pageProps);
   `
   }
-  hydrateRoot(document.getElementById("__next"), element);
+  const root = hydrateRoot(document.getElementById("__next"), element);
+  window.__NEXTCOMPAT_ROOT__ = root;
 }
 hydrate();
 </script>`;

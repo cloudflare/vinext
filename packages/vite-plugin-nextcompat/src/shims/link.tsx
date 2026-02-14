@@ -2,10 +2,8 @@
  * next/link shim
  *
  * Renders an <a> tag with client-side navigation support.
- * For now, this is a basic implementation that handles:
- * - href prop (string or UrlObject)
- * - Preventing full page reloads for internal links
- * - Passing through standard anchor props
+ * On click, prevents full page reload and triggers client-side
+ * page swap via the router's navigation system.
  */
 import React, { forwardRef, type AnchorHTMLAttributes, type MouseEvent } from "react";
 
@@ -40,7 +38,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 ) {
   const resolvedHref = resolveHref(href);
 
-  const handleClick = (e: MouseEvent<HTMLAnchorElement>) => {
+  const handleClick = async (e: MouseEvent<HTMLAnchorElement>) => {
     if (onClick) onClick(e);
     if (e.defaultPrevented) return;
 
@@ -66,14 +64,24 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
     e.preventDefault();
 
-    if (replace) {
-      window.history.replaceState({}, "", resolvedHref);
-    } else {
-      window.history.pushState({}, "", resolvedHref);
+    // Use the Router singleton to navigate (which triggers client-side page swap)
+    try {
+      const routerModule = await import("next/router");
+      const Router = routerModule.default;
+      if (replace) {
+        await Router.replace(resolvedHref);
+      } else {
+        await Router.push(resolvedHref);
+      }
+    } catch {
+      // Fallback to hard navigation if router fails
+      if (replace) {
+        window.history.replaceState({}, "", resolvedHref);
+      } else {
+        window.history.pushState({}, "", resolvedHref);
+      }
+      window.dispatchEvent(new PopStateEvent("popstate"));
     }
-
-    // Dispatch popstate so router shim picks it up
-    window.dispatchEvent(new PopStateEvent("popstate"));
 
     if (scroll) {
       window.scrollTo(0, 0);

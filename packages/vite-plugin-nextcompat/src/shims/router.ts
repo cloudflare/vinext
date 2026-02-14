@@ -2,7 +2,8 @@
  * next/router shim
  *
  * Provides useRouter() hook and Router singleton for Pages Router.
- * Backed by the browser History API.
+ * Backed by the browser History API. Supports client-side navigation
+ * by fetching new page data and re-rendering the React root.
  */
 import { useState, useEffect, useCallback, useMemo } from "react";
 
@@ -96,7 +97,6 @@ function resolveUrl(url: string | UrlObject): string {
 
 /**
  * SSR context - set by the dev server before rendering each page.
- * Provides the actual URL, route pattern, and params during SSR.
  */
 interface SSRContext {
   pathname: string;
@@ -106,9 +106,6 @@ interface SSRContext {
 
 let ssrContext: SSRContext | null = null;
 
-/**
- * Set the router's SSR context. Called by the dev server before rendering.
- */
 export function setSSRContext(ctx: SSRContext | null): void {
   ssrContext = ctx;
 }
@@ -120,16 +117,11 @@ function getPathnameAndQuery(): {
 } {
   if (typeof window === "undefined") {
     if (ssrContext) {
-      // Flatten query values to strings for compatibility
       const query: Record<string, string> = {};
       for (const [key, value] of Object.entries(ssrContext.query)) {
         query[key] = Array.isArray(value) ? value.join(",") : value;
       }
-      return {
-        pathname: ssrContext.pathname,
-        query,
-        asPath: ssrContext.asPath,
-      };
+      return { pathname: ssrContext.pathname, query, asPath: ssrContext.asPath };
     }
     return { pathname: "/", query: {}, asPath: "/" };
   }
@@ -144,6 +136,84 @@ function getPathnameAndQuery(): {
 }
 
 /**
+ * Perform client-side navigation: fetch the target page's HTML,
+ * extract __NEXT_DATA__, and re-render the React root.
+ */
+async function navigateClient(url: string): Promise<void> {
+  if (typeof window === "undefined") return;
+
+  const win = window as any;
+  const root = win.__NEXTCOMPAT_ROOT__;
+  if (!root) {
+    // No React root yet — fall back to hard navigation
+    window.location.href = url;
+    return;
+  }
+
+  try {
+    // Fetch the target page's SSR HTML
+    const res = await fetch(url, { headers: { Accept: "text/html" } });
+    if (!res.ok) {
+      window.location.href = url;
+      return;
+    }
+
+    const html = await res.text();
+
+    // Extract __NEXT_DATA__ from the HTML
+    const match = html.match(/<script>window\.__NEXT_DATA__\s*=\s*(.*?)<\/script>/);
+    if (!match) {
+      window.location.href = url;
+      return;
+    }
+
+    const nextData = JSON.parse(match[1]);
+    const { pageProps } = nextData.props;
+    win.__NEXT_DATA__ = nextData;
+
+    // Find the page module URL from the hydration script
+    const moduleMatch = html.match(/import\("([^"]+)"\);\s*\n\s*const PageComponent/);
+    // Fallback: look for first dynamic import in the hydration script
+    const altMatch = html.match(/await import\("([^"]+pages\/[^"]+)"\)/);
+    const pageModuleUrl = moduleMatch?.[1] ?? altMatch?.[1];
+
+    if (!pageModuleUrl) {
+      window.location.href = url;
+      return;
+    }
+
+    // Dynamically import the new page module
+    const pageModule = await import(/* @vite-ignore */ pageModuleUrl);
+    const PageComponent = pageModule.default;
+
+    if (!PageComponent) {
+      window.location.href = url;
+      return;
+    }
+
+    // Import React for createElement
+    const React = (await import("react")).default;
+
+    // Re-render with the new page
+    const AppComponent = win.__NEXTCOMPAT_APP__;
+    let element;
+    if (AppComponent) {
+      element = React.createElement(AppComponent, {
+        Component: PageComponent,
+        pageProps,
+      });
+    } else {
+      element = React.createElement(PageComponent, pageProps);
+    }
+
+    root.render(element);
+  } catch (err) {
+    console.error("[nextcompat] Client navigation failed:", err);
+    window.location.href = url;
+  }
+}
+
+/**
  * useRouter hook - Pages Router compatible.
  */
 export function useRouter(): NextRouter {
@@ -152,9 +222,20 @@ export function useRouter(): NextRouter {
   useEffect(() => {
     const onPopState = () => {
       setState(getPathnameAndQuery());
+      // Re-render with the new page on back/forward navigation
+      navigateClient(window.location.pathname + window.location.search);
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  // Listen for custom navigation events from Link component
+  useEffect(() => {
+    const onNavigate = ((e: CustomEvent) => {
+      setState(getPathnameAndQuery());
+    }) as EventListener;
+    window.addEventListener("nextcompat:navigate", onNavigate);
+    return () => window.removeEventListener("nextcompat:navigate", onNavigate);
   }, []);
 
   const push = useCallback(
@@ -162,11 +243,13 @@ export function useRouter(): NextRouter {
       const resolved = resolveUrl(url);
       routerEvents.emit("routeChangeStart", resolved);
       window.history.pushState({}, "", resolved);
+      await navigateClient(resolved);
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved);
       if (options?.scroll !== false) {
         window.scrollTo(0, 0);
       }
+      window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
       return true;
     },
     [],
@@ -177,11 +260,13 @@ export function useRouter(): NextRouter {
       const resolved = resolveUrl(url);
       routerEvents.emit("routeChangeStart", resolved);
       window.history.replaceState({}, "", resolved);
+      await navigateClient(resolved);
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved);
       if (options?.scroll !== false) {
         window.scrollTo(0, 0);
       }
+      window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
       return true;
     },
     [],
@@ -224,20 +309,24 @@ export function useRouter(): NextRouter {
 
 // Also export a default Router singleton for `import Router from 'next/router'`
 const Router = {
-  push: (url: string | UrlObject) =>
-    Promise.resolve().then(() => {
-      const resolved = resolveUrl(url);
-      window.history.pushState({}, "", resolved);
-      window.dispatchEvent(new PopStateEvent("popstate"));
-      return true;
-    }),
-  replace: (url: string | UrlObject) =>
-    Promise.resolve().then(() => {
-      const resolved = resolveUrl(url);
-      window.history.replaceState({}, "", resolved);
-      window.dispatchEvent(new PopStateEvent("popstate"));
-      return true;
-    }),
+  push: async (url: string | UrlObject) => {
+    const resolved = resolveUrl(url);
+    routerEvents.emit("routeChangeStart", resolved);
+    window.history.pushState({}, "", resolved);
+    await navigateClient(resolved);
+    routerEvents.emit("routeChangeComplete", resolved);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    return true;
+  },
+  replace: async (url: string | UrlObject) => {
+    const resolved = resolveUrl(url);
+    routerEvents.emit("routeChangeStart", resolved);
+    window.history.replaceState({}, "", resolved);
+    await navigateClient(resolved);
+    routerEvents.emit("routeChangeComplete", resolved);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    return true;
+  },
   back: () => window.history.back(),
   reload: () => window.location.reload(),
   prefetch: async () => {},
