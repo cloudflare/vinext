@@ -746,6 +746,17 @@ describe("App Router integration", () => {
     expect(html).toMatch(/property="og:type".*content="website"/);
   });
 
+  it("renders dynamic page with generateStaticParams export", async () => {
+    // generateStaticParams is a no-op in dev mode — the page should
+    // render on-demand with any slug, including ones not in the static params list.
+    const res = await fetch(`${baseUrl}/blog/any-arbitrary-slug`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Blog Post");
+    expect(html).toContain("any-arbitrary-slug");
+  });
+
   it("renders server actions page with 'use client' components", async () => {
     const res = await fetch(`${baseUrl}/actions`);
     expect(res.status).toBe(200);

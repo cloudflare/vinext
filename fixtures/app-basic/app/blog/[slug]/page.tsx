@@ -1,3 +1,11 @@
+export async function generateStaticParams() {
+  return [
+    { slug: "hello-world" },
+    { slug: "getting-started" },
+    { slug: "advanced-guide" },
+  ];
+}
+
 export async function generateMetadata({
   params,
 }: {
