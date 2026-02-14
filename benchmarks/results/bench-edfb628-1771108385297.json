@@ -1,0 +1,104 @@
+{
+  "timestamp": "2026-02-14T22:31:18.336Z",
+  "gitHash": "edfb628",
+  "runs": 3,
+  "system": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "nodeVersion": "v24.3.0",
+    "cpus": 8
+  },
+  "nextjs": {
+    "buildTime": {
+      "mean": 6587.793916999998,
+      "stddev": 169.15056785779495,
+      "min": 6452.628291999994,
+      "max": 6826.302334
+    },
+    "bundleSize": {
+      "raw": 564589,
+      "gzip": 172923,
+      "files": 14
+    },
+    "devColdStart": {
+      "meanMs": 2195.721041666669,
+      "meanRssKb": 89573.33333333333,
+      "runs": [
+        {
+          "coldStartMs": 2375.8247499999998,
+          "peakRssKb": 89376
+        },
+        {
+          "coldStartMs": 2144.088499999998,
+          "peakRssKb": 89616
+        },
+        {
+          "coldStartMs": 2067.2498750000086,
+          "peakRssKb": 89728
+        }
+      ]
+    }
+  },
+  "nextcompat": {
+    "buildTime": {
+      "mean": 2429.3891526666653,
+      "stddev": 7.325631662605203,
+      "min": 2421.013957999996,
+      "max": 2438.8577920000025
+    },
+    "bundleSize": {
+      "raw": 242050,
+      "gzip": 77206,
+      "files": 3
+    },
+    "devColdStart": {
+      "meanMs": 1371.7690003333362,
+      "meanRssKb": 90117.33333333333,
+      "runs": [
+        {
+          "coldStartMs": 1591.4314169999998,
+          "peakRssKb": 90192
+        },
+        {
+          "coldStartMs": 1362.9761670000007,
+          "peakRssKb": 90320
+        },
+        {
+          "coldStartMs": 1160.8994170000078,
+          "peakRssKb": 89840
+        }
+      ]
+    }
+  },
+  "nextcompatRolldown": {
+    "buildTime": {
+      "mean": 945.7700553333343,
+      "stddev": 16.131854930397143,
+      "min": 932.5355000000054,
+      "max": 968.4804999999978
+    },
+    "bundleSize": {
+      "raw": 238587,
+      "gzip": 75537,
+      "files": 4
+    },
+    "devColdStart": {
+      "meanMs": 1212.95570833333,
+      "meanRssKb": 90565.33333333333,
+      "runs": [
+        {
+          "coldStartMs": 1291.261249999996,
+          "peakRssKb": 90112
+        },
+        {
+          "coldStartMs": 1166.7279579999886,
+          "peakRssKb": 90704
+        },
+        {
+          "coldStartMs": 1180.8779170000053,
+          "peakRssKb": 90880
+        }
+      ]
+    }
+  }
+}

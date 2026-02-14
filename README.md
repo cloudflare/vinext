@@ -254,12 +254,31 @@ The [Vercel App Router Playground](https://github.com/vercel/next-app-router-pla
 
 Measured on an 8-core Apple Silicon machine, Node v24.3.0, with a shared 33-route App Router app (nested layouts, dynamic routes, client components, API routes). 3 runs each.
 
-| Metric | Next.js 16 (Turbopack) | nextcompat (Vite 7) | Delta |
-|--------|----------------------|--------------------|----|
-| Production build | 5.43s ±99ms | 2.09s ±13ms | **2.6x faster** |
-| Client bundle (gzip) | 168.9 KB (14 files) | 75.4 KB (3 files) | **55% smaller** |
-| Dev cold start | 1.72s | 1.16s | **33% faster** |
-| Dev peak RSS | 88 MB | 88 MB | Same |
+### Production Build Time
+
+| Framework | Mean | StdDev | vs Next.js |
+|-----------|------|--------|------------|
+| Next.js 16 (Turbopack) | 6.59s | ±169ms | baseline |
+| nextcompat (Vite 7 / Rollup) | 2.43s | ±7ms | **2.7x faster** |
+| nextcompat (Vite 8 / Rolldown) | 946ms | ±16ms | **7.0x faster** |
+
+### Client Bundle Size (gzipped)
+
+| Framework | Files | Gzipped | vs Next.js |
+|-----------|-------|---------|------------|
+| Next.js 16 | 14 | 168.9 KB | baseline |
+| nextcompat (Rollup) | 3 | 75.4 KB | **55% smaller** |
+| nextcompat (Rolldown) | 4 | 73.8 KB | **56% smaller** |
+
+### Dev Server Cold Start
+
+| Framework | Mean | Peak RSS | vs Next.js |
+|-----------|------|----------|------------|
+| Next.js 16 (Turbopack) | 2.20s | 87 MB | baseline |
+| nextcompat (Vite 7 / Rollup) | 1.37s | 88 MB | **1.6x faster** |
+| nextcompat (Vite 8 / Rolldown) | 1.21s | 88 MB | **1.8x faster** |
+
+Vite 8 (Rolldown) delivers sub-second production builds — **7x faster** than Next.js 16 with Turbopack. Bundle sizes are consistent between Rollup and Rolldown, both roughly half the size of Next.js output.
 
 Reproduce with:
 

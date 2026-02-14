@@ -457,7 +457,7 @@ console.log(`Generated benchmark app: ${pages} pages + ${routes} API routes = ${
 // Copy to both benchmark projects (symlinks don't work with Turbopack)
 import { cpSync } from "node:fs";
 const BASE = dirname(new URL(import.meta.url).pathname);
-for (const project of ["nextjs", "nextcompat"]) {
+for (const project of ["nextjs", "nextcompat", "nextcompat-rolldown"]) {
   const dest = join(BASE, project, "app");
   rmSync(dest, { recursive: true, force: true });
   cpSync(APP, dest, { recursive: true });

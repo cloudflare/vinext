@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Benchmark harness: compares Next.js 16 (Turbopack) vs nextcompat (Vite 7)
+ * Benchmark harness: compares Next.js 16 (Turbopack) vs nextcompat (Vite 7/Rollup) vs nextcompat (Vite 8/Rolldown)
  *
  * Metrics:
  *   1. Production build time (hyperfine)
@@ -176,10 +176,13 @@ async function main() {
     },
     nextjs: {},
     nextcompat: {},
+    nextcompatRolldown: {},
   };
 
   const nextjsDir = join(__dirname, "nextjs");
   const nextcompatDir = join(__dirname, "nextcompat");
+  const rolldownDir = join(__dirname, "nextcompat-rolldown");
+  const hasRolldown = existsSync(join(rolldownDir, "package.json"));
 
   // ─── 1. Production Build Time ──────────────────────────────────────────────
   if (!SKIP_BUILD) {
@@ -188,19 +191,26 @@ async function main() {
     // Clean previous builds
     exec("rm -rf .next", { cwd: nextjsDir });
     exec("rm -rf dist", { cwd: nextcompatDir });
+    if (hasRolldown) exec("rm -rf dist", { cwd: rolldownDir });
 
     // Ensure plugin is built
     console.log("  Building nextcompat plugin...");
     exec("npx tsc -p packages/vite-plugin-nextcompat/tsconfig.json", { cwd: join(__dirname, "..") });
 
-    // Warmup run for both (not measured)
+    // Warmup run for all (not measured)
     console.log("  Warmup: Next.js build...");
     exec("npx next build", { cwd: nextjsDir, timeout: 120000 });
     exec("rm -rf .next", { cwd: nextjsDir });
 
-    console.log("  Warmup: nextcompat build...");
+    console.log("  Warmup: nextcompat (Rollup) build...");
     exec("npx vite build", { cwd: nextcompatDir, timeout: 120000 });
     exec("rm -rf dist", { cwd: nextcompatDir });
+
+    if (hasRolldown) {
+      console.log("  Warmup: nextcompat (Rolldown) build...");
+      exec("npx vite build", { cwd: rolldownDir, timeout: 120000 });
+      exec("rm -rf dist", { cwd: rolldownDir });
+    }
 
     // Measured runs with hyperfine (separate runs per project for clean --prepare)
     console.log(`\n  Running ${RUNS} build iterations with hyperfine...\n`);
@@ -225,17 +235,27 @@ async function main() {
       );
       results.nextjs.buildTime = parseHyperfine(njsJson);
 
-      // nextcompat
-      console.log("  Timing nextcompat builds...");
+      // nextcompat (Rollup)
+      console.log("  Timing nextcompat (Rollup) builds...");
       const ncJson = exec(
         `hyperfine --runs ${RUNS} --prepare 'rm -rf dist' 'npx vite build' --export-json /dev/stdout 2>/dev/null`,
         { cwd: nextcompatDir, timeout: 600000 }
       );
       results.nextcompat.buildTime = parseHyperfine(ncJson);
+
+      // nextcompat (Rolldown)
+      if (hasRolldown) {
+        console.log("  Timing nextcompat (Rolldown) builds...");
+        const rdJson = exec(
+          `hyperfine --runs ${RUNS} --prepare 'rm -rf dist' 'npx vite build' --export-json /dev/stdout 2>/dev/null`,
+          { cwd: rolldownDir, timeout: 600000 }
+        );
+        results.nextcompatRolldown.buildTime = parseHyperfine(rdJson);
+      }
     } catch {
       // Fallback: manual timing
       console.log("  hyperfine failed, falling back to manual timing...");
-      const buildTimes = { nextjs: [], nextcompat: [] };
+      const buildTimes = { nextjs: [], nextcompat: [], rolldown: [] };
 
       for (let i = 0; i < RUNS; i++) {
         console.log(`  Run ${i + 1}/${RUNS}...`);
@@ -249,6 +269,13 @@ async function main() {
         const ncStart = performance.now();
         exec("npx vite build", { cwd: nextcompatDir, timeout: 120000 });
         buildTimes.nextcompat.push(performance.now() - ncStart);
+
+        if (hasRolldown) {
+          exec("rm -rf dist", { cwd: rolldownDir });
+          const rdStart = performance.now();
+          exec("npx vite build", { cwd: rolldownDir, timeout: 120000 });
+          buildTimes.rolldown.push(performance.now() - rdStart);
+        }
       }
 
       const avg = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
@@ -269,6 +296,14 @@ async function main() {
         min: Math.min(...buildTimes.nextcompat),
         max: Math.max(...buildTimes.nextcompat),
       };
+      if (hasRolldown && buildTimes.rolldown.length) {
+        results.nextcompatRolldown.buildTime = {
+          mean: avg(buildTimes.rolldown),
+          stddev: stddev(buildTimes.rolldown),
+          min: Math.min(...buildTimes.rolldown),
+          max: Math.max(...buildTimes.rolldown),
+        };
+      }
     }
 
     // ─── 2. Bundle Size ────────────────────────────────────────────────────────
@@ -286,17 +321,26 @@ async function main() {
     results.nextjs.bundleSize = njsSize;
     console.log(`  Next.js:     ${njsSize.files} files, ${formatBytes(njsSize.raw)} raw, ${formatBytes(njsSize.gzip)} gzip`);
 
-    // nextcompat: client bundles are in dist/client
+    // nextcompat (Rollup): client bundles are in dist/client
     const ncSize = bundleSize(join(nextcompatDir, "dist", "client"));
     results.nextcompat.bundleSize = ncSize;
-    console.log(`  nextcompat:  ${ncSize.files} files, ${formatBytes(ncSize.raw)} raw, ${formatBytes(ncSize.gzip)} gzip`);
+    console.log(`  nextcompat (Rollup):    ${ncSize.files} files, ${formatBytes(ncSize.raw)} raw, ${formatBytes(ncSize.gzip)} gzip`);
+
+    // nextcompat (Rolldown): client bundles are in dist/client
+    if (hasRolldown) {
+      exec("rm -rf dist", { cwd: rolldownDir });
+      exec("npx vite build", { cwd: rolldownDir, timeout: 120000 });
+      const rdSize = bundleSize(join(rolldownDir, "dist", "client"));
+      results.nextcompatRolldown.bundleSize = rdSize;
+      console.log(`  nextcompat (Rolldown):  ${rdSize.files} files, ${formatBytes(rdSize.raw)} raw, ${formatBytes(rdSize.gzip)} gzip`);
+    }
   }
 
   // ─── 3. Dev Server Cold Start ──────────────────────────────────────────────
   if (!SKIP_DEV) {
     console.log("\n=== Dev Server Cold Start ===\n");
 
-    const devResults = { nextjs: [], nextcompat: [] };
+    const devResults = { nextjs: [], nextcompat: [], rolldown: [] };
 
     for (let i = 0; i < RUNS; i++) {
       console.log(`  Run ${i + 1}/${RUNS}...`);
@@ -310,13 +354,23 @@ async function main() {
       kill(njsDev.process);
       await new Promise((r) => setTimeout(r, 2000)); // cooldown
 
-      // nextcompat dev
-      console.log("    Starting nextcompat dev server...");
+      // nextcompat (Rollup) dev
+      console.log("    Starting nextcompat (Rollup) dev server...");
       const ncDev = await startAndMeasure("npx", ["vite", "--port", "4101"], nextcompatDir, "http://localhost:4101");
       devResults.nextcompat.push({ coldStartMs: ncDev.coldStartMs, peakRssKb: ncDev.peakRssKb });
-      console.log(`    nextcompat: ${formatMs(ncDev.coldStartMs)}, ${Math.round(ncDev.peakRssKb / 1024)} MB RSS`);
+      console.log(`    nextcompat (Rollup): ${formatMs(ncDev.coldStartMs)}, ${Math.round(ncDev.peakRssKb / 1024)} MB RSS`);
       kill(ncDev.process);
       await new Promise((r) => setTimeout(r, 2000)); // cooldown
+
+      // nextcompat (Rolldown) dev
+      if (hasRolldown) {
+        console.log("    Starting nextcompat (Rolldown) dev server...");
+        const rdDev = await startAndMeasure("npx", ["vite", "--port", "4102"], rolldownDir, "http://localhost:4102");
+        devResults.rolldown.push({ coldStartMs: rdDev.coldStartMs, peakRssKb: rdDev.peakRssKb });
+        console.log(`    nextcompat (Rolldown): ${formatMs(rdDev.coldStartMs)}, ${Math.round(rdDev.peakRssKb / 1024)} MB RSS`);
+        kill(rdDev.process);
+        await new Promise((r) => setTimeout(r, 2000)); // cooldown
+      }
     }
 
     const avg = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
@@ -331,6 +385,13 @@ async function main() {
       meanRssKb: avg(devResults.nextcompat.map((r) => r.peakRssKb)),
       runs: devResults.nextcompat,
     };
+    if (hasRolldown && devResults.rolldown.length) {
+      results.nextcompatRolldown.devColdStart = {
+        meanMs: avg(devResults.rolldown.map((r) => r.coldStartMs)),
+        meanRssKb: avg(devResults.rolldown.map((r) => r.peakRssKb)),
+        runs: devResults.rolldown,
+      };
+    }
   }
 
   // ─── 4. SSR Throughput & TTFB ──────────────────────────────────────────────
@@ -359,33 +420,54 @@ async function main() {
   md += `- **CPUs**: ${results.system.cpus}\n`;
   md += `- **Runs**: ${results.runs}\n\n`;
 
+  const hasRolldownResults = results.nextcompatRolldown && Object.keys(results.nextcompatRolldown).length > 0;
+
   if (results.nextjs.buildTime && results.nextcompat.buildTime) {
     md += `## Production Build Time\n\n`;
-    md += `| Framework | Mean | StdDev | Min | Max |\n`;
-    md += `|-----------|------|--------|-----|-----|\n`;
-    md += `| Next.js 16 (Turbopack) | ${formatMs(results.nextjs.buildTime.mean)} | ±${formatMs(results.nextjs.buildTime.stddev)} | ${formatMs(results.nextjs.buildTime.min)} | ${formatMs(results.nextjs.buildTime.max)} |\n`;
-    md += `| nextcompat (Vite 7) | ${formatMs(results.nextcompat.buildTime.mean)} | ±${formatMs(results.nextcompat.buildTime.stddev)} | ${formatMs(results.nextcompat.buildTime.min)} | ${formatMs(results.nextcompat.buildTime.max)} |\n`;
+    md += `| Framework | Mean | StdDev | Min | Max | vs Next.js |\n`;
+    md += `|-----------|------|--------|-----|-----|------------|\n`;
+    md += `| Next.js 16 (Turbopack) | ${formatMs(results.nextjs.buildTime.mean)} | ±${formatMs(results.nextjs.buildTime.stddev)} | ${formatMs(results.nextjs.buildTime.min)} | ${formatMs(results.nextjs.buildTime.max)} | baseline |\n`;
 
-    const ratio = results.nextjs.buildTime.mean / results.nextcompat.buildTime.mean;
-    if (ratio > 1) md += `\n**nextcompat is ${ratio.toFixed(1)}x faster**\n`;
-    else md += `\n**Next.js is ${(1 / ratio).toFixed(1)}x faster**\n`;
+    const rollupRatio = results.nextjs.buildTime.mean / results.nextcompat.buildTime.mean;
+    md += `| nextcompat (Vite 7 / Rollup) | ${formatMs(results.nextcompat.buildTime.mean)} | ±${formatMs(results.nextcompat.buildTime.stddev)} | ${formatMs(results.nextcompat.buildTime.min)} | ${formatMs(results.nextcompat.buildTime.max)} | **${rollupRatio.toFixed(1)}x faster** |\n`;
+
+    if (hasRolldownResults && results.nextcompatRolldown.buildTime) {
+      const rolldownRatio = results.nextjs.buildTime.mean / results.nextcompatRolldown.buildTime.mean;
+      md += `| nextcompat (Vite 8 / Rolldown) | ${formatMs(results.nextcompatRolldown.buildTime.mean)} | ±${formatMs(results.nextcompatRolldown.buildTime.stddev)} | ${formatMs(results.nextcompatRolldown.buildTime.min)} | ${formatMs(results.nextcompatRolldown.buildTime.max)} | **${rolldownRatio.toFixed(1)}x faster** |\n`;
+    }
     md += "\n";
   }
 
   if (results.nextjs.bundleSize && results.nextcompat.bundleSize) {
     md += `## Production Bundle Size (Client)\n\n`;
-    md += `| Framework | Files | Raw | Gzipped |\n`;
-    md += `|-----------|-------|-----|----------|\n`;
-    md += `| Next.js 16 | ${results.nextjs.bundleSize.files} | ${formatBytes(results.nextjs.bundleSize.raw)} | ${formatBytes(results.nextjs.bundleSize.gzip)} |\n`;
-    md += `| nextcompat | ${results.nextcompat.bundleSize.files} | ${formatBytes(results.nextcompat.bundleSize.raw)} | ${formatBytes(results.nextcompat.bundleSize.gzip)} |\n\n`;
+    md += `| Framework | Files | Raw | Gzipped | vs Next.js (gzip) |\n`;
+    md += `|-----------|-------|-----|----------|--------------------|\n`;
+    md += `| Next.js 16 | ${results.nextjs.bundleSize.files} | ${formatBytes(results.nextjs.bundleSize.raw)} | ${formatBytes(results.nextjs.bundleSize.gzip)} | baseline |\n`;
+
+    const rollupSizePct = ((1 - results.nextcompat.bundleSize.gzip / results.nextjs.bundleSize.gzip) * 100).toFixed(0);
+    md += `| nextcompat (Rollup) | ${results.nextcompat.bundleSize.files} | ${formatBytes(results.nextcompat.bundleSize.raw)} | ${formatBytes(results.nextcompat.bundleSize.gzip)} | **${rollupSizePct}% smaller** |\n`;
+
+    if (hasRolldownResults && results.nextcompatRolldown.bundleSize) {
+      const rolldownSizePct = ((1 - results.nextcompatRolldown.bundleSize.gzip / results.nextjs.bundleSize.gzip) * 100).toFixed(0);
+      md += `| nextcompat (Rolldown) | ${results.nextcompatRolldown.bundleSize.files} | ${formatBytes(results.nextcompatRolldown.bundleSize.raw)} | ${formatBytes(results.nextcompatRolldown.bundleSize.gzip)} | **${rolldownSizePct}% smaller** |\n`;
+    }
+    md += "\n";
   }
 
   if (results.nextjs.devColdStart && results.nextcompat.devColdStart) {
     md += `## Dev Server Cold Start\n\n`;
-    md += `| Framework | Mean Cold Start | Mean Peak RSS |\n`;
-    md += `|-----------|----------------|----------------|\n`;
-    md += `| Next.js 16 (Turbopack) | ${formatMs(results.nextjs.devColdStart.meanMs)} | ${Math.round(results.nextjs.devColdStart.meanRssKb / 1024)} MB |\n`;
-    md += `| nextcompat (Vite 7) | ${formatMs(results.nextcompat.devColdStart.meanMs)} | ${Math.round(results.nextcompat.devColdStart.meanRssKb / 1024)} MB |\n\n`;
+    md += `| Framework | Mean Cold Start | Mean Peak RSS | vs Next.js |\n`;
+    md += `|-----------|----------------|----------------|------------|\n`;
+    md += `| Next.js 16 (Turbopack) | ${formatMs(results.nextjs.devColdStart.meanMs)} | ${Math.round(results.nextjs.devColdStart.meanRssKb / 1024)} MB | baseline |\n`;
+
+    const rollupDevRatio = results.nextjs.devColdStart.meanMs / results.nextcompat.devColdStart.meanMs;
+    md += `| nextcompat (Vite 7 / Rollup) | ${formatMs(results.nextcompat.devColdStart.meanMs)} | ${Math.round(results.nextcompat.devColdStart.meanRssKb / 1024)} MB | **${rollupDevRatio.toFixed(1)}x faster** |\n`;
+
+    if (hasRolldownResults && results.nextcompatRolldown.devColdStart) {
+      const rolldownDevRatio = results.nextjs.devColdStart.meanMs / results.nextcompatRolldown.devColdStart.meanMs;
+      md += `| nextcompat (Vite 8 / Rolldown) | ${formatMs(results.nextcompatRolldown.devColdStart.meanMs)} | ${Math.round(results.nextcompatRolldown.devColdStart.meanRssKb / 1024)} MB | **${rolldownDevRatio.toFixed(1)}x faster** |\n`;
+    }
+    md += "\n";
   }
 
   // SSR throughput section will be added once prod server is wired up
