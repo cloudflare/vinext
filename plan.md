@@ -347,17 +347,23 @@ It also makes contribution dead simple - find a red test, make it green.
    tackling the harder App Router + RSC surface.
 
 3. ~~**`next/image` optimization**~~ **RESOLVED: Shim over existing tools.**
-   No point rebuilding Sharp pipelines. Two strong options:
-   - **`vite-imagetools`** (109k weekly downloads) - Vite plugin, Sharp-powered,
-     build-time transforms (resize, format conversion, srcset). Handles the
-     optimization pipeline at build time.
-   - **`@unpic/react`** (40k weekly downloads) - Drop-in `<Image>` component
-     that auto-detects image CDNs, generates correct srcset/sizes. Already
-     has a `@unpic/react/nextjs` variant, so the "shim next/image" problem
-     is partially solved from the other direction.
-   Likely approach: use `@unpic/react` as the component shim (it handles
-   layout/srcset/sizes), backed by `vite-imagetools` for local image
-   optimization at build time.
+   No point rebuilding Sharp pipelines. Use:
+   - **`@unpic/react`** (40k weekly downloads) as the component layer. This
+     is **provider-agnostic by design** - it auto-detects the image CDN from
+     the URL and uses that CDN's native resizing. 28 providers supported:
+     Cloudflare, Netlify, Vercel, IPX (self-hosted), Cloudinary, Imgix,
+     Shopify, Bunny.net, etc. Has a `fallback` prop so you can configure
+     per-deployment target (e.g. `fallback="cloudflare"` on CF,
+     `fallback="ipx"` on self-hosted). This actually aligns perfectly with
+     the deploy-anywhere goal - wherever you deploy, unpic uses whatever
+     image CDN is available there natively.
+   - **`vite-imagetools`** (109k weekly downloads) for **local images** that
+     aren't on a CDN. Sharp-powered build-time optimization (resize, format
+     conversion, srcset generation). Images are optimized at build time so
+     no runtime image processing needed on the server.
+   This is arguably a *better* story than `next/image`, which forces
+   everything through Vercel's optimizer or requires you to configure a
+   single loader manually.
 
 4. ~~**Edge Runtime**~~ **RESOLVED: Skip it. Run middleware in Node.**
    Vercel has effectively abandoned the Edge Runtime too. Middleware runs
