@@ -34,6 +34,27 @@ export interface NextHeader {
   headers: Array<{ key: string; value: string }>;
 }
 
+export interface NextI18nConfig {
+  /** List of supported locales */
+  locales: string[];
+  /** The default locale (used when no locale prefix is in the URL) */
+  defaultLocale: string;
+  /**
+   * Whether to auto-detect locale from Accept-Language header.
+   * Defaults to true in Next.js.
+   */
+  localeDetection?: boolean;
+  /**
+   * Domain-based routing. Each domain maps to a specific locale.
+   */
+  domains?: Array<{
+    domain: string;
+    defaultLocale: string;
+    locales?: string[];
+    http?: boolean;
+  }>;
+}
+
 export interface NextConfig {
   /** Additional env variables */
   env?: Record<string, string>;
@@ -41,6 +62,8 @@ export interface NextConfig {
   basePath?: string;
   /** Whether to add trailing slashes */
   trailingSlash?: boolean;
+  /** Internationalization routing config */
+  i18n?: NextI18nConfig;
   /** URL redirect rules */
   redirects?: () => Promise<NextRedirect[]> | NextRedirect[];
   /** URL rewrite rules */
@@ -87,6 +110,7 @@ export interface ResolvedNextConfig {
   };
   headers: NextHeader[];
   images: NextConfig["images"];
+  i18n: NextI18nConfig | null;
 }
 
 const CONFIG_FILES = [
@@ -148,6 +172,7 @@ export async function resolveNextConfig(
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],
       images: undefined,
+      i18n: null,
     };
   }
 
@@ -180,7 +205,7 @@ export async function resolveNextConfig(
   }
 
   // Warn about unsupported options
-  const unsupported = ["webpack", "experimental", "i18n"];
+  const unsupported = ["webpack", "experimental"];
   for (const key of unsupported) {
     if (config[key] !== undefined) {
       console.warn(
@@ -194,6 +219,17 @@ export async function resolveNextConfig(
     console.warn(`[nextcompat] Unknown output mode "${output}", ignoring`);
   }
 
+  // Parse i18n config
+  let i18n: NextI18nConfig | null = null;
+  if (config.i18n) {
+    i18n = {
+      locales: config.i18n.locales,
+      defaultLocale: config.i18n.defaultLocale,
+      localeDetection: config.i18n.localeDetection ?? true,
+      domains: config.i18n.domains,
+    };
+  }
+
   return {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
@@ -203,5 +239,6 @@ export async function resolveNextConfig(
     rewrites,
     headers,
     images: config.images,
+    i18n,
   };
 }

@@ -832,7 +832,7 @@ hydrate();
                 if (afterRewrite) resolvedUrl = afterRewrite;
               }
 
-              const handler = createSSRHandler(server, routes, pagesDir);
+              const handler = createSSRHandler(server, routes, pagesDir, nextConfig?.i18n);
 
               // Try rendering the resolved URL
               const match = matchRoute(resolvedUrl.split("?")[0], routes);

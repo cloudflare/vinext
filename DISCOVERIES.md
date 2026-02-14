@@ -125,3 +125,11 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **`(...)photos/[id]` from `app/feed/@modal/`** intercepts `/photos/:id` (resolves from app root). This is different from `(.)photos/[id]` which would resolve to `/feed/photos/:id` (same level as the route).
 - **The source route is rendered with the intercepting page in the slot**, not the target route. e.g., navigating from `/feed` to `/photos/42` renders the `/feed` layout with `@modal` showing the photo modal, not the `/photos/42` page.
 - **RSC payload contains both the source route content and the intercepted slot content**, so the client can render the feed page with the modal overlay in a single stream.
+
+## i18n Routing
+
+- **i18n is a Pages Router feature only** in Next.js 16+. The App Router dropped built-in i18n — apps are expected to use middleware for locale routing. We implement i18n for Pages Router only.
+- **Locale prefix stripping** happens before route matching. `/fr/about` strips to `/about` with `locale: "fr"`. The default locale has no prefix (`/about` → `locale: "en"`).
+- **Accept-Language detection** triggers a 307 redirect to the detected locale prefix on first visit (when `localeDetection: true`). This only fires if no locale prefix was in the URL.
+- **`getServerSideProps`/`getStaticProps`/`getStaticPaths`** all receive `locale`, `locales`, and `defaultLocale` in their context objects, matching Next.js behavior.
+- **`useRouter().locale`** is populated from SSR context on the server, and from `window.__NEXTCOMPAT_LOCALE__` on the client. The i18n globals are injected alongside `__NEXT_DATA__`.

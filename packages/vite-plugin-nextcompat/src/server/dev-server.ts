@@ -2,6 +2,7 @@ import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute } from "../routing/pages-router.js";
+import type { NextI18nConfig } from "../config/next-config.js";
 import {
   isrGet,
   isrSet,
@@ -63,6 +64,65 @@ function findFileWithExtensions(basePath: string): boolean {
 }
 
 /**
+ * Extract locale prefix from a URL path.
+ * e.g. /fr/about -> { locale: "fr", url: "/about", hadPrefix: true }
+ *      /about    -> { locale: "en", url: "/about", hadPrefix: false } (defaultLocale)
+ */
+function extractLocaleFromUrl(
+  url: string,
+  i18nConfig: NextI18nConfig,
+): { locale: string; url: string; hadPrefix: boolean } {
+  const pathname = url.split("?")[0];
+  const parts = pathname.split("/").filter(Boolean);
+  const query = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+
+  if (parts.length > 0 && i18nConfig.locales.includes(parts[0])) {
+    const locale = parts[0];
+    const rest = "/" + parts.slice(1).join("/");
+    return { locale, url: (rest || "/") + query, hadPrefix: true };
+  }
+
+  return { locale: i18nConfig.defaultLocale, url, hadPrefix: false };
+}
+
+/**
+ * Detect the preferred locale from the Accept-Language header.
+ * Returns the best matching locale or null.
+ */
+function detectLocaleFromHeaders(
+  req: IncomingMessage,
+  i18nConfig: NextI18nConfig,
+): string | null {
+  const acceptLang = req.headers["accept-language"];
+  if (!acceptLang) return null;
+
+  // Parse Accept-Language: en-US,en;q=0.9,fr;q=0.8
+  const langs = acceptLang
+    .split(",")
+    .map((part) => {
+      const [lang, qPart] = part.trim().split(";");
+      const q = qPart ? parseFloat(qPart.replace("q=", "")) : 1;
+      return { lang: lang.trim().toLowerCase(), q };
+    })
+    .sort((a, b) => b.q - a.q);
+
+  for (const { lang } of langs) {
+    // Exact match
+    const exactMatch = i18nConfig.locales.find((l) => l.toLowerCase() === lang);
+    if (exactMatch) return exactMatch;
+
+    // Prefix match (e.g. "en-US" matches "en")
+    const prefix = lang.split("-")[0];
+    const prefixMatch = i18nConfig.locales.find(
+      (l) => l.toLowerCase() === prefix || l.toLowerCase().startsWith(prefix + "-"),
+    );
+    if (prefixMatch) return prefixMatch;
+  }
+
+  return null;
+}
+
+/**
  * Create an SSR request handler for the Pages Router.
  *
  * For each request:
@@ -76,13 +136,36 @@ export function createSSRHandler(
   server: ViteDevServer,
   routes: Route[],
   pagesDir: string,
+  i18nConfig?: NextI18nConfig | null,
 ) {
   return async (
     req: IncomingMessage,
     res: ServerResponse,
     url: string,
   ): Promise<void> => {
-    const match = matchRoute(url, routes);
+    // --- i18n: extract locale from URL prefix ---
+    let locale: string | undefined;
+    let localeStrippedUrl = url;
+
+    if (i18nConfig) {
+      const parsed = extractLocaleFromUrl(url, i18nConfig);
+      locale = parsed.locale;
+      localeStrippedUrl = parsed.url;
+
+      // If no locale prefix and localeDetection is enabled, detect from Accept-Language
+      if (!parsed.hadPrefix && i18nConfig.localeDetection !== false) {
+        const detectedLocale = detectLocaleFromHeaders(req, i18nConfig);
+        if (detectedLocale && detectedLocale !== i18nConfig.defaultLocale) {
+          // Redirect to the detected locale
+          const redirectUrl = `/${detectedLocale}${url === "/" ? "" : url}`;
+          res.writeHead(307, { Location: redirectUrl });
+          res.end();
+          return;
+        }
+      }
+    }
+
+    const match = matchRoute(localeStrippedUrl, routes);
 
     if (!match) {
       // No route matched — try to render custom 404 page
@@ -98,9 +181,12 @@ export function createSSRHandler(
       const routerShim = await server.ssrLoadModule("next/router");
       if (typeof routerShim.setSSRContext === "function") {
         routerShim.setSSRContext({
-          pathname: url.split("?")[0],
+          pathname: localeStrippedUrl.split("?")[0],
           query: { ...params, ...parseQuery(url) },
           asPath: url,
+          locale: locale ?? i18nConfig?.defaultLocale,
+          locales: i18nConfig?.locales,
+          defaultLocale: i18nConfig?.defaultLocale,
         });
       }
 
@@ -122,7 +208,10 @@ export function createSSRHandler(
       // Handle getStaticPaths for dynamic routes: validate the path
       // and respect fallback: false (return 404 for unlisted paths).
       if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
-        const pathsResult = await pageModule.getStaticPaths({ locales: [], defaultLocale: "" });
+        const pathsResult = await pageModule.getStaticPaths({
+          locales: i18nConfig?.locales ?? [],
+          defaultLocale: i18nConfig?.defaultLocale ?? "",
+        });
         const fallback = pathsResult?.fallback ?? false;
 
         if (fallback === false) {
@@ -154,7 +243,10 @@ export function createSSRHandler(
           req,
           res,
           query: parseQuery(url),
-          resolvedUrl: url,
+          resolvedUrl: localeStrippedUrl,
+          locale: locale ?? i18nConfig?.defaultLocale,
+          locales: i18nConfig?.locales,
+          defaultLocale: i18nConfig?.defaultLocale,
         };
         const result = await pageModule.getServerSideProps(context);
         if (result && "props" in result) {
@@ -226,7 +318,12 @@ export function createSSRHandler(
         }
 
         // Cache miss — call getStaticProps normally
-        const context = { params };
+        const context = {
+          params,
+          locale: locale ?? i18nConfig?.defaultLocale,
+          locales: i18nConfig?.locales,
+          defaultLocale: i18nConfig?.defaultLocale,
+        };
         const result = await pageModule.getStaticProps(context);
         if (result && "props" in result) {
           pageProps = result.props;
@@ -344,12 +441,15 @@ hydrate();
         props: { pageProps },
         page: route.pattern,
         query: params,
+        locale: locale ?? i18nConfig?.defaultLocale,
+        locales: i18nConfig?.locales,
+        defaultLocale: i18nConfig?.defaultLocale,
         // Include module URLs so client navigation can import pages directly
         __nextcompat: {
           pageModuleUrl,
           appModuleUrl,
         },
-      })}</script>`;
+      })}${i18nConfig ? `;window.__NEXTCOMPAT_LOCALE__=${JSON.stringify(locale ?? i18nConfig.defaultLocale)};window.__NEXTCOMPAT_LOCALES__=${JSON.stringify(i18nConfig.locales)};window.__NEXTCOMPAT_DEFAULT_LOCALE__=${JSON.stringify(i18nConfig.defaultLocale)}` : ""}</script>`;
 
       // Try to load custom _document.tsx
       let html: string;

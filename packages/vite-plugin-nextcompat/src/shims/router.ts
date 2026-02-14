@@ -103,6 +103,9 @@ interface SSRContext {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
+  locale?: string;
+  locales?: string[];
+  defaultLocale?: string;
 }
 
 let ssrContext: SSRContext | null = null;
@@ -311,6 +314,17 @@ export function useRouter(): NextRouter {
     // No-op for now - can implement link prefetching later
   }, []);
 
+  // Get i18n info from SSR context or window
+  const locale = typeof window === "undefined"
+    ? ssrContext?.locale
+    : (window as any).__NEXTCOMPAT_LOCALE__;
+  const locales = typeof window === "undefined"
+    ? ssrContext?.locales
+    : (window as any).__NEXTCOMPAT_LOCALES__;
+  const defaultLocale = typeof window === "undefined"
+    ? ssrContext?.defaultLocale
+    : (window as any).__NEXTCOMPAT_DEFAULT_LOCALE__;
+
   const router = useMemo(
     (): NextRouter => ({
       pathname,
@@ -318,6 +332,9 @@ export function useRouter(): NextRouter {
       query,
       asPath,
       basePath: "",
+      locale,
+      locales,
+      defaultLocale,
       isReady: true,
       isPreview: false,
       isFallback: false,
@@ -328,7 +345,7 @@ export function useRouter(): NextRouter {
       prefetch,
       events: routerEvents,
     }),
-    [pathname, query, asPath, push, replace, back, reload, prefetch],
+    [pathname, query, asPath, locale, locales, defaultLocale, push, replace, back, reload, prefetch],
   );
 
   return router;
