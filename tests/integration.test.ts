@@ -4996,3 +4996,169 @@ describe("instrumentation.ts support", () => {
     await runInstrumentation(mockServer, "/fake/empty-instrumentation.ts");
   });
 });
+
+describe("production server compression", () => {
+  it("negotiateEncoding returns br when Accept-Encoding includes br", async () => {
+    const { negotiateEncoding } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+    );
+    const req = { headers: { "accept-encoding": "gzip, deflate, br" } };
+    expect(negotiateEncoding(req as any)).toBe("br");
+  });
+
+  it("negotiateEncoding returns gzip when br is not available", async () => {
+    const { negotiateEncoding } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+    );
+    const req = { headers: { "accept-encoding": "gzip, deflate" } };
+    expect(negotiateEncoding(req as any)).toBe("gzip");
+  });
+
+  it("negotiateEncoding returns null when no encoding header", async () => {
+    const { negotiateEncoding } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+    );
+    const req = { headers: {} };
+    expect(negotiateEncoding(req as any)).toBeNull();
+  });
+
+  it("COMPRESSIBLE_TYPES includes expected content types", async () => {
+    const { COMPRESSIBLE_TYPES } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+    );
+    expect(COMPRESSIBLE_TYPES.has("text/html")).toBe(true);
+    expect(COMPRESSIBLE_TYPES.has("application/javascript")).toBe(true);
+    expect(COMPRESSIBLE_TYPES.has("application/json")).toBe(true);
+    expect(COMPRESSIBLE_TYPES.has("text/css")).toBe(true);
+    expect(COMPRESSIBLE_TYPES.has("image/svg+xml")).toBe(true);
+    // Binary formats should not be compressible
+    expect(COMPRESSIBLE_TYPES.has("image/png")).toBe(false);
+    expect(COMPRESSIBLE_TYPES.has("image/jpeg")).toBe(false);
+  });
+
+  it("COMPRESS_THRESHOLD is a reasonable minimum", async () => {
+    const { COMPRESS_THRESHOLD } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+    );
+    expect(COMPRESS_THRESHOLD).toBeGreaterThanOrEqual(256);
+    expect(COMPRESS_THRESHOLD).toBeLessThanOrEqual(4096);
+  });
+
+  it("sendCompressed compresses text/html with gzip", async () => {
+    const { sendCompressed } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+    );
+    const body = "<html>" + "x".repeat(2000) + "</html>";
+    const req = { headers: { "accept-encoding": "gzip" } };
+
+    const chunks: Buffer[] = [];
+    let writtenStatus = 0;
+    let writtenHeaders: Record<string, string> = {};
+    const res = {
+      writeHead: (status: number, headers: Record<string, string>) => {
+        writtenStatus = status;
+        writtenHeaders = headers;
+      },
+      write: (chunk: Buffer) => {
+        chunks.push(chunk);
+        return true;
+      },
+      end: (chunk?: Buffer) => {
+        if (chunk) chunks.push(chunk);
+      },
+      on: () => {},
+      once: () => {},
+      emit: () => false,
+      removeListener: () => {},
+    };
+
+    await new Promise<void>((resolve) => {
+      // Override end to capture completion
+      const origEnd = res.end;
+      (res as any).end = (chunk?: Buffer) => {
+        origEnd(chunk);
+        resolve();
+      };
+      sendCompressed(req as any, res as any, body, "text/html", 200, {}, true);
+      // Give pipeline time to complete
+      setTimeout(resolve, 100);
+    });
+
+    expect(writtenStatus).toBe(200);
+    expect(writtenHeaders["Content-Encoding"]).toBe("gzip");
+    expect(writtenHeaders["Vary"]).toBe("Accept-Encoding");
+  });
+
+  it("sendCompressed does not compress when disabled", async () => {
+    const { sendCompressed } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+    );
+
+    const body = "<html>" + "x".repeat(2000) + "</html>";
+    const req = { headers: { "accept-encoding": "gzip" } };
+
+    let writtenHeaders: Record<string, string> = {};
+    let writtenBody: Buffer | null = null;
+    const res = {
+      writeHead: (_status: number, headers: Record<string, string>) => {
+        writtenHeaders = headers;
+      },
+      end: (chunk?: Buffer) => {
+        if (chunk) writtenBody = chunk;
+      },
+    };
+
+    sendCompressed(req as any, res as any, body, "text/html", 200, {}, false);
+
+    // Should NOT have Content-Encoding
+    expect(writtenHeaders["Content-Encoding"]).toBeUndefined();
+    // Should have Content-Length
+    expect(writtenHeaders["Content-Length"]).toBeDefined();
+    expect(writtenBody).toBeTruthy();
+  });
+
+  it("sendCompressed does not compress small bodies", async () => {
+    const { sendCompressed } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+    );
+
+    const body = "<html>small</html>";
+    const req = { headers: { "accept-encoding": "gzip" } };
+
+    let writtenHeaders: Record<string, string> = {};
+    const res = {
+      writeHead: (_status: number, headers: Record<string, string>) => {
+        writtenHeaders = headers;
+      },
+      end: () => {},
+    };
+
+    sendCompressed(req as any, res as any, body, "text/html", 200, {}, true);
+
+    // Body is too small for compression
+    expect(writtenHeaders["Content-Encoding"]).toBeUndefined();
+    expect(writtenHeaders["Content-Length"]).toBeDefined();
+  });
+
+  it("sendCompressed does not compress non-compressible types", async () => {
+    const { sendCompressed } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+    );
+
+    const body = Buffer.alloc(2000, 0xff); // binary content
+    const req = { headers: { "accept-encoding": "gzip" } };
+
+    let writtenHeaders: Record<string, string> = {};
+    const res = {
+      writeHead: (_status: number, headers: Record<string, string>) => {
+        writtenHeaders = headers;
+      },
+      end: () => {},
+    };
+
+    sendCompressed(req as any, res as any, body, "image/png", 200, {}, true);
+
+    // PNG should not be compressed
+    expect(writtenHeaders["Content-Encoding"]).toBeUndefined();
+  });
+});
