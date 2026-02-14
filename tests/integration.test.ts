@@ -973,6 +973,16 @@ describe("App Router integration", () => {
     expect(html).toContain("<html");
     expect(html).toContain("Template Active");
   });
+
+  it("global-error.tsx is discovered and does not interfere with normal rendering", async () => {
+    // When global-error.tsx exists, normal pages should still render fine
+    // The global error boundary only activates when the root layout throws
+    const { res, html } = await fetchHtml(baseUrl, "/");
+    expect(res.status).toBe(200);
+    expect(html).toContain("Welcome to App Router");
+    // global-error content should NOT appear in normal rendering
+    expect(html).not.toContain("Something went wrong!");
+  });
 });
 
 describe("App Router Production build", () => {

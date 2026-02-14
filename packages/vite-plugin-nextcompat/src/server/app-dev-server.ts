@@ -21,6 +21,7 @@ export function generateRscEntry(
   routes: AppRoute[],
   middlewarePath?: string | null,
   metadataRoutes?: MetadataFileRoute[],
+  globalErrorPath?: string | null,
 ): string {
   // Build import map for all page and layout files
   const imports: string[] = [];
@@ -73,6 +74,9 @@ export function generateRscEntry(
   const rootLayoutVars = rootRoute
     ? rootRoute.layouts.map((l) => getImportVar(l))
     : [];
+
+  // Global error boundary (app/global-error.tsx)
+  const globalErrorVar = globalErrorPath ? getImportVar(globalErrorPath) : null;
 
   // Build metadata route handling
   const effectiveMetaRoutes = metadataRoutes ?? [];
@@ -249,6 +253,18 @@ async function buildPageElement(route, params) {
       element = createElement(LayoutComponent, { children: element, params });
     }
   }
+
+  // Wrap with global error boundary if app/global-error.tsx exists.
+  // This catches errors in the root layout itself.
+  ${globalErrorVar ? `
+  const GlobalErrorComponent = ${globalErrorVar}.default;
+  if (GlobalErrorComponent) {
+    element = createElement(ErrorBoundary, {
+      fallback: GlobalErrorComponent,
+      children: element,
+    });
+  }
+  ` : ""}
 
   return element;
 }

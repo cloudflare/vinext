@@ -654,7 +654,9 @@ hydrate();
         if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
           const routes = await appRouter(appDir);
           const metaRoutes = scanMetadataFiles(appDir);
-          return generateRscEntry(appDir, routes, middlewarePath, metaRoutes);
+          // Check for global-error.tsx at app root
+          const globalErrorPath = findFileWithExts(appDir, "global-error");
+          return generateRscEntry(appDir, routes, middlewarePath, metaRoutes, globalErrorPath);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
           return generateSsrEntry();
@@ -930,6 +932,19 @@ function applyHeaders(
       }
     }
   }
+}
+
+/**
+ * Find a file by name (without extension) in a directory.
+ * Checks .tsx, .ts, .jsx, .js extensions.
+ */
+function findFileWithExts(dir: string, name: string): string | null {
+  const extensions = [".tsx", ".ts", ".jsx", ".js"];
+  for (const ext of extensions) {
+    const filePath = path.join(dir, name + ext);
+    if (fs.existsSync(filePath)) return filePath;
+  }
+  return null;
 }
 
 // Public exports for static export
