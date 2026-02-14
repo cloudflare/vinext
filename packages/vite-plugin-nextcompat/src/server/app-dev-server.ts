@@ -789,7 +789,29 @@ export default async function handler(request) {
     }
   }
 
-  const element = await buildPageElement(route, params, interceptOpts);
+  let element;
+  try {
+    element = await buildPageElement(route, params, interceptOpts);
+  } catch (buildErr) {
+    // Check for redirect/notFound thrown during metadata resolution or async components
+    if (buildErr && typeof buildErr === "object" && "digest" in buildErr) {
+      const digest = String(buildErr.digest);
+      if (digest.startsWith("NEXT_REDIRECT;")) {
+        const parts = digest.split(";");
+        const redirectUrl = parts[2];
+        const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return Response.redirect(new URL(redirectUrl, request.url), statusCode);
+      }
+      if (digest === "NEXT_NOT_FOUND") {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return new Response("Not Found", { status: 404 });
+      }
+    }
+    throw buildErr;
+  }
 
   // Note: CSS is automatically injected by @vitejs/plugin-rsc's
   // rscCssTransform — no manual loadCss() call needed.

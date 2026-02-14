@@ -195,6 +195,41 @@ export function useRouter() {
   return router;
 }
 
+/**
+ * Returns the active child segment one level below the layout where it's called.
+ *
+ * In Next.js, this is layout-aware: it returns the segment relative to the
+ * nearest parent layout. In our implementation, we approximate by returning
+ * the first segment after a specified parallel route key, or the first segment
+ * of the pathname. Returns null if at the leaf (no child segments).
+ *
+ * @param parallelRoutesKey - Which parallel route to read (default: "children")
+ */
+export function useSelectedLayoutSegment(
+  parallelRoutesKey?: string,
+): string | null {
+  const segments = useSelectedLayoutSegments(parallelRoutesKey);
+  return segments.length > 0 ? segments[0] : null;
+}
+
+/**
+ * Returns all active segments below the layout where it's called.
+ *
+ * In Next.js, this returns the full array of segments from the current
+ * layout down to the leaf page. In our implementation, we derive this
+ * from the pathname.
+ *
+ * @param parallelRoutesKey - Which parallel route to read (default: "children")
+ */
+export function useSelectedLayoutSegments(
+  _parallelRoutesKey?: string,
+): string[] {
+  const pathname = usePathname();
+  // Split pathname into segments, filtering empty strings
+  const segments = pathname.split("/").filter(Boolean);
+  return segments;
+}
+
 // ---------------------------------------------------------------------------
 // Non-hook utilities (can be called from Server Components)
 // ---------------------------------------------------------------------------

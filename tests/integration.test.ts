@@ -1614,6 +1614,48 @@ describe("next/navigation shim", () => {
     expect(params).toEqual({ slug: "test" });
     setNavigationContext(null);
   });
+
+  it("exports useSelectedLayoutSegment and useSelectedLayoutSegments", async () => {
+    const nav = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    expect(typeof nav.useSelectedLayoutSegment).toBe("function");
+    expect(typeof nav.useSelectedLayoutSegments).toBe("function");
+  });
+
+  it("useSelectedLayoutSegments returns path segments from server context", async () => {
+    const { setNavigationContext, useSelectedLayoutSegments } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    setNavigationContext({
+      pathname: "/dashboard/settings/profile",
+      searchParams: new URLSearchParams(""),
+      params: {},
+    });
+    const segments = useSelectedLayoutSegments();
+    expect(segments).toEqual(["dashboard", "settings", "profile"]);
+    setNavigationContext(null);
+  });
+
+  it("useSelectedLayoutSegment returns first segment or null", async () => {
+    const { setNavigationContext, useSelectedLayoutSegment } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    setNavigationContext({
+      pathname: "/blog/my-post",
+      searchParams: new URLSearchParams(""),
+      params: {},
+    });
+    expect(useSelectedLayoutSegment()).toBe("blog");
+
+    setNavigationContext({
+      pathname: "/",
+      searchParams: new URLSearchParams(""),
+      params: {},
+    });
+    expect(useSelectedLayoutSegment()).toBeNull();
+    setNavigationContext(null);
+  });
 });
 
 describe("next/headers shim", () => {
@@ -1688,6 +1730,75 @@ describe("next/headers shim", () => {
 
     await expect(headers()).rejects.toThrow("Server Component");
     await expect(cookies()).rejects.toThrow("Server Component");
+  });
+
+  it("draftMode() returns isEnabled=false when no bypass cookie", async () => {
+    const { setHeadersContext, draftMode } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+    const dm = await draftMode();
+    expect(dm.isEnabled).toBe(false);
+    setHeadersContext(null);
+  });
+
+  it("draftMode() returns isEnabled=true when __prerender_bypass cookie is present", async () => {
+    const { setHeadersContext, draftMode } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["__prerender_bypass", "1"]]),
+    });
+    const dm = await draftMode();
+    expect(dm.isEnabled).toBe(true);
+    setHeadersContext(null);
+  });
+
+  it("draftMode().enable() sets the bypass cookie in context", async () => {
+    const { setHeadersContext, draftMode, getDraftModeCookieHeader } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+    const dm = await draftMode();
+    expect(dm.isEnabled).toBe(false);
+
+    dm.enable();
+    // After enabling, the cookie should be set on the context
+    const dm2 = await draftMode();
+    expect(dm2.isEnabled).toBe(true);
+
+    // The Set-Cookie header should be generated
+    const cookieHeader = getDraftModeCookieHeader();
+    expect(cookieHeader).toContain("__prerender_bypass=1");
+    expect(cookieHeader).toContain("HttpOnly");
+    setHeadersContext(null);
+  });
+
+  it("draftMode().disable() clears the bypass cookie", async () => {
+    const { setHeadersContext, draftMode, getDraftModeCookieHeader } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["__prerender_bypass", "1"]]),
+    });
+    const dm = await draftMode();
+    expect(dm.isEnabled).toBe(true);
+
+    dm.disable();
+    const dm2 = await draftMode();
+    expect(dm2.isEnabled).toBe(false);
+
+    const cookieHeader = getDraftModeCookieHeader();
+    expect(cookieHeader).toContain("Max-Age=0");
+    setHeadersContext(null);
   });
 });
 
