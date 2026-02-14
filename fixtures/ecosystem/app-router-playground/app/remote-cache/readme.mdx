@@ -1,0 +1,57 @@
+import db from '#/lib/db';
+import { Grid } from '#/ui/codehike';
+
+export const demo = db.demo.find({ where: { slug: 'remote-cache' } });
+
+# {demo.name}
+
+<Grid>
+
+# !!col
+
+- Use `use cache: remote` when the cache key depends on something **private or dynamic**, or it's always accessed **after dynamic data** is read.
+- Regular `use cache` will not cache in dynamic contexts (after `await connection()`, `await cookies()`, `await headers()`, etc.).
+- `use cache: remote` caches at runtime in a remote cache, reducing origin load even in dynamic contexts.
+- Perfect for user-specific data, frequently changing data, or data accessed per-request.
+
+# !!col
+
+```tsx app/page.tsx
+async function getProductPrice(id: string) {
+  // !mark
+  'use cache: remote';
+  cacheTag(`price-${id}`);
+  return await db.query(...);
+}
+
+async function ProductPrice({ id }: { id: string }) {
+  // Ensure dynamic context
+  await connection();
+  const price = await getProductPrice(id);
+  return <div>Price: ${price}</div>;
+}
+
+export default async function Page() {
+  return (
+    <Suspense fallback={<Skeleton />}>
+      <ProductPrice id="1" />
+    </Suspense>
+  );
+}
+```
+
+</Grid>
+
+### Demo
+
+- **Product data** is fetched with `use cache` in `getData()` - cached in the static shell.
+- **Price data** is fetched with `use cache: remote` in `getProductPrice()` - accessed after `await connection()`, so it's cached in a remote cache at runtime.
+- Each price component calls `await connection()` to ensure it's never included in the static shell.
+- The price data function uses `cacheTag()` for targeted cache invalidation.
+- Artificial delays (1s for products, 1s for prices) make caching behavior visible.
+- Notice how product data loads once, while price data streams in per product, but is cached for subsequent requests.
+
+### Notes
+
+- This demo uses the experimental `use cache` directive and describes caching behavior once stable.
+- `use cache: remote` is essential for caching in dynamic contexts where regular `use cache` won't work.

@@ -1,0 +1,17 @@
+# Error.js
+
+`error.js` is a file convention that lets you define fallback UI for a route segment to show when unexpected runtime errors occur.
+
+When an error is thrown in a route segment or its children, the fallback UI from `error.js` renders instead. The rest of the application remains interactive and the user can attempt to reset or recover from the error.
+
+Use filesytem hierarchy to define more or less specific fallback UI.
+
+### Demo
+
+- Navigate through the categories and trigger an error in one of the nested layouts.
+- **Error containment**: Error boundaries confine unexpected runtime errors to their segment, preventing them from affecting the rest of the app.
+
+### Links
+
+- [Docs](https://nextjs.org/docs/app/building-your-application/routing/error-handling)
+- [Code](https://github.com/vercel/next-app-router-playground/tree/main/app/error-handling)

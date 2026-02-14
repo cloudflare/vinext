@@ -1,0 +1,16 @@
+{
+  "name": "ecosystem-next-intl",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "next-intl": "^4.0.0",
+    "vite-plugin-nextcompat": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "vite": "^7.0.0",
+    "typescript": "^5.0.0"
+  }
+}

@@ -1,0 +1,16 @@
+# Client Context
+
+Importing a component into a file marked with `'use client'` makes it part of the client bundle. This means you can't import Server Components into Client Components.
+
+However, you can pass a Server Component as a prop (or child) to a Client Component. This lets you visually nest Server Components inside client-rendered UI.
+
+With this pattern, you can place a client context provider high in the tree and still nest Server Components inside it. Client Components deeper down can access the shared context—even if a Server Component sits between them.
+
+### Demo
+
+- **Shared State**: Try incrementing the counter and navigating between categories.
+
+### Links
+
+- [Docs](https://nextjs.org/docs/getting-started/react-essentials#context)
+- [Code](https://github.com/vercel/next-app-router-playground/tree/main/app/context)

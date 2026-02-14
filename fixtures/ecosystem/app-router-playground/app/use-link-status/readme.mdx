@@ -1,0 +1,51 @@
+# useLinkStatus
+
+`useLinkStatus` is a Client Component hook that tracks the **pending** state of a `<Link>`. Use it to show inline visual feedback (like spinners or text glimmers) while a navigation to a new route completes.
+
+`useLinkStatus` is useful when:
+
+- Prefetching is disabled or in progress.
+- The destination route is dynamic **and** doesn't include a `loading.js` file that would allow an instant navigation.
+
+**Note:** We recommend using `loading.js` and not disabling prefetching. This allows Next.js to [instantly navigate](/loading) to the new route and show a loading state while the rest of the page loads.
+
+### Demo
+
+1. Navigate between sub-categories (e.g. Clothing > Tops) below.
+2. Notice the delay before the new page loads. During this time, we dim the nav item to show the navigation is in progress.
+
+#### Notes
+
+- Sub-category pages include an artificial delay and do not include a `loading.js` file to make the pending state more noticeable.
+
+## Links
+
+- [Docs](https://nextjs.org/docs/app/api-reference/functions/use-link-status)
+- [Code](https://github.com/vercel/next-app-router-playground/tree/main/app/use-link-status)
+
+## Pending UI design tips
+
+- **Keep subtle and avoid layout shift**: Pending indicators should feel lightweight and unobtrusive. To avoid layout shift, keep them out of the normal document flow (e.g. `position: absolute`) or use a CSS approach that doesn't create an element (e.g. animating the `background` position of a gradient).
+- **Handle fast navigations gracefully**: Prevent unnecessary flashes of pending UI on fast navigations by adding an initial animation delay (e.g. 150ms) and starting an animation as invisible (e.g. `opacity: 0`) or outside the parent's clipping boundary (e.g. `overflow: hidden` and `translate: -100%`).
+- **Place indicators near interaction**: Visual feedback should appear close to where the user clicked or tapped. This helps reinforce the connection between the feedback and their action.
+- **Design proactively**: It is fine to preemptively include pending indicators for key nav items even when most navigations are fast. If the transition is instant or fast, the indicator won't have a chance to show. If the navigation takes time for whatever reason, the user will get helpful feedback.
+
+## Loading UI deep dive
+
+Next.js routing is server centric. This has many benefits, but means navigations require a round trip to the server to get information about the new route.
+
+Next.js alleviates this tradeoff through strategies like prerendering, prefetching and streaming. As well as API's developers can use like `loading.js` and `useLinkStatus`.
+
+### Improving loading user experience
+
+When a user navigates (e.g. clicking a `<Link>`), there are two phases before the navigation is fully complete:
+
+1. **Pending phase**: Before the navigation and the browser URL is updated, **while** the user is still on the current route.
+2. **Loading phase**: After the navigation and the browser URL is updated but **before** all content of the new route is loaded.
+
+Next.js provides features and APIs to improve the loading experiences in both phases:
+
+- **Prefetching**: `<Link>` prefetches routes to enable instant navigation. Static routes are fully prefetched by default. Dynamic routes are partially prefetched up to the nearest segment with a `loading.js` file. Including the segments fallback UI in the prefetch allows instant navigation for dynamic routes.
+- **Pending UI**: Use `useLinkStatus` and `useFormStatus` to show visual feedback to the user during the pending phase.
+- **Instant navigations and Loading UI**: Use `loading.js` to define fallback UI for a route segment. On navigation, this essentially skips the pending phase and immediately shows something to the user while the rest of the content loads.
+- **Streaming**: Use `<Suspense>` boundaries to further split server-side work into smaller parts and show something to the user earlier in the loading phase.

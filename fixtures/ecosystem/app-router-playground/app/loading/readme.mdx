@@ -1,0 +1,21 @@
+# Loading.js
+
+`loading.js` is a file convention that lets you define fallback UI for a route segment when it's loading, enabling prefetching and instant navigation for dynamic routes.
+
+When a user navigates to a dynamic route with prefetched fallback UI, the URL updates immediately and the loading state is shown while the segment loads.
+
+Use filesytem hierarchy to define more or less specific fallback UI.
+
+### Demo
+
+- Navigate between categories using the menu above.
+- **Instant navigation**: Even though the new route segment is still rendering on the server, we can instantly navigate (update the url and render fallback UI) to the new route. The actual segment content streams in once rendering is complete.
+
+#### Notes
+
+- An artificial delay is added to pages to simulate a slow data request and make the loading state more noticeable.
+
+### Links
+
+- [Docs](https://nextjs.org/docs/app/building-your-application/routing/loading-ui-and-streaming)
+- [Code](https://github.com/vercel/next-app-router-playground/tree/main/app/loading)

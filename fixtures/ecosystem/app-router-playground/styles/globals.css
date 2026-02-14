@@ -1,0 +1,194 @@
+@import 'tailwindcss';
+
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentColor);
+  }
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@theme {
+  --color-gray-50: var(--color-neutral-50);
+  --color-gray-100: var(--color-neutral-100);
+  --color-gray-200: var(--color-neutral-200);
+  --color-gray-300: var(--color-neutral-300);
+  --color-gray-400: var(--color-neutral-400);
+  --color-gray-500: var(--color-neutral-500);
+  --color-gray-600: var(--color-neutral-600);
+  --color-gray-700: var(--color-neutral-700);
+  --color-gray-800: var(--color-neutral-800);
+  --color-gray-900: var(--color-neutral-900);
+  --color-gray-950: var(--color-neutral-950);
+
+  --animate-shimmer: shimmer 1.5s infinite;
+
+  --duration-enter: 210ms;
+  --duration-move: 400ms;
+  --duration-exit: 150ms;
+
+  @keyframes shimmer {
+    0% {
+      opacity: 0;
+    }
+    30% {
+      opacity: 1;
+    }
+    70% {
+      opacity: 1;
+    }
+    100% {
+      transform: translateX(150%);
+      opacity: 0;
+    }
+  }
+}
+
+@keyframes rerender {
+  0%,
+  40% {
+    border-color: currentColor;
+  }
+}
+
+@keyframes highlight {
+  0%,
+  40% {
+    background: var(--color-blue-600);
+    color: var(--color-blue-100);
+  }
+}
+
+@keyframes loading {
+  0% {
+    opacity: 0.2;
+  }
+  20% {
+    opacity: 1;
+    transform: translateX(1px);
+  }
+  100% {
+    opacity: 0.2;
+  }
+}
+
+.spinner {
+  background: conic-gradient(transparent 10deg, white, transparent 320deg);
+
+  /* Mask to create a hollow center 🍩 */
+  --border-size: 3px;
+  mask-image: radial-gradient(
+    closest-side,
+    transparent calc(100% - var(--border-size)),
+    white calc(100% - var(--border-size))
+  );
+
+  /* Animation:
+     - opacity: render invisible and use animations to reveal spinner
+     - fade: fade in after delay to prevent flashes of UI on fast navigations 
+     - rotate: rotate indefinitely while rendered */
+  opacity: 0;
+  animation:
+    fade 500ms 150ms forwards,
+    rotate 1s linear infinite;
+}
+
+@keyframes rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.transition-enter {
+  opacity: 1;
+  transform: scale(1);
+  transition:
+    opacity 0.5s,
+    transform 0.5s;
+
+  @starting-style {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+}
+
+@plugin "@tailwindcss/forms";
+@plugin "@tailwindcss/typography";
+
+@keyframes fade {
+  from {
+    filter: blur(3px);
+    opacity: 0;
+  }
+  to {
+    filter: blur(0);
+    opacity: 1;
+  }
+}
+
+@keyframes slide {
+  from {
+    translate: var(--slide-offset);
+  }
+  to {
+    translate: 0;
+  }
+}
+
+::view-transition-new(.animate-slide-from-left) {
+  --slide-offset: -60px;
+  animation:
+    var(--duration-enter) ease-out var(--duration-exit) both fade,
+    var(--duration-move) ease-in-out both slide;
+}
+::view-transition-old(.animate-slide-to-right) {
+  --slide-offset: 60px;
+  animation:
+    var(--duration-exit) ease-in both fade reverse,
+    var(--duration-move) ease-in-out both slide reverse;
+}
+
+::view-transition-new(.animate-slide-from-right) {
+  --slide-offset: 60px;
+  animation:
+    var(--duration-enter) ease-out var(--duration-exit) both fade,
+    var(--duration-move) ease-in-out both slide;
+}
+
+::view-transition-old(.animate-slide-to-left) {
+  --slide-offset: -60px;
+  animation:
+    var(--duration-exit) ease-in both fade reverse,
+    var(--duration-move) ease-in-out both slide reverse;
+}
+
+::view-transition-group(.animate-morph) {
+  animation-duration: var(--duration-move);
+}
+
+/* 
+ * Using view-transition-image-pair and not view-transition-group to preserve
+ * the default animation which includes automatic position and scale morphing
+ */
+::view-transition-image-pair(.animate-morph) {
+  animation-name: via-blur;
+}
+
+/* 
+ * Blur animation for view transitions with shared elements. 
+ * Fast-moving elements can be visually jarring as the eye tries
+ * to track them. This creates a poor man's motion blur we can
+ * use to make these transitions smoother.
+ */
+@keyframes via-blur {
+  30% {
+    filter: blur(3px);
+  }
+}

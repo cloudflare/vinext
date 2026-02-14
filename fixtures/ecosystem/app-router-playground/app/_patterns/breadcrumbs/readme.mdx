@@ -1,0 +1,16 @@
+# Shared server-side UI that depends on URL information
+
+Typically, when you have shared UI, you'd put it inside a layout. However, layouts do not receive `searchParams` and `params` lower than the segment they exist in. This is a challenge for shared UI like breadcrumbs that depends on the URL information.
+
+For simple cases, you can move the UI to Client Components and use router hooks such as `usePathname` and `useSearchParams`.
+
+This example shows how to use Parallel Routes and a `page.js` in a catch all route to have pockets of shared UI across your app.
+
+### Demo
+
+- Try navigating between categories and sub categories. Notice the breadcrumbs can derive URL information.
+
+### Links
+
+- [Docs](https://nextjs.org/docs/app/building-your-application/routing/parallel-routes)
+- [Code](https://github.com/vercel/next-app-router-playground/tree/main/app/patterns/breadcrumbs)

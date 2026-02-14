@@ -1,0 +1,40 @@
+import db from '#/lib/db';
+import { Grid } from '#/ui/codehike';
+
+export const demo = db.demo.find({ where: { slug: 'cached-components' } });
+
+# {demo.name}
+
+<Grid>
+
+# !!col
+
+- Mark an individual React Server Component as _cacheable_ by adding the `use cache` directive to the top of the function definition.
+- When a cacheable component is called with the same inputs, it reuses the cached result if it exists, otherwise it renders and caches the output.
+
+# !!col
+
+```tsx app/page.tsx
+async function ProductList() {
+  // !mark
+  'use cache';
+  // ...
+}
+
+export default async function Page() {
+  return <ProductList />;
+}
+```
+
+</Grid>
+
+### Demo
+
+- A product list component is annotated with `use cache`.
+- An artificial one second delay is added to make the difference more noticeable.
+- Since the component is cacheable, the delay only happens the first time the component is rendered.
+- `layout.tsx` and `page.tsx` aren't explicitly annotated with `use cache`, but Next.js infers they're static because they do not use any Dynamic APIs. If they started to, Next.js will guide the developer to either add `use cache` or a `<Suspense>` boundary.
+
+### Notes
+
+- This demo uses the experimental `use cache` directive and describes caching behavior once stable.

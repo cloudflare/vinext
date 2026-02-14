@@ -1,0 +1,45 @@
+import db from '#/lib/db';
+import { Grid } from '#/ui/codehike';
+
+export const demo = db.demo.find({ where: { slug: 'cached-functions' } });
+
+# {demo.name}
+
+<Grid>
+
+# !!col
+
+- Mark a regular function as _cacheable_ by adding the `use cache` directive to the top of the function definition.
+- When a cacheable function is called with the same inputs, it reuses the cached result if it exists, otherwise it runs and caches the output.
+
+# !!col
+
+```tsx app/page.tsx
+async function getData() {
+  // !mark
+  'use cache';
+  // ...
+}
+
+async function ProductList() {
+  const products = await getData();
+  // ...
+}
+
+export default async function Page() {
+  return <ProductList />;
+}
+```
+
+</Grid>
+
+### Demo
+
+- The data fetching function to get the list of products is annotated with `use cache`.
+- An artificial one second delay is added to the function to make the difference more noticeable.
+- Since the function is cacheable, the delay only happens the first time the function is called.
+- `layout.tsx`, `page.tsx` and `<ProductList>` aren't explicitly annotated with `use cache`, but Next.js infers they're static because they do not use any Dynamic APIs. If they started to, Next.js will guide the developer to either add `use cache` or a `<Suspense>` boundary.
+
+### Notes
+
+- This demo uses the experimental `use cache` directive and describes caching behavior once stable.

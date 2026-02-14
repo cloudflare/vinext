@@ -1,0 +1,6 @@
+import db from '#/lib/db';
+import { Grid } from '#/ui/codehike';
+
+export const demo = db.demo.find({ where: { slug: 'view-transitions' } });
+
+# {demo.name}

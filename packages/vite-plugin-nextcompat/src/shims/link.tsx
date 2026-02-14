@@ -7,7 +7,11 @@
  * On click, prevents full page reload and triggers client-side
  * page swap via the router's navigation system.
  */
-import React, { forwardRef, useRef, useEffect, useCallback, type AnchorHTMLAttributes, type MouseEvent } from "react";
+import React, { forwardRef, useRef, useEffect, useCallback, useContext, createContext, type AnchorHTMLAttributes, type MouseEvent } from "react";
+
+interface NavigateEvent {
+  url: URL;
+}
 
 interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> {
   href: string | { pathname?: string; query?: Record<string, string> };
@@ -23,7 +27,28 @@ interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"
   scroll?: boolean;
   /** Locale for i18n (used for locale-prefixed URLs) */
   locale?: string | false;
+  /** Called before navigation happens (Next.js 16). Return value is ignored. */
+  onNavigate?: (event: NavigateEvent) => void;
   children?: React.ReactNode;
+}
+
+// ---------------------------------------------------------------------------
+// useLinkStatus — reports the pending state of a parent <Link> navigation
+// ---------------------------------------------------------------------------
+
+interface LinkStatusContextValue {
+  pending: boolean;
+}
+
+const LinkStatusContext = createContext<LinkStatusContextValue>({ pending: false });
+
+/**
+ * useLinkStatus returns the pending state of the enclosing <Link>.
+ * In Next.js, this is used to show loading indicators while a
+ * prefetch-triggered navigation is in progress.
+ */
+export function useLinkStatus(): LinkStatusContextValue {
+  return useContext(LinkStatusContext);
 }
 
 /** basePath from next.config.js, injected by the plugin at build time */
@@ -188,7 +213,7 @@ function getSharedObserver(): IntersectionObserver | null {
 }
 
 const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
-  { href, as, replace = false, prefetch: prefetchProp, scroll = true, children, onClick, ...rest },
+  { href, as, replace = false, prefetch: prefetchProp, scroll = true, children, onClick, onNavigate, ...rest },
   forwardedRef,
 ) {
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
@@ -256,6 +281,16 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     }
 
     e.preventDefault();
+
+    // Call onNavigate callback if provided (Next.js 16 View Transitions support)
+    if (onNavigate) {
+      try {
+        const navUrl = new URL(resolvedHref, window.location.origin);
+        onNavigate({ url: navUrl });
+      } catch {
+        // Ignore URL parsing errors for relative/hash hrefs
+      }
+    }
 
     // Save scroll position for back/forward restoration
     if (!replace) {

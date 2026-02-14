@@ -325,7 +325,7 @@ function findIntercept(pathname) {
   return null;
 }
 
-async function buildPageElement(route, params, opts) {
+async function buildPageElement(route, params, opts, searchParams) {
   const PageComponent = route.page?.default;
   if (!PageComponent) {
     return createElement("div", null, "Page has no default export");
@@ -351,8 +351,18 @@ async function buildPageElement(route, params, opts) {
   const resolvedMetadata = metadataList.length > 0 ? mergeMetadata(metadataList) : null;
   const resolvedViewport = viewportList.length > 0 ? mergeViewport(viewportList) : null;
 
-  // Build nested layout tree from outermost to innermost
-  let element = createElement(PageComponent, { params });
+  // Build nested layout tree from outermost to innermost.
+  // Next.js 16 passes params/searchParams as Promises (async pattern)
+  // but pre-16 code accesses them as plain objects (params.id).
+  // We create a "thenable object" that works both ways.
+  const asyncParams = Object.assign(Promise.resolve(params), params);
+  const pageProps = { params: asyncParams };
+  if (searchParams) {
+    const spObj = {};
+    if (searchParams.forEach) searchParams.forEach(function(v, k) { spObj[k] = v; });
+    pageProps.searchParams = Object.assign(Promise.resolve(spObj), spObj);
+  }
+  let element = createElement(PageComponent, pageProps);
 
   // Add metadata + viewport head tags (React 19 hoists title/meta/link to <head>)
   if (resolvedMetadata || resolvedViewport) {
@@ -397,7 +407,7 @@ async function buildPageElement(route, params, opts) {
   for (let i = route.layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = route.layouts[i]?.default;
     if (LayoutComponent) {
-      const layoutProps = { children: element, params };
+      const layoutProps = { children: element, params: Object.assign(Promise.resolve(params), params) };
 
       // Add parallel slot elements to the layout that defines them.
       // Each slot has a layoutIndex indicating which layout it belongs to.
@@ -419,7 +429,7 @@ async function buildPageElement(route, params, opts) {
           }
 
           if (SlotPage) {
-            let slotElement = createElement(SlotPage, { params: slotParams });
+            let slotElement = createElement(SlotPage, { params: Object.assign(Promise.resolve(slotParams), slotParams) });
             // Wrap with slot-specific loading if present
             if (slotMod.loading?.default) {
               slotElement = createElement(Suspense,
@@ -619,7 +629,7 @@ async function _handleRequest(request) {
           searchParams: url.searchParams,
           params: actionParams,
         });
-        element = buildPageElement(actionRoute, actionParams);
+        element = buildPageElement(actionRoute, actionParams, undefined, url.searchParams);
       } else {
         element = createElement("div", null, "Page not found");
       }
@@ -897,7 +907,7 @@ async function _handleRequest(request) {
       if (cached.isStale) {
         // Trigger background regeneration
         isrTriggerRegen(cacheKey, async function() {
-          const freshElement = await buildPageElement(route, params);
+          const freshElement = await buildPageElement(route, params, undefined, url.searchParams);
           const freshRscStream = renderToReadableStream(freshElement);
           const ssrEntryFresh = await import.meta.viteRsc.loadModule("ssr", "index");
           const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream);
@@ -944,7 +954,7 @@ async function _handleRequest(request) {
           interceptSlot: intercept.slotName,
           interceptPage: intercept.page,
           interceptParams: intercept.matchedParams,
-        });
+        }, url.searchParams);
         const interceptStream = renderToReadableStream(interceptElement);
         setHeadersContext(null);
         setNavigationContext(null);
@@ -963,7 +973,7 @@ async function _handleRequest(request) {
 
   let element;
   try {
-    element = await buildPageElement(route, params, interceptOpts);
+    element = await buildPageElement(route, params, interceptOpts, url.searchParams);
   } catch (buildErr) {
     // Check for redirect/notFound/forbidden/unauthorized thrown during metadata resolution or async components
     if (buildErr && typeof buildErr === "object" && "digest" in buildErr) {

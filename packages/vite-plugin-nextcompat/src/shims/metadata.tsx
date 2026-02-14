@@ -40,7 +40,8 @@ export async function resolveModuleViewport(
   params: Record<string, string | string[]>,
 ): Promise<Viewport | null> {
   if (typeof mod.generateViewport === "function") {
-    return await mod.generateViewport({ params });
+    const asyncParams = Object.assign(Promise.resolve(params), params);
+    return await mod.generateViewport({ params: asyncParams });
   }
   if (mod.viewport && typeof mod.viewport === "object") {
     return mod.viewport as Viewport;
@@ -264,7 +265,12 @@ export async function resolveModuleMetadata(
   searchParams?: Record<string, string>,
 ): Promise<Metadata | null> {
   if (typeof mod.generateMetadata === "function") {
-    return await mod.generateMetadata({ params, searchParams: searchParams ?? {} });
+    // Next.js 16 passes params/searchParams as Promises (async pattern).
+    // Create thenable objects that work both as Promises and plain objects.
+    const asyncParams = Object.assign(Promise.resolve(params), params);
+    const sp = searchParams ?? {};
+    const asyncSp = Object.assign(Promise.resolve(sp), sp);
+    return await mod.generateMetadata({ params: asyncParams, searchParams: asyncSp });
   }
   if (mod.metadata && typeof mod.metadata === "object") {
     return mod.metadata as Metadata;

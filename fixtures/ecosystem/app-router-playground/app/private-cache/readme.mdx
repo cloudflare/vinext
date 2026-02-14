@@ -1,0 +1,74 @@
+import db from '#/lib/db';
+import { Grid } from '#/ui/codehike';
+
+export const demo = db.demo.find({ where: { slug: 'private-cache' } });
+
+# {demo.name}
+
+<Grid>
+
+# !!col
+
+- Enable **runtime prefetching** of personalized content by including it in prefetch requests.
+- Use `use cache: private` when you need to cache **user-specific data** that depends on cookies, headers, or search params.
+- Unlike regular `use cache`, private caches can access request-specific APIs like `cookies()` and `headers()` directly inside the cached function.
+- Private caches are **never persisted** to cache handlers - they're only used to mark the dynamic content as runtime prefetchable.
+- Without `use cache: private`, personalized content cannot be prefetched and must wait until navigation occurs.
+
+# !!col
+
+```tsx app/private-cache/product/[id]/with-private/page.tsx
+async function getRecommendations(productId: string) {
+  // !mark
+  'use cache: private';
+  cacheTag(`recommendations-${productId}`);
+  cacheLife({ stale: 60 });
+
+  // Can call cookies() INSIDE the cached function!
+  // !mark
+  const sessionId = (await cookies()).get('session-id')?.value || 'guest';
+
+  return getPersonalizedRecommendations(productId, sessionId);
+}
+
+async function Recommendations({ productId }: { productId: string }) {
+  // This will be runtime prefetched automatically
+  const recommendations = await getRecommendations(productId);
+
+  return (
+    <div>
+      {recommendations.map((rec) => (
+        <ProductCard key={rec.id} product={rec} />
+      ))}
+    </div>
+  );
+}
+
+export const unstable_prefetch = {
+  mode: 'runtime',
+  samples: [
+    { params: { id: '1' }, cookies: [{ name: 'session-id', value: '1' }] },
+  ],
+};
+```
+
+</Grid>
+
+### Demo
+
+- Products labeled **"Private Cache"** link to pages that use `use cache: private` to enable runtime prefetching. The content is still dynamic, but it's prefetched
+  when the static content of the page is also prefetched.
+- Products labeled **"No Private Cache"** link to pages that don't use `use cache: private`, meaning their recommendations will be loaded after navigation.
+- **For demo purposes**, the links display visual loading states:
+  - **Pink border** with "Prefetching Private Cache..." when the runtime prefetch is in progress
+  - **Blue border** with "Prefetched Private Cache" when the runtime prefetch has completed
+  - **Gray border** for links without private cache
+- **With Private Cache**: Personalized recommendations appear instantly (runtime prefetched).
+- **Without Private Cache**: Recommendations show a loading skeleton, then appear after they're finished loading. The loading starts when the link is clicked.
+- Click "Change Session" to get different personalized recommendations - notice how Private Cache links still runtime prefetch your new session's data.
+
+### Notes
+
+- This demo uses the experimental `use cache` directive and describes caching behavior once stable.
+- `use cache: private` enables runtime prefetching of dynamic content by allowing `cookies()` and `headers()` inside cached functions.
+- Requires `unstable_prefetch` export with `mode: 'runtime'` and `cacheLife({ stale: 60 })` (≥30s).
