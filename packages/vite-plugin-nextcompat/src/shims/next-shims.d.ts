@@ -66,10 +66,79 @@ declare module "next/script" {
   export function initScriptLoader(scripts: ScriptProps[]): void;
 }
 
+declare module "next/navigation" {
+  export function useRouter(): {
+    push(href: string, options?: { scroll?: boolean }): void;
+    replace(href: string, options?: { scroll?: boolean }): void;
+    back(): void;
+    forward(): void;
+    refresh(): void;
+    prefetch(href: string): void;
+  };
+  export function usePathname(): string;
+  export function useSearchParams(): URLSearchParams;
+  export function useParams<T extends Record<string, string | string[]> = Record<string, string | string[]>>(): T;
+  export function useSelectedLayoutSegment(parallelRoutesKey?: string): string | null;
+  export function useSelectedLayoutSegments(parallelRoutesKey?: string): string[];
+  export function useServerInsertedHTML(callback: () => unknown): void;
+  export function redirect(url: string, type?: "replace" | "push"): never;
+  export function permanentRedirect(url: string): never;
+  export function notFound(): never;
+  export type ReadonlyURLSearchParams = URLSearchParams;
+
+  // Context management (internal)
+  export function setNavigationContext(ctx: any): void;
+  export function setClientParams(params: Record<string, string | string[]>): void;
+  export function getClientParams(): Record<string, string | string[]>;
+}
+
+declare module "next/image" {
+  import { ForwardRefExoticComponent, RefAttributes, ImgHTMLAttributes, CSSProperties, ReactEventHandler, MouseEventHandler } from "react";
+
+  export interface StaticImageData {
+    src: string;
+    height: number;
+    width: number;
+    blurDataURL?: string;
+  }
+
+  interface ImageProps {
+    src: string | StaticImageData;
+    alt: string;
+    width?: number;
+    height?: number;
+    fill?: boolean;
+    priority?: boolean;
+    quality?: number;
+    placeholder?: "blur" | "empty";
+    blurDataURL?: string;
+    loader?: (params: { src: string; width: number; quality?: number }) => string;
+    sizes?: string;
+    className?: string;
+    style?: CSSProperties;
+    onLoad?: ReactEventHandler<HTMLImageElement>;
+    onError?: ReactEventHandler<HTMLImageElement>;
+    onClick?: MouseEventHandler<HTMLImageElement>;
+    id?: string;
+    unoptimized?: boolean;
+    overrideSrc?: string;
+    loading?: "lazy" | "eager";
+  }
+
+  const Image: ForwardRefExoticComponent<ImageProps & RefAttributes<HTMLImageElement>>;
+  export default Image;
+
+  export function getImageProps(props: ImageProps): {
+    props: ImgHTMLAttributes<HTMLImageElement>;
+  };
+}
+
 declare module "next/server" {
   export class NextRequest extends Request {
     get nextUrl(): any;
     get cookies(): any;
+    get ip(): string | undefined;
+    get geo(): { city?: string; country?: string; region?: string; latitude?: string; longitude?: string } | undefined;
   }
   export class NextResponse<Body = unknown> extends Response {
     get cookies(): any;

@@ -3568,6 +3568,143 @@ describe("Pages Router router helpers", () => {
   });
 });
 
+// ─── next/server quick wins (ip, geo, ResponseCookies.getAll) ────────────────
+describe("next/server enhancements", () => {
+  it("NextRequest.ip extracts from x-forwarded-for header", async () => {
+    const { NextRequest } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const req = new NextRequest("https://example.com", {
+      headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" },
+    });
+    expect(req.ip).toBe("1.2.3.4");
+  });
+
+  it("NextRequest.ip returns undefined without forwarded header", async () => {
+    const { NextRequest } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const req = new NextRequest("https://example.com");
+    expect(req.ip).toBeUndefined();
+  });
+
+  it("NextRequest.geo extracts from Cloudflare/Vercel headers", async () => {
+    const { NextRequest } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const req = new NextRequest("https://example.com", {
+      headers: {
+        "cf-ipcountry": "US",
+        "cf-ipcity": "San Francisco",
+      },
+    });
+    const geo = req.geo;
+    expect(geo).toBeDefined();
+    expect(geo!.country).toBe("US");
+    expect(geo!.city).toBe("San Francisco");
+  });
+
+  it("NextRequest.geo returns undefined without geo headers", async () => {
+    const { NextRequest } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const req = new NextRequest("https://example.com");
+    expect(req.geo).toBeUndefined();
+  });
+
+  it("ResponseCookies.getAll returns all set cookies", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+    const all = cookies.getAll();
+    expect(all).toHaveLength(2);
+    expect(all.find((c: any) => c.name === "a")?.value).toBe("1");
+    expect(all.find((c: any) => c.name === "b")?.value).toBe("2");
+  });
+});
+
+// ─── next/image enhancements (StaticImageData, getImageProps) ────────────────
+describe("next/image enhancements", () => {
+  it("exports StaticImageData type", async () => {
+    const imageModule = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+    );
+    // StaticImageData is an interface, so we can't check at runtime
+    // but getImageProps uses it — verify that function exists
+    expect(typeof imageModule.getImageProps).toBe("function");
+  });
+
+  it("getImageProps returns img props from Image props", async () => {
+    const { getImageProps } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Test",
+      width: 800,
+      height: 600,
+      priority: true,
+    });
+    expect(result.props.src).toBe("/photo.jpg");
+    expect(result.props.alt).toBe("Test");
+    expect(result.props.width).toBe(800);
+    expect(result.props.height).toBe(600);
+    expect(result.props.loading).toBe("eager");
+  });
+
+  it("getImageProps handles fill mode", async () => {
+    const { getImageProps } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/bg.jpg",
+      alt: "Background",
+      fill: true,
+    });
+    expect(result.props.width).toBeUndefined();
+    expect(result.props.height).toBeUndefined();
+    expect(result.props.style?.position).toBe("absolute");
+  });
+
+  it("getImageProps handles StaticImageData", async () => {
+    const { getImageProps } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: { src: "/imported.jpg", width: 1200, height: 800, blurDataURL: "data:..." },
+      alt: "Imported",
+    });
+    expect(result.props.src).toBe("/imported.jpg");
+    expect(result.props.width).toBe(1200);
+    expect(result.props.height).toBe(800);
+  });
+});
+
+// ─── next/navigation enhancements (ReadonlyURLSearchParams, useServerInsertedHTML) ──
+describe("next/navigation enhancements", () => {
+  it("exports ReadonlyURLSearchParams type alias", async () => {
+    // This is a type-only export, we verify the module loads without error
+    const nav = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    // ReadonlyURLSearchParams is a type export, not a runtime value
+    // But useServerInsertedHTML should be exported
+    expect(typeof nav.useServerInsertedHTML).toBe("function");
+  });
+
+  it("useServerInsertedHTML is a no-op function", async () => {
+    const { useServerInsertedHTML } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    // Should not throw
+    expect(() => useServerInsertedHTML(() => null)).not.toThrow();
+  });
+});
+
 // ─── next/script strategies (SSR behavior) ──────────────────────────────────
 describe("next/script SSR rendering", () => {
   it("beforeInteractive renders <script> tag in SSR", async () => {

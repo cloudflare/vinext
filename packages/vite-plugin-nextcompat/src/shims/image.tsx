@@ -8,7 +8,7 @@
 import React, { forwardRef } from "react";
 import { Image as UnpicImage } from "@unpic/react";
 
-interface StaticImageData {
+export interface StaticImageData {
   src: string;
   height: number;
   width: number;
@@ -160,5 +160,54 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     />
   );
 });
+
+/**
+ * getImageProps — for advanced use cases (picture elements, background images).
+ * Returns the props that would be passed to the underlying <img> element.
+ */
+export function getImageProps(props: ImageProps): {
+  props: React.ImgHTMLAttributes<HTMLImageElement>;
+} {
+  const {
+    src: srcProp,
+    alt,
+    width,
+    height,
+    fill,
+    priority,
+    quality: _quality,
+    placeholder: _placeholder,
+    blurDataURL: _blurDataURL,
+    loader: _loader,
+    sizes,
+    className,
+    style,
+    unoptimized: _unoptimized,
+    overrideSrc: _overrideSrc,
+    loading,
+    ...rest
+  } = props;
+
+  const src = typeof srcProp === "string" ? srcProp : srcProp.src;
+  const imgWidth = width ?? (typeof srcProp === "object" ? srcProp.width : undefined);
+  const imgHeight = height ?? (typeof srcProp === "object" ? srcProp.height : undefined);
+
+  return {
+    props: {
+      src,
+      alt,
+      width: fill ? undefined : imgWidth,
+      height: fill ? undefined : imgHeight,
+      loading: priority ? "eager" : (loading ?? "lazy"),
+      decoding: "async" as const,
+      sizes,
+      className,
+      style: fill
+        ? { position: "absolute" as const, inset: 0, width: "100%", height: "100%", objectFit: "cover" as const, ...style }
+        : style,
+      ...rest,
+    },
+  };
+}
 
 export default Image;

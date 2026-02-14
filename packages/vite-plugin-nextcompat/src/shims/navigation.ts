@@ -355,6 +355,23 @@ export function useSelectedLayoutSegments(
   return segments;
 }
 
+/**
+ * ReadonlyURLSearchParams — type alias matching Next.js.
+ * In Next.js this prevents mutation, but since URLSearchParams is the underlying
+ * type in our implementation, we export it as-is for type compatibility.
+ */
+export type ReadonlyURLSearchParams = URLSearchParams;
+
+/**
+ * useServerInsertedHTML — for injecting HTML from server components.
+ * Used by styling libraries (styled-components, emotion) for SSR.
+ * In our implementation, this is a no-op since we don't have the same
+ * streaming injection mechanism.
+ */
+export function useServerInsertedHTML(_callback: () => unknown): void {
+  // No-op — styles should be handled via Vite's CSS pipeline
+}
+
 // ---------------------------------------------------------------------------
 // Non-hook utilities (can be called from Server Components)
 // ---------------------------------------------------------------------------

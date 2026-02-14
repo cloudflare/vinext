@@ -35,6 +35,31 @@ export class NextRequest extends Request {
   get cookies(): RequestCookies {
     return this._cookies;
   }
+
+  /**
+   * Client IP address. Returns undefined in non-platform environments.
+   * In production, set via x-forwarded-for header by the reverse proxy.
+   */
+  get ip(): string | undefined {
+    return this.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? undefined;
+  }
+
+  /**
+   * Geolocation data. Platform-dependent (e.g., Cloudflare, Vercel).
+   * Returns undefined if not available.
+   */
+  get geo(): { city?: string; country?: string; region?: string; latitude?: string; longitude?: string } | undefined {
+    // Check Cloudflare-style headers, Vercel-style headers
+    const country = this.headers.get("cf-ipcountry") ?? this.headers.get("x-vercel-ip-country") ?? undefined;
+    if (!country) return undefined;
+    return {
+      country,
+      city: this.headers.get("cf-ipcity") ?? this.headers.get("x-vercel-ip-city") ?? undefined,
+      region: this.headers.get("cf-region") ?? this.headers.get("x-vercel-ip-country-region") ?? undefined,
+      latitude: this.headers.get("cf-iplatitude") ?? this.headers.get("x-vercel-ip-latitude") ?? undefined,
+      longitude: this.headers.get("cf-iplongitude") ?? this.headers.get("x-vercel-ip-longitude") ?? undefined,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,6 +248,19 @@ export class ResponseCookies {
       }
     }
     return undefined;
+  }
+
+  getAll(): CookieEntry[] {
+    const entries: CookieEntry[] = [];
+    for (const header of this._headers.getSetCookie()) {
+      const eq = header.indexOf("=");
+      if (eq === -1) continue;
+      const cookieName = header.slice(0, eq);
+      const semi = header.indexOf(";", eq);
+      const value = header.slice(eq + 1, semi === -1 ? undefined : semi);
+      entries.push({ name: cookieName, value: decodeURIComponent(value) });
+    }
+    return entries;
   }
 
   delete(name: string): this {
