@@ -59,17 +59,30 @@ export function generateRscEntry(
   }`;
   });
 
+  // Find root not-found page and root layouts for global 404 handling
+  const rootRoute = routes.find((r) => r.pattern === "/");
+  const rootNotFoundVar = rootRoute?.notFoundPath
+    ? getImportVar(rootRoute.notFoundPath)
+    : null;
+  const rootLayoutVars = rootRoute
+    ? rootRoute.layouts.map((l) => getImportVar(l))
+    : [];
+
   return `
 import { renderToReadableStream } from "@vitejs/plugin-rsc/rsc";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest } from "next/headers";
+import { ErrorBoundary } from "nextcompat/error-boundary";
 
 ${imports.join("\n")}
 
 const routes = [
 ${routeEntries.join(",\n")}
 ];
+
+const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
+const rootLayouts = [${rootLayoutVars.join(", ")}];
 
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
@@ -127,7 +140,35 @@ export default async function handler(request) {
   const match = matchRoute(cleanPathname, routes);
 
   if (!match) {
-    // TODO: render not-found page
+    // Render custom not-found page if available, otherwise plain 404
+    if (rootNotFoundModule) {
+      const NotFoundComponent = rootNotFoundModule.default;
+      let element = createElement(NotFoundComponent);
+      // Wrap in root layouts
+      for (let i = rootLayouts.length - 1; i >= 0; i--) {
+        const LayoutComponent = rootLayouts[i]?.default;
+        if (LayoutComponent) {
+          element = createElement(LayoutComponent, { children: element });
+        }
+      }
+      const rscStream = renderToReadableStream(element);
+      if (isRscRequest) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return new Response(rscStream, {
+          status: 404,
+          headers: { "Content-Type": "text/x-component; charset=utf-8" },
+        });
+      }
+      const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+      const htmlStream = await ssrEntry.handleSsr(rscStream);
+      setHeadersContext(null);
+      setNavigationContext(null);
+      return new Response(htmlStream, {
+        status: 404,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      });
+    }
     setHeadersContext(null);
     setNavigationContext(null);
     return new Response("Not Found", { status: 404 });
@@ -182,6 +223,14 @@ export default async function handler(request) {
       { fallback: createElement(route.loading.default) },
       element,
     );
+  }
+
+  // Wrap with error.tsx ErrorBoundary if present
+  if (route.error?.default) {
+    element = createElement(ErrorBoundary, {
+      fallback: route.error.default,
+      children: element,
+    });
   }
 
   // Wrap with layouts (innermost first, then outer)

@@ -1,0 +1,8 @@
+export default function ErrorTestPage() {
+  return (
+    <main>
+      <h1>Error Test Page</h1>
+      <p>This page has an error boundary.</p>
+    </main>
+  );
+}

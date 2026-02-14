@@ -637,6 +637,38 @@ describe("App Router integration", () => {
     const res = await fetch(`${baseUrl}/api/hello`, { method: "DELETE" });
     expect(res.status).toBe(405);
   });
+
+  it("renders custom not-found.tsx for unmatched routes", async () => {
+    const res = await fetch(`${baseUrl}/does-not-exist`);
+    expect(res.status).toBe(404);
+
+    const html = await res.text();
+    // Should render our custom not-found page within the root layout
+    expect(html).toContain("404 - Page Not Found");
+    expect(html).toContain("does not exist");
+    expect(html).toContain('<html lang="en">');
+  });
+
+  it("renders error boundary wrapper for routes with error.tsx", async () => {
+    const res = await fetch(`${baseUrl}/error-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // The page should render normally (error boundary is in the tree but inactive)
+    expect(html).toContain("Error Test Page");
+    expect(html).toContain("This page has an error boundary");
+  });
+
+  it("renders loading.tsx Suspense wrapper for routes with loading.tsx", async () => {
+    const res = await fetch(`${baseUrl}/slow`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // The Suspense boundary markers should be present
+    expect(html).toContain("Slow Page");
+    // Content should render (not the loading fallback, since nothing is async)
+    expect(html).toContain("This page has a loading boundary");
+  });
 });
 
 describe("next/navigation shim", () => {
