@@ -157,3 +157,44 @@ declare module "next/font/local" {
 
   export default function localFont(options: LocalFontOptions): FontResult;
 }
+
+declare module "next/cache" {
+  export interface CacheHandler {
+    get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
+    set(key: string, data: IncrementalCacheValue | null, ctx?: Record<string, unknown>): Promise<void>;
+    revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
+    resetRequestCache?(): void;
+  }
+
+  export interface CacheHandlerValue {
+    lastModified: number;
+    age?: number;
+    cacheState?: string;
+    value: IncrementalCacheValue | null;
+  }
+
+  export type IncrementalCacheValue =
+    | { kind: "FETCH"; data: { headers: Record<string, string>; body: string; url: string; status?: number }; tags?: string[]; revalidate: number }
+    | { kind: "APP_PAGE"; html: string; rscData: ArrayBuffer | undefined; headers: Record<string, string | string[]> | undefined; postponed: string | undefined; status: number | undefined }
+    | { kind: "PAGES"; html: string; pageData: object; headers: Record<string, string | string[]> | undefined; status: number | undefined }
+    | { kind: "APP_ROUTE"; body: ArrayBuffer; status: number; headers: Record<string, string | string[]> }
+    | { kind: "REDIRECT"; props: object }
+    | { kind: "IMAGE"; etag: string; buffer: ArrayBuffer; extension: string; revalidate?: number };
+
+  export class MemoryCacheHandler implements CacheHandler {
+    get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
+    set(key: string, data: IncrementalCacheValue | null, ctx?: Record<string, unknown>): Promise<void>;
+    revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
+    resetRequestCache(): void;
+  }
+
+  export function setCacheHandler(handler: CacheHandler): void;
+  export function getCacheHandler(): CacheHandler;
+  export function revalidateTag(tag: string): Promise<void>;
+  export function revalidatePath(path: string, type?: "page" | "layout"): Promise<void>;
+  export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
+    fn: T,
+    keyParts?: string[],
+    options?: { revalidate?: number | false; tags?: string[] },
+  ): T;
+}

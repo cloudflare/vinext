@@ -472,6 +472,7 @@ hydrate();
               "next/headers": path.join(shimsDir, "headers"),
               "next/font/google": path.join(shimsDir, "font-google"),
               "next/font/local": path.join(shimsDir, "font-local"),
+              "next/cache": path.join(shimsDir, "cache"),
               "nextcompat/error-boundary": path.join(shimsDir, "error-boundary"),
               "nextcompat/metadata": path.join(shimsDir, "metadata"),
             },

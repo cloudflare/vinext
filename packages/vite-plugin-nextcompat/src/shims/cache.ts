@@ -1,0 +1,330 @@
+/**
+ * next/cache shim
+ *
+ * Provides the Next.js caching API surface: revalidateTag, revalidatePath,
+ * unstable_cache. Backed by a pluggable CacheHandler that defaults to
+ * in-memory but can be swapped for Cloudflare KV, Redis, DynamoDB, etc.
+ *
+ * The CacheHandler interface matches Next.js 16's CacheHandler class, so
+ * existing community adapters (@neshca/cache-handler, @opennextjs/aws, etc.)
+ * can be used directly.
+ *
+ * Configuration (in vite.config.ts or next.config.js):
+ *   nextcompat({ cacheHandler: './my-cache-handler.ts' })
+ *
+ * Or set at runtime:
+ *   import { setCacheHandler } from 'next/cache';
+ *   setCacheHandler(new MyCacheHandler());
+ */
+
+// ---------------------------------------------------------------------------
+// CacheHandler interface — matches Next.js 16's CacheHandler class shape.
+// Implement this to provide a custom cache backend.
+// ---------------------------------------------------------------------------
+
+export interface CacheHandlerValue {
+  lastModified: number;
+  age?: number;
+  cacheState?: string;
+  value: IncrementalCacheValue | null;
+}
+
+/** Discriminated union of cache value types. */
+export type IncrementalCacheValue =
+  | CachedFetchValue
+  | CachedAppPageValue
+  | CachedPagesValue
+  | CachedRouteValue
+  | CachedRedirectValue
+  | CachedImageValue;
+
+export interface CachedFetchValue {
+  kind: "FETCH";
+  data: {
+    headers: Record<string, string>;
+    body: string;
+    url: string;
+    status?: number;
+  };
+  tags?: string[];
+  revalidate: number;
+}
+
+export interface CachedAppPageValue {
+  kind: "APP_PAGE";
+  html: string;
+  rscData: ArrayBuffer | undefined;
+  headers: Record<string, string | string[]> | undefined;
+  postponed: string | undefined;
+  status: number | undefined;
+}
+
+export interface CachedPagesValue {
+  kind: "PAGES";
+  html: string;
+  pageData: object;
+  headers: Record<string, string | string[]> | undefined;
+  status: number | undefined;
+}
+
+export interface CachedRouteValue {
+  kind: "APP_ROUTE";
+  body: ArrayBuffer;
+  status: number;
+  headers: Record<string, string | string[]>;
+}
+
+export interface CachedRedirectValue {
+  kind: "REDIRECT";
+  props: object;
+}
+
+export interface CachedImageValue {
+  kind: "IMAGE";
+  etag: string;
+  buffer: ArrayBuffer;
+  extension: string;
+  revalidate?: number;
+}
+
+export interface CacheHandlerContext {
+  dev?: boolean;
+  maxMemoryCacheSize?: number;
+  revalidatedTags?: string[];
+  [key: string]: unknown;
+}
+
+export interface CacheHandler {
+  get(
+    key: string,
+    ctx?: Record<string, unknown>,
+  ): Promise<CacheHandlerValue | null>;
+
+  set(
+    key: string,
+    data: IncrementalCacheValue | null,
+    ctx?: Record<string, unknown>,
+  ): Promise<void>;
+
+  revalidateTag(
+    tags: string | string[],
+    durations?: { expire?: number },
+  ): Promise<void>;
+
+  resetRequestCache?(): void;
+}
+
+// ---------------------------------------------------------------------------
+// Default in-memory adapter — works everywhere, suitable for dev and
+// single-process production. Not shared across workers/instances.
+// ---------------------------------------------------------------------------
+
+interface MemoryEntry {
+  value: IncrementalCacheValue | null;
+  tags: string[];
+  lastModified: number;
+  revalidateAt: number | null;
+}
+
+export class MemoryCacheHandler implements CacheHandler {
+  private store = new Map<string, MemoryEntry>();
+  private tagRevalidatedAt = new Map<string, number>();
+
+  async get(
+    key: string,
+    _ctx?: Record<string, unknown>,
+  ): Promise<CacheHandlerValue | null> {
+    const entry = this.store.get(key);
+    if (!entry) return null;
+
+    // Check time-based expiry
+    if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
+      this.store.delete(key);
+      return null;
+    }
+
+    // Check tag-based invalidation
+    for (const tag of entry.tags) {
+      const revalidatedAt = this.tagRevalidatedAt.get(tag);
+      if (revalidatedAt && revalidatedAt >= entry.lastModified) {
+        this.store.delete(key);
+        return null;
+      }
+    }
+
+    return {
+      lastModified: entry.lastModified,
+      value: entry.value,
+    };
+  }
+
+  async set(
+    key: string,
+    data: IncrementalCacheValue | null,
+    ctx?: Record<string, unknown>,
+  ): Promise<void> {
+    const tags: string[] = [];
+    if (data && "tags" in data && Array.isArray(data.tags)) {
+      tags.push(...data.tags);
+    }
+    if (ctx && "tags" in ctx && Array.isArray(ctx.tags)) {
+      tags.push(...(ctx.tags as string[]));
+    }
+
+    let revalidateAt: number | null = null;
+    if (ctx) {
+      // Handle both old-style { revalidate } and new-style { cacheControl: { revalidate } }
+      const revalidate =
+        (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
+      if (typeof revalidate === "number" && revalidate > 0) {
+        revalidateAt = Date.now() + revalidate * 1000;
+      }
+    }
+    if (data && "revalidate" in data && typeof data.revalidate === "number") {
+      revalidateAt = Date.now() + data.revalidate * 1000;
+    }
+
+    this.store.set(key, {
+      value: data,
+      tags,
+      lastModified: Date.now(),
+      revalidateAt,
+    });
+  }
+
+  async revalidateTag(
+    tags: string | string[],
+    _durations?: { expire?: number },
+  ): Promise<void> {
+    const tagList = Array.isArray(tags) ? tags : [tags];
+    const now = Date.now();
+    for (const tag of tagList) {
+      this.tagRevalidatedAt.set(tag, now);
+    }
+  }
+
+  resetRequestCache(): void {
+    // No-op for the simple memory cache. In a production adapter,
+    // this would clear per-request caches (e.g., dedup fetch calls).
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Active cache handler — the singleton used by next/cache API functions.
+// Defaults to MemoryCacheHandler, can be swapped at runtime.
+// ---------------------------------------------------------------------------
+
+let activeHandler: CacheHandler = new MemoryCacheHandler();
+
+/**
+ * Set a custom CacheHandler. Call this during server startup to
+ * plug in Cloudflare KV, Redis, DynamoDB, or any other backend.
+ *
+ * The handler must implement the CacheHandler interface (same shape
+ * as Next.js 16's CacheHandler class).
+ */
+export function setCacheHandler(handler: CacheHandler): void {
+  activeHandler = handler;
+}
+
+/**
+ * Get the active CacheHandler (for internal use or testing).
+ */
+export function getCacheHandler(): CacheHandler {
+  return activeHandler;
+}
+
+// ---------------------------------------------------------------------------
+// Public API — what app code imports from 'next/cache'
+// ---------------------------------------------------------------------------
+
+/**
+ * Revalidate cached data associated with a specific cache tag.
+ *
+ * Works with both `fetch(..., { next: { tags: ['myTag'] } })` and
+ * `unstable_cache(fn, keys, { tags: ['myTag'] })`.
+ */
+export async function revalidateTag(tag: string): Promise<void> {
+  await activeHandler.revalidateTag(tag);
+}
+
+/**
+ * Revalidate cached data associated with a specific path.
+ *
+ * Under the hood, Next.js converts paths to internal tags.
+ * We use a `_N_T_/path` prefix convention for path-based tags.
+ */
+export async function revalidatePath(
+  path: string,
+  _type?: "page" | "layout",
+): Promise<void> {
+  // Next.js internally converts paths to tags with a prefix
+  const pathTag = `_N_T_${path}`;
+  await activeHandler.revalidateTag([path, pathTag]);
+}
+
+interface UnstableCacheOptions {
+  revalidate?: number | false;
+  tags?: string[];
+}
+
+/**
+ * Wrap an async function with caching.
+ *
+ * Returns a new function that caches results. The cache key is derived
+ * from keyParts + serialized arguments.
+ */
+export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
+  fn: T,
+  keyParts?: string[],
+  options?: UnstableCacheOptions,
+): T {
+  const baseKey = keyParts
+    ? keyParts.join(":")
+    : fn.toString().slice(0, 64);
+  const tags = options?.tags ?? [];
+  const revalidateSeconds = options?.revalidate;
+
+  const cachedFn = async (...args: any[]): Promise<any> => {
+    const argsKey = JSON.stringify(args);
+    const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
+
+    // Try to get from cache
+    const existing = await activeHandler.get(cacheKey, {
+      kind: "FETCH",
+      tags,
+    });
+    if (existing?.value && existing.value.kind === "FETCH") {
+      try {
+        return JSON.parse(existing.value.data.body);
+      } catch {
+        // Corrupted entry, fall through to re-fetch
+      }
+    }
+
+    // Cache miss — call the function
+    const result = await fn(...args);
+
+    // Store in cache using the FETCH kind
+    const cacheValue: CachedFetchValue = {
+      kind: "FETCH",
+      data: {
+        headers: {},
+        body: JSON.stringify(result),
+        url: cacheKey,
+      },
+      tags,
+      revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : 0,
+    };
+
+    await activeHandler.set(cacheKey, cacheValue, {
+      fetchCache: true,
+      tags,
+      revalidate: revalidateSeconds,
+    });
+
+    return result;
+  };
+
+  return cachedFn as T;
+}

@@ -1023,6 +1023,192 @@ describe("next/config shim", () => {
   });
 });
 
+describe("next/cache shim", () => {
+  it("exports revalidateTag, revalidatePath, unstable_cache", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+    expect(typeof mod.revalidateTag).toBe("function");
+    expect(typeof mod.revalidatePath).toBe("function");
+    expect(typeof mod.unstable_cache).toBe("function");
+  });
+
+  it("exports setCacheHandler and getCacheHandler", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+    expect(typeof mod.setCacheHandler).toBe("function");
+    expect(typeof mod.getCacheHandler).toBe("function");
+  });
+
+  it("default handler is MemoryCacheHandler", async () => {
+    const { getCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+    const handler = getCacheHandler();
+    expect(handler).toBeInstanceOf(MemoryCacheHandler);
+  });
+
+  it("unstable_cache caches function results", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vite-plugin-nextcompat/src/shims/cache.js");
+
+    // Fresh handler for isolation
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const expensive = async (x: number) => {
+      callCount++;
+      return x * 2;
+    };
+
+    const cached = unstable_cache(expensive, ["test-fn"], {
+      tags: ["test-tag"],
+    });
+
+    const r1 = await cached(5);
+    expect(r1).toBe(10);
+    expect(callCount).toBe(1);
+
+    const r2 = await cached(5);
+    expect(r2).toBe(10);
+    expect(callCount).toBe(1); // Should NOT call the function again
+
+    const r3 = await cached(10);
+    expect(r3).toBe(20);
+    expect(callCount).toBe(2); // Different args = different cache key
+
+    // Reset
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("revalidateTag invalidates cached entries", async () => {
+    const {
+      unstable_cache,
+      revalidateTag,
+      setCacheHandler,
+      MemoryCacheHandler,
+    } = await import("../packages/vite-plugin-nextcompat/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const fn = async () => {
+      callCount++;
+      return "result-" + callCount;
+    };
+
+    const cached = unstable_cache(fn, ["revalidate-test"], {
+      tags: ["my-tag"],
+    });
+
+    const r1 = await cached();
+    expect(r1).toBe("result-1");
+    expect(callCount).toBe(1);
+
+    // Revalidate the tag
+    await revalidateTag("my-tag");
+
+    // Next call should re-execute the function
+    const r2 = await cached();
+    expect(r2).toBe("result-2");
+    expect(callCount).toBe(2);
+
+    // Reset
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("setCacheHandler swaps the active handler", async () => {
+    const { setCacheHandler, getCacheHandler, unstable_cache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    // Create a custom handler that tracks calls
+    const calls: string[] = [];
+    const customHandler = {
+      async get(key: string) {
+        calls.push(`get:${key}`);
+        return null;
+      },
+      async set(key: string) {
+        calls.push(`set:${key}`);
+      },
+      async revalidateTag(tags: string | string[]) {
+        const tagList = Array.isArray(tags) ? tags : [tags];
+        calls.push(`revalidateTag:${tagList.join(",")}`);
+      },
+      resetRequestCache() {
+        calls.push("reset");
+      },
+    };
+
+    const originalHandler = getCacheHandler();
+    setCacheHandler(customHandler);
+
+    const cached = unstable_cache(async () => 42, ["custom-test"]);
+    await cached();
+
+    expect(calls.some((c) => c.startsWith("get:"))).toBe(true);
+    expect(calls.some((c) => c.startsWith("set:"))).toBe(true);
+
+    // Restore
+    setCacheHandler(originalHandler);
+  });
+
+  it("MemoryCacheHandler.get/set round-trips values", async () => {
+    const { MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    const handler = new MemoryCacheHandler();
+
+    await handler.set("test-key", {
+      kind: "FETCH",
+      data: { headers: {}, body: '{"x":1}', url: "test" },
+      tags: ["t1"],
+      revalidate: 3600,
+    });
+
+    const result = await handler.get("test-key");
+    expect(result).not.toBeNull();
+    expect(result!.value).not.toBeNull();
+    expect(result!.value!.kind).toBe("FETCH");
+    if (result!.value!.kind === "FETCH") {
+      expect(result!.value!.data.body).toBe('{"x":1}');
+    }
+  });
+
+  it("MemoryCacheHandler respects tag invalidation", async () => {
+    const { MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    const handler = new MemoryCacheHandler();
+
+    await handler.set(
+      "tagged-entry",
+      {
+        kind: "FETCH",
+        data: { headers: {}, body: '"cached"', url: "test" },
+        tags: ["fresh-tag"],
+        revalidate: 3600,
+      },
+      { tags: ["fresh-tag"] },
+    );
+
+    // Should return the entry
+    let result = await handler.get("tagged-entry");
+    expect(result).not.toBeNull();
+
+    // Invalidate the tag
+    await handler.revalidateTag("fresh-tag");
+
+    // Should now return null (invalidated)
+    result = await handler.get("tagged-entry");
+    expect(result).toBeNull();
+  });
+});
+
 describe("next/font/google shim", () => {
   it("returns className, style, and variable for a Google Font", async () => {
     const { Inter } = await import(
