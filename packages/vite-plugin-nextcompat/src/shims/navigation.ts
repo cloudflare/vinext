@@ -32,6 +32,22 @@ export function setNavigationContext(ctx: NavigationContext | null): void {
 
 const isServer = typeof window === "undefined";
 
+/** basePath from next.config.js, injected by the plugin at build time */
+const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+
+/** Strip basePath prefix from a browser pathname */
+function stripBasePath(p: string): string {
+  if (!__basePath) return p;
+  if (p.startsWith(__basePath)) return p.slice(__basePath.length) || "/";
+  return p;
+}
+
+/** Prepend basePath to a path for browser URLs / fetches */
+function withBasePath(p: string): string {
+  if (!__basePath) return p;
+  return __basePath + p;
+}
+
 // Client navigation listeners
 type NavigationListener = () => void;
 const _listeners: Set<NavigationListener> = new Set();
@@ -70,14 +86,14 @@ export function usePathname(): string {
   if (useSyncExternalStore) {
     return useSyncExternalStore(
       (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
-      () => window.location.pathname,
+      () => stripBasePath(window.location.pathname),
       () => _serverContext?.pathname ?? "/",
     );
   }
   // Fallback for older React
-  const [pathname, setPathname] = useStateR(window.location.pathname);
+  const [pathname, setPathname] = useStateR(stripBasePath(window.location.pathname));
   useEffectR(() => {
-    const handler = () => setPathname(window.location.pathname);
+    const handler = () => setPathname(stripBasePath(window.location.pathname));
     _listeners.add(handler);
     return () => { _listeners.delete(handler); };
   }, []);
@@ -134,27 +150,27 @@ export function useRouter() {
   const router = {
     push(href: string, options?: { scroll?: boolean }): void {
       if (isServer) return;
-      // For now, do a full navigation. Once RSC client navigation is wired,
-      // this will do an RSC fetch + client-side transition.
-      window.history.pushState(null, "", href);
+      const fullHref = withBasePath(href);
+      window.history.pushState(null, "", fullHref);
       notifyListeners();
       if (options?.scroll !== false) {
         window.scrollTo(0, 0);
       }
       // Trigger RSC re-fetch if available
       if (typeof (window as any).__NEXTCOMPAT_RSC_NAVIGATE__ === "function") {
-        (window as any).__NEXTCOMPAT_RSC_NAVIGATE__(href);
+        (window as any).__NEXTCOMPAT_RSC_NAVIGATE__(fullHref);
       }
     },
     replace(href: string, options?: { scroll?: boolean }): void {
       if (isServer) return;
-      window.history.replaceState(null, "", href);
+      const fullHref = withBasePath(href);
+      window.history.replaceState(null, "", fullHref);
       notifyListeners();
       if (options?.scroll !== false) {
         window.scrollTo(0, 0);
       }
       if (typeof (window as any).__NEXTCOMPAT_RSC_NAVIGATE__ === "function") {
-        (window as any).__NEXTCOMPAT_RSC_NAVIGATE__(href);
+        (window as any).__NEXTCOMPAT_RSC_NAVIGATE__(fullHref);
       }
     },
     back(): void {

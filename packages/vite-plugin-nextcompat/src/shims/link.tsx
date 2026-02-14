@@ -26,6 +26,9 @@ interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"
   children?: React.ReactNode;
 }
 
+/** basePath from next.config.js, injected by the plugin at build time */
+const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+
 function resolveHref(href: LinkProps["href"]): string {
   if (typeof href === "string") return href;
   let url = href.pathname ?? "/";
@@ -36,13 +39,23 @@ function resolveHref(href: LinkProps["href"]): string {
   return url;
 }
 
+/** Prepend basePath to an internal path for browser URLs / fetches */
+function withBasePath(path: string): string {
+  if (!__basePath || path.startsWith("http://") || path.startsWith("https://") || path.startsWith("//")) {
+    return path;
+  }
+  return __basePath + path;
+}
+
 const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   { href, as, replace = false, scroll = true, children, onClick, ...rest },
   ref,
 ) {
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
-  // where href is a route pattern like "/user/[id]" and as is "/user/1")
+    // where href is a route pattern like "/user/[id]" and as is "/user/1")
   const resolvedHref = as ?? resolveHref(href);
+  // Full href with basePath for browser URLs and fetches
+  const fullHref = withBasePath(resolvedHref);
 
   const handleClick = async (e: MouseEvent<HTMLAnchorElement>) => {
     if (onClick) onClick(e);
@@ -75,11 +88,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (typeof win.__NEXTCOMPAT_RSC_NAVIGATE__ === "function") {
       // App Router: push/replace history state, then fetch RSC stream
       if (replace) {
-        window.history.replaceState(null, "", resolvedHref);
+        window.history.replaceState(null, "", fullHref);
       } else {
-        window.history.pushState(null, "", resolvedHref);
+        window.history.pushState(null, "", fullHref);
       }
-      win.__NEXTCOMPAT_RSC_NAVIGATE__(resolvedHref);
+      win.__NEXTCOMPAT_RSC_NAVIGATE__(fullHref);
     } else {
       // Pages Router: use the Router singleton
       try {
@@ -93,9 +106,9 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       } catch {
         // Fallback to hard navigation if router fails
         if (replace) {
-          window.history.replaceState({}, "", resolvedHref);
+          window.history.replaceState({}, "", fullHref);
         } else {
-          window.history.pushState({}, "", resolvedHref);
+          window.history.pushState({}, "", fullHref);
         }
         window.dispatchEvent(new PopStateEvent("popstate"));
       }
@@ -110,7 +123,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const { prefetch: _, passHref: _p, locale: _l, ...anchorProps } = rest;
 
   return (
-    <a ref={ref} href={resolvedHref} onClick={handleClick} {...anchorProps}>
+    <a ref={ref} href={fullHref} onClick={handleClick} {...anchorProps}>
       {children}
     </a>
   );

@@ -22,7 +22,9 @@ export function generateRscEntry(
   middlewarePath?: string | null,
   metadataRoutes?: MetadataFileRoute[],
   globalErrorPath?: string | null,
+  basePath?: string,
 ): string {
+  const bp = basePath ?? "";
   // Build import map for all page and layout files
   const imports: string[] = [];
   const importMap: Map<string, string> = new Map();
@@ -398,9 +400,17 @@ function matchMiddlewarePath(pathname, matcher) {
 }
 ` : ""}
 
+const __basePath = ${JSON.stringify(bp)};
+
 export default async function handler(request) {
   const url = new URL(request.url);
   let pathname = url.pathname;
+  ${bp ? `
+  // Strip basePath prefix
+  if (__basePath && pathname.startsWith(__basePath)) {
+    pathname = pathname.slice(__basePath.length) || "/";
+  }
+  ` : ""}
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
   let cleanPathname = pathname.replace(/\\.rsc$/, "");
 

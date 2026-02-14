@@ -539,6 +539,10 @@ hydrate();
         for (const [key, value] of Object.entries(nextConfig.env)) {
           defines[`process.env.${key}`] = JSON.stringify(value);
         }
+        // Expose basePath to client-side code
+        defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(
+          nextConfig.basePath,
+        );
 
         const viteConfig: Record<string, any> = {
           // Disable Vite's default HTML serving - we handle all routing
@@ -656,7 +660,7 @@ hydrate();
           const metaRoutes = scanMetadataFiles(appDir);
           // Check for global-error.tsx at app root
           const globalErrorPath = findFileWithExts(appDir, "global-error");
-          return generateRscEntry(appDir, routes, middlewarePath, metaRoutes, globalErrorPath);
+          return generateRscEntry(appDir, routes, middlewarePath, metaRoutes, globalErrorPath, nextConfig?.basePath);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
           return generateSsrEntry();
@@ -724,8 +728,21 @@ hydrate();
               }
 
               // Skip requests for files with extensions (static assets)
-              const pathname = url.split("?")[0];
+              let pathname = url.split("?")[0];
               if (pathname.includes(".") && !pathname.endsWith(".html")) {
+                return next();
+              }
+
+              // Strip basePath prefix from URL for route matching.
+              // All internal routing uses basePath-free paths.
+              const bp = nextConfig?.basePath ?? "";
+              if (bp && pathname.startsWith(bp)) {
+                const stripped = pathname.slice(bp.length) || "/";
+                const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                url = stripped + qs;
+                pathname = stripped;
+              } else if (bp && pathname !== "/") {
+                // URL doesn't start with basePath — let Vite handle it
                 return next();
               }
 

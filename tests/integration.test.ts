@@ -2588,3 +2588,63 @@ describe("next/dynamic shim", () => {
     expect(html).toContain("Bare export");
   });
 });
+
+// ---------------------------------------------------------------------------
+// basePath support
+// ---------------------------------------------------------------------------
+describe("basePath support (Pages Router)", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    const plugins: any[] = [nextcompat()];
+    server = await createServer({
+      root: PAGES_FIXTURE_DIR,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+      // Simulate basePath from next.config.js by setting env before server starts
+    });
+
+    // Override the next.config to add basePath. We do this by writing a temp config.
+    // Instead, we test the config parsing + routing integration via the resolved config.
+    // The simpler approach: test that the basePath is correctly parsed from next.config.
+    await server.listen();
+    const addr = server.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      baseUrl = `http://localhost:${addr.port}`;
+    }
+  });
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  it("resolveNextConfig correctly resolves basePath", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+    );
+
+    // Default: empty basePath
+    const defaultConfig = await resolveNextConfig({});
+    expect(defaultConfig.basePath).toBe("");
+
+    // With basePath configured
+    const withBasePath = await resolveNextConfig({ basePath: "/app" });
+    expect(withBasePath.basePath).toBe("/app");
+
+    // basePath must start with / (Next.js requirement)
+    const withSlash = await resolveNextConfig({ basePath: "/docs" });
+    expect(withSlash.basePath).toBe("/docs");
+  });
+
+  it("basePath define is injected into client code", async () => {
+    // The plugin should set process.env.__NEXT_ROUTER_BASEPATH as a define.
+    // We test this by checking the resolved config of the current server.
+    const config = server.config;
+    // Default fixture has no basePath, so it should be ""
+    const defineKey = "process.env.__NEXT_ROUTER_BASEPATH";
+    expect(config.define?.[defineKey]).toBe(JSON.stringify(""));
+  });
+});

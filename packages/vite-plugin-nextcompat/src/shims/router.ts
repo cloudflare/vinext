@@ -7,6 +7,22 @@
  */
 import { useState, useEffect, useCallback, useMemo } from "react";
 
+/** basePath from next.config.js, injected by the plugin at build time */
+const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
+
+/** Prepend basePath to a path for browser URLs / fetches */
+function withBasePath(p: string): string {
+  if (!__basePath) return p;
+  return __basePath + p;
+}
+
+/** Strip basePath prefix from a browser pathname */
+function stripBasePath(p: string): string {
+  if (!__basePath) return p;
+  if (p.startsWith(__basePath)) return p.slice(__basePath.length) || "/";
+  return p;
+}
+
 interface NextRouter {
   /** Current pathname */
   pathname: string;
@@ -129,13 +145,13 @@ function getPathnameAndQuery(): {
     }
     return { pathname: "/", query: {}, asPath: "/" };
   }
-  const pathname = window.location.pathname;
+  const pathname = stripBasePath(window.location.pathname);
   const query: Record<string, string> = {};
   const params = new URLSearchParams(window.location.search);
   for (const [key, value] of params) {
     query[key] = value;
   }
-  const asPath = window.location.pathname + window.location.search;
+  const asPath = pathname + window.location.search;
   return { pathname, query, asPath };
 }
 
@@ -271,9 +287,10 @@ export function useRouter(): NextRouter {
   const push = useCallback(
     async (url: string | UrlObject, _as?: string, options?: TransitionOptions): Promise<boolean> => {
       const resolved = resolveUrl(url);
+      const full = withBasePath(resolved);
       routerEvents.emit("routeChangeStart", resolved);
-      window.history.pushState({}, "", resolved);
-      await navigateClient(resolved);
+      window.history.pushState({}, "", full);
+      await navigateClient(full);
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved);
       if (options?.scroll !== false) {
@@ -288,9 +305,10 @@ export function useRouter(): NextRouter {
   const replace = useCallback(
     async (url: string | UrlObject, _as?: string, options?: TransitionOptions): Promise<boolean> => {
       const resolved = resolveUrl(url);
+      const full = withBasePath(resolved);
       routerEvents.emit("routeChangeStart", resolved);
-      window.history.replaceState({}, "", resolved);
-      await navigateClient(resolved);
+      window.history.replaceState({}, "", full);
+      await navigateClient(full);
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved);
       if (options?.scroll !== false) {
@@ -331,7 +349,7 @@ export function useRouter(): NextRouter {
       route: pathname,
       query,
       asPath,
-      basePath: "",
+      basePath: __basePath,
       locale,
       locales,
       defaultLocale,
@@ -356,10 +374,11 @@ export function useRouter(): NextRouter {
 // any component calls useRouter().
 if (typeof window !== "undefined") {
   window.addEventListener("popstate", () => {
-    const url = window.location.pathname + window.location.search;
-    routerEvents.emit("routeChangeStart", url);
-    navigateClient(url).then(() => {
-      routerEvents.emit("routeChangeComplete", url);
+    const browserUrl = window.location.pathname + window.location.search;
+    const appUrl = stripBasePath(window.location.pathname) + window.location.search;
+    routerEvents.emit("routeChangeStart", appUrl);
+    navigateClient(browserUrl).then(() => {
+      routerEvents.emit("routeChangeComplete", appUrl);
       window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
     });
   });
@@ -369,18 +388,20 @@ if (typeof window !== "undefined") {
 const Router = {
   push: async (url: string | UrlObject) => {
     const resolved = resolveUrl(url);
+    const full = withBasePath(resolved);
     routerEvents.emit("routeChangeStart", resolved);
-    window.history.pushState({}, "", resolved);
-    await navigateClient(resolved);
+    window.history.pushState({}, "", full);
+    await navigateClient(full);
     routerEvents.emit("routeChangeComplete", resolved);
     window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
     return true;
   },
   replace: async (url: string | UrlObject) => {
     const resolved = resolveUrl(url);
+    const full = withBasePath(resolved);
     routerEvents.emit("routeChangeStart", resolved);
-    window.history.replaceState({}, "", resolved);
-    await navigateClient(resolved);
+    window.history.replaceState({}, "", full);
+    await navigateClient(full);
     routerEvents.emit("routeChangeComplete", resolved);
     window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
     return true;
