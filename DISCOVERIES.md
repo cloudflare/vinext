@@ -209,3 +209,32 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **`metadataBase` for URL resolution**: Base URL for composing relative URLs in metadata (canonical, OG images, alternates). Use `new URL(relative, metadataBase)` for composition.
 - **`noindex` meta auto-injected on 404 pages**: Next.js automatically adds `<meta name="robots" content="noindex"/>` when rendering not-found pages.
 - **`notFound()` must propagate past error boundaries**: `getDerivedStateFromError` in the `ErrorBoundary` shim must re-throw errors with `digest === "NEXT_NOT_FOUND"` or `"NEXT_REDIRECT;..."`. These are framework-level errors, not component errors.
+
+## Static Metadata Images
+
+- **Static image files in route directories** (`icon.png`, `opengraph-image.png`, `twitter-image.png`, `apple-icon.png`) are served with their file extension's content type and `Cache-Control: public, max-age=0, must-revalidate`.
+- **Dynamic takes priority over static**: If both `icon.tsx` (dynamic) and `icon.png` (static) exist at the same level, the dynamic version takes priority. Deduplication in `scanMetadataFiles()` uses `servedUrl` as key.
+- **Nestable image metadata**: `icon`, `opengraph-image`, `twitter-image`, `apple-icon` can appear in sub-route directories (e.g., `app/about/opengraph-image.png` → `/about/opengraph-image`). `favicon`, `robots`, `manifest` are root-only.
+
+## notFound() Escalation
+
+- **`notFound()` finds the nearest ancestor `not-found.tsx`**: When thrown from `/dashboard/settings/page.tsx`, the framework walks from the route directory up to the app root looking for `not-found.tsx`. The first (closest) one found is used. If none found, falls back to root `not-found.tsx`.
+- **Layout wrapping for non-root not-found**: When `dashboard/not-found.tsx` is used, it's still wrapped in all layouts from root to the dashboard level (root layout + dashboard layout), matching Next.js behavior.
+
+## useParams Referential Stability
+
+- **`setClientParams` JSON comparison**: Uses `JSON.stringify()` to compare new params with previous. Only creates a new object reference when the JSON differs. This prevents unnecessary re-renders in components that depend on params identity.
+
+## isHashOnlyChange Fix
+
+- **`#hash` prefix should bypass `window` check**: The original `isHashOnlyChange` checked `typeof window === "undefined"` before `href.startsWith("#")`. This caused `#section` to return `false` on the server. Fix: check `startsWith("#")` FIRST, before the window guard. `#foo` is always a hash-only change regardless of environment.
+
+## API Surface Gaps
+
+- **`next/legacy/image`** is critical for Next.js 12 migrations. Apps that ran the `next-image-to-legacy-image` codemod import from this module. It uses `layout` prop (`"fill"|"responsive"|"intrinsic"|"fixed"`) instead of the modern `fill` boolean.
+- **`next/legacy/image` imports `next/image` internally**: In Vitest (outside Vite's alias system), `import Image from "next/image"` fails. Fix: use relative import (`./image.js`) instead of the aliased bare specifier.
+- **`NextRequest.ip`** extracts from `x-forwarded-for` header (first entry, comma-separated).
+- **`NextRequest.geo`** extracts from Cloudflare (`cf-ipcountry`, `cf-ipcity`, etc.) or Vercel (`x-vercel-ip-country`, etc.) headers. Returns `undefined` if no geo headers present.
+- **`getImageProps`** (Next.js 14+) returns the underlying `<img>` props without rendering. Used for `<picture>` elements and CSS background images.
+- **`ReadonlyURLSearchParams`** is just a type alias for `URLSearchParams` — Next.js uses it to signal read-only intent but doesn't enforce at runtime.
+- **`useServerInsertedHTML`** from `next/navigation` is used by styled-components/emotion for SSR style injection. In our implementation, this is a no-op since Vite handles CSS.
