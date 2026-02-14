@@ -41,6 +41,7 @@ export function generateRscEntry(
     if (route.pagePath) getImportVar(route.pagePath);
     if (route.routePath) getImportVar(route.routePath);
     for (const layout of route.layouts) getImportVar(layout);
+    for (const tmpl of route.templates) getImportVar(tmpl);
     if (route.loadingPath) getImportVar(route.loadingPath);
     if (route.errorPath) getImportVar(route.errorPath);
     if (route.notFoundPath) getImportVar(route.notFoundPath);
@@ -49,6 +50,7 @@ export function generateRscEntry(
   // Build route table as serialized JS
   const routeEntries = routes.map((route) => {
     const layoutVars = route.layouts.map((l) => getImportVar(l));
+    const templateVars = route.templates.map((t) => getImportVar(t));
     return `  {
     pattern: ${JSON.stringify(route.pattern)},
     isDynamic: ${route.isDynamic},
@@ -56,6 +58,7 @@ export function generateRscEntry(
     page: ${route.pagePath ? getImportVar(route.pagePath) : "null"},
     routeHandler: ${route.routePath ? getImportVar(route.routePath) : "null"},
     layouts: [${layoutVars.join(", ")}],
+    templates: [${templateVars.join(", ")}],
     loading: ${route.loadingPath ? getImportVar(route.loadingPath) : "null"},
     error: ${route.errorPath ? getImportVar(route.errorPath) : "null"},
     notFound: ${route.notFoundPath ? getImportVar(route.notFoundPath) : "null"},
@@ -225,6 +228,18 @@ async function buildPageElement(route, params) {
       fallback: route.error.default,
       children: element,
     });
+  }
+
+  // Wrap with templates (innermost first, then outer)
+  // Templates are like layouts but re-mount on navigation (client-side concern).
+  // On the server, they just wrap the content like layouts do.
+  if (route.templates) {
+    for (let i = route.templates.length - 1; i >= 0; i--) {
+      const TemplateComponent = route.templates[i]?.default;
+      if (TemplateComponent) {
+        element = createElement(TemplateComponent, { children: element, params });
+      }
+    }
   }
 
   // Wrap with layouts (innermost first, then outer)

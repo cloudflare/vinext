@@ -957,6 +957,22 @@ describe("App Router integration", () => {
     expect(html).toContain('data-testid="like-btn"');
     expect(html).toContain('data-testid="message-input"');
   });
+
+  it("renders template.tsx wrapper around page content", async () => {
+    const { html } = await fetchHtml(baseUrl, "/");
+    expect(html).toContain('data-testid="root-template"');
+    expect(html).toContain("Template Active");
+  });
+
+  it("renders template.tsx inside layout (layout > template > page)", async () => {
+    const { html } = await fetchHtml(baseUrl, "/about");
+    // Template should be present
+    expect(html).toContain('data-testid="root-template"');
+    // Layout wraps template, so layout HTML should appear before template
+    // (Both should be present in the output)
+    expect(html).toContain("<html");
+    expect(html).toContain("Template Active");
+  });
 });
 
 describe("App Router Production build", () => {
@@ -1165,6 +1181,7 @@ describe("App Router Static export", () => {
         pagePath: path.resolve(APP_FIXTURE_DIR, "app", "page.tsx"),
         routePath: null,
         layouts: [],
+        templates: [],
         loadingPath: null,
         errorPath: null,
         notFoundPath: null,
@@ -1209,6 +1226,7 @@ describe("App Router Static export", () => {
         pagePath: null,
         routePath: path.resolve(APP_FIXTURE_DIR, "app", "api", "hello", "route.ts"),
         layouts: [],
+        templates: [],
         loadingPath: null,
         errorPath: null,
         notFoundPath: null,

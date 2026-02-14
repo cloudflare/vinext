@@ -26,6 +26,8 @@ export interface AppRoute {
   routePath: string | null;
   /** Ordered list of layout files from root to leaf */
   layouts: string[];
+  /** Ordered list of template files from root to leaf (parallel to layouts) */
+  templates: string[];
   /** Loading component path */
   loadingPath: string | null;
   /** Error component path */
@@ -136,8 +138,9 @@ function fileToAppRoute(
 
   const pattern = "/" + urlSegments.join("/");
 
-  // Discover layouts from root to leaf
+  // Discover layouts and templates from root to leaf
   const layouts = discoverLayouts(segments, appDir);
+  const templates = discoverTemplates(segments, appDir);
 
   // Discover loading, error, not-found in the route's directory
   const routeDir = dir === "." ? appDir : path.join(appDir, dir);
@@ -150,6 +153,7 @@ function fileToAppRoute(
     pagePath: type === "page" ? path.join(appDir, file) : null,
     routePath: type === "route" ? path.join(appDir, file) : null,
     layouts,
+    templates,
     loadingPath,
     errorPath,
     notFoundPath,
@@ -178,6 +182,29 @@ function discoverLayouts(segments: string[], appDir: string): string[] {
   }
 
   return layouts;
+}
+
+/**
+ * Discover all template files from root to the given directory.
+ * Each level of the directory tree may have a template.tsx.
+ * Templates are like layouts but re-mount on navigation.
+ */
+function discoverTemplates(segments: string[], appDir: string): string[] {
+  const templates: string[] = [];
+
+  // Check root template
+  const rootTemplate = findFile(appDir, "template");
+  if (rootTemplate) templates.push(rootTemplate);
+
+  // Check each directory level
+  let currentDir = appDir;
+  for (const segment of segments) {
+    currentDir = path.join(currentDir, segment);
+    const template = findFile(currentDir, "template");
+    if (template) templates.push(template);
+  }
+
+  return templates;
 }
 
 /**

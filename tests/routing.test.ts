@@ -290,4 +290,23 @@ describe("matchAppRoute - URL matching", () => {
     expect(result).not.toBeNull();
     expect(result!.params.path).toEqual(["a", "b", "c"]);
   });
+
+  it("discovers template.tsx files", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    // Root template should be discovered for the home page
+    const homeRoute = routes.find((r) => r.pattern === "/");
+    expect(homeRoute).toBeDefined();
+    expect(homeRoute!.templates.length).toBeGreaterThan(0);
+    expect(homeRoute!.templates[0]).toContain("template");
+  });
+
+  it("includes templates array even when no template exists", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    // All routes should have a templates array (may be empty or populated)
+    for (const route of routes) {
+      expect(Array.isArray(route.templates)).toBe(true);
+    }
+  });
 });
