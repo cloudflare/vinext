@@ -211,3 +211,27 @@ declare module "next/form" {
   const Form: ForwardRefExoticComponent<FormProps & RefAttributes<HTMLFormElement>>;
   export default Form;
 }
+
+declare module "next/og" {
+  import { ReactElement } from "react";
+
+  interface ImageResponseOptions {
+    width?: number;
+    height?: number;
+    emoji?: "twemoji" | "blobmoji" | "noto" | "openmoji";
+    fonts?: Array<{
+      name: string;
+      data: ArrayBuffer;
+      weight?: 100 | 200 | 300 | 400 | 500 | 600 | 700 | 800 | 900;
+      style?: "normal" | "italic";
+    }>;
+    debug?: boolean;
+    status?: number;
+    statusText?: string;
+    headers?: Record<string, string>;
+  }
+
+  export class ImageResponse extends Response {
+    constructor(element: ReactElement, options?: ImageResponseOptions);
+  }
+}

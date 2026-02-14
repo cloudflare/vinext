@@ -1863,3 +1863,104 @@ describe("next/font/local shim", () => {
     expect(result.style.fontFamily).toBeTruthy();
   });
 });
+
+describe("next/og shim", () => {
+  it("exports ImageResponse class", async () => {
+    const og = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/og.js"
+    );
+    expect(og.ImageResponse).toBeDefined();
+    expect(typeof og.ImageResponse).toBe("function");
+  });
+
+  it("ImageResponse extends Response", async () => {
+    const og = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/og.js"
+    );
+    // Check the prototype chain
+    expect(og.ImageResponse.prototype instanceof Response).toBe(true);
+  });
+
+  it("generates a PNG image from JSX", async () => {
+    const React = await import("react");
+    const og = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/og.js"
+    );
+
+    // Simple colored div — no text so no font needed
+    const element = React.createElement(
+      "div",
+      {
+        style: {
+          display: "flex",
+          width: "100%",
+          height: "100%",
+          backgroundColor: "#ff6600",
+          alignItems: "center",
+          justifyContent: "center",
+        },
+      },
+    );
+
+    const response = new og.ImageResponse(element, {
+      width: 100,
+      height: 100,
+    });
+
+    expect(response).toBeInstanceOf(Response);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+
+    // Read the response body — should be valid PNG data
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+
+    // PNG magic bytes: 0x89 0x50 0x4E 0x47
+    expect(bytes[0]).toBe(0x89);
+    expect(bytes[1]).toBe(0x50); // P
+    expect(bytes[2]).toBe(0x4e); // N
+    expect(bytes[3]).toBe(0x47); // G
+  });
+
+  it("respects custom status and headers", async () => {
+    const React = await import("react");
+    const og = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/og.js"
+    );
+
+    const element = React.createElement("div", {
+      style: { display: "flex", width: "100%", height: "100%", backgroundColor: "blue" },
+    });
+
+    const response = new og.ImageResponse(element, {
+      width: 50,
+      height: 50,
+      status: 201,
+      headers: { "x-custom": "test-value" },
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.headers.get("x-custom")).toBe("test-value");
+    expect(response.headers.get("content-type")).toBe("image/png");
+  });
+
+  it("uses default dimensions of 1200x630", async () => {
+    const React = await import("react");
+    const og = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/og.js"
+    );
+
+    const element = React.createElement("div", {
+      style: { display: "flex", width: "100%", height: "100%", backgroundColor: "green" },
+    });
+
+    // No width/height specified — should use defaults
+    const response = new og.ImageResponse(element);
+    expect(response).toBeInstanceOf(Response);
+
+    // Verify it produces valid PNG
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    expect(bytes[0]).toBe(0x89); // PNG magic
+  });
+});
