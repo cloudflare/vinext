@@ -106,20 +106,20 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 
 | Next.js Import | Priority | Complexity | Notes |
 |---|---|---|---|
+| `next/head` | P0 | Low | Document head management (Pages Router) |
 | `next/link` | P0 | Medium | Client-side nav, prefetching |
-| `next/image` | P1 | High | Image optimization pipeline |
-| `next/head` | P0 | Low | Document head management |
-| `next/script` | P2 | Low | Third-party script loading |
-| `next/router` (Pages) | P1 | High | Full Pages Router compat |
-| `next/navigation` (App) | P0 | High | `useRouter`, `usePathname`, `useSearchParams`, `useParams`, `redirect`, `notFound` |
-| `next/headers` | P0 | Medium | `cookies()`, `headers()`, `draftMode()` |
-| `next/server` | P0 | Medium | `NextRequest`, `NextResponse`, `after()` |
+| `next/router` (Pages) | P0 | High | Pages Router `useRouter` - needed first |
+| `next/document` | P0 | Low | Pages Router `_document.tsx` |
+| `next/app` | P0 | Low | Pages Router `_app.tsx` |
+| `next/image` | P1 | Low | Shim via `@unpic/react` + `vite-imagetools` |
 | `next/dynamic` | P1 | Medium | Dynamic imports / code splitting |
+| `next/navigation` (App) | P1 | High | `useRouter`, `usePathname`, `useSearchParams`, `useParams`, `redirect`, `notFound` |
+| `next/headers` | P1 | Medium | `cookies()`, `headers()`, `draftMode()` |
+| `next/server` | P1 | Medium | `NextRequest`, `NextResponse`, `after()` |
+| `next/font` | P2 | High | Font optimization |
+| `next/script` | P2 | Low | Third-party script loading |
 | `next/og` | P2 | Medium | OG image generation |
 | `next/form` | P2 | Low | Progressive enhancement form |
-| `next/font` | P1 | High | Font optimization |
-| `next/document` | P1 | Low | Pages Router only |
-| `next/app` | P1 | Low | Pages Router only |
 
 ### File Conventions
 
@@ -138,9 +138,9 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 | `(group)/` | P1 | Route groups |
 | `@slot/` | P2 | Parallel routes |
 | `(.)intercepting/` | P2 | Intercepting routes |
-| `pages/` directory | P1 | Legacy Pages Router |
-| `pages/api/` | P1 | Legacy API routes |
-| `middleware.ts` | P1 | Edge middleware |
+| `pages/` directory | P0 | Pages Router - starting here |
+| `pages/api/` | P0 | Pages Router API routes |
+| `middleware.ts` | P2 | Runs in Node, not Edge |
 
 ### Rendering Modes
 
@@ -169,27 +169,54 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 
 ## Phased Execution Plan
 
-### Phase 0: Foundation (Week 1-2)
+### Phase 0: Pages Router Foundation (Week 1-2)
 
-**Goal**: `hello-world` example renders correctly.
+**Goal**: Simplest Pages Router app renders. Start with the easier,
+well-understood model before tackling RSC.
 
-- [ ] Scaffold the Vite plugin structure
-- [ ] Implement `app/` directory file-system routing (basic)
-  - `page.tsx` and `layout.tsx` discovery
+- [ ] Scaffold the Vite plugin structure (on top of `@vitejs/plugin-rsc`)
+- [ ] Implement `pages/` directory file-system routing
+  - Page discovery and route generation
   - Dynamic route segments `[param]`
+  - `_app.tsx`, `_document.tsx` support
 - [ ] Implement basic SSR rendering pipeline
   - Server-side React rendering to HTML
   - Client hydration bundle generation
 - [ ] Implement `next/head` shim
-- [ ] Implement `next/link` shim (basic - just renders `<a>` with client nav)
+- [ ] Implement `next/link` shim (basic - renders `<a>` with client nav)
+- [ ] Implement `next/router` shim (`useRouter`, `router.push`, etc.)
 - [ ] Create CLI: `nextcompat dev` wrapping `vite dev` with our plugin
-- [ ] **Validation**: `hello-world` example renders, navigates
+- [ ] **Validation**: `reproduction-template-pages` and `with-typescript`
+  examples render and navigate
 
-### Phase 1: Core App Router (Week 3-5)
+### Phase 1: Pages Router Complete + Production (Week 3-5)
 
-**Goal**: Most simple App Router examples work. Begin test harness.
+**Goal**: Full Pages Router compat. Production builds. Test harness online.
 
+- [ ] `getServerSideProps` (server-side data fetching per request)
+- [ ] `getStaticProps` + `getStaticPaths` (static generation)
+- [ ] `pages/api/` routes (API endpoints)
+- [ ] `_error.tsx`, `404.tsx`, `500.tsx` (error pages)
+- [ ] `next/dynamic` (dynamic imports / code splitting)
+- [ ] `next/image` shim (via `@unpic/react` + `vite-imagetools` for local)
+- [ ] CSS Modules support (Vite handles natively)
+- [ ] `next.config.js` parsing (basic: `env`, `basePath`, `rewrites`,
+  `redirects`, `headers`)
+- [ ] `nextcompat build` (production build via `vite build`)
+- [ ] `nextcompat start` (production server)
+- [ ] **Validation**: `api-routes-rest`, `api-routes-cors`, `with-docker`
+- [ ] **Test harness**: Extract and adapt Next.js e2e test infrastructure
+- [ ] **Test harness**: Begin running Pages Router e2e tests, track pass rate
+
+### Phase 2: App Router (Week 6-9)
+
+**Goal**: App Router basics work. RSC rendering online.
+
+- [ ] Implement `app/` directory file-system routing
+  - `page.tsx` and `layout.tsx` discovery
+  - Dynamic route segments `[param]`
 - [ ] RSC support (server/client component boundary via `'use client'`)
+  - Wire up `@vitejs/plugin-rsc` environments (rsc/ssr/client entries)
 - [ ] `app/route.ts` API route handlers (GET, POST, etc.)
 - [ ] `next/navigation` hooks (`useRouter`, `usePathname`, `useSearchParams`)
 - [ ] `next/headers` (`cookies()`, `headers()`)
@@ -197,55 +224,36 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 - [ ] `app/loading.tsx` (Suspense boundaries)
 - [ ] `app/error.tsx` (Error boundaries)
 - [ ] `app/not-found.tsx`
-- [ ] CSS Modules support (Vite handles this natively)
-- [ ] `next.config.js` parsing (basic: `env`, `basePath`)
-- [ ] **Validation**: `basic-css`, `next-forms`, `reproduction-template` examples
-- [ ] **Test harness**: Extract and adapt Next.js e2e test infrastructure
-
-### Phase 2: Pages Router + Production (Week 6-8)
-
-**Goal**: Pages Router works. Production builds work.
-
-- [ ] `pages/` directory routing
-- [ ] `getServerSideProps`, `getStaticProps`, `getStaticPaths`
-- [ ] `pages/api/` routes
-- [ ] `_app.tsx`, `_document.tsx`, `_error.tsx`
-- [ ] `next/router` (Pages Router `useRouter`)
-- [ ] `nextcompat build` (production build via `vite build`)
-- [ ] `nextcompat start` (production server)
-- [ ] Static generation (SSG)
-- [ ] `next/dynamic` (dynamic imports)
-- [ ] `next/image` (basic - proxy + resize, not full optimization)
-- [ ] **Validation**: Pages Router examples, `api-routes-rest`
-- [ ] **Test harness**: Begin running e2e tests, track pass rate
-
-### Phase 3: Advanced Features (Week 9-12)
-
-**Goal**: Majority of e2e tests passing.
-
 - [ ] Server Actions (`'use server'`)
-- [ ] Middleware (`middleware.ts`)
+- [ ] **Validation**: `hello-world`, `basic-css`, `next-forms` examples
+- [ ] **Test harness**: Begin running App Router e2e tests
+
+### Phase 3: Advanced Features (Week 10-13)
+
+**Goal**: Majority of e2e tests passing across both routers.
+
+- [ ] Middleware (`middleware.ts`) - running in Node, not Edge
 - [ ] Streaming SSR
 - [ ] `next/font` optimization
-- [ ] `rewrites`, `redirects`, `headers` in config
 - [ ] Route groups, catch-all routes, optional catch-all
 - [ ] `output: 'export'` (static export)
 - [ ] ISR (Incremental Static Regeneration)
 - [ ] `next/og` (OG image generation)
 - [ ] `next/script`
+- [ ] `next/form`
+- [ ] Full `next.config.js` compatibility
 - [ ] **Validation**: Target 50%+ of e2e test suite passing
+- [ ] **Are We Vite Yet?** dashboard live and auto-updating
 
-### Phase 4: Parity Push (Week 13+)
+### Phase 4: Parity Push (Week 14+)
 
 **Goal**: Maximize e2e test pass rate. Production-ready.
 
 - [ ] Parallel routes (`@slot`)
 - [ ] Intercepting routes
 - [ ] i18n routing
-- [ ] Full `next/image` optimization pipeline
-- [ ] Edge runtime compatibility
-- [ ] `next.config.js` full compatibility
 - [ ] Performance optimization (bundle size, cold start, HMR speed)
+- [ ] Deployment guides (Cloudflare, AWS, Netlify, Fly, Railway, etc.)
 - [ ] **Validation**: Target 80%+ of e2e test suite passing
 
 ## Test Harness Strategy
@@ -315,13 +323,14 @@ It also makes contribution dead simple - find a red test, make it green.
 
 ### Test Categories to Prioritize
 
-1. `test/e2e/app-dir/` - App Router basics (largest surface area)
-2. `test/e2e/middleware-general/` - Middleware
+1. `test/e2e/pages-dir/` - Pages Router (starting here)
+2. `test/integration/` - Legacy tests (many are Pages Router)
 3. `test/production/` - Production build correctness
-4. `test/development/` - Dev server / HMR
-5. `test/e2e/pages-dir/` - Pages Router (if we pursue compat)
+4. `test/e2e/app-dir/` - App Router (Phase 2+)
+5. `test/development/` - Dev server / HMR
+6. `test/e2e/middleware-general/` - Middleware (Phase 3)
 
-## Open Questions
+## Decisions Made
 
 1. ~~**RSC bundling**~~ **RESOLVED**: `@vitejs/plugin-rsc` (official Vite
    plugin) handles the full RSC pipeline. It provides three environments
@@ -330,38 +339,60 @@ It also makes contribution dead simple - find a red test, make it green.
    across server/client, and HMR for server components. We build on top of
    this rather than rolling our own. It even supports `"use cache"` already.
 
-2. **Scope of Pages Router support**: Do we go full compat, or declare it
-   out of scope and focus on App Router only? Pages Router is legacy but
-   still widely used.
+2. ~~**Scope of Pages Router support**~~ **RESOLVED: Pages Router first.**
+   It's simpler (no RSC, no server/client component boundaries), it's what
+   a lot of people are still stuck on, and Vercel has effectively abandoned
+   it. Those users are the most locked-in and the most motivated to migrate.
+   Starting here gives us a working system faster and builds momentum before
+   tackling the harder App Router + RSC surface.
 
-3. **`next/image` optimization**: Next.js has a full image optimization
-   pipeline (Sharp-based). Do we reimplement it, or use an existing Vite
-   image plugin and just shim the component?
+3. ~~**`next/image` optimization**~~ **RESOLVED: Shim over existing tools.**
+   No point rebuilding Sharp pipelines. Two strong options:
+   - **`vite-imagetools`** (109k weekly downloads) - Vite plugin, Sharp-powered,
+     build-time transforms (resize, format conversion, srcset). Handles the
+     optimization pipeline at build time.
+   - **`@unpic/react`** (40k weekly downloads) - Drop-in `<Image>` component
+     that auto-detects image CDNs, generates correct srcset/sizes. Already
+     has a `@unpic/react/nextjs` variant, so the "shim next/image" problem
+     is partially solved from the other direction.
+   Likely approach: use `@unpic/react` as the component shim (it handles
+   layout/srcset/sizes), backed by `vite-imagetools` for local image
+   optimization at build time.
 
-4. **Edge Runtime**: Next.js middleware runs in an Edge-like environment.
-   Do we need to emulate this, or can we run middleware in Node and accept
-   minor behavioral differences?
+4. ~~**Edge Runtime**~~ **RESOLVED: Skip it. Run middleware in Node.**
+   Vercel has effectively abandoned the Edge Runtime too. Middleware runs
+   in Node with the standard Node APIs. Minor behavioral differences
+   (e.g. no `crypto.subtle` by default) are acceptable and can be polyfilled
+   if needed. This massively simplifies the implementation.
 
-5. **Turbopack-specific behaviors**: Are there behaviors that only exist
-   because of Turbopack that we'd need to replicate, or can we treat the
-   public API as the contract?
+5. **Turbopack-specific behaviors**: Treating the public API as the contract.
+   If a behavior only exists because of Turbopack internals, it's not part
+   of the compatibility target.
 
-6. **Name**: `nextcompat`? `vite-plugin-next`? `unnext`? `vixt`?
+## Remaining Open Questions
+
+1. **Name**: Going with `nextcompat` for now. Clear, obvious, descriptive.
+   Open to change if something better emerges.
 
 ## Success Criteria
 
-- **Phase 0**: `hello-world` renders. We know this is feasible.
-- **Phase 1**: 5+ official examples work unmodified.
-- **Phase 2**: Production builds work. Pages Router basics work.
-- **Phase 3**: 50%+ of Next.js e2e tests pass.
-- **Phase 4**: 80%+ pass rate. Real-world apps can migrate.
+- **Phase 0**: Pages Router hello-world renders. Basic routing works.
+- **Phase 1**: Full Pages Router compat. Production builds. `getServerSideProps`/`getStaticProps`/API routes all work.
+- **Phase 2**: App Router basics work. RSC renders. Server Actions function.
+- **Phase 3**: 50%+ of Next.js e2e tests pass. Are We Vite Yet? dashboard live.
+- **Phase 4**: 80%+ pass rate. Real-world apps can migrate. Deploy-anywhere guides.
 
 ## Prior Art & References
 
+- [OpenNext](https://opennext.js.org/) - Deploy Next.js anywhere (AWS/Cloudflare/Netlify adapters). Proves demand for portability.
+- [`@vitejs/plugin-rsc`](https://www.npmjs.com/package/@vitejs/plugin-rsc) - Official Vite RSC plugin. Our foundation.
+- [`vite-imagetools`](https://www.npmjs.com/package/vite-imagetools) - Sharp-powered image optimization for Vite (109k weekly downloads)
+- [`@unpic/react`](https://www.npmjs.com/package/@unpic/react) - Universal image component, auto-detects CDNs (40k weekly downloads)
 - [Vike](https://vike.dev/) - Vite-based SSR framework (different API)
 - [Vinxi](https://vinxi.vercel.app/) - Framework-agnostic server layer on Vite/Nitro
 - [TanStack Start](https://tanstack.com/start) - Full-stack React on Vite (different API)
 - [Waku](https://waku.gg/) - Minimal RSC framework on Vite
+- [Are We Turbo Yet?](https://areweturboyet.com/) - Vercel's Turbopack progress tracker. Inspiration for our dashboard.
 - Next.js repo: https://github.com/vercel/next.js
 - Next.js e2e tests: `test/e2e/`, especially `test/e2e/app-dir/`
 - Existing POC: AI chatbot example (internal, built by team member)
