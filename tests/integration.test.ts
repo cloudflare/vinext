@@ -182,6 +182,21 @@ describe("Pages Router integration", () => {
 
   // --- Hydration ---
 
+  // --- next.config.js ---
+
+  it("applies redirects from next.config.js", async () => {
+    const res = await fetch(`${baseUrl}/old-about`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/about");
+  });
+
+  it("applies custom headers from next.config.js", async () => {
+    const res = await fetch(`${baseUrl}/api/hello`);
+    expect(res.headers.get("x-custom-header")).toBe("nextcompat");
+  });
+
+  // --- Hydration ---
+
   it("hydration proxy script is fetchable", async () => {
     // Fetch the index page, find the proxy script URL, fetch it,
     // and verify it contains our hydration code

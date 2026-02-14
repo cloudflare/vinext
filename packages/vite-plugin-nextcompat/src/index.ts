@@ -2,6 +2,13 @@ import type { Plugin, ViteDevServer } from "vite";
 import { pagesRouter, apiRouter } from "./routing/pages-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
+import {
+  loadNextConfig,
+  resolveNextConfig,
+  type ResolvedNextConfig,
+  type NextRedirect,
+  type NextRewrite,
+} from "./config/next-config.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -15,6 +22,7 @@ export interface NextcompatOptions {
 export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
   let root: string;
   let pagesDir: string;
+  let nextConfig: ResolvedNextConfig;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
@@ -24,9 +32,19 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
       name: "nextcompat:config",
       enforce: "pre",
 
-      config(config) {
+      async config(config) {
         root = config.root ?? process.cwd();
         pagesDir = path.join(options.appDir ?? root, "pages");
+
+        // Load next.config.js if present
+        const rawConfig = await loadNextConfig(options.appDir ?? root);
+        nextConfig = await resolveNextConfig(rawConfig);
+
+        // Merge env from next.config.js with NEXT_PUBLIC_* env vars
+        const defines = getNextPublicEnvDefines();
+        for (const [key, value] of Object.entries(nextConfig.env)) {
+          defines[`process.env.${key}`] = JSON.stringify(value);
+        }
 
         return {
           // Disable Vite's default HTML serving - we handle all routing
@@ -51,8 +69,10 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
           esbuild: {
             jsx: "automatic",
           },
-          // Define NEXT_PUBLIC_* env vars for client bundle
-          define: getNextPublicEnvDefines(),
+          // Define env vars for client bundle
+          define: defines,
+          // Set base path if configured
+          ...(nextConfig.basePath ? { base: nextConfig.basePath + "/" } : {}),
         };
       },
     },
@@ -81,14 +101,41 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
                 return next();
               }
 
+              // Apply custom headers from next.config.js
+              if (nextConfig?.headers.length) {
+                applyHeaders(pathname, res, nextConfig.headers);
+              }
+
+              // Apply redirects from next.config.js
+              if (nextConfig?.redirects.length) {
+                const redirected = applyRedirects(
+                  pathname,
+                  res,
+                  nextConfig.redirects,
+                );
+                if (redirected) return;
+              }
+
+              // Apply rewrites from next.config.js (beforeFiles)
+              let resolvedUrl = url;
+              if (nextConfig?.rewrites.beforeFiles.length) {
+                resolvedUrl =
+                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles) ??
+                  url;
+              }
+
               // Handle API routes first (pages/api/*)
-              if (pathname.startsWith("/api/") || pathname === "/api") {
+              const resolvedPathname = resolvedUrl.split("?")[0];
+              if (
+                resolvedPathname.startsWith("/api/") ||
+                resolvedPathname === "/api"
+              ) {
                 const apiRoutes = await apiRouter(pagesDir);
                 const handled = await handleApiRoute(
                   server,
                   req,
                   res,
-                  url,
+                  resolvedUrl,
                   apiRoutes,
                 );
                 if (handled) return;
@@ -100,7 +147,7 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
 
               const routes = await pagesRouter(pagesDir);
               const handler = createSSRHandler(server, routes, pagesDir);
-              await handler(req, res, url);
+              await handler(req, res, resolvedUrl);
             } catch (e) {
               next(e);
             }
@@ -123,4 +170,97 @@ function getNextPublicEnvDefines(): Record<string, string> {
     }
   }
   return defines;
+}
+
+/**
+ * Match a Next.js route pattern (e.g. "/blog/:slug") against a pathname.
+ * Returns matched params or null.
+ */
+function matchConfigPattern(
+  pathname: string,
+  pattern: string,
+): Record<string, string> | null {
+  // Convert Next.js-style :param to regex
+  const parts = pattern.split("/");
+  const pathParts = pathname.split("/");
+
+  if (parts.length !== pathParts.length) return null;
+
+  const params: Record<string, string> = {};
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i].startsWith(":")) {
+      params[parts[i].slice(1)] = pathParts[i];
+    } else if (parts[i] !== pathParts[i]) {
+      return null;
+    }
+  }
+  return params;
+}
+
+/**
+ * Apply redirect rules from next.config.js.
+ * Returns true if a redirect was applied.
+ */
+function applyRedirects(
+  pathname: string,
+  res: any,
+  redirects: NextRedirect[],
+): boolean {
+  for (const redirect of redirects) {
+    const params = matchConfigPattern(pathname, redirect.source);
+    if (params) {
+      // Replace :param placeholders in destination
+      let dest = redirect.destination;
+      for (const [key, value] of Object.entries(params)) {
+        dest = dest.replace(`:${key}`, value);
+      }
+      res.writeHead(redirect.permanent ? 308 : 307, { Location: dest });
+      res.end();
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Apply rewrite rules from next.config.js.
+ * Returns the rewritten URL or null if no rewrite matched.
+ */
+function applyRewrites(
+  pathname: string,
+  rewrites: NextRewrite[],
+): string | null {
+  for (const rewrite of rewrites) {
+    const params = matchConfigPattern(pathname, rewrite.source);
+    if (params) {
+      let dest = rewrite.destination;
+      for (const [key, value] of Object.entries(params)) {
+        dest = dest.replace(`:${key}`, value);
+      }
+      return dest;
+    }
+  }
+  return null;
+}
+
+/**
+ * Apply custom header rules from next.config.js.
+ */
+function applyHeaders(
+  pathname: string,
+  res: any,
+  headers: Array<{ source: string; headers: Array<{ key: string; value: string }> }>,
+): void {
+  for (const rule of headers) {
+    // Simple match: exact or glob-like (just check if source matches)
+    // Next.js uses path-to-regexp for matching; we use a simpler approach
+    const sourceRegex = new RegExp(
+      "^" + rule.source.replace(/\*/g, ".*").replace(/:\w+/g, "[^/]+") + "$",
+    );
+    if (sourceRegex.test(pathname)) {
+      for (const header of rule.headers) {
+        res.setHeader(header.key, header.value);
+      }
+    }
+  }
 }
