@@ -112,6 +112,54 @@ function resolveUrl(url: string | UrlObject): string {
   return result;
 }
 
+/** Check if a URL is external */
+export function isExternalUrl(url: string): boolean {
+  return url.startsWith("http://") || url.startsWith("https://") || url.startsWith("//");
+}
+
+/** Check if a href is only a hash change relative to the current URL */
+export function isHashOnlyChange(href: string): boolean {
+  if (href.startsWith("#")) return true;
+  if (typeof window === "undefined") return false;
+  try {
+    const current = new URL(window.location.href);
+    const next = new URL(href, window.location.href);
+    return current.pathname === next.pathname && current.search === next.search && next.hash !== "";
+  } catch {
+    return false;
+  }
+}
+
+/** Scroll to hash target element, or top if no hash */
+function scrollToHash(hash: string): void {
+  if (!hash || hash === "#") {
+    window.scrollTo(0, 0);
+    return;
+  }
+  const el = document.getElementById(hash.slice(1));
+  if (el) el.scrollIntoView({ behavior: "auto" });
+}
+
+/** Save current scroll position into history state for back/forward restoration */
+function saveScrollPosition(): void {
+  const state = window.history.state ?? {};
+  window.history.replaceState(
+    { ...state, __nextcompat_scrollX: window.scrollX, __nextcompat_scrollY: window.scrollY },
+    "",
+  );
+}
+
+/** Restore scroll position from history state */
+function restoreScrollPosition(state: unknown): void {
+  if (state && typeof state === "object" && "__nextcompat_scrollY" in state) {
+    const { __nextcompat_scrollX: x, __nextcompat_scrollY: y } = state as {
+      __nextcompat_scrollX: number;
+      __nextcompat_scrollY: number;
+    };
+    requestAnimationFrame(() => window.scrollTo(x, y));
+  }
+}
+
 /**
  * SSR context - set by the dev server before rendering each page.
  */
@@ -266,10 +314,12 @@ export function useRouter(): NextRouter {
   const [{ pathname, query, asPath }, setState] = useState(getPathnameAndQuery);
 
   useEffect(() => {
-    const onPopState = () => {
+    const onPopState = (e: PopStateEvent) => {
       setState(getPathnameAndQuery());
       // Re-render with the new page on back/forward navigation
-      navigateClient(window.location.pathname + window.location.search);
+      navigateClient(window.location.pathname + window.location.search).then(() => {
+        restoreScrollPosition(e.state);
+      });
     };
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
@@ -287,13 +337,36 @@ export function useRouter(): NextRouter {
   const push = useCallback(
     async (url: string | UrlObject, _as?: string, options?: TransitionOptions): Promise<boolean> => {
       const resolved = resolveUrl(url);
+
+      // External URLs — delegate to browser
+      if (isExternalUrl(resolved)) {
+        window.location.assign(resolved);
+        return true;
+      }
+
+      // Hash-only change — no page fetch needed
+      if (isHashOnlyChange(resolved)) {
+        const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+        window.history.pushState({}, "", resolved.startsWith("#") ? resolved : withBasePath(resolved));
+        scrollToHash(hash);
+        setState(getPathnameAndQuery());
+        window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
+        return true;
+      }
+
+      saveScrollPosition();
       const full = withBasePath(resolved);
       routerEvents.emit("routeChangeStart", resolved);
       window.history.pushState({}, "", full);
       await navigateClient(full);
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved);
-      if (options?.scroll !== false) {
+
+      // Scroll: handle hash target, else scroll to top unless scroll:false
+      const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+      if (hash) {
+        scrollToHash(hash);
+      } else if (options?.scroll !== false) {
         window.scrollTo(0, 0);
       }
       window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
@@ -305,13 +378,35 @@ export function useRouter(): NextRouter {
   const replace = useCallback(
     async (url: string | UrlObject, _as?: string, options?: TransitionOptions): Promise<boolean> => {
       const resolved = resolveUrl(url);
+
+      // External URLs — delegate to browser
+      if (isExternalUrl(resolved)) {
+        window.location.replace(resolved);
+        return true;
+      }
+
+      // Hash-only change — no page fetch needed
+      if (isHashOnlyChange(resolved)) {
+        const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+        window.history.replaceState({}, "", resolved.startsWith("#") ? resolved : withBasePath(resolved));
+        scrollToHash(hash);
+        setState(getPathnameAndQuery());
+        window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
+        return true;
+      }
+
       const full = withBasePath(resolved);
       routerEvents.emit("routeChangeStart", resolved);
       window.history.replaceState({}, "", full);
       await navigateClient(full);
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved);
-      if (options?.scroll !== false) {
+
+      // Scroll: handle hash target, else scroll to top unless scroll:false
+      const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+      if (hash) {
+        scrollToHash(hash);
+      } else if (options?.scroll !== false) {
         window.scrollTo(0, 0);
       }
       window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
@@ -373,12 +468,13 @@ export function useRouter(): NextRouter {
 // the React root with the page at the new URL. This runs regardless of whether
 // any component calls useRouter().
 if (typeof window !== "undefined") {
-  window.addEventListener("popstate", () => {
+  window.addEventListener("popstate", (e: PopStateEvent) => {
     const browserUrl = window.location.pathname + window.location.search;
     const appUrl = stripBasePath(window.location.pathname) + window.location.search;
     routerEvents.emit("routeChangeStart", appUrl);
     navigateClient(browserUrl).then(() => {
       routerEvents.emit("routeChangeComplete", appUrl);
+      restoreScrollPosition(e.state);
       window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
     });
   });
@@ -388,21 +484,68 @@ if (typeof window !== "undefined") {
 const Router = {
   push: async (url: string | UrlObject) => {
     const resolved = resolveUrl(url);
+
+    // External URLs
+    if (isExternalUrl(resolved)) {
+      window.location.assign(resolved);
+      return true;
+    }
+
+    // Hash-only change
+    if (isHashOnlyChange(resolved)) {
+      const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+      window.history.pushState({}, "", resolved.startsWith("#") ? resolved : withBasePath(resolved));
+      scrollToHash(hash);
+      window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
+      return true;
+    }
+
+    saveScrollPosition();
     const full = withBasePath(resolved);
     routerEvents.emit("routeChangeStart", resolved);
     window.history.pushState({}, "", full);
     await navigateClient(full);
     routerEvents.emit("routeChangeComplete", resolved);
+
+    const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+    if (hash) {
+      scrollToHash(hash);
+    } else {
+      window.scrollTo(0, 0);
+    }
     window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
     return true;
   },
   replace: async (url: string | UrlObject) => {
     const resolved = resolveUrl(url);
+
+    // External URLs
+    if (isExternalUrl(resolved)) {
+      window.location.replace(resolved);
+      return true;
+    }
+
+    // Hash-only change
+    if (isHashOnlyChange(resolved)) {
+      const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+      window.history.replaceState({}, "", resolved.startsWith("#") ? resolved : withBasePath(resolved));
+      scrollToHash(hash);
+      window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
+      return true;
+    }
+
     const full = withBasePath(resolved);
     routerEvents.emit("routeChangeStart", resolved);
     window.history.replaceState({}, "", full);
     await navigateClient(full);
     routerEvents.emit("routeChangeComplete", resolved);
+
+    const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+    if (hash) {
+      scrollToHash(hash);
+    } else {
+      window.scrollTo(0, 0);
+    }
     window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
     return true;
   },

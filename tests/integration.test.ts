@@ -10,6 +10,7 @@ import {
   startFixtureServer,
   fetchHtml,
 } from "./helpers.js";
+import { isExternalUrl, isHashOnlyChange } from "../packages/vite-plugin-nextcompat/src/shims/router.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -3382,5 +3383,57 @@ describe("MetadataHead rendering", () => {
     );
     expect(html).toContain('content="val1"');
     expect(html).toContain('content="val2"');
+  });
+});
+
+// ─── Pages Router: router helpers (isExternalUrl, isHashOnlyChange) ──────────
+describe("Pages Router router helpers", () => {
+  describe("isExternalUrl", () => {
+    it("detects https:// as external", () => {
+      expect(isExternalUrl("https://example.com")).toBe(true);
+      expect(isExternalUrl("https://example.com/path")).toBe(true);
+    });
+
+    it("detects http:// as external", () => {
+      expect(isExternalUrl("http://example.com")).toBe(true);
+    });
+
+    it("detects protocol-relative // as external", () => {
+      expect(isExternalUrl("//cdn.example.com/img.png")).toBe(true);
+    });
+
+    it("returns false for relative paths", () => {
+      expect(isExternalUrl("/about")).toBe(false);
+      expect(isExternalUrl("/")).toBe(false);
+      expect(isExternalUrl("about")).toBe(false);
+    });
+
+    it("returns false for hash-only", () => {
+      expect(isExternalUrl("#section")).toBe(false);
+    });
+
+    it("returns false for query-only", () => {
+      expect(isExternalUrl("?foo=1")).toBe(false);
+    });
+  });
+
+  describe("isHashOnlyChange", () => {
+    it("returns true for hash-only strings starting with #", () => {
+      // This works even without window because of the startsWith check
+      expect(isHashOnlyChange("#foo")).toBe(true);
+      expect(isHashOnlyChange("#")).toBe(true);
+      expect(isHashOnlyChange("#section-2")).toBe(true);
+    });
+
+    it("returns false for absolute paths without window context", () => {
+      // Without a real browser window, URL-based comparison returns false
+      // because typeof window === "undefined" → returns false
+      expect(isHashOnlyChange("/about")).toBe(false);
+      expect(isHashOnlyChange("/about#foo")).toBe(false);
+    });
+
+    it("returns false for full URLs without window context", () => {
+      expect(isHashOnlyChange("https://example.com#foo")).toBe(false);
+    });
   });
 });
