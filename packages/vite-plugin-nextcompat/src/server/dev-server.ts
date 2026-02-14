@@ -261,8 +261,7 @@ export function createSSRHandler(
           return;
         }
         if (result && "notFound" in result && result.notFound) {
-          res.statusCode = 404;
-          res.end("404 - Not Found");
+          await renderErrorPage(server, req, res, url, pagesDir, 404);
           return;
         }
       }
@@ -337,8 +336,7 @@ export function createSSRHandler(
           return;
         }
         if (result && "notFound" in result && result.notFound) {
-          res.statusCode = 404;
-          res.end("404 - Not Found");
+          await renderErrorPage(server, req, res, url, pagesDir, 404);
           return;
         }
 

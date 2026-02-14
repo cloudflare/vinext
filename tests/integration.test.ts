@@ -57,6 +57,16 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Rendered at:");
   });
 
+  it("getServerSideProps returning notFound renders custom 404 page", async () => {
+    const res = await fetch(`${baseUrl}/posts/missing`);
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    // Should render the custom 404 page (pages/404.tsx), not plain text
+    expect(html).toContain("Page Not Found");
+    // Should be wrapped in the _app layout
+    expect(html).toContain("app-wrapper");
+  });
+
   it("renders dynamic routes with params", async () => {
     const res = await fetch(`${baseUrl}/posts/42`);
     expect(res.status).toBe(200);
