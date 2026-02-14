@@ -104,9 +104,30 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
     return `
 import React from "react";
 import ReactDOMServer from "react-dom/server";
+import { Writable } from "node:stream";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext } from "next/router";
+
+function renderToStringAsync(element) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const writable = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        callback();
+      },
+      final(callback) {
+        resolve(Buffer.concat(chunks).toString("utf-8"));
+        callback();
+      },
+    });
+    const { pipe } = ReactDOMServer.renderToPipeableStream(element, {
+      onAllReady() { pipe(writable); },
+      onError(error) { reject(error); },
+    });
+  });
+}
 
 ${pageImports.join("\n")}
 ${apiImports.join("\n")}
@@ -250,7 +271,7 @@ export async function renderPage(req, res, url, manifest) {
     if (typeof resetSSRHead === "function") resetSSRHead();
     if (typeof flushPreloads === "function") await flushPreloads();
 
-    const bodyHtml = ReactDOMServer.renderToString(element);
+    const bodyHtml = await renderToStringAsync(element);
     const ssrHeadHTML = typeof getSSRHeadHTML === "function" ? getSSRHeadHTML() : "";
     // Look up this page's assets + the client entry assets in the manifest
     const pageModuleIds = route.filePath ? [route.filePath] : [];
@@ -262,7 +283,7 @@ export async function renderPage(req, res, url, manifest) {
     let html;
     if (DocumentComponent) {
       const docElement = React.createElement(DocumentComponent);
-      html = "<!DOCTYPE html>" + ReactDOMServer.renderToString(docElement);
+      html = "<!DOCTYPE html>" + await renderToStringAsync(docElement);
       html = html.replace("__NEXT_MAIN__", bodyHtml);
       if (ssrHeadHTML || assetTags) {
         html = html.replace("</head>", "  " + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>");

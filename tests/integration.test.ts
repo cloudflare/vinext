@@ -319,6 +319,20 @@ describe("Pages Router integration", () => {
     expect(scriptContent).toContain("hydrateRoot");
     expect(scriptContent).toContain("__NEXT_DATA__");
   });
+
+  it("renders Suspense + React.lazy content via streaming SSR", async () => {
+    // renderToPipeableStream waits for lazy components to resolve,
+    // so the final HTML should contain the lazy component's content
+    // (not just the Suspense fallback).
+    const res = await fetch(`${baseUrl}/suspense-test`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Suspense Test");
+    // The lazy component should have resolved and rendered its content
+    expect(html).toContain("Hello from lazy component");
+    // The loading fallback should NOT be in the final HTML
+    expect(html).not.toContain("Loading...");
+  });
 });
 
 describe("Virtual server entry generation", () => {

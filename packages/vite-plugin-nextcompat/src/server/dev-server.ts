@@ -4,10 +4,48 @@ import type { Route } from "../routing/pages-router.js";
 import { matchRoute } from "../routing/pages-router.js";
 import path from "node:path";
 import fs from "node:fs";
+import { Writable } from "node:stream";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 
 const PAGE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
+
+/**
+ * Render a React element to a string using renderToPipeableStream.
+ *
+ * Unlike renderToString, this supports Suspense boundaries — the stream
+ * waits for all Suspense fallbacks to resolve before completing. This
+ * gives Pages Router components access to React.lazy and Suspense.
+ *
+ * Returns the rendered HTML string once the full shell + all Suspense
+ * boundaries have resolved.
+ */
+function renderToStringAsync(element: React.ReactElement): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const writable = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        callback();
+      },
+      final(callback) {
+        resolve(Buffer.concat(chunks).toString("utf-8"));
+        callback();
+      },
+    });
+
+    const { pipe } = ReactDOMServer.renderToPipeableStream(element, {
+      onAllReady() {
+        // All content (including Suspense boundaries) has resolved.
+        // Pipe the full output to our writable.
+        pipe(writable);
+      },
+      onError(error: unknown) {
+        reject(error);
+      },
+    });
+  });
+}
 
 /** Check if a file exists with any page extension (tsx, ts, jsx, js). */
 function findFileWithExtensions(basePath: string): boolean {
@@ -183,14 +221,15 @@ export function createSSRHandler(
       }
 
       // Flush any pending dynamic() preloads so components are ready
-      // for synchronous renderToString
       const dynamicShim = await server.ssrLoadModule("next/dynamic");
       if (typeof dynamicShim.flushPreloads === "function") {
         await dynamicShim.flushPreloads();
       }
 
-      // Render page to HTML string
-      const bodyHtml = ReactDOMServer.renderToString(element);
+      // Render page to HTML string using streaming renderer.
+      // renderToPipeableStream supports Suspense boundaries — it waits for
+      // all Suspense fallbacks to resolve before we collect the output.
+      const bodyHtml = await renderToStringAsync(element);
 
       // Collect any <Head> tags that were rendered
       const ssrHeadHTML = typeof headShim.getSSRHeadHTML === "function"
@@ -265,7 +304,7 @@ hydrate();
       if (DocumentComponent) {
         // Render the custom Document component
         const docElement = createElement(DocumentComponent);
-        let docHtml = "<!DOCTYPE html>" + ReactDOMServer.renderToString(docElement);
+        let docHtml = "<!DOCTYPE html>" + await renderToStringAsync(docElement);
         // Replace the __NEXT_MAIN__ placeholder with actual page content
         docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
         // Inject SSR head tags into </head>
@@ -385,7 +424,7 @@ async function renderErrorPage(
         element = createElement(ErrorComponent, errorProps);
       }
 
-      const bodyHtml = ReactDOMServer.renderToString(element);
+      const bodyHtml = await renderToStringAsync(element);
 
       // Try custom _document
       let html: string;
@@ -403,7 +442,7 @@ async function renderErrorPage(
       if (DocumentComponent) {
         const docElement = createElement(DocumentComponent);
         let docHtml =
-          "<!DOCTYPE html>" + ReactDOMServer.renderToString(docElement);
+          "<!DOCTYPE html>" + await renderToStringAsync(docElement);
         docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
         docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");
         html = docHtml;

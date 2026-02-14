@@ -3,7 +3,7 @@
  *
  * In the Pages Router, <Head> manages document <head> elements.
  * - On the server: collects elements into a module-level array that the
- *   dev-server reads after renderToString and injects into the HTML <head>.
+ *   dev-server reads after render and injects into the HTML <head>.
  * - On the client: uses useEffect + DOM manipulation.
  */
 import React, { useEffect, Children, isValidElement } from "react";
@@ -17,12 +17,12 @@ interface HeadProps {
 /** Collected head elements during SSR (reset before each render). */
 let ssrHeadElements: string[] = [];
 
-/** Reset the SSR head collector. Call before renderToString. */
+/** Reset the SSR head collector. Call before render. */
 export function resetSSRHead(): void {
   ssrHeadElements = [];
 }
 
-/** Get collected head HTML. Call after renderToString. */
+/** Get collected head HTML. Call after render. */
 export function getSSRHeadHTML(): string {
   return ssrHeadElements.join("\n  ");
 }
