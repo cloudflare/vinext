@@ -689,6 +689,36 @@ describe("App Router integration", () => {
     expect(html).toMatch(/name="description".*content="Read about my-post"/);
   });
 
+  it("renders catch-all routes with multiple segments", async () => {
+    const res = await fetch(`${baseUrl}/docs/getting-started/install`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Documentation");
+    expect(html).toContain("getting-started/install");
+    // React SSR inserts <!-- --> between text and expressions
+    expect(html).toMatch(/Segments:.*2/);
+  });
+
+  it("renders optional catch-all with zero segments", async () => {
+    const res = await fetch(`${baseUrl}/optional`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Optional Catch-All");
+    expect(html).toContain("(root)");
+    expect(html).toMatch(/Segments:.*0/);
+  });
+
+  it("renders optional catch-all with segments", async () => {
+    const res = await fetch(`${baseUrl}/optional/x/y`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("x/y");
+    expect(html).toMatch(/Segments:.*2/);
+  });
+
   it("renders static metadata (export const metadata) as head elements", async () => {
     const res = await fetch(`${baseUrl}/metadata-test`);
     expect(res.status).toBe(200);

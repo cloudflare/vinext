@@ -249,4 +249,45 @@ describe("matchAppRoute - URL matching", () => {
     expect(patterns).toContain("/features");
     expect(patterns.some((p) => p.includes("marketing"))).toBe(false);
   });
+
+  it("matches catch-all routes with multiple segments", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    const result = matchAppRoute("/docs/getting-started/install", routes);
+    expect(result).not.toBeNull();
+    expect(result!.route.pattern).toBe("/docs/:slug+");
+    expect(result!.params.slug).toEqual(["getting-started", "install"]);
+  });
+
+  it("matches catch-all routes with single segment", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    const result = matchAppRoute("/docs/intro", routes);
+    expect(result).not.toBeNull();
+    expect(result!.params.slug).toEqual(["intro"]);
+  });
+
+  it("does not match catch-all with zero segments", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    // /docs alone should NOT match [...slug]
+    const result = matchAppRoute("/docs", routes);
+    expect(result).toBeNull();
+  });
+
+  it("matches optional catch-all with zero segments", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    const result = matchAppRoute("/optional", routes);
+    expect(result).not.toBeNull();
+    expect(result!.route.pattern).toBe("/optional/:path*");
+    expect(result!.params.path).toEqual([]);
+  });
+
+  it("matches optional catch-all with multiple segments", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    const result = matchAppRoute("/optional/a/b/c", routes);
+    expect(result).not.toBeNull();
+    expect(result!.params.path).toEqual(["a", "b", "c"]);
+  });
 });
