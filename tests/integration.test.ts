@@ -3705,6 +3705,116 @@ describe("next/navigation enhancements", () => {
   });
 });
 
+// ─── next/legacy/image shim ──────────────────────────────────────────────────
+describe("next/legacy/image shim", () => {
+  it("renders LegacyImage with layout=fill as modern Image with fill prop", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const LegacyImage = (await import("../packages/vite-plugin-nextcompat/src/shims/legacy-image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(LegacyImage, {
+        src: "/photo.jpg",
+        alt: "Test",
+        layout: "fill",
+        objectFit: "cover",
+        objectPosition: "center",
+      }),
+    );
+    expect(html).toContain("photo.jpg");
+    expect(html).toContain("alt");
+    // fill mode should produce absolute positioning styles
+    expect(html).toContain("position:absolute");
+  });
+
+  it("renders LegacyImage with layout=intrinsic using width/height", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const LegacyImage = (await import("../packages/vite-plugin-nextcompat/src/shims/legacy-image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(LegacyImage, {
+        src: "/photo.jpg",
+        alt: "Test",
+        layout: "intrinsic",
+        width: 640,
+        height: 480,
+      }),
+    );
+    expect(html).toContain('width="640"');
+    expect(html).toContain('height="480"');
+  });
+
+  it("renders LegacyImage with string width/height (converts to number)", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const LegacyImage = (await import("../packages/vite-plugin-nextcompat/src/shims/legacy-image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(LegacyImage, {
+        src: "/photo.jpg",
+        alt: "Test",
+        width: "200",
+        height: "150",
+      }),
+    );
+    expect(html).toContain('width="200"');
+    expect(html).toContain('height="150"');
+  });
+});
+
+// ─── next/error shim ────────────────────────────────────────────────────────
+describe("next/error shim", () => {
+  it("renders 404 error page", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vite-plugin-nextcompat/src/shims/error.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(ErrorComponent, { statusCode: 404 }),
+    );
+    expect(html).toContain("404");
+    expect(html).toContain("could not be found");
+  });
+
+  it("renders 500 error page", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vite-plugin-nextcompat/src/shims/error.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(ErrorComponent, { statusCode: 500 }),
+    );
+    expect(html).toContain("500");
+    expect(html).toContain("Internal Server Error");
+  });
+
+  it("renders custom title", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vite-plugin-nextcompat/src/shims/error.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(ErrorComponent, { statusCode: 403, title: "Forbidden" }),
+    );
+    expect(html).toContain("403");
+    expect(html).toContain("Forbidden");
+  });
+});
+
+// ─── next/constants shim ────────────────────────────────────────────────────
+describe("next/constants shim", () => {
+  it("exports all phase constants", async () => {
+    const constants = await import("../packages/vite-plugin-nextcompat/src/shims/constants.js");
+    expect(constants.PHASE_PRODUCTION_BUILD).toBe("phase-production-build");
+    expect(constants.PHASE_DEVELOPMENT_SERVER).toBe("phase-development-server");
+    expect(constants.PHASE_PRODUCTION_SERVER).toBe("phase-production-server");
+    expect(constants.PHASE_EXPORT).toBe("phase-export");
+    expect(constants.PHASE_INFO).toBe("phase-info");
+    expect(constants.PHASE_TEST).toBe("phase-test");
+  });
+});
+
 // ─── next/script strategies (SSR behavior) ──────────────────────────────────
 describe("next/script SSR rendering", () => {
   it("beforeInteractive renders <script> tag in SSR", async () => {

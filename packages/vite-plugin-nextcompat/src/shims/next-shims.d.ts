@@ -133,6 +133,59 @@ declare module "next/image" {
   };
 }
 
+declare module "next/legacy/image" {
+  import { ForwardRefExoticComponent, RefAttributes, CSSProperties, ReactEventHandler } from "react";
+
+  interface LegacyImageProps {
+    src: string | { src: string; width: number; height: number; blurDataURL?: string };
+    alt: string;
+    width?: number | string;
+    height?: number | string;
+    layout?: "fixed" | "intrinsic" | "responsive" | "fill";
+    objectFit?: CSSProperties["objectFit"];
+    objectPosition?: string;
+    priority?: boolean;
+    quality?: number;
+    placeholder?: "blur" | "empty";
+    blurDataURL?: string;
+    loader?: (params: { src: string; width: number; quality?: number }) => string;
+    sizes?: string;
+    className?: string;
+    style?: CSSProperties;
+    onLoad?: ReactEventHandler<HTMLImageElement>;
+    onLoadingComplete?: (result: { naturalWidth: number; naturalHeight: number }) => void;
+    onError?: ReactEventHandler<HTMLImageElement>;
+    loading?: "lazy" | "eager";
+    unoptimized?: boolean;
+    id?: string;
+  }
+
+  const LegacyImage: ForwardRefExoticComponent<LegacyImageProps & RefAttributes<HTMLImageElement>>;
+  export default LegacyImage;
+}
+
+declare module "next/error" {
+  import { ComponentType } from "react";
+
+  interface ErrorProps {
+    statusCode: number;
+    title?: string;
+    withDarkMode?: boolean;
+  }
+
+  const ErrorComponent: ComponentType<ErrorProps>;
+  export default ErrorComponent;
+}
+
+declare module "next/constants" {
+  export const PHASE_PRODUCTION_BUILD: string;
+  export const PHASE_DEVELOPMENT_SERVER: string;
+  export const PHASE_PRODUCTION_SERVER: string;
+  export const PHASE_EXPORT: string;
+  export const PHASE_INFO: string;
+  export const PHASE_TEST: string;
+}
+
 declare module "next/server" {
   export class NextRequest extends Request {
     get nextUrl(): any;
