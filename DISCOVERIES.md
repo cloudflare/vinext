@@ -276,3 +276,22 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **Shallow routing requires history method patching.** Next.js intercepts `window.history.pushState()` and `window.history.replaceState()` so that when user code updates the URL directly (common for filter UIs, tabs, URL search param state), React hooks like `usePathname()` and `useSearchParams()` re-render with the new URL values.
 - **Internal operations must use the original `replaceState`.** `saveScrollPosition()` calls `history.replaceState()` to store scroll coordinates in history state — this must NOT trigger `notifyListeners()` or it would cause spurious re-renders. Solution: capture a reference to the native `replaceState` before patching and use that for internal operations.
 - **Double notification is harmless but avoidable.** Our `navigateImpl()` already calls `notifyListeners()` after `pushState/replaceState`, and the patched methods also call it. `useSyncExternalStore` deduplicates by comparing snapshots, so this is safe. We leave both calls for robustness.
+
+## instrumentation.ts
+
+- **`instrumentation.ts` is loaded once at server startup**, not per-request. The `register()` function is called during `configureServer()` (Vite plugin hook), before any request handling begins. This is the recommended place to initialize Sentry, Datadog, OpenTelemetry, etc.
+- **`onRequestError()` is stored module-level** and called from error handlers in both Pages Router (`dev-server.ts`) and App Router (`app-dev-server.ts`). The context includes `routerKind`, `routePath`, and `routeType` (render/route/action/middleware).
+- **File detection mirrors middleware pattern**: Checks `instrumentation.{ts,tsx,js,mjs}` at root and in `src/`. Same convention as Next.js.
+
+## Link/Router prefetching
+
+- **IntersectionObserver with 250px rootMargin**: Links prefetch when they're within 250px of the viewport edge, giving the browser a head start. All Link components share a single observer instance to minimize resource usage.
+- **RSC prefetch uses `priority: "low"`** to avoid competing with critical requests. The `.rsc` payload is fetched in the background via `requestIdleCallback`.
+- **Pages Router prefetch injects `<link rel="prefetch">`** rather than pre-importing the module — this lets the browser's preload scanner handle it at the optimal time.
+- **Prefetch dedup via `Set<string>`**: Each URL is only prefetched once per page load. The set is not shared across page navigations (it resets on full page load).
+
+## next/font className
+
+- **Next.js generates CSS rules at build time** mapping each font's `className` to its `font-family`. Our runtime shim must do the same — without the CSS rule, `<div className={inter.className}>` has no effect.
+- **CSS variable injection**: When `variable` is specified (e.g., `variable: "--font-inter"`), a CSS rule like `.className { --font-inter: 'Inter', sans-serif; }` is generated. This enables the `var(--font-inter)` pattern in Tailwind/CSS modules.
+- **SSR font styles collection**: On the server (`typeof document === "undefined"`), CSS rules are collected into an array (`ssrFontStyles`) for injection in `<head>`. On the client, `<style>` tags are directly appended to `<head>`.
