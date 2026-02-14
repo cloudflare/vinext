@@ -52,21 +52,37 @@ with zero provider-specific configuration:
 
 - **Images**: Auto-detect the CDN, use its native transforms. No hardwired
   optimizer. Works on Cloudflare, Netlify, AWS, self-hosted, whatever.
-- **Server runtime**: Standard Node.js. No Edge Runtime, no proprietary
-  serverless format. Just a server that runs anywhere Node runs.
+- **Server runtime**: Target standard Web APIs (Request/Response, fetch,
+  streams, crypto) that work across Node.js, Cloudflare Workers, Deno, and
+  other WinterCG-compatible runtimes. No proprietary serverless format. If
+  your runtime speaks Web standards, nextcompat runs on it.
 - **Build output**: Standard Vite build artifacts. Static assets are static
   assets. Server code is server code. No proprietary `.nft.json` trace files,
   no Vercel-specific routing manifests.
-- **Caching/ISR**: Use standard HTTP caching semantics, not a proprietary
-  revalidation protocol tied to a specific CDN.
-- **Middleware**: Runs in Node. Works the same on every platform.
+- **Caching/ISR**: Use standard HTTP caching semantics (Cache-Control,
+  stale-while-revalidate) that every CDN and runtime understands, not a
+  proprietary revalidation protocol tied to a specific vendor.
+- **Middleware**: Runs on standard Web APIs. Works the same on every
+  platform - Node, Workers, Deno, anywhere.
 
-The litmus test for every feature: **"does this work if I deploy to a \$5
-VPS?"** If the answer is no, we're doing it wrong.
+The litmus test for every feature: **"does this work on a \$5 VPS *and*
+on Cloudflare Workers?"** If it requires Node-specific APIs where a Web
+standard exists, we're doing it wrong. If it requires a specific hosting
+provider's infrastructure, we're doing it wrong.
 
-This is what Vite gives us for free. Vite doesn't care where you deploy. Its
-ecosystem of tools and plugins assumes nothing about your hosting. That
-portability is the whole point of building on top of it.
+This is what Vite gives us for free. Vite doesn't care where you deploy.
+The ecosystem of Vite plugins already handles platform-specific deployment:
+
+- **`@cloudflare/vite-plugin`** (310k weekly downloads) - runs code in
+  `workerd` during dev for production-identical behavior on Workers. Uses
+  the same Vite Environment API that `@vitejs/plugin-rsc` is built on,
+  and the RSC plugin explicitly supports it via `loadModuleDevProxy`.
+- **Netlify, Vercel, AWS** - standard Vite build output already works
+  with their existing deployment tooling.
+- **Any Node.js host** - `vite build` produces a standard server bundle.
+
+Our job is to produce standard Vite output. The platform plugins handle the
+rest. We never write provider-specific code.
 
 ## Why This Might Actually Work
 
@@ -424,6 +440,7 @@ It also makes contribution dead simple - find a red test, make it green.
 
 - [OpenNext](https://opennext.js.org/) - Deploy Next.js anywhere (AWS/Cloudflare/Netlify adapters). Proves demand for portability.
 - [`@vitejs/plugin-rsc`](https://www.npmjs.com/package/@vitejs/plugin-rsc) - Official Vite RSC plugin. Our foundation.
+- [`@cloudflare/vite-plugin`](https://www.npmjs.com/package/@cloudflare/vite-plugin) - Cloudflare Workers Vite plugin (310k weekly downloads). Compatible with plugin-rsc via Environment API.
 - [`vite-imagetools`](https://www.npmjs.com/package/vite-imagetools) - Sharp-powered image optimization for Vite (109k weekly downloads)
 - [`@unpic/react`](https://www.npmjs.com/package/@unpic/react) - Universal image component, auto-detects CDNs (40k weekly downloads)
 - [Vike](https://vike.dev/) - Vite-based SSR framework (different API)
