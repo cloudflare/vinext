@@ -71,6 +71,23 @@ zero or minimal changes. That's different from reproducing every quirk.
 - **Runtime warnings** when we detect usage of an unsupported API, pointing
   to the docs for the recommended alternative
 
+**Before you even migrate, we tell you what to expect:**
+- **`npx nextcompat check`** - point it at an existing Next.js app and it
+  scans the codebase to produce a compatibility report:
+  - Which `next/*` imports are used and whether they're supported
+  - Which `next.config.js` options are in use and which we handle
+  - Which third-party libraries have known Next.js-specific integrations
+    (next-auth, @clerk/nextjs, @sentry/nextjs, etc.) and their status
+  - Which file conventions are used (Pages Router, App Router, middleware,
+    API routes) and coverage level
+  - Specific files/lines flagged as potentially incompatible, with
+    explanations of why and what to do about it
+  - An overall compatibility score: "93% compatible, 4 issues to address"
+  This can be an AI-powered analysis (feed the scan results + our known
+  caveats to an LLM for contextual advice) or a pure static analysis
+  tool, or both. Either way, the user knows before committing to the
+  migration exactly what they're getting into.
+
 The mental model: if a Next.js app was written following the official docs
 and using current APIs, it should Just Work. If it's relying on a quirk
 from Next.js 12 that was never documented, we'll help you migrate, but
@@ -209,7 +226,7 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 | `next/navigation` (App) | P1 | High | `useRouter`, `usePathname`, `useSearchParams`, `useParams`, `redirect`, `notFound` |
 | `next/headers` | P1 | Medium | `cookies()`, `headers()`, `draftMode()` |
 | `next/server` | P1 | Medium | `NextRequest`, `NextResponse`, `after()` |
-| `next/font` | P2 | High | Font optimization |
+| `next/font` | P1 | High | Font optimization (`next/font/google`, `next/font/local`) |
 | `next/script` | P2 | Low | Third-party script loading |
 | `next/og` | P2 | Medium | OG image generation |
 | `next/form` | P2 | Low | Progressive enhancement form |
@@ -231,6 +248,8 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 | `(group)/` | P1 | Route groups |
 | `@slot/` | P2 | Parallel routes |
 | `(.)intercepting/` | P2 | Intercepting routes |
+| `generateMetadata()` | P1 | App Router metadata/SEO (also `export const metadata`) |
+| `generateStaticParams()` | P1 | App Router equivalent of `getStaticPaths` |
 | `pages/` directory | P0 | Pages Router - starting here |
 | `pages/api/` | P0 | Pages Router API routes |
 | `middleware.ts` | P2 | Runs in Node, not Edge |
@@ -246,7 +265,7 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 | Streaming SSR | P1 | HTML streaming with Suspense |
 | `output: 'export'` | P1 | Full static export |
 
-### Config (`next.config.js`)
+### Config (`next.config.js` / `next.config.mjs` / `next.config.ts`)
 
 | Feature | Priority | Notes |
 |---|---|---|
@@ -257,7 +276,7 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 | `trailingSlash` | P2 | URL normalization |
 | `images` | P1 | Image optimization config |
 | `i18n` | P2 | Internationalization routing |
-| `env` | P0 | Environment variables |
+| `env` | P0 | Environment variables (including `NEXT_PUBLIC_*` client inlining) |
 | `experimental` | varies | Feature flags |
 
 ## Phased Execution Plan
@@ -278,6 +297,8 @@ well-understood model before tackling RSC.
 - [ ] Implement `next/head` shim
 - [ ] Implement `next/link` shim (basic - renders `<a>` with client nav)
 - [ ] Implement `next/router` shim (`useRouter`, `router.push`, etc.)
+- [ ] `NEXT_PUBLIC_*` environment variable convention: inline into client
+  bundle at build time, keep everything else server-only
 - [ ] Create CLI: `nextcompat dev` wrapping `vite dev` with our plugin
 - [ ] **Validation**: `reproduction-template-pages` and `with-typescript`
   examples render and navigate
@@ -318,6 +339,9 @@ well-understood model before tackling RSC.
 - [ ] `app/error.tsx` (Error boundaries)
 - [ ] `app/not-found.tsx`
 - [ ] Server Actions (`'use server'`)
+- [ ] Metadata API (`export const metadata`, `generateMetadata()`)
+- [ ] `generateStaticParams()` (static generation for App Router)
+- [ ] `next/font` (`next/font/google`, `next/font/local`)
 - [ ] **Validation**: `hello-world`, `basic-css`, `next-forms` examples
 - [ ] **Test harness**: Begin running App Router e2e tests
 
@@ -327,7 +351,6 @@ well-understood model before tackling RSC.
 
 - [ ] Middleware (`middleware.ts`) - running in Node, not Edge
 - [ ] Streaming SSR
-- [ ] `next/font` optimization
 - [ ] Route groups, catch-all routes, optional catch-all
 - [ ] `output: 'export'` (static export)
 - [ ] ISR (Incremental Static Regeneration)
@@ -467,6 +490,41 @@ It also makes contribution dead simple - find a red test, make it green.
 5. **Turbopack-specific behaviors**: Treating the public API as the contract.
    If a behavior only exists because of Turbopack internals, it's not part
    of the compatibility target.
+
+6. ~~**Build output format**~~ **RESOLVED: Emit our own structure.** We do
+   NOT need `.next/` directory compatibility. The entire point is that we
+   don't need OpenNext adapters or Vercel-specific tooling to deploy. Our
+   build output is standard Vite output. If a post-build tool expects
+   `.next/server/pages-manifest.json`, that tool is part of the problem
+   we're solving.
+
+7. **Third-party library compatibility**: This is a known hard problem.
+   Libraries like `next-auth`, `@clerk/nextjs`, `@sentry/nextjs`,
+   `next-intl`, `next-themes`, `next-sitemap` etc. often import from
+   `next/*` internals or use Next.js plugin hooks. Strategy:
+   - Maintain a **compatibility tracker** (part of the Are We Vite Yet?
+     dashboard) for the top 50 most-used Next.js ecosystem packages
+   - For libraries that import from public `next/*` APIs only: our shims
+     handle it automatically
+   - For libraries that reach into `next/dist/...` internals: document
+     on a per-library basis, contribute upstream PRs where possible, or
+     provide wrapper packages (`@nextcompat/auth`, etc.) as a last resort
+   - The `npx nextcompat check` tool flags these before migration
+   - Tackle these reactively as real users hit them, don't try to
+     pre-solve every library
+
+8. ~~**`next/image` prop API translation**~~ **DEFERRED.** `next/image`
+   and `@unpic/react` have different prop APIs (`fill` vs `layout`,
+   `placeholder="blur"` + `blurDataURL`, `quality`, custom `loader`,
+   etc.). The shim layer translating Next.js image props to unpic is
+   non-trivial. Will tackle when we get to image support in Phase 1,
+   likely by writing a thin wrapper component that maps the props.
+
+9. ~~**Monorepo / Turborepo support**~~ **DEFERRED.** Many Next.js apps
+   live in monorepos with shared packages and `transpilePackages` config.
+   Vite handles monorepos well natively, but Next.js-specific patterns
+   (Turborepo caching, `transpilePackages`) need investigation. Punt to
+   Phase 3+ once single-app compat is solid.
 
 ## Remaining Open Questions
 
