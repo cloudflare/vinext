@@ -14,6 +14,7 @@ import {
 } from "./isr-cache.js";
 import type { CachedPagesValue } from "../shims/cache.js";
 import { withFetchCache } from "../shims/fetch-cache.js";
+import { reportRequestError } from "./instrumentation.js";
 import path from "node:path";
 import fs from "node:fs";
 import { Writable } from "node:stream";
@@ -539,6 +540,18 @@ hydrate();
       // Let Vite fix the stack trace for better dev experience
       server.ssrFixStacktrace(e as Error);
       console.error(e);
+      // Report error via instrumentation hook if registered
+      reportRequestError(
+        e instanceof Error ? e : new Error(String(e)),
+        {
+          path: url,
+          method: req.method ?? "GET",
+          headers: Object.fromEntries(
+            Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v ?? "")]),
+          ),
+        },
+        { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
+      ).catch(() => { /* ignore reporting errors */ });
       // Try to render custom 500 error page
       try {
         await renderErrorPage(server, req, res, url, pagesDir, 500);

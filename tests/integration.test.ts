@@ -4660,3 +4660,155 @@ describe("fetch cache (extended fetch with next options)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// instrumentation.ts support
+// ---------------------------------------------------------------------------
+
+describe("instrumentation.ts support", () => {
+  it("exports findInstrumentationFile", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+    );
+    expect(typeof mod.findInstrumentationFile).toBe("function");
+  });
+
+  it("findInstrumentationFile returns null when no file exists", async () => {
+    const { findInstrumentationFile } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+    );
+    const result = findInstrumentationFile("/nonexistent/path");
+    expect(result).toBeNull();
+  });
+
+  it("findInstrumentationFile detects instrumentation.ts", async () => {
+    const { findInstrumentationFile } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+    );
+    const os = await import("node:os");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+
+    // Create a temp directory with an instrumentation.ts file
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nextcompat-inst-"));
+    fs.writeFileSync(
+      path.join(tmpDir, "instrumentation.ts"),
+      'export function register() { console.log("registered"); }',
+    );
+
+    const result = findInstrumentationFile(tmpDir);
+    expect(result).toBe(path.join(tmpDir, "instrumentation.ts"));
+
+    // Cleanup
+    fs.rmSync(tmpDir, { recursive: true });
+  });
+
+  it("findInstrumentationFile detects src/instrumentation.ts", async () => {
+    const { findInstrumentationFile } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+    );
+    const os = await import("node:os");
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nextcompat-inst-"));
+    fs.mkdirSync(path.join(tmpDir, "src"));
+    fs.writeFileSync(
+      path.join(tmpDir, "src", "instrumentation.ts"),
+      'export function register() {}',
+    );
+
+    const result = findInstrumentationFile(tmpDir);
+    expect(result).toBe(path.join(tmpDir, "src", "instrumentation.ts"));
+
+    fs.rmSync(tmpDir, { recursive: true });
+  });
+
+  it("runInstrumentation calls register() and stores onRequestError", async () => {
+    const { runInstrumentation, getOnRequestErrorHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+    );
+
+    let registerCalled = false;
+    const mockOnRequestError = (_error: any, _request: any, _context: any) => {};
+
+    // Create a mock SSR module loader
+    const mockServer = {
+      ssrLoadModule: async (_id: string) => ({
+        register: () => { registerCalled = true; },
+        onRequestError: mockOnRequestError,
+      }),
+    };
+
+    await runInstrumentation(mockServer, "/fake/instrumentation.ts");
+
+    expect(registerCalled).toBe(true);
+    expect(getOnRequestErrorHandler()).toBe(mockOnRequestError);
+  });
+
+  it("reportRequestError calls onRequestError handler", async () => {
+    const { runInstrumentation, reportRequestError } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+    );
+
+    const reportedErrors: { error: Error; request: any; context: any }[] = [];
+
+    const mockServer = {
+      ssrLoadModule: async (_id: string) => ({
+        register: () => {},
+        onRequestError: (error: Error, request: any, context: any) => {
+          reportedErrors.push({ error, request, context });
+        },
+      }),
+    };
+
+    await runInstrumentation(mockServer, "/fake/instrumentation.ts");
+
+    const testError = new Error("test error");
+    await reportRequestError(
+      testError,
+      { path: "/blog/1", method: "GET", headers: {} },
+      { routerKind: "Pages Router", routePath: "/blog/[slug]", routeType: "render" },
+    );
+
+    expect(reportedErrors.length).toBe(1);
+    expect(reportedErrors[0].error).toBe(testError);
+    expect(reportedErrors[0].request.path).toBe("/blog/1");
+    expect(reportedErrors[0].context.routerKind).toBe("Pages Router");
+  });
+
+  it("reportRequestError is a no-op when no handler is registered", async () => {
+    const { reportRequestError, runInstrumentation } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+    );
+
+    // Register a module with no onRequestError
+    const mockServer = {
+      ssrLoadModule: async (_id: string) => ({
+        register: () => {},
+      }),
+    };
+    await runInstrumentation(mockServer, "/fake/no-error-handler.ts");
+
+    // Should not throw
+    await reportRequestError(
+      new Error("test"),
+      { path: "/", method: "GET", headers: {} },
+      { routerKind: "App Router", routePath: "/", routeType: "render" },
+    );
+  });
+
+  it("runInstrumentation handles missing register gracefully", async () => {
+    const { runInstrumentation } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+    );
+
+    // Module with no register() or onRequestError()
+    const mockServer = {
+      ssrLoadModule: async (_id: string) => ({}),
+    };
+
+    // Should not throw
+    await runInstrumentation(mockServer, "/fake/empty-instrumentation.ts");
+  });
+});

@@ -16,6 +16,7 @@ import {
   type NextRewrite,
 } from "./config/next-config.js";
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
 import path from "node:path";
@@ -51,6 +52,7 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
   let middlewarePath: string | null = null;
+  let instrumentationPath: string | null = null;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
@@ -533,6 +535,7 @@ hydrate();
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = fs.existsSync(appDir);
         middlewarePath = findMiddlewareFile(baseDir);
+        instrumentationPath = findInstrumentationFile(baseDir);
 
         // Load next.config.js if present
         const rawConfig = await loadNextConfig(baseDir);
@@ -730,6 +733,13 @@ hydrate();
             invalidateAppRouteCache();
           }
         });
+
+        // Run instrumentation.ts register() if present (once at server startup)
+        if (instrumentationPath) {
+          runInstrumentation(server, instrumentationPath).catch((err) => {
+            console.error("[nextcompat] Instrumentation error:", err);
+          });
+        }
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
