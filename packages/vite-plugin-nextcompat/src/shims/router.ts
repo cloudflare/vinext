@@ -423,8 +423,15 @@ export function useRouter(): NextRouter {
     window.location.reload();
   }, []);
 
-  const prefetch = useCallback(async (_url: string): Promise<void> => {
-    // No-op for now - can implement link prefetching later
+  const prefetch = useCallback(async (url: string): Promise<void> => {
+    // Inject a <link rel="prefetch"> for the target page
+    if (typeof document !== "undefined") {
+      const link = document.createElement("link");
+      link.rel = "prefetch";
+      link.href = url;
+      link.as = "document";
+      document.head.appendChild(link);
+    }
   }, []);
 
   // Get i18n info from SSR context or window
@@ -551,7 +558,15 @@ const Router = {
   },
   back: () => window.history.back(),
   reload: () => window.location.reload(),
-  prefetch: async () => {},
+  prefetch: async (url: string) => {
+    if (typeof document !== "undefined") {
+      const link = document.createElement("link");
+      link.rel = "prefetch";
+      link.href = url;
+      link.as = "document";
+      document.head.appendChild(link);
+    }
+  },
   events: routerEvents,
 };
 

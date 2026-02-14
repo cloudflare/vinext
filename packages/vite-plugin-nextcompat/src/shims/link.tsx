@@ -7,7 +7,7 @@
  * On click, prevents full page reload and triggers client-side
  * page swap via the router's navigation system.
  */
-import React, { forwardRef, type AnchorHTMLAttributes, type MouseEvent } from "react";
+import React, { forwardRef, useRef, useEffect, useCallback, type AnchorHTMLAttributes, type MouseEvent } from "react";
 
 interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> {
   href: string | { pathname?: string; query?: Record<string, string> };
@@ -96,15 +96,140 @@ function scrollToHash(hash: string): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Prefetching infrastructure
+// ---------------------------------------------------------------------------
+
+/** URLs that have already been prefetched (to avoid duplicates). */
+const prefetchedUrls = new Set<string>();
+
+/**
+ * Prefetch a URL for faster navigation.
+ *
+ * For App Router (RSC): fetches the .rsc payload in the background.
+ * For Pages Router: injects a <link rel="prefetch"> for the page module.
+ *
+ * Uses `requestIdleCallback` (or `setTimeout` fallback) to avoid blocking
+ * the main thread during initial page load.
+ */
+function prefetchUrl(href: string): void {
+  if (typeof window === "undefined") return;
+
+  const fullHref = withBasePath(href);
+
+  // Don't prefetch external URLs
+  if (fullHref.startsWith("http://") || fullHref.startsWith("https://") || fullHref.startsWith("//")) return;
+
+  // Don't prefetch the same URL twice
+  if (prefetchedUrls.has(fullHref)) return;
+  prefetchedUrls.add(fullHref);
+
+  const schedule = (window as any).requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
+
+  schedule(() => {
+    const win = window as any;
+    if (typeof win.__NEXTCOMPAT_RSC_NAVIGATE__ === "function") {
+      // App Router: prefetch the RSC payload
+      // Use low priority fetch (no credentials needed for RSC prefetch)
+      fetch(fullHref.split("#")[0] + ".rsc", {
+        priority: "low" as any,
+        // @ts-expect-error — purpose is a valid fetch option in some browsers
+        purpose: "prefetch",
+      }).catch(() => {
+        // Silently ignore prefetch failures (network errors, 404s, etc.)
+      });
+    } else if (win.__NEXT_DATA__?.__nextcompat?.pageModuleUrl) {
+      // Pages Router: inject a prefetch link for the target page module
+      // We can't easily resolve the target page's module URL from the Link,
+      // so we create a <link rel="prefetch"> for the HTML page which helps
+      // the browser's preload scanner.
+      const link = document.createElement("link");
+      link.rel = "prefetch";
+      link.href = fullHref;
+      link.as = "document";
+      document.head.appendChild(link);
+    }
+  });
+}
+
+/**
+ * Shared IntersectionObserver for viewport-based prefetching.
+ * All Link elements use the same observer to minimize resource usage.
+ */
+let sharedObserver: IntersectionObserver | null = null;
+const observerCallbacks = new WeakMap<Element, () => void>();
+
+function getSharedObserver(): IntersectionObserver | null {
+  if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") return null;
+  if (sharedObserver) return sharedObserver;
+
+  sharedObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          const callback = observerCallbacks.get(entry.target);
+          if (callback) {
+            callback();
+            // Unobserve after prefetching — only prefetch once
+            sharedObserver?.unobserve(entry.target);
+            observerCallbacks.delete(entry.target);
+          }
+        }
+      }
+    },
+    {
+      // Start prefetching when the link is within 250px of the viewport.
+      // This gives the browser a head start before the user scrolls to it.
+      rootMargin: "250px",
+    },
+  );
+
+  return sharedObserver;
+}
+
 const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
-  { href, as, replace = false, scroll = true, children, onClick, ...rest },
-  ref,
+  { href, as, replace = false, prefetch: prefetchProp, scroll = true, children, onClick, ...rest },
+  forwardedRef,
 ) {
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
   // where href is a route pattern like "/user/[id]" and as is "/user/1")
   const resolvedHref = as ?? resolveHref(href);
   // Full href with basePath for browser URLs and fetches
   const fullHref = withBasePath(resolvedHref);
+
+  // Prefetching: observe the element when it enters the viewport.
+  // prefetch={false} disables, prefetch={true} or undefined/null (default) enables.
+  const internalRef = useRef<HTMLAnchorElement | null>(null);
+  const shouldPrefetch = prefetchProp !== false;
+
+  const setRefs = useCallback(
+    (node: HTMLAnchorElement | null) => {
+      internalRef.current = node;
+      if (typeof forwardedRef === "function") forwardedRef(node);
+      else if (forwardedRef) (forwardedRef as React.MutableRefObject<HTMLAnchorElement | null>).current = node;
+    },
+    [forwardedRef],
+  );
+
+  useEffect(() => {
+    if (!shouldPrefetch || typeof window === "undefined") return;
+    const node = internalRef.current;
+    if (!node) return;
+
+    // Don't prefetch external URLs
+    if (resolvedHref.startsWith("http://") || resolvedHref.startsWith("https://") || resolvedHref.startsWith("//")) return;
+
+    const observer = getSharedObserver();
+    if (!observer) return;
+
+    observerCallbacks.set(node, () => prefetchUrl(resolvedHref));
+    observer.observe(node);
+
+    return () => {
+      observer.unobserve(node);
+      observerCallbacks.delete(node);
+    };
+  }, [shouldPrefetch, resolvedHref]);
 
   const handleClick = async (e: MouseEvent<HTMLAnchorElement>) => {
     if (onClick) onClick(e);
@@ -204,10 +329,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   };
 
   // Remove props that shouldn't be on <a>
-  const { prefetch: _, passHref: _p, locale: _l, ...anchorProps } = rest;
+  const { passHref: _p, locale: _l, ...anchorProps } = rest;
 
   return (
-    <a ref={ref} href={fullHref} onClick={handleClick} {...anchorProps}>
+    <a ref={setRefs} href={fullHref} onClick={handleClick} {...anchorProps}>
       {children}
     </a>
   );

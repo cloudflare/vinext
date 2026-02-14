@@ -327,8 +327,15 @@ export function useRouter() {
         (window as any).__NEXTCOMPAT_RSC_NAVIGATE__(window.location.href);
       }
     },
-    prefetch(_href: string): void {
-      // No-op for now — could implement RSC prefetching later
+    prefetch(href: string): void {
+      if (isServer) return;
+      // Prefetch the RSC payload for the target route
+      const fullHref = withBasePath(href);
+      fetch(fullHref.split("#")[0] + ".rsc", {
+        priority: "low" as RequestInit["priority"],
+      }).catch(() => {
+        // Silently ignore prefetch failures
+      });
     },
   };
   return router;
