@@ -89,6 +89,18 @@ describe("Pages Router integration", () => {
     expect(html).toContain("does not exist");
   });
 
+  it("renders next/head tags in SSR HTML <head>", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    const html = await res.text();
+    // Index page has <Head><title>Hello nextcompat</title></Head>
+    // This should appear in the actual <head> of the HTML
+    expect(html).toContain("<title");
+    expect(html).toContain("Hello nextcompat");
+    // The title tag should be in <head>, not in <body>
+    const headSection = html.split("</head>")[0];
+    expect(headSection).toContain("Hello nextcompat");
+  });
+
   it("includes __NEXT_DATA__ script tag", async () => {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();

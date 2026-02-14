@@ -41,10 +41,12 @@ export function Main() {
 }
 
 /**
- * NextScript - renders the hydration scripts.
+ * NextScript - renders a placeholder that the dev-server replaces with
+ * actual hydration scripts (__NEXT_DATA__ + entry module).
+ * Uses dangerouslySetInnerHTML so the HTML comment survives renderToString.
  */
 export function NextScript() {
-  return <>{/* __NEXT_SCRIPTS__ */}</>;
+  return <span dangerouslySetInnerHTML={{ __html: "<!-- __NEXT_SCRIPTS__ -->" }} />;
 }
 
 /**

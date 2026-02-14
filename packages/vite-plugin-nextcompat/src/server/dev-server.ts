@@ -137,8 +137,19 @@ export function createSSRHandler(
         element = createElement(PageComponent, pageProps);
       }
 
+      // Reset SSR head collector before rendering so <Head> tags are captured
+      const headShim = await server.ssrLoadModule("next/head");
+      if (typeof headShim.resetSSRHead === "function") {
+        headShim.resetSSRHead();
+      }
+
       // Render page to HTML string
       const bodyHtml = ReactDOMServer.renderToString(element);
+
+      // Collect any <Head> tags that were rendered
+      const ssrHeadHTML = typeof headShim.getSSRHeadHTML === "function"
+        ? headShim.getSSRHeadHTML()
+        : "";
 
       // Convert absolute file paths to Vite-servable URLs (relative to root)
       const viteRoot = server.config.root;
@@ -203,12 +214,16 @@ hydrate();
         let docHtml = "<!DOCTYPE html>" + ReactDOMServer.renderToString(docElement);
         // Replace the __NEXT_MAIN__ placeholder with actual page content
         docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
-        // Replace the NextScript placeholder comment with actual scripts
+        // Inject SSR head tags into </head>
+        if (ssrHeadHTML) {
+          docHtml = docHtml.replace("</head>", `  ${ssrHeadHTML}\n</head>`);
+        }
+        // Replace the NextScript placeholder with actual scripts
         docHtml = docHtml.replace(
           "<!-- __NEXT_SCRIPTS__ -->",
           scripts,
         );
-        // If no placeholder comment found, inject scripts before </body>
+        // If no placeholder found, inject scripts before </body>
         if (!docHtml.includes(nextDataScript)) {
           docHtml = docHtml.replace(
             "</body>",
@@ -223,6 +238,7 @@ hydrate();
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${ssrHeadHTML}
 </head>
 <body>
   <div id="__next">${bodyHtml}</div>
