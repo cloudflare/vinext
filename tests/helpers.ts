@@ -1,0 +1,102 @@
+/**
+ * Test helpers for nextcompat integration tests.
+ *
+ * Eliminates boilerplate for:
+ * - Creating Pages Router / App Router dev servers
+ * - Fetching pages and asserting on responses
+ * - Static export setup
+ */
+
+import { createServer, type ViteDevServer } from "vite";
+import nextcompat from "../packages/vite-plugin-nextcompat/src/index.js";
+import path from "node:path";
+
+// ── Fixture paths ─────────────────────────────────────────────
+export const PAGES_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "../fixtures/pages-basic",
+);
+export const APP_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "../fixtures/app-basic",
+);
+
+// ── Shared RSC virtual module entries (used by @vitejs/plugin-rsc) ──
+export const RSC_ENTRIES = {
+  rsc: "virtual:nextcompat-rsc-entry",
+  ssr: "virtual:nextcompat-app-ssr-entry",
+  client: "virtual:nextcompat-app-browser-entry",
+} as const;
+
+// ── Server lifecycle helper ───────────────────────────────────
+
+export interface TestServerResult {
+  server: ViteDevServer;
+  baseUrl: string;
+}
+
+/**
+ * Start a Vite dev server against a fixture directory.
+ *
+ * @param fixtureDir - Path to the fixture directory
+ * @param opts.appRouter - If true, loads @vitejs/plugin-rsc with standard entries
+ * @param opts.listen - If false, creates server without listening (default: true)
+ */
+export async function startFixtureServer(
+  fixtureDir: string,
+  opts?: { appRouter?: boolean; listen?: boolean },
+): Promise<TestServerResult> {
+  const plugins: any[] = [nextcompat()];
+
+  if (opts?.appRouter) {
+    const rsc = (await import("@vitejs/plugin-rsc")).default;
+    plugins.push(rsc({ entries: RSC_ENTRIES }));
+  }
+
+  const server = await createServer({
+    root: fixtureDir,
+    configFile: false,
+    plugins,
+    server: { port: 0 },
+    logLevel: "silent",
+  });
+
+  let baseUrl = "";
+  if (opts?.listen !== false) {
+    await server.listen();
+    const addr = server.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      baseUrl = `http://localhost:${addr.port}`;
+    }
+  }
+
+  return { server, baseUrl };
+}
+
+// ── Fetch helpers ─────────────────────────────────────────────
+
+/**
+ * Fetch a page and return both the Response and the HTML text.
+ */
+export async function fetchHtml(
+  baseUrl: string,
+  urlPath: string,
+  init?: RequestInit,
+): Promise<{ res: Response; html: string }> {
+  const res = await fetch(`${baseUrl}${urlPath}`, init);
+  const html = await res.text();
+  return { res, html };
+}
+
+/**
+ * Fetch a JSON endpoint and return both the Response and parsed data.
+ */
+export async function fetchJson(
+  baseUrl: string,
+  urlPath: string,
+  init?: RequestInit,
+): Promise<{ res: Response; data: any }> {
+  const res = await fetch(`${baseUrl}${urlPath}`, init);
+  const data = await res.json();
+  return { res, data };
+}

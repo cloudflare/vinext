@@ -3,33 +3,22 @@ import { createServer, build, createBuilder, type ViteDevServer } from "vite";
 import path from "node:path";
 import fs from "node:fs";
 import nextcompat from "../packages/vite-plugin-nextcompat/src/index.js";
+import {
+  PAGES_FIXTURE_DIR,
+  APP_FIXTURE_DIR,
+  RSC_ENTRIES,
+  startFixtureServer,
+  fetchHtml,
+} from "./helpers.js";
 
-const FIXTURE_DIR = path.resolve(
-  import.meta.dirname,
-  "../fixtures/pages-basic",
-);
+const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
 describe("Pages Router integration", () => {
   let server: ViteDevServer;
   let baseUrl: string;
 
   beforeAll(async () => {
-    // Start a Vite dev server with our plugin against the fixture.
-    // configFile: false prevents loading the fixture's vite.config.ts
-    // (which also registers the plugin, causing duplicate/conflict).
-    server = await createServer({
-      root: FIXTURE_DIR,
-      configFile: false,
-      plugins: [nextcompat()],
-      server: { port: 0 }, // random port
-      logLevel: "silent",
-    });
-
-    await server.listen();
-    const address = server.httpServer?.address();
-    if (address && typeof address === "object") {
-      baseUrl = `http://localhost:${address.port}`;
-    }
+    ({ server, baseUrl } = await startFixtureServer(FIXTURE_DIR));
   });
 
   afterAll(async () => {
@@ -711,41 +700,12 @@ describe("Static export (Pages Router)", () => {
 // App Router integration tests
 // ---------------------------------------------------------------
 
-const APP_FIXTURE_DIR = path.resolve(
-  import.meta.dirname,
-  "../fixtures/app-basic",
-);
-
 describe("App Router integration", () => {
   let server: ViteDevServer;
   let baseUrl: string;
 
   beforeAll(async () => {
-    // Dynamically import the RSC plugin
-    const rsc = (await import("@vitejs/plugin-rsc")).default;
-
-    server = await createServer({
-      root: APP_FIXTURE_DIR,
-      configFile: false,
-      plugins: [
-        nextcompat(),
-        rsc({
-          entries: {
-            rsc: "virtual:nextcompat-rsc-entry",
-            ssr: "virtual:nextcompat-app-ssr-entry",
-            client: "virtual:nextcompat-app-browser-entry",
-          },
-        }),
-      ],
-      server: { port: 0 },
-      logLevel: "silent",
-    });
-
-    await server.listen();
-    const address = server.httpServer?.address();
-    if (address && typeof address === "object") {
-      baseUrl = `http://localhost:${address.port}`;
-    }
+    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
   }, 30000);
 
   afterAll(async () => {
@@ -753,11 +713,9 @@ describe("App Router integration", () => {
   });
 
   it("renders the home page with root layout", async () => {
-    const res = await fetch(`${baseUrl}/`);
+    const { res, html } = await fetchHtml(baseUrl, "/");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/html");
-
-    const html = await res.text();
     expect(html).toContain("<html");
     expect(html).toContain("Welcome to App Router");
     expect(html).toContain("Server Component");
@@ -1016,13 +974,7 @@ describe("App Router Production build", () => {
       configFile: false,
       plugins: [
         nextcompat(),
-        rsc({
-          entries: {
-            rsc: "virtual:nextcompat-rsc-entry",
-            ssr: "virtual:nextcompat-app-ssr-entry",
-            client: "virtual:nextcompat-app-browser-entry",
-          },
-        }),
+        rsc({ entries: RSC_ENTRIES }),
       ],
       logLevel: "silent",
     });
@@ -1063,13 +1015,7 @@ describe("App Router Production build", () => {
       configFile: false,
       plugins: [
         nextcompat(),
-        rsc({
-          entries: {
-            rsc: "virtual:nextcompat-rsc-entry",
-            ssr: "virtual:nextcompat-app-ssr-entry",
-            client: "virtual:nextcompat-app-browser-entry",
-          },
-        }),
+        rsc({ entries: RSC_ENTRIES }),
       ],
       preview: { port: 0 },
       logLevel: "silent",
@@ -1126,30 +1072,7 @@ describe("App Router Static export", () => {
   const exportDir = path.resolve(APP_FIXTURE_DIR, "out");
 
   beforeAll(async () => {
-    const rsc = (await import("@vitejs/plugin-rsc")).default;
-
-    server = await createServer({
-      root: APP_FIXTURE_DIR,
-      configFile: false,
-      plugins: [
-        nextcompat(),
-        rsc({
-          entries: {
-            rsc: "virtual:nextcompat-rsc-entry",
-            ssr: "virtual:nextcompat-app-ssr-entry",
-            client: "virtual:nextcompat-app-browser-entry",
-          },
-        }),
-      ],
-      server: { port: 0 },
-      logLevel: "silent",
-    });
-
-    await server.listen();
-    const address = server.httpServer?.address();
-    if (address && typeof address === "object") {
-      baseUrl = `http://localhost:${address.port}`;
-    }
+    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
   });
 
   afterAll(async () => {
@@ -2065,28 +1988,7 @@ describe("metadata routes integration (App Router)", () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    const rsc = (await import("@vitejs/plugin-rsc")).default;
-    server = await createServer({
-      root: APP_FIXTURE_DIR,
-      configFile: false,
-      plugins: [
-        nextcompat(),
-        rsc({
-          entries: {
-            rsc: "virtual:nextcompat-rsc-entry",
-            ssr: "virtual:nextcompat-app-ssr-entry",
-            client: "virtual:nextcompat-app-browser-entry",
-          },
-        }),
-      ],
-      server: { port: 0 },
-      logLevel: "silent",
-    });
-    await server.listen();
-    const address = server.httpServer?.address();
-    if (address && typeof address === "object") {
-      baseUrl = `http://localhost:${address.port}`;
-    }
+    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
   });
 
   afterAll(async () => {
@@ -2133,18 +2035,7 @@ describe("ISR (Pages Router)", () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    server = await createServer({
-      root: FIXTURE_DIR,
-      configFile: false,
-      plugins: [nextcompat()],
-      server: { port: 0 },
-      logLevel: "silent",
-    });
-    await server.listen();
-    const address = server.httpServer?.address();
-    if (address && typeof address === "object") {
-      baseUrl = `http://localhost:${address.port}`;
-    }
+    ({ server, baseUrl } = await startFixtureServer(FIXTURE_DIR));
   });
 
   afterAll(async () => {
