@@ -23,10 +23,46 @@ vinext lets you keep your existing Next.js code — pages, layouts, API routes, 
 ## Quick start
 
 ```bash
-npm install vinext vite @vitejs/plugin-rsc
+npm install vinext
 ```
 
-Create a `vite.config.ts`:
+Replace `next` with `vinext` in your scripts:
+
+```json
+{
+  "scripts": {
+    "dev": "vinext dev",
+    "build": "vinext build",
+    "start": "vinext start",
+    "lint": "vinext lint"
+  }
+}
+```
+
+```bash
+vinext dev          # Development server
+vinext build        # Production build
+vinext start        # Production server
+```
+
+That's it. No `vite.config.ts` needed. vinext auto-detects your `app/` or `pages/` directory, loads `next.config.js`, and configures Vite with RSC support automatically.
+
+Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work as-is.
+
+### CLI reference
+
+| Command | Description |
+|---------|-------------|
+| `vinext dev` | Start Vite dev server with HMR |
+| `vinext build` | Multi-environment production build (RSC + SSR + client) |
+| `vinext start` | Start production server with SSR, compression, middleware |
+| `vinext lint` | Delegate to eslint (with eslint-config-next) or oxlint |
+
+Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
+
+### Advanced: custom Vite config
+
+If you need custom Vite configuration, create a `vite.config.ts`. vinext will merge its config with yours:
 
 ```ts
 import { defineConfig } from "vite";
@@ -35,10 +71,6 @@ import rsc from "@vitejs/plugin-rsc";
 
 export default defineConfig({
   plugins: [
-    // Pages Router only — just vinext:
-    ...vinext(),
-
-    // App Router — add the RSC plugin:
     rsc({
       entries: {
         rsc: "virtual:vinext-rsc-entry",
@@ -46,17 +78,10 @@ export default defineConfig({
         client: "virtual:vinext-app-browser-entry",
       },
     }),
+    ...vinext(),
   ],
 });
 ```
-
-```bash
-npx vite dev        # Development server
-npx vite build      # Production build
-npx vite preview    # Preview production build
-```
-
-Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work as-is.
 
 ## API coverage
 

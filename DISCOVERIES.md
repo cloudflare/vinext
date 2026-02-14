@@ -357,3 +357,8 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **next-themes works out of the box** — ThemeProvider, `useTheme`, SSR script injection, flash-free theme detection all work. 4/4 tests pass.
 - **nuqs works via `npx vite`** (confirmed SSR output with correct default state) but fails in vitest's `createServer` because the RSC module runner's customization hooks bypass Vite's `resolveId` for `next` package resolution. This is a test infrastructure limitation, not a plugin bug.
 - **next-intl requires deep integration** — it expects a plugin from `next.config.ts` that injects config at build time (via `createNextIntlPlugin`). Simply installing and importing doesn't work — we'd need to shim `next-intl`'s config resolution mechanism.
+
+## CLI & Build
+
+- **Vite 8 renamed `esbuild` config to `oxc`** — our plugin sets `esbuild: { jsx: "automatic" }` which triggers a deprecation warning in Vite 8. Fixed by detecting the Vite major version at runtime via `createRequire(cwd + "/package.json")` and conditionally setting `oxc` or `esbuild`. Static `import { version } from "vite"` doesn't work because the plugin's compiled output resolves `vite` from its own `node_modules` (workspace root = Vite 7), not the consumer project's Vite 8.
+- **vinext CLI architecture** — the CLI is bundled into the main `vinext` package (not a separate package) via a `bin` entry pointing to `dist/cli.js`. It imports `./index.js` directly (relative import, not the package name) to avoid circular resolution. The CLI auto-detects `app/` vs `pages/` and configures Vite+RSC without needing a `vite.config.ts`. For App Router, it uses `createBuilder()` + `builder.buildApp()` for production builds.
