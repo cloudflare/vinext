@@ -110,6 +110,12 @@ then migrate to nextcompat. One moving target is enough.
 We can always broaden version support later once the core is solid. Starting
 narrow keeps the scope sane.
 
+**Deprecation policy:** If Next.js has explicitly deprecated an API, we
+don't implement it. `getInitialProps`, legacy `<Image>` from `next/legacy/image`,
+`next/amp`, etc. - skip them. If someone's app uses deprecated APIs, step one
+is upgrading to current Next.js APIs (which they should do regardless), then
+migrating to nextcompat.
+
 ## Design Principle: Deploy Anywhere by Default
 
 This is the guiding principle behind every implementation decision.
@@ -206,6 +212,51 @@ nextcompat
 └── areweviteyet/                   # Progress dashboard site
 ```
 
+### How `next/*` Import Shims Work
+
+The entire shim system is built on Vite's `resolve.alias` - our plugin
+registers aliases for every `next/*` import path, redirecting them to our
+implementations:
+
+```ts
+// Inside vite-plugin-nextcompat
+resolve: {
+  alias: {
+    'next/link': '@nextcompat/shims/link',
+    'next/image': '@nextcompat/shims/image',
+    'next/router': '@nextcompat/shims/router',
+    'next/head': '@nextcompat/shims/head',
+    // ... every next/* import
+  }
+}
+```
+
+This is load-bearing for the entire project. Because alias resolution
+happens at the Vite bundler level, it works for user code AND third-party
+libraries. When `next-auth` does `import { NextResponse } from 'next/server'`,
+it gets our shim automatically. No configuration needed from the user.
+
+Users don't configure aliases manually. The plugin does it all. You add
+`nextcompat()` to your `vite.config.ts` and every `next/*` import in
+your entire dependency tree resolves to our implementation.
+
+### CLI Approach
+
+Lean into Vite rather than building a bespoke CLI. The plugin does the
+heavy lifting; the CLI is just Vite with our plugin pre-configured:
+
+- **`vite dev`** works directly if the user has our plugin in their config
+- **`nextcompat dev`** / **`nextcompat build`** / **`nextcompat start`** are
+  thin wrappers that call Vite with our plugin, so users migrating from
+  Next.js have a familiar command to run without touching `vite.config.ts`
+- Long-term, we want people to just think of this as a Vite app. The
+  `nextcompat` CLI is a migration convenience, not the primary interface.
+
+We do NOT publish a package called `next` (trademark issues, npm policy,
+and it would be confusing). Users either:
+1. Use the `nextcompat` CLI (drop-in replacement for `next` CLI), or
+2. Add the plugin to their `vite.config.ts` and use `vite` directly
+
 ### How It Maps to `@vitejs/plugin-rsc`
 
 The plugin-rsc provides three Vite environments with distinct module
@@ -239,6 +290,7 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 | `next/headers` | P1 | Medium | `cookies()`, `headers()`, `draftMode()` |
 | `next/server` | P1 | Medium | `NextRequest`, `NextResponse`, `after()` |
 | `next/font` | P1 | High | Font optimization (`next/font/google`, `next/font/local`) |
+| `next/cache` | P1 | Medium | `revalidateTag()`, `revalidatePath()`, `unstable_cache()` |
 | `next/script` | P2 | Low | Third-party script loading |
 | `next/og` | P2 | Medium | OG image generation |
 | `next/form` | P2 | Low | Progressive enhancement form |
