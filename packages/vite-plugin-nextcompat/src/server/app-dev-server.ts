@@ -77,6 +77,7 @@ export function generateRscEntry(
         default: ${slot.defaultPath ? getImportVar(slot.defaultPath) : "null"},
         loading: ${slot.loadingPath ? getImportVar(slot.loadingPath) : "null"},
         error: ${slot.errorPath ? getImportVar(slot.errorPath) : "null"},
+        layoutIndex: ${slot.layoutIndex},
         intercepts: [
 ${interceptEntries.join(",\n")}
         ],
@@ -321,9 +322,13 @@ async function buildPageElement(route, params, opts) {
     if (LayoutComponent) {
       const layoutProps = { children: element, params };
 
-      // Add parallel slot elements to the innermost layout
-      if (i === route.layouts.length - 1 && route.slots) {
+      // Add parallel slot elements to the layout that defines them.
+      // Each slot has a layoutIndex indicating which layout it belongs to.
+      if (route.slots) {
         for (const [slotName, slotMod] of Object.entries(route.slots)) {
+          // Attach slot to the layout at its layoutIndex, or to the innermost layout if -1
+          const targetIdx = slotMod.layoutIndex >= 0 ? slotMod.layoutIndex : route.layouts.length - 1;
+          if (i !== targetIdx) continue;
           // Check if this slot has an intercepting route that should activate
           let SlotPage = null;
           let slotParams = params;

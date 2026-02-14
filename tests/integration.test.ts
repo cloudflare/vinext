@@ -869,6 +869,30 @@ describe("App Router integration", () => {
     expect(html).toContain('data-testid="analytics-slot"');
   });
 
+  it("renders parallel slot default.tsx fallbacks on child routes", async () => {
+    // When navigating to /dashboard/settings, the dashboard layout still renders
+    // but @team and @analytics should show their default.tsx (not page.tsx)
+    const res = await fetch(`${baseUrl}/dashboard/settings`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Dashboard layout should be present
+    expect(html).toContain('id="dashboard-layout"');
+    expect(html).toContain("Dashboard Nav");
+    // Settings page content
+    expect(html).toContain("Settings");
+
+    // Parallel slots should render their default.tsx components
+    expect(html).toContain('data-testid="team-default"');
+    expect(html).toContain("Loading team...");
+    expect(html).toContain('data-testid="analytics-default"');
+    expect(html).toContain("Loading analytics...");
+
+    // Should NOT contain the slot page.tsx content (that's for /dashboard only)
+    expect(html).not.toContain("Team Members");
+    expect(html).not.toContain("Page views: 1,234");
+  });
+
   it("parallel slots do not affect URL routing", async () => {
     // @team and @analytics should NOT be accessible as direct routes
     const teamRes = await fetch(`${baseUrl}/dashboard/team`);

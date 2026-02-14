@@ -372,6 +372,33 @@ describe("matchAppRoute - URL matching", () => {
     expect(homeRoute!.parallelSlots).toEqual([]);
   });
 
+  it("child routes inherit parent parallel slots with default.tsx fallback", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const settingsRoute = routes.find((r) => r.pattern === "/dashboard/settings");
+
+    expect(settingsRoute).toBeDefined();
+    // Settings inherits @team and @analytics from dashboard layout
+    expect(settingsRoute!.parallelSlots.length).toBe(2);
+
+    const slotNames = settingsRoute!.parallelSlots.map((s) => s.name).sort();
+    expect(slotNames).toEqual(["analytics", "team"]);
+
+    // Inherited slots should NOT have pagePath (page.tsx is for /dashboard only)
+    const teamSlot = settingsRoute!.parallelSlots.find((s) => s.name === "team");
+    expect(teamSlot).toBeDefined();
+    expect(teamSlot!.pagePath).toBeNull();
+    // But should have defaultPath
+    expect(teamSlot!.defaultPath).not.toBeNull();
+    expect(teamSlot!.defaultPath).toContain("@team");
+
+    const analyticsSlot = settingsRoute!.parallelSlots.find((s) => s.name === "analytics");
+    expect(analyticsSlot).toBeDefined();
+    expect(analyticsSlot!.pagePath).toBeNull();
+    expect(analyticsSlot!.defaultPath).not.toBeNull();
+    expect(analyticsSlot!.defaultPath).toContain("@analytics");
+  });
+
   it("discovers intercepting routes inside parallel slots", async () => {
     invalidateAppRouteCache();
     const routes = await appRouter(APP_FIXTURE_DIR);

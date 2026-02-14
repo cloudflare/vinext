@@ -41,6 +41,12 @@ export interface ParallelSlot {
   errorPath: string | null;
   /** Intercepting routes within this slot */
   interceptingRoutes: InterceptingRoute[];
+  /**
+   * The layout index (0-based, in route.layouts[]) that this slot belongs to.
+   * Slots are passed as props to the layout at their directory level, not
+   * necessarily the innermost layout. -1 means "innermost" (legacy default).
+   */
+  layoutIndex: number;
 }
 
 export interface AppRoute {
@@ -188,8 +194,10 @@ function fileToAppRoute(
   const errorPath = findFile(routeDir, "error");
   const notFoundPath = findFile(routeDir, "not-found");
 
-  // Discover parallel slots (@team, @analytics, etc.) at the route's directory
-  const parallelSlots = discoverParallelSlots(routeDir, appDir);
+  // Discover parallel slots (@team, @analytics, etc.).
+  // Slots at the route's own directory use page.tsx; slots at ancestor directories
+  // (inherited from parent layouts) use default.tsx as fallback.
+  const parallelSlots = discoverInheritedParallelSlots(segments, appDir, routeDir);
 
   return {
     pattern: pattern === "/" ? "/" : pattern,
@@ -252,6 +260,70 @@ function discoverTemplates(segments: string[], appDir: string): string[] {
 }
 
 /**
+ * Discover parallel slots inherited from ancestor directories.
+ *
+ * In Next.js, parallel slots belong to the layout that defines them. When a
+ * child route is rendered, its parent layout's slots must still be present.
+ * If the child doesn't have matching content in a slot, the slot's default.tsx
+ * is rendered instead.
+ *
+ * Walk from appDir through each segment to the route's directory. At each level
+ * that has @slot dirs, collect them. Slots at the route's own directory level
+ * use page.tsx; slots at ancestor levels use default.tsx only.
+ */
+function discoverInheritedParallelSlots(
+  segments: string[],
+  appDir: string,
+  routeDir: string,
+): ParallelSlot[] {
+  const slotMap = new Map<string, ParallelSlot>();
+
+  // Walk from appDir through each segment, tracking layout indices.
+  // layoutIndex tracks which position in the route's layouts[] array corresponds
+  // to a given directory. Only directories with a layout.tsx file increment.
+  let currentDir = appDir;
+  const dirsToCheck: { dir: string; layoutIdx: number }[] = [];
+  let layoutIdx = findFile(appDir, "layout") ? 0 : -1;
+  dirsToCheck.push({ dir: appDir, layoutIdx: Math.max(layoutIdx, 0) });
+
+  for (const segment of segments) {
+    currentDir = path.join(currentDir, segment);
+    if (findFile(currentDir, "layout")) {
+      layoutIdx++;
+    }
+    dirsToCheck.push({ dir: currentDir, layoutIdx: Math.max(layoutIdx, 0) });
+  }
+
+  for (const { dir, layoutIdx: lvlLayoutIdx } of dirsToCheck) {
+    const isOwnDir = dir === routeDir;
+    const slotsAtLevel = discoverParallelSlots(dir, appDir);
+
+    for (const slot of slotsAtLevel) {
+      if (isOwnDir) {
+        // At the route's own directory: use page.tsx (normal behavior)
+        slot.layoutIndex = lvlLayoutIdx;
+        slotMap.set(slot.name, slot);
+      } else {
+        // At an ancestor directory: use default.tsx as the page, not page.tsx
+        // (the slot's page.tsx is for the parent route, not this child route)
+        const inheritedSlot: ParallelSlot = {
+          ...slot,
+          pagePath: null, // Don't use ancestor's page.tsx
+          layoutIndex: lvlLayoutIdx,
+          // defaultPath, loadingPath, errorPath, interceptingRoutes remain
+        };
+        // Only inherit if we haven't seen this slot at a closer level
+        if (!slotMap.has(slot.name)) {
+          slotMap.set(slot.name, inheritedSlot);
+        }
+      }
+    }
+  }
+
+  return Array.from(slotMap.values());
+}
+
+/**
  * Discover parallel route slots (@team, @analytics, etc.) in a directory.
  * Returns a ParallelSlot for each @-prefixed subdirectory that has a page or default component.
  */
@@ -281,6 +353,7 @@ function discoverParallelSlots(dir: string, appDir: string): ParallelSlot[] {
       loadingPath: findFile(slotDir, "loading"),
       errorPath: findFile(slotDir, "error"),
       interceptingRoutes,
+      layoutIndex: -1, // Will be set by discoverInheritedParallelSlots
     });
   }
 
