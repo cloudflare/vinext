@@ -17,6 +17,19 @@ import { glob } from "glob";
 import path from "node:path";
 import fs from "node:fs";
 
+export interface ParallelSlot {
+  /** Slot name (e.g. "team" from @team) */
+  name: string;
+  /** Absolute path to the slot's page component */
+  pagePath: string | null;
+  /** Absolute path to the slot's default.tsx fallback */
+  defaultPath: string | null;
+  /** Absolute path to the slot's loading component */
+  loadingPath: string | null;
+  /** Absolute path to the slot's error component */
+  errorPath: string | null;
+}
+
 export interface AppRoute {
   /** URL pattern, e.g. "/" or "/about" or "/blog/:slug" */
   pattern: string;
@@ -28,6 +41,8 @@ export interface AppRoute {
   layouts: string[];
   /** Ordered list of template files from root to leaf (parallel to layouts) */
   templates: string[];
+  /** Parallel route slots (from @slot directories at the route's directory level) */
+  parallelSlots: ParallelSlot[];
   /** Loading component path */
   loadingPath: string | null;
   /** Error component path */
@@ -55,9 +70,16 @@ export function invalidateAppRouteCache(): void {
 export async function appRouter(appDir: string): Promise<AppRoute[]> {
   if (cachedRoutes && cachedAppDir === appDir) return cachedRoutes;
 
-  // Find all page.tsx and route.ts files
-  const pageFiles = await glob("**/page.{tsx,ts,jsx,js}", { cwd: appDir });
-  const routeFiles = await glob("**/route.{tsx,ts,jsx,js}", { cwd: appDir });
+  // Find all page.tsx and route.ts files, excluding @slot directories
+  // (slot pages are not standalone routes — they're rendered as props of their parent layout)
+  const allPageFiles = await glob("**/page.{tsx,ts,jsx,js}", { cwd: appDir });
+  const pageFiles = allPageFiles.filter(
+    (f) => !f.split(path.sep).some((s) => s.startsWith("@")),
+  );
+  const allRouteFiles = await glob("**/route.{tsx,ts,jsx,js}", { cwd: appDir });
+  const routeFiles = allRouteFiles.filter(
+    (f) => !f.split(path.sep).some((s) => s.startsWith("@")),
+  );
 
   const routes: AppRoute[] = [];
 
@@ -98,11 +120,16 @@ function fileToAppRoute(
   const params: string[] = [];
   let isDynamic = false;
 
-  // Convert segments to URL pattern, stripping route groups
+  // Convert segments to URL pattern, stripping route groups and parallel slots
   const urlSegments: string[] = [];
   for (const segment of segments) {
     // Route groups: (group) -> skip (transparent in URL)
     if (segment.startsWith("(") && segment.endsWith(")")) {
+      continue;
+    }
+
+    // Parallel slots: @slot -> skip (invisible in URL, content passed as layout props)
+    if (segment.startsWith("@")) {
       continue;
     }
 
@@ -148,12 +175,16 @@ function fileToAppRoute(
   const errorPath = findFile(routeDir, "error");
   const notFoundPath = findFile(routeDir, "not-found");
 
+  // Discover parallel slots (@team, @analytics, etc.) at the route's directory
+  const parallelSlots = discoverParallelSlots(routeDir);
+
   return {
     pattern: pattern === "/" ? "/" : pattern,
     pagePath: type === "page" ? path.join(appDir, file) : null,
     routePath: type === "route" ? path.join(appDir, file) : null,
     layouts,
     templates,
+    parallelSlots,
     loadingPath,
     errorPath,
     notFoundPath,
@@ -205,6 +236,40 @@ function discoverTemplates(segments: string[], appDir: string): string[] {
   }
 
   return templates;
+}
+
+/**
+ * Discover parallel route slots (@team, @analytics, etc.) in a directory.
+ * Returns a ParallelSlot for each @-prefixed subdirectory that has a page or default component.
+ */
+function discoverParallelSlots(dir: string): ParallelSlot[] {
+  if (!fs.existsSync(dir)) return [];
+
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const slots: ParallelSlot[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith("@")) continue;
+
+    const slotName = entry.name.slice(1); // "@team" -> "team"
+    const slotDir = path.join(dir, entry.name);
+
+    const pagePath = findFile(slotDir, "page");
+    const defaultPath = findFile(slotDir, "default");
+
+    // Only include slots that have at least a page or default component
+    if (!pagePath && !defaultPath) continue;
+
+    slots.push({
+      name: slotName,
+      pagePath,
+      defaultPath,
+      loadingPath: findFile(slotDir, "loading"),
+      errorPath: findFile(slotDir, "error"),
+    });
+  }
+
+  return slots;
 }
 
 /**

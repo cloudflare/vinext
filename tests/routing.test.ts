@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import path from "node:path";
 import { pagesRouter, matchRoute } from "../packages/vite-plugin-nextcompat/src/routing/pages-router.js";
-import { appRouter, matchAppRoute } from "../packages/vite-plugin-nextcompat/src/routing/app-router.js";
+import { appRouter, matchAppRoute, invalidateAppRouteCache } from "../packages/vite-plugin-nextcompat/src/routing/app-router.js";
 
 const FIXTURE_DIR = path.resolve(
   import.meta.dirname,
@@ -308,5 +308,67 @@ describe("matchAppRoute - URL matching", () => {
     for (const route of routes) {
       expect(Array.isArray(route.templates)).toBe(true);
     }
+  });
+
+  it("@slot directories do not appear in URL patterns", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const patterns = routes.map((r) => r.pattern);
+
+    // No pattern should contain "@team" or "@analytics"
+    expect(patterns.some((p) => p.includes("@"))).toBe(false);
+    // Specifically, there should be no route like /dashboard/@team
+    expect(patterns).not.toContain("/dashboard/@team");
+    expect(patterns).not.toContain("/dashboard/@analytics");
+  });
+
+  it("@slot/page.tsx files do not create standalone routes", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const patterns = routes.map((r) => r.pattern);
+
+    // Slot pages should not generate their own routes
+    expect(patterns).not.toContain("/dashboard/team");
+    expect(patterns).not.toContain("/dashboard/analytics");
+  });
+
+  it("discovers parallel slots on dashboard route", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const dashboardRoute = routes.find((r) => r.pattern === "/dashboard");
+
+    expect(dashboardRoute).toBeDefined();
+    expect(dashboardRoute!.parallelSlots.length).toBe(2);
+
+    const slotNames = dashboardRoute!.parallelSlots.map((s) => s.name).sort();
+    expect(slotNames).toEqual(["analytics", "team"]);
+  });
+
+  it("parallel slot pages and defaults are discovered", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const dashboardRoute = routes.find((r) => r.pattern === "/dashboard");
+    expect(dashboardRoute).toBeDefined();
+
+    const teamSlot = dashboardRoute!.parallelSlots.find((s) => s.name === "team");
+    expect(teamSlot).toBeDefined();
+    expect(teamSlot!.pagePath).not.toBeNull();
+    expect(teamSlot!.pagePath).toContain("@team");
+    expect(teamSlot!.defaultPath).not.toBeNull();
+    expect(teamSlot!.defaultPath).toContain("@team");
+
+    const analyticsSlot = dashboardRoute!.parallelSlots.find((s) => s.name === "analytics");
+    expect(analyticsSlot).toBeDefined();
+    expect(analyticsSlot!.pagePath).not.toBeNull();
+    expect(analyticsSlot!.defaultPath).not.toBeNull();
+  });
+
+  it("routes without @slot dirs have empty parallelSlots", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const homeRoute = routes.find((r) => r.pattern === "/");
+
+    expect(homeRoute).toBeDefined();
+    expect(homeRoute!.parallelSlots).toEqual([]);
   });
 });

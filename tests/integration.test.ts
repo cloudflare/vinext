@@ -841,6 +841,43 @@ describe("App Router integration", () => {
     expect(html).toContain("Configure your dashboard settings.");
   });
 
+  it("renders parallel route slots on dashboard page", async () => {
+    const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Dashboard layout should render the main children
+    expect(html).toContain("Welcome to your dashboard.");
+    // Parallel slot @team should be rendered
+    expect(html).toContain("Team Members");
+    expect(html).toContain("Alice");
+    // Parallel slot @analytics should be rendered
+    expect(html).toContain("Analytics");
+    expect(html).toContain("Page views: 1,234");
+  });
+
+  it("parallel slot content appears in the correct layout panels", async () => {
+    const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // The layout wraps team/analytics in data-testid panels
+    expect(html).toContain('data-testid="team-panel"');
+    expect(html).toContain('data-testid="analytics-panel"');
+    // The slot components have their own testids
+    expect(html).toContain('data-testid="team-slot"');
+    expect(html).toContain('data-testid="analytics-slot"');
+  });
+
+  it("parallel slots do not affect URL routing", async () => {
+    // @team and @analytics should NOT be accessible as direct routes
+    const teamRes = await fetch(`${baseUrl}/dashboard/team`);
+    expect(teamRes.status).toBe(404);
+
+    const analyticsRes = await fetch(`${baseUrl}/dashboard/analytics`);
+    expect(analyticsRes.status).toBe(404);
+  });
+
   it("returns Method Not Allowed for unsupported HTTP methods on route handlers", async () => {
     const res = await fetch(`${baseUrl}/api/hello`, { method: "DELETE" });
     expect(res.status).toBe(405);
@@ -1213,6 +1250,7 @@ describe("App Router Static export", () => {
         routePath: null,
         layouts: [],
         templates: [],
+        parallelSlots: [],
         loadingPath: null,
         errorPath: null,
         notFoundPath: null,
@@ -1258,6 +1296,7 @@ describe("App Router Static export", () => {
         routePath: path.resolve(APP_FIXTURE_DIR, "app", "api", "hello", "route.ts"),
         layouts: [],
         templates: [],
+        parallelSlots: [],
         loadingPath: null,
         errorPath: null,
         notFoundPath: null,

@@ -46,12 +46,27 @@ export function generateRscEntry(
     if (route.loadingPath) getImportVar(route.loadingPath);
     if (route.errorPath) getImportVar(route.errorPath);
     if (route.notFoundPath) getImportVar(route.notFoundPath);
+    // Register parallel slot modules
+    for (const slot of route.parallelSlots) {
+      if (slot.pagePath) getImportVar(slot.pagePath);
+      if (slot.defaultPath) getImportVar(slot.defaultPath);
+      if (slot.loadingPath) getImportVar(slot.loadingPath);
+      if (slot.errorPath) getImportVar(slot.errorPath);
+    }
   }
 
   // Build route table as serialized JS
   const routeEntries = routes.map((route) => {
     const layoutVars = route.layouts.map((l) => getImportVar(l));
     const templateVars = route.templates.map((t) => getImportVar(t));
+    const slotEntries = route.parallelSlots.map((slot) => {
+      return `      ${JSON.stringify(slot.name)}: {
+        page: ${slot.pagePath ? getImportVar(slot.pagePath) : "null"},
+        default: ${slot.defaultPath ? getImportVar(slot.defaultPath) : "null"},
+        loading: ${slot.loadingPath ? getImportVar(slot.loadingPath) : "null"},
+        error: ${slot.errorPath ? getImportVar(slot.errorPath) : "null"},
+      }`;
+    });
     return `  {
     pattern: ${JSON.stringify(route.pattern)},
     isDynamic: ${route.isDynamic},
@@ -60,6 +75,9 @@ export function generateRscEntry(
     routeHandler: ${route.routePath ? getImportVar(route.routePath) : "null"},
     layouts: [${layoutVars.join(", ")}],
     templates: [${templateVars.join(", ")}],
+    slots: {
+${slotEntries.join(",\n")}
+    },
     loading: ${route.loadingPath ? getImportVar(route.loadingPath) : "null"},
     error: ${route.errorPath ? getImportVar(route.errorPath) : "null"},
     notFound: ${route.notFoundPath ? getImportVar(route.notFoundPath) : "null"},
@@ -247,10 +265,39 @@ async function buildPageElement(route, params) {
   }
 
   // Wrap with layouts (innermost first, then outer)
+  // Parallel slots are passed as named props to the innermost layout
+  // (the layout at the same directory level as the page/slots)
   for (let i = route.layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = route.layouts[i]?.default;
     if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element, params });
+      const layoutProps = { children: element, params };
+
+      // Add parallel slot elements to the innermost layout
+      if (i === route.layouts.length - 1 && route.slots) {
+        for (const [slotName, slotMod] of Object.entries(route.slots)) {
+          const SlotPage = slotMod.page?.default || slotMod.default?.default;
+          if (SlotPage) {
+            let slotElement = createElement(SlotPage, { params });
+            // Wrap with slot-specific loading if present
+            if (slotMod.loading?.default) {
+              slotElement = createElement(Suspense,
+                { fallback: createElement(slotMod.loading.default) },
+                slotElement,
+              );
+            }
+            // Wrap with slot-specific error boundary if present
+            if (slotMod.error?.default) {
+              slotElement = createElement(ErrorBoundary, {
+                fallback: slotMod.error.default,
+                children: slotElement,
+              });
+            }
+            layoutProps[slotName] = slotElement;
+          }
+        }
+      }
+
+      element = createElement(LayoutComponent, layoutProps);
     }
   }
 

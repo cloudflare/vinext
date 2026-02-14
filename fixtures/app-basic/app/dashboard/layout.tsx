@@ -1,7 +1,11 @@
 export default function DashboardLayout({
   children,
+  team,
+  analytics,
 }: {
   children: React.ReactNode;
+  team?: React.ReactNode;
+  analytics?: React.ReactNode;
 }) {
   return (
     <div id="dashboard-layout">
@@ -9,6 +13,8 @@ export default function DashboardLayout({
         <span>Dashboard Nav</span>
       </nav>
       <section>{children}</section>
+      {team && <aside data-testid="team-panel">{team}</aside>}
+      {analytics && <aside data-testid="analytics-panel">{analytics}</aside>}
     </div>
   );
 }
