@@ -1,0 +1,389 @@
+#!/usr/bin/env node
+
+/**
+ * vinext CLI — drop-in replacement for the `next` command
+ *
+ *   vinext dev     Start development server (Vite)
+ *   vinext build   Build for production
+ *   vinext start   Start production server
+ *   vinext lint    Run linter (delegates to eslint/oxlint)
+ *
+ * Automatically configures Vite with the vinext plugin — no vite.config.ts
+ * needed for most Next.js apps.
+ */
+
+import { createServer, build, createBuilder, version as viteVersion } from "vite";
+import vinext from "./index.js";
+import rsc from "@vitejs/plugin-rsc";
+import path from "node:path";
+import fs from "node:fs";
+import { execSync } from "node:child_process";
+
+const VERSION = "0.0.1";
+
+// ─── CLI Argument Parsing ──────────────────────────────────────────────────────
+
+const command = process.argv[2];
+const rawArgs = process.argv.slice(3);
+
+interface ParsedArgs {
+  port?: number;
+  hostname?: string;
+  help?: boolean;
+  turbopack?: boolean; // accepted for compat, always ignored
+  experimental?: boolean; // accepted for compat, always ignored
+}
+
+function parseArgs(args: string[]): ParsedArgs {
+  const result: ParsedArgs = {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--help" || arg === "-h") {
+      result.help = true;
+    } else if (arg === "--turbopack") {
+      result.turbopack = true; // no-op, accepted for script compat
+    } else if (arg === "--experimental-https") {
+      result.experimental = true; // no-op
+    } else if (arg === "--port" || arg === "-p") {
+      result.port = parseInt(args[++i], 10);
+    } else if (arg.startsWith("--port=")) {
+      result.port = parseInt(arg.split("=")[1], 10);
+    } else if (arg === "--hostname" || arg === "-H") {
+      result.hostname = args[++i];
+    } else if (arg.startsWith("--hostname=")) {
+      result.hostname = arg.split("=")[1];
+    }
+  }
+  return result;
+}
+
+// ─── Auto-configuration ───────────────────────────────────────────────────────
+
+/**
+ * Build the Vite config automatically. If a vite.config.ts exists in the
+ * project, Vite will merge our config with it (theirs takes precedence).
+ * If there's no vite.config, this provides everything needed.
+ */
+function hasAppDir(): boolean {
+  return fs.existsSync(path.join(process.cwd(), "app"));
+}
+
+function hasViteConfig(): boolean {
+  return (
+    fs.existsSync(path.join(process.cwd(), "vite.config.ts")) ||
+    fs.existsSync(path.join(process.cwd(), "vite.config.js")) ||
+    fs.existsSync(path.join(process.cwd(), "vite.config.mjs"))
+  );
+}
+
+function buildViteConfig(overrides: Record<string, unknown> = {}) {
+  const isApp = hasAppDir();
+
+  // Base config: vinext plugin auto-configured
+  const config: Record<string, unknown> = {
+    root: process.cwd(),
+    plugins: isApp
+      ? [
+          rsc(),
+          ...vinext(),
+        ]
+      : [vinext()],
+    ...overrides,
+  };
+
+  // For App Router, set up RSC virtual entries if no vite.config exists
+  if (isApp && !hasViteConfig()) {
+    (config as Record<string, unknown>).environments = {
+      rsc: {
+        build: { rollupOptions: { input: "virtual:vinext-rsc-entry" } },
+      },
+      ssr: {
+        build: { rollupOptions: { input: "virtual:vinext-app-ssr-entry" } },
+      },
+      client: {
+        build: { rollupOptions: { input: "virtual:vinext-app-browser-entry" } },
+      },
+    };
+  }
+
+  return config;
+}
+
+// ─── Commands ─────────────────────────────────────────────────────────────────
+
+async function dev() {
+  const parsed = parseArgs(rawArgs);
+  if (parsed.help) return printHelp("dev");
+
+  const port = parsed.port ?? 3000;
+  const host = parsed.hostname ?? "localhost";
+
+  console.log(`\n  vinext dev  (Vite ${viteVersion})\n`);
+
+  const config = buildViteConfig({
+    server: { port, host },
+  });
+
+  const server = await createServer(config);
+  await server.listen();
+  server.printUrls();
+}
+
+async function buildApp() {
+  const parsed = parseArgs(rawArgs);
+  if (parsed.help) return printHelp("build");
+
+  console.log(`\n  vinext build  (Vite ${viteVersion})\n`);
+
+  const isApp = hasAppDir();
+
+  if (isApp) {
+    // App Router: use createBuilder for multi-environment RSC builds
+    const config = buildViteConfig();
+    const builder = await createBuilder(config);
+    await builder.buildApp();
+  } else {
+    // Pages Router: client + SSR builds
+    const appRoot = process.cwd();
+
+    console.log("  Building client...");
+    await build({
+      root: appRoot,
+      plugins: [vinext()],
+      build: {
+        outDir: "dist/client",
+        ssrManifest: true,
+        rollupOptions: {
+          input: "virtual:vinext-client-entry",
+        },
+      },
+    });
+
+    console.log("  Building server...");
+    await build({
+      root: appRoot,
+      plugins: [vinext()],
+      build: {
+        outDir: "dist/server",
+        ssr: "virtual:vinext-server-entry",
+        rollupOptions: {
+          output: {
+            entryFileNames: "entry.js",
+          },
+        },
+      },
+    });
+  }
+
+  console.log("\n  Build complete. Run `vinext start` to start the production server.\n");
+}
+
+async function start() {
+  const parsed = parseArgs(rawArgs);
+  if (parsed.help) return printHelp("start");
+
+  const port = parsed.port ?? parseInt(process.env.PORT ?? "3000", 10);
+  const host = parsed.hostname ?? "0.0.0.0";
+
+  console.log(`\n  vinext start  (port ${port})\n`);
+
+  const { startProdServer } = (await import(
+    /* @vite-ignore */ "./server/prod-server.js"
+  )) as {
+    startProdServer: (opts: {
+      port: number;
+      host: string;
+      outDir: string;
+    }) => Promise<unknown>;
+  };
+
+  await startProdServer({
+    port,
+    host,
+    outDir: path.resolve(process.cwd(), "dist"),
+  });
+}
+
+async function lint() {
+  const parsed = parseArgs(rawArgs);
+  if (parsed.help) return printHelp("lint");
+
+  console.log(`\n  vinext lint\n`);
+
+  // Try oxlint first (fast), fall back to eslint
+  const cwd = process.cwd();
+  const hasOxlint = fs.existsSync(path.join(cwd, "node_modules", ".bin", "oxlint"));
+  const hasEslint = fs.existsSync(path.join(cwd, "node_modules", ".bin", "eslint"));
+
+  // Check for next lint config (eslint-config-next)
+  const hasNextLintConfig =
+    fs.existsSync(path.join(cwd, ".eslintrc.json")) ||
+    fs.existsSync(path.join(cwd, ".eslintrc.js")) ||
+    fs.existsSync(path.join(cwd, ".eslintrc.cjs")) ||
+    fs.existsSync(path.join(cwd, "eslint.config.js")) ||
+    fs.existsSync(path.join(cwd, "eslint.config.mjs"));
+
+  try {
+    if (hasEslint && hasNextLintConfig) {
+      console.log("  Using eslint (with existing config)\n");
+      execSync("npx eslint .", { cwd, stdio: "inherit" });
+    } else if (hasOxlint) {
+      console.log("  Using oxlint\n");
+      execSync("npx oxlint .", { cwd, stdio: "inherit" });
+    } else if (hasEslint) {
+      console.log("  Using eslint\n");
+      execSync("npx eslint .", { cwd, stdio: "inherit" });
+    } else {
+      console.log(
+        "  No linter found. Install eslint or oxlint:\n\n" +
+          "    npm install -D eslint eslint-config-next\n" +
+          "    # or\n" +
+          "    npm install -D oxlint\n",
+      );
+      process.exit(1);
+    }
+    console.log("\n  Lint passed.\n");
+  } catch {
+    process.exit(1);
+  }
+}
+
+// ─── Help ─────────────────────────────────────────────────────────────────────
+
+function printHelp(cmd?: string) {
+  if (cmd === "dev") {
+    console.log(`
+  vinext dev - Start development server
+
+  Usage: vinext dev [options]
+
+  Options:
+    -p, --port <port>        Port to listen on (default: 3000)
+    -H, --hostname <host>    Hostname to bind to (default: localhost)
+    --turbopack              Accepted for compatibility (no-op, Vite is always used)
+    -h, --help               Show this help
+`);
+    return;
+  }
+
+  if (cmd === "build") {
+    console.log(`
+  vinext build - Build for production
+
+  Usage: vinext build [options]
+
+  Automatically detects App Router (app/) or Pages Router (pages/) and
+  runs the appropriate multi-environment build via Vite.
+
+  Options:
+    -h, --help    Show this help
+`);
+    return;
+  }
+
+  if (cmd === "start") {
+    console.log(`
+  vinext start - Start production server
+
+  Usage: vinext start [options]
+
+  Serves the output from \`vinext build\`. Supports SSR, static files,
+  compression, and all middleware.
+
+  Options:
+    -p, --port <port>        Port to listen on (default: 3000, or PORT env)
+    -H, --hostname <host>    Hostname to bind to (default: 0.0.0.0)
+    -h, --help               Show this help
+`);
+    return;
+  }
+
+  if (cmd === "lint") {
+    console.log(`
+  vinext lint - Run linter
+
+  Usage: vinext lint [options]
+
+  Delegates to your project's eslint (with eslint-config-next) or oxlint.
+  If neither is installed, suggests how to add one.
+
+  Options:
+    -h, --help    Show this help
+`);
+    return;
+  }
+
+  console.log(`
+  vinext v${VERSION} - Run Next.js apps on Vite
+
+  Usage: vinext <command> [options]
+
+  Commands:
+    dev      Start development server
+    build    Build for production
+    start    Start production server
+    lint     Run linter
+
+  Options:
+    -h, --help     Show this help
+    --version      Show version
+
+  Examples:
+    vinext dev                  Start dev server on port 3000
+    vinext dev -p 4000          Start dev server on port 4000
+    vinext build                Build for production
+    vinext start                Start production server
+    vinext lint                 Run linter
+
+  vinext is a drop-in replacement for the \`next\` CLI.
+  No vite.config.ts needed — just run \`vinext dev\` in your Next.js project.
+`);
+}
+
+// ─── Entry ────────────────────────────────────────────────────────────────────
+
+if (command === "--version" || command === "-v") {
+  console.log(`vinext v${VERSION} (vite ${viteVersion})`);
+  process.exit(0);
+}
+
+if (command === "--help" || command === "-h" || !command) {
+  printHelp();
+  if (!command) process.exit(0);
+  process.exit(0);
+}
+
+switch (command) {
+  case "dev":
+    dev().catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+    break;
+
+  case "build":
+    buildApp().catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+    break;
+
+  case "start":
+    start().catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+    break;
+
+  case "lint":
+    lint().catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+    break;
+
+  default:
+    console.error(`\n  Unknown command: ${command}\n`);
+    printHelp();
+    process.exit(1);
+}

@@ -1,9 +1,13 @@
 {
   "name": "vinext",
   "version": "0.0.1",
+  "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "vinext": "./dist/cli.js"
+  },
   "exports": {
     ".": {
       "import": "./dist/index.js",
