@@ -97,6 +97,36 @@ function injectFontFaceCSS(css: string, id: string): void {
   }
 }
 
+/** Track which className CSS rules have been injected. */
+const injectedClassRules = new Set<string>();
+
+/**
+ * Inject a CSS rule that maps a className to a font-family.
+ * Also creates a CSS variable rule if a variable name is specified.
+ *
+ * This is what makes `<div className={font.className}>` apply the font.
+ */
+function injectClassNameRule(
+  className: string,
+  fontFamily: string,
+  variable?: string,
+): void {
+  if (injectedClassRules.has(className)) return;
+  injectedClassRules.add(className);
+
+  let css = `.${className} { font-family: ${fontFamily}; }\n`;
+  if (variable) {
+    css += `.${className} { ${variable}: ${fontFamily}; }\n`;
+  }
+
+  if (typeof document !== "undefined") {
+    const style = document.createElement("style");
+    style.textContent = css;
+    style.setAttribute("data-nextcompat-font-class", className);
+    document.head.appendChild(style);
+  }
+}
+
 export default function localFont(options: LocalFontOptions): FontResult {
   const id = classCounter++;
   const family = `__local_font_${id}`;
@@ -105,8 +135,12 @@ export default function localFont(options: LocalFontOptions): FontResult {
   const fontFamily = `'${family}', ${fallback.join(", ")}`;
   const variable = options.variable;
 
+  // Inject @font-face declarations
   const css = generateFontFaceCSS(family, options);
   injectFontFaceCSS(css, family);
+
+  // Inject the className -> font-family CSS rule (+ optional CSS variable)
+  injectClassNameRule(className, fontFamily, variable);
 
   return {
     className,

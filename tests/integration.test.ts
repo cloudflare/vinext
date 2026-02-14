@@ -2736,6 +2736,35 @@ describe("next/font/google shim", () => {
     expect(result.style.fontFamily).toContain("Helvetica");
     expect(result.style.fontFamily).toContain("Arial");
   });
+
+  it("generates CSS rules for className (SSR)", async () => {
+    const { Inter, getSSRFontStyles } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+    );
+    // Clear any previously collected styles
+    getSSRFontStyles();
+
+    const result = Inter({ subsets: ["latin"], weight: ["400"] });
+
+    // getSSRFontStyles should return CSS rules mapping className to font-family
+    const styles = getSSRFontStyles();
+    const allCss = styles.join("\n");
+    expect(allCss).toContain(`.${result.className}`);
+    expect(allCss).toContain("font-family:");
+    expect(allCss).toContain("Inter");
+  });
+
+  it("generates CSS variable rule when variable is specified", async () => {
+    const { Inter, getSSRFontStyles } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+    );
+    getSSRFontStyles(); // clear
+
+    Inter({ variable: "--font-inter" });
+    const styles = getSSRFontStyles();
+    const allCss = styles.join("\n");
+    expect(allCss).toContain("--font-inter:");
+  });
 });
 
 describe("next/font/local shim", () => {

@@ -105,6 +105,54 @@ function injectFontStylesheet(url: string): void {
   }
 }
 
+/** Track which className CSS rules have been injected. */
+const injectedClassRules = new Set<string>();
+
+/**
+ * Inject a CSS rule that maps a className to a font-family.
+ * Also creates a CSS variable rule if a variable name is specified.
+ *
+ * This is what makes `<div className={inter.className}>` apply the font.
+ * Next.js generates equivalent rules at build time.
+ */
+function injectClassNameRule(
+  className: string,
+  fontFamily: string,
+  variable?: string,
+): void {
+  if (injectedClassRules.has(className)) return;
+  injectedClassRules.add(className);
+
+  let css = `.${className} { font-family: ${fontFamily}; }\n`;
+  if (variable) {
+    css += `.${className} { ${variable}: ${fontFamily}; }\n`;
+  }
+
+  // On server, store the CSS for SSR injection
+  if (typeof document === "undefined") {
+    ssrFontStyles.push(css);
+    return;
+  }
+
+  // On client, inject a <style> tag
+  const style = document.createElement("style");
+  style.textContent = css;
+  style.setAttribute("data-nextcompat-font-class", className);
+  document.head.appendChild(style);
+}
+
+// SSR: collect font class CSS for injection in <head>
+const ssrFontStyles: string[] = [];
+
+/**
+ * Get and clear collected SSR font class styles (used by the renderer).
+ */
+export function getSSRFontStyles(): string[] {
+  const styles = [...ssrFontStyles];
+  ssrFontStyles.length = 0;
+  return styles;
+}
+
 // SSR: collect font URLs to inject in <head>
 const ssrFontUrls: string[] = [];
 
@@ -128,6 +176,10 @@ function createFontLoader(family: string) {
     // Build and inject the Google Fonts stylesheet
     const url = buildGoogleFontsUrl(family, options);
     injectFontStylesheet(url);
+
+    // Inject a CSS rule that maps className to font-family.
+    // This is what makes `<div className={inter.className}>` work.
+    injectClassNameRule(className, fontFamily, variable);
 
     // On SSR, collect the URL for head injection
     if (typeof document === "undefined") {
