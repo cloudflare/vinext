@@ -162,6 +162,7 @@ ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewar
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
 import { getCacheHandler } from "next/cache";
 import { withFetchCache } from "nextcompat/fetch-cache";
+import { reportRequestError as _reportRequestError } from "nextcompat/instrumentation";
 
 // ISR cache helpers
 async function isrGet(key) {
@@ -646,6 +647,11 @@ async function _handleRequest(request) {
     } catch (err) {
       getAndClearPendingCookies(); // Clear pending cookies on error
       console.error("[nextcompat] Server action error:", err);
+      _reportRequestError(
+        err instanceof Error ? err : new Error(String(err)),
+        { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+        { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
+      ).catch(() => {});
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response("Server action failed: " + (err && err.message ? err.message : String(err)), { status: 500 });
@@ -773,6 +779,11 @@ async function _handleRequest(request) {
         setHeadersContext(null);
         setNavigationContext(null);
         console.error("[nextcompat] Route handler error:", err);
+        _reportRequestError(
+          err instanceof Error ? err : new Error(String(err)),
+          { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+          { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
+        ).catch(() => {});
         return new Response(null, { status: 500 });
       }
     }

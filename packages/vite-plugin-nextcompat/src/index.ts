@@ -602,6 +602,7 @@ hydrate();
               "nextcompat/error-boundary": path.join(shimsDir, "error-boundary"),
               "nextcompat/metadata": path.join(shimsDir, "metadata"),
               "nextcompat/fetch-cache": path.join(shimsDir, "fetch-cache"),
+              "nextcompat/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
             },
           },
           // Enable JSX in .tsx/.jsx files
