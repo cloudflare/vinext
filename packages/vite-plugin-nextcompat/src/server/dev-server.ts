@@ -230,6 +230,11 @@ hydrate();
         props: { pageProps },
         page: route.pattern,
         query: params,
+        // Include module URLs so client navigation can import pages directly
+        __nextcompat: {
+          pageModuleUrl,
+          appModuleUrl,
+        },
       })}</script>`;
 
       // Try to load custom _document.tsx

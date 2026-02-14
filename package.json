@@ -10,9 +10,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsgo --noEmit",
-    "lint": "oxlint --deny-warnings"
+    "lint": "oxlint --deny-warnings",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@typescript/native-preview": "^7.0.0-dev.20260213.1",
     "oxlint": "^1.47.0",
     "playwright": "^1.52.0",

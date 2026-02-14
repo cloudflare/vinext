@@ -140,6 +140,7 @@ function getPathnameAndQuery(): {
  * Perform client-side navigation: fetch the target page's HTML,
  * extract __NEXT_DATA__, and re-render the React root.
  */
+let _navInProgress = false;
 async function navigateClient(url: string): Promise<void> {
   if (typeof window === "undefined") return;
 
@@ -150,6 +151,10 @@ async function navigateClient(url: string): Promise<void> {
     window.location.href = url;
     return;
   }
+
+  // Prevent re-entrant navigation (e.g., double popstate events)
+  if (_navInProgress) return;
+  _navInProgress = true;
 
   try {
     // Fetch the target page's SSR HTML
@@ -172,11 +177,17 @@ async function navigateClient(url: string): Promise<void> {
     const { pageProps } = nextData.props;
     win.__NEXT_DATA__ = nextData;
 
-    // Find the page module URL from the hydration script
-    const moduleMatch = html.match(/import\("([^"]+)"\);\s*\n\s*const PageComponent/);
-    // Fallback: look for first dynamic import in the hydration script
-    const altMatch = html.match(/await import\("([^"]+pages\/[^"]+)"\)/);
-    const pageModuleUrl = moduleMatch?.[1] ?? altMatch?.[1];
+    // Get the page module URL from __NEXT_DATA__.__nextcompat (preferred),
+    // or fall back to parsing the hydration script
+    let pageModuleUrl: string | undefined =
+      nextData.__nextcompat?.pageModuleUrl;
+
+    if (!pageModuleUrl) {
+      // Legacy fallback: try to find the module URL in the inline script
+      const moduleMatch = html.match(/import\("([^"]+)"\);\s*\n\s*const PageComponent/);
+      const altMatch = html.match(/await import\("([^"]+pages\/[^"]+)"\)/);
+      pageModuleUrl = moduleMatch?.[1] ?? altMatch?.[1] ?? undefined;
+    }
 
     if (!pageModuleUrl) {
       window.location.href = url;
@@ -195,8 +206,21 @@ async function navigateClient(url: string): Promise<void> {
     // Import React for createElement
     const React = (await import("react")).default;
 
-    // Re-render with the new page
-    const AppComponent = win.__NEXTCOMPAT_APP__;
+    // Re-render with the new page, loading _app if needed
+    let AppComponent = win.__NEXTCOMPAT_APP__;
+    const appModuleUrl: string | undefined =
+      nextData.__nextcompat?.appModuleUrl;
+
+    if (!AppComponent && appModuleUrl) {
+      try {
+        const appModule = await import(/* @vite-ignore */ appModuleUrl);
+        AppComponent = appModule.default;
+        win.__NEXTCOMPAT_APP__ = AppComponent;
+      } catch {
+        // _app not available — continue without it
+      }
+    }
+
     let element;
     if (AppComponent) {
       element = React.createElement(AppComponent, {
@@ -211,6 +235,8 @@ async function navigateClient(url: string): Promise<void> {
   } catch (err) {
     console.error("[nextcompat] Client navigation failed:", err);
     window.location.href = url;
+  } finally {
+    _navInProgress = false;
   }
 }
 
@@ -308,6 +334,20 @@ export function useRouter(): NextRouter {
   return router;
 }
 
+// Module-level popstate listener: handles browser back/forward by re-rendering
+// the React root with the page at the new URL. This runs regardless of whether
+// any component calls useRouter().
+if (typeof window !== "undefined") {
+  window.addEventListener("popstate", () => {
+    const url = window.location.pathname + window.location.search;
+    routerEvents.emit("routeChangeStart", url);
+    navigateClient(url).then(() => {
+      routerEvents.emit("routeChangeComplete", url);
+      window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
+    });
+  });
+}
+
 // Also export a default Router singleton for `import Router from 'next/router'`
 const Router = {
   push: async (url: string | UrlObject) => {
@@ -316,7 +356,7 @@ const Router = {
     window.history.pushState({}, "", resolved);
     await navigateClient(resolved);
     routerEvents.emit("routeChangeComplete", resolved);
-    window.dispatchEvent(new PopStateEvent("popstate"));
+    window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
     return true;
   },
   replace: async (url: string | UrlObject) => {
@@ -325,7 +365,7 @@ const Router = {
     window.history.replaceState({}, "", resolved);
     await navigateClient(resolved);
     routerEvents.emit("routeChangeComplete", resolved);
-    window.dispatchEvent(new PopStateEvent("popstate"));
+    window.dispatchEvent(new CustomEvent("nextcompat:navigate"));
     return true;
   },
   back: () => window.history.back(),

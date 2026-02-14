@@ -502,7 +502,7 @@ hydrate();
         return () => {
           server.middlewares.use(async (req: any, res: any, next: any) => {
             try {
-              const url: string = req.url ?? "/";
+              let url: string = req.url ?? "/";
 
               // Skip Vite internal requests and static files
               if (
@@ -511,6 +511,16 @@ hydrate();
                 url.startsWith("/node_modules")
               ) {
                 return next();
+              }
+
+              // Vite's built-in middleware may rewrite "/" to "/index.html".
+              // Normalize it back so our router can match correctly.
+              const rawPathname = url.split("?")[0];
+              if (rawPathname.endsWith("/index.html")) {
+                url = url.replace("/index.html", "/");
+              } else if (rawPathname.endsWith(".html")) {
+                // Strip .html extensions (e.g. "/about.html" -> "/about")
+                url = url.replace(/\.html(?=\?|$)/, "");
               }
 
               // Skip requests for files with extensions (static assets)
