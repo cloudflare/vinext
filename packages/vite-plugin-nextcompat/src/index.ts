@@ -660,7 +660,7 @@ hydrate();
           const metaRoutes = scanMetadataFiles(appDir);
           // Check for global-error.tsx at app root
           const globalErrorPath = findFileWithExts(appDir, "global-error");
-          return generateRscEntry(appDir, routes, middlewarePath, metaRoutes, globalErrorPath, nextConfig?.basePath);
+          return generateRscEntry(appDir, routes, middlewarePath, metaRoutes, globalErrorPath, nextConfig?.basePath, nextConfig?.trailingSlash);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
           return generateSsrEntry();
@@ -744,6 +744,27 @@ hydrate();
               } else if (bp && pathname !== "/") {
                 // URL doesn't start with basePath — let Vite handle it
                 return next();
+              }
+
+              // Normalize trailing slash based on next.config.js trailingSlash setting.
+              // Redirect to the canonical form if needed.
+              if (nextConfig && pathname !== "/" && !pathname.startsWith("/api")) {
+                const hasTrailing = pathname.endsWith("/");
+                if (nextConfig.trailingSlash && !hasTrailing) {
+                  // trailingSlash: true — redirect /about → /about/
+                  const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                  const dest = bp + pathname + "/" + qs;
+                  res.writeHead(308, { Location: dest });
+                  res.end();
+                  return;
+                } else if (!nextConfig.trailingSlash && hasTrailing) {
+                  // trailingSlash: false (default) — redirect /about/ → /about
+                  const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+                  const dest = bp + pathname.replace(/\/+$/, "") + qs;
+                  res.writeHead(308, { Location: dest });
+                  res.end();
+                  return;
+                }
               }
 
               // Run middleware.ts if present

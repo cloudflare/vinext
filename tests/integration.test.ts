@@ -2594,7 +2594,6 @@ describe("next/dynamic shim", () => {
 // ---------------------------------------------------------------------------
 describe("basePath support (Pages Router)", () => {
   let server: ViteDevServer;
-  let baseUrl: string;
 
   beforeAll(async () => {
     const plugins: any[] = [nextcompat()];
@@ -2604,17 +2603,9 @@ describe("basePath support (Pages Router)", () => {
       plugins,
       server: { port: 0 },
       logLevel: "silent",
-      // Simulate basePath from next.config.js by setting env before server starts
     });
 
-    // Override the next.config to add basePath. We do this by writing a temp config.
-    // Instead, we test the config parsing + routing integration via the resolved config.
-    // The simpler approach: test that the basePath is correctly parsed from next.config.
     await server.listen();
-    const addr = server.httpServer?.address();
-    if (addr && typeof addr === "object") {
-      baseUrl = `http://localhost:${addr.port}`;
-    }
   });
 
   afterAll(async () => {
@@ -2646,5 +2637,19 @@ describe("basePath support (Pages Router)", () => {
     // Default fixture has no basePath, so it should be ""
     const defineKey = "process.env.__NEXT_ROUTER_BASEPATH";
     expect(config.define?.[defineKey]).toBe(JSON.stringify(""));
+  });
+
+  it("resolveNextConfig correctly resolves trailingSlash", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+    );
+
+    // Default: trailingSlash is false
+    const defaultConfig = await resolveNextConfig({});
+    expect(defaultConfig.trailingSlash).toBe(false);
+
+    // With trailingSlash: true
+    const withTrailing = await resolveNextConfig({ trailingSlash: true });
+    expect(withTrailing.trailingSlash).toBe(true);
   });
 });

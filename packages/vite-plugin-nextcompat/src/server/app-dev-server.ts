@@ -23,8 +23,10 @@ export function generateRscEntry(
   metadataRoutes?: MetadataFileRoute[],
   globalErrorPath?: string | null,
   basePath?: string,
+  trailingSlash?: boolean,
 ): string {
   const bp = basePath ?? "";
+  const ts = trailingSlash ?? false;
   // Build import map for all page and layout files
   const imports: string[] = [];
   const importMap: Map<string, string> = new Map();
@@ -401,6 +403,7 @@ function matchMiddlewarePath(pathname, matcher) {
 ` : ""}
 
 const __basePath = ${JSON.stringify(bp)};
+const __trailingSlash = ${JSON.stringify(ts)};
 
 export default async function handler(request) {
   const url = new URL(request.url);
@@ -411,6 +414,17 @@ export default async function handler(request) {
     pathname = pathname.slice(__basePath.length) || "/";
   }
   ` : ""}
+
+  // Trailing slash normalization (redirect to canonical form)
+  if (pathname !== "/" && !pathname.startsWith("/api")) {
+    const hasTrailing = pathname.endsWith("/");
+    if (__trailingSlash && !hasTrailing && !pathname.endsWith(".rsc")) {
+      return Response.redirect(new URL(__basePath + pathname + "/" + url.search, request.url), 308);
+    } else if (!__trailingSlash && hasTrailing) {
+      return Response.redirect(new URL(__basePath + pathname.replace(/\\/+$/, "") + url.search, request.url), 308);
+    }
+  }
+
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
   let cleanPathname = pathname.replace(/\\.rsc$/, "");
 
