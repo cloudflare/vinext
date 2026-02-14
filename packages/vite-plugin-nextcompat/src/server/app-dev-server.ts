@@ -154,7 +154,7 @@ import {
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { createElement, Suspense, Fragment } from "react";
-import { setNavigationContext } from "next/navigation";
+import { setNavigationContext as _setNavigationContextOrig } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies } from "next/headers";
 import { ErrorBoundary } from "nextcompat/error-boundary";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "nextcompat/metadata";
@@ -163,6 +163,15 @@ ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifes
 import { getCacheHandler } from "next/cache";
 import { withFetchCache } from "nextcompat/fetch-cache";
 import { reportRequestError as _reportRequestError } from "nextcompat/instrumentation";
+
+// Track current navigation context so we can pass it to the SSR environment.
+// "use client" components rendered during SSR need the pathname/searchParams/params
+// but the SSR environment has a separate module instance of next/navigation.
+let _currentNavContext = null;
+function setNavigationContext(ctx) {
+  _currentNavContext = ctx;
+  _setNavigationContextOrig(ctx);
+}
 
 // ISR cache helpers
 async function isrGet(key) {
@@ -238,7 +247,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     });
   }
   const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-  const htmlStream = await ssrEntry.handleSsr(rscStream);
+  const htmlStream = await ssrEntry.handleSsr(rscStream, _currentNavContext);
   setHeadersContext(null);
   setNavigationContext(null);
   return new Response(htmlStream, {
@@ -910,7 +919,7 @@ async function _handleRequest(request) {
           const freshElement = await buildPageElement(route, params, undefined, url.searchParams);
           const freshRscStream = renderToReadableStream(freshElement);
           const ssrEntryFresh = await import.meta.viteRsc.loadModule("ssr", "index");
-          const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream);
+          const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream, _currentNavContext);
           // Consume the stream to get HTML string
           const freshHtml = await new Response(freshHtmlStream).text();
           await isrSet(cacheKey, { kind: "APP_PAGE", html: freshHtml, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, revalidateSeconds);
@@ -1067,7 +1076,7 @@ async function _handleRequest(request) {
   let htmlStream;
   try {
     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    htmlStream = await ssrEntry.handleSsr(rscStream);
+    htmlStream = await ssrEntry.handleSsr(rscStream, _currentNavContext);
   } catch (ssrErr) {
     const specialResponse = handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
@@ -1151,21 +1160,42 @@ export function generateSsrEntry(): string {
   return `
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import { renderToReadableStream } from "react-dom/server.edge";
+import { setNavigationContext } from "next/navigation";
 
-export async function handleSsr(rscStream) {
-  // Deserialize RSC stream back to React VDOM
-  const root = await createFromReadableStream(rscStream);
+/**
+ * Render the RSC stream to HTML.
+ *
+ * @param rscStream - The RSC payload stream from the RSC environment
+ * @param navContext - Navigation context for client component SSR hooks.
+ *   "use client" components like those using usePathname() need the current
+ *   request URL during SSR, and they run in this SSR environment (separate
+ *   from the RSC environment where the context was originally set).
+ */
+export async function handleSsr(rscStream, navContext) {
+  // Set navigation context so hooks like usePathname() work during SSR
+  // of "use client" components
+  if (navContext) {
+    setNavigationContext(navContext);
+  }
 
-  // Get the bootstrap script content for the browser entry
-  const bootstrapScriptContent =
-    await import.meta.viteRsc.loadBootstrapScriptContent("index");
+  try {
+    // Deserialize RSC stream back to React VDOM
+    const root = await createFromReadableStream(rscStream);
 
-  // Render HTML (traditional SSR)
-  const htmlStream = await renderToReadableStream(root, {
-    bootstrapScriptContent,
-  });
+    // Get the bootstrap script content for the browser entry
+    const bootstrapScriptContent =
+      await import.meta.viteRsc.loadBootstrapScriptContent("index");
 
-  return htmlStream;
+    // Render HTML (traditional SSR)
+    const htmlStream = await renderToReadableStream(root, {
+      bootstrapScriptContent,
+    });
+
+    return htmlStream;
+  } finally {
+    // Clean up so we don't leak context between requests
+    setNavigationContext(null);
+  }
 }
 `;
 }

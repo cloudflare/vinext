@@ -6,7 +6,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "next-intl": "^4.0.0",
-    "vite-plugin-nextcompat": "workspace:*"
+    "vite-plugin-nextcompat": "*"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
