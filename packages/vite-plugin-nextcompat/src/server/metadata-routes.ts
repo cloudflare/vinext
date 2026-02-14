@@ -15,6 +15,8 @@
  * Dynamic versions (ts/tsx/js) export a default function that returns the data.
  * Static versions (xml/txt/json/png/etc.) are served as-is.
  */
+import fs from "node:fs";
+import path from "node:path";
 
 // -------------------------------------------------------------------
 // Types matching Next.js MetadataRoute
@@ -314,8 +316,6 @@ export interface MetadataFileRoute {
  * Scan an app directory for metadata files.
  */
 export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
-  const fs = require("node:fs") as typeof import("node:fs");
-  const path = require("node:path") as typeof import("node:path");
   const routes: MetadataFileRoute[] = [];
 
   // Scan the app directory recursively
