@@ -6,6 +6,8 @@
  * Client-side: reads from browser Location API and provides navigation.
  */
 
+import { useSyncExternalStore } from "react";
+
 // ---------------------------------------------------------------------------
 // Server-side request context (set by the RSC entry before rendering)
 // ---------------------------------------------------------------------------
@@ -56,6 +58,32 @@ function notifyListeners(): void {
   for (const fn of _listeners) fn();
 }
 
+// Cached URLSearchParams for referential stability (useSyncExternalStore
+// compares snapshots with Object.is — new URLSearchParams instances are
+// never equal, which would cause infinite re-renders).
+let _cachedSearch = !isServer ? window.location.search : "";
+let _cachedSearchParams: URLSearchParams = new URLSearchParams(_cachedSearch);
+
+function getSearchParamsSnapshot(): URLSearchParams {
+  const current = window.location.search;
+  if (current !== _cachedSearch) {
+    _cachedSearch = current;
+    _cachedSearchParams = new URLSearchParams(current);
+  }
+  return _cachedSearchParams;
+}
+
+// Same for pathname — cache the string for referential stability
+let _cachedPathname = !isServer ? stripBasePath(window.location.pathname) : "/";
+
+function getPathnameSnapshot(): string {
+  const current = stripBasePath(window.location.pathname);
+  if (current !== _cachedPathname) {
+    _cachedPathname = current;
+  }
+  return _cachedPathname;
+}
+
 // Track client-side params (set during RSC hydration/navigation)
 // We cache the params object for referential stability — only create a new
 // object when the params actually change (shallow key/value comparison).
@@ -85,31 +113,16 @@ export function getClientParams(): Record<string, string | string[]> {
  */
 export function usePathname(): string {
   if (isServer) {
-    if (!_serverContext) {
-      throw new Error(
-        "usePathname() called outside of a request context. " +
-          "This usually means it was called in a Server Component that wasn't rendered by the framework.",
-      );
-    }
-    return _serverContext.pathname;
+    // During SSR of "use client" components, _serverContext may not be set.
+    // Return a safe fallback — the client will hydrate with the real value.
+    return _serverContext?.pathname ?? "/";
   }
   // Client-side: use the hook system for reactivity
-  const { useState: useStateR, useEffect: useEffectR, useSyncExternalStore } = requireReact();
-  if (useSyncExternalStore) {
-    return useSyncExternalStore(
-      (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
-      () => stripBasePath(window.location.pathname),
-      () => _serverContext?.pathname ?? "/",
-    );
-  }
-  // Fallback for older React
-  const [pathname, setPathname] = useStateR(stripBasePath(window.location.pathname));
-  useEffectR(() => {
-    const handler = () => setPathname(stripBasePath(window.location.pathname));
-    _listeners.add(handler);
-    return () => { _listeners.delete(handler); };
-  }, []);
-  return pathname;
+  return useSyncExternalStore(
+    (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
+    getPathnameSnapshot,
+    () => _serverContext?.pathname ?? "/",
+  );
 }
 
 /**
@@ -117,26 +130,15 @@ export function usePathname(): string {
  */
 export function useSearchParams(): URLSearchParams {
   if (isServer) {
-    if (!_serverContext) {
-      throw new Error("useSearchParams() called outside of a request context.");
-    }
-    return _serverContext.searchParams;
+    // During SSR of "use client" components, _serverContext may not be set.
+    // Return a safe fallback — the client will hydrate with the real value.
+    return _serverContext?.searchParams ?? new URLSearchParams();
   }
-  const { useSyncExternalStore, useState: useStateR, useEffect: useEffectR } = requireReact();
-  if (useSyncExternalStore) {
-    return useSyncExternalStore(
-      (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
-      () => new URLSearchParams(window.location.search),
-      () => _serverContext?.searchParams ?? new URLSearchParams(),
-    );
-  }
-  const [sp, setSp] = useStateR(new URLSearchParams(window.location.search));
-  useEffectR(() => {
-    const handler = () => setSp(new URLSearchParams(window.location.search));
-    _listeners.add(handler);
-    return () => { _listeners.delete(handler); };
-  }, []);
-  return sp;
+  return useSyncExternalStore(
+    (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
+    getSearchParamsSnapshot,
+    () => _serverContext?.searchParams ?? new URLSearchParams(),
+  );
 }
 
 /**
@@ -146,10 +148,8 @@ export function useParams<
   T extends Record<string, string | string[]> = Record<string, string | string[]>,
 >(): T {
   if (isServer) {
-    if (!_serverContext) {
-      throw new Error("useParams() called outside of a request context.");
-    }
-    return _serverContext.params as T;
+    // During SSR of "use client" components, _serverContext may not be set.
+    return (_serverContext?.params ?? {}) as T;
   }
   return _clientParams as T;
 }
@@ -485,16 +485,7 @@ export function unauthorized(): never {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function requireReact() {
-  // Dynamic require to avoid issues in RSC environment
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const React = require("react");
-  return {
-    useState: React.useState,
-    useEffect: React.useEffect,
-    useSyncExternalStore: React.useSyncExternalStore,
-  };
-}
+// React hooks are imported at the top level via ESM.
 
 // Listen for popstate on the client
 if (!isServer) {
