@@ -61,3 +61,16 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **Virtual module `\0` prefix in client environment**: When `@vitejs/plugin-rsc` generates its `virtual:vite-rsc/entry-browser` module, it imports our virtual entry using the already-resolved `\0`-prefixed ID (e.g., `\0virtual:nextcompat-app-browser-entry`). Vite's `import-analysis` plugin in the client environment fails to resolve this. Fix: `resolveId` must strip the `\0` prefix before matching, e.g., `const cleanId = id.startsWith("\0") ? id.slice(1) : id`.
 - **Server Actions transport**: `@vitejs/plugin-rsc` is transport-agnostic for server actions. It provides serialization primitives (`encodeReply`/`decodeReply`/`loadServerAction`) but we must implement the HTTP transport. Convention: POST to `pathname.rsc` with `x-rsc-action: <actionId>` header. The RSC entry must `decodeReply` the body, `loadServerAction(id)`, execute it, then re-render the page tree and include `returnValue` in the RSC stream payload. The browser uses `setServerCallback` to register the action handler.
 - **RSC action response shape**: When server actions complete, the RSC stream must serialize `{ root: <pageElement>, returnValue: { ok: true, data } }`. The browser deserializes this, renders `result.root` and returns `result.returnValue.data` to the caller. This allows the page to reflect mutations while the action return value is delivered to the calling component's state.
+
+## Middleware
+
+- **middleware.ts runs in Node**, not Edge Runtime. This is a deliberate departure from Next.js (which uses Edge Runtime). Since nextcompat targets "deploy anywhere" including $5 VPS, Node is the pragmatic choice. The middleware uses standard Web APIs (`Request`/`Response`/`NextRequest`/`NextResponse`) so the API surface is compatible.
+- **Middleware detection**: We check for `middleware.ts/.tsx/.js/.mjs` at the project root and also in `src/` subdirectory (Next.js convention).
+- **Two integration paths**: Pages Router uses Vite's `server.ssrLoadModule()` in the connect middleware. App Router imports the middleware module directly in the generated RSC entry (since the RSC entry runs in its own Vite environment where `ssrLoadModule` isn't available).
+- **Matcher patterns**: Next.js matcher uses a custom path pattern syntax that's similar to but not identical to regex. Patterns like `/((?!api|_next).*)` are common. We convert these to proper RegExp for matching.
+
+## Caching
+
+- **Next.js CacheHandler interface has churned significantly** across versions 13-16. The `kind` enum values changed (`PAGE` → `PAGES`, `ROUTE` → `APP_ROUTE`), the set context shape changed from `{ revalidate }` to `{ cacheControl: { revalidate, expire } }`, and `revalidateTag` went from `(tag: string)` to `(tags: string | string[], durations?)`.
+- **Our CacheHandler interface targets Next.js 16** but accepts both old and new context shapes in `MemoryCacheHandler.set()` for compatibility with community adapters.
+- **Tag invalidation timing**: When using `>=` (not `>`) for comparing `revalidatedAt` vs `lastModified`, entries invalidated in the same millisecond they were created are correctly evicted. This matters in fast test environments.

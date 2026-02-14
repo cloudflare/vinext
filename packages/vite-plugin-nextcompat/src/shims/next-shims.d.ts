@@ -198,3 +198,16 @@ declare module "next/cache" {
     options?: { revalidate?: number | false; tags?: string[] },
   ): T;
 }
+
+declare module "next/form" {
+  import { ForwardRefExoticComponent, RefAttributes, FormHTMLAttributes } from "react";
+
+  interface FormProps extends Omit<FormHTMLAttributes<HTMLFormElement>, "action"> {
+    action: string | ((formData: FormData) => void | Promise<void>);
+    replace?: boolean;
+    scroll?: boolean;
+  }
+
+  const Form: ForwardRefExoticComponent<FormProps & RefAttributes<HTMLFormElement>>;
+  export default Form;
+}
