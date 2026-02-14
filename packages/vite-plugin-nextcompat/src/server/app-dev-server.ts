@@ -566,7 +566,9 @@ export default async function handler(request) {
     // Render custom not-found page if available, otherwise plain 404
     if (rootNotFoundModule) {
       const NotFoundComponent = rootNotFoundModule.default;
-      let element = createElement(NotFoundComponent);
+      // Include noindex meta tag on 404 pages (matching Next.js behavior)
+      const noindexMeta = createElement("meta", { name: "robots", content: "noindex" });
+      let element = createElement(Fragment, null, noindexMeta, createElement(NotFoundComponent));
       // Wrap in root layouts
       for (let i = rootLayouts.length - 1; i >= 0; i--) {
         const LayoutComponent = rootLayouts[i]?.default;

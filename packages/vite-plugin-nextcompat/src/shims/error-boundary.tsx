@@ -26,6 +26,14 @@ export class ErrorBoundary extends React.Component<
   }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    // notFound() and redirect() must propagate past error boundaries.
+    // Re-throw them so they bubble up to the framework's not-found/redirect handler.
+    if (error && typeof error === "object" && "digest" in error) {
+      const digest = String((error as any).digest);
+      if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_REDIRECT;")) {
+        throw error;
+      }
+    }
     return { error };
   }
 

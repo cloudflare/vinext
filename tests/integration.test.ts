@@ -3171,3 +3171,216 @@ describe("metadata title templates", () => {
     expect(result).toEqual({});
   });
 });
+
+// ---------------------------------------------------------------------------
+// MetadataHead rendering tests
+// ---------------------------------------------------------------------------
+describe("MetadataHead rendering", () => {
+  let MetadataHead: typeof import("../packages/vite-plugin-nextcompat/src/shims/metadata.js").MetadataHead;
+  let React: typeof import("react");
+  let renderToStaticMarkup: typeof import("react-dom/server").renderToStaticMarkup;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vite-plugin-nextcompat/src/shims/metadata.js");
+    MetadataHead = mod.MetadataHead;
+    React = await import("react");
+    renderToStaticMarkup = (await import("react-dom/server")).renderToStaticMarkup;
+  });
+
+  it("renders generator meta tag", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, { metadata: { generator: "Next.js" } }),
+    );
+    expect(html).toContain('name="generator"');
+    expect(html).toContain('content="Next.js"');
+  });
+
+  it("renders application-name meta tag", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, { metadata: { applicationName: "My App" } }),
+    );
+    expect(html).toContain('name="application-name"');
+    expect(html).toContain('content="My App"');
+  });
+
+  it("renders author meta and link tags", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          authors: [
+            { name: "Seb" },
+            { name: "Josh", url: "https://josh.dev" },
+          ],
+        },
+      }),
+    );
+    expect(html).toContain('name="author"');
+    expect(html).toContain('content="Seb"');
+    expect(html).toContain('rel="author"');
+    expect(html).toContain('href="https://josh.dev"');
+  });
+
+  it("renders format-detection meta tag", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: { formatDetection: { telephone: false, email: false } },
+      }),
+    );
+    expect(html).toContain('name="format-detection"');
+    expect(html).toContain("telephone=no");
+    expect(html).toContain("email=no");
+  });
+
+  it("renders googlebot meta tag separately from robots", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          robots: {
+            index: true,
+            follow: true,
+            googleBot: { index: true, follow: true, "max-snippet": -1 },
+          },
+        },
+      }),
+    );
+    expect(html).toContain('name="robots"');
+    expect(html).toContain('name="googlebot"');
+    expect(html).toContain("max-snippet:-1");
+  });
+
+  it("renders verification meta tags", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          verification: { google: "abc123", yandex: "xyz789" },
+        },
+      }),
+    );
+    expect(html).toContain('name="google-site-verification"');
+    expect(html).toContain('content="abc123"');
+    expect(html).toContain('name="yandex-verification"');
+    expect(html).toContain('content="xyz789"');
+  });
+
+  it("renders icon link tags from icons metadata", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          icons: {
+            icon: "/favicon.ico",
+            apple: [{ url: "/apple-icon.png", sizes: "180x180" }],
+            shortcut: "/shortcut.png",
+          },
+        },
+      }),
+    );
+    expect(html).toContain('rel="icon"');
+    expect(html).toContain('href="/favicon.ico"');
+    expect(html).toContain('rel="apple-touch-icon"');
+    expect(html).toContain('sizes="180x180"');
+    expect(html).toContain('rel="shortcut icon"');
+  });
+
+  it("renders alternate hreflang links", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          alternates: {
+            canonical: "https://example.com",
+            languages: { "en-US": "https://example.com/en", "de-DE": "https://example.com/de" },
+          },
+        },
+      }),
+    );
+    expect(html).toContain('rel="canonical"');
+    expect(html).toContain('href="https://example.com"');
+    // React renders hrefLang in camelCase (hrefLang or hreflang depending on version)
+    expect(html).toMatch(/hreflang="en-US"|hrefLang="en-US"/i);
+    expect(html).toMatch(/hreflang="de-DE"|hrefLang="de-DE"/i);
+  });
+
+  it("renders alternate RSS feed link", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          alternates: {
+            types: { "application/rss+xml": "https://example.com/rss" },
+          },
+        },
+      }),
+    );
+    expect(html).toContain('type="application/rss+xml"');
+    expect(html).toContain('href="https://example.com/rss"');
+  });
+
+  it("renders twitter:site and twitter:creator:id", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          twitter: {
+            card: "summary",
+            site: "@nextjs",
+            siteId: "12345",
+            creatorId: "67890",
+          },
+        },
+      }),
+    );
+    expect(html).toContain('name="twitter:site"');
+    expect(html).toContain('content="@nextjs"');
+    expect(html).toContain('name="twitter:site:id"');
+    expect(html).toContain('content="12345"');
+    expect(html).toContain('name="twitter:creator:id"');
+  });
+
+  it("resolves relative URLs with metadataBase", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          metadataBase: new URL("https://acme.com"),
+          alternates: { canonical: "/about" },
+          openGraph: { images: "/og.png" },
+        },
+      }),
+    );
+    expect(html).toContain('href="https://acme.com/about"');
+    expect(html).toContain('content="https://acme.com/og.png"');
+  });
+
+  it("renders OG video and audio tags", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          openGraph: {
+            videos: [{ url: "https://example.com/video.mp4", width: 800, height: 600 }],
+            audio: [{ url: "https://example.com/audio.mp3" }],
+          },
+        },
+      }),
+    );
+    expect(html).toContain('property="og:video"');
+    expect(html).toContain('content="https://example.com/video.mp4"');
+    expect(html).toContain('property="og:video:width"');
+    expect(html).toContain('property="og:audio"');
+  });
+
+  it("renders manifest link", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: { manifest: "/manifest.json" },
+      }),
+    );
+    expect(html).toContain('rel="manifest"');
+    expect(html).toContain('href="/manifest.json"');
+  });
+
+  it("renders other meta with array values", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: { other: { custom: ["val1", "val2"] } },
+      }),
+    );
+    expect(html).toContain('content="val1"');
+    expect(html).toContain('content="val2"');
+  });
+});

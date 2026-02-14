@@ -47,12 +47,61 @@ function withBasePath(path: string): string {
   return __basePath + path;
 }
 
+/**
+ * Check if a href is only a hash change (same pathname, different/added hash).
+ * Handles relative hashes like "#foo" and "?query#foo".
+ */
+function isHashOnlyChange(href: string): boolean {
+  if (href.startsWith("#")) return true;
+  try {
+    const current = new URL(window.location.href);
+    const next = new URL(href, window.location.href);
+    return current.pathname === next.pathname && current.search === next.search && next.hash !== "";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve a potentially relative href against the current URL.
+ * Handles: "#hash", "?query", "?query#hash", relative paths.
+ */
+function resolveRelativeHref(href: string): string {
+  if (typeof window === "undefined") return href;
+  // Already absolute
+  if (href.startsWith("/") || href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//")) {
+    return href;
+  }
+  // Relative: resolve against current location
+  try {
+    const resolved = new URL(href, window.location.href);
+    return resolved.pathname + resolved.search + resolved.hash;
+  } catch {
+    return href;
+  }
+}
+
+/**
+ * Scroll to a hash target element, or to the top if no hash.
+ */
+function scrollToHash(hash: string): void {
+  if (!hash || hash === "#") {
+    window.scrollTo(0, 0);
+    return;
+  }
+  const id = hash.slice(1); // Remove leading #
+  const element = document.getElementById(id);
+  if (element) {
+    element.scrollIntoView({ behavior: "auto" });
+  }
+}
+
 const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   { href, as, replace = false, scroll = true, children, onClick, ...rest },
   ref,
 ) {
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
-    // where href is a route pattern like "/user/[id]" and as is "/user/1")
+  // where href is a route pattern like "/user/[id]" and as is "/user/1")
   const resolvedHref = as ?? resolveHref(href);
   // Full href with basePath for browser URLs and fetches
   const fullHref = withBasePath(resolvedHref);
@@ -72,7 +121,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       return;
     }
 
-    // Only intercept internal links
+    // External links: let the browser handle it
     if (
       resolvedHref.startsWith("http://") ||
       resolvedHref.startsWith("https://") ||
@@ -83,39 +132,65 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
     e.preventDefault();
 
+    // Resolve relative hrefs (#hash, ?query) against current URL
+    const absoluteHref = resolveRelativeHref(resolvedHref);
+    const absoluteFullHref = withBasePath(absoluteHref);
+
+    // Hash-only change: update URL and scroll to target, skip RSC fetch
+    if (typeof window !== "undefined" && isHashOnlyChange(absoluteFullHref)) {
+      const hash = absoluteFullHref.includes("#") ? absoluteFullHref.slice(absoluteFullHref.indexOf("#")) : "";
+      if (replace) {
+        window.history.replaceState(null, "", absoluteFullHref);
+      } else {
+        window.history.pushState(null, "", absoluteFullHref);
+      }
+      if (scroll) {
+        scrollToHash(hash);
+      }
+      return;
+    }
+
+    // Extract hash for scroll-after-navigation
+    const hashIdx = absoluteFullHref.indexOf("#");
+    const hash = hashIdx !== -1 ? absoluteFullHref.slice(hashIdx) : "";
+
     // Try RSC navigation first (App Router), then Pages Router
     const win = window as any;
     if (typeof win.__NEXTCOMPAT_RSC_NAVIGATE__ === "function") {
       // App Router: push/replace history state, then fetch RSC stream
       if (replace) {
-        window.history.replaceState(null, "", fullHref);
+        window.history.replaceState(null, "", absoluteFullHref);
       } else {
-        window.history.pushState(null, "", fullHref);
+        window.history.pushState(null, "", absoluteFullHref);
       }
-      win.__NEXTCOMPAT_RSC_NAVIGATE__(fullHref);
+      win.__NEXTCOMPAT_RSC_NAVIGATE__(absoluteFullHref);
     } else {
       // Pages Router: use the Router singleton
       try {
         const routerModule = await import("next/router");
         const Router = routerModule.default;
         if (replace) {
-          await Router.replace(resolvedHref);
+          await Router.replace(absoluteHref);
         } else {
-          await Router.push(resolvedHref);
+          await Router.push(absoluteHref);
         }
       } catch {
         // Fallback to hard navigation if router fails
         if (replace) {
-          window.history.replaceState({}, "", fullHref);
+          window.history.replaceState({}, "", absoluteFullHref);
         } else {
-          window.history.pushState({}, "", fullHref);
+          window.history.pushState({}, "", absoluteFullHref);
         }
         window.dispatchEvent(new PopStateEvent("popstate"));
       }
     }
 
     if (scroll) {
-      window.scrollTo(0, 0);
+      if (hash) {
+        scrollToHash(hash);
+      } else {
+        window.scrollTo(0, 0);
+      }
     }
   };
 

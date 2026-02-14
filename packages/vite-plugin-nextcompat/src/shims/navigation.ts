@@ -143,6 +143,103 @@ export function useParams<
 }
 
 /**
+ * Check if a href is an external URL.
+ */
+function isExternalUrl(href: string): boolean {
+  return href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//");
+}
+
+/**
+ * Check if a href is only a hash change relative to the current URL.
+ */
+function isHashOnlyChange(href: string): boolean {
+  if (typeof window === "undefined") return false;
+  if (href.startsWith("#")) return true;
+  try {
+    const current = new URL(window.location.href);
+    const next = new URL(href, window.location.href);
+    return current.pathname === next.pathname && current.search === next.search && next.hash !== "";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Scroll to a hash target element, or to the top if no hash.
+ */
+function scrollToHash(hash: string): void {
+  if (!hash || hash === "#") {
+    window.scrollTo(0, 0);
+    return;
+  }
+  const id = hash.slice(1);
+  const element = document.getElementById(id);
+  if (element) {
+    element.scrollIntoView({ behavior: "auto" });
+  }
+}
+
+/**
+ * Navigate to a URL, handling external URLs, hash-only changes, and RSC navigation.
+ */
+function navigateImpl(
+  href: string,
+  mode: "push" | "replace",
+  scroll: boolean,
+): void {
+  // External URLs: use full page navigation
+  if (isExternalUrl(href)) {
+    if (mode === "replace") {
+      window.location.replace(href);
+    } else {
+      window.location.assign(href);
+    }
+    return;
+  }
+
+  const fullHref = withBasePath(href);
+
+  // Hash-only change: update URL and scroll to target, skip RSC fetch
+  if (isHashOnlyChange(fullHref)) {
+    const hash = fullHref.includes("#") ? fullHref.slice(fullHref.indexOf("#")) : "";
+    if (mode === "replace") {
+      window.history.replaceState(null, "", fullHref);
+    } else {
+      window.history.pushState(null, "", fullHref);
+    }
+    notifyListeners();
+    if (scroll) {
+      scrollToHash(hash);
+    }
+    return;
+  }
+
+  // Extract hash for post-navigation scrolling
+  const hashIdx = fullHref.indexOf("#");
+  const hash = hashIdx !== -1 ? fullHref.slice(hashIdx) : "";
+
+  if (mode === "replace") {
+    window.history.replaceState(null, "", fullHref);
+  } else {
+    window.history.pushState(null, "", fullHref);
+  }
+  notifyListeners();
+
+  // Trigger RSC re-fetch if available
+  if (typeof (window as any).__NEXTCOMPAT_RSC_NAVIGATE__ === "function") {
+    (window as any).__NEXTCOMPAT_RSC_NAVIGATE__(fullHref);
+  }
+
+  if (scroll) {
+    if (hash) {
+      scrollToHash(hash);
+    } else {
+      window.scrollTo(0, 0);
+    }
+  }
+}
+
+/**
  * App Router's useRouter — returns push/replace/back/forward/refresh.
  * Different from Pages Router's useRouter (next/router).
  */
@@ -150,28 +247,11 @@ export function useRouter() {
   const router = {
     push(href: string, options?: { scroll?: boolean }): void {
       if (isServer) return;
-      const fullHref = withBasePath(href);
-      window.history.pushState(null, "", fullHref);
-      notifyListeners();
-      if (options?.scroll !== false) {
-        window.scrollTo(0, 0);
-      }
-      // Trigger RSC re-fetch if available
-      if (typeof (window as any).__NEXTCOMPAT_RSC_NAVIGATE__ === "function") {
-        (window as any).__NEXTCOMPAT_RSC_NAVIGATE__(fullHref);
-      }
+      navigateImpl(href, "push", options?.scroll !== false);
     },
     replace(href: string, options?: { scroll?: boolean }): void {
       if (isServer) return;
-      const fullHref = withBasePath(href);
-      window.history.replaceState(null, "", fullHref);
-      notifyListeners();
-      if (options?.scroll !== false) {
-        window.scrollTo(0, 0);
-      }
-      if (typeof (window as any).__NEXTCOMPAT_RSC_NAVIGATE__ === "function") {
-        (window as any).__NEXTCOMPAT_RSC_NAVIGATE__(fullHref);
-      }
+      navigateImpl(href, "replace", options?.scroll !== false);
     },
     back(): void {
       if (isServer) return;
