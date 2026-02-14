@@ -478,6 +478,261 @@ describe("Production build", () => {
   });
 });
 
+// ---------------------------------------------------------------
+// App Router integration tests
+// ---------------------------------------------------------------
+
+const APP_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "../fixtures/app-basic",
+);
+
+describe("App Router integration", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    // Dynamically import the RSC plugin
+    const rsc = (await import("@vitejs/plugin-rsc")).default;
+
+    server = await createServer({
+      root: APP_FIXTURE_DIR,
+      configFile: false,
+      plugins: [
+        nextcompat(),
+        rsc({
+          entries: {
+            rsc: "virtual:nextcompat-rsc-entry",
+            ssr: "virtual:nextcompat-app-ssr-entry",
+            client: "virtual:nextcompat-app-browser-entry",
+          },
+        }),
+      ],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await server.listen();
+    const address = server.httpServer?.address();
+    if (address && typeof address === "object") {
+      baseUrl = `http://localhost:${address.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  it("renders the home page with root layout", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+
+    const html = await res.text();
+    expect(html).toContain("<html");
+    expect(html).toContain("Welcome to App Router");
+    expect(html).toContain("Server Component");
+  });
+
+  it("renders the about page", async () => {
+    const res = await fetch(`${baseUrl}/about`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("About");
+    expect(html).toContain("This is the about page.");
+  });
+
+  it("renders dynamic routes with params", async () => {
+    const res = await fetch(`${baseUrl}/blog/hello-world`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Blog Post");
+    expect(html).toContain("hello-world");
+  });
+
+  it("handles GET API route handlers", async () => {
+    const res = await fetch(`${baseUrl}/api/hello`);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data).toEqual({ message: "Hello from App Router API" });
+  });
+
+  it("handles POST API route handlers", async () => {
+    const res = await fetch(`${baseUrl}/api/hello`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ test: true }),
+    });
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data).toEqual({ echo: { test: true } });
+  });
+
+  it("returns 404 for non-existent routes", async () => {
+    const res = await fetch(`${baseUrl}/nonexistent`);
+    expect(res.status).toBe(404);
+  });
+
+  it("returns RSC stream for .rsc requests", async () => {
+    const res = await fetch(`${baseUrl}/.rsc`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+
+    const text = await res.text();
+    // RSC stream should contain serialized React tree
+    expect(text.length).toBeGreaterThan(0);
+  });
+
+  it("wraps pages in the root layout", async () => {
+    const res = await fetch(`${baseUrl}/about`);
+    const html = await res.text();
+
+    // Should have the <html> tag from root layout
+    expect(html).toContain('<html lang="en">');
+    expect(html).toContain("<title>App Basic</title>");
+    expect(html).toContain("</body></html>");
+  });
+});
+
+describe("next/navigation shim", () => {
+  it("exports usePathname, useSearchParams, useParams, useRouter", async () => {
+    const nav = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    expect(typeof nav.usePathname).toBe("function");
+    expect(typeof nav.useSearchParams).toBe("function");
+    expect(typeof nav.useParams).toBe("function");
+    expect(typeof nav.useRouter).toBe("function");
+  });
+
+  it("exports redirect, notFound, permanentRedirect", async () => {
+    const nav = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    expect(typeof nav.redirect).toBe("function");
+    expect(typeof nav.notFound).toBe("function");
+    expect(typeof nav.permanentRedirect).toBe("function");
+  });
+
+  it("redirect() throws with correct digest", async () => {
+    const { redirect } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    try {
+      redirect("/login");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      expect(e.digest).toContain("NEXT_REDIRECT");
+      expect(e.digest).toContain("/login");
+    }
+  });
+
+  it("notFound() throws with correct digest", async () => {
+    const { notFound } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    try {
+      notFound();
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      expect(e.digest).toBe("NEXT_NOT_FOUND");
+    }
+  });
+
+  it("setNavigationContext / useParams works on server side", async () => {
+    const { setNavigationContext, useParams } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    setNavigationContext({
+      pathname: "/blog/test",
+      searchParams: new URLSearchParams(""),
+      params: { slug: "test" },
+    });
+    const params = useParams();
+    expect(params).toEqual({ slug: "test" });
+    setNavigationContext(null);
+  });
+});
+
+describe("next/headers shim", () => {
+  it("exports cookies, headers, draftMode", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    expect(typeof mod.cookies).toBe("function");
+    expect(typeof mod.headers).toBe("function");
+    expect(typeof mod.draftMode).toBe("function");
+  });
+
+  it("headers() returns request headers from context", async () => {
+    const { setHeadersContext, headers } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    const reqHeaders = new Headers({ "x-custom": "test-value" });
+    setHeadersContext({
+      headers: reqHeaders,
+      cookies: new Map(),
+    });
+
+    const h = await headers();
+    expect(h.get("x-custom")).toBe("test-value");
+    setHeadersContext(null);
+  });
+
+  it("cookies() returns parsed cookies from context", async () => {
+    const { setHeadersContext, cookies } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([
+        ["session", "abc123"],
+        ["theme", "dark"],
+      ]),
+    });
+
+    const c = await cookies();
+    expect(c.get("session")).toEqual({ name: "session", value: "abc123" });
+    expect(c.get("theme")).toEqual({ name: "theme", value: "dark" });
+    expect(c.has("session")).toBe(true);
+    expect(c.has("missing")).toBe(false);
+    expect(c.size).toBe(2);
+    setHeadersContext(null);
+  });
+
+  it("headersContextFromRequest parses cookies from Request", async () => {
+    const { headersContextFromRequest } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    const req = new Request("https://example.com", {
+      headers: { cookie: "a=1; b=2" },
+    });
+    const ctx = headersContextFromRequest(req);
+
+    expect(ctx.cookies.get("a")).toBe("1");
+    expect(ctx.cookies.get("b")).toBe("2");
+    expect(ctx.headers.get("cookie")).toBe("a=1; b=2");
+  });
+
+  it("throws when called outside request context", async () => {
+    const { headers, cookies } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    // Ensure context is cleared
+    const { setHeadersContext } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    setHeadersContext(null);
+
+    await expect(headers()).rejects.toThrow("Server Component");
+    await expect(cookies()).rejects.toThrow("Server Component");
+  });
+});
+
 describe("next/server shim", () => {
   it("NextRequest wraps a standard Request with nextUrl and cookies", async () => {
     const { NextRequest } = await import(

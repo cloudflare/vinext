@@ -1,7 +1,13 @@
 import type { Plugin, ViteDevServer } from "vite";
 import { pagesRouter, apiRouter, invalidateRouteCache, type Route } from "./routing/pages-router.js";
+import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
+import {
+  generateRscEntry,
+  generateSsrEntry,
+  generateBrowserEntry,
+} from "./server/app-dev-server.js";
 import {
   loadNextConfig,
   resolveNextConfig,
@@ -15,11 +21,19 @@ import fs from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Virtual module IDs for the production build
+// Virtual module IDs for Pages Router production build
 const VIRTUAL_SERVER_ENTRY = "virtual:nextcompat-server-entry";
 const RESOLVED_SERVER_ENTRY = "\0" + VIRTUAL_SERVER_ENTRY;
 const VIRTUAL_CLIENT_ENTRY = "virtual:nextcompat-client-entry";
 const RESOLVED_CLIENT_ENTRY = "\0" + VIRTUAL_CLIENT_ENTRY;
+
+// Virtual module IDs for App Router entries
+const VIRTUAL_RSC_ENTRY = "virtual:nextcompat-rsc-entry";
+const RESOLVED_RSC_ENTRY = "\0" + VIRTUAL_RSC_ENTRY;
+const VIRTUAL_APP_SSR_ENTRY = "virtual:nextcompat-app-ssr-entry";
+const RESOLVED_APP_SSR_ENTRY = "\0" + VIRTUAL_APP_SSR_ENTRY;
+const VIRTUAL_APP_BROWSER_ENTRY = "virtual:nextcompat-app-browser-entry";
+const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
 
 export interface NextcompatOptions {
   /** Root directory of the Next.js app (default: Vite root) */
@@ -29,6 +43,9 @@ export interface NextcompatOptions {
 export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
   let root: string;
   let pagesDir: string;
+  let appDir: string;
+  let hasAppDir = false;
+  let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
@@ -415,10 +432,14 @@ hydrate();
 
       async config(config) {
         root = config.root ?? process.cwd();
-        pagesDir = path.join(options.appDir ?? root, "pages");
+        const baseDir = options.appDir ?? root;
+        pagesDir = path.join(baseDir, "pages");
+        appDir = path.join(baseDir, "app");
+        hasPagesDir = fs.existsSync(pagesDir);
+        hasAppDir = fs.existsSync(appDir);
 
         // Load next.config.js if present
-        const rawConfig = await loadNextConfig(options.appDir ?? root);
+        const rawConfig = await loadNextConfig(baseDir);
         nextConfig = await resolveNextConfig(rawConfig);
 
         // Merge env from next.config.js with NEXT_PUBLIC_* env vars
@@ -427,7 +448,7 @@ hydrate();
           defines[`process.env.${key}`] = JSON.stringify(value);
         }
 
-        return {
+        const viteConfig: Record<string, any> = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           // Externalize React packages from SSR transform — they are CJS and
@@ -447,6 +468,8 @@ hydrate();
               "next/config": path.join(shimsDir, "config"),
               "next/script": path.join(shimsDir, "script"),
               "next/server": path.join(shimsDir, "server"),
+              "next/navigation": path.join(shimsDir, "navigation"),
+              "next/headers": path.join(shimsDir, "headers"),
             },
           },
           // Enable JSX in .tsx/.jsx files
@@ -458,26 +481,80 @@ hydrate();
           // Set base path if configured
           ...(nextConfig.basePath ? { base: nextConfig.basePath + "/" } : {}),
         };
+
+        // If app/ directory exists, configure RSC environments
+        if (hasAppDir) {
+          viteConfig.environments = {
+            rsc: {
+              build: {
+                rollupOptions: {
+                  input: { index: VIRTUAL_RSC_ENTRY },
+                },
+              },
+            },
+            ssr: {
+              build: {
+                rollupOptions: {
+                  input: { index: VIRTUAL_APP_SSR_ENTRY },
+                },
+              },
+            },
+            client: {
+              build: {
+                rollupOptions: {
+                  input: { index: VIRTUAL_APP_BROWSER_ENTRY },
+                },
+              },
+            },
+          };
+        }
+
+        return viteConfig;
       },
 
       resolveId(id) {
+        // Pages Router virtual modules
         if (id === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
         if (id === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
-        // Vite build may resolve virtual entries relative to root
         if (id.endsWith("/" + VIRTUAL_SERVER_ENTRY) || id.endsWith("\\" + VIRTUAL_SERVER_ENTRY)) {
           return RESOLVED_SERVER_ENTRY;
         }
         if (id.endsWith("/" + VIRTUAL_CLIENT_ENTRY) || id.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)) {
           return RESOLVED_CLIENT_ENTRY;
         }
+        // App Router virtual modules
+        if (id === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
+        if (id === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
+        if (id === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
+        if (id.endsWith("/" + VIRTUAL_RSC_ENTRY) || id.endsWith("\\" + VIRTUAL_RSC_ENTRY)) {
+          return RESOLVED_RSC_ENTRY;
+        }
+        if (id.endsWith("/" + VIRTUAL_APP_SSR_ENTRY) || id.endsWith("\\" + VIRTUAL_APP_SSR_ENTRY)) {
+          return RESOLVED_APP_SSR_ENTRY;
+        }
+        if (id.endsWith("/" + VIRTUAL_APP_BROWSER_ENTRY) || id.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)) {
+          return RESOLVED_APP_BROWSER_ENTRY;
+        }
       },
 
       async load(id) {
+        // Pages Router virtual modules
         if (id === RESOLVED_SERVER_ENTRY) {
           return await generateServerEntry();
         }
         if (id === RESOLVED_CLIENT_ENTRY) {
           return await generateClientEntry();
+        }
+        // App Router virtual modules
+        if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
+          const routes = await appRouter(appDir);
+          return generateRscEntry(appDir, routes);
+        }
+        if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
+          return generateSsrEntry();
+        }
+        if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
+          return generateBrowserEntry();
         }
       },
     },
@@ -488,13 +565,19 @@ hydrate();
         // Watch pages directory for file additions/removals to invalidate route cache.
         const pageExtensions = /\.(tsx?|jsx?)$/;
         server.watcher.on("add", (filePath: string) => {
-          if (filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
+          if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
+          }
+          if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
+            invalidateAppRouteCache();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
-          if (filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
+          if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
+          }
+          if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
+            invalidateAppRouteCache();
           }
         });
 
@@ -504,12 +587,21 @@ hydrate();
             try {
               let url: string = req.url ?? "/";
 
+              // If no pages directory, skip this middleware entirely
+              // (app router is handled by @vitejs/plugin-rsc's built-in middleware)
+              if (!hasPagesDir) return next();
+
               // Skip Vite internal requests and static files
               if (
                 url.startsWith("/@") ||
                 url.startsWith("/__vite") ||
                 url.startsWith("/node_modules")
               ) {
+                return next();
+              }
+
+              // Skip .rsc requests — those are for the App Router RSC handler
+              if (url.split("?")[0].endsWith(".rsc")) {
                 return next();
               }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import path from "node:path";
 import { pagesRouter, matchRoute } from "../packages/vite-plugin-nextcompat/src/routing/pages-router.js";
+import { appRouter, matchAppRoute } from "../packages/vite-plugin-nextcompat/src/routing/app-router.js";
 
 const FIXTURE_DIR = path.resolve(
   import.meta.dirname,
@@ -136,5 +137,107 @@ describe("matchRoute - URL matching", () => {
     // /docs alone should NOT match [...slug] (requires at least 1 segment)
     const result = matchRoute("/docs", routes);
     expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------
+// App Router routing tests
+// ---------------------------------------------------------------
+
+const APP_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "../fixtures/app-basic/app",
+);
+
+describe("appRouter - route discovery", () => {
+  it("discovers page routes from the app directory", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const pagePatterns = routes.filter((r) => r.pagePath).map((r) => r.pattern);
+
+    expect(pagePatterns).toContain("/");
+    expect(pagePatterns).toContain("/about");
+    expect(pagePatterns).toContain("/blog/:slug");
+  });
+
+  it("discovers route handler (API) routes", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const apiRoutes = routes.filter((r) => r.routePath);
+
+    expect(apiRoutes.length).toBeGreaterThan(0);
+    const apiPatterns = apiRoutes.map((r) => r.pattern);
+    expect(apiPatterns).toContain("/api/hello");
+  });
+
+  it("discovers layouts from root to leaf", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const homeRoute = routes.find((r) => r.pattern === "/");
+
+    expect(homeRoute).toBeDefined();
+    expect(homeRoute!.layouts.length).toBeGreaterThan(0);
+    // Root layout should be the first
+    expect(homeRoute!.layouts[0]).toContain("layout.tsx");
+  });
+
+  it("detects dynamic segments", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const blogRoute = routes.find((r) => r.pattern === "/blog/:slug");
+
+    expect(blogRoute).toBeDefined();
+    expect(blogRoute!.isDynamic).toBe(true);
+    expect(blogRoute!.params).toEqual(["slug"]);
+  });
+
+  it("sorts static routes before dynamic routes", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const staticRoutes = routes.filter((r) => !r.isDynamic);
+    const dynamicRoutes = routes.filter((r) => r.isDynamic);
+
+    if (staticRoutes.length > 0 && dynamicRoutes.length > 0) {
+      const lastStaticIndex = routes.findIndex(
+        (r) => r === staticRoutes[staticRoutes.length - 1],
+      );
+      const firstDynamicIndex = routes.findIndex(
+        (r) => r === dynamicRoutes[0],
+      );
+      expect(lastStaticIndex).toBeLessThan(firstDynamicIndex);
+    }
+  });
+});
+
+describe("matchAppRoute - URL matching", () => {
+  it("matches static routes", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    const result = matchAppRoute("/", routes);
+    expect(result).not.toBeNull();
+    expect(result!.route.pattern).toBe("/");
+
+    const aboutResult = matchAppRoute("/about", routes);
+    expect(aboutResult).not.toBeNull();
+    expect(aboutResult!.route.pattern).toBe("/about");
+  });
+
+  it("matches dynamic routes and extracts params", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    const result = matchAppRoute("/blog/hello-world", routes);
+    expect(result).not.toBeNull();
+    expect(result!.route.pattern).toBe("/blog/:slug");
+    expect(result!.params).toEqual({ slug: "hello-world" });
+  });
+
+  it("returns null for unmatched routes", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    const result = matchAppRoute("/nonexistent", routes);
+    expect(result).toBeNull();
+  });
+
+  it("matches API route handlers", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    const result = matchAppRoute("/api/hello", routes);
+    expect(result).not.toBeNull();
+    expect(result!.route.routePath).toBeTruthy();
   });
 });
