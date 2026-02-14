@@ -185,6 +185,48 @@ ${metaRouteEntries.join(",\n")}
 const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
 const rootLayouts = [${rootLayoutVars.join(", ")}];
 
+/**
+ * Render a not-found page with layouts and noindex meta.
+ * Tries the route's not-found.tsx first, then root not-found.tsx.
+ * Returns null if no not-found component is available.
+ */
+async function renderNotFoundPage(route, isRscRequest, request) {
+  // Determine which not-found component to use
+  const notFoundModule = route?.notFound ?? rootNotFoundModule;
+  const layouts = route?.layouts ?? rootLayouts;
+  if (!notFoundModule) return null;
+
+  const NotFoundComponent = notFoundModule.default;
+  if (!NotFoundComponent) return null;
+
+  // Build element: noindex meta + not-found component wrapped in layouts
+  const noindexMeta = createElement("meta", { name: "robots", content: "noindex" });
+  let element = createElement(Fragment, null, noindexMeta, createElement(NotFoundComponent));
+  for (let i = layouts.length - 1; i >= 0; i--) {
+    const LayoutComponent = layouts[i]?.default;
+    if (LayoutComponent) {
+      element = createElement(LayoutComponent, { children: element });
+    }
+  }
+  const rscStream = renderToReadableStream(element);
+  if (isRscRequest) {
+    setHeadersContext(null);
+    setNavigationContext(null);
+    return new Response(rscStream, {
+      status: 404,
+      headers: { "Content-Type": "text/x-component; charset=utf-8" },
+    });
+  }
+  const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+  const htmlStream = await ssrEntry.handleSsr(rscStream);
+  setHeadersContext(null);
+  setNavigationContext(null);
+  return new Response(htmlStream, {
+    status: 404,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   const normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
@@ -564,36 +606,8 @@ export default async function handler(request) {
 
   if (!match) {
     // Render custom not-found page if available, otherwise plain 404
-    if (rootNotFoundModule) {
-      const NotFoundComponent = rootNotFoundModule.default;
-      // Include noindex meta tag on 404 pages (matching Next.js behavior)
-      const noindexMeta = createElement("meta", { name: "robots", content: "noindex" });
-      let element = createElement(Fragment, null, noindexMeta, createElement(NotFoundComponent));
-      // Wrap in root layouts
-      for (let i = rootLayouts.length - 1; i >= 0; i--) {
-        const LayoutComponent = rootLayouts[i]?.default;
-        if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element });
-        }
-      }
-      const rscStream = renderToReadableStream(element);
-      if (isRscRequest) {
-        setHeadersContext(null);
-        setNavigationContext(null);
-        return new Response(rscStream, {
-          status: 404,
-          headers: { "Content-Type": "text/x-component; charset=utf-8" },
-        });
-      }
-      const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-      const htmlStream = await ssrEntry.handleSsr(rscStream);
-      setHeadersContext(null);
-      setNavigationContext(null);
-      return new Response(htmlStream, {
-        status: 404,
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
-    }
+    const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
+    if (notFoundResponse) return notFoundResponse;
     setHeadersContext(null);
     setNavigationContext(null);
     return new Response("Not Found", { status: 404 });
@@ -868,6 +882,9 @@ export default async function handler(request) {
         return Response.redirect(new URL(redirectUrl, request.url), statusCode);
       }
       if (digest === "NEXT_NOT_FOUND") {
+        // Render the nearest not-found.tsx with layouts + noindex
+        const nfResp = await renderNotFoundPage(route, isRscRequest, request);
+        if (nfResp) return nfResp;
         setHeadersContext(null);
         setNavigationContext(null);
         return new Response("Not Found", { status: 404 });
@@ -880,7 +897,7 @@ export default async function handler(request) {
   // rscCssTransform — no manual loadCss() call needed.
 
   // Helper: check if an error is a redirect/notFound thrown by the navigation shim
-  function handleRenderError(err) {
+  async function handleRenderError(err) {
     if (err && typeof err === "object" && "digest" in err) {
       const digest = String(err.digest);
       if (digest.startsWith("NEXT_REDIRECT;")) {
@@ -892,6 +909,8 @@ export default async function handler(request) {
         return Response.redirect(new URL(redirectUrl, request.url), statusCode);
       }
       if (digest === "NEXT_NOT_FOUND") {
+        const nfResp = await renderNotFoundPage(route, isRscRequest, request);
+        if (nfResp) return nfResp;
         setHeadersContext(null);
         setNavigationContext(null);
         return new Response("Not Found", { status: 404 });
@@ -910,7 +929,7 @@ export default async function handler(request) {
       await testResult;
     }
   } catch (preRenderErr) {
-    const specialResponse = handleRenderError(preRenderErr);
+    const specialResponse = await handleRenderError(preRenderErr);
     if (specialResponse) return specialResponse;
     // Not a special error — let it propagate through normal RSC rendering
     // (React error boundaries, etc.)

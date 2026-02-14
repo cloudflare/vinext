@@ -132,6 +132,15 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
     e.preventDefault();
 
+    // Save scroll position for back/forward restoration
+    if (!replace) {
+      const state = window.history.state ?? {};
+      window.history.replaceState(
+        { ...state, __nextcompat_scrollX: window.scrollX, __nextcompat_scrollY: window.scrollY },
+        "",
+      );
+    }
+
     // Resolve relative hrefs (#hash, ?query) against current URL
     const absoluteHref = resolveRelativeHref(resolvedHref);
     const absoluteFullHref = withBasePath(absoluteHref);

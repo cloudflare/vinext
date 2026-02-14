@@ -184,3 +184,28 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 ## dynamic = "error"
 
 - **`dynamic = "error"` uses Proxy-based traps** on the headers/cookies context. When a page with `dynamic = "error"` tries to access `headers()`, `cookies()`, or `searchParams`, the Proxy throws an informative error. SearchParams are also cleared. Response gets the same caching headers as `force-static` (s-maxage=31536000).
+
+## Route handlers
+
+- **HEAD auto-implementation**: When a route exports `GET` but not `HEAD`, Next.js automatically handles HEAD by running GET and stripping the body. Our handler does the same.
+- **OPTIONS auto-implementation**: Next.js returns 204 with `Allow` header listing all exported methods. `HEAD` is implicitly included when `GET` exists.
+- **Vite CORS middleware intercepts OPTIONS**: In dev mode, Vite's built-in CORS middleware responds to OPTIONS requests before our handler. Set `server.cors: false` in test configuration to test OPTIONS handling directly.
+- **Route handler params**: Route handler functions receive `(request, { params })` as second argument. Dynamic route segments are passed as `params`.
+- **Route handler error body should be empty**: Next.js returns 500 with empty body for route handler errors, not "Internal Server Error" text.
+- **Route handler redirect/notFound**: `redirect()` and `notFound()` thrown from route handlers return HTTP responses (307 redirect / 404 with empty body).
+
+## Navigation
+
+- **Hash-only navigation must skip RSC fetch**: Clicking `<Link href="#foo">` or calling `router.push("#hash")` should NOT trigger an RSC round-trip. Only update the URL and scroll to the target element.
+- **Relative hrefs resolve against current URL**: `<Link href="#h1">`, `<Link href="?foo=1">` resolve relative to `window.location.href`.
+- **External URLs in router.push()**: `router.push("https://...")` must use `window.location.assign()`, not `history.pushState()`.
+- **Scroll restoration**: Save scroll position (`scrollX`, `scrollY`) in `history.state` before every push navigation. On `popstate`, restore from `event.state`.
+- **scrollToHash**: After navigation to a URL with a hash, scroll to the element with matching `id` using `element.scrollIntoView()`.
+
+## Metadata
+
+- **Title templates apply to child segments only**: `title.template` in `layout.js` does NOT apply to the `page.js` in the same route segment. Only child segments' titles get wrapped.
+- **`title.absolute` skips all templates**: Useful for overriding the parent template entirely.
+- **`metadataBase` for URL resolution**: Base URL for composing relative URLs in metadata (canonical, OG images, alternates). Use `new URL(relative, metadataBase)` for composition.
+- **`noindex` meta auto-injected on 404 pages**: Next.js automatically adds `<meta name="robots" content="noindex"/>` when rendering not-found pages.
+- **`notFound()` must propagate past error boundaries**: `getDerivedStateFromError` in the `ErrorBoundary` shim must re-throw errors with `digest === "NEXT_NOT_FOUND"` or `"NEXT_REDIRECT;..."`. These are framework-level errors, not component errors.

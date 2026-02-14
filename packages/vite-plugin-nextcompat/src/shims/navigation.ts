@@ -180,6 +180,34 @@ function scrollToHash(hash: string): void {
 }
 
 /**
+ * Save the current scroll position into the current history state.
+ * Called before every navigation to enable scroll restoration on back/forward.
+ */
+function saveScrollPosition(): void {
+  const state = window.history.state ?? {};
+  window.history.replaceState(
+    { ...state, __nextcompat_scrollX: window.scrollX, __nextcompat_scrollY: window.scrollY },
+    "",
+  );
+}
+
+/**
+ * Restore scroll position from a history state object (used on popstate).
+ */
+function restoreScrollPosition(state: unknown): void {
+  if (state && typeof state === "object" && "__nextcompat_scrollY" in state) {
+    const { __nextcompat_scrollX: x, __nextcompat_scrollY: y } = state as {
+      __nextcompat_scrollX: number;
+      __nextcompat_scrollY: number;
+    };
+    // Use requestAnimationFrame to ensure DOM has updated before scrolling
+    requestAnimationFrame(() => {
+      window.scrollTo(x, y);
+    });
+  }
+}
+
+/**
  * Navigate to a URL, handling external URLs, hash-only changes, and RSC navigation.
  */
 function navigateImpl(
@@ -198,6 +226,11 @@ function navigateImpl(
   }
 
   const fullHref = withBasePath(href);
+
+  // Save scroll position before navigating (for back/forward restoration)
+  if (mode === "push") {
+    saveScrollPosition();
+  }
 
   // Hash-only change: update URL and scroll to target, skip RSC fetch
   if (isHashOnlyChange(fullHref)) {
@@ -358,7 +391,9 @@ function requireReact() {
 
 // Listen for popstate on the client
 if (!isServer) {
-  window.addEventListener("popstate", () => {
+  window.addEventListener("popstate", (event) => {
     notifyListeners();
+    // Restore scroll position for back/forward navigation
+    restoreScrollPosition(event.state);
   });
 }
