@@ -197,6 +197,27 @@ describe("Pages Router integration", () => {
     expect(res.headers.get("x-custom-header")).toBe("nextcompat");
   });
 
+  it("applies beforeFiles rewrites from next.config.js", async () => {
+    const res = await fetch(`${baseUrl}/before-rewrite`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
+  });
+
+  it("applies afterFiles rewrites from next.config.js", async () => {
+    const res = await fetch(`${baseUrl}/after-rewrite`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
+  });
+
+  it("applies fallback rewrites from next.config.js", async () => {
+    const res = await fetch(`${baseUrl}/fallback-rewrite`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
+  });
+
   // --- getStaticPaths ---
 
   it("renders pages with getStaticPaths + getStaticProps", async () => {

@@ -12,6 +12,28 @@ const nextConfig = {
       },
     ];
   },
+  async rewrites() {
+    return {
+      beforeFiles: [
+        {
+          source: "/before-rewrite",
+          destination: "/about",
+        },
+      ],
+      afterFiles: [
+        {
+          source: "/after-rewrite",
+          destination: "/about",
+        },
+      ],
+      fallback: [
+        {
+          source: "/fallback-rewrite",
+          destination: "/about",
+        },
+      ],
+    };
+  },
   async headers() {
     return [
       {

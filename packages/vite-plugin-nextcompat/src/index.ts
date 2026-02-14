@@ -1,5 +1,5 @@
 import type { Plugin, ViteDevServer } from "vite";
-import { pagesRouter, apiRouter, invalidateRouteCache, type Route } from "./routing/pages-router.js";
+import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, type Route } from "./routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
@@ -819,7 +819,41 @@ hydrate();
               }
 
               const routes = await pagesRouter(pagesDir);
+
+              // Apply afterFiles rewrites — these run after initial route matching
+              // If beforeFiles already rewrote the URL, afterFiles still run on the
+              // *resolved* pathname. Next.js applies these when route matching succeeds
+              // but allows overriding with rewrites.
+              if (nextConfig?.rewrites.afterFiles.length) {
+                const afterRewrite = applyRewrites(
+                  resolvedUrl.split("?")[0],
+                  nextConfig.rewrites.afterFiles,
+                );
+                if (afterRewrite) resolvedUrl = afterRewrite;
+              }
+
               const handler = createSSRHandler(server, routes, pagesDir);
+
+              // Try rendering the resolved URL
+              const match = matchRoute(resolvedUrl.split("?")[0], routes);
+              if (match) {
+                await handler(req, res, resolvedUrl);
+                return;
+              }
+
+              // No route matched — try fallback rewrites
+              if (nextConfig?.rewrites.fallback.length) {
+                const fallbackRewrite = applyRewrites(
+                  resolvedUrl.split("?")[0],
+                  nextConfig.rewrites.fallback,
+                );
+                if (fallbackRewrite) {
+                  await handler(req, res, fallbackRewrite);
+                  return;
+                }
+              }
+
+              // No fallback matched — render as-is (will hit 404 handler)
               await handler(req, res, resolvedUrl);
             } catch (e) {
               next(e);
