@@ -11,8 +11,11 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "playwright": "^1.52.0",
     "typescript": "^5.7.0",
-    "vitest": "^3.2.1",
-    "playwright": "^1.52.0"
+    "vitest": "^3.2.1"
+  },
+  "dependencies": {
+    "@unpic/react": "^1.0.2"
   }
 }
