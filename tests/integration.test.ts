@@ -1034,6 +1034,39 @@ describe("App Router integration", () => {
     expect(data).toEqual({ id: "99", name: "Widget" });
   });
 
+  it("cookies().set() in route handler produces Set-Cookie headers", async () => {
+    const res = await fetch(`${baseUrl}/api/set-cookie`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+
+    // Should have Set-Cookie headers from cookies().set()
+    const setCookieHeaders = res.headers.getSetCookie();
+    expect(setCookieHeaders.length).toBeGreaterThanOrEqual(2);
+
+    // Check session cookie
+    const sessionCookie = setCookieHeaders.find((h: string) => h.startsWith("session="));
+    expect(sessionCookie).toBeDefined();
+    expect(sessionCookie).toContain("abc123");
+    expect(sessionCookie).toContain("HttpOnly");
+    expect(sessionCookie).toContain("Path=/");
+
+    // Check theme cookie
+    const themeCookie = setCookieHeaders.find((h: string) => h.startsWith("theme="));
+    expect(themeCookie).toBeDefined();
+    expect(themeCookie).toContain("dark");
+  });
+
+  it("cookies().delete() in route handler produces Max-Age=0 Set-Cookie", async () => {
+    const res = await fetch(`${baseUrl}/api/set-cookie`, { method: "POST" });
+    expect(res.status).toBe(200);
+
+    const setCookieHeaders = res.headers.getSetCookie();
+    const deleteCookie = setCookieHeaders.find((h: string) => h.startsWith("session="));
+    expect(deleteCookie).toBeDefined();
+    expect(deleteCookie).toContain("Max-Age=0");
+  });
+
   it("renders custom not-found.tsx for unmatched routes", async () => {
     const res = await fetch(`${baseUrl}/does-not-exist`);
     expect(res.status).toBe(404);
@@ -1978,6 +2011,77 @@ describe("next/headers shim", () => {
 
     const cookieHeader = getDraftModeCookieHeader();
     expect(cookieHeader).toContain("Max-Age=0");
+    setHeadersContext(null);
+  });
+});
+
+describe("next/headers writable cookies", () => {
+  it("cookies().set() updates the cookie map and accumulates Set-Cookie headers", async () => {
+    const { setHeadersContext, cookies, getAndClearPendingCookies } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const c = await cookies();
+    c.set("token", "xyz", { path: "/", httpOnly: true, secure: true });
+
+    // Cookie should now be readable
+    expect(c.get("token")).toEqual({ name: "token", value: "xyz" });
+    expect(c.has("token")).toBe(true);
+
+    // Pending Set-Cookie headers should be accumulated
+    const pending = getAndClearPendingCookies();
+    expect(pending.length).toBe(1);
+    expect(pending[0]).toContain("token=xyz");
+    expect(pending[0]).toContain("Path=/");
+    expect(pending[0]).toContain("HttpOnly");
+    expect(pending[0]).toContain("Secure");
+
+    // After clearing, should be empty
+    expect(getAndClearPendingCookies().length).toBe(0);
+    setHeadersContext(null);
+  });
+
+  it("cookies().delete() removes from map and adds Max-Age=0 header", async () => {
+    const { setHeadersContext, cookies, getAndClearPendingCookies } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "abc"]]),
+    });
+
+    const c = await cookies();
+    expect(c.has("session")).toBe(true);
+    c.delete("session");
+    expect(c.has("session")).toBe(false);
+
+    const pending = getAndClearPendingCookies();
+    expect(pending.length).toBe(1);
+    expect(pending[0]).toContain("session=");
+    expect(pending[0]).toContain("Max-Age=0");
+    setHeadersContext(null);
+  });
+
+  it("cookies().set() with object syntax works", async () => {
+    const { setHeadersContext, cookies, getAndClearPendingCookies } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const c = await cookies();
+    c.set({ name: "pref", value: "dark", sameSite: "Lax" });
+    expect(c.get("pref")?.value).toBe("dark");
+
+    const pending = getAndClearPendingCookies();
+    expect(pending[0]).toContain("pref=dark");
+    expect(pending[0]).toContain("SameSite=Lax");
     setHeadersContext(null);
   });
 });

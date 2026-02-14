@@ -145,7 +145,7 @@ import {
 } from "@vitejs/plugin-rsc/rsc";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies } from "next/headers";
 import { ErrorBoundary } from "nextcompat/error-boundary";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "nextcompat/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
@@ -592,12 +592,24 @@ export default async function handler(request) {
         { root: element, returnValue },
         { temporaryReferences },
       );
+
+      // Collect cookies set during the action
+      const actionPendingCookies = getAndClearPendingCookies();
+      const actionDraftCookie = getDraftModeCookieHeader();
       setHeadersContext(null);
       setNavigationContext(null);
-      return new Response(rscStream, {
-        headers: { "Content-Type": "text/x-component; charset=utf-8" },
-      });
+
+      const actionHeaders = { "Content-Type": "text/x-component; charset=utf-8" };
+      const actionResponse = new Response(rscStream, { headers: actionHeaders });
+      if (actionPendingCookies.length > 0 || actionDraftCookie) {
+        for (const cookie of actionPendingCookies) {
+          actionResponse.headers.append("Set-Cookie", cookie);
+        }
+        if (actionDraftCookie) actionResponse.headers.append("Set-Cookie", actionDraftCookie);
+      }
+      return actionResponse;
     } catch (err) {
+      getAndClearPendingCookies(); // Clear pending cookies on error
       console.error("[nextcompat] Server action error:", err);
       setHeadersContext(null);
       setNavigationContext(null);
@@ -662,8 +674,35 @@ export default async function handler(request) {
     if (typeof handlerFn === "function") {
       try {
         const response = await handlerFn(request, { params });
+
+        // Collect any Set-Cookie headers from cookies().set()/delete() calls
+        const pendingCookies = getAndClearPendingCookies();
+        const draftCookie = getDraftModeCookieHeader();
         setHeadersContext(null);
         setNavigationContext(null);
+
+        // If we have pending cookies, create a new response with them attached
+        if (pendingCookies.length > 0 || draftCookie) {
+          const newHeaders = new Headers(response.headers);
+          for (const cookie of pendingCookies) {
+            newHeaders.append("Set-Cookie", cookie);
+          }
+          if (draftCookie) newHeaders.append("Set-Cookie", draftCookie);
+
+          if (isAutoHead) {
+            return new Response(null, {
+              status: response.status,
+              statusText: response.statusText,
+              headers: newHeaders,
+            });
+          }
+          return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: newHeaders,
+          });
+        }
+
         if (isAutoHead) {
           // Strip body for auto-HEAD, preserve headers and status
           return new Response(null, {
@@ -674,6 +713,7 @@ export default async function handler(request) {
         }
         return response;
       } catch (err) {
+        getAndClearPendingCookies(); // Clear any pending cookies on error
         // Catch redirect() / notFound() thrown from route handlers
         if (err && typeof err === "object" && "digest" in err) {
           const digest = String(err.digest);
