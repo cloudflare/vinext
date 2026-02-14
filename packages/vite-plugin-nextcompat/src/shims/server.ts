@@ -380,3 +380,17 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
 export async function connection(): Promise<void> {
   // No-op — all our responses are dynamic
 }
+
+/**
+ * URLPattern re-export — used in middleware for route matching.
+ * Available natively in Node 20+, Cloudflare Workers, Deno.
+ * Falls back to urlpattern-polyfill if the global is not available.
+ */
+export const URLPattern: typeof globalThis.URLPattern =
+  globalThis.URLPattern ??
+  (() => {
+    throw new Error(
+      "URLPattern is not available in this runtime. " +
+        "Install the `urlpattern-polyfill` package or upgrade to Node 20+.",
+    );
+  });

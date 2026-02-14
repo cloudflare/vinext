@@ -2311,6 +2311,23 @@ describe("next/server shim", () => {
     expect(result).toBeInstanceOf(Promise);
     await expect(result).resolves.toBeUndefined();
   });
+
+  it("URLPattern is exported and available in Node 20+", async () => {
+    const { URLPattern } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    // Node 22+ has URLPattern globally; if available, test it works
+    if (globalThis.URLPattern) {
+      expect(URLPattern).toBe(globalThis.URLPattern);
+      const pattern = new URLPattern({ pathname: "/blog/:slug" });
+      const match = pattern.exec({ pathname: "/blog/hello-world" });
+      expect(match).toBeTruthy();
+      expect(match!.pathname.groups.slug).toBe("hello-world");
+    } else {
+      // URLPattern not available — our export should be a fallback that throws
+      expect(typeof URLPattern).toBe("function");
+    }
+  });
 });
 
 describe("next/config shim", () => {

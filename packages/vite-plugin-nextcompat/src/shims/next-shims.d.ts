@@ -209,6 +209,7 @@ declare module "next/server" {
   export function userAgentFromString(ua: string | undefined): any;
   export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void;
   export function connection(): Promise<void>;
+  export const URLPattern: typeof globalThis.URLPattern;
   export type NextMiddleware = (request: NextRequest, event: any) => any;
 }
 
