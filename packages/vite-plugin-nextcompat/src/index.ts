@@ -444,6 +444,9 @@ hydrate();
               "next/dynamic": path.join(shimsDir, "dynamic"),
               "next/app": path.join(shimsDir, "app"),
               "next/document": path.join(shimsDir, "document"),
+              "next/config": path.join(shimsDir, "config"),
+              "next/script": path.join(shimsDir, "script"),
+              "next/server": path.join(shimsDir, "server"),
             },
           },
           // Enable JSX in .tsx/.jsx files

@@ -240,6 +240,41 @@ describe("Pages Router integration", () => {
 
   // --- Hydration ---
 
+  // --- next/config ---
+
+  it("renders pages that use next/config getConfig()", async () => {
+    const res = await fetch(`${baseUrl}/config-test`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Config Test");
+    // publicRuntimeConfig is empty by default, so it should show the fallback
+    // React SSR inserts <!-- --> between text and expressions
+    expect(html).toMatch(/App:.*default-app/);
+  });
+
+  // --- next/script ---
+
+  it("renders Script with beforeInteractive strategy as <script> tag in SSR", async () => {
+    const res = await fetch(`${baseUrl}/script-test`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Script Test");
+    expect(html).toContain("Page with scripts");
+    // beforeInteractive should render a <script> tag in the SSR output
+    expect(html).toContain('src="https://example.com/analytics.js"');
+  });
+
+  // --- next/server ---
+
+  it("resolves next/server imports in API routes", async () => {
+    const res = await fetch(`${baseUrl}/api/middleware-test`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({ ok: true, message: "middleware-test works" });
+  });
+
+  // --- Hydration ---
+
   it("hydration proxy script is fetchable", async () => {
     // Fetch the index page, find the proxy script URL, fetch it,
     // and verify it contains our hydration code
@@ -440,5 +475,121 @@ describe("Production build", () => {
     } finally {
       httpServer.close();
     }
+  });
+});
+
+describe("next/server shim", () => {
+  it("NextRequest wraps a standard Request with nextUrl and cookies", async () => {
+    const { NextRequest } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const req = new NextRequest("https://example.com/blog?page=2", {
+      headers: { cookie: "session=abc123; theme=dark" },
+    });
+
+    expect(req.nextUrl.pathname).toBe("/blog");
+    expect(req.nextUrl.searchParams.get("page")).toBe("2");
+    expect(req.cookies.get("session")).toEqual({ name: "session", value: "abc123" });
+    expect(req.cookies.get("theme")).toEqual({ name: "theme", value: "dark" });
+    expect(req.cookies.has("session")).toBe(true);
+    expect(req.cookies.has("missing")).toBe(false);
+  });
+
+  it("NextResponse.json() creates a JSON response", async () => {
+    const { NextResponse } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const res = NextResponse.json({ message: "hello" }, { status: 201 });
+
+    expect(res.status).toBe(201);
+    expect(res.headers.get("content-type")).toBe("application/json");
+    const body = await res.json();
+    expect(body).toEqual({ message: "hello" });
+  });
+
+  it("NextResponse.redirect() creates a redirect response", async () => {
+    const { NextResponse } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const res = NextResponse.redirect("https://example.com/new", 308);
+
+    expect(res.status).toBe(308);
+    expect(res.headers.get("Location")).toBe("https://example.com/new");
+  });
+
+  it("NextResponse.rewrite() sets x-middleware-rewrite header", async () => {
+    const { NextResponse } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const res = NextResponse.rewrite("https://example.com/internal");
+
+    expect(res.headers.get("x-middleware-rewrite")).toBe("https://example.com/internal");
+  });
+
+  it("NextResponse.next() sets x-middleware-next header", async () => {
+    const { NextResponse } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const res = NextResponse.next();
+
+    expect(res.headers.get("x-middleware-next")).toBe("1");
+  });
+
+  it("ResponseCookies set/get/delete work", async () => {
+    const { NextResponse } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const res = new NextResponse();
+    res.cookies.set("token", "xyz", { path: "/", httpOnly: true });
+
+    const cookie = res.cookies.get("token");
+    expect(cookie).toBeTruthy();
+    expect(cookie!.value).toBe("xyz");
+
+    // Verify the Set-Cookie header was set
+    const setCookie = res.headers.getSetCookie();
+    expect(setCookie.length).toBeGreaterThan(0);
+    expect(setCookie[0]).toContain("token=xyz");
+    expect(setCookie[0]).toContain("HttpOnly");
+  });
+
+  it("userAgentFromString detects bots", async () => {
+    const { userAgentFromString } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+    );
+    const bot = userAgentFromString("Googlebot/2.1");
+    expect(bot.isBot).toBe(true);
+
+    const human = userAgentFromString("Mozilla/5.0");
+    expect(human.isBot).toBe(false);
+  });
+});
+
+describe("next/config shim", () => {
+  it("getConfig returns default empty config", async () => {
+    const { default: getConfig } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/config.js"
+    );
+    const config = getConfig();
+    expect(config).toEqual({
+      serverRuntimeConfig: {},
+      publicRuntimeConfig: {},
+    });
+  });
+
+  it("setConfig updates the runtime config", async () => {
+    const { default: getConfig, setConfig } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/config.js"
+    );
+    setConfig({
+      serverRuntimeConfig: { secret: "s3cr3t" },
+      publicRuntimeConfig: { appName: "test-app" },
+    });
+    const config = getConfig();
+    expect(config.serverRuntimeConfig.secret).toBe("s3cr3t");
+    expect(config.publicRuntimeConfig.appName).toBe("test-app");
+
+    // Reset for other tests
+    setConfig({ serverRuntimeConfig: {}, publicRuntimeConfig: {} });
   });
 });

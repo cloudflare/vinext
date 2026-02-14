@@ -131,3 +131,51 @@ declare module "next/document" {
   export const Main: ComponentType;
   export const NextScript: ComponentType;
 }
+
+declare module "next/config" {
+  interface RuntimeConfig {
+    serverRuntimeConfig: Record<string, unknown>;
+    publicRuntimeConfig: Record<string, unknown>;
+  }
+  export default function getConfig(): RuntimeConfig;
+  export function setConfig(configValue: RuntimeConfig): void;
+}
+
+declare module "next/script" {
+  import { ReactElement } from "react";
+  interface ScriptProps {
+    src?: string;
+    strategy?: "beforeInteractive" | "afterInteractive" | "lazyOnload" | "worker";
+    id?: string;
+    onLoad?: (e: Event) => void;
+    onReady?: () => void;
+    onError?: (e: Event) => void;
+    children?: React.ReactNode;
+    dangerouslySetInnerHTML?: { __html: string };
+    [key: string]: unknown;
+  }
+  const Script: (props: ScriptProps) => ReactElement | null;
+  export default Script;
+  export { ScriptProps };
+  export function handleClientScriptLoad(props: ScriptProps): void;
+  export function initScriptLoader(scripts: ScriptProps[]): void;
+}
+
+declare module "next/server" {
+  export class NextRequest extends Request {
+    get nextUrl(): any;
+    get cookies(): any;
+  }
+  export class NextResponse<Body = unknown> extends Response {
+    get cookies(): any;
+    static json<T>(body: T, init?: ResponseInit): NextResponse<T>;
+    static redirect(url: string | URL, init?: number | ResponseInit): NextResponse;
+    static rewrite(destination: string | URL, init?: ResponseInit): NextResponse;
+    static next(init?: ResponseInit): NextResponse;
+  }
+  export function userAgent(req: { headers: Headers }): any;
+  export function userAgentFromString(ua: string | undefined): any;
+  export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void;
+  export function connection(): Promise<void>;
+  export type NextMiddleware = (request: NextRequest, event: any) => any;
+}
