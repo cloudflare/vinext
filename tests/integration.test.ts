@@ -143,4 +143,30 @@ describe("Pages Router integration", () => {
     const res = await fetch(`${baseUrl}/api/nonexistent`);
     expect(res.status).toBe(404);
   });
+
+  // --- Client Hydration ---
+
+  it("includes hydration script for client-side rendering", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    const html = await res.text();
+    // Vite extracts inline module scripts into html-proxy modules.
+    // The hydration script becomes a <script type="module" src="...html-proxy...">
+    expect(html).toMatch(/html-proxy.*\.js/);
+  });
+
+  it("hydration proxy script is fetchable", async () => {
+    // Fetch the index page, find the proxy script URL, fetch it,
+    // and verify it contains our hydration code
+    const res = await fetch(`${baseUrl}/`);
+    const html = await res.text();
+    const proxyMatch = html.match(/src="([^"]*html-proxy[^"]*)"/);
+    expect(proxyMatch).toBeTruthy();
+
+    const scriptRes = await fetch(`${baseUrl}${proxyMatch![1]}`);
+    expect(scriptRes.status).toBe(200);
+    const scriptContent = await scriptRes.text();
+    // The proxy module should contain our hydration imports
+    expect(scriptContent).toContain("hydrateRoot");
+    expect(scriptContent).toContain("__NEXT_DATA__");
+  });
 });

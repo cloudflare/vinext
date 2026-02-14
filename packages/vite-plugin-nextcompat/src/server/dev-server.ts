@@ -130,6 +130,44 @@ export function createSSRHandler(
       // Render page to HTML string
       const bodyHtml = ReactDOMServer.renderToString(element);
 
+      // Convert absolute file paths to Vite-servable URLs (relative to root)
+      const viteRoot = server.config.root;
+      const pageModuleUrl = "/" + path.relative(viteRoot, route.filePath);
+      const appModuleUrl = AppComponent
+        ? "/" + path.relative(viteRoot, path.join(pagesDir, "_app"))
+        : null;
+
+      // Hydration entry: inline script that imports the page and hydrates.
+      // Uses bare specifiers (react, react-dom/client) which Vite's dev
+      // server resolves via its dependency pre-bundling.
+      const hydrationScript = `
+<script type="module">
+import React from "react";
+import { hydrateRoot } from "react-dom/client";
+
+const nextData = window.__NEXT_DATA__;
+const { pageProps } = nextData.props;
+
+async function hydrate() {
+  const pageModule = await import("${pageModuleUrl}");
+  const PageComponent = pageModule.default;
+  let element;
+  ${
+    appModuleUrl
+      ? `
+  const appModule = await import("${appModuleUrl}");
+  const AppComponent = appModule.default;
+  element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+  `
+      : `
+  element = React.createElement(PageComponent, pageProps);
+  `
+  }
+  hydrateRoot(document.getElementById("__next"), element);
+}
+hydrate();
+</script>`;
+
       const nextDataScript = `<script>window.__NEXT_DATA__ = ${JSON.stringify({
         props: { pageProps },
         page: route.pattern,
@@ -147,6 +185,8 @@ export function createSSRHandler(
         // No custom _document, use default shell
       }
 
+      const scripts = `${nextDataScript}\n  ${hydrationScript}`;
+
       if (DocumentComponent) {
         // Render the custom Document component
         const docElement = createElement(DocumentComponent);
@@ -156,13 +196,13 @@ export function createSSRHandler(
         // Replace the NextScript placeholder comment with actual scripts
         docHtml = docHtml.replace(
           "<!-- __NEXT_SCRIPTS__ -->",
-          `${nextDataScript}\n  <script type="module" src="/@vite/client"></script>`,
+          scripts,
         );
         // If no placeholder comment found, inject scripts before </body>
         if (!docHtml.includes(nextDataScript)) {
           docHtml = docHtml.replace(
             "</body>",
-            `  ${nextDataScript}\n  <script type="module" src="/@vite/client"></script>\n</body>`,
+            `  ${scripts}\n</body>`,
           );
         }
         html = docHtml;
@@ -176,8 +216,7 @@ export function createSSRHandler(
 </head>
 <body>
   <div id="__next">${bodyHtml}</div>
-  ${nextDataScript}
-  <script type="module" src="/@vite/client"></script>
+  ${scripts}
 </body>
 </html>`;
       }
