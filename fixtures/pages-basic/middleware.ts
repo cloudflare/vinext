@@ -1,0 +1,31 @@
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+
+export function middleware(request: NextRequest) {
+  const url = new URL(request.url);
+
+  // Add a custom header to all matched requests
+  const response = NextResponse.next();
+  response.headers.set("x-middleware-test", "active");
+
+  // Redirect /old-page to /about
+  if (url.pathname === "/old-page") {
+    return NextResponse.redirect(new URL("/about", request.url));
+  }
+
+  // Rewrite /rewritten to /ssr
+  if (url.pathname === "/rewritten") {
+    return NextResponse.rewrite(new URL("/ssr", request.url));
+  }
+
+  // Block /blocked with a custom response
+  if (url.pathname === "/blocked") {
+    return new Response("Access Denied", { status: 403 });
+  }
+
+  return response;
+}
+
+export const config = {
+  matcher: ["/((?!api|_next|favicon\\.ico).*)"],
+};

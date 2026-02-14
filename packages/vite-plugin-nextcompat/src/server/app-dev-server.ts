@@ -18,6 +18,7 @@ import type { AppRoute } from "../routing/app-router.js";
 export function generateRscEntry(
   appDir: string,
   routes: AppRoute[],
+  middlewarePath?: string | null,
 ): string {
   // Build import map for all page and layout files
   const imports: string[] = [];
@@ -80,6 +81,7 @@ import { setNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest } from "next/headers";
 import { ErrorBoundary } from "nextcompat/error-boundary";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata } from "nextcompat/metadata";
+${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 
 ${imports.join("\n")}
 
@@ -188,11 +190,59 @@ async function buildPageElement(route, params) {
   return element;
 }
 
+${middlewarePath ? `
+function matchMiddlewarePath(pathname, matcher) {
+  if (!matcher) return true;
+  const patterns = typeof matcher === "string" ? [matcher]
+    : Array.isArray(matcher) ? matcher.map(m => typeof m === "string" ? m : m.source)
+    : [];
+  return patterns.some(pattern => {
+    const re = new RegExp("^" + pattern
+      .replace(/:(\\w+)\\*/g, "(?:.*)")
+      .replace(/:(\\w+)\\+/g, "(?:.+)")
+      .replace(/:(\\w+)/g, "([^/]+)")
+      .replace(/\\./g, "\\\\.") + "$");
+    return re.test(pathname);
+  });
+}
+` : ""}
+
 export default async function handler(request) {
   const url = new URL(request.url);
-  const pathname = url.pathname;
-  const isRscRequest = url.pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
-  const cleanPathname = pathname.replace(/\\.rsc$/, "");
+  let pathname = url.pathname;
+  const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
+  let cleanPathname = pathname.replace(/\\.rsc$/, "");
+
+  ${middlewarePath ? `
+  // Run middleware if present and path matches
+  const middlewareFn = middlewareModule.default || middlewareModule.middleware;
+  const middlewareMatcher = middlewareModule.config?.matcher;
+  if (typeof middlewareFn === "function" && matchMiddlewarePath(cleanPathname, middlewareMatcher)) {
+    try {
+      const mwResponse = await middlewareFn(request);
+      if (mwResponse) {
+        // Check for x-middleware-next (continue)
+        if (mwResponse.headers.get("x-middleware-next") !== "1") {
+          // Check for redirect
+          if (mwResponse.status >= 300 && mwResponse.status < 400) {
+            return mwResponse;
+          }
+          // Check for rewrite
+          const rewriteUrl = mwResponse.headers.get("x-middleware-rewrite");
+          if (rewriteUrl) {
+            const rewriteParsed = new URL(rewriteUrl, request.url);
+            cleanPathname = rewriteParsed.pathname;
+          } else {
+            // Middleware returned a custom response
+            return mwResponse;
+          }
+        }
+      }
+    } catch (err) {
+      console.error("[nextcompat] Middleware error:", err);
+    }
+  }
+  ` : ""}
 
   // Set request contexts for Server Components
   setHeadersContext(headersContextFromRequest(request));

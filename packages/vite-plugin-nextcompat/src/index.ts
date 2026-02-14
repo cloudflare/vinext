@@ -15,6 +15,7 @@ import {
   type NextRedirect,
   type NextRewrite,
 } from "./config/next-config.js";
+import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
@@ -47,6 +48,7 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
   let hasAppDir = false;
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
+  let middlewarePath: string | null = null;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
@@ -437,6 +439,7 @@ hydrate();
         appDir = path.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = fs.existsSync(appDir);
+        middlewarePath = findMiddlewareFile(baseDir);
 
         // Load next.config.js if present
         const rawConfig = await loadNextConfig(baseDir);
@@ -559,7 +562,7 @@ hydrate();
         // App Router virtual modules
         if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
           const routes = await appRouter(appDir);
-          return generateRscEntry(appDir, routes);
+          return generateRscEntry(appDir, routes, middlewarePath);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
           return generateSsrEntry();
@@ -630,6 +633,51 @@ hydrate();
               const pathname = url.split("?")[0];
               if (pathname.includes(".") && !pathname.endsWith(".html")) {
                 return next();
+              }
+
+              // Run middleware.ts if present
+              if (middlewarePath) {
+                const origin = `${req.headers["x-forwarded-proto"] || "http"}://${req.headers.host || "localhost"}`;
+                const middlewareRequest = new Request(new URL(url, origin), {
+                  method: req.method,
+                  headers: Object.fromEntries(
+                    Object.entries(req.headers)
+                      .filter(([, v]) => v !== undefined)
+                      .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])
+                  ),
+                });
+                const result = await runMiddleware(server, middlewarePath, middlewareRequest);
+
+                if (!result.continue) {
+                  if (result.redirectUrl) {
+                    res.writeHead(result.redirectStatus ?? 307, {
+                      Location: result.redirectUrl,
+                    });
+                    res.end();
+                    return;
+                  }
+                  if (result.response) {
+                    res.statusCode = result.response.status;
+                    for (const [key, value] of result.response.headers) {
+                      res.setHeader(key, value);
+                    }
+                    const body = await result.response.text();
+                    res.end(body);
+                    return;
+                  }
+                }
+
+                // Apply middleware response headers
+                if (result.responseHeaders) {
+                  for (const [key, value] of result.responseHeaders) {
+                    res.setHeader(key, value);
+                  }
+                }
+
+                // Apply middleware rewrite
+                if (result.rewriteUrl) {
+                  url = result.rewriteUrl;
+                }
               }
 
               // Apply custom headers from next.config.js

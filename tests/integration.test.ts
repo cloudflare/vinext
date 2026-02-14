@@ -273,6 +273,35 @@ describe("Pages Router integration", () => {
     expect(data).toEqual({ ok: true, message: "middleware-test works" });
   });
 
+  // --- Middleware ---
+
+  it("middleware adds custom headers to responses", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-middleware-test")).toBe("active");
+  });
+
+  it("middleware redirects /old-page to /about", async () => {
+    const res = await fetch(`${baseUrl}/old-page`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("middleware rewrites /rewritten to /ssr", async () => {
+    const res = await fetch(`${baseUrl}/rewritten`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // Should get the SSR page content (rewritten from /rewritten to /ssr)
+    expect(html).toContain("Server-Side Rendered");
+  });
+
+  it("middleware blocks /blocked with 403", async () => {
+    const res = await fetch(`${baseUrl}/blocked`);
+    expect(res.status).toBe(403);
+    const text = await res.text();
+    expect(text).toContain("Access Denied");
+  });
+
   // --- Hydration ---
 
   it("hydration proxy script is fetchable", async () => {
@@ -1205,6 +1234,26 @@ describe("next/cache shim", () => {
 
     // Should now return null (invalidated)
     result = await handler.get("tagged-entry");
+    expect(result).toBeNull();
+  });
+});
+
+describe("middleware runner", () => {
+  it("findMiddlewareFile finds middleware.ts at project root", async () => {
+    const { findMiddlewareFile } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/middleware.js"
+    );
+    // pages-basic fixture has middleware.ts
+    const result = findMiddlewareFile(FIXTURE_DIR);
+    expect(result).not.toBeNull();
+    expect(result).toContain("middleware.ts");
+  });
+
+  it("findMiddlewareFile returns null when no middleware exists", async () => {
+    const { findMiddlewareFile } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/middleware.js"
+    );
+    const result = findMiddlewareFile("/tmp/nonexistent-dir-" + Date.now());
     expect(result).toBeNull();
   });
 });
