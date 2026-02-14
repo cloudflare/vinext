@@ -1059,6 +1059,21 @@ describe("App Router integration", () => {
     expect(html).toMatch(/property="og:type".*content="website"/);
   });
 
+  it("renders viewport metadata (export const viewport) as head elements", async () => {
+    const res = await fetch(`${baseUrl}/metadata-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Viewport meta tag with configured properties
+    expect(html).toMatch(/name="viewport".*content="[^"]*width=device-width/);
+    expect(html).toMatch(/name="viewport".*content="[^"]*initial-scale=1/);
+    expect(html).toMatch(/name="viewport".*content="[^"]*maximum-scale=1/);
+    // Theme color
+    expect(html).toMatch(/name="theme-color".*content="#0070f3"/);
+    // Color scheme
+    expect(html).toMatch(/name="color-scheme".*content="light dark"/);
+  });
+
   it("renders dynamic page with generateStaticParams export", async () => {
     // generateStaticParams is a no-op in dev mode — the page should
     // render on-demand with any slug, including ones not in the static params list.

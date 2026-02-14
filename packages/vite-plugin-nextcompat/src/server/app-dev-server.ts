@@ -147,7 +147,7 @@ import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest } from "next/headers";
 import { ErrorBoundary } from "nextcompat/error-boundary";
-import { MetadataHead, mergeMetadata, resolveModuleMetadata } from "nextcompat/metadata";
+import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "nextcompat/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
 import { getCacheHandler } from "next/cache";
@@ -264,29 +264,35 @@ async function buildPageElement(route, params, opts) {
     return createElement("div", null, "Page has no default export");
   }
 
-  // Resolve metadata from layouts and page
+  // Resolve metadata and viewport from layouts and page
   const metadataList = [];
+  const viewportList = [];
   for (const layoutMod of route.layouts) {
     if (layoutMod) {
       const meta = await resolveModuleMetadata(layoutMod, params);
       if (meta) metadataList.push(meta);
+      const vp = await resolveModuleViewport(layoutMod, params);
+      if (vp) viewportList.push(vp);
     }
   }
   if (route.page) {
     const pageMeta = await resolveModuleMetadata(route.page, params);
     if (pageMeta) metadataList.push(pageMeta);
+    const pageVp = await resolveModuleViewport(route.page, params);
+    if (pageVp) viewportList.push(pageVp);
   }
   const resolvedMetadata = metadataList.length > 0 ? mergeMetadata(metadataList) : null;
+  const resolvedViewport = viewportList.length > 0 ? mergeViewport(viewportList) : null;
 
   // Build nested layout tree from outermost to innermost
   let element = createElement(PageComponent, { params });
 
-  // Add metadata head tags (React 19 hoists title/meta/link to <head>)
-  if (resolvedMetadata) {
-    element = createElement(Fragment, null,
-      createElement(MetadataHead, { metadata: resolvedMetadata }),
-      element,
-    );
+  // Add metadata + viewport head tags (React 19 hoists title/meta/link to <head>)
+  if (resolvedMetadata || resolvedViewport) {
+    const headElements = [];
+    if (resolvedMetadata) headElements.push(createElement(MetadataHead, { metadata: resolvedMetadata }));
+    if (resolvedViewport) headElements.push(createElement(ViewportHead, { viewport: resolvedViewport }));
+    element = createElement(Fragment, null, ...headElements, element);
   }
 
   // Wrap with loading.tsx Suspense if present

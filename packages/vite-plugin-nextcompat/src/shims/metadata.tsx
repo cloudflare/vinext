@@ -6,6 +6,116 @@
  */
 import React from "react";
 
+// ---------------------------------------------------------------------------
+// Viewport types and resolution
+// ---------------------------------------------------------------------------
+
+export interface Viewport {
+  /** Viewport width (default: "device-width") */
+  width?: string | number;
+  /** Viewport height */
+  height?: string | number;
+  /** Initial scale */
+  initialScale?: number;
+  /** Minimum scale */
+  minimumScale?: number;
+  /** Maximum scale */
+  maximumScale?: number;
+  /** Whether user can scale */
+  userScalable?: boolean;
+  /** Theme color — single color or array of { media, color } */
+  themeColor?:
+    | string
+    | Array<{ media?: string; color: string }>;
+  /** Color scheme: 'light' | 'dark' | 'light dark' | 'normal' */
+  colorScheme?: string;
+}
+
+/**
+ * Resolve viewport config from a module. Handles both static `viewport` export
+ * and async `generateViewport()` function.
+ */
+export async function resolveModuleViewport(
+  mod: Record<string, unknown>,
+  params: Record<string, string | string[]>,
+): Promise<Viewport | null> {
+  if (typeof mod.generateViewport === "function") {
+    return await mod.generateViewport({ params });
+  }
+  if (mod.viewport && typeof mod.viewport === "object") {
+    return mod.viewport as Viewport;
+  }
+  return null;
+}
+
+/**
+ * Merge viewport configs from multiple sources (layouts + page).
+ * Later entries override earlier ones.
+ */
+export function mergeViewport(viewportList: Viewport[]): Viewport {
+  const merged: Viewport = {};
+  for (const vp of viewportList) {
+    Object.assign(merged, vp);
+  }
+  return merged;
+}
+
+/**
+ * React component that renders viewport meta tags into <head>.
+ */
+export function ViewportHead({ viewport }: { viewport: Viewport }) {
+  const elements: React.ReactElement[] = [];
+  let key = 0;
+
+  // Build viewport content string
+  const parts: string[] = [];
+  if (viewport.width !== undefined) parts.push(`width=${viewport.width}`);
+  if (viewport.height !== undefined) parts.push(`height=${viewport.height}`);
+  if (viewport.initialScale !== undefined) parts.push(`initial-scale=${viewport.initialScale}`);
+  if (viewport.minimumScale !== undefined) parts.push(`minimum-scale=${viewport.minimumScale}`);
+  if (viewport.maximumScale !== undefined) parts.push(`maximum-scale=${viewport.maximumScale}`);
+  if (viewport.userScalable !== undefined) parts.push(`user-scalable=${viewport.userScalable ? "yes" : "no"}`);
+
+  if (parts.length > 0) {
+    elements.push(
+      <meta key={key++} name="viewport" content={parts.join(", ")} />,
+    );
+  }
+
+  // Theme color
+  if (viewport.themeColor) {
+    if (typeof viewport.themeColor === "string") {
+      elements.push(
+        <meta key={key++} name="theme-color" content={viewport.themeColor} />,
+      );
+    } else if (Array.isArray(viewport.themeColor)) {
+      for (const entry of viewport.themeColor) {
+        elements.push(
+          <meta
+            key={key++}
+            name="theme-color"
+            content={entry.color}
+            {...(entry.media ? { media: entry.media } : {})}
+          />,
+        );
+      }
+    }
+  }
+
+  // Color scheme
+  if (viewport.colorScheme) {
+    elements.push(
+      <meta key={key++} name="color-scheme" content={viewport.colorScheme} />,
+    );
+  }
+
+  return <>{elements}</>;
+}
+
+// ---------------------------------------------------------------------------
+// Metadata types and resolution
+// ---------------------------------------------------------------------------
+
 export interface Metadata {
   title?: string | { default?: string; template?: string; absolute?: string };
   description?: string;
