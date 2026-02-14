@@ -1148,6 +1148,41 @@ describe("App Router integration", () => {
     // Normal pages should not have no-store
     expect(cacheControl).toBeNull();
   });
+
+  it("dynamicParams = false allows known params from generateStaticParams", async () => {
+    const res = await fetch(`${baseUrl}/products/1`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('data-testid="product-page"');
+    expect(html).toMatch(/Product\s*(<!--\s*-->)?\s*1/);
+  });
+
+  it("dynamicParams = false returns 404 for unknown params", async () => {
+    const res = await fetch(`${baseUrl}/products/999`);
+    expect(res.status).toBe(404);
+  });
+
+  it("dynamicParams defaults to true (allows any params)", async () => {
+    // Blog has generateStaticParams but no dynamicParams=false
+    const res = await fetch(`${baseUrl}/blog/any-random-slug`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("any-random-slug");
+  });
+
+  it("export const revalidate sets ISR Cache-Control header", async () => {
+    const res = await fetch(`${baseUrl}/revalidate-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("ISR Revalidate Page");
+    expect(html).toContain('data-testid="revalidate-test-page"');
+
+    // revalidate=60 should set s-maxage=60 on first request (cache MISS)
+    const cacheControl = res.headers.get("cache-control");
+    expect(cacheControl).toContain("s-maxage=60");
+    expect(cacheControl).toContain("stale-while-revalidate");
+  });
 });
 
 describe("App Router Production build", () => {

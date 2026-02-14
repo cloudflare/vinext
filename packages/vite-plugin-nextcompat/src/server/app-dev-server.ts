@@ -633,6 +633,32 @@ export default async function handler(request) {
   // Read route segment config from page module exports
   const revalidateSeconds = typeof route.page?.revalidate === "number" ? route.page.revalidate : null;
   const dynamicConfig = route.page?.dynamic; // 'auto' | 'force-dynamic' | 'force-static' | 'error'
+  const dynamicParamsConfig = route.page?.dynamicParams; // true (default) | false
+
+  // dynamicParams = false: only params from generateStaticParams are allowed
+  if (dynamicParamsConfig === false && route.isDynamic && typeof route.page?.generateStaticParams === "function") {
+    try {
+      const staticParams = await route.page.generateStaticParams();
+      if (Array.isArray(staticParams)) {
+        const paramKeys = Object.keys(params);
+        const isAllowed = staticParams.some(sp =>
+          paramKeys.every(key => {
+            const val = params[key];
+            const staticVal = sp[key];
+            if (Array.isArray(val)) return JSON.stringify(val) === JSON.stringify(staticVal);
+            return String(val) === String(staticVal);
+          })
+        );
+        if (!isAllowed) {
+          setHeadersContext(null);
+          setNavigationContext(null);
+          return new Response("Not Found", { status: 404 });
+        }
+      }
+    } catch (err) {
+      console.error("[nextcompat] generateStaticParams error:", err);
+    }
+  }
 
   // force-dynamic: skip ISR cache, set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
