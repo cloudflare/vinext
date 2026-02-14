@@ -133,3 +133,30 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **Accept-Language detection** triggers a 307 redirect to the detected locale prefix on first visit (when `localeDetection: true`). This only fires if no locale prefix was in the URL.
 - **`getServerSideProps`/`getStaticProps`/`getStaticPaths`** all receive `locale`, `locales`, and `defaultLocale` in their context objects, matching Next.js behavior.
 - **`useRouter().locale`** is populated from SSR context on the server, and from `window.__NEXTCOMPAT_LOCALE__` on the client. The i18n globals are injected alongside `__NEXT_DATA__`.
+
+## Parallel Route Slot Inheritance
+
+- **Parallel slots must be inherited by child routes.** When `/dashboard/settings` is rendered, the dashboard layout's `@team` and `@analytics` slots need to render even though `settings/` has no `@slot` dirs. The fix: `discoverInheritedParallelSlots` walks from the app root through each segment, collecting slots. Ancestor slots use `default.tsx` as the active page, not `page.tsx`.
+- **Each slot tracks `layoutIndex`** — the index in `route.layouts[]` of the layout it belongs to. This ensures slots are passed as props to the correct layout (the one that defines them), not blindly to the innermost layout.
+- **Slot directories at the route's own level** use `page.tsx` as normal. Slot directories at ancestor levels use `default.tsx` (the fallback). This matches Next.js semantics exactly.
+
+## basePath / trailingSlash
+
+- **basePath stripping** must happen early in the request pipeline, before middleware, headers, redirects, and rewrites. Both Pages Router (connect middleware in `index.ts`) and App Router (generated RSC entry handler) strip basePath before route matching.
+- **`process.env.__NEXT_ROUTER_BASEPATH`** is injected as a Vite define so client-side code (Link, router shims, navigation shims) can prepend/strip basePath without runtime config.
+- **`usePathname()` returns paths WITHOUT basePath**, matching Next.js behavior. Browser `window.location.pathname` includes it, so client code must strip.
+- **trailingSlash normalization** uses 308 redirects (not 301/302) — permanent redirect preserving the HTTP method. API routes (`/api/*`) and `.rsc` requests are excluded.
+
+## Route Segment Config
+
+- **`export const revalidate`** was already wired — the RSC entry reads `route.page?.revalidate` from the module exports. Adding a fixture and test confirmed it works.
+- **`export const dynamicParams = false`** checks params against `generateStaticParams()` results at request time. If the current params aren't in the static list, return 404. This runs before ISR/caching.
+- **`export const dynamic = "force-dynamic"`** was already implemented. Sets `Cache-Control: no-store, must-revalidate` and skips ISR cache.
+
+## Viewport Metadata
+
+- **`export const viewport`** and `generateViewport()` are separate from the metadata export in Next.js. They control viewport-related meta tags (`<meta name="viewport">`, `<meta name="theme-color">`, `<meta name="color-scheme">`). We resolve them alongside metadata from layouts and pages, merging with later entries overriding earlier ones.
+
+## ESM Build Issues
+
+- **`require()` is not available** in ESM builds. `scanMetadataFiles` was using `require("node:fs")` which worked in Vitest (CJS transform) but failed when the plugin was built to `dist/` and loaded by the Playwright fixture. Fixed by using standard `import` at the top of the file.
