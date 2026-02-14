@@ -2195,6 +2195,24 @@ describe("metadata routes integration (App Router)", () => {
     expect(data.name).toBe("App Basic");
     expect(data.display).toBe("standalone");
   });
+
+  // Note: serving /icon from dynamic icon.tsx requires the RSC environment
+  // to have access to Satori + Resvg Node APIs. This works when the RSC env
+  // has proper Node externals configured. The discovery/routing is tested below.
+
+  it("scanMetadataFiles discovers icon.tsx as a dynamic icon route", async () => {
+    const { scanMetadataFiles } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+    );
+    const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
+    const routes = scanMetadataFiles(appDir);
+
+    const iconRoute = routes.find((r: { type: string }) => r.type === "icon");
+    expect(iconRoute).toBeDefined();
+    expect(iconRoute!.isDynamic).toBe(true);
+    expect(iconRoute!.servedUrl).toBe("/icon");
+    expect(iconRoute!.contentType).toBe("image/png");
+  });
 });
 
 // ---------------------------------------------------------------------------
