@@ -1120,6 +1120,201 @@ describe("App Router Production build", () => {
   }, 30000);
 });
 
+describe("App Router Static export", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+  const exportDir = path.resolve(APP_FIXTURE_DIR, "out");
+
+  beforeAll(async () => {
+    const rsc = (await import("@vitejs/plugin-rsc")).default;
+
+    server = await createServer({
+      root: APP_FIXTURE_DIR,
+      configFile: false,
+      plugins: [
+        nextcompat(),
+        rsc({
+          entries: {
+            rsc: "virtual:nextcompat-rsc-entry",
+            ssr: "virtual:nextcompat-app-ssr-entry",
+            client: "virtual:nextcompat-app-browser-entry",
+          },
+        }),
+      ],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await server.listen();
+    const address = server.httpServer?.address();
+    if (address && typeof address === "object") {
+      baseUrl = `http://localhost:${address.port}`;
+    }
+  });
+
+  afterAll(async () => {
+    await server.close();
+    fs.rmSync(exportDir, { recursive: true, force: true });
+  });
+
+  it("exports static App Router pages to HTML files", async () => {
+    const { staticExportApp } = await import(
+      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+    );
+    const { appRouter } = await import(
+      "../packages/vite-plugin-nextcompat/src/routing/app-router.js"
+    );
+    const { resolveNextConfig } = await import(
+      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+    );
+
+    const appDir = path.resolve(APP_FIXTURE_DIR, "app");
+    const routes = await appRouter(appDir);
+    const config = await resolveNextConfig({ output: "export" });
+
+    const result = await staticExportApp({
+      baseUrl,
+      routes,
+      appDir,
+      server,
+      outDir: exportDir,
+      config,
+    });
+
+    // Should have generated HTML files
+    expect(result.pageCount).toBeGreaterThan(0);
+
+    // Index page
+    expect(result.files).toContain("index.html");
+    const indexHtml = fs.readFileSync(
+      path.join(exportDir, "index.html"),
+      "utf-8",
+    );
+    expect(indexHtml).toContain("Welcome to App Router");
+
+    // About page
+    expect(result.files).toContain("about.html");
+    const aboutHtml = fs.readFileSync(
+      path.join(exportDir, "about.html"),
+      "utf-8",
+    );
+    expect(aboutHtml).toContain("About");
+  });
+
+  it("pre-renders dynamic routes from generateStaticParams", async () => {
+    // blog/[slug] has generateStaticParams returning hello-world and getting-started
+    expect(
+      fs.existsSync(path.join(exportDir, "blog", "hello-world.html")),
+    ).toBe(true);
+    expect(
+      fs.existsSync(path.join(exportDir, "blog", "getting-started.html")),
+    ).toBe(true);
+
+    const blogHtml = fs.readFileSync(
+      path.join(exportDir, "blog", "hello-world.html"),
+      "utf-8",
+    );
+    expect(blogHtml).toContain("hello-world");
+  });
+
+  it("generates 404.html for App Router", async () => {
+    expect(fs.existsSync(path.join(exportDir, "404.html"))).toBe(true);
+    const html404 = fs.readFileSync(
+      path.join(exportDir, "404.html"),
+      "utf-8",
+    );
+    // Custom not-found.tsx should be rendered
+    expect(html404).toContain("Page Not Found");
+  });
+
+  it("reports errors for dynamic routes without generateStaticParams", async () => {
+    const { staticExportApp } = await import(
+      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+    );
+    const { resolveNextConfig } = await import(
+      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+    );
+
+    // Create a fake route with isDynamic but no generateStaticParams
+    const fakeRoutes = [
+      {
+        pattern: "/fake/:id",
+        pagePath: path.resolve(APP_FIXTURE_DIR, "app", "page.tsx"),
+        routePath: null,
+        layouts: [],
+        loadingPath: null,
+        errorPath: null,
+        notFoundPath: null,
+        isDynamic: true,
+        params: ["id"],
+      },
+    ];
+    const config = await resolveNextConfig({ output: "export" });
+    const tempDir = path.resolve(APP_FIXTURE_DIR, "out-temp-app");
+
+    try {
+      const result = await staticExportApp({
+        baseUrl,
+        routes: fakeRoutes,
+        appDir: path.resolve(APP_FIXTURE_DIR, "app"),
+        server,
+        outDir: tempDir,
+        config,
+      });
+
+      // Should have an error about missing generateStaticParams
+      expect(
+        result.errors.some((e) => e.error.includes("generateStaticParams")),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips route handlers with warning", async () => {
+    const { staticExportApp } = await import(
+      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+    );
+    const { resolveNextConfig } = await import(
+      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+    );
+
+    // Create a fake API route
+    const fakeRoutes = [
+      {
+        pattern: "/api/test",
+        pagePath: null,
+        routePath: path.resolve(APP_FIXTURE_DIR, "app", "api", "hello", "route.ts"),
+        layouts: [],
+        loadingPath: null,
+        errorPath: null,
+        notFoundPath: null,
+        isDynamic: false,
+        params: [],
+      },
+    ];
+    const config = await resolveNextConfig({ output: "export" });
+    const tempDir = path.resolve(APP_FIXTURE_DIR, "out-temp-api");
+
+    try {
+      const result = await staticExportApp({
+        baseUrl,
+        routes: fakeRoutes,
+        appDir: path.resolve(APP_FIXTURE_DIR, "app"),
+        server,
+        outDir: tempDir,
+        config,
+      });
+
+      expect(result.warnings.some((w) => w.includes("API route"))).toBe(true);
+      // Only the 404 page should be generated, no regular pages
+      expect(result.files.filter((f) => f !== "404.html")).toHaveLength(0);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("next/navigation shim", () => {
   it("exports usePathname, useSearchParams, useParams, useRouter", async () => {
     const nav = await import(

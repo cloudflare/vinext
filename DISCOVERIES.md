@@ -81,3 +81,12 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **`onAllReady` vs `onShellReady`**: We use `onAllReady` (waits for all Suspense boundaries to resolve) rather than `onShellReady` (starts streaming after initial shell). This is because the Pages Router needs the complete HTML string for `transformIndexHtml` (dev) and head tag injection. True progressive streaming (using `onShellReady`) would require rearchitecting how `<Head>` tags and `__NEXT_DATA__` are injected.
 - **App Router already streams**: The App Router SSR entry uses `renderToReadableStream` from `react-dom/server.edge` through `@vitejs/plugin-rsc`. No changes were needed there.
 - **`createBuilder` API is required for RSC production builds**: Calling `build()` directly from the Vite JS API doesn't trigger the RSC plugin's multi-environment build pipeline. Must use `createBuilder()` + `builder.buildApp()` instead, which runs the 5-step RSC/SSR/client build sequence.
+- **`renderToPipeableStream` auto-prepends `<!DOCTYPE html>`** when the root element is `<html>`. The old `renderToString` did NOT do this. After switching to streaming, we had a double `<!DOCTYPE html>` bug in `_document` rendering. Fixed by removing the manual `"<!DOCTYPE html>" +` prefix.
+
+## Static Export (`output: 'export'`)
+
+- **App Router static export is simplest as fetch-from-dev-server**: Rather than reimplementing the RSC→SSR→HTML pipeline, we start a dev server and fetch each route via HTTP. This reuses the full rendering pipeline including layouts, metadata, error boundaries, etc.
+- **Pages Router static export uses direct rendering**: Since we have `renderToStringAsync` and the full page rendering infrastructure in the static export module, we render directly without needing a running server.
+- **`generateStaticParams` must return all paths**: With `output: 'export'`, there's no server to handle fallback rendering. Dynamic routes without `generateStaticParams` are build errors.
+- **`getStaticPaths` must use `fallback: false`**: Same reason — no server for fallback rendering.
+- **404 page for App Router**: We fetch a nonexistent URL from the dev server and save the 404 response as `404.html`.

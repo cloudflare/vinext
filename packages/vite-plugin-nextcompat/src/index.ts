@@ -864,5 +864,5 @@ function applyHeaders(
 }
 
 // Public exports for static export
-export { staticExportPages } from "./build/static-export.js";
-export type { StaticExportResult, StaticExportOptions } from "./build/static-export.js";
+export { staticExportPages, staticExportApp } from "./build/static-export.js";
+export type { StaticExportResult, StaticExportOptions, AppStaticExportOptions } from "./build/static-export.js";

@@ -19,6 +19,7 @@
  */
 import type { ViteDevServer } from "vite";
 import type { Route } from "../routing/pages-router.js";
+import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import path from "node:path";
 import fs from "node:fs";
@@ -531,4 +532,140 @@ function getOutputPath(urlPath: string, trailingSlash: boolean): string {
     return `${clean}/index.html`;
   }
   return `${clean}.html`;
+}
+
+// -------------------------------------------------------------------
+// App Router static export
+// -------------------------------------------------------------------
+
+export interface AppStaticExportOptions {
+  /** Base URL of a running dev server (e.g. "http://localhost:5173") */
+  baseUrl: string;
+  /** Discovered app routes */
+  routes: AppRoute[];
+  /** App directory path (for loading modules to call generateStaticParams) */
+  appDir: string;
+  /** Vite dev server (for loading page modules) */
+  server: ViteDevServer;
+  /** Output directory */
+  outDir: string;
+  /** Resolved next.config.js */
+  config: ResolvedNextConfig;
+}
+
+/**
+ * Run static export for App Router.
+ *
+ * Fetches each route from a running dev server and writes the HTML to disk.
+ * For dynamic routes, calls generateStaticParams() to expand all paths.
+ */
+export async function staticExportApp(
+  options: AppStaticExportOptions,
+): Promise<StaticExportResult> {
+  const { baseUrl, routes, server, outDir, config } = options;
+  const result: StaticExportResult = {
+    pageCount: 0,
+    files: [],
+    warnings: [],
+    errors: [],
+  };
+
+  fs.mkdirSync(outDir, { recursive: true });
+
+  // Collect all URLs to render
+  const urlsToRender: string[] = [];
+
+  for (const route of routes) {
+    // Skip API route handlers — not supported in static export
+    if (route.routePath && !route.pagePath) {
+      result.warnings.push(
+        `Route handler ${route.pattern} skipped — API routes are not supported with output: 'export'`,
+      );
+      continue;
+    }
+
+    if (!route.pagePath) continue;
+
+    if (route.isDynamic) {
+      // Dynamic route — must have generateStaticParams
+      try {
+        const pageModule = await server.ssrLoadModule(route.pagePath);
+
+        if (typeof pageModule.generateStaticParams !== "function") {
+          result.errors.push({
+            route: route.pattern,
+            error: `Dynamic route requires generateStaticParams() with output: 'export'`,
+          });
+          continue;
+        }
+
+        const paramSets = await pageModule.generateStaticParams();
+        if (!Array.isArray(paramSets) || paramSets.length === 0) {
+          result.warnings.push(
+            `generateStaticParams() for ${route.pattern} returned empty array — no pages generated`,
+          );
+          continue;
+        }
+
+        for (const params of paramSets) {
+          const urlPath = buildUrlFromParams(route.pattern, params);
+          urlsToRender.push(urlPath);
+        }
+      } catch (e) {
+        result.errors.push({
+          route: route.pattern,
+          error: `Failed to call generateStaticParams(): ${(e as Error).message}`,
+        });
+      }
+    } else {
+      // Static route
+      urlsToRender.push(route.pattern);
+    }
+  }
+
+  // Fetch each URL from the dev server and write HTML
+  for (const urlPath of urlsToRender) {
+    try {
+      const res = await fetch(`${baseUrl}${urlPath}`);
+      if (!res.ok) {
+        result.errors.push({
+          route: urlPath,
+          error: `Server returned ${res.status}`,
+        });
+        continue;
+      }
+
+      const html = await res.text();
+      const outputPath = getOutputPath(urlPath, config.trailingSlash);
+      const fullPath = path.join(outDir, outputPath);
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, html, "utf-8");
+
+      result.files.push(outputPath);
+      result.pageCount++;
+    } catch (e) {
+      result.errors.push({
+        route: urlPath,
+        error: (e as Error).message,
+      });
+    }
+  }
+
+  // Render 404 page
+  try {
+    const res = await fetch(`${baseUrl}/__nonexistent_page_for_404__`);
+    if (res.status === 404) {
+      const html = await res.text();
+      if (html.length > 0) {
+        const fullPath = path.join(outDir, "404.html");
+        fs.writeFileSync(fullPath, html, "utf-8");
+        result.files.push("404.html");
+        result.pageCount++;
+      }
+    }
+  } catch {
+    // No custom 404, skip
+  }
+
+  return result;
 }
