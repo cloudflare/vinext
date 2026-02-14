@@ -1,0 +1,534 @@
+/**
+ * Static export for `output: 'export'`.
+ *
+ * Renders all pages to static HTML files at build time. Produces a directory
+ * of HTML + client JS/CSS that can be deployed to any static file host
+ * (S3, Cloudflare Pages, GitHub Pages, Nginx, etc.) with no server required.
+ *
+ * Pages Router:
+ *   - Static pages → render to HTML
+ *   - getStaticProps pages → call at build time, render with props
+ *   - Dynamic routes → call getStaticPaths (must be fallback: false), render each
+ *   - getServerSideProps → build error
+ *   - API routes → skipped with warning
+ *
+ * App Router:
+ *   - Static pages → run Server Components at build time, render to HTML
+ *   - Dynamic routes → call generateStaticParams(), render each
+ *   - Dynamic routes without generateStaticParams → build error
+ */
+import type { ViteDevServer } from "vite";
+import type { Route } from "../routing/pages-router.js";
+import type { ResolvedNextConfig } from "../config/next-config.js";
+import path from "node:path";
+import fs from "node:fs";
+import { Writable } from "node:stream";
+import React from "react";
+import ReactDOMServer from "react-dom/server";
+
+const PAGE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
+
+function findFileWithExtensions(basePath: string): boolean {
+  return PAGE_EXTENSIONS.some((ext) => fs.existsSync(basePath + ext));
+}
+
+/**
+ * Render a React element to string using streaming renderer (Suspense support).
+ */
+function renderToStringAsync(element: React.ReactElement): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const writable = new Writable({
+      write(chunk, _encoding, callback) {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        callback();
+      },
+      final(callback) {
+        resolve(Buffer.concat(chunks).toString("utf-8"));
+        callback();
+      },
+    });
+
+    const { pipe } = ReactDOMServer.renderToPipeableStream(element, {
+      onAllReady() {
+        pipe(writable);
+      },
+      onError(error: unknown) {
+        reject(error);
+      },
+    });
+  });
+}
+
+export interface StaticExportOptions {
+  /** Vite dev server (for SSR module loading) */
+  server: ViteDevServer;
+  /** Discovered page routes (excludes API routes) */
+  routes: Route[];
+  /** Discovered API routes */
+  apiRoutes: Route[];
+  /** Pages directory path */
+  pagesDir: string;
+  /** Output directory for static files */
+  outDir: string;
+  /** Resolved next.config.js */
+  config: ResolvedNextConfig;
+}
+
+export interface StaticExportResult {
+  /** Number of HTML files generated */
+  pageCount: number;
+  /** Generated file paths (relative to outDir) */
+  files: string[];
+  /** Warnings encountered */
+  warnings: string[];
+  /** Errors encountered (non-fatal, specific pages) */
+  errors: Array<{ route: string; error: string }>;
+}
+
+/**
+ * Run static export for Pages Router.
+ *
+ * Creates a directory of static HTML files by rendering each route at build time.
+ */
+export async function staticExportPages(
+  options: StaticExportOptions,
+): Promise<StaticExportResult> {
+  const { server, routes, apiRoutes, pagesDir, outDir, config } = options;
+  const result: StaticExportResult = {
+    pageCount: 0,
+    files: [],
+    warnings: [],
+    errors: [],
+  };
+
+  // Ensure output directory exists
+  fs.mkdirSync(outDir, { recursive: true });
+
+  // Warn about API routes
+  if (apiRoutes.length > 0) {
+    result.warnings.push(
+      `${apiRoutes.length} API route(s) skipped — API routes are not supported with output: 'export'`,
+    );
+  }
+
+  // Gather all pages to render (expand dynamic routes via getStaticPaths)
+  const pagesToRender: Array<{
+    route: Route;
+    urlPath: string;
+    params: Record<string, string | string[]>;
+  }> = [];
+
+  for (const route of routes) {
+    // Skip internal pages
+    const routeName = path.basename(route.filePath, path.extname(route.filePath));
+    if (routeName.startsWith("_")) continue;
+
+    const pageModule = await server.ssrLoadModule(route.filePath);
+
+    // Validate: getServerSideProps is not allowed with static export
+    if (typeof pageModule.getServerSideProps === "function") {
+      result.errors.push({
+        route: route.pattern,
+        error: `Page uses getServerSideProps which is not supported with output: 'export'. Use getStaticProps instead.`,
+      });
+      continue;
+    }
+
+    if (route.isDynamic) {
+      // Dynamic route — must have getStaticPaths
+      if (typeof pageModule.getStaticPaths !== "function") {
+        result.errors.push({
+          route: route.pattern,
+          error: `Dynamic route requires getStaticPaths with output: 'export'`,
+        });
+        continue;
+      }
+
+      const pathsResult = await pageModule.getStaticPaths({
+        locales: [],
+        defaultLocale: "",
+      });
+      const fallback = pathsResult?.fallback ?? false;
+
+      if (fallback !== false) {
+        result.errors.push({
+          route: route.pattern,
+          error: `getStaticPaths must return fallback: false with output: 'export' (got: ${JSON.stringify(fallback)})`,
+        });
+        continue;
+      }
+
+      const paths: Array<{ params: Record<string, string | string[]> }> =
+        pathsResult?.paths ?? [];
+
+      for (const { params } of paths) {
+        // Build the URL path from the route pattern and params
+        const urlPath = buildUrlFromParams(route.pattern, params);
+        pagesToRender.push({ route, urlPath, params });
+      }
+    } else {
+      // Static route — render directly
+      pagesToRender.push({ route, urlPath: route.pattern, params: {} });
+    }
+  }
+
+  // Load shared components (_app, _document, head shim, dynamic shim)
+  let AppComponent: React.ComponentType<{
+    Component: React.ComponentType;
+    pageProps: Record<string, unknown>;
+  }> | null = null;
+  const appPath = path.join(pagesDir, "_app");
+  if (findFileWithExtensions(appPath)) {
+    try {
+      const appModule = await server.ssrLoadModule(appPath);
+      AppComponent = appModule.default ?? null;
+    } catch {
+      // _app exists but failed to load
+    }
+  }
+
+  let DocumentComponent: React.ComponentType | null = null;
+  const docPath = path.join(pagesDir, "_document");
+  if (findFileWithExtensions(docPath)) {
+    try {
+      const docModule = await server.ssrLoadModule(docPath);
+      DocumentComponent = docModule.default ?? null;
+    } catch {
+      // _document exists but failed to load
+    }
+  }
+
+  const headShim = await server.ssrLoadModule("next/head");
+  const dynamicShim = await server.ssrLoadModule("next/dynamic");
+  const routerShim = await server.ssrLoadModule("next/router");
+
+  // Render each page
+  for (const { route, urlPath, params } of pagesToRender) {
+    try {
+      const html = await renderStaticPage({
+        server,
+        route,
+        urlPath,
+        params,
+        pagesDir,
+        config,
+        AppComponent,
+        DocumentComponent,
+        headShim,
+        dynamicShim,
+        routerShim,
+      });
+
+      const outputPath = getOutputPath(urlPath, config.trailingSlash);
+      const fullPath = path.join(outDir, outputPath);
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, html, "utf-8");
+
+      result.files.push(outputPath);
+      result.pageCount++;
+    } catch (e) {
+      result.errors.push({
+        route: urlPath,
+        error: (e as Error).message,
+      });
+    }
+  }
+
+  // Render 404 page
+  try {
+    const html404 = await renderErrorPage({
+      server,
+      pagesDir,
+      statusCode: 404,
+      AppComponent,
+      DocumentComponent,
+      headShim,
+    });
+    if (html404) {
+      const fullPath = path.join(outDir, "404.html");
+      fs.writeFileSync(fullPath, html404, "utf-8");
+      result.files.push("404.html");
+      result.pageCount++;
+    }
+  } catch {
+    // No custom 404, skip
+  }
+
+  return result;
+}
+
+interface RenderStaticPageOptions {
+  server: ViteDevServer;
+  route: Route;
+  urlPath: string;
+  params: Record<string, string | string[]>;
+  pagesDir: string;
+  config: ResolvedNextConfig;
+  AppComponent: React.ComponentType<{
+    Component: React.ComponentType;
+    pageProps: Record<string, unknown>;
+  }> | null;
+  DocumentComponent: React.ComponentType | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  headShim: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  dynamicShim: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  routerShim: any;
+}
+
+async function renderStaticPage(options: RenderStaticPageOptions): Promise<string> {
+  const {
+    server,
+    route,
+    urlPath,
+    params,
+    config: _config,
+    AppComponent,
+    DocumentComponent,
+    headShim,
+    dynamicShim,
+    routerShim,
+  } = options;
+
+  // Set SSR context for router shim
+  if (typeof routerShim.setSSRContext === "function") {
+    routerShim.setSSRContext({
+      pathname: urlPath,
+      query: params,
+      asPath: urlPath,
+    });
+  }
+
+  const pageModule = await server.ssrLoadModule(route.filePath);
+  const PageComponent = pageModule.default;
+  if (!PageComponent) {
+    throw new Error(`Page ${route.filePath} has no default export`);
+  }
+
+  // Collect page props
+  let pageProps: Record<string, unknown> = {};
+
+  if (typeof pageModule.getStaticProps === "function") {
+    const result = await pageModule.getStaticProps({ params });
+    if (result && "props" in result) {
+      pageProps = result.props as Record<string, unknown>;
+    }
+    if (result && "redirect" in result) {
+      // Static export can't handle redirects — write a meta redirect
+      const redirect = result.redirect as { destination: string };
+      return `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${redirect.destination}" /></head><body></body></html>`;
+    }
+    if (result && "notFound" in result && result.notFound) {
+      throw new Error(`Page ${urlPath} returned notFound: true`);
+    }
+  }
+
+  // Build element
+  const createElement = React.createElement;
+  let element: React.ReactElement;
+
+  if (AppComponent) {
+    element = createElement(AppComponent, {
+      Component: PageComponent,
+      pageProps,
+    });
+  } else {
+    element = createElement(PageComponent, pageProps);
+  }
+
+  // Reset head collector and flush dynamic preloads
+  if (typeof headShim.resetSSRHead === "function") {
+    headShim.resetSSRHead();
+  }
+  if (typeof dynamicShim.flushPreloads === "function") {
+    await dynamicShim.flushPreloads();
+  }
+
+  // Render page body
+  const bodyHtml = await renderToStringAsync(element);
+
+  // Collect head tags
+  const ssrHeadHTML =
+    typeof headShim.getSSRHeadHTML === "function"
+      ? headShim.getSSRHeadHTML()
+      : "";
+
+  // __NEXT_DATA__ for client hydration
+  const nextDataScript = `<script>window.__NEXT_DATA__ = ${JSON.stringify({
+    props: { pageProps },
+    page: route.pattern,
+    query: params,
+  })}</script>`;
+
+  // Build HTML shell
+  let html: string;
+
+  if (DocumentComponent) {
+    const docElement = createElement(DocumentComponent);
+    // renderToPipeableStream auto-prepends <!DOCTYPE html> when root is <html>
+    let docHtml = await renderToStringAsync(docElement);
+    docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
+    if (ssrHeadHTML) {
+      docHtml = docHtml.replace("</head>", `  ${ssrHeadHTML}\n</head>`);
+    }
+    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
+    if (!docHtml.includes("__NEXT_DATA__")) {
+      docHtml = docHtml.replace("</body>", `  ${nextDataScript}\n</body>`);
+    }
+    html = docHtml;
+  } else {
+    html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${ssrHeadHTML}
+</head>
+<body>
+  <div id="__next">${bodyHtml}</div>
+  ${nextDataScript}
+</body>
+</html>`;
+  }
+
+  // Clear SSR context
+  if (typeof routerShim.setSSRContext === "function") {
+    routerShim.setSSRContext(null);
+  }
+
+  return html;
+}
+
+interface RenderErrorPageOptions {
+  server: ViteDevServer;
+  pagesDir: string;
+  statusCode: number;
+  AppComponent: React.ComponentType<{
+    Component: React.ComponentType;
+    pageProps: Record<string, unknown>;
+  }> | null;
+  DocumentComponent: React.ComponentType | null;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  headShim: any;
+}
+
+async function renderErrorPage(
+  options: RenderErrorPageOptions,
+): Promise<string | null> {
+  const { server, pagesDir, statusCode, AppComponent, DocumentComponent, headShim } =
+    options;
+
+  const candidates =
+    statusCode === 404
+      ? ["404", "_error"]
+      : statusCode === 500
+        ? ["500", "_error"]
+        : ["_error"];
+
+  for (const candidate of candidates) {
+    const candidatePath = path.join(pagesDir, candidate);
+    if (!findFileWithExtensions(candidatePath)) continue;
+
+    const errorModule = await server.ssrLoadModule(candidatePath);
+    const ErrorComponent = errorModule.default;
+    if (!ErrorComponent) continue;
+
+    const createElement = React.createElement;
+    const errorProps = { statusCode };
+
+    let element: React.ReactElement;
+    if (AppComponent) {
+      element = createElement(AppComponent, {
+        Component: ErrorComponent,
+        pageProps: errorProps,
+      });
+    } else {
+      element = createElement(ErrorComponent, errorProps);
+    }
+
+    if (typeof headShim.resetSSRHead === "function") {
+      headShim.resetSSRHead();
+    }
+
+    const bodyHtml = await renderToStringAsync(element);
+
+    let html: string;
+    if (DocumentComponent) {
+      const docElement = createElement(DocumentComponent);
+      let docHtml = await renderToStringAsync(docElement);
+      docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
+      docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");
+      html = docHtml;
+    } else {
+      html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+<body>
+  <div id="__next">${bodyHtml}</div>
+</body>
+</html>`;
+    }
+
+    return html;
+  }
+
+  return null;
+}
+
+/**
+ * Build a URL path from a route pattern and params.
+ * E.g., "/posts/:id" + { id: "42" } → "/posts/42"
+ * E.g., "/docs/:slug+" + { slug: ["a", "b"] } → "/docs/a/b"
+ */
+function buildUrlFromParams(
+  pattern: string,
+  params: Record<string, string | string[]>,
+): string {
+  const parts = pattern.split("/").filter(Boolean);
+  const result: string[] = [];
+
+  for (const part of parts) {
+    if (part.endsWith("+") || part.endsWith("*")) {
+      // Catch-all: :slug+ or :slug*
+      const paramName = part.slice(1, -1);
+      const value = params[paramName];
+      if (Array.isArray(value)) {
+        result.push(...value);
+      } else if (value) {
+        result.push(String(value));
+      }
+    } else if (part.startsWith(":")) {
+      // Dynamic segment: :id
+      const paramName = part.slice(1);
+      const value = params[paramName];
+      result.push(String(value));
+    } else {
+      result.push(part);
+    }
+  }
+
+  return "/" + result.join("/");
+}
+
+/**
+ * Determine the output file path for a given URL.
+ * Respects trailingSlash config.
+ */
+function getOutputPath(urlPath: string, trailingSlash: boolean): string {
+  if (urlPath === "/") {
+    return "index.html";
+  }
+
+  // Remove leading slash
+  const clean = urlPath.replace(/^\//, "");
+
+  if (trailingSlash) {
+    return `${clean}/index.html`;
+  }
+  return `${clean}.html`;
+}

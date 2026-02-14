@@ -522,6 +522,192 @@ describe("Production build", () => {
 });
 
 // ---------------------------------------------------------------
+// Static export (output: 'export') tests
+// ---------------------------------------------------------------
+
+describe("Static export (Pages Router)", () => {
+  let server: ViteDevServer;
+  const exportDir = path.resolve(FIXTURE_DIR, "out");
+
+  beforeAll(async () => {
+    server = await createServer({
+      root: FIXTURE_DIR,
+      configFile: false,
+      plugins: [nextcompat()],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+    // Don't need to listen — just need the SSR module loader
+  });
+
+  afterAll(async () => {
+    await server.close();
+    fs.rmSync(exportDir, { recursive: true, force: true });
+  });
+
+  it("exports static pages to HTML files", async () => {
+    const { staticExportPages } = await import(
+      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+    );
+    const { pagesRouter, apiRouter } = await import(
+      "../packages/vite-plugin-nextcompat/src/routing/pages-router.js"
+    );
+    const { resolveNextConfig } = await import(
+      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+    );
+
+    const pagesDir = path.resolve(FIXTURE_DIR, "pages");
+    const routes = await pagesRouter(pagesDir);
+    const apiRoutes = await apiRouter(pagesDir);
+    const config = await resolveNextConfig({ output: "export" });
+
+    const result = await staticExportPages({
+      server,
+      routes,
+      apiRoutes,
+      pagesDir,
+      outDir: exportDir,
+      config,
+    });
+
+    // Should have generated HTML files
+    expect(result.pageCount).toBeGreaterThan(0);
+
+    // Index page
+    expect(result.files).toContain("index.html");
+    const indexHtml = fs.readFileSync(
+      path.join(exportDir, "index.html"),
+      "utf-8",
+    );
+    expect(indexHtml).toContain("<!DOCTYPE html>");
+    expect(indexHtml).toContain("Hello, nextcompat!");
+
+    // About page
+    expect(result.files).toContain("about.html");
+    const aboutHtml = fs.readFileSync(
+      path.join(exportDir, "about.html"),
+      "utf-8",
+    );
+    expect(aboutHtml).toContain("About");
+  });
+
+  it("pre-renders dynamic routes from getStaticPaths", async () => {
+    // blog/[slug] has getStaticPaths returning hello-world and getting-started
+    expect(
+      fs.existsSync(path.join(exportDir, "blog", "hello-world.html")),
+    ).toBe(true);
+    expect(
+      fs.existsSync(path.join(exportDir, "blog", "getting-started.html")),
+    ).toBe(true);
+
+    const blogHtml = fs.readFileSync(
+      path.join(exportDir, "blog", "hello-world.html"),
+      "utf-8",
+    );
+    expect(blogHtml).toContain("Hello World");
+    expect(blogHtml).toContain("hello-world");
+  });
+
+  it("generates 404.html", async () => {
+    expect(fs.existsSync(path.join(exportDir, "404.html"))).toBe(true);
+    const html404 = fs.readFileSync(
+      path.join(exportDir, "404.html"),
+      "utf-8",
+    );
+    expect(html404).toContain("404");
+  });
+
+  it("reports errors for pages using getServerSideProps", async () => {
+    // The result from the first test should have errors for SSR-only pages
+    const { staticExportPages } = await import(
+      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+    );
+    const { pagesRouter, apiRouter } = await import(
+      "../packages/vite-plugin-nextcompat/src/routing/pages-router.js"
+    );
+    const { resolveNextConfig } = await import(
+      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+    );
+
+    const pagesDir = path.resolve(FIXTURE_DIR, "pages");
+    const routes = await pagesRouter(pagesDir);
+    const apiRoutes = await apiRouter(pagesDir);
+    const config = await resolveNextConfig({ output: "export" });
+
+    const tempDir = path.resolve(FIXTURE_DIR, "out-temp");
+    try {
+      const result = await staticExportPages({
+        server,
+        routes,
+        apiRoutes,
+        pagesDir,
+        outDir: tempDir,
+        config,
+      });
+
+      // Should report errors for getServerSideProps pages
+      const ssrErrors = result.errors.filter((e) =>
+        e.error.includes("getServerSideProps"),
+      );
+      expect(ssrErrors.length).toBeGreaterThan(0);
+
+      // Should warn about API routes
+      expect(result.warnings.some((w) => w.includes("API route"))).toBe(true);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("includes __NEXT_DATA__ in exported HTML", async () => {
+    const indexHtml = fs.readFileSync(
+      path.join(exportDir, "index.html"),
+      "utf-8",
+    );
+    expect(indexHtml).toContain("__NEXT_DATA__");
+  });
+
+  it("respects trailingSlash config", async () => {
+    const { staticExportPages } = await import(
+      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+    );
+    const { pagesRouter, apiRouter } = await import(
+      "../packages/vite-plugin-nextcompat/src/routing/pages-router.js"
+    );
+    const { resolveNextConfig } = await import(
+      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+    );
+
+    const pagesDir = path.resolve(FIXTURE_DIR, "pages");
+    const routes = await pagesRouter(pagesDir);
+    const apiRoutes = await apiRouter(pagesDir);
+    const config = await resolveNextConfig({
+      output: "export",
+      trailingSlash: true,
+    });
+
+    const trailingDir = path.resolve(FIXTURE_DIR, "out-trailing");
+    try {
+      const result = await staticExportPages({
+        server,
+        routes,
+        apiRoutes,
+        pagesDir,
+        outDir: trailingDir,
+        config,
+      });
+
+      // With trailingSlash, about → about/index.html
+      expect(result.files).toContain("about/index.html");
+      expect(
+        fs.existsSync(path.join(trailingDir, "about", "index.html")),
+      ).toBe(true);
+    } finally {
+      fs.rmSync(trailingDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------
 // App Router integration tests
 // ---------------------------------------------------------------
 

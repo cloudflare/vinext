@@ -61,6 +61,8 @@ export interface NextConfig {
     domains?: string[];
     unoptimized?: boolean;
   };
+  /** Build output mode: 'export' for full static export, 'standalone' for single server */
+  output?: "export" | "standalone";
   /** Transpile packages (Vite handles this natively) */
   transpilePackages?: string[];
   /** Webpack config (ignored — we use Vite) */
@@ -76,6 +78,7 @@ export interface ResolvedNextConfig {
   env: Record<string, string>;
   basePath: string;
   trailingSlash: boolean;
+  output: "" | "export" | "standalone";
   redirects: NextRedirect[];
   rewrites: {
     beforeFiles: NextRewrite[];
@@ -140,6 +143,7 @@ export async function resolveNextConfig(
       env: {},
       basePath: "",
       trailingSlash: false,
+      output: "",
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],
@@ -176,7 +180,7 @@ export async function resolveNextConfig(
   }
 
   // Warn about unsupported options
-  const unsupported = ["webpack", "experimental", "i18n", "output"];
+  const unsupported = ["webpack", "experimental", "i18n"];
   for (const key of unsupported) {
     if (config[key] !== undefined) {
       console.warn(
@@ -185,10 +189,16 @@ export async function resolveNextConfig(
     }
   }
 
+  const output = config.output ?? "";
+  if (output && output !== "export" && output !== "standalone") {
+    console.warn(`[nextcompat] Unknown output mode "${output}", ignoring`);
+  }
+
   return {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
     trailingSlash: config.trailingSlash ?? false,
+    output: output === "export" || output === "standalone" ? output : "",
     redirects,
     rewrites,
     headers,

@@ -303,8 +303,9 @@ hydrate();
 
       if (DocumentComponent) {
         // Render the custom Document component
+        // renderToPipeableStream auto-prepends <!DOCTYPE html> when root is <html>
         const docElement = createElement(DocumentComponent);
-        let docHtml = "<!DOCTYPE html>" + await renderToStringAsync(docElement);
+        let docHtml = await renderToStringAsync(docElement);
         // Replace the __NEXT_MAIN__ placeholder with actual page content
         docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
         // Inject SSR head tags into </head>
@@ -441,8 +442,7 @@ async function renderErrorPage(
 
       if (DocumentComponent) {
         const docElement = createElement(DocumentComponent);
-        let docHtml =
-          "<!DOCTYPE html>" + await renderToStringAsync(docElement);
+        let docHtml = await renderToStringAsync(docElement);
         docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
         docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");
         html = docHtml;

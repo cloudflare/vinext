@@ -16,6 +16,7 @@ import {
   type NextRewrite,
 } from "./config/next-config.js";
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import { staticExportPages } from "./build/static-export.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import fs from "node:fs";
@@ -283,7 +284,7 @@ export async function renderPage(req, res, url, manifest) {
     let html;
     if (DocumentComponent) {
       const docElement = React.createElement(DocumentComponent);
-      html = "<!DOCTYPE html>" + await renderToStringAsync(docElement);
+      html = await renderToStringAsync(docElement);
       html = html.replace("__NEXT_MAIN__", bodyHtml);
       if (ssrHeadHTML || assetTags) {
         html = html.replace("</head>", "  " + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>");
@@ -861,3 +862,7 @@ function applyHeaders(
     }
   }
 }
+
+// Public exports for static export
+export { staticExportPages } from "./build/static-export.js";
+export type { StaticExportResult, StaticExportOptions } from "./build/static-export.js";
