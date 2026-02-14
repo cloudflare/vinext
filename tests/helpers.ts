@@ -57,7 +57,7 @@ export async function startFixtureServer(
     root: fixtureDir,
     configFile: false,
     plugins,
-    server: { port: 0 },
+    server: { port: 0, cors: false },
     logLevel: "silent",
   });
 

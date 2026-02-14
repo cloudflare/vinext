@@ -949,6 +949,88 @@ describe("App Router integration", () => {
   it("returns Method Not Allowed for unsupported HTTP methods on route handlers", async () => {
     const res = await fetch(`${baseUrl}/api/hello`, { method: "DELETE" });
     expect(res.status).toBe(405);
+    // Should include Allow header listing supported methods
+    const allow = res.headers.get("allow");
+    expect(allow).toBeTruthy();
+    expect(allow).toContain("GET");
+    expect(allow).toContain("POST");
+    // Body should be empty for 405
+    const body = await res.text();
+    expect(body).toBe("");
+  });
+
+  it("auto-implements HEAD for route handlers that export GET", async () => {
+    const res = await fetch(`${baseUrl}/api/get-only`, { method: "HEAD" });
+    expect(res.status).toBe(200);
+    // HEAD response should have no body
+    const body = await res.text();
+    expect(body).toBe("");
+    // But should preserve headers from GET handler
+    expect(res.headers.get("content-type")).toContain("application/json");
+  });
+
+  it("auto-implements OPTIONS for route handlers", async () => {
+    const res = await fetch(`${baseUrl}/api/get-only`, { method: "OPTIONS" });
+    expect(res.status).toBe(204);
+    const allow = res.headers.get("allow");
+    expect(allow).toBeTruthy();
+    expect(allow).toContain("GET");
+    expect(allow).toContain("HEAD");
+    expect(allow).toContain("OPTIONS");
+    // Body should be empty
+    const body = await res.text();
+    expect(body).toBe("");
+  });
+
+  it("auto-implements OPTIONS for route handlers with multiple methods", async () => {
+    const res = await fetch(`${baseUrl}/api/hello`, { method: "OPTIONS" });
+    expect(res.status).toBe(204);
+    const allow = res.headers.get("allow");
+    expect(allow).toBeTruthy();
+    expect(allow).toContain("GET");
+    expect(allow).toContain("POST");
+    expect(allow).toContain("HEAD");
+    expect(allow).toContain("OPTIONS");
+  });
+
+  it("returns 500 with empty body when route handler throws", async () => {
+    const res = await fetch(`${baseUrl}/api/error-route`);
+    expect(res.status).toBe(500);
+    const body = await res.text();
+    expect(body).toBe("");
+  });
+
+  it("catches redirect() thrown in route handlers", async () => {
+    const res = await fetch(`${baseUrl}/api/redirect-route`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    const location = res.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(location).toContain("/about");
+  });
+
+  it("catches notFound() thrown in route handlers", async () => {
+    const res = await fetch(`${baseUrl}/api/not-found-route`);
+    expect(res.status).toBe(404);
+    const body = await res.text();
+    expect(body).toBe("");
+  });
+
+  it("passes { params } as second argument to route handlers", async () => {
+    const res = await fetch(`${baseUrl}/api/items/42`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({ id: "42" });
+  });
+
+  it("passes { params } to route handlers with different methods", async () => {
+    const res = await fetch(`${baseUrl}/api/items/99`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Widget" }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({ id: "99", name: "Widget" });
   });
 
   it("renders custom not-found.tsx for unmatched routes", async () => {
@@ -2996,5 +3078,96 @@ describe("next/amp shim", () => {
     // Both always return false
     expect(useAmp()).toBe(false);
     expect(isInAmpMode()).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Metadata title template tests
+// ---------------------------------------------------------------------------
+describe("metadata title templates", () => {
+  let mergeMetadata: typeof import("../packages/vite-plugin-nextcompat/src/shims/metadata.js").mergeMetadata;
+
+  beforeAll(async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/metadata.js"
+    );
+    mergeMetadata = mod.mergeMetadata;
+  });
+
+  it("applies layout template to child page string title", () => {
+    const result = mergeMetadata([
+      { title: { template: "%s | My Site", default: "My Site" } },
+      { title: "About" },
+    ]);
+    expect(result.title).toBe("About | My Site");
+  });
+
+  it("uses layout default title when page has no title", () => {
+    const result = mergeMetadata([
+      { title: { template: "%s | My Site", default: "My Site" } },
+      { description: "No title here" },
+    ]);
+    expect(result.title).toBe("My Site");
+  });
+
+  it("title.absolute skips all templates", () => {
+    const result = mergeMetadata([
+      { title: { template: "%s | My Site", default: "My Site" } },
+      { title: { absolute: "Custom Title" } },
+    ]);
+    expect(result.title).toBe("Custom Title");
+  });
+
+  it("nearest layout template wins over root", () => {
+    const result = mergeMetadata([
+      { title: { template: "%s | Root", default: "Root" } },
+      { title: { template: "%s - Blog", default: "Blog" } },
+      { title: "Hello World" },
+    ]);
+    expect(result.title).toBe("Hello World - Blog");
+  });
+
+  it("page template has no effect (page is terminal)", () => {
+    // If the page defines a template, it should be ignored
+    // Only layouts define templates, and page is always the last entry
+    const result = mergeMetadata([
+      { title: { template: "%s | Site", default: "Site" } },
+      { title: { template: "%s - Page Template", default: "Page Default" } },
+    ]);
+    // The page's template should be ignored; the page's default is used
+    // because the page has a title object (not a string), so we use its default
+    expect(result.title).toBe("Page Default");
+  });
+
+  it("preserves non-title metadata during merge", () => {
+    const result = mergeMetadata([
+      { title: { template: "%s | Site", default: "Site" }, description: "Root desc" },
+      { title: "About", keywords: ["about"] },
+    ]);
+    expect(result.title).toBe("About | Site");
+    expect(result.description).toBe("Root desc");
+    expect(result.keywords).toEqual(["about"]);
+  });
+
+  it("later entries override earlier for non-title fields", () => {
+    const result = mergeMetadata([
+      { description: "From layout", openGraph: { title: "OG Layout" } },
+      { description: "From page" },
+    ]);
+    expect(result.description).toBe("From page");
+    // openGraph from layout should be inherited if page doesn't override it
+    expect(result.openGraph).toEqual({ title: "OG Layout" });
+  });
+
+  it("simple string title without template passes through", () => {
+    const result = mergeMetadata([
+      { title: "My Page" },
+    ]);
+    expect(result.title).toBe("My Page");
+  });
+
+  it("handles empty metadata list", () => {
+    const result = mergeMetadata([]);
+    expect(result).toEqual({});
   });
 });

@@ -153,58 +153,66 @@ export interface Metadata {
 }
 
 /**
- * Resolve a title from metadata, applying template if available.
- */
-function resolveTitle(
-  metadata: Metadata,
-  parentTitle?: string | { default?: string; template?: string },
-): string | undefined {
-  const title = metadata.title;
-  if (!title) return undefined;
-
-  if (typeof title === "string") {
-    // Apply parent template if available
-    if (
-      parentTitle &&
-      typeof parentTitle === "object" &&
-      parentTitle.template
-    ) {
-      return parentTitle.template.replace("%s", title);
-    }
-    return title;
-  }
-
-  if (title.absolute) return title.absolute;
-  if (title.default) return title.default;
-  return undefined;
-}
-
-/**
  * Merge metadata from multiple sources (layouts + page).
- * Later entries override earlier ones, except for title templating.
+ *
+ * The list is ordered [rootLayout, nestedLayout, ..., page].
+ * Title template from layouts applies to the page title but NOT to
+ * the segment that defines the template itself. `title.absolute`
+ * skips all templates. `title.default` is the fallback when no
+ * child provides a title.
+ *
+ * Shallow merge: later entries override earlier ones (per Next.js docs).
  */
 export function mergeMetadata(metadataList: Metadata[]): Metadata {
-  const merged: Metadata = {};
-  let lastTitleTemplate: string | { default?: string; template?: string } | undefined;
+  if (metadataList.length === 0) return {};
 
-  for (const meta of metadataList) {
-    // Title needs special handling for templates
-    if (meta.title) {
-      if (typeof meta.title === "object" && meta.title.template) {
-        lastTitleTemplate = meta.title;
-      }
+  const merged: Metadata = {};
+
+  // Track the most recent title template from LAYOUTS (not from page).
+  // The page is always the last entry in metadataList.
+  let parentTemplate: string | undefined;
+
+  for (let i = 0; i < metadataList.length; i++) {
+    const meta = metadataList[i];
+    const isPage = i === metadataList.length - 1;
+
+    // Collect template from layouts only (page templates are ignored per Next.js spec)
+    if (!isPage && meta.title && typeof meta.title === "object" && meta.title.template) {
+      parentTemplate = meta.title.template;
     }
-    Object.assign(merged, meta);
+
+    // Shallow merge — later entries override earlier for top-level keys
+    for (const key of Object.keys(meta)) {
+      if (key === "title") continue; // Handle title separately below
+      (merged as Record<string, unknown>)[key] = (meta as Record<string, unknown>)[key];
+    }
+
+    // Title resolution
+    if (meta.title !== undefined) {
+      merged.title = meta.title;
+    }
   }
 
-  // Re-resolve title with template from parent
-  if (merged.title && lastTitleTemplate) {
-    const resolvedTitle = resolveTitle(
-      { title: merged.title },
-      lastTitleTemplate,
-    );
-    if (resolvedTitle) {
-      merged.title = resolvedTitle;
+  // Now resolve the final title, applying the parent template if applicable
+  const finalTitle = merged.title;
+  if (finalTitle) {
+    if (typeof finalTitle === "string") {
+      // Simple string title — apply parent template
+      if (parentTemplate) {
+        merged.title = parentTemplate.replace("%s", finalTitle);
+      }
+    } else if (typeof finalTitle === "object") {
+      if (finalTitle.absolute) {
+        // Absolute title — skip all templates
+        merged.title = finalTitle.absolute;
+      } else if (finalTitle.default) {
+        // Title object with default — this is used when the segment IS the
+        // defining layout (its own default doesn't get template-wrapped)
+        merged.title = finalTitle.default;
+      } else if (finalTitle.template && !finalTitle.default && !finalTitle.absolute) {
+        // Template only with no default — no title to render
+        merged.title = undefined;
+      }
     }
   }
 

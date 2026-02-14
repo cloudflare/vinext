@@ -610,22 +610,83 @@ export default async function handler(request) {
   if (route.routeHandler) {
     const handler = route.routeHandler;
     const method = request.method.toUpperCase();
-    const handlerFn = handler[method] || handler["default"];
+
+    // Collect exported HTTP methods for OPTIONS auto-response and Allow header
+    const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
+    const exportedMethods = HTTP_METHODS.filter((m) => typeof handler[m] === "function");
+    // If GET is exported, HEAD is implicitly supported
+    if (exportedMethods.includes("GET") && !exportedMethods.includes("HEAD")) {
+      exportedMethods.push("HEAD");
+    }
+    const hasDefault = typeof handler["default"] === "function";
+
+    // OPTIONS auto-implementation: respond with Allow header and 204
+    if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
+      const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
+      if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
+      setHeadersContext(null);
+      setNavigationContext(null);
+      return new Response(null, {
+        status: 204,
+        headers: { "Allow": allowMethods.join(", ") },
+      });
+    }
+
+    // HEAD auto-implementation: run GET handler and strip body
+    let handlerFn = handler[method] || handler["default"];
+    let isAutoHead = false;
+    if (method === "HEAD" && typeof handler["HEAD"] !== "function" && typeof handler["GET"] === "function") {
+      handlerFn = handler["GET"];
+      isAutoHead = true;
+    }
+
     if (typeof handlerFn === "function") {
       try {
-        const response = await handlerFn(request);
+        const response = await handlerFn(request, { params });
         setHeadersContext(null);
         setNavigationContext(null);
+        if (isAutoHead) {
+          // Strip body for auto-HEAD, preserve headers and status
+          return new Response(null, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          });
+        }
         return response;
       } catch (err) {
+        // Catch redirect() / notFound() thrown from route handlers
+        if (err && typeof err === "object" && "digest" in err) {
+          const digest = String(err.digest);
+          if (digest.startsWith("NEXT_REDIRECT;")) {
+            const parts = digest.split(";");
+            const redirectUrl = parts[2];
+            const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
+            setHeadersContext(null);
+            setNavigationContext(null);
+            return new Response(null, {
+              status: statusCode,
+              headers: { Location: new URL(redirectUrl, request.url).toString() },
+            });
+          }
+          if (digest === "NEXT_NOT_FOUND") {
+            setHeadersContext(null);
+            setNavigationContext(null);
+            return new Response(null, { status: 404 });
+          }
+        }
         setHeadersContext(null);
         setNavigationContext(null);
-        return new Response("Internal Server Error", { status: 500 });
+        console.error("[nextcompat] Route handler error:", err);
+        return new Response(null, { status: 500 });
       }
     }
     setHeadersContext(null);
     setNavigationContext(null);
-    return new Response("Method Not Allowed", { status: 405 });
+    return new Response(null, {
+      status: 405,
+      headers: { Allow: exportedMethods.join(", ") },
+    });
   }
 
   // Build the component tree: layouts wrapping the page
