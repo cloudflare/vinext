@@ -238,3 +238,26 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **`getImageProps`** (Next.js 14+) returns the underlying `<img>` props without rendering. Used for `<picture>` elements and CSS background images.
 - **`ReadonlyURLSearchParams`** is just a type alias for `URLSearchParams` — Next.js uses it to signal read-only intent but doesn't enforce at runtime.
 - **`useServerInsertedHTML`** from `next/navigation` is used by styled-components/emotion for SSR style injection. In our implementation, this is a no-op since Vite handles CSS.
+
+## HTTP Access Fallback (forbidden/unauthorized)
+
+- **Unified error digest format**: Next.js 16 uses `NEXT_HTTP_ERROR_FALLBACK;{statusCode}` as the digest prefix for `notFound()` (404), `forbidden()` (403), and `unauthorized()` (401). The old `NEXT_NOT_FOUND` digest is legacy. Our implementation supports both formats for backward compatibility.
+- **`forbidden()` and `unauthorized()` are experimental** in Next.js 16, gated behind `experimental.authInterrupts` config. We support them unconditionally — simpler and more useful.
+- **Boundary file conventions**: `forbidden.tsx` and `unauthorized.tsx` work identically to `not-found.tsx` — discovered by walking from route directory up to app root (nearest wins), wrapped in layouts, with `<meta name="robots" content="noindex">` injected.
+- **Error boundary propagation**: The `ErrorBoundary` (error.tsx wrapper) must re-throw errors with `NEXT_HTTP_ERROR_FALLBACK;*` digests, not just `NEXT_NOT_FOUND`. Updated to check `digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")`.
+
+## Cache APIs
+
+- **`cacheLife()` and `cacheTag()` require `"use cache"` directive** in Next.js — they only work inside functions marked with `"use cache"`. Since we don't support the `"use cache"` directive yet (it's a compiler feature), these are exported as validation-only no-ops.
+- **Built-in cache profiles**: `default` (15min revalidate), `seconds` (1s), `minutes` (1min), `hours` (1hr), `days` (1day), `weeks` (1week), `max` (1month). Values match Next.js 16 `config-shared.ts`.
+- **`cacheLife` minimum-wins**: If called multiple times in a `"use cache"` function, the lowest value wins for each field. Important for nested caches.
+
+## generateStaticParams
+
+- **Parent params passing is top-down**: For nested dynamic routes like `/[category]/[item]`, the parent's `generateStaticParams` runs first, then each result is passed to the child as `{ params: { category } }`.
+- **Static export uses full top-down resolution**: `resolveParentParams()` walks ancestor routes, finds those with `generateStaticParams`, runs them top-down, and merges results. The child is called once per parent param combination.
+- **Dev server `dynamicParams` check passes full URL params**: When `dynamicParams: false` validates against `generateStaticParams`, we pass the full matched URL params. The child's returned param sets may omit parent params (they're inherited), so the validation skips undefined keys.
+
+## URLPattern
+
+- **URLPattern is a Web API** available natively in Node 20+, Cloudflare Workers, and Deno. Next.js re-exports it from `next/server` for middleware route matching. Our export uses `globalThis.URLPattern` with a fallback that throws a helpful error.
