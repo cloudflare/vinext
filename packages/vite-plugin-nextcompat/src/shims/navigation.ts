@@ -57,10 +57,22 @@ function notifyListeners(): void {
 }
 
 // Track client-side params (set during RSC hydration/navigation)
+// We cache the params object for referential stability — only create a new
+// object when the params actually change (shallow key/value comparison).
 let _clientParams: Record<string, string | string[]> = {};
+let _clientParamsJson = "{}";
 
 export function setClientParams(params: Record<string, string | string[]>): void {
-  _clientParams = params;
+  const json = JSON.stringify(params);
+  if (json !== _clientParamsJson) {
+    _clientParams = params;
+    _clientParamsJson = json;
+  }
+}
+
+/** Get the current client params (for testing referential stability). */
+export function getClientParams(): Record<string, string | string[]> {
+  return _clientParams;
 }
 
 // ---------------------------------------------------------------------------

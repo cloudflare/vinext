@@ -1720,6 +1720,28 @@ describe("next/navigation shim", () => {
     setNavigationContext(null);
   });
 
+  it("setClientParams provides referential stability for identical params", async () => {
+    const { setClientParams, getClientParams } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    // Set params initially
+    setClientParams({ slug: "hello" });
+    const first = getClientParams();
+    // Set params with same values — should return same object reference
+    setClientParams({ slug: "hello" });
+    const second = getClientParams();
+    expect(first).toBe(second); // referential equality
+
+    // Set params with different values — should return new object
+    setClientParams({ slug: "world" });
+    const third = getClientParams();
+    expect(third).not.toBe(first);
+    expect(third).toEqual({ slug: "world" });
+
+    // Clean up
+    setClientParams({});
+  });
+
   it("exports useSelectedLayoutSegment and useSelectedLayoutSegments", async () => {
     const nav = await import(
       "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
@@ -3490,5 +3512,91 @@ describe("Pages Router router helpers", () => {
     it("returns false for full URLs without window context", () => {
       expect(isHashOnlyChange("https://example.com#foo")).toBe(false);
     });
+  });
+});
+
+// ─── next/script strategies (SSR behavior) ──────────────────────────────────
+describe("next/script SSR rendering", () => {
+  it("beforeInteractive renders <script> tag in SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vite-plugin-nextcompat/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        src: "https://example.com/analytics.js",
+        strategy: "beforeInteractive",
+        id: "analytics",
+      }),
+    );
+    expect(html).toContain("<script");
+    expect(html).toContain('src="https://example.com/analytics.js"');
+    expect(html).toContain('id="analytics"');
+  });
+
+  it("afterInteractive returns null in SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vite-plugin-nextcompat/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        src: "https://example.com/chat.js",
+        strategy: "afterInteractive",
+      }),
+    );
+    // afterInteractive should not render anything server-side
+    expect(html).toBe("");
+  });
+
+  it("lazyOnload returns null in SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vite-plugin-nextcompat/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        src: "https://example.com/tracking.js",
+        strategy: "lazyOnload",
+      }),
+    );
+    expect(html).toBe("");
+  });
+
+  it("default strategy (no strategy prop) returns null in SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vite-plugin-nextcompat/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        src: "https://example.com/default.js",
+      }),
+    );
+    // Default is afterInteractive → null in SSR
+    expect(html).toBe("");
+  });
+
+  it("beforeInteractive with dangerouslySetInnerHTML renders inline script", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vite-plugin-nextcompat/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        strategy: "beforeInteractive",
+        id: "inline-script",
+        dangerouslySetInnerHTML: { __html: "console.log('hello')" },
+      }),
+    );
+    expect(html).toContain("<script");
+    expect(html).toContain('id="inline-script"');
+    expect(html).toContain("console.log('hello')");
+  });
+
+  it("exports handleClientScriptLoad and initScriptLoader", async () => {
+    const scriptModule = await import("../packages/vite-plugin-nextcompat/src/shims/script.js");
+    expect(typeof scriptModule.handleClientScriptLoad).toBe("function");
+    expect(typeof scriptModule.initScriptLoader).toBe("function");
   });
 });
