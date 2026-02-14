@@ -371,6 +371,67 @@ describe("Pages Router integration", () => {
     // The loading fallback should NOT be in the final HTML
     expect(html).not.toContain("Loading...");
   });
+
+  // --- getStaticPaths tests ---
+
+  it("renders blog post with getStaticPaths fallback: false for listed path", async () => {
+    const res = await fetch(`${baseUrl}/blog/hello-world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Hello World");
+    expect(html).toMatch(/Blog post slug:.*hello-world/);
+  });
+
+  it("returns 404 for unlisted path with getStaticPaths fallback: false", async () => {
+    const res = await fetch(`${baseUrl}/blog/nonexistent`);
+    expect(res.status).toBe(404);
+  });
+
+  it("renders article with getStaticPaths fallback: 'blocking' for listed path", async () => {
+    const res = await fetch(`${baseUrl}/articles/1`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("First Article");
+    expect(html).toMatch(/Article ID:.*1/);
+  });
+
+  it("SSR renders unlisted path with getStaticPaths fallback: 'blocking'", async () => {
+    const res = await fetch(`${baseUrl}/articles/99`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/Article\s*(<!-- -->)?\s*99/);
+    expect(html).toMatch(/Article ID:.*99/);
+  });
+
+  it("renders product with getStaticPaths fallback: true for listed path", async () => {
+    const res = await fetch(`${baseUrl}/products/widget`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Super Widget");
+    expect(html).toMatch(/Product ID:.*widget/);
+    expect(html).toMatch(/isFallback:.*false/);
+  });
+
+  it("SSR renders unlisted path with getStaticPaths fallback: true (on-demand)", async () => {
+    // In dev/SSR mode, fallback: true still renders fully (same as blocking)
+    // because data is always available via on-demand SSR.
+    const res = await fetch(`${baseUrl}/products/unknown`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/Product\s*(<!-- -->)?\s*unknown/);
+    expect(html).toMatch(/Product ID:.*unknown/);
+    // isFallback should be false since we always SSR fully
+    expect(html).toMatch(/isFallback:.*false/);
+  });
+
+  it("includes isFallback: false in __NEXT_DATA__", async () => {
+    const res = await fetch(`${baseUrl}/products/widget`);
+    const html = await res.text();
+    const match = html.match(/__NEXT_DATA__\s*=\s*(\{.*?\})\s*[;<]/);
+    expect(match).toBeTruthy();
+    const nextData = JSON.parse(match![1]);
+    expect(nextData.isFallback).toBe(false);
+  });
 });
 
 describe("Virtual server entry generation", () => {

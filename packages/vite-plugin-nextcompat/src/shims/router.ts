@@ -457,7 +457,7 @@ export function useRouter(): NextRouter {
       defaultLocale,
       isReady: true,
       isPreview: false,
-      isFallback: false,
+      isFallback: typeof window !== "undefined" && (window as any).__NEXT_DATA__?.isFallback === true,
       push,
       replace,
       back,

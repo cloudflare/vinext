@@ -212,7 +212,7 @@ export function createSSRHandler(
 
       // Handle getStaticPaths for dynamic routes: validate the path
       // and respect fallback: false (return 404 for unlisted paths).
-      if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
+       if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
         const pathsResult = await pageModule.getStaticPaths({
           locales: i18nConfig?.locales ?? [],
           defaultLocale: i18nConfig?.defaultLocale ?? "",
@@ -238,8 +238,11 @@ export function createSSRHandler(
             return;
           }
         }
-        // fallback: true or "blocking" — in dev mode, always render
-        // (Next.js dev mode does the same)
+        // fallback: true or "blocking" — always SSR on-demand.
+        // In dev mode, Next.js does the same (no fallback shell).
+        // In production, both modes SSR on-demand with caching.
+        // The difference is that fallback:true could serve a shell first,
+        // but since we always have data available via SSR, we render fully.
       }
 
       if (typeof pageModule.getServerSideProps === "function") {
@@ -464,6 +467,7 @@ hydrate();
         props: { pageProps },
         page: route.pattern,
         query: params,
+        isFallback: false,
         locale: locale ?? i18nConfig?.defaultLocale,
         locales: i18nConfig?.locales,
         defaultLocale: i18nConfig?.defaultLocale,
