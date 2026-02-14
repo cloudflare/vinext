@@ -1022,3 +1022,95 @@ describe("next/config shim", () => {
     setConfig({ serverRuntimeConfig: {}, publicRuntimeConfig: {} });
   });
 });
+
+describe("next/font/google shim", () => {
+  it("returns className, style, and variable for a Google Font", async () => {
+    const { Inter } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+    );
+    const result = Inter({ subsets: ["latin"], weight: ["400", "700"] });
+
+    expect(result.className).toMatch(/^__font_inter_/);
+    expect(result.style.fontFamily).toContain("Inter");
+    expect(result.variable).toBe("--font-inter");
+  });
+
+  it("Proxy returns font loaders for any family", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+    );
+    const googleFonts = mod.default;
+    const loader = googleFonts.Poppins;
+    expect(typeof loader).toBe("function");
+
+    const result = loader({ weight: "400" });
+    expect(result.className).toMatch(/^__font_poppins_/);
+    expect(result.style.fontFamily).toContain("Poppins");
+  });
+
+  it("converts PascalCase to font family name", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+    );
+    const googleFonts = mod.default;
+    const result = googleFonts.RobotoMono({ weight: "400" });
+
+    expect(result.style.fontFamily).toContain("Roboto Mono");
+    expect(result.variable).toBe("--font-roboto-mono");
+  });
+
+  it("uses custom variable name when provided", async () => {
+    const { Inter } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+    );
+    const result = Inter({ variable: "--custom-font" });
+    expect(result.variable).toBe("--custom-font");
+  });
+
+  it("uses custom fallback fonts", async () => {
+    const { Inter } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+    );
+    const result = Inter({ fallback: ["Helvetica", "Arial", "sans-serif"] });
+    expect(result.style.fontFamily).toContain("Helvetica");
+    expect(result.style.fontFamily).toContain("Arial");
+  });
+});
+
+describe("next/font/local shim", () => {
+  it("returns className, style for a local font", async () => {
+    const { default: localFont } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/font-local.js"
+    );
+    const result = localFont({ src: "./my-font.woff2" });
+
+    expect(result.className).toMatch(/^__font_local_/);
+    expect(result.style.fontFamily).toMatch(/__local_font_/);
+  });
+
+  it("includes variable when specified", async () => {
+    const { default: localFont } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/font-local.js"
+    );
+    const result = localFont({
+      src: "./my-font.woff2",
+      variable: "--font-custom",
+    });
+    expect(result.variable).toBe("--font-custom");
+  });
+
+  it("accepts array of font sources", async () => {
+    const { default: localFont } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/font-local.js"
+    );
+    const result = localFont({
+      src: [
+        { path: "./regular.woff2", weight: "400" },
+        { path: "./bold.woff2", weight: "700" },
+      ],
+    });
+
+    expect(result.className).toMatch(/^__font_local_/);
+    expect(result.style.fontFamily).toBeTruthy();
+  });
+});

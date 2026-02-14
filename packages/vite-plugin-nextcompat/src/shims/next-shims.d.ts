@@ -84,3 +84,76 @@ declare module "next/server" {
   export function connection(): Promise<void>;
   export type NextMiddleware = (request: NextRequest, event: any) => any;
 }
+
+declare module "next/font/google" {
+  interface FontOptions {
+    weight?: string | string[];
+    style?: string | string[];
+    subsets?: string[];
+    display?: string;
+    preload?: boolean;
+    fallback?: string[];
+    adjustFontFallback?: boolean | string;
+    variable?: string;
+    axes?: string[];
+  }
+
+  interface FontResult {
+    className: string;
+    style: { fontFamily: string };
+    variable?: string;
+  }
+
+  type FontLoader = (options?: FontOptions) => FontResult;
+
+  export const Inter: FontLoader;
+  export const Roboto: FontLoader;
+  export const Roboto_Mono: FontLoader;
+  export const Open_Sans: FontLoader;
+  export const Lato: FontLoader;
+  export const Poppins: FontLoader;
+  export const Montserrat: FontLoader;
+  export const Source_Code_Pro: FontLoader;
+  export const Noto_Sans: FontLoader;
+  export const Raleway: FontLoader;
+  export const Ubuntu: FontLoader;
+  export const Nunito: FontLoader;
+  export const Playfair_Display: FontLoader;
+  export const Merriweather: FontLoader;
+  export const PT_Sans: FontLoader;
+  export const Fira_Code: FontLoader;
+  export const JetBrains_Mono: FontLoader;
+  export const Geist: FontLoader;
+  export const Geist_Mono: FontLoader;
+  // Any other Google Font can be imported via the Proxy
+  const googleFonts: Record<string, FontLoader>;
+  export default googleFonts;
+}
+
+declare module "next/font/local" {
+  interface LocalFontSrc {
+    path: string;
+    weight?: string;
+    style?: string;
+  }
+
+  interface LocalFontOptions {
+    src: string | LocalFontSrc | LocalFontSrc[];
+    display?: string;
+    weight?: string;
+    style?: string;
+    fallback?: string[];
+    preload?: boolean;
+    variable?: string;
+    adjustFontFallback?: boolean | string;
+    declarations?: Array<{ prop: string; value: string }>;
+  }
+
+  interface FontResult {
+    className: string;
+    style: { fontFamily: string };
+    variable?: string;
+  }
+
+  export default function localFont(options: LocalFontOptions): FontResult;
+}
