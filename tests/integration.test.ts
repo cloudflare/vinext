@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createServer, build, type ViteDevServer } from "vite";
+import { createServer, build, createBuilder, type ViteDevServer } from "vite";
 import path from "node:path";
 import fs from "node:fs";
 import nextcompat from "../packages/vite-plugin-nextcompat/src/index.js";
@@ -799,6 +799,125 @@ describe("App Router integration", () => {
     expect(html).toContain('data-testid="like-btn"');
     expect(html).toContain('data-testid="message-input"');
   });
+});
+
+describe("App Router Production build", () => {
+  const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
+
+  afterAll(() => {
+    fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  it("produces RSC/SSR/client bundles via vite build", async () => {
+    const rsc = (await import("@vitejs/plugin-rsc")).default;
+
+    const builder = await createBuilder({
+      root: APP_FIXTURE_DIR,
+      configFile: false,
+      plugins: [
+        nextcompat(),
+        rsc({
+          entries: {
+            rsc: "virtual:nextcompat-rsc-entry",
+            ssr: "virtual:nextcompat-app-ssr-entry",
+            client: "virtual:nextcompat-app-browser-entry",
+          },
+        }),
+      ],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    // RSC entry should exist
+    expect(fs.existsSync(path.join(outDir, "rsc", "index.js"))).toBe(true);
+    // SSR entry should exist
+    expect(fs.existsSync(path.join(outDir, "ssr", "index.js"))).toBe(true);
+    // Client bundle should exist
+    expect(fs.existsSync(path.join(outDir, "client"))).toBe(true);
+
+    // Client should have hashed JS assets
+    const clientAssets = fs.readdirSync(path.join(outDir, "client", "assets"));
+    expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
+
+    // RSC bundle should contain route handling code
+    const rscEntry = fs.readFileSync(
+      path.join(outDir, "rsc", "index.js"),
+      "utf-8",
+    );
+    expect(rscEntry).toContain("handler");
+
+    // Asset manifest should be generated
+    expect(
+      fs.existsSync(
+        path.join(outDir, "rsc", "__vite_rsc_assets_manifest.js"),
+      ),
+    ).toBe(true);
+  }, 30000);
+
+  it("serves production build via preview server", async () => {
+    const { preview } = await import("vite");
+    const rsc = (await import("@vitejs/plugin-rsc")).default;
+
+    const previewServer = await preview({
+      root: APP_FIXTURE_DIR,
+      configFile: false,
+      plugins: [
+        nextcompat(),
+        rsc({
+          entries: {
+            rsc: "virtual:nextcompat-rsc-entry",
+            ssr: "virtual:nextcompat-app-ssr-entry",
+            client: "virtual:nextcompat-app-browser-entry",
+          },
+        }),
+      ],
+      preview: { port: 0 },
+      logLevel: "silent",
+    });
+
+    const addr = previewServer.httpServer.address();
+    const previewUrl =
+      addr && typeof addr === "object"
+        ? `http://localhost:${addr.port}`
+        : null;
+    expect(previewUrl).not.toBeNull();
+
+    try {
+      // Home page renders SSR HTML
+      const homeRes = await fetch(`${previewUrl}/`);
+      expect(homeRes.status).toBe(200);
+      const homeHtml = await homeRes.text();
+      expect(homeHtml).toContain("Welcome to App Router");
+      expect(homeHtml).toContain("<script");
+      // Production bootstrap should reference hashed assets
+      expect(homeHtml).toMatch(/import\("\/assets\/[^"]+\.js"\)/);
+
+      // Dynamic route works
+      const blogRes = await fetch(`${previewUrl}/blog/test-post`);
+      expect(blogRes.status).toBe(200);
+      const blogHtml = await blogRes.text();
+      expect(blogHtml).toContain("Blog Post");
+      expect(blogHtml).toContain("test-post");
+
+      // Nested layout works
+      const dashRes = await fetch(`${previewUrl}/dashboard`);
+      expect(dashRes.status).toBe(200);
+      const dashHtml = await dashRes.text();
+      expect(dashHtml).toContain("Dashboard");
+      expect(dashHtml).toContain("dashboard-layout");
+
+      // 404 for nonexistent routes
+      const notFoundRes = await fetch(`${previewUrl}/no-such-page`);
+      expect(notFoundRes.status).toBe(404);
+
+      // RSC endpoint works
+      const rscRes = await fetch(`${previewUrl}/about.rsc`);
+      expect(rscRes.status).toBe(200);
+      expect(rscRes.headers.get("content-type")).toContain("text/x-component");
+    } finally {
+      previewServer.httpServer.close();
+    }
+  }, 30000);
 });
 
 describe("next/navigation shim", () => {
