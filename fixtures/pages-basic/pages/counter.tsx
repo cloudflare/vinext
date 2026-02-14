@@ -7,7 +7,7 @@ export default function CounterPage() {
   return (
     <div>
       <Head>
-        <title>Counter - nextcompat</title>
+        <title>Counter - vinext</title>
       </Head>
       <h1>Counter Page</h1>
       <p data-testid="count">Count: {count}</p>

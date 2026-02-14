@@ -23,7 +23,7 @@ export default defineConfig({
   webServer: [
     {
       command:
-        "npx tsc -p ../../packages/vite-plugin-nextcompat/tsconfig.json && npx vite --port 4173",
+        "npx tsc -p ../../packages/vinext/tsconfig.json && npx vite --port 4173",
       cwd: "./fixtures/pages-basic",
       port: 4173,
       reuseExistingServer: !process.env.CI,

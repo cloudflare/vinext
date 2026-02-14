@@ -27,7 +27,7 @@ test.describe("Hydration", () => {
     await page.goto(`${BASE}/`);
 
     // Even without JS, the page content should be there from SSR
-    await expect(page.locator("h1")).toHaveText("Hello, nextcompat!");
+    await expect(page.locator("h1")).toHaveText("Hello, vinext!");
     await expect(page.locator("p")).toContainText(
       "This is a Pages Router app running on Vite.",
     );
@@ -58,7 +58,7 @@ test.describe("Hydration", () => {
 
     // Navigate away (this fetches new page HTML)
     await page.click('a[href="/"]');
-    await expect(page.locator("h1")).toHaveText("Hello, nextcompat!");
+    await expect(page.locator("h1")).toHaveText("Hello, vinext!");
 
     // Navigate back — state resets because we re-mount the component
     // (this is expected behavior matching Next.js)

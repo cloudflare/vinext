@@ -1,15 +1,15 @@
 import { defineConfig } from "vite";
-import nextcompat from "vite-plugin-nextcompat";
+import vinext from "vinext";
 import rsc from "@vitejs/plugin-rsc";
 
 export default defineConfig({
   plugins: [
-    nextcompat(),
+    vinext(),
     rsc({
       entries: {
-        rsc: "virtual:nextcompat-rsc-entry",
-        ssr: "virtual:nextcompat-app-ssr-entry",
-        client: "virtual:nextcompat-app-browser-entry",
+        rsc: "virtual:vinext-rsc-entry",
+        ssr: "virtual:vinext-app-ssr-entry",
+        client: "virtual:vinext-app-browser-entry",
       },
     }),
   ],

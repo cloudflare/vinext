@@ -5,9 +5,9 @@ export default function Home() {
   return (
     <div>
       <Head>
-        <title>Hello nextcompat</title>
+        <title>Hello vinext</title>
       </Head>
-      <h1>Hello, nextcompat!</h1>
+      <h1>Hello, vinext!</h1>
       <p>This is a Pages Router app running on Vite.</p>
       <Link href="/about">Go to About</Link>
     </div>

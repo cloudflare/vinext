@@ -5,7 +5,7 @@ const BASE = "http://localhost:4173";
 test.describe("Client-side navigation", () => {
   test("Link click navigates without full page reload", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await expect(page.locator("h1")).toHaveText("Hello, nextcompat!");
+    await expect(page.locator("h1")).toHaveText("Hello, vinext!");
 
     // Store a marker on the window to detect if page fully reloaded
     await page.evaluate(() => {
@@ -35,7 +35,7 @@ test.describe("Client-side navigation", () => {
     });
 
     await page.click('a[href="/"]');
-    await expect(page.locator("h1")).toHaveText("Hello, nextcompat!");
+    await expect(page.locator("h1")).toHaveText("Hello, vinext!");
 
     const marker = await page.evaluate(() => (window as any).__NAV_MARKER__);
     expect(marker).toBe(true);
@@ -61,7 +61,7 @@ test.describe("Client-side navigation", () => {
   test("router.replace navigates without adding history entry", async ({ page }) => {
     // Start at home, then go to nav-test, then replace to SSR
     await page.goto(`${BASE}/`);
-    await expect(page.locator("h1")).toHaveText("Hello, nextcompat!");
+    await expect(page.locator("h1")).toHaveText("Hello, vinext!");
 
     // Navigate to nav-test via direct navigation
     await page.goto(`${BASE}/nav-test`);
@@ -78,7 +78,7 @@ test.describe("Client-side navigation", () => {
 
   test("browser back/forward buttons work after client navigation", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await expect(page.locator("h1")).toHaveText("Hello, nextcompat!");
+    await expect(page.locator("h1")).toHaveText("Hello, vinext!");
 
     // Navigate: Home -> About via link
     await page.click('a[href="/about"]');
@@ -86,7 +86,7 @@ test.describe("Client-side navigation", () => {
 
     // Go back
     await page.goBack();
-    await expect(page.locator("h1")).toHaveText("Hello, nextcompat!");
+    await expect(page.locator("h1")).toHaveText("Hello, vinext!");
     expect(page.url()).toBe(`${BASE}/`);
 
     // Go forward
@@ -109,7 +109,7 @@ test.describe("Client-side navigation", () => {
 
     // About -> Home (via link on about page)
     await page.click('a[href="/"]');
-    await expect(page.locator("h1")).toHaveText("Hello, nextcompat!");
+    await expect(page.locator("h1")).toHaveText("Hello, vinext!");
 
     // Home -> About (via link on home page)
     await page.click('a[href="/about"]');

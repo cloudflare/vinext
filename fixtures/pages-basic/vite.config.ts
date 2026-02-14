@@ -1,6 +1,6 @@
 import { defineConfig } from "vite";
-import nextcompat from "vite-plugin-nextcompat";
+import vinext from "vinext";
 
 export default defineConfig({
-  plugins: [nextcompat()],
+  plugins: [vinext()],
 });

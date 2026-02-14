@@ -8,7 +8,7 @@ const BASE = "http://localhost:4174";
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
     const ready = await page.evaluate(
-      () => !!(window as any).__NEXTCOMPAT_RSC_ROOT__,
+      () => !!(window as any).__VINEXT_RSC_ROOT__,
     );
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
@@ -51,12 +51,12 @@ test.describe("Server Actions", () => {
     await waitForHydration(page);
 
     // Type a message and submit
-    await page.fill('[data-testid="message-input"]', "Hello nextcompat!");
+    await page.fill('[data-testid="message-input"]', "Hello vinext!");
     await page.click('[data-testid="send-btn"]');
 
     // Should display the server response
     await expect(page.locator('[data-testid="message-result"]')).toHaveText(
-      "Received: Hello nextcompat!",
+      "Received: Hello vinext!",
       { timeout: 10_000 },
     );
   });

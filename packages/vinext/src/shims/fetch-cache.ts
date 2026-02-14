@@ -1,0 +1,319 @@
+/**
+ * Extended fetch() with Next.js caching semantics.
+ *
+ * Patches `globalThis.fetch` during server rendering to support:
+ *
+ *   fetch(url, { next: { revalidate: 60, tags: ['posts'] } })
+ *   fetch(url, { cache: 'force-cache' })
+ *   fetch(url, { cache: 'no-store' })
+ *
+ * Cached responses are stored via the pluggable CacheHandler, so
+ * revalidateTag() and revalidatePath() invalidate fetch-level caches.
+ *
+ * Usage (in server entry):
+ *   import { withFetchCache, cleanupFetchCache } from './fetch-cache';
+ *   const cleanup = withFetchCache();
+ *   try { ... render ... } finally { cleanup(); }
+ *
+ * Or use the async helper:
+ *   await runWithFetchCache(async () => { ... render ... });
+ */
+
+import {
+  getCacheHandler,
+  type CachedFetchValue,
+} from "./cache.js";
+
+// ---------------------------------------------------------------------------
+// Cache key generation
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a deterministic cache key from a fetch request.
+ *
+ * Key = "fetch:" + URL + "|" + sorted relevant options.
+ * We exclude headers that are request-specific (cookie, authorization)
+ * unless the user explicitly opts in via `next.tags`.
+ */
+function buildFetchCacheKey(input: string | URL | Request, init?: RequestInit & { next?: NextFetchOptions }): string {
+  let url: string;
+  let method = "GET";
+  let body: string | undefined;
+
+  if (typeof input === "string") {
+    url = input;
+  } else if (input instanceof URL) {
+    url = input.toString();
+  } else {
+    // Request object
+    url = input.url;
+    method = input.method || "GET";
+  }
+
+  if (init?.method) method = init.method;
+  if (init?.body && typeof init.body === "string") body = init.body;
+
+  // Build a stable key from URL + method + body
+  const parts = [`fetch:${method}:${url}`];
+  if (body) parts.push(body);
+
+  return parts.join("|");
+}
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+interface NextFetchOptions {
+  revalidate?: number | false;
+  tags?: string[];
+}
+
+// Extend the standard RequestInit to include `next`
+declare global {
+  interface RequestInit {
+    next?: NextFetchOptions;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Patching
+// ---------------------------------------------------------------------------
+
+const originalFetch = globalThis.fetch;
+
+/** Per-request collection of tags gathered during rendering. */
+let currentRequestTags: string[] | null = null;
+
+/**
+ * Get tags collected during the current render pass.
+ * Useful for associating page-level cache entries with all the
+ * fetch tags used during rendering.
+ */
+export function getCollectedFetchTags(): string[] {
+  return currentRequestTags ? [...currentRequestTags] : [];
+}
+
+/**
+ * Create a patched fetch function with Next.js caching semantics.
+ *
+ * The patched fetch:
+ * 1. Checks `cache` and `next` options to determine caching behavior
+ * 2. On cache hit, returns the cached response without hitting the network
+ * 3. On cache miss, fetches from network, stores in cache, returns response
+ * 4. Respects `next.revalidate` for TTL-based revalidation
+ * 5. Respects `next.tags` for tag-based invalidation via revalidateTag()
+ */
+function createPatchedFetch(): typeof globalThis.fetch {
+  return async function patchedFetch(
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const nextOpts = init?.next as NextFetchOptions | undefined;
+    const cacheDirective = init?.cache;
+
+    // Determine caching behavior:
+    // - cache: 'no-store' → skip cache entirely
+    // - cache: 'force-cache' → cache indefinitely (revalidate = Infinity)
+    // - next.revalidate: false → same as 'no-store'
+    // - next.revalidate: 0 → same as 'no-store'
+    // - next.revalidate: N → cache for N seconds
+    // - No cache/next options → default behavior (no caching, pass-through)
+
+    // If no caching options at all, just pass through to original fetch
+    if (!nextOpts && !cacheDirective) {
+      return originalFetch(input, init);
+    }
+
+    // Explicit no-store
+    if (cacheDirective === "no-store" || nextOpts?.revalidate === false || nextOpts?.revalidate === 0) {
+      // Strip the `next` property before passing to real fetch
+      const cleanInit = stripNextFromInit(init);
+      return originalFetch(input, cleanInit);
+    }
+
+    // Determine revalidation period
+    let revalidateSeconds: number;
+    if (cacheDirective === "force-cache") {
+      // force-cache means cache indefinitely (we use a very large number)
+      revalidateSeconds = nextOpts?.revalidate && typeof nextOpts.revalidate === "number"
+        ? nextOpts.revalidate
+        : 31536000; // 1 year
+    } else if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
+      revalidateSeconds = nextOpts.revalidate;
+    } else {
+      // Has `next` options but no explicit revalidate — Next.js defaults to
+      // caching when `next` is present (force-cache behavior).
+      // If only tags are specified, cache indefinitely.
+      if (nextOpts?.tags && nextOpts.tags.length > 0) {
+        revalidateSeconds = 31536000;
+      } else {
+        // next: {} with no revalidate or tags — pass through
+        const cleanInit = stripNextFromInit(init);
+        return originalFetch(input, cleanInit);
+      }
+    }
+
+    const tags = nextOpts?.tags ?? [];
+    const cacheKey = buildFetchCacheKey(input, init);
+    const handler = getCacheHandler();
+
+    // Collect tags for this render pass
+    if (currentRequestTags !== null && tags.length > 0) {
+      for (const tag of tags) {
+        if (!currentRequestTags.includes(tag)) {
+          currentRequestTags.push(tag);
+        }
+      }
+    }
+
+    // Try cache first
+    try {
+      const cached = await handler.get(cacheKey, { kind: "FETCH", tags });
+      if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
+        const cachedData = cached.value.data;
+        // Reconstruct a Response from the cached data
+        return new Response(cachedData.body, {
+          status: cachedData.status ?? 200,
+          headers: cachedData.headers,
+        });
+      }
+
+      // Stale entry — we could do stale-while-revalidate here, but for fetch()
+      // the simpler approach is to just re-fetch (the page-level ISR handles SWR).
+      // However, if we have a stale entry, return it and trigger background refetch.
+      if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
+        const staleData = cached.value.data;
+
+        // Background refetch
+        const cleanInit = stripNextFromInit(init);
+        originalFetch(input, cleanInit).then(async (freshResp) => {
+          const freshBody = await freshResp.text();
+          const freshHeaders: Record<string, string> = {};
+          freshResp.headers.forEach((v, k) => { freshHeaders[k] = v; });
+
+          const freshValue: CachedFetchValue = {
+            kind: "FETCH",
+            data: {
+              headers: freshHeaders,
+              body: freshBody,
+              url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+              status: freshResp.status,
+            },
+            tags,
+            revalidate: revalidateSeconds,
+          };
+          await handler.set(cacheKey, freshValue, {
+            fetchCache: true,
+            tags,
+            revalidate: revalidateSeconds,
+          });
+        }).catch((err) => {
+          console.error("[vinext] fetch cache background revalidation failed:", err);
+        });
+
+        // Return stale data immediately
+        return new Response(staleData.body, {
+          status: staleData.status ?? 200,
+          headers: staleData.headers,
+        });
+      }
+    } catch (cacheErr) {
+      // Cache read failed — fall through to network
+      console.error("[vinext] fetch cache read error:", cacheErr);
+    }
+
+    // Cache miss — fetch from network
+    const cleanInit = stripNextFromInit(init);
+    const response = await originalFetch(input, cleanInit);
+
+    // Only cache successful responses (2xx)
+    if (response.ok) {
+      // Clone before reading body
+      const cloned = response.clone();
+      const body = await cloned.text();
+      const headers: Record<string, string> = {};
+      cloned.headers.forEach((v, k) => { headers[k] = v; });
+
+      const cacheValue: CachedFetchValue = {
+        kind: "FETCH",
+        data: {
+          headers,
+          body,
+          url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+          status: cloned.status,
+        },
+        tags,
+        revalidate: revalidateSeconds,
+      };
+
+      // Store in cache (fire-and-forget)
+      handler.set(cacheKey, cacheValue, {
+        fetchCache: true,
+        tags,
+        revalidate: revalidateSeconds,
+      }).catch((err) => {
+        console.error("[vinext] fetch cache write error:", err);
+      });
+    }
+
+    return response;
+  } as typeof globalThis.fetch;
+}
+
+/**
+ * Strip the `next` property from RequestInit before passing to real fetch.
+ * The `next` property is not a standard fetch option and would cause warnings
+ * in some environments.
+ */
+function stripNextFromInit(init?: RequestInit): RequestInit | undefined {
+  if (!init) return init;
+  if (!("next" in init)) return init;
+  const { next: _next, ...rest } = init as RequestInit & { next?: unknown };
+  return Object.keys(rest).length > 0 ? rest : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+/**
+ * Install the patched fetch for the current rendering context.
+ * Returns a cleanup function that restores the original fetch.
+ *
+ * Usage:
+ *   const cleanup = withFetchCache();
+ *   try { await render(); } finally { cleanup(); }
+ */
+export function withFetchCache(): () => void {
+  const previousFetch = globalThis.fetch;
+  const previousTags = currentRequestTags;
+  currentRequestTags = [];
+  globalThis.fetch = createPatchedFetch();
+
+  return () => {
+    globalThis.fetch = previousFetch;
+    currentRequestTags = previousTags;
+  };
+}
+
+/**
+ * Run an async function with patched fetch caching enabled.
+ * Automatically cleans up when done.
+ */
+export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
+  const cleanup = withFetchCache();
+  try {
+    return await fn();
+  } finally {
+    cleanup();
+  }
+}
+
+/**
+ * Get the original (unpatched) fetch function.
+ * Useful for internal code that should bypass caching.
+ */
+export function getOriginalFetch(): typeof globalThis.fetch {
+  return originalFetch;
+}

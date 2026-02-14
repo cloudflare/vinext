@@ -1,6 +1,6 @@
 /**
  * Ecosystem integration tests — verifies popular third-party libraries
- * work correctly with nextcompat.
+ * work correctly with vinext.
  *
  * Uses subprocess-based testing: starts Vite dev server as a child process,
  * waits for it to be ready, makes HTTP requests, and asserts SSR output.

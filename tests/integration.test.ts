@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { createServer, build, createBuilder, type ViteDevServer } from "vite";
 import path from "node:path";
 import fs from "node:fs";
-import nextcompat from "../packages/vite-plugin-nextcompat/src/index.js";
+import vinext from "../packages/vinext/src/index.js";
 import {
   PAGES_FIXTURE_DIR,
   APP_FIXTURE_DIR,
@@ -10,7 +10,7 @@ import {
   startFixtureServer,
   fetchHtml,
 } from "./helpers.js";
-import { isExternalUrl, isHashOnlyChange } from "../packages/vite-plugin-nextcompat/src/shims/router.js";
+import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -32,7 +32,7 @@ describe("Pages Router integration", () => {
     expect(res.headers.get("content-type")).toContain("text/html");
 
     const html = await res.text();
-    expect(html).toContain("Hello, nextcompat!");
+    expect(html).toContain("Hello, vinext!");
     expect(html).toContain("This is a Pages Router app running on Vite.");
     expect(html).toContain("Go to About");
   });
@@ -93,13 +93,13 @@ describe("Pages Router integration", () => {
   it("renders next/head tags in SSR HTML <head>", async () => {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
-    // Index page has <Head><title>Hello nextcompat</title></Head>
+    // Index page has <Head><title>Hello vinext</title></Head>
     // This should appear in the actual <head> of the HTML
     expect(html).toContain("<title");
-    expect(html).toContain("Hello nextcompat");
+    expect(html).toContain("Hello vinext");
     // The title tag should be in <head>, not in <body>
     const headSection = html.split("</head>")[0];
-    expect(headSection).toContain("Hello nextcompat");
+    expect(headSection).toContain("Hello vinext");
   });
 
   it("includes __NEXT_DATA__ script tag", async () => {
@@ -135,7 +135,7 @@ describe("Pages Router integration", () => {
     // Custom _document sets lang="en" on <html>
     expect(html).toContain('lang="en"');
     // Custom _document adds a meta description
-    expect(html).toContain("A nextcompat test app");
+    expect(html).toContain("A vinext test app");
     // Custom _document sets className on body
     expect(html).toContain("custom-body");
   });
@@ -205,7 +205,7 @@ describe("Pages Router integration", () => {
 
   it("applies custom headers from next.config.js", async () => {
     const res = await fetch(`${baseUrl}/api/hello`);
-    expect(res.headers.get("x-custom-header")).toBe("nextcompat");
+    expect(res.headers.get("x-custom-header")).toBe("vinext");
   });
 
   it("applies beforeFiles rewrites from next.config.js", async () => {
@@ -440,14 +440,14 @@ describe("Virtual server entry generation", () => {
     const testServer = await createServer({
       root: FIXTURE_DIR,
       configFile: false,
-      plugins: [nextcompat()],
+      plugins: [vinext()],
       server: { port: 0 },
       logLevel: "silent",
     });
 
     try {
       // Load the virtual module through Vite's SSR pipeline
-      const entry = await testServer.ssrLoadModule("virtual:nextcompat-server-entry");
+      const entry = await testServer.ssrLoadModule("virtual:vinext-server-entry");
 
       // Verify it exports the expected functions
       expect(typeof entry.renderPage).toBe("function");
@@ -471,11 +471,11 @@ describe("Production build", () => {
     await build({
       root: FIXTURE_DIR,
       configFile: false,
-      plugins: [nextcompat()],
+      plugins: [vinext()],
       logLevel: "silent",
       build: {
         outDir: path.join(outDir, "server"),
-        ssr: "virtual:nextcompat-server-entry",
+        ssr: "virtual:vinext-server-entry",
         rollupOptions: {
           output: {
             entryFileNames: "entry.js",
@@ -502,13 +502,13 @@ describe("Production build", () => {
     await build({
       root: FIXTURE_DIR,
       configFile: false,
-      plugins: [nextcompat()],
+      plugins: [vinext()],
       logLevel: "silent",
       build: {
         outDir: path.join(outDir, "client"),
         ssrManifest: true,
         rollupOptions: {
-          input: "virtual:nextcompat-client-entry",
+          input: "virtual:vinext-client-entry",
         },
       },
     });
@@ -541,23 +541,23 @@ describe("Production build", () => {
       await build({
         root: FIXTURE_DIR,
         configFile: false,
-        plugins: [nextcompat()],
+        plugins: [vinext()],
         logLevel: "silent",
         build: {
           outDir: path.join(outDir, "server"),
-          ssr: "virtual:nextcompat-server-entry",
+          ssr: "virtual:vinext-server-entry",
           rollupOptions: { output: { entryFileNames: "entry.js" } },
         },
       });
       await build({
         root: FIXTURE_DIR,
         configFile: false,
-        plugins: [nextcompat()],
+        plugins: [vinext()],
         logLevel: "silent",
         build: {
           outDir: path.join(outDir, "client"),
           ssrManifest: true,
-          rollupOptions: { input: "virtual:nextcompat-client-entry" },
+          rollupOptions: { input: "virtual:vinext-client-entry" },
         },
       });
     }
@@ -590,7 +590,7 @@ describe("Production build", () => {
       const indexRes = await fetch(`${prodUrl}/`);
       expect(indexRes.status).toBe(200);
       const indexHtml = await indexRes.text();
-      expect(indexHtml).toContain("Hello, nextcompat!");
+      expect(indexHtml).toContain("Hello, vinext!");
       expect(indexHtml).toContain("__NEXT_DATA__");
 
       // Test: about page renders
@@ -632,7 +632,7 @@ describe("Static export (Pages Router)", () => {
     server = await createServer({
       root: FIXTURE_DIR,
       configFile: false,
-      plugins: [nextcompat()],
+      plugins: [vinext()],
       server: { port: 0 },
       logLevel: "silent",
     });
@@ -646,13 +646,13 @@ describe("Static export (Pages Router)", () => {
 
   it("exports static pages to HTML files", async () => {
     const { staticExportPages } = await import(
-      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+      "../packages/vinext/src/build/static-export.js"
     );
     const { pagesRouter, apiRouter } = await import(
-      "../packages/vite-plugin-nextcompat/src/routing/pages-router.js"
+      "../packages/vinext/src/routing/pages-router.js"
     );
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
 
     const pagesDir = path.resolve(FIXTURE_DIR, "pages");
@@ -679,7 +679,7 @@ describe("Static export (Pages Router)", () => {
       "utf-8",
     );
     expect(indexHtml).toContain("<!DOCTYPE html>");
-    expect(indexHtml).toContain("Hello, nextcompat!");
+    expect(indexHtml).toContain("Hello, vinext!");
 
     // About page
     expect(result.files).toContain("about.html");
@@ -719,13 +719,13 @@ describe("Static export (Pages Router)", () => {
   it("reports errors for pages using getServerSideProps", async () => {
     // The result from the first test should have errors for SSR-only pages
     const { staticExportPages } = await import(
-      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+      "../packages/vinext/src/build/static-export.js"
     );
     const { pagesRouter, apiRouter } = await import(
-      "../packages/vite-plugin-nextcompat/src/routing/pages-router.js"
+      "../packages/vinext/src/routing/pages-router.js"
     );
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
 
     const pagesDir = path.resolve(FIXTURE_DIR, "pages");
@@ -767,13 +767,13 @@ describe("Static export (Pages Router)", () => {
 
   it("respects trailingSlash config", async () => {
     const { staticExportPages } = await import(
-      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+      "../packages/vinext/src/build/static-export.js"
     );
     const { pagesRouter, apiRouter } = await import(
-      "../packages/vite-plugin-nextcompat/src/routing/pages-router.js"
+      "../packages/vinext/src/routing/pages-router.js"
     );
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
 
     const pagesDir = path.resolve(FIXTURE_DIR, "pages");
@@ -1331,7 +1331,7 @@ describe("App Router integration", () => {
     // Description meta tag
     expect(html).toMatch(/name="description".*content="A page to test the metadata API"/);
     // Keywords meta tag
-    expect(html).toMatch(/name="keywords".*content="test, metadata, nextcompat"/);
+    expect(html).toMatch(/name="keywords".*content="test, metadata, vinext"/);
     // Open Graph tags
     expect(html).toMatch(/property="og:title".*content="OG Title"/);
     expect(html).toMatch(/property="og:type".*content="website"/);
@@ -1518,7 +1518,7 @@ describe("App Router integration", () => {
     // force-static should set s-maxage for indefinite caching
     const cacheControl = res.headers.get("cache-control");
     expect(cacheControl).toContain("s-maxage=31536000");
-    expect(res.headers.get("x-nextcompat-cache")).toBe("STATIC");
+    expect(res.headers.get("x-vinext-cache")).toBe("STATIC");
   });
 
   it("force-static pages have empty headers/cookies context", async () => {
@@ -1541,7 +1541,7 @@ describe("App Router integration", () => {
     // Should be treated as static — long-lived cache
     const cacheControl = res.headers.get("cache-control");
     expect(cacheControl).toContain("s-maxage=31536000");
-    expect(res.headers.get("x-nextcompat-cache")).toBe("STATIC");
+    expect(res.headers.get("x-vinext-cache")).toBe("STATIC");
   });
 
   it("pages with fetchCache, maxDuration, preferredRegion, runtime exports render fine", async () => {
@@ -1624,7 +1624,7 @@ describe("App Router Production build", () => {
       root: APP_FIXTURE_DIR,
       configFile: false,
       plugins: [
-        nextcompat(),
+        vinext(),
         rsc({ entries: RSC_ENTRIES }),
       ],
       logLevel: "silent",
@@ -1665,7 +1665,7 @@ describe("App Router Production build", () => {
       root: APP_FIXTURE_DIR,
       configFile: false,
       plugins: [
-        nextcompat(),
+        vinext(),
         rsc({ entries: RSC_ENTRIES }),
       ],
       preview: { port: 0 },
@@ -1733,13 +1733,13 @@ describe("App Router Static export", () => {
 
   it("exports static App Router pages to HTML files", async () => {
     const { staticExportApp } = await import(
-      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+      "../packages/vinext/src/build/static-export.js"
     );
     const { appRouter } = await import(
-      "../packages/vite-plugin-nextcompat/src/routing/app-router.js"
+      "../packages/vinext/src/routing/app-router.js"
     );
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
 
     const appDir = path.resolve(APP_FIXTURE_DIR, "app");
@@ -1803,10 +1803,10 @@ describe("App Router Static export", () => {
 
   it("reports errors for dynamic routes without generateStaticParams", async () => {
     const { staticExportApp } = await import(
-      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+      "../packages/vinext/src/build/static-export.js"
     );
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
 
     // Create a fake route with isDynamic but no generateStaticParams
@@ -1851,10 +1851,10 @@ describe("App Router Static export", () => {
 
   it("skips route handlers with warning", async () => {
     const { staticExportApp } = await import(
-      "../packages/vite-plugin-nextcompat/src/build/static-export.js"
+      "../packages/vinext/src/build/static-export.js"
     );
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
 
     // Create a fake API route
@@ -1900,7 +1900,7 @@ describe("App Router Static export", () => {
 describe("next/navigation shim", () => {
   it("exports usePathname, useSearchParams, useParams, useRouter", async () => {
     const nav = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     expect(typeof nav.usePathname).toBe("function");
     expect(typeof nav.useSearchParams).toBe("function");
@@ -1910,7 +1910,7 @@ describe("next/navigation shim", () => {
 
   it("exports redirect, notFound, permanentRedirect", async () => {
     const nav = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     expect(typeof nav.redirect).toBe("function");
     expect(typeof nav.notFound).toBe("function");
@@ -1919,7 +1919,7 @@ describe("next/navigation shim", () => {
 
   it("redirect() throws with correct digest", async () => {
     const { redirect } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     try {
       redirect("/login");
@@ -1932,7 +1932,7 @@ describe("next/navigation shim", () => {
 
   it("notFound() throws with correct digest", async () => {
     const { notFound } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     try {
       notFound();
@@ -1944,7 +1944,7 @@ describe("next/navigation shim", () => {
 
   it("forbidden() throws with correct digest", async () => {
     const { forbidden } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     try {
       forbidden();
@@ -1956,7 +1956,7 @@ describe("next/navigation shim", () => {
 
   it("unauthorized() throws with correct digest", async () => {
     const { unauthorized } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     try {
       unauthorized();
@@ -1968,7 +1968,7 @@ describe("next/navigation shim", () => {
 
   it("isHTTPAccessFallbackError detects all HTTP access fallback errors", async () => {
     const { notFound, forbidden, unauthorized, isHTTPAccessFallbackError, getAccessFallbackHTTPStatus } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
 
     // Test notFound
@@ -2002,7 +2002,7 @@ describe("next/navigation shim", () => {
 
   it("setNavigationContext / useParams works on server side", async () => {
     const { setNavigationContext, useParams } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     setNavigationContext({
       pathname: "/blog/test",
@@ -2016,7 +2016,7 @@ describe("next/navigation shim", () => {
 
   it("setClientParams provides referential stability for identical params", async () => {
     const { setClientParams, getClientParams } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     // Set params initially
     setClientParams({ slug: "hello" });
@@ -2038,7 +2038,7 @@ describe("next/navigation shim", () => {
 
   it("exports useSelectedLayoutSegment and useSelectedLayoutSegments", async () => {
     const nav = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     expect(typeof nav.useSelectedLayoutSegment).toBe("function");
     expect(typeof nav.useSelectedLayoutSegments).toBe("function");
@@ -2046,7 +2046,7 @@ describe("next/navigation shim", () => {
 
   it("useSelectedLayoutSegments returns path segments from server context", async () => {
     const { setNavigationContext, useSelectedLayoutSegments } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     setNavigationContext({
       pathname: "/dashboard/settings/profile",
@@ -2060,7 +2060,7 @@ describe("next/navigation shim", () => {
 
   it("useSelectedLayoutSegment returns first segment or null", async () => {
     const { setNavigationContext, useSelectedLayoutSegment } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     setNavigationContext({
       pathname: "/blog/my-post",
@@ -2082,7 +2082,7 @@ describe("next/navigation shim", () => {
 describe("next/headers shim", () => {
   it("exports cookies, headers, draftMode", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     expect(typeof mod.cookies).toBe("function");
     expect(typeof mod.headers).toBe("function");
@@ -2091,7 +2091,7 @@ describe("next/headers shim", () => {
 
   it("headers() returns request headers from context", async () => {
     const { setHeadersContext, headers } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     const reqHeaders = new Headers({ "x-custom": "test-value" });
     setHeadersContext({
@@ -2106,7 +2106,7 @@ describe("next/headers shim", () => {
 
   it("cookies() returns parsed cookies from context", async () => {
     const { setHeadersContext, cookies } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     setHeadersContext({
       headers: new Headers(),
@@ -2127,7 +2127,7 @@ describe("next/headers shim", () => {
 
   it("headersContextFromRequest parses cookies from Request", async () => {
     const { headersContextFromRequest } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     const req = new Request("https://example.com", {
       headers: { cookie: "a=1; b=2" },
@@ -2141,11 +2141,11 @@ describe("next/headers shim", () => {
 
   it("throws when called outside request context", async () => {
     const { headers, cookies } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     // Ensure context is cleared
     const { setHeadersContext } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     setHeadersContext(null);
 
@@ -2155,7 +2155,7 @@ describe("next/headers shim", () => {
 
   it("draftMode() returns isEnabled=false when no bypass cookie", async () => {
     const { setHeadersContext, draftMode } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     setHeadersContext({
       headers: new Headers(),
@@ -2168,7 +2168,7 @@ describe("next/headers shim", () => {
 
   it("draftMode() returns isEnabled=true when __prerender_bypass cookie is present", async () => {
     const { setHeadersContext, draftMode } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     setHeadersContext({
       headers: new Headers(),
@@ -2181,7 +2181,7 @@ describe("next/headers shim", () => {
 
   it("draftMode().enable() sets the bypass cookie in context", async () => {
     const { setHeadersContext, draftMode, getDraftModeCookieHeader } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     setHeadersContext({
       headers: new Headers(),
@@ -2204,7 +2204,7 @@ describe("next/headers shim", () => {
 
   it("draftMode().disable() clears the bypass cookie", async () => {
     const { setHeadersContext, draftMode, getDraftModeCookieHeader } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     setHeadersContext({
       headers: new Headers(),
@@ -2226,7 +2226,7 @@ describe("next/headers shim", () => {
 describe("next/headers writable cookies", () => {
   it("cookies().set() updates the cookie map and accumulates Set-Cookie headers", async () => {
     const { setHeadersContext, cookies, getAndClearPendingCookies } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     setHeadersContext({
       headers: new Headers(),
@@ -2255,7 +2255,7 @@ describe("next/headers writable cookies", () => {
 
   it("cookies().delete() removes from map and adds Max-Age=0 header", async () => {
     const { setHeadersContext, cookies, getAndClearPendingCookies } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     setHeadersContext({
       headers: new Headers(),
@@ -2276,7 +2276,7 @@ describe("next/headers writable cookies", () => {
 
   it("cookies().set() with object syntax works", async () => {
     const { setHeadersContext, cookies, getAndClearPendingCookies } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/headers.js"
+      "../packages/vinext/src/shims/headers.js"
     );
     setHeadersContext({
       headers: new Headers(),
@@ -2297,7 +2297,7 @@ describe("next/headers writable cookies", () => {
 describe("next/server shim", () => {
   it("NextRequest wraps a standard Request with nextUrl and cookies", async () => {
     const { NextRequest } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const req = new NextRequest("https://example.com/blog?page=2", {
       headers: { cookie: "session=abc123; theme=dark" },
@@ -2313,7 +2313,7 @@ describe("next/server shim", () => {
 
   it("NextResponse.json() creates a JSON response", async () => {
     const { NextResponse } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const res = NextResponse.json({ message: "hello" }, { status: 201 });
 
@@ -2325,7 +2325,7 @@ describe("next/server shim", () => {
 
   it("NextResponse.redirect() creates a redirect response", async () => {
     const { NextResponse } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const res = NextResponse.redirect("https://example.com/new", 308);
 
@@ -2335,7 +2335,7 @@ describe("next/server shim", () => {
 
   it("NextResponse.rewrite() sets x-middleware-rewrite header", async () => {
     const { NextResponse } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const res = NextResponse.rewrite("https://example.com/internal");
 
@@ -2344,7 +2344,7 @@ describe("next/server shim", () => {
 
   it("NextResponse.next() sets x-middleware-next header", async () => {
     const { NextResponse } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const res = NextResponse.next();
 
@@ -2353,7 +2353,7 @@ describe("next/server shim", () => {
 
   it("ResponseCookies set/get/delete work", async () => {
     const { NextResponse } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const res = new NextResponse();
     res.cookies.set("token", "xyz", { path: "/", httpOnly: true });
@@ -2371,7 +2371,7 @@ describe("next/server shim", () => {
 
   it("userAgentFromString detects bots", async () => {
     const { userAgentFromString } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const bot = userAgentFromString("Googlebot/2.1");
     expect(bot.isBot).toBe(true);
@@ -2382,7 +2382,7 @@ describe("next/server shim", () => {
 
   it("after() runs a callback asynchronously without throwing", async () => {
     const { after } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     let called = false;
     after(() => {
@@ -2395,7 +2395,7 @@ describe("next/server shim", () => {
 
   it("after() handles a promise argument", async () => {
     const { after } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     let resolved = false;
     const p = new Promise<void>((resolve) => {
@@ -2411,7 +2411,7 @@ describe("next/server shim", () => {
 
   it("after() swallows errors from failing tasks", async () => {
     const { after } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     after(() => {
@@ -2419,7 +2419,7 @@ describe("next/server shim", () => {
     });
     await new Promise((r) => setTimeout(r, 10));
     expect(consoleError).toHaveBeenCalledWith(
-      "[nextcompat] after() task failed:",
+      "[vinext] after() task failed:",
       expect.any(Error),
     );
     consoleError.mockRestore();
@@ -2427,7 +2427,7 @@ describe("next/server shim", () => {
 
   it("connection() returns a resolved promise", async () => {
     const { connection } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const result = connection();
     expect(result).toBeInstanceOf(Promise);
@@ -2436,7 +2436,7 @@ describe("next/server shim", () => {
 
   it("URLPattern is exported and available in Node 20+", async () => {
     const { URLPattern } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     // Node 22+ has URLPattern globally; if available, test it works
     if (globalThis.URLPattern) {
@@ -2455,7 +2455,7 @@ describe("next/server shim", () => {
 describe("next/config shim", () => {
   it("getConfig returns default empty config", async () => {
     const { default: getConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/config.js"
+      "../packages/vinext/src/shims/config.js"
     );
     const config = getConfig();
     expect(config).toEqual({
@@ -2466,7 +2466,7 @@ describe("next/config shim", () => {
 
   it("setConfig updates the runtime config", async () => {
     const { default: getConfig, setConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/config.js"
+      "../packages/vinext/src/shims/config.js"
     );
     setConfig({
       serverRuntimeConfig: { secret: "s3cr3t" },
@@ -2484,7 +2484,7 @@ describe("next/config shim", () => {
 describe("next/cache shim", () => {
   it("exports revalidateTag, revalidatePath, unstable_cache", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
     expect(typeof mod.revalidateTag).toBe("function");
     expect(typeof mod.revalidatePath).toBe("function");
@@ -2493,7 +2493,7 @@ describe("next/cache shim", () => {
 
   it("exports setCacheHandler and getCacheHandler", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
     expect(typeof mod.setCacheHandler).toBe("function");
     expect(typeof mod.getCacheHandler).toBe("function");
@@ -2501,7 +2501,7 @@ describe("next/cache shim", () => {
 
   it("default handler is MemoryCacheHandler", async () => {
     const { getCacheHandler, MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
     const handler = getCacheHandler();
     expect(handler).toBeInstanceOf(MemoryCacheHandler);
@@ -2509,7 +2509,7 @@ describe("next/cache shim", () => {
 
   it("unstable_cache caches function results", async () => {
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
-      await import("../packages/vite-plugin-nextcompat/src/shims/cache.js");
+      await import("../packages/vinext/src/shims/cache.js");
 
     // Fresh handler for isolation
     setCacheHandler(new MemoryCacheHandler());
@@ -2546,7 +2546,7 @@ describe("next/cache shim", () => {
       revalidateTag,
       setCacheHandler,
       MemoryCacheHandler,
-    } = await import("../packages/vite-plugin-nextcompat/src/shims/cache.js");
+    } = await import("../packages/vinext/src/shims/cache.js");
 
     setCacheHandler(new MemoryCacheHandler());
 
@@ -2578,7 +2578,7 @@ describe("next/cache shim", () => {
 
   it("setCacheHandler swaps the active handler", async () => {
     const { setCacheHandler, getCacheHandler, unstable_cache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     // Create a custom handler that tracks calls
@@ -2615,7 +2615,7 @@ describe("next/cache shim", () => {
 
   it("MemoryCacheHandler.get/set round-trips values", async () => {
     const { MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     const handler = new MemoryCacheHandler();
@@ -2638,7 +2638,7 @@ describe("next/cache shim", () => {
 
   it("MemoryCacheHandler respects tag invalidation", async () => {
     const { MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     const handler = new MemoryCacheHandler();
@@ -2668,7 +2668,7 @@ describe("next/cache shim", () => {
 
   it("exports unstable_noStore and noStore as no-ops", async () => {
     const { unstable_noStore, noStore } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
     expect(typeof unstable_noStore).toBe("function");
     expect(typeof noStore).toBe("function");
@@ -2679,7 +2679,7 @@ describe("next/cache shim", () => {
 
   it("exports cacheLife with built-in profiles", async () => {
     const { cacheLife, cacheLifeProfiles } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
     expect(typeof cacheLife).toBe("function");
     expect(typeof cacheLifeProfiles).toBe("object");
@@ -2705,7 +2705,7 @@ describe("next/cache shim", () => {
 
   it("cacheLife warns on unknown profile", async () => {
     const { cacheLife } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
     cacheLife("nonexistent-profile");
@@ -2717,7 +2717,7 @@ describe("next/cache shim", () => {
 
   it("cacheLife warns when expire < revalidate", async () => {
     const { cacheLife } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
     const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
     cacheLife({ revalidate: 3600, expire: 60 });
@@ -2729,7 +2729,7 @@ describe("next/cache shim", () => {
 
   it("exports cacheTag as a no-op function", async () => {
     const { cacheTag } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
     expect(typeof cacheTag).toBe("function");
     // Should accept multiple tags without throwing
@@ -2740,7 +2740,7 @@ describe("next/cache shim", () => {
 describe("middleware runner", () => {
   it("findMiddlewareFile finds middleware.ts at project root", async () => {
     const { findMiddlewareFile } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/middleware.js"
+      "../packages/vinext/src/server/middleware.js"
     );
     // pages-basic fixture has middleware.ts
     const result = findMiddlewareFile(FIXTURE_DIR);
@@ -2750,7 +2750,7 @@ describe("middleware runner", () => {
 
   it("findMiddlewareFile returns null when no middleware exists", async () => {
     const { findMiddlewareFile } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/middleware.js"
+      "../packages/vinext/src/server/middleware.js"
     );
     const result = findMiddlewareFile("/tmp/nonexistent-dir-" + Date.now());
     expect(result).toBeNull();
@@ -2760,7 +2760,7 @@ describe("middleware runner", () => {
 describe("next/font/google shim", () => {
   it("returns className, style, and variable for a Google Font", async () => {
     const { Inter } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+      "../packages/vinext/src/shims/font-google.js"
     );
     const result = Inter({ subsets: ["latin"], weight: ["400", "700"] });
 
@@ -2771,7 +2771,7 @@ describe("next/font/google shim", () => {
 
   it("Proxy returns font loaders for any family", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+      "../packages/vinext/src/shims/font-google.js"
     );
     const googleFonts = mod.default;
     const loader = googleFonts.Poppins;
@@ -2784,7 +2784,7 @@ describe("next/font/google shim", () => {
 
   it("converts PascalCase to font family name", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+      "../packages/vinext/src/shims/font-google.js"
     );
     const googleFonts = mod.default;
     const result = googleFonts.RobotoMono({ weight: "400" });
@@ -2795,7 +2795,7 @@ describe("next/font/google shim", () => {
 
   it("uses custom variable name when provided", async () => {
     const { Inter } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+      "../packages/vinext/src/shims/font-google.js"
     );
     const result = Inter({ variable: "--custom-font" });
     expect(result.variable).toBe("--custom-font");
@@ -2803,7 +2803,7 @@ describe("next/font/google shim", () => {
 
   it("uses custom fallback fonts", async () => {
     const { Inter } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+      "../packages/vinext/src/shims/font-google.js"
     );
     const result = Inter({ fallback: ["Helvetica", "Arial", "sans-serif"] });
     expect(result.style.fontFamily).toContain("Helvetica");
@@ -2812,7 +2812,7 @@ describe("next/font/google shim", () => {
 
   it("generates CSS rules for className (SSR)", async () => {
     const { Inter, getSSRFontStyles } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+      "../packages/vinext/src/shims/font-google.js"
     );
     // Clear any previously collected styles
     getSSRFontStyles();
@@ -2829,7 +2829,7 @@ describe("next/font/google shim", () => {
 
   it("generates CSS variable rule when variable is specified", async () => {
     const { Inter, getSSRFontStyles } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/font-google.js"
+      "../packages/vinext/src/shims/font-google.js"
     );
     getSSRFontStyles(); // clear
 
@@ -2843,7 +2843,7 @@ describe("next/font/google shim", () => {
 describe("next/font/local shim", () => {
   it("returns className, style for a local font", async () => {
     const { default: localFont } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/font-local.js"
+      "../packages/vinext/src/shims/font-local.js"
     );
     const result = localFont({ src: "./my-font.woff2" });
 
@@ -2853,7 +2853,7 @@ describe("next/font/local shim", () => {
 
   it("includes variable when specified", async () => {
     const { default: localFont } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/font-local.js"
+      "../packages/vinext/src/shims/font-local.js"
     );
     const result = localFont({
       src: "./my-font.woff2",
@@ -2864,7 +2864,7 @@ describe("next/font/local shim", () => {
 
   it("accepts array of font sources", async () => {
     const { default: localFont } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/font-local.js"
+      "../packages/vinext/src/shims/font-local.js"
     );
     const result = localFont({
       src: [
@@ -2881,7 +2881,7 @@ describe("next/font/local shim", () => {
 describe("next/og shim", () => {
   it("exports ImageResponse class", async () => {
     const og = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/og.js"
+      "../packages/vinext/src/shims/og.js"
     );
     expect(og.ImageResponse).toBeDefined();
     expect(typeof og.ImageResponse).toBe("function");
@@ -2889,7 +2889,7 @@ describe("next/og shim", () => {
 
   it("ImageResponse extends Response", async () => {
     const og = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/og.js"
+      "../packages/vinext/src/shims/og.js"
     );
     // Check the prototype chain
     expect(og.ImageResponse.prototype instanceof Response).toBe(true);
@@ -2898,7 +2898,7 @@ describe("next/og shim", () => {
   it("generates a PNG image from JSX", async () => {
     const React = await import("react");
     const og = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/og.js"
+      "../packages/vinext/src/shims/og.js"
     );
 
     // Simple colored div — no text so no font needed
@@ -2939,7 +2939,7 @@ describe("next/og shim", () => {
   it("respects custom status and headers", async () => {
     const React = await import("react");
     const og = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/og.js"
+      "../packages/vinext/src/shims/og.js"
     );
 
     const element = React.createElement("div", {
@@ -2961,7 +2961,7 @@ describe("next/og shim", () => {
   it("uses default dimensions of 1200x630", async () => {
     const React = await import("react");
     const og = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/og.js"
+      "../packages/vinext/src/shims/og.js"
     );
 
     const element = React.createElement("div", {
@@ -2982,7 +2982,7 @@ describe("next/og shim", () => {
 describe("metadata route serializers", () => {
   it("sitemapToXml converts sitemap entries to valid XML", async () => {
     const { sitemapToXml } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+      "../packages/vinext/src/server/metadata-routes.js"
     );
     const xml = sitemapToXml([
       { url: "https://example.com", lastModified: "2025-01-01", priority: 1 },
@@ -2999,7 +2999,7 @@ describe("metadata route serializers", () => {
 
   it("sitemapToXml handles Date objects", async () => {
     const { sitemapToXml } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+      "../packages/vinext/src/server/metadata-routes.js"
     );
     const xml = sitemapToXml([
       { url: "https://example.com", lastModified: new Date("2025-06-15") },
@@ -3009,7 +3009,7 @@ describe("metadata route serializers", () => {
 
   it("robotsToText converts robots config to text", async () => {
     const { robotsToText } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+      "../packages/vinext/src/server/metadata-routes.js"
     );
     const text = robotsToText({
       rules: { userAgent: "*", allow: "/", disallow: "/private/" },
@@ -3023,7 +3023,7 @@ describe("metadata route serializers", () => {
 
   it("robotsToText handles multiple rules", async () => {
     const { robotsToText } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+      "../packages/vinext/src/server/metadata-routes.js"
     );
     const text = robotsToText({
       rules: [
@@ -3038,7 +3038,7 @@ describe("metadata route serializers", () => {
 
   it("manifestToJson converts manifest config to JSON", async () => {
     const { manifestToJson } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+      "../packages/vinext/src/server/metadata-routes.js"
     );
     const json = manifestToJson({
       name: "Test App",
@@ -3053,7 +3053,7 @@ describe("metadata route serializers", () => {
 
   it("scanMetadataFiles discovers metadata files in app directory", async () => {
     const { scanMetadataFiles } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+      "../packages/vinext/src/server/metadata-routes.js"
     );
     const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
@@ -3122,7 +3122,7 @@ describe("metadata routes integration (App Router)", () => {
 
   it("scanMetadataFiles discovers icon.tsx as a dynamic icon route", async () => {
     const { scanMetadataFiles } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+      "../packages/vinext/src/server/metadata-routes.js"
     );
     const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
@@ -3137,7 +3137,7 @@ describe("metadata routes integration (App Router)", () => {
 
   it("scanMetadataFiles discovers static apple-icon.png at root", async () => {
     const { scanMetadataFiles } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+      "../packages/vinext/src/server/metadata-routes.js"
     );
     const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
@@ -3151,7 +3151,7 @@ describe("metadata routes integration (App Router)", () => {
 
   it("scanMetadataFiles discovers nested opengraph-image.png", async () => {
     const { scanMetadataFiles } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+      "../packages/vinext/src/server/metadata-routes.js"
     );
     const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
@@ -3213,7 +3213,7 @@ describe("ISR (Pages Router)", () => {
     expect(html).toContain("ISR Page");
     expect(html).toContain("Hello from ISR");
     // First request should be a cache miss
-    expect(res.headers.get("x-nextcompat-cache")).toBe("MISS");
+    expect(res.headers.get("x-vinext-cache")).toBe("MISS");
     expect(res.headers.get("cache-control")).toContain("s-maxage=1");
   });
 
@@ -3230,7 +3230,7 @@ describe("ISR (Pages Router)", () => {
     const res2 = await fetch(`${baseUrl}/isr-test`);
     expect(res2.status).toBe(200);
     const html2 = await res2.text();
-    expect(res2.headers.get("x-nextcompat-cache")).toBe("HIT");
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
     const timestamp2Match = html2.match(/data-testid="timestamp">(\d+)</);
     expect(timestamp2Match).toBeTruthy();
     expect(timestamp2Match![1]).toBe(timestamp1);
@@ -3249,7 +3249,7 @@ describe("ISR (Pages Router)", () => {
     // Request after TTL should get STALE content
     const res2 = await fetch(`${baseUrl}/isr-test`);
     expect(res2.status).toBe(200);
-    expect(res2.headers.get("x-nextcompat-cache")).toBe("STALE");
+    expect(res2.headers.get("x-vinext-cache")).toBe("STALE");
     // Stale content should have the same timestamp as original
     const html2 = await res2.text();
     const timestamp2Match = html2.match(/data-testid="timestamp">(\d+)</);
@@ -3262,7 +3262,7 @@ describe("ISR (Pages Router)", () => {
     const res3 = await fetch(`${baseUrl}/isr-test`);
     expect(res3.status).toBe(200);
     // Should be a HIT now (fresh entry from background regen)
-    expect(res3.headers.get("x-nextcompat-cache")).toBe("HIT");
+    expect(res3.headers.get("x-vinext-cache")).toBe("HIT");
   });
 
   it("sets Cache-Control header for ISR pages", async () => {
@@ -3275,7 +3275,7 @@ describe("ISR (Pages Router)", () => {
   it("does not set ISR headers for non-ISR pages", async () => {
     const res = await fetch(`${baseUrl}/about`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-nextcompat-cache")).toBeNull();
+    expect(res.headers.get("x-vinext-cache")).toBeNull();
     expect(res.headers.get("cache-control")).toBeNull();
   });
 });
@@ -3287,7 +3287,7 @@ describe("ISR (Pages Router)", () => {
 describe("ISR cache internals", () => {
   it("MemoryCacheHandler returns stale entries instead of null", async () => {
     const { MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
     const handler = new MemoryCacheHandler();
 
@@ -3306,7 +3306,7 @@ describe("ISR cache internals", () => {
 
   it("MemoryCacheHandler returns fresh entries without cacheState", async () => {
     const { MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
     const handler = new MemoryCacheHandler();
 
@@ -3319,7 +3319,7 @@ describe("ISR cache internals", () => {
 
   it("MemoryCacheHandler still returns null for tag-invalidated entries", async () => {
     const { MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
     const handler = new MemoryCacheHandler();
 
@@ -3345,7 +3345,7 @@ describe("ISR cache internals", () => {
 describe("i18n config parsing", () => {
   it("parses i18n config from next.config.js", async () => {
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
     const config = await resolveNextConfig({
       i18n: {
@@ -3363,7 +3363,7 @@ describe("i18n config parsing", () => {
 
   it("returns null i18n when not configured", async () => {
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
     const config = await resolveNextConfig({});
 
@@ -3372,7 +3372,7 @@ describe("i18n config parsing", () => {
 
   it("defaults localeDetection to true", async () => {
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
     const config = await resolveNextConfig({
       i18n: {
@@ -3386,7 +3386,7 @@ describe("i18n config parsing", () => {
 
   it("respects localeDetection: false", async () => {
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
     const config = await resolveNextConfig({
       i18n: {
@@ -3410,14 +3410,14 @@ describe("i18n routing (Pages Router)", () => {
 
   // Create a fixture server with i18n config
   beforeAll(async () => {
-    const nextcompat = (
-      await import("../packages/vite-plugin-nextcompat/src/index.js")
+    const vinext = (
+      await import("../packages/vinext/src/index.js")
     ).default;
 
     server = await createServer({
       root: FIXTURE_DIR,
       configFile: false,
-      plugins: [nextcompat()],
+      plugins: [vinext()],
       server: { port: 0 },
       logLevel: "silent",
     });
@@ -3453,21 +3453,21 @@ describe("i18n routing (Pages Router)", () => {
 describe("next/dynamic shim", () => {
   it("exports a default function", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+      "../packages/vinext/src/shims/dynamic.js"
     );
     expect(typeof mod.default).toBe("function");
   });
 
   it("exports flushPreloads", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+      "../packages/vinext/src/shims/dynamic.js"
     );
     expect(typeof mod.flushPreloads).toBe("function");
   });
 
   it("returns a component for SSR-enabled dynamic imports", async () => {
     const { default: dynamic, flushPreloads } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+      "../packages/vinext/src/shims/dynamic.js"
     );
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -3487,7 +3487,7 @@ describe("next/dynamic shim", () => {
 
   it("renders loading state for ssr: false on server", async () => {
     const { default: dynamic } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+      "../packages/vinext/src/shims/dynamic.js"
     );
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -3507,7 +3507,7 @@ describe("next/dynamic shim", () => {
 
   it("renders nothing for ssr: false without loading on server", async () => {
     const { default: dynamic } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+      "../packages/vinext/src/shims/dynamic.js"
     );
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -3525,7 +3525,7 @@ describe("next/dynamic shim", () => {
 
   it("accepts module without default export (bare component)", async () => {
     const { default: dynamic, flushPreloads } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+      "../packages/vinext/src/shims/dynamic.js"
     );
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -3547,7 +3547,7 @@ describe("basePath support (Pages Router)", () => {
   let server: ViteDevServer;
 
   beforeAll(async () => {
-    const plugins: any[] = [nextcompat()];
+    const plugins: any[] = [vinext()];
     server = await createServer({
       root: PAGES_FIXTURE_DIR,
       configFile: false,
@@ -3565,7 +3565,7 @@ describe("basePath support (Pages Router)", () => {
 
   it("resolveNextConfig correctly resolves basePath", async () => {
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
 
     // Default: empty basePath
@@ -3592,7 +3592,7 @@ describe("basePath support (Pages Router)", () => {
 
   it("resolveNextConfig correctly resolves trailingSlash", async () => {
     const { resolveNextConfig } = await import(
-      "../packages/vite-plugin-nextcompat/src/config/next-config.js"
+      "../packages/vinext/src/config/next-config.js"
     );
 
     // Default: trailingSlash is false
@@ -3608,7 +3608,7 @@ describe("basePath support (Pages Router)", () => {
 describe("next/web-vitals shim", () => {
   it("exports useReportWebVitals as a no-op function", async () => {
     const { useReportWebVitals } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/web-vitals.js"
+      "../packages/vinext/src/shims/web-vitals.js"
     );
     expect(typeof useReportWebVitals).toBe("function");
     // Should run without throwing
@@ -3619,7 +3619,7 @@ describe("next/web-vitals shim", () => {
 describe("next/amp shim", () => {
   it("exports useAmp and isInAmpMode as no-op functions", async () => {
     const { useAmp, isInAmpMode } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/amp.js"
+      "../packages/vinext/src/shims/amp.js"
     );
     expect(typeof useAmp).toBe("function");
     expect(typeof isInAmpMode).toBe("function");
@@ -3633,11 +3633,11 @@ describe("next/amp shim", () => {
 // Metadata title template tests
 // ---------------------------------------------------------------------------
 describe("metadata title templates", () => {
-  let mergeMetadata: typeof import("../packages/vite-plugin-nextcompat/src/shims/metadata.js").mergeMetadata;
+  let mergeMetadata: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadata;
 
   beforeAll(async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/metadata.js"
+      "../packages/vinext/src/shims/metadata.js"
     );
     mergeMetadata = mod.mergeMetadata;
   });
@@ -3724,12 +3724,12 @@ describe("metadata title templates", () => {
 // MetadataHead rendering tests
 // ---------------------------------------------------------------------------
 describe("MetadataHead rendering", () => {
-  let MetadataHead: typeof import("../packages/vite-plugin-nextcompat/src/shims/metadata.js").MetadataHead;
+  let MetadataHead: typeof import("../packages/vinext/src/shims/metadata.js").MetadataHead;
   let React: typeof import("react");
   let renderToStaticMarkup: typeof import("react-dom/server").renderToStaticMarkup;
 
   beforeAll(async () => {
-    const mod = await import("../packages/vite-plugin-nextcompat/src/shims/metadata.js");
+    const mod = await import("../packages/vinext/src/shims/metadata.js");
     MetadataHead = mod.MetadataHead;
     React = await import("react");
     renderToStaticMarkup = (await import("react-dom/server")).renderToStaticMarkup;
@@ -3989,7 +3989,7 @@ describe("Pages Router router helpers", () => {
 describe("next/server enhancements", () => {
   it("NextRequest.ip extracts from x-forwarded-for header", async () => {
     const { NextRequest } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const req = new NextRequest("https://example.com", {
       headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" },
@@ -3999,7 +3999,7 @@ describe("next/server enhancements", () => {
 
   it("NextRequest.ip returns undefined without forwarded header", async () => {
     const { NextRequest } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const req = new NextRequest("https://example.com");
     expect(req.ip).toBeUndefined();
@@ -4007,7 +4007,7 @@ describe("next/server enhancements", () => {
 
   it("NextRequest.geo extracts from Cloudflare/Vercel headers", async () => {
     const { NextRequest } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const req = new NextRequest("https://example.com", {
       headers: {
@@ -4023,7 +4023,7 @@ describe("next/server enhancements", () => {
 
   it("NextRequest.geo returns undefined without geo headers", async () => {
     const { NextRequest } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const req = new NextRequest("https://example.com");
     expect(req.geo).toBeUndefined();
@@ -4031,7 +4031,7 @@ describe("next/server enhancements", () => {
 
   it("ResponseCookies.getAll returns all set cookies", async () => {
     const { ResponseCookies } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/server.js"
+      "../packages/vinext/src/shims/server.js"
     );
     const headers = new Headers();
     const cookies = new ResponseCookies(headers);
@@ -4048,7 +4048,7 @@ describe("next/server enhancements", () => {
 describe("next/image enhancements", () => {
   it("exports StaticImageData type", async () => {
     const imageModule = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+      "../packages/vinext/src/shims/image.js"
     );
     // StaticImageData is an interface, so we can't check at runtime
     // but getImageProps uses it — verify that function exists
@@ -4057,7 +4057,7 @@ describe("next/image enhancements", () => {
 
   it("getImageProps returns img props from Image props", async () => {
     const { getImageProps } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+      "../packages/vinext/src/shims/image.js"
     );
     const result = getImageProps({
       src: "/photo.jpg",
@@ -4075,7 +4075,7 @@ describe("next/image enhancements", () => {
 
   it("getImageProps handles fill mode", async () => {
     const { getImageProps } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+      "../packages/vinext/src/shims/image.js"
     );
     const result = getImageProps({
       src: "/bg.jpg",
@@ -4089,7 +4089,7 @@ describe("next/image enhancements", () => {
 
   it("getImageProps handles StaticImageData", async () => {
     const { getImageProps } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+      "../packages/vinext/src/shims/image.js"
     );
     const result = getImageProps({
       src: { src: "/imported.jpg", width: 1200, height: 800, blurDataURL: "data:..." },
@@ -4102,7 +4102,7 @@ describe("next/image enhancements", () => {
 
   it("getImageProps generates srcSet for local images with width", async () => {
     const { getImageProps } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+      "../packages/vinext/src/shims/image.js"
     );
     const result = getImageProps({
       src: "/photo.jpg",
@@ -4117,7 +4117,7 @@ describe("next/image enhancements", () => {
 
   it("getImageProps does not generate srcSet for fill images", async () => {
     const { getImageProps } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+      "../packages/vinext/src/shims/image.js"
     );
     const result = getImageProps({
       src: "/bg.jpg",
@@ -4130,7 +4130,7 @@ describe("next/image enhancements", () => {
 
   it("getImageProps includes fetchPriority for priority images", async () => {
     const { getImageProps } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+      "../packages/vinext/src/shims/image.js"
     );
     const result = getImageProps({
       src: "/hero.jpg",
@@ -4145,7 +4145,7 @@ describe("next/image enhancements", () => {
 
   it("getImageProps includes data-nimg attribute", async () => {
     const { getImageProps } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+      "../packages/vinext/src/shims/image.js"
     );
     const result = getImageProps({
       src: "/photo.jpg",
@@ -4165,7 +4165,7 @@ describe("next/image enhancements", () => {
 
   it("getImageProps includes blur placeholder background styles", async () => {
     const { getImageProps } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+      "../packages/vinext/src/shims/image.js"
     );
     const blurUrl = "data:image/jpeg;base64,/9j/4AAQ";
     const result = getImageProps({
@@ -4182,7 +4182,7 @@ describe("next/image enhancements", () => {
 
   it("getImageProps uses custom loader function", async () => {
     const { getImageProps } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/image.js"
+      "../packages/vinext/src/shims/image.js"
     );
     const result = getImageProps({
       src: "/photo.jpg",
@@ -4200,7 +4200,7 @@ describe("next/navigation enhancements", () => {
   it("exports ReadonlyURLSearchParams type alias", async () => {
     // This is a type-only export, we verify the module loads without error
     const nav = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     // ReadonlyURLSearchParams is a type export, not a runtime value
     // But useServerInsertedHTML should be exported
@@ -4209,7 +4209,7 @@ describe("next/navigation enhancements", () => {
 
   it("useServerInsertedHTML is a no-op function", async () => {
     const { useServerInsertedHTML } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+      "../packages/vinext/src/shims/navigation.js"
     );
     // Should not throw
     expect(() => useServerInsertedHTML(() => null)).not.toThrow();
@@ -4221,7 +4221,7 @@ describe("next/legacy/image shim", () => {
   it("renders LegacyImage with layout=fill as modern Image with fill prop", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const LegacyImage = (await import("../packages/vite-plugin-nextcompat/src/shims/legacy-image.js")).default;
+    const LegacyImage = (await import("../packages/vinext/src/shims/legacy-image.js")).default;
 
     const html = renderToStaticMarkup(
       React.createElement(LegacyImage, {
@@ -4241,7 +4241,7 @@ describe("next/legacy/image shim", () => {
   it("renders LegacyImage with layout=intrinsic using width/height", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const LegacyImage = (await import("../packages/vite-plugin-nextcompat/src/shims/legacy-image.js")).default;
+    const LegacyImage = (await import("../packages/vinext/src/shims/legacy-image.js")).default;
 
     const html = renderToStaticMarkup(
       React.createElement(LegacyImage, {
@@ -4259,7 +4259,7 @@ describe("next/legacy/image shim", () => {
   it("renders LegacyImage with string width/height (converts to number)", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const LegacyImage = (await import("../packages/vite-plugin-nextcompat/src/shims/legacy-image.js")).default;
+    const LegacyImage = (await import("../packages/vinext/src/shims/legacy-image.js")).default;
 
     const html = renderToStaticMarkup(
       React.createElement(LegacyImage, {
@@ -4279,7 +4279,7 @@ describe("next/error shim", () => {
   it("renders 404 error page", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const ErrorComponent = (await import("../packages/vite-plugin-nextcompat/src/shims/error.js")).default;
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
 
     const html = renderToStaticMarkup(
       React.createElement(ErrorComponent, { statusCode: 404 }),
@@ -4291,7 +4291,7 @@ describe("next/error shim", () => {
   it("renders 500 error page", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const ErrorComponent = (await import("../packages/vite-plugin-nextcompat/src/shims/error.js")).default;
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
 
     const html = renderToStaticMarkup(
       React.createElement(ErrorComponent, { statusCode: 500 }),
@@ -4303,7 +4303,7 @@ describe("next/error shim", () => {
   it("renders custom title", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const ErrorComponent = (await import("../packages/vite-plugin-nextcompat/src/shims/error.js")).default;
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
 
     const html = renderToStaticMarkup(
       React.createElement(ErrorComponent, { statusCode: 403, title: "Forbidden" }),
@@ -4316,7 +4316,7 @@ describe("next/error shim", () => {
 // ─── next/constants shim ────────────────────────────────────────────────────
 describe("next/constants shim", () => {
   it("exports all phase constants", async () => {
-    const constants = await import("../packages/vite-plugin-nextcompat/src/shims/constants.js");
+    const constants = await import("../packages/vinext/src/shims/constants.js");
     expect(constants.PHASE_PRODUCTION_BUILD).toBe("phase-production-build");
     expect(constants.PHASE_DEVELOPMENT_SERVER).toBe("phase-development-server");
     expect(constants.PHASE_PRODUCTION_SERVER).toBe("phase-production-server");
@@ -4331,7 +4331,7 @@ describe("next/script SSR rendering", () => {
   it("beforeInteractive renders <script> tag in SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const Script = (await import("../packages/vite-plugin-nextcompat/src/shims/script.js")).default;
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
 
     const html = renderToStaticMarkup(
       React.createElement(Script, {
@@ -4348,7 +4348,7 @@ describe("next/script SSR rendering", () => {
   it("afterInteractive returns null in SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const Script = (await import("../packages/vite-plugin-nextcompat/src/shims/script.js")).default;
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
 
     const html = renderToStaticMarkup(
       React.createElement(Script, {
@@ -4363,7 +4363,7 @@ describe("next/script SSR rendering", () => {
   it("lazyOnload returns null in SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const Script = (await import("../packages/vite-plugin-nextcompat/src/shims/script.js")).default;
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
 
     const html = renderToStaticMarkup(
       React.createElement(Script, {
@@ -4377,7 +4377,7 @@ describe("next/script SSR rendering", () => {
   it("default strategy (no strategy prop) returns null in SSR", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const Script = (await import("../packages/vite-plugin-nextcompat/src/shims/script.js")).default;
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
 
     const html = renderToStaticMarkup(
       React.createElement(Script, {
@@ -4391,7 +4391,7 @@ describe("next/script SSR rendering", () => {
   it("beforeInteractive with dangerouslySetInnerHTML renders inline script", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
-    const Script = (await import("../packages/vite-plugin-nextcompat/src/shims/script.js")).default;
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
 
     const html = renderToStaticMarkup(
       React.createElement(Script, {
@@ -4406,7 +4406,7 @@ describe("next/script SSR rendering", () => {
   });
 
   it("exports handleClientScriptLoad and initScriptLoader", async () => {
-    const scriptModule = await import("../packages/vite-plugin-nextcompat/src/shims/script.js");
+    const scriptModule = await import("../packages/vinext/src/shims/script.js");
     expect(typeof scriptModule.handleClientScriptLoad).toBe("function");
     expect(typeof scriptModule.initScriptLoader).toBe("function");
   });
@@ -4416,7 +4416,7 @@ describe("next/script SSR rendering", () => {
 describe("next/dist/* internal import shims", () => {
   it("app-router-context exports AppRouterContext and types", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/internal/app-router-context.js"
+      "../packages/vinext/src/shims/internal/app-router-context.js"
     );
     expect(mod.AppRouterContext).toBeDefined();
     expect(mod.GlobalLayoutRouterContext).toBeDefined();
@@ -4427,7 +4427,7 @@ describe("next/dist/* internal import shims", () => {
 
   it("utils exports NEXT_DATA type helpers", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/internal/utils.js"
+      "../packages/vinext/src/shims/internal/utils.js"
     );
     expect(typeof mod.execOnce).toBe("function");
     expect(typeof mod.getLocationOrigin).toBe("function");
@@ -4443,14 +4443,14 @@ describe("next/dist/* internal import shims", () => {
   it("api-utils exports NextApiRequestCookies type", async () => {
     // This module is primarily type-only, but should resolve without errors
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/internal/api-utils.js"
+      "../packages/vinext/src/shims/internal/api-utils.js"
     );
     expect(mod).toBeDefined();
   });
 
   it("cookies shim re-exports RequestCookies and ResponseCookies", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/internal/cookies.js"
+      "../packages/vinext/src/shims/internal/cookies.js"
     );
     expect(mod.RequestCookies).toBeDefined();
     expect(mod.ResponseCookies).toBeDefined();
@@ -4458,7 +4458,7 @@ describe("next/dist/* internal import shims", () => {
 
   it("work-unit-async-storage exports AsyncLocalStorage instances", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/internal/work-unit-async-storage.js"
+      "../packages/vinext/src/shims/internal/work-unit-async-storage.js"
     );
     expect(mod.workUnitAsyncStorage).toBeDefined();
     expect(mod.requestAsyncStorage).toBeDefined();
@@ -4468,7 +4468,7 @@ describe("next/dist/* internal import shims", () => {
 
   it("router-context exports RouterContext", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/internal/router-context.js"
+      "../packages/vinext/src/shims/internal/router-context.js"
     );
     expect(mod.RouterContext).toBeDefined();
   });
@@ -4507,7 +4507,7 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("exports withFetchCache, runWithFetchCache, getOriginalFetch, getCollectedFetchTags", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     expect(typeof mod.withFetchCache).toBe("function");
     expect(typeof mod.runWithFetchCache).toBe("function");
@@ -4517,7 +4517,7 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("passes through fetch without next options unchanged", async () => {
     const { withFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
 
     fetchCallCount = 0;
@@ -4537,10 +4537,10 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("caches fetch with { next: { revalidate } }", async () => {
     const { withFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     // Fresh cache handler for isolation
@@ -4571,10 +4571,10 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("cache: 'force-cache' caches indefinitely", async () => {
     const { withFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     setCacheHandler(new MemoryCacheHandler());
@@ -4603,10 +4603,10 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("cache: 'no-store' bypasses cache", async () => {
     const { withFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     setCacheHandler(new MemoryCacheHandler());
@@ -4633,10 +4633,10 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("next.revalidate: false bypasses cache", async () => {
     const { withFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     setCacheHandler(new MemoryCacheHandler());
@@ -4655,10 +4655,10 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("next.revalidate: 0 bypasses cache", async () => {
     const { withFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     setCacheHandler(new MemoryCacheHandler());
@@ -4677,10 +4677,10 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("revalidateTag invalidates fetch cache entries", async () => {
     const { withFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler, revalidateTag } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     setCacheHandler(new MemoryCacheHandler());
@@ -4722,10 +4722,10 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("collects fetch tags during render pass", async () => {
     const { withFetchCache, getCollectedFetchTags } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     setCacheHandler(new MemoryCacheHandler());
@@ -4748,10 +4748,10 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("different URLs produce separate cache entries", async () => {
     const { withFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     setCacheHandler(new MemoryCacheHandler());
@@ -4775,10 +4775,10 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("fetch with only tags (no revalidate) caches indefinitely", async () => {
     const { withFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     setCacheHandler(new MemoryCacheHandler());
@@ -4797,7 +4797,7 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("cleanup restores original fetch", async () => {
     const { withFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
 
     const originalFetch = globalThis.fetch;
@@ -4809,10 +4809,10 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("runWithFetchCache auto-cleans up", async () => {
     const { runWithFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     setCacheHandler(new MemoryCacheHandler());
@@ -4833,10 +4833,10 @@ describe("fetch cache (extended fetch with next options)", () => {
 
   it("strips next property before passing to real fetch", async () => {
     const { withFetchCache } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+      "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+      "../packages/vinext/src/shims/cache.js"
     );
 
     setCacheHandler(new MemoryCacheHandler());
@@ -4864,14 +4864,14 @@ describe("fetch cache (extended fetch with next options)", () => {
 describe("instrumentation.ts support", () => {
   it("exports findInstrumentationFile", async () => {
     const mod = await import(
-      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+      "../packages/vinext/src/server/instrumentation.js"
     );
     expect(typeof mod.findInstrumentationFile).toBe("function");
   });
 
   it("findInstrumentationFile returns null when no file exists", async () => {
     const { findInstrumentationFile } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+      "../packages/vinext/src/server/instrumentation.js"
     );
     const result = findInstrumentationFile("/nonexistent/path");
     expect(result).toBeNull();
@@ -4879,14 +4879,14 @@ describe("instrumentation.ts support", () => {
 
   it("findInstrumentationFile detects instrumentation.ts", async () => {
     const { findInstrumentationFile } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+      "../packages/vinext/src/server/instrumentation.js"
     );
     const os = await import("node:os");
     const fs = await import("node:fs");
     const path = await import("node:path");
 
     // Create a temp directory with an instrumentation.ts file
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nextcompat-inst-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-"));
     fs.writeFileSync(
       path.join(tmpDir, "instrumentation.ts"),
       'export function register() { console.log("registered"); }',
@@ -4901,13 +4901,13 @@ describe("instrumentation.ts support", () => {
 
   it("findInstrumentationFile detects src/instrumentation.ts", async () => {
     const { findInstrumentationFile } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+      "../packages/vinext/src/server/instrumentation.js"
     );
     const os = await import("node:os");
     const fs = await import("node:fs");
     const path = await import("node:path");
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "nextcompat-inst-"));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-inst-"));
     fs.mkdirSync(path.join(tmpDir, "src"));
     fs.writeFileSync(
       path.join(tmpDir, "src", "instrumentation.ts"),
@@ -4922,7 +4922,7 @@ describe("instrumentation.ts support", () => {
 
   it("runInstrumentation calls register() and stores onRequestError", async () => {
     const { runInstrumentation, getOnRequestErrorHandler } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+      "../packages/vinext/src/server/instrumentation.js"
     );
 
     let registerCalled = false;
@@ -4944,7 +4944,7 @@ describe("instrumentation.ts support", () => {
 
   it("reportRequestError calls onRequestError handler", async () => {
     const { runInstrumentation, reportRequestError } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+      "../packages/vinext/src/server/instrumentation.js"
     );
 
     const reportedErrors: { error: Error; request: any; context: any }[] = [];
@@ -4975,7 +4975,7 @@ describe("instrumentation.ts support", () => {
 
   it("reportRequestError is a no-op when no handler is registered", async () => {
     const { reportRequestError, runInstrumentation } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+      "../packages/vinext/src/server/instrumentation.js"
     );
 
     // Register a module with no onRequestError
@@ -4996,7 +4996,7 @@ describe("instrumentation.ts support", () => {
 
   it("runInstrumentation handles missing register gracefully", async () => {
     const { runInstrumentation } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/instrumentation.js"
+      "../packages/vinext/src/server/instrumentation.js"
     );
 
     // Module with no register() or onRequestError()
@@ -5012,7 +5012,7 @@ describe("instrumentation.ts support", () => {
 describe("production server compression", () => {
   it("negotiateEncoding returns br when Accept-Encoding includes br", async () => {
     const { negotiateEncoding } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+      "../packages/vinext/src/server/prod-server.js"
     );
     const req = { headers: { "accept-encoding": "gzip, deflate, br" } };
     expect(negotiateEncoding(req as any)).toBe("br");
@@ -5020,7 +5020,7 @@ describe("production server compression", () => {
 
   it("negotiateEncoding returns gzip when br is not available", async () => {
     const { negotiateEncoding } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+      "../packages/vinext/src/server/prod-server.js"
     );
     const req = { headers: { "accept-encoding": "gzip, deflate" } };
     expect(negotiateEncoding(req as any)).toBe("gzip");
@@ -5028,7 +5028,7 @@ describe("production server compression", () => {
 
   it("negotiateEncoding returns null when no encoding header", async () => {
     const { negotiateEncoding } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+      "../packages/vinext/src/server/prod-server.js"
     );
     const req = { headers: {} };
     expect(negotiateEncoding(req as any)).toBeNull();
@@ -5036,7 +5036,7 @@ describe("production server compression", () => {
 
   it("COMPRESSIBLE_TYPES includes expected content types", async () => {
     const { COMPRESSIBLE_TYPES } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+      "../packages/vinext/src/server/prod-server.js"
     );
     expect(COMPRESSIBLE_TYPES.has("text/html")).toBe(true);
     expect(COMPRESSIBLE_TYPES.has("application/javascript")).toBe(true);
@@ -5050,7 +5050,7 @@ describe("production server compression", () => {
 
   it("COMPRESS_THRESHOLD is a reasonable minimum", async () => {
     const { COMPRESS_THRESHOLD } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+      "../packages/vinext/src/server/prod-server.js"
     );
     expect(COMPRESS_THRESHOLD).toBeGreaterThanOrEqual(256);
     expect(COMPRESS_THRESHOLD).toBeLessThanOrEqual(4096);
@@ -5058,7 +5058,7 @@ describe("production server compression", () => {
 
   it("sendCompressed compresses text/html with gzip", async () => {
     const { sendCompressed } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+      "../packages/vinext/src/server/prod-server.js"
     );
     const body = "<html>" + "x".repeat(2000) + "</html>";
     const req = { headers: { "accept-encoding": "gzip" } };
@@ -5103,7 +5103,7 @@ describe("production server compression", () => {
 
   it("sendCompressed does not compress when disabled", async () => {
     const { sendCompressed } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+      "../packages/vinext/src/server/prod-server.js"
     );
 
     const body = "<html>" + "x".repeat(2000) + "</html>";
@@ -5131,7 +5131,7 @@ describe("production server compression", () => {
 
   it("sendCompressed does not compress small bodies", async () => {
     const { sendCompressed } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+      "../packages/vinext/src/server/prod-server.js"
     );
 
     const body = "<html>small</html>";
@@ -5154,7 +5154,7 @@ describe("production server compression", () => {
 
   it("sendCompressed does not compress non-compressible types", async () => {
     const { sendCompressed } = await import(
-      "../packages/vite-plugin-nextcompat/src/server/prod-server.js"
+      "../packages/vinext/src/server/prod-server.js"
     );
 
     const body = Buffer.alloc(2000, 0xff); // binary content

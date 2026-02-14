@@ -1,7 +1,7 @@
 export const metadata = {
   title: "Metadata Test Page",
   description: "A page to test the metadata API",
-  keywords: ["test", "metadata", "nextcompat"],
+  keywords: ["test", "metadata", "vinext"],
   openGraph: {
     title: "OG Title",
     description: "OG Description",

@@ -1,5 +1,5 @@
 /**
- * Test helpers for nextcompat integration tests.
+ * Test helpers for vinext integration tests.
  *
  * Eliminates boilerplate for:
  * - Creating Pages Router / App Router dev servers
@@ -8,7 +8,7 @@
  */
 
 import { createServer, type ViteDevServer } from "vite";
-import nextcompat from "../packages/vite-plugin-nextcompat/src/index.js";
+import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
 
 // ── Fixture paths ─────────────────────────────────────────────
@@ -23,9 +23,9 @@ export const APP_FIXTURE_DIR = path.resolve(
 
 // ── Shared RSC virtual module entries (used by @vitejs/plugin-rsc) ──
 export const RSC_ENTRIES = {
-  rsc: "virtual:nextcompat-rsc-entry",
-  ssr: "virtual:nextcompat-app-ssr-entry",
-  client: "virtual:nextcompat-app-browser-entry",
+  rsc: "virtual:vinext-rsc-entry",
+  ssr: "virtual:vinext-app-ssr-entry",
+  client: "virtual:vinext-app-browser-entry",
 } as const;
 
 // ── Server lifecycle helper ───────────────────────────────────
@@ -46,7 +46,7 @@ export async function startFixtureServer(
   fixtureDir: string,
   opts?: { appRouter?: boolean; listen?: boolean },
 ): Promise<TestServerResult> {
-  const plugins: any[] = [nextcompat()];
+  const plugins: any[] = [vinext()];
 
   if (opts?.appRouter) {
     const rsc = (await import("@vitejs/plugin-rsc")).default;

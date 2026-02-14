@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Generate a realistic benchmark app with 50+ pages.
- * Shared between the Next.js and nextcompat benchmark projects.
+ * Shared between the Next.js and vinext benchmark projects.
  */
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -21,7 +21,7 @@ function write(rel, content) {
 write("layout.tsx", `
 export const metadata = {
   title: { default: "Benchmark App", template: "%s | Benchmark" },
-  description: "A realistic benchmark app for comparing Next.js and nextcompat",
+  description: "A realistic benchmark app for comparing Next.js and vinext",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -116,7 +116,7 @@ export default function AboutPage() {
   return (
     <div>
       <h1>About</h1>
-      <p>This is a benchmark application for comparing Next.js and nextcompat (Vite) performance.</p>
+      <p>This is a benchmark application for comparing Next.js and vinext (Vite) performance.</p>
       <p>It includes 50+ pages with nested layouts, dynamic routes, server components, client components, and metadata.</p>
     </div>
   );
@@ -457,7 +457,7 @@ console.log(`Generated benchmark app: ${pages} pages + ${routes} API routes = ${
 // Copy to both benchmark projects (symlinks don't work with Turbopack)
 import { cpSync } from "node:fs";
 const BASE = dirname(new URL(import.meta.url).pathname);
-for (const project of ["nextjs", "nextcompat", "nextcompat-rolldown"]) {
+for (const project of ["nextjs", "vinext", "vinext-rolldown"]) {
   const dest = join(BASE, project, "app");
   rmSync(dest, { recursive: true, force: true });
   cpSync(APP, dest, { recursive: true });

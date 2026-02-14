@@ -1,4 +1,4 @@
-# nextcompat
+# vinext
 
 A Vite plugin that reimplements the Next.js API surface so existing Next.js applications can run on Vite and deploy anywhere.
 
@@ -10,7 +10,7 @@ A Vite plugin that reimplements the Next.js API surface so existing Next.js appl
 
 Next.js is tightly coupled to Vercel's infrastructure. If you want to deploy to Cloudflare Workers, a $5 VPS, AWS, Fly.io, or anywhere else, you're fighting the framework rather than working with it.
 
-nextcompat lets you keep your existing Next.js code — pages, layouts, API routes, server components — and run it on Vite. No vendor lock-in. Standard Web APIs. Deploy anywhere.
+vinext lets you keep your existing Next.js code — pages, layouts, API routes, server components — and run it on Vite. No vendor lock-in. Standard Web APIs. Deploy anywhere.
 
 ### Design principles
 
@@ -23,27 +23,27 @@ nextcompat lets you keep your existing Next.js code — pages, layouts, API rout
 ## Quick start
 
 ```bash
-npm install vite-plugin-nextcompat vite @vitejs/plugin-rsc
+npm install vinext vite @vitejs/plugin-rsc
 ```
 
 Create a `vite.config.ts`:
 
 ```ts
 import { defineConfig } from "vite";
-import nextcompat from "vite-plugin-nextcompat";
+import vinext from "vinext";
 import rsc from "@vitejs/plugin-rsc";
 
 export default defineConfig({
   plugins: [
-    // Pages Router only — just nextcompat:
-    ...nextcompat(),
+    // Pages Router only — just vinext:
+    ...vinext(),
 
     // App Router — add the RSC plugin:
     rsc({
       entries: {
-        rsc: "virtual:nextcompat-rsc-entry",
-        ssr: "virtual:nextcompat-app-ssr-entry",
-        client: "virtual:nextcompat-app-browser-entry",
+        rsc: "virtual:vinext-rsc-entry",
+        ssr: "virtual:vinext-app-ssr-entry",
+        client: "virtual:vinext-app-browser-entry",
       },
     }),
   ],
@@ -177,7 +177,7 @@ These are intentional exclusions, not bugs:
 
 ## Architecture
 
-nextcompat is a Vite plugin that:
+vinext is a Vite plugin that:
 
 1. **Resolves all `next/*` imports** to local shim modules that reimplement the Next.js API using standard Web APIs and React primitives.
 2. **Scans your `pages/` and `app/` directories** to build a file-system router matching Next.js conventions.
@@ -204,7 +204,7 @@ Request → RSC entry (Vite rsc environment) → Route match → Build layout/pa
 ## Project structure
 
 ```
-packages/vite-plugin-nextcompat/
+packages/vinext/
   src/
     index.ts              # Main plugin — resolve aliases, config, virtual modules
     routing/
@@ -229,7 +229,7 @@ fixtures/                 # Test fixtures
   pages-basic/            # Pages Router test app
   app-basic/              # App Router test app
   ecosystem/
-    app-router-playground/  # Vercel's Next.js App Router Playground running on nextcompat
+    app-router-playground/  # Vercel's Next.js App Router Playground running on vinext
 
 tests/
   routing.test.ts         # 41 unit tests
@@ -248,7 +248,7 @@ npm run lint          # Linting (oxlint)
 
 The test suite covers routing, SSR, API routes, metadata, ISR, server actions, static export, streaming, client hydration, navigation, error boundaries, and more.
 
-The [Vercel App Router Playground](https://github.com/vercel/next-app-router-playground) runs on nextcompat as an integration test — all 11 sections render correctly in both dev and production builds.
+The [Vercel App Router Playground](https://github.com/vercel/next-app-router-playground) runs on vinext as an integration test — all 11 sections render correctly in both dev and production builds.
 
 ## Benchmarks
 
@@ -259,24 +259,24 @@ Measured on an 8-core Apple Silicon machine, Node v24.3.0, with a shared 33-rout
 | Framework | Mean | StdDev | vs Next.js |
 |-----------|------|--------|------------|
 | Next.js 16 (Turbopack) | 6.59s | ±169ms | baseline |
-| nextcompat (Vite 7 / Rollup) | 2.43s | ±7ms | **2.7x faster** |
-| nextcompat (Vite 8 / Rolldown) | 946ms | ±16ms | **7.0x faster** |
+| vinext (Vite 7 / Rollup) | 2.43s | ±7ms | **2.7x faster** |
+| vinext (Vite 8 / Rolldown) | 946ms | ±16ms | **7.0x faster** |
 
 ### Client Bundle Size (gzipped)
 
 | Framework | Files | Gzipped | vs Next.js |
 |-----------|-------|---------|------------|
 | Next.js 16 | 14 | 168.9 KB | baseline |
-| nextcompat (Rollup) | 3 | 75.4 KB | **55% smaller** |
-| nextcompat (Rolldown) | 4 | 73.8 KB | **56% smaller** |
+| vinext (Rollup) | 3 | 75.4 KB | **55% smaller** |
+| vinext (Rolldown) | 4 | 73.8 KB | **56% smaller** |
 
 ### Dev Server Cold Start
 
 | Framework | Mean | Peak RSS | vs Next.js |
 |-----------|------|----------|------------|
 | Next.js 16 (Turbopack) | 2.20s | 87 MB | baseline |
-| nextcompat (Vite 7 / Rollup) | 1.37s | 88 MB | **1.6x faster** |
-| nextcompat (Vite 8 / Rolldown) | 1.21s | 88 MB | **1.8x faster** |
+| vinext (Vite 7 / Rollup) | 1.37s | 88 MB | **1.6x faster** |
+| vinext (Vite 8 / Rolldown) | 1.21s | 88 MB | **1.8x faster** |
 
 Vite 8 (Rolldown) delivers sub-second production builds — **7x faster** than Next.js 16 with Turbopack. Bundle sizes are consistent between Rollup and Rolldown, both roughly half the size of Next.js output.
 

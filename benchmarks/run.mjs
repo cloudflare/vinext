@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Benchmark harness: compares Next.js 16 (Turbopack) vs nextcompat (Vite 7/Rollup) vs nextcompat (Vite 8/Rolldown)
+ * Benchmark harness: compares Next.js 16 (Turbopack) vs vinext (Vite 7/Rollup) vs vinext (Vite 8/Rolldown)
  *
  * Metrics:
  *   1. Production build time (hyperfine)
@@ -175,14 +175,14 @@ async function main() {
       cpus: (await import("node:os")).cpus().length,
     },
     nextjs: {},
-    nextcompat: {},
-    nextcompatRolldown: {},
+    vinext: {},
+    vinextRolldown: {},
   };
 
   const nextjsDir = join(__dirname, "nextjs");
-  const nextcompatDir = join(__dirname, "nextcompat");
-  const rolldownDir = join(__dirname, "nextcompat-rolldown");
-  const hasRolldown = existsSync(join(rolldownDir, "package.json"));
+  const vinextDir = join(__dirname, "vinext");
+  const vinextRolldownDir = join(__dirname, "vinext-rolldown");
+  const hasRolldown = existsSync(join(vinextRolldownDir, "package.json"));
 
   // ─── 1. Production Build Time ──────────────────────────────────────────────
   if (!SKIP_BUILD) {
@@ -190,26 +190,26 @@ async function main() {
 
     // Clean previous builds
     exec("rm -rf .next", { cwd: nextjsDir });
-    exec("rm -rf dist", { cwd: nextcompatDir });
-    if (hasRolldown) exec("rm -rf dist", { cwd: rolldownDir });
+    exec("rm -rf dist", { cwd: vinextDir });
+    if (hasRolldown) exec("rm -rf dist", { cwd: vinextRolldownDir });
 
     // Ensure plugin is built
-    console.log("  Building nextcompat plugin...");
-    exec("npx tsc -p packages/vite-plugin-nextcompat/tsconfig.json", { cwd: join(__dirname, "..") });
+    console.log("  Building vinext plugin...");
+    exec("npx tsc -p packages/vinext/tsconfig.json", { cwd: join(__dirname, "..") });
 
     // Warmup run for all (not measured)
     console.log("  Warmup: Next.js build...");
     exec("npx next build", { cwd: nextjsDir, timeout: 120000 });
     exec("rm -rf .next", { cwd: nextjsDir });
 
-    console.log("  Warmup: nextcompat (Rollup) build...");
-    exec("npx vite build", { cwd: nextcompatDir, timeout: 120000 });
-    exec("rm -rf dist", { cwd: nextcompatDir });
+    console.log("  Warmup: vinext (Rollup) build...");
+    exec("npx vite build", { cwd: vinextDir, timeout: 120000 });
+    exec("rm -rf dist", { cwd: vinextDir });
 
     if (hasRolldown) {
-      console.log("  Warmup: nextcompat (Rolldown) build...");
-      exec("npx vite build", { cwd: rolldownDir, timeout: 120000 });
-      exec("rm -rf dist", { cwd: rolldownDir });
+      console.log("  Warmup: vinext (Rolldown) build...");
+      exec("npx vite build", { cwd: vinextRolldownDir, timeout: 120000 });
+      exec("rm -rf dist", { cwd: vinextRolldownDir });
     }
 
     // Measured runs with hyperfine (separate runs per project for clean --prepare)
@@ -235,27 +235,27 @@ async function main() {
       );
       results.nextjs.buildTime = parseHyperfine(njsJson);
 
-      // nextcompat (Rollup)
-      console.log("  Timing nextcompat (Rollup) builds...");
+      // vinext (Rollup)
+      console.log("  Timing vinext (Rollup) builds...");
       const ncJson = exec(
         `hyperfine --runs ${RUNS} --prepare 'rm -rf dist' 'npx vite build' --export-json /dev/stdout 2>/dev/null`,
-        { cwd: nextcompatDir, timeout: 600000 }
+        { cwd: vinextDir, timeout: 600000 }
       );
-      results.nextcompat.buildTime = parseHyperfine(ncJson);
+      results.vinext.buildTime = parseHyperfine(ncJson);
 
-      // nextcompat (Rolldown)
+      // vinext (Rolldown)
       if (hasRolldown) {
-        console.log("  Timing nextcompat (Rolldown) builds...");
+        console.log("  Timing vinext (Rolldown) builds...");
         const rdJson = exec(
           `hyperfine --runs ${RUNS} --prepare 'rm -rf dist' 'npx vite build' --export-json /dev/stdout 2>/dev/null`,
-          { cwd: rolldownDir, timeout: 600000 }
+          { cwd: vinextRolldownDir, timeout: 600000 }
         );
-        results.nextcompatRolldown.buildTime = parseHyperfine(rdJson);
+        results.vinextRolldown.buildTime = parseHyperfine(rdJson);
       }
     } catch {
       // Fallback: manual timing
       console.log("  hyperfine failed, falling back to manual timing...");
-      const buildTimes = { nextjs: [], nextcompat: [], rolldown: [] };
+      const buildTimes = { nextjs: [], vinext: [], rolldown: [] };
 
       for (let i = 0; i < RUNS; i++) {
         console.log(`  Run ${i + 1}/${RUNS}...`);
@@ -265,15 +265,15 @@ async function main() {
         exec("npx next build", { cwd: nextjsDir, timeout: 120000 });
         buildTimes.nextjs.push(performance.now() - njsStart);
 
-        exec("rm -rf dist", { cwd: nextcompatDir });
+        exec("rm -rf dist", { cwd: vinextDir });
         const ncStart = performance.now();
-        exec("npx vite build", { cwd: nextcompatDir, timeout: 120000 });
-        buildTimes.nextcompat.push(performance.now() - ncStart);
+        exec("npx vite build", { cwd: vinextDir, timeout: 120000 });
+        buildTimes.vinext.push(performance.now() - ncStart);
 
         if (hasRolldown) {
-          exec("rm -rf dist", { cwd: rolldownDir });
+          exec("rm -rf dist", { cwd: vinextRolldownDir });
           const rdStart = performance.now();
-          exec("npx vite build", { cwd: rolldownDir, timeout: 120000 });
+          exec("npx vite build", { cwd: vinextRolldownDir, timeout: 120000 });
           buildTimes.rolldown.push(performance.now() - rdStart);
         }
       }
@@ -290,14 +290,14 @@ async function main() {
         min: Math.min(...buildTimes.nextjs),
         max: Math.max(...buildTimes.nextjs),
       };
-      results.nextcompat.buildTime = {
-        mean: avg(buildTimes.nextcompat),
-        stddev: stddev(buildTimes.nextcompat),
-        min: Math.min(...buildTimes.nextcompat),
-        max: Math.max(...buildTimes.nextcompat),
+      results.vinext.buildTime = {
+        mean: avg(buildTimes.vinext),
+        stddev: stddev(buildTimes.vinext),
+        min: Math.min(...buildTimes.vinext),
+        max: Math.max(...buildTimes.vinext),
       };
       if (hasRolldown && buildTimes.rolldown.length) {
-        results.nextcompatRolldown.buildTime = {
+        results.vinextRolldown.buildTime = {
           mean: avg(buildTimes.rolldown),
           stddev: stddev(buildTimes.rolldown),
           min: Math.min(...buildTimes.rolldown),
@@ -313,26 +313,26 @@ async function main() {
     exec("rm -rf .next", { cwd: nextjsDir });
     exec("npx next build", { cwd: nextjsDir, timeout: 120000 });
 
-    exec("rm -rf dist", { cwd: nextcompatDir });
-    exec("npx vite build", { cwd: nextcompatDir, timeout: 120000 });
+    exec("rm -rf dist", { cwd: vinextDir });
+    exec("npx vite build", { cwd: vinextDir, timeout: 120000 });
 
     // Next.js: client bundles are in .next/static
     const njsSize = bundleSize(join(nextjsDir, ".next", "static"));
     results.nextjs.bundleSize = njsSize;
     console.log(`  Next.js:     ${njsSize.files} files, ${formatBytes(njsSize.raw)} raw, ${formatBytes(njsSize.gzip)} gzip`);
 
-    // nextcompat (Rollup): client bundles are in dist/client
-    const ncSize = bundleSize(join(nextcompatDir, "dist", "client"));
-    results.nextcompat.bundleSize = ncSize;
-    console.log(`  nextcompat (Rollup):    ${ncSize.files} files, ${formatBytes(ncSize.raw)} raw, ${formatBytes(ncSize.gzip)} gzip`);
+    // vinext (Rollup): client bundles are in dist/client
+    const ncSize = bundleSize(join(vinextDir, "dist", "client"));
+    results.vinext.bundleSize = ncSize;
+    console.log(`  vinext (Rollup):    ${ncSize.files} files, ${formatBytes(ncSize.raw)} raw, ${formatBytes(ncSize.gzip)} gzip`);
 
-    // nextcompat (Rolldown): client bundles are in dist/client
+    // vinext (Rolldown): client bundles are in dist/client
     if (hasRolldown) {
-      exec("rm -rf dist", { cwd: rolldownDir });
-      exec("npx vite build", { cwd: rolldownDir, timeout: 120000 });
-      const rdSize = bundleSize(join(rolldownDir, "dist", "client"));
-      results.nextcompatRolldown.bundleSize = rdSize;
-      console.log(`  nextcompat (Rolldown):  ${rdSize.files} files, ${formatBytes(rdSize.raw)} raw, ${formatBytes(rdSize.gzip)} gzip`);
+      exec("rm -rf dist", { cwd: vinextRolldownDir });
+      exec("npx vite build", { cwd: vinextRolldownDir, timeout: 120000 });
+      const rdSize = bundleSize(join(vinextRolldownDir, "dist", "client"));
+      results.vinextRolldown.bundleSize = rdSize;
+      console.log(`  vinext (Rolldown):  ${rdSize.files} files, ${formatBytes(rdSize.raw)} raw, ${formatBytes(rdSize.gzip)} gzip`);
     }
   }
 
@@ -340,7 +340,7 @@ async function main() {
   if (!SKIP_DEV) {
     console.log("\n=== Dev Server Cold Start ===\n");
 
-    const devResults = { nextjs: [], nextcompat: [], rolldown: [] };
+    const devResults = { nextjs: [], vinext: [], rolldown: [] };
 
     for (let i = 0; i < RUNS; i++) {
       console.log(`  Run ${i + 1}/${RUNS}...`);
@@ -354,20 +354,20 @@ async function main() {
       kill(njsDev.process);
       await new Promise((r) => setTimeout(r, 2000)); // cooldown
 
-      // nextcompat (Rollup) dev
-      console.log("    Starting nextcompat (Rollup) dev server...");
-      const ncDev = await startAndMeasure("npx", ["vite", "--port", "4101"], nextcompatDir, "http://localhost:4101");
-      devResults.nextcompat.push({ coldStartMs: ncDev.coldStartMs, peakRssKb: ncDev.peakRssKb });
-      console.log(`    nextcompat (Rollup): ${formatMs(ncDev.coldStartMs)}, ${Math.round(ncDev.peakRssKb / 1024)} MB RSS`);
+      // vinext (Rollup) dev
+      console.log("    Starting vinext (Rollup) dev server...");
+      const ncDev = await startAndMeasure("npx", ["vite", "--port", "4101"], vinextDir, "http://localhost:4101");
+      devResults.vinext.push({ coldStartMs: ncDev.coldStartMs, peakRssKb: ncDev.peakRssKb });
+      console.log(`    vinext (Rollup): ${formatMs(ncDev.coldStartMs)}, ${Math.round(ncDev.peakRssKb / 1024)} MB RSS`);
       kill(ncDev.process);
       await new Promise((r) => setTimeout(r, 2000)); // cooldown
 
-      // nextcompat (Rolldown) dev
+      // vinext (Rolldown) dev
       if (hasRolldown) {
-        console.log("    Starting nextcompat (Rolldown) dev server...");
-        const rdDev = await startAndMeasure("npx", ["vite", "--port", "4102"], rolldownDir, "http://localhost:4102");
+        console.log("    Starting vinext (Rolldown) dev server...");
+        const rdDev = await startAndMeasure("npx", ["vite", "--port", "4102"], vinextRolldownDir, "http://localhost:4102");
         devResults.rolldown.push({ coldStartMs: rdDev.coldStartMs, peakRssKb: rdDev.peakRssKb });
-        console.log(`    nextcompat (Rolldown): ${formatMs(rdDev.coldStartMs)}, ${Math.round(rdDev.peakRssKb / 1024)} MB RSS`);
+        console.log(`    vinext (Rolldown): ${formatMs(rdDev.coldStartMs)}, ${Math.round(rdDev.peakRssKb / 1024)} MB RSS`);
         kill(rdDev.process);
         await new Promise((r) => setTimeout(r, 2000)); // cooldown
       }
@@ -380,13 +380,13 @@ async function main() {
       meanRssKb: avg(devResults.nextjs.map((r) => r.peakRssKb)),
       runs: devResults.nextjs,
     };
-    results.nextcompat.devColdStart = {
-      meanMs: avg(devResults.nextcompat.map((r) => r.coldStartMs)),
-      meanRssKb: avg(devResults.nextcompat.map((r) => r.peakRssKb)),
-      runs: devResults.nextcompat,
+    results.vinext.devColdStart = {
+      meanMs: avg(devResults.vinext.map((r) => r.coldStartMs)),
+      meanRssKb: avg(devResults.vinext.map((r) => r.peakRssKb)),
+      runs: devResults.vinext,
     };
     if (hasRolldown && devResults.rolldown.length) {
-      results.nextcompatRolldown.devColdStart = {
+      results.vinextRolldown.devColdStart = {
         meanMs: avg(devResults.rolldown.map((r) => r.coldStartMs)),
         meanRssKb: avg(devResults.rolldown.map((r) => r.peakRssKb)),
         runs: devResults.rolldown,
@@ -395,12 +395,12 @@ async function main() {
   }
 
   // ─── 4. SSR Throughput & TTFB ──────────────────────────────────────────────
-  // TODO: Requires wiring up nextcompat production server (startProdServer)
+  // TODO: Requires wiring up vinext production server (startProdServer)
   // to serve dynamic SSR pages, not just static preview. Skipped for now.
   if (!SKIP_SSR) {
     console.log("\n=== SSR Throughput & TTFB ===\n");
-    console.log("  Skipped — nextcompat production server not yet wired for benchmark app.");
-    console.log("  Next.js `next start` does SSR; nextcompat `vite preview` only serves static.");
+    console.log("  Skipped — vinext production server not yet wired for benchmark app.");
+    console.log("  Next.js `next start` does SSR; vinext `vite preview` only serves static.");
     console.log("  This will be added once the prod server integration is complete.\n");
   }
 
@@ -420,52 +420,52 @@ async function main() {
   md += `- **CPUs**: ${results.system.cpus}\n`;
   md += `- **Runs**: ${results.runs}\n\n`;
 
-  const hasRolldownResults = results.nextcompatRolldown && Object.keys(results.nextcompatRolldown).length > 0;
+  const hasRolldownResults = results.vinextRolldown && Object.keys(results.vinextRolldown).length > 0;
 
-  if (results.nextjs.buildTime && results.nextcompat.buildTime) {
+  if (results.nextjs.buildTime && results.vinext.buildTime) {
     md += `## Production Build Time\n\n`;
     md += `| Framework | Mean | StdDev | Min | Max | vs Next.js |\n`;
     md += `|-----------|------|--------|-----|-----|------------|\n`;
     md += `| Next.js 16 (Turbopack) | ${formatMs(results.nextjs.buildTime.mean)} | ±${formatMs(results.nextjs.buildTime.stddev)} | ${formatMs(results.nextjs.buildTime.min)} | ${formatMs(results.nextjs.buildTime.max)} | baseline |\n`;
 
-    const rollupRatio = results.nextjs.buildTime.mean / results.nextcompat.buildTime.mean;
-    md += `| nextcompat (Vite 7 / Rollup) | ${formatMs(results.nextcompat.buildTime.mean)} | ±${formatMs(results.nextcompat.buildTime.stddev)} | ${formatMs(results.nextcompat.buildTime.min)} | ${formatMs(results.nextcompat.buildTime.max)} | **${rollupRatio.toFixed(1)}x faster** |\n`;
+    const rollupRatio = results.nextjs.buildTime.mean / results.vinext.buildTime.mean;
+    md += `| vinext (Vite 7 / Rollup) | ${formatMs(results.vinext.buildTime.mean)} | ±${formatMs(results.vinext.buildTime.stddev)} | ${formatMs(results.vinext.buildTime.min)} | ${formatMs(results.vinext.buildTime.max)} | **${rollupRatio.toFixed(1)}x faster** |\n`;
 
-    if (hasRolldownResults && results.nextcompatRolldown.buildTime) {
-      const rolldownRatio = results.nextjs.buildTime.mean / results.nextcompatRolldown.buildTime.mean;
-      md += `| nextcompat (Vite 8 / Rolldown) | ${formatMs(results.nextcompatRolldown.buildTime.mean)} | ±${formatMs(results.nextcompatRolldown.buildTime.stddev)} | ${formatMs(results.nextcompatRolldown.buildTime.min)} | ${formatMs(results.nextcompatRolldown.buildTime.max)} | **${rolldownRatio.toFixed(1)}x faster** |\n`;
+    if (hasRolldownResults && results.vinextRolldown.buildTime) {
+      const rolldownRatio = results.nextjs.buildTime.mean / results.vinextRolldown.buildTime.mean;
+      md += `| vinext (Vite 8 / Rolldown) | ${formatMs(results.vinextRolldown.buildTime.mean)} | ±${formatMs(results.vinextRolldown.buildTime.stddev)} | ${formatMs(results.vinextRolldown.buildTime.min)} | ${formatMs(results.vinextRolldown.buildTime.max)} | **${rolldownRatio.toFixed(1)}x faster** |\n`;
     }
     md += "\n";
   }
 
-  if (results.nextjs.bundleSize && results.nextcompat.bundleSize) {
+  if (results.nextjs.bundleSize && results.vinext.bundleSize) {
     md += `## Production Bundle Size (Client)\n\n`;
     md += `| Framework | Files | Raw | Gzipped | vs Next.js (gzip) |\n`;
     md += `|-----------|-------|-----|----------|--------------------|\n`;
     md += `| Next.js 16 | ${results.nextjs.bundleSize.files} | ${formatBytes(results.nextjs.bundleSize.raw)} | ${formatBytes(results.nextjs.bundleSize.gzip)} | baseline |\n`;
 
-    const rollupSizePct = ((1 - results.nextcompat.bundleSize.gzip / results.nextjs.bundleSize.gzip) * 100).toFixed(0);
-    md += `| nextcompat (Rollup) | ${results.nextcompat.bundleSize.files} | ${formatBytes(results.nextcompat.bundleSize.raw)} | ${formatBytes(results.nextcompat.bundleSize.gzip)} | **${rollupSizePct}% smaller** |\n`;
+    const rollupSizePct = ((1 - results.vinext.bundleSize.gzip / results.nextjs.bundleSize.gzip) * 100).toFixed(0);
+    md += `| vinext (Rollup) | ${results.vinext.bundleSize.files} | ${formatBytes(results.vinext.bundleSize.raw)} | ${formatBytes(results.vinext.bundleSize.gzip)} | **${rollupSizePct}% smaller** |\n`;
 
-    if (hasRolldownResults && results.nextcompatRolldown.bundleSize) {
-      const rolldownSizePct = ((1 - results.nextcompatRolldown.bundleSize.gzip / results.nextjs.bundleSize.gzip) * 100).toFixed(0);
-      md += `| nextcompat (Rolldown) | ${results.nextcompatRolldown.bundleSize.files} | ${formatBytes(results.nextcompatRolldown.bundleSize.raw)} | ${formatBytes(results.nextcompatRolldown.bundleSize.gzip)} | **${rolldownSizePct}% smaller** |\n`;
+    if (hasRolldownResults && results.vinextRolldown.bundleSize) {
+      const rolldownSizePct = ((1 - results.vinextRolldown.bundleSize.gzip / results.nextjs.bundleSize.gzip) * 100).toFixed(0);
+      md += `| vinext (Rolldown) | ${results.vinextRolldown.bundleSize.files} | ${formatBytes(results.vinextRolldown.bundleSize.raw)} | ${formatBytes(results.vinextRolldown.bundleSize.gzip)} | **${rolldownSizePct}% smaller** |\n`;
     }
     md += "\n";
   }
 
-  if (results.nextjs.devColdStart && results.nextcompat.devColdStart) {
+  if (results.nextjs.devColdStart && results.vinext.devColdStart) {
     md += `## Dev Server Cold Start\n\n`;
     md += `| Framework | Mean Cold Start | Mean Peak RSS | vs Next.js |\n`;
     md += `|-----------|----------------|----------------|------------|\n`;
     md += `| Next.js 16 (Turbopack) | ${formatMs(results.nextjs.devColdStart.meanMs)} | ${Math.round(results.nextjs.devColdStart.meanRssKb / 1024)} MB | baseline |\n`;
 
-    const rollupDevRatio = results.nextjs.devColdStart.meanMs / results.nextcompat.devColdStart.meanMs;
-    md += `| nextcompat (Vite 7 / Rollup) | ${formatMs(results.nextcompat.devColdStart.meanMs)} | ${Math.round(results.nextcompat.devColdStart.meanRssKb / 1024)} MB | **${rollupDevRatio.toFixed(1)}x faster** |\n`;
+    const rollupDevRatio = results.nextjs.devColdStart.meanMs / results.vinext.devColdStart.meanMs;
+    md += `| vinext (Vite 7 / Rollup) | ${formatMs(results.vinext.devColdStart.meanMs)} | ${Math.round(results.vinext.devColdStart.meanRssKb / 1024)} MB | **${rollupDevRatio.toFixed(1)}x faster** |\n`;
 
-    if (hasRolldownResults && results.nextcompatRolldown.devColdStart) {
-      const rolldownDevRatio = results.nextjs.devColdStart.meanMs / results.nextcompatRolldown.devColdStart.meanMs;
-      md += `| nextcompat (Vite 8 / Rolldown) | ${formatMs(results.nextcompatRolldown.devColdStart.meanMs)} | ${Math.round(results.nextcompatRolldown.devColdStart.meanRssKb / 1024)} MB | **${rolldownDevRatio.toFixed(1)}x faster** |\n`;
+    if (hasRolldownResults && results.vinextRolldown.devColdStart) {
+      const rolldownDevRatio = results.nextjs.devColdStart.meanMs / results.vinextRolldown.devColdStart.meanMs;
+      md += `| vinext (Vite 8 / Rolldown) | ${formatMs(results.vinextRolldown.devColdStart.meanMs)} | ${Math.round(results.vinextRolldown.devColdStart.meanRssKb / 1024)} MB | **${rolldownDevRatio.toFixed(1)}x faster** |\n`;
     }
     md += "\n";
   }

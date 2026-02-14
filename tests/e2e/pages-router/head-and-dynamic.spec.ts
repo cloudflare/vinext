@@ -5,20 +5,20 @@ const BASE = "http://localhost:4173";
 test.describe("next/head client-side updates", () => {
   test("title changes when navigating between pages", async ({ page }) => {
     await page.goto(`${BASE}/`);
-    await expect(page).toHaveTitle("Hello nextcompat");
+    await expect(page).toHaveTitle("Hello vinext");
 
     // Navigate to about page — title should change
     await page.click('a[href="/about"]');
     await expect(page.locator("h1")).toHaveText("About");
     // After client navigation, the head shim should update document.title
-    await expect(page).toHaveTitle("About - nextcompat");
+    await expect(page).toHaveTitle("About - vinext");
   });
 
   test("title is correct on SSR (no JS)", async ({ page }) => {
     // Disable JS — verify the title comes from SSR
     await page.route("**/*.js", (route) => route.abort());
     await page.goto(`${BASE}/`);
-    await expect(page).toHaveTitle("Hello nextcompat");
+    await expect(page).toHaveTitle("Hello vinext");
   });
 
   test("meta tags are present in SSR head", async ({ page }) => {

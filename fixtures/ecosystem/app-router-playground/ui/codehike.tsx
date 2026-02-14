@@ -1,5 +1,5 @@
 /**
- * Simplified codehike shim for nextcompat playground.
+ * Simplified codehike shim for vinext playground.
  *
  * The original imports codehike/blocks, codehike/code, zod, and mdx/types
  * which are heavy deps not needed for the basic playground demo.

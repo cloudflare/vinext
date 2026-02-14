@@ -6,7 +6,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "next-intl": "^4.8.2",
-    "vite-plugin-nextcompat": "*",
+    "vinext": "*",
     "@vitejs/plugin-rsc": "^0.5.19",
     "react-server-dom-webpack": "^19.2.4"
   },

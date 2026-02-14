@@ -41,7 +41,7 @@ const nextConfig = {
         headers: [
           {
             key: "X-Custom-Header",
-            value: "nextcompat",
+            value: "vinext",
           },
         ],
       },

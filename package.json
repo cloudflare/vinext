@@ -1,5 +1,5 @@
 {
-  "name": "nextcompat-monorepo",
+  "name": "vinext-monorepo",
   "private": true,
   "workspaces": [
     "packages/*",
@@ -7,7 +7,7 @@
     "fixtures/ecosystem/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace=packages/vite-plugin-nextcompat",
+    "build": "npm run build --workspace=packages/vinext",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsgo --noEmit",

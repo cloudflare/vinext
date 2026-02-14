@@ -1,4 +1,4 @@
-# nextcompat: Next.js API Surface Reimplemented on Vite
+# vinext: Next.js API Surface Reimplemented on Vite
 
 ## Thesis
 
@@ -10,7 +10,7 @@ surface - file conventions, routing, data fetching, rendering - as a Vite
 plugin?**
 
 Not a "Vite-flavored alternative." A direct, API-compatible reimplementation
-where existing Next.js apps can `npm uninstall next && npm install nextcompat`
+where existing Next.js apps can `npm uninstall next && npm install vinext`
 and largely Just Work.
 
 ## Why This Matters: The Deployment Problem
@@ -57,12 +57,12 @@ zero or minimal changes. That's different from reproducing every quirk.
 **When something doesn't work, we provide an off-ramp:**
 - A clear **compatibility caveats** page documenting known differences,
   with workarounds for each
-- **Codemods** (`npx nextcompat migrate`) that automatically transform
+- **Codemods** (`npx vinext migrate`) that automatically transform
   code away from unsupported patterns. If we can't support a pattern, we
   can at least automate the migration off of it.
 - **AI-assisted migration**: For edge cases that are too contextual for
   a mechanical codemod, use an LLM that understands both the Next.js API
-  surface and the nextcompat surface. `npx nextcompat migrate` scans the
+  surface and the vinext surface. `npx vinext migrate` scans the
   project, flags incompatibilities, and offers AI-suggested fixes in
   context - not generic "here's the docs" but actual code changes specific
   to the user's file. Mechanical transforms (rename an import, swap an
@@ -72,7 +72,7 @@ zero or minimal changes. That's different from reproducing every quirk.
   to the docs for the recommended alternative
 
 **Before you even migrate, we tell you what to expect:**
-- **`npx nextcompat check`** - point it at an existing Next.js app and it
+- **`npx vinext check`** - point it at an existing Next.js app and it
   scans the codebase to produce a compatibility report:
   - Which `next/*` imports are used and whether they're supported
   - Which `next.config.js` options are in use and which we handle
@@ -105,7 +105,7 @@ We target **the latest stable Next.js release only** (currently **16.x**).
 No multi-version matrix. No chasing old releases. If an API was removed or
 changed in 16.x, we implement the 16.x behavior. If someone is on an older
 version, they upgrade Next.js first (which they should be doing anyway),
-then migrate to nextcompat. One moving target is enough.
+then migrate to vinext. One moving target is enough.
 
 We can always broaden version support later once the core is solid. Starting
 narrow keeps the scope sane.
@@ -114,7 +114,7 @@ narrow keeps the scope sane.
 don't implement it. `getInitialProps`, legacy `<Image>` from `next/legacy/image`,
 `next/amp`, etc. - skip them. If someone's app uses deprecated APIs, step one
 is upgrading to current Next.js APIs (which they should do regardless), then
-migrating to nextcompat.
+migrating to vinext.
 
 ## Design Principle: Deploy Anywhere by Default
 
@@ -135,7 +135,7 @@ with zero provider-specific configuration:
 - **Server runtime**: Target standard Web APIs (Request/Response, fetch,
   streams, crypto) that work across Node.js, Cloudflare Workers, Deno, and
   other WinterCG-compatible runtimes. No proprietary serverless format. If
-  your runtime speaks Web standards, nextcompat runs on it.
+  your runtime speaks Web standards, vinext runs on it.
 - **Build output**: Standard Vite build artifacts. Static assets are static
   assets. Server code is server code. No proprietary `.nft.json` trace files,
   no Vercel-specific routing manifests.
@@ -184,8 +184,8 @@ Built on `@vitejs/plugin-rsc` which provides the RSC foundation (three Vite
 environments: `rsc`, `ssr`, `client`). We layer Next.js conventions on top.
 
 ```
-nextcompat
-├── vite-plugin-nextcompat          # Core Vite plugin
+vinext
+├── vinext          # Core Vite plugin
 │   ├── routing/                    # File-system router (app/ and pages/ conventions)
 │   │   ├── app-router.ts           # app/ directory scanning + route generation
 │   │   ├── pages-router.ts         # pages/ directory scanning (legacy)
@@ -207,7 +207,7 @@ nextcompat
 │   │   ├── headers.ts              # next/headers -> cookies(), headers()
 │   │   └── server.ts               # next/server -> NextRequest, NextResponse
 │   └── config/                     # next.config.js parser + transformer
-├── nextcompat-cli                  # `nextcompat dev`, `nextcompat build`, `nextcompat start`
+├── vinext-cli                  # `vinext dev`, `vinext build`, `vinext start`
 ├── test-harness/                   # Adapted Next.js e2e test runner
 └── areweviteyet/                   # Progress dashboard site
 ```
@@ -219,13 +219,13 @@ registers aliases for every `next/*` import path, redirecting them to our
 implementations:
 
 ```ts
-// Inside vite-plugin-nextcompat
+// Inside vinext
 resolve: {
   alias: {
-    'next/link': '@nextcompat/shims/link',
-    'next/image': '@nextcompat/shims/image',
-    'next/router': '@nextcompat/shims/router',
-    'next/head': '@nextcompat/shims/head',
+    'next/link': '@vinext/shims/link',
+    'next/image': '@vinext/shims/image',
+    'next/router': '@vinext/shims/router',
+    'next/head': '@vinext/shims/head',
     // ... every next/* import
   }
 }
@@ -237,7 +237,7 @@ libraries. When `next-auth` does `import { NextResponse } from 'next/server'`,
 it gets our shim automatically. No configuration needed from the user.
 
 Users don't configure aliases manually. The plugin does it all. You add
-`nextcompat()` to your `vite.config.ts` and every `next/*` import in
+`vinext()` to your `vite.config.ts` and every `next/*` import in
 your entire dependency tree resolves to our implementation.
 
 ### CLI Approach
@@ -246,15 +246,15 @@ Lean into Vite rather than building a bespoke CLI. The plugin does the
 heavy lifting; the CLI is just Vite with our plugin pre-configured:
 
 - **`vite dev`** works directly if the user has our plugin in their config
-- **`nextcompat dev`** / **`nextcompat build`** / **`nextcompat start`** are
+- **`vinext dev`** / **`vinext build`** / **`vinext start`** are
   thin wrappers that call Vite with our plugin, so users migrating from
   Next.js have a familiar command to run without touching `vite.config.ts`
 - Long-term, we want people to just think of this as a Vite app. The
-  `nextcompat` CLI is a migration convenience, not the primary interface.
+  `vinext` CLI is a migration convenience, not the primary interface.
 
 We do NOT publish a package called `next` (trademark issues, npm policy,
 and it would be confusing). Users either:
-1. Use the `nextcompat` CLI (drop-in replacement for `next` CLI), or
+1. Use the `vinext` CLI (drop-in replacement for `next` CLI), or
 2. Add the plugin to their `vite.config.ts` and use `vite` directly
 
 ### How It Maps to `@vitejs/plugin-rsc`
@@ -392,7 +392,7 @@ well-understood model before tackling RSC.
 - [ ] Implement `next/router` shim (`useRouter`, `router.push`, etc.)
 - [ ] `NEXT_PUBLIC_*` environment variable convention: inline into client
   bundle at build time, keep everything else server-only
-- [ ] Create CLI: `nextcompat dev` wrapping `vite dev` with our plugin
+- [ ] Create CLI: `vinext dev` wrapping `vite dev` with our plugin
 - [ ] **Validation**: `reproduction-template-pages` and `with-typescript`
   examples render and navigate
 
@@ -409,8 +409,8 @@ well-understood model before tackling RSC.
 - [ ] CSS Modules support (Vite handles natively)
 - [ ] `next.config.js` parsing (basic: `env`, `basePath`, `rewrites`,
   `redirects`, `headers`)
-- [ ] `nextcompat build` (production build via `vite build`)
-- [ ] `nextcompat start` (production server)
+- [ ] `vinext build` (production build via `vite build`)
+- [ ] `vinext start` (production server)
 - [ ] **Validation**: `api-routes-rest`, `api-routes-cors`, `with-docker`
 - [ ] **Test harness**: Extract and adapt Next.js e2e test infrastructure
 - [ ] **Test harness**: Begin running Pages Router e2e tests, track pass rate
@@ -465,9 +465,9 @@ well-understood model before tackling RSC.
 - [ ] Deployment guides (Cloudflare, AWS, Netlify, Fly, Railway, etc.)
 - [ ] **Validation**: Target 80%+ of e2e test suite passing
 
-### Phase 5: Benchmarks — nextcompat vs Next.js+Turbopack
+### Phase 5: Benchmarks — vinext vs Next.js+Turbopack
 
-**Goal**: Quantify the developer experience and production performance advantage of nextcompat (Vite) over Next.js (Turbopack/webpack). Provide hard numbers for the README and migration guides.
+**Goal**: Quantify the developer experience and production performance advantage of vinext (Vite) over Next.js (Turbopack/webpack). Provide hard numbers for the README and migration guides.
 
 #### What to benchmark
 
@@ -484,8 +484,8 @@ well-understood model before tackling RSC.
 
 1. **Next.js + Turbopack (dev)** — `next dev` (Turbopack is now the default dev bundler in Next.js 15+; opt out with `--no-turbopack`)
 2. **Next.js + webpack (build)** — `next build` (Turbopack for production builds is not yet stable)
-3. **nextcompat + Vite (Rollup/esbuild)** — current stable Vite stack (Vite 7, Rollup for production, esbuild for dev transforms)
-4. **nextcompat + Vite (Rolldown)** — experimental Rust-based bundler being integrated into Vite. Enable via `environments.*.builder: 'rolldown'` or the `vite-rolldown` package. Not yet default but actively landing.
+3. **vinext + Vite (Rollup/esbuild)** — current stable Vite stack (Vite 7, Rollup for production, esbuild for dev transforms)
+4. **vinext + Vite (Rolldown)** — experimental Rust-based bundler being integrated into Vite. Enable via `environments.*.builder: 'rolldown'` or the `vite-rolldown` package. Not yet default but actively landing.
 
 #### Benchmark app
 
@@ -557,7 +557,7 @@ Concretely:
 ### Runtime Contract Black-Box Suite (New)
 
 We add a separate, minimal, request/response-only test suite that runs against
-both **real Next.js** and **nextcompat** with identical fixtures. The tests are
+both **real Next.js** and **vinext** with identical fixtures. The tests are
 black-box: they spin up a server and only assert on HTTP behavior (status,
 headers, body, redirects, cookies, cache headers) with no internal hooks.
 
@@ -605,7 +605,7 @@ Each ecosystem fixture is a self-contained mini-app:
 fixtures/ecosystem/
   next-intl/
     package.json          # deps: next-intl, react, react-dom
-    vite.config.ts        # uses vite-plugin-nextcompat
+    vite.config.ts        # uses vinext
     app/
       layout.tsx
       [locale]/
@@ -646,7 +646,7 @@ Key things each fixture validates:
 while (failing_tests > 0):
     pick the simplest failing test
     understand what Next.js API it exercises
-    implement that API in nextcompat
+    implement that API in vinext
     run test again
     if passes: commit, pick next test
     if still fails: debug, fix, repeat
@@ -747,8 +747,8 @@ It also makes contribution dead simple - find a red test, make it green.
      handle it automatically
    - For libraries that reach into `next/dist/...` internals: document
      on a per-library basis, contribute upstream PRs where possible, or
-     provide wrapper packages (`@nextcompat/auth`, etc.) as a last resort
-   - The `npx nextcompat check` tool flags these before migration
+     provide wrapper packages (`@vinext/auth`, etc.) as a last resort
+   - The `npx vinext check` tool flags these before migration
    - Tackle these reactively as real users hit them, don't try to
      pre-solve every library
 
@@ -775,7 +775,7 @@ Published matrix tracking per-feature status against latest Next.js (16.x):
 - Config flags and routing behavior
 - Third-party integration tests
 
-Part of the docs and surfaced by `nextcompat status` CLI command.
+Part of the docs and surfaced by `vinext status` CLI command.
 
 ## Routing Behavior Spec (Later)
 
@@ -792,7 +792,7 @@ upfront. We'll codify it once we've learned enough from implementation.
 
 ## Remaining Open Questions
 
-1. **Name**: Going with `nextcompat` for now. Clear, obvious, descriptive.
+1. **Name**: Going with `vinext` for now. Clear, obvious, descriptive.
    Open to change if something better emerges.
 
 ## Success Criteria

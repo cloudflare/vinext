@@ -1,6 +1,6 @@
 #!/bin/bash
 # Generate a realistic benchmark app with 50+ pages.
-# The app/ directory is shared between Next.js and nextcompat projects.
+# The app/ directory is shared between Next.js and vinext projects.
 set -euo pipefail
 
 APP_DIR="$(dirname "$0")/app"
@@ -11,7 +11,7 @@ mkdir -p "$APP_DIR"
 cat > "$APP_DIR/layout.tsx" << 'EOF'
 export const metadata = {
   title: { default: "Benchmark App", template: "%s | Benchmark" },
-  description: "A realistic benchmark app for comparing Next.js and nextcompat",
+  description: "A realistic benchmark app for comparing Next.js and vinext",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -88,7 +88,7 @@ export default function AboutPage() {
   return (
     <div>
       <h1>About</h1>
-      <p>This is a benchmark application for comparing Next.js and nextcompat (Vite) performance.</p>
+      <p>This is a benchmark application for comparing Next.js and vinext (Vite) performance.</p>
       <p>It includes 50+ pages with nested layouts, dynamic routes, server components, client components, and metadata.</p>
     </div>
   );

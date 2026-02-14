@@ -4,12 +4,12 @@ const BASE = "http://localhost:4174";
 
 /**
  * Wait for the RSC browser entry to hydrate. The browser entry sets
- * window.__NEXTCOMPAT_RSC_ROOT__ after hydration completes.
+ * window.__VINEXT_RSC_ROOT__ after hydration completes.
  */
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
     const ready = await page.evaluate(
-      () => !!(window as any).__NEXTCOMPAT_RSC_ROOT__,
+      () => !!(window as any).__VINEXT_RSC_ROOT__,
     );
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });

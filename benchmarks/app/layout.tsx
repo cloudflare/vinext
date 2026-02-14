@@ -1,6 +1,6 @@
 export const metadata = {
   title: { default: "Benchmark App", template: "%s | Benchmark" },
-  description: "A realistic benchmark app for comparing Next.js and nextcompat",
+  description: "A realistic benchmark app for comparing Next.js and vinext",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import path from "node:path";
-import { pagesRouter, matchRoute } from "../packages/vite-plugin-nextcompat/src/routing/pages-router.js";
-import { appRouter, matchAppRoute, invalidateAppRouteCache } from "../packages/vite-plugin-nextcompat/src/routing/app-router.js";
+import { pagesRouter, matchRoute } from "../packages/vinext/src/routing/pages-router.js";
+import { appRouter, matchAppRoute, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 
 const FIXTURE_DIR = path.resolve(
   import.meta.dirname,
