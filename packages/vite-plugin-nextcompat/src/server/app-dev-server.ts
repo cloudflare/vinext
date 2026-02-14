@@ -69,7 +69,12 @@ export function generateRscEntry(
     : [];
 
   return `
-import { renderToReadableStream } from "@vitejs/plugin-rsc/rsc";
+import {
+  renderToReadableStream,
+  decodeReply,
+  loadServerAction,
+  createTemporaryReferenceSet,
+} from "@vitejs/plugin-rsc/rsc";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest } from "next/headers";
@@ -124,6 +129,65 @@ function matchPattern(url, pattern) {
   return params;
 }
 
+async function buildPageElement(route, params) {
+  const PageComponent = route.page?.default;
+  if (!PageComponent) {
+    return createElement("div", null, "Page has no default export");
+  }
+
+  // Resolve metadata from layouts and page
+  const metadataList = [];
+  for (const layoutMod of route.layouts) {
+    if (layoutMod) {
+      const meta = await resolveModuleMetadata(layoutMod, params);
+      if (meta) metadataList.push(meta);
+    }
+  }
+  if (route.page) {
+    const pageMeta = await resolveModuleMetadata(route.page, params);
+    if (pageMeta) metadataList.push(pageMeta);
+  }
+  const resolvedMetadata = metadataList.length > 0 ? mergeMetadata(metadataList) : null;
+
+  // Build nested layout tree from outermost to innermost
+  let element = createElement(PageComponent, { params });
+
+  // Add metadata head tags (React 19 hoists title/meta/link to <head>)
+  if (resolvedMetadata) {
+    element = createElement(Fragment, null,
+      createElement(MetadataHead, { metadata: resolvedMetadata }),
+      element,
+    );
+  }
+
+  // Wrap with loading.tsx Suspense if present
+  if (route.loading?.default) {
+    element = createElement(
+      Suspense,
+      { fallback: createElement(route.loading.default) },
+      element,
+    );
+  }
+
+  // Wrap with error.tsx ErrorBoundary if present
+  if (route.error?.default) {
+    element = createElement(ErrorBoundary, {
+      fallback: route.error.default,
+      children: element,
+    });
+  }
+
+  // Wrap with layouts (innermost first, then outer)
+  for (let i = route.layouts.length - 1; i >= 0; i--) {
+    const LayoutComponent = route.layouts[i]?.default;
+    if (LayoutComponent) {
+      element = createElement(LayoutComponent, { children: element, params });
+    }
+  }
+
+  return element;
+}
+
 export default async function handler(request) {
   const url = new URL(request.url);
   const pathname = url.pathname;
@@ -137,6 +201,58 @@ export default async function handler(request) {
     searchParams: url.searchParams,
     params: {},
   });
+
+  // Handle server action POST requests
+  const actionId = request.headers.get("x-rsc-action");
+  if (request.method === "POST" && actionId) {
+    try {
+      const contentType = request.headers.get("content-type") || "";
+      const body = contentType.startsWith("multipart/form-data")
+        ? await request.formData()
+        : await request.text();
+      const temporaryReferences = createTemporaryReferenceSet();
+      const args = await decodeReply(body, { temporaryReferences });
+      const action = await loadServerAction(actionId);
+      let returnValue;
+      try {
+        const data = await action.apply(null, args);
+        returnValue = { ok: true, data };
+      } catch (e) {
+        returnValue = { ok: false, data: e };
+      }
+
+      // After the action, re-render the current page so the client
+      // gets an updated React tree reflecting any mutations.
+      const match = matchRoute(cleanPathname, routes);
+      let element;
+      if (match) {
+        const { route: actionRoute, params: actionParams } = match;
+        setNavigationContext({
+          pathname: cleanPathname,
+          searchParams: url.searchParams,
+          params: actionParams,
+        });
+        element = buildPageElement(actionRoute, actionParams);
+      } else {
+        element = createElement("div", null, "Page not found");
+      }
+
+      const rscStream = renderToReadableStream(
+        { root: element, returnValue },
+        { temporaryReferences },
+      );
+      setHeadersContext(null);
+      setNavigationContext(null);
+      return new Response(rscStream, {
+        headers: { "Content-Type": "text/x-component; charset=utf-8" },
+      });
+    } catch (err) {
+      console.error("[nextcompat] Server action error:", err);
+      setHeadersContext(null);
+      setNavigationContext(null);
+      return new Response("Server action failed: " + (err && err.message ? err.message : String(err)), { status: 500 });
+    }
+  }
 
   const match = matchRoute(cleanPathname, routes);
 
@@ -214,55 +330,7 @@ export default async function handler(request) {
     return new Response("Page has no default export", { status: 500 });
   }
 
-  // Resolve metadata from layouts and page
-  const metadataList = [];
-  for (const layoutMod of route.layouts) {
-    if (layoutMod) {
-      const meta = await resolveModuleMetadata(layoutMod, params);
-      if (meta) metadataList.push(meta);
-    }
-  }
-  if (route.page) {
-    const pageMeta = await resolveModuleMetadata(route.page, params);
-    if (pageMeta) metadataList.push(pageMeta);
-  }
-  const resolvedMetadata = metadataList.length > 0 ? mergeMetadata(metadataList) : null;
-
-  // Build nested layout tree from outermost to innermost
-  let element = createElement(PageComponent, { params });
-
-  // Add metadata head tags (React 19 hoists title/meta/link to <head>)
-  if (resolvedMetadata) {
-    element = createElement(Fragment, null,
-      createElement(MetadataHead, { metadata: resolvedMetadata }),
-      element,
-    );
-  }
-
-  // Wrap with loading.tsx Suspense if present
-  if (route.loading?.default) {
-    element = createElement(
-      Suspense,
-      { fallback: createElement(route.loading.default) },
-      element,
-    );
-  }
-
-  // Wrap with error.tsx ErrorBoundary if present
-  if (route.error?.default) {
-    element = createElement(ErrorBoundary, {
-      fallback: route.error.default,
-      children: element,
-    });
-  }
-
-  // Wrap with layouts (innermost first, then outer)
-  for (let i = route.layouts.length - 1; i >= 0; i--) {
-    const LayoutComponent = route.layouts[i]?.default;
-    if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element, params });
-    }
-  }
+  const element = await buildPageElement(route, params);
 
   // Note: CSS is automatically injected by @vitejs/plugin-rsc's
   // rscCssTransform — no manual loadCss() call needed.
@@ -335,8 +403,47 @@ export async function handleSsr(rscStream) {
  */
 export function generateBrowserEntry(): string {
   return `
-import { createFromReadableStream, createFromFetch } from "@vitejs/plugin-rsc/browser";
+import {
+  createFromReadableStream,
+  createFromFetch,
+  setServerCallback,
+  encodeReply,
+  createTemporaryReferenceSet,
+} from "@vitejs/plugin-rsc/browser";
 import { hydrateRoot } from "react-dom/client";
+
+let reactRoot;
+
+// Register the server action callback — React calls this internally
+// when a "use server" function is invoked from client code.
+setServerCallback(async (id, args) => {
+  const temporaryReferences = createTemporaryReferenceSet();
+  const body = await encodeReply(args, { temporaryReferences });
+
+  const response = fetch(window.location.pathname + ".rsc", {
+    method: "POST",
+    headers: { "x-rsc-action": id },
+    body,
+  });
+
+  const result = await createFromFetch(response, { temporaryReferences });
+
+  // The RSC response for actions contains { root, returnValue }.
+  // Re-render the page with the updated tree.
+  if (result && typeof result === "object" && "root" in result) {
+    reactRoot.render(result.root);
+    // Return the action's return value to the caller
+    if (result.returnValue) {
+      if (!result.returnValue.ok) throw result.returnValue.data;
+      return result.returnValue.data;
+    }
+    return undefined;
+  }
+
+  // Fallback: render the entire result as the tree
+  reactRoot.render(result);
+  return result;
+});
 
 async function main() {
   // Initial hydration: fetch the RSC stream for the current page
@@ -344,7 +451,7 @@ async function main() {
   const root = await createFromReadableStream(rscResponse.body);
 
   // Hydrate the document
-  const reactRoot = hydrateRoot(document, root);
+  reactRoot = hydrateRoot(document, root);
 
   // Store for client-side navigation
   window.__NEXTCOMPAT_RSC_ROOT__ = reactRoot;

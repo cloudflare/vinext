@@ -745,6 +745,20 @@ describe("App Router integration", () => {
     expect(html).toMatch(/property="og:title".*content="OG Title"/);
     expect(html).toMatch(/property="og:type".*content="website"/);
   });
+
+  it("renders server actions page with 'use client' components", async () => {
+    const res = await fetch(`${baseUrl}/actions`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Server Actions");
+    expect(html).toContain("Like Button");
+    expect(html).toContain("Message Form");
+    // Client components should be SSR-rendered
+    expect(html).toContain('data-testid="likes"');
+    expect(html).toContain('data-testid="like-btn"');
+    expect(html).toContain('data-testid="message-input"');
+  });
 });
 
 describe("next/navigation shim", () => {
