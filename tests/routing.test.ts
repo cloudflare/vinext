@@ -106,7 +106,7 @@ describe("matchRoute - URL matching", () => {
   it("discovers catch-all routes [...slug]", async () => {
     const routes = await pagesRouter(FIXTURE_DIR);
 
-    const catchAll = routes.find((r) => r.pattern.includes("slug"));
+    const catchAll = routes.find((r) => r.pattern.includes(":slug+"));
     expect(catchAll).toBeTruthy();
     expect(catchAll!.pattern).toBe("/docs/:slug+");
     expect(catchAll!.isDynamic).toBe(true);

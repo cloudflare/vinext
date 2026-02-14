@@ -207,6 +207,23 @@ describe("Pages Router integration", () => {
     expect(res.headers.get("x-custom-header")).toBe("nextcompat");
   });
 
+  // --- getStaticPaths ---
+
+  it("renders pages with getStaticPaths + getStaticProps", async () => {
+    const res = await fetch(`${baseUrl}/blog/hello-world`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Hello World");
+    expect(html).toContain("Blog post slug:");
+    expect(html).toMatch(/slug:\s*(<!--\s*-->)?\s*hello-world/);
+  });
+
+  it("returns 404 for paths not in getStaticPaths when fallback is false", async () => {
+    const res = await fetch(`${baseUrl}/blog/nonexistent-post`);
+    expect(res.status).toBe(404);
+  });
+
   // --- next/dynamic ---
 
   it("renders dynamically imported components during SSR", async () => {

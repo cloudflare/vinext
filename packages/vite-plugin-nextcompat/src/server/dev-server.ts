@@ -63,6 +63,35 @@ export function createSSRHandler(
       // Collect page props via data fetching methods
       let pageProps: Record<string, unknown> = {};
 
+      // Handle getStaticPaths for dynamic routes: validate the path
+      // and respect fallback: false (return 404 for unlisted paths).
+      if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
+        const pathsResult = await pageModule.getStaticPaths({ locales: [], defaultLocale: "" });
+        const fallback = pathsResult?.fallback ?? false;
+
+        if (fallback === false) {
+          // Only allow paths explicitly listed in getStaticPaths
+          const paths: Array<{ params: Record<string, string | string[]> }> =
+            pathsResult?.paths ?? [];
+          const isValidPath = paths.some((p: { params: Record<string, string | string[]> }) => {
+            return Object.entries(p.params).every(([key, val]) => {
+              const actual = params[key];
+              if (Array.isArray(val)) {
+                return Array.isArray(actual) && val.join("/") === actual.join("/");
+              }
+              return String(val) === String(actual);
+            });
+          });
+
+          if (!isValidPath) {
+            await renderErrorPage(server, req, res, url, pagesDir, 404);
+            return;
+          }
+        }
+        // fallback: true or "blocking" — in dev mode, always render
+        // (Next.js dev mode does the same)
+      }
+
       if (typeof pageModule.getServerSideProps === "function") {
         const context = {
           params,
