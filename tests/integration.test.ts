@@ -1964,3 +1964,162 @@ describe("next/og shim", () => {
     expect(bytes[0]).toBe(0x89); // PNG magic
   });
 });
+
+describe("metadata route serializers", () => {
+  it("sitemapToXml converts sitemap entries to valid XML", async () => {
+    const { sitemapToXml } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+    );
+    const xml = sitemapToXml([
+      { url: "https://example.com", lastModified: "2025-01-01", priority: 1 },
+      { url: "https://example.com/about", changeFrequency: "monthly" as const },
+    ]);
+    expect(xml).toContain('<?xml version="1.0" encoding="UTF-8"?>');
+    expect(xml).toContain("<urlset");
+    expect(xml).toContain("<loc>https://example.com</loc>");
+    expect(xml).toContain("<lastmod>2025-01-01</lastmod>");
+    expect(xml).toContain("<priority>1</priority>");
+    expect(xml).toContain("<loc>https://example.com/about</loc>");
+    expect(xml).toContain("<changefreq>monthly</changefreq>");
+  });
+
+  it("sitemapToXml handles Date objects", async () => {
+    const { sitemapToXml } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+    );
+    const xml = sitemapToXml([
+      { url: "https://example.com", lastModified: new Date("2025-06-15") },
+    ]);
+    expect(xml).toContain("<lastmod>2025-06-15T00:00:00.000Z</lastmod>");
+  });
+
+  it("robotsToText converts robots config to text", async () => {
+    const { robotsToText } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+    );
+    const text = robotsToText({
+      rules: { userAgent: "*", allow: "/", disallow: "/private/" },
+      sitemap: "https://example.com/sitemap.xml",
+    });
+    expect(text).toContain("User-Agent: *");
+    expect(text).toContain("Allow: /");
+    expect(text).toContain("Disallow: /private/");
+    expect(text).toContain("Sitemap: https://example.com/sitemap.xml");
+  });
+
+  it("robotsToText handles multiple rules", async () => {
+    const { robotsToText } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+    );
+    const text = robotsToText({
+      rules: [
+        { userAgent: "Googlebot", allow: "/" },
+        { userAgent: "Bingbot", disallow: "/secret" },
+      ],
+    });
+    expect(text).toContain("User-Agent: Googlebot");
+    expect(text).toContain("User-Agent: Bingbot");
+    expect(text).toContain("Disallow: /secret");
+  });
+
+  it("manifestToJson converts manifest config to JSON", async () => {
+    const { manifestToJson } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+    );
+    const json = manifestToJson({
+      name: "Test App",
+      short_name: "Test",
+      start_url: "/",
+      display: "standalone",
+    });
+    const parsed = JSON.parse(json);
+    expect(parsed.name).toBe("Test App");
+    expect(parsed.display).toBe("standalone");
+  });
+
+  it("scanMetadataFiles discovers metadata files in app directory", async () => {
+    const { scanMetadataFiles } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+    );
+    const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
+    const routes = scanMetadataFiles(appDir);
+
+    // Should find our test fixture files
+    const types = routes.map((r: { type: string }) => r.type);
+    expect(types).toContain("sitemap");
+    expect(types).toContain("robots");
+    expect(types).toContain("manifest");
+
+    // Sitemap should be dynamic (.ts)
+    const sitemap = routes.find((r: { type: string }) => r.type === "sitemap");
+    expect(sitemap).toBeDefined();
+    expect(sitemap!.isDynamic).toBe(true);
+    expect(sitemap!.servedUrl).toBe("/sitemap.xml");
+    expect(sitemap!.contentType).toBe("application/xml");
+  });
+});
+
+describe("metadata routes integration (App Router)", () => {
+  // These tests reuse the App Router dev server from the integration tests
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    const rsc = (await import("@vitejs/plugin-rsc")).default;
+    server = await createServer({
+      root: APP_FIXTURE_DIR,
+      configFile: false,
+      plugins: [
+        nextcompat(),
+        rsc({
+          entries: {
+            rsc: "virtual:nextcompat-rsc-entry",
+            ssr: "virtual:nextcompat-app-ssr-entry",
+            client: "virtual:nextcompat-app-browser-entry",
+          },
+        }),
+      ],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+    await server.listen();
+    const address = server.httpServer?.address();
+    if (address && typeof address === "object") {
+      baseUrl = `http://localhost:${address.port}`;
+    }
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("serves /sitemap.xml from dynamic sitemap.ts", async () => {
+    const res = await fetch(`${baseUrl}/sitemap.xml`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/xml");
+    const xml = await res.text();
+    expect(xml).toContain("<urlset");
+    expect(xml).toContain("https://example.com");
+    expect(xml).toContain("https://example.com/about");
+  });
+
+  it("serves /robots.txt from dynamic robots.ts", async () => {
+    const res = await fetch(`${baseUrl}/robots.txt`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    const text = await res.text();
+    expect(text).toContain("User-Agent: *");
+    expect(text).toContain("Allow: /");
+    expect(text).toContain("Disallow: /private/");
+    expect(text).toContain("Sitemap: https://example.com/sitemap.xml");
+  });
+
+  it("serves /manifest.webmanifest from dynamic manifest.ts", async () => {
+    const res = await fetch(`${baseUrl}/manifest.webmanifest`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/manifest+json");
+    const data = await res.json();
+    expect(data.name).toBe("App Basic");
+    expect(data.display).toBe("standalone");
+  });
+});

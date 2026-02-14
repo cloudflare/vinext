@@ -7,6 +7,7 @@
  * the SSR entry for HTML generation.
  */
 import type { AppRoute } from "../routing/app-router.js";
+import type { MetadataFileRoute } from "./metadata-routes.js";
 
 /**
  * Generate the virtual RSC entry module.
@@ -19,6 +20,7 @@ export function generateRscEntry(
   appDir: string,
   routes: AppRoute[],
   middlewarePath?: string | null,
+  metadataRoutes?: MetadataFileRoute[],
 ): string {
   // Build import map for all page and layout files
   const imports: string[] = [];
@@ -69,6 +71,26 @@ export function generateRscEntry(
     ? rootRoute.layouts.map((l) => getImportVar(l))
     : [];
 
+  // Build metadata route handling
+  const effectiveMetaRoutes = metadataRoutes ?? [];
+  const dynamicMetaRoutes = effectiveMetaRoutes.filter((r) => r.isDynamic);
+
+  // Import dynamic metadata modules
+  for (const mr of dynamicMetaRoutes) {
+    getImportVar(mr.filePath);
+  }
+
+  // Build metadata route table
+  const metaRouteEntries = effectiveMetaRoutes.map((mr) => {
+    return `  {
+    type: ${JSON.stringify(mr.type)},
+    isDynamic: ${mr.isDynamic},
+    servedUrl: ${JSON.stringify(mr.servedUrl)},
+    contentType: ${JSON.stringify(mr.contentType)},
+    ${mr.isDynamic ? `module: ${getImportVar(mr.filePath)},` : `filePath: ${JSON.stringify(mr.filePath.replace(/\\/g, "/"))},`}
+  }`;
+  });
+
   return `
 import {
   renderToReadableStream,
@@ -82,11 +104,16 @@ import { setHeadersContext, headersContextFromRequest } from "next/headers";
 import { ErrorBoundary } from "nextcompat/error-boundary";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata } from "nextcompat/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
+${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
 
 ${imports.join("\n")}
 
 const routes = [
 ${routeEntries.join(",\n")}
+];
+
+const metadataRoutes = [
+${metaRouteEntries.join(",\n")}
 ];
 
 const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
@@ -243,6 +270,41 @@ export default async function handler(request) {
     }
   }
   ` : ""}
+
+  // Handle metadata routes (sitemap.xml, robots.txt, manifest.webmanifest, etc.)
+  for (const metaRoute of metadataRoutes) {
+    if (cleanPathname === metaRoute.servedUrl) {
+      if (metaRoute.isDynamic) {
+        // Dynamic metadata route — call the default export and serialize
+        const metaFn = metaRoute.module.default;
+        if (typeof metaFn === "function") {
+          const result = await metaFn();
+          let body;
+          // If it's already a Response (e.g., ImageResponse), return directly
+          if (result instanceof Response) return result;
+          // Serialize based on type
+          if (metaRoute.type === "sitemap") body = sitemapToXml(result);
+          else if (metaRoute.type === "robots") body = robotsToText(result);
+          else if (metaRoute.type === "manifest") body = manifestToJson(result);
+          else body = JSON.stringify(result);
+          return new Response(body, {
+            headers: { "Content-Type": metaRoute.contentType },
+          });
+        }
+      } else {
+        // Static metadata file — read and serve
+        const fs = await import("node:fs");
+        try {
+          const data = fs.readFileSync(metaRoute.filePath);
+          return new Response(data, {
+            headers: { "Content-Type": metaRoute.contentType },
+          });
+        } catch {
+          return new Response("Not Found", { status: 404 });
+        }
+      }
+    }
+  }
 
   // Set request contexts for Server Components
   setHeadersContext(headersContextFromRequest(request));

@@ -16,6 +16,7 @@ import {
   type NextRewrite,
 } from "./config/next-config.js";
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -586,7 +587,8 @@ hydrate();
         // App Router virtual modules
         if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
           const routes = await appRouter(appDir);
-          return generateRscEntry(appDir, routes, middlewarePath);
+          const metaRoutes = scanMetadataFiles(appDir);
+          return generateRscEntry(appDir, routes, middlewarePath, metaRoutes);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
           return generateSsrEntry();
