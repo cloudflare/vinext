@@ -90,3 +90,12 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **`generateStaticParams` must return all paths**: With `output: 'export'`, there's no server to handle fallback rendering. Dynamic routes without `generateStaticParams` are build errors.
 - **`getStaticPaths` must use `fallback: false`**: Same reason — no server for fallback rendering.
 - **404 page for App Router**: We fetch a nonexistent URL from the dev server and save the 404 response as `404.html`.
+
+## Metadata Routes (sitemap.xml, robots.txt, manifest.webmanifest)
+
+- **Handled as special routes in the RSC entry**, checked before normal page routing. Dynamic versions (`.ts`) call the default export and serialize to the appropriate format; static versions are served directly from disk.
+- **Next.js metadata route convention**: Files named `sitemap.ts`, `robots.ts`, `manifest.ts` (or `.js`) in `app/` export a default function returning structured data. Static variants (`.xml`, `.txt`, `.webmanifest`) are served as-is.
+- **Serialization is format-specific**: `sitemapToXml()` produces XML with `<urlset>` and `<url>` elements, `robotsToText()` produces `User-Agent:`/`Allow:`/`Disallow:`/`Sitemap:` lines, `manifestToJson()` outputs a Web App Manifest JSON.
+- **`scanMetadataFiles()`** scans the `app/` directory root for metadata files and returns typed `MetadataFileRoute[]` with `type`, `servedUrl`, `isDynamic`, and `filePath` fields.
+- **Both static and dynamic metadata routes share the same route table** in the generated RSC entry. Static routes read from disk at request time; dynamic routes import the module and call the default export.
+- **React 19 auto-hoisting** means metadata rendered via `<MetadataHead>` anywhere in the tree gets moved to `<head>` automatically — no special placement needed.
