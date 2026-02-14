@@ -207,7 +207,7 @@ vinext
 │   │   ├── headers.ts              # next/headers -> cookies(), headers()
 │   │   └── server.ts               # next/server -> NextRequest, NextResponse
 │   └── config/                     # next.config.js parser + transformer
-├── vinext-cli                  # `vinext dev`, `vinext build`, `vinext start`
+│   └── cli.ts                     # `vinext dev`, `vinext build`, `vinext start`
 ├── test-harness/                   # Adapted Next.js e2e test runner
 └── areweviteyet/                   # Progress dashboard site
 ```
