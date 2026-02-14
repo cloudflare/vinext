@@ -36,6 +36,43 @@ anywhere Vite deploys - which is everywhere.
 This is arguably the strongest practical motivation: not just cleaner
 internals, but **liberating Next.js apps from vendor lock-in**.
 
+## Design Principle: Pragmatic Compatibility, Not Bug-for-Bug Parity
+
+The goal is **95%+ of real-world Next.js apps work out of the box** with
+zero or minimal changes. That's different from reproducing every quirk.
+
+**What we cover:**
+- The documented, current Next.js API surface
+- Behaviors that real apps depend on
+- Common patterns from the ecosystem (popular libraries, typical project structures)
+
+**What we skip or deprioritize:**
+- Deprecated APIs that Next.js has removed or is removing
+- Undocumented internal behaviors that happen to work but aren't part of
+  the public contract
+- Weird edge cases that cost disproportionate engineering effort relative
+  to the number of apps that depend on them
+- Behaviors that only exist because of Vercel-specific infrastructure
+
+**When something doesn't work, we provide an off-ramp:**
+- A clear **compatibility caveats** page documenting known differences,
+  with workarounds for each
+- **Codemods** (`npx nextcompat migrate`) that automatically transform
+  code away from unsupported patterns. If we can't support a pattern, we
+  can at least automate the migration off of it.
+- **Runtime warnings** when we detect usage of an unsupported API, pointing
+  to the docs for the recommended alternative
+
+The mental model: if a Next.js app was written following the official docs
+and using current APIs, it should Just Work. If it's relying on a quirk
+from Next.js 12 that was never documented, we'll help you migrate, but
+we're not going to burn a week implementing it.
+
+This is also where the test harness helps. When a test fails because of
+a genuine edge case we choose not to support, we mark it as "skipped
+(intentional)" with a note explaining why and what the alternative is.
+The "Are We Vite Yet?" dashboard shows these separately from real failures.
+
 ## Design Principle: Deploy Anywhere by Default
 
 This is the guiding principle behind every implementation decision.
