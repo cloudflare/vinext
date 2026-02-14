@@ -962,6 +962,20 @@ describe("App Router integration", () => {
     expect(html).toContain('<html lang="en">');
   });
 
+  it("notFound() from Server Component returns 404", async () => {
+    const res = await fetch(`${baseUrl}/notfound-test`);
+    expect(res.status).toBe(404);
+  });
+
+  it("redirect() from Server Component returns redirect response", async () => {
+    const res = await fetch(`${baseUrl}/redirect-test`, { redirect: "manual" });
+    expect(res.status).toBeGreaterThanOrEqual(300);
+    expect(res.status).toBeLessThan(400);
+    const location = res.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(location).toContain("/about");
+  });
+
   it("renders error boundary wrapper for routes with error.tsx", async () => {
     const res = await fetch(`${baseUrl}/error-test`);
     expect(res.status).toBe(200);
@@ -2950,5 +2964,16 @@ describe("basePath support (Pages Router)", () => {
     // With trailingSlash: true
     const withTrailing = await resolveNextConfig({ trailingSlash: true });
     expect(withTrailing.trailingSlash).toBe(true);
+  });
+});
+
+describe("next/web-vitals shim", () => {
+  it("exports useReportWebVitals as a no-op function", async () => {
+    const { useReportWebVitals } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/web-vitals.js"
+    );
+    expect(typeof useReportWebVitals).toBe("function");
+    // Should run without throwing
+    expect(() => useReportWebVitals(() => {})).not.toThrow();
   });
 });

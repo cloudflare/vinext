@@ -214,6 +214,19 @@ declare module "next/form" {
   export default Form;
 }
 
+declare module "next/web-vitals" {
+  interface WebVitalsMetric {
+    id: string;
+    name: string;
+    value: number;
+    rating?: "good" | "needs-improvement" | "poor";
+    delta: number;
+    navigationType?: "navigate" | "reload" | "back-forward" | "prerender";
+  }
+  type ReportWebVitalsCallback = (metric: WebVitalsMetric) => void;
+  export function useReportWebVitals(callback: ReportWebVitalsCallback): void;
+}
+
 declare module "next/og" {
   import { ReactElement } from "react";
 

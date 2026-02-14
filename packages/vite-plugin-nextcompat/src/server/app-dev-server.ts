@@ -816,6 +816,43 @@ export default async function handler(request) {
   // Note: CSS is automatically injected by @vitejs/plugin-rsc's
   // rscCssTransform — no manual loadCss() call needed.
 
+  // Helper: check if an error is a redirect/notFound thrown by the navigation shim
+  function handleRenderError(err) {
+    if (err && typeof err === "object" && "digest" in err) {
+      const digest = String(err.digest);
+      if (digest.startsWith("NEXT_REDIRECT;")) {
+        const parts = digest.split(";");
+        const redirectUrl = parts[2];
+        const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return Response.redirect(new URL(redirectUrl, request.url), statusCode);
+      }
+      if (digest === "NEXT_NOT_FOUND") {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return new Response("Not Found", { status: 404 });
+      }
+    }
+    return null;
+  }
+
+  // Pre-render the page component to catch redirect()/notFound() thrown synchronously.
+  // Server Components are just functions — we can call PageComponent directly to detect
+  // these special throws before starting the RSC stream.
+  try {
+    const testResult = PageComponent({ params });
+    // If it's a promise (async component), await it to catch async redirect/notFound
+    if (testResult && typeof testResult === "object" && typeof testResult.then === "function") {
+      await testResult;
+    }
+  } catch (preRenderErr) {
+    const specialResponse = handleRenderError(preRenderErr);
+    if (specialResponse) return specialResponse;
+    // Not a special error — let it propagate through normal RSC rendering
+    // (React error boundaries, etc.)
+  }
+
   // Render to RSC stream
   const rscStream = renderToReadableStream(element);
 
@@ -837,8 +874,15 @@ export default async function handler(request) {
   }
 
   // Delegate to SSR environment for HTML rendering
-  const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-  const htmlStream = await ssrEntry.handleSsr(rscStream);
+  let htmlStream;
+  try {
+    const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+    htmlStream = await ssrEntry.handleSsr(rscStream);
+  } catch (ssrErr) {
+    const specialResponse = handleRenderError(ssrErr);
+    if (specialResponse) return specialResponse;
+    throw ssrErr;
+  }
 
   setHeadersContext(null);
   setNavigationContext(null);
