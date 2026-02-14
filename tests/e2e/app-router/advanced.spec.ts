@@ -135,3 +135,111 @@ test.describe("Viewport Metadata", () => {
     await expect(colorScheme).toHaveAttribute("content", "light dark");
   });
 });
+
+test.describe("Shallow Routing (history.pushState/replaceState)", () => {
+  test("pushState updates useSearchParams", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+
+    // Wait for hydration
+    await page.waitForFunction(
+      () => typeof (window as any).__NEXTCOMPAT_RSC_ROOT__ !== "undefined",
+      null,
+      { timeout: 10000 },
+    );
+
+    // Initially no search params
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: ");
+
+    // Click pushState button to set filter=active
+    await page.click('[data-testid="push-filter"]');
+
+    // useSearchParams should react to the URL change
+    await expect(page.locator('[data-testid="search"]')).toHaveText(
+      "search: filter=active",
+      { timeout: 3000 },
+    );
+
+    // URL should be updated
+    expect(page.url()).toContain("/shallow-test?filter=active");
+  });
+
+  test("replaceState updates useSearchParams without adding history entry", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/shallow-test`);
+
+    await page.waitForFunction(
+      () => typeof (window as any).__NEXTCOMPAT_RSC_ROOT__ !== "undefined",
+      null,
+      { timeout: 10000 },
+    );
+
+    // Replace with sort=name
+    await page.click('[data-testid="replace-sort"]');
+
+    await expect(page.locator('[data-testid="search"]')).toHaveText(
+      "search: sort=name",
+      { timeout: 3000 },
+    );
+
+    // Going back should go to the page before /shallow-test (not to /shallow-test without params)
+    // because replaceState replaces the current entry
+    expect(page.url()).toContain("/shallow-test?sort=name");
+  });
+
+  test("pushState updates usePathname", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+
+    await page.waitForFunction(
+      () => typeof (window as any).__NEXTCOMPAT_RSC_ROOT__ !== "undefined",
+      null,
+      { timeout: 10000 },
+    );
+
+    // Initial pathname
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test",
+    );
+
+    // Push new path
+    await page.click('[data-testid="push-path"]');
+
+    // usePathname should update
+    await expect(page.locator('[data-testid="pathname"]')).toHaveText(
+      "pathname: /shallow-test/sub",
+      { timeout: 3000 },
+    );
+  });
+
+  test("multiple pushState calls update search params correctly", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/shallow-test`);
+
+    await page.waitForFunction(
+      () => typeof (window as any).__NEXTCOMPAT_RSC_ROOT__ !== "undefined",
+      null,
+      { timeout: 10000 },
+    );
+
+    // Push filter, then combined
+    await page.click('[data-testid="push-filter"]');
+    await expect(page.locator('[data-testid="search"]')).toHaveText(
+      "search: filter=active",
+      { timeout: 3000 },
+    );
+
+    await page.click('[data-testid="push-combined"]');
+    await expect(page.locator('[data-testid="search"]')).toHaveText(
+      "search: a=1&b=2",
+      { timeout: 3000 },
+    );
+
+    // Go back should restore previous state
+    await page.goBack();
+    await expect(page.locator('[data-testid="search"]')).toHaveText(
+      "search: filter=active",
+      { timeout: 3000 },
+    );
+  });
+});

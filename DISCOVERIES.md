@@ -270,3 +270,9 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **`next: { revalidate: 0 }` is equivalent to `cache: 'no-store'`** — zero seconds means "never cache". This matches Next.js behavior where `revalidate: 0` opts out of the data cache entirely.
 - **Stale-while-revalidate for fetch**: When a cached fetch entry is stale (past TTL), we return the stale data immediately and trigger a background refetch. This mirrors the page-level ISR SWR pattern but at the individual fetch level.
 - **The `next` property must be stripped from `init` before passing to real fetch.** Standard `fetch()` implementations may warn or error on unknown properties. We use a spread-and-delete pattern to clean the init object.
+
+## history.pushState/replaceState interception
+
+- **Shallow routing requires history method patching.** Next.js intercepts `window.history.pushState()` and `window.history.replaceState()` so that when user code updates the URL directly (common for filter UIs, tabs, URL search param state), React hooks like `usePathname()` and `useSearchParams()` re-render with the new URL values.
+- **Internal operations must use the original `replaceState`.** `saveScrollPosition()` calls `history.replaceState()` to store scroll coordinates in history state — this must NOT trigger `notifyListeners()` or it would cause spurious re-renders. Solution: capture a reference to the native `replaceState` before patching and use that for internal operations.
+- **Double notification is harmless but avoidable.** Our `navigateImpl()` already calls `notifyListeners()` after `pushState/replaceState`, and the patched methods also call it. `useSyncExternalStore` deduplicates by comparing snapshots, so this is safe. We leave both calls for robustness.

@@ -192,12 +192,26 @@ function scrollToHash(hash: string): void {
 }
 
 /**
+ * Reference to the native history.replaceState before patching.
+ * Used internally to avoid triggering the interception for internal operations
+ * (e.g. saving scroll position shouldn't cause re-renders).
+ * Captured before the history method patching at the bottom of this module.
+ */
+const _nativeReplaceState = !isServer
+  ? window.history.replaceState.bind(window.history)
+  : (null as unknown as typeof window.history.replaceState);
+
+/**
  * Save the current scroll position into the current history state.
  * Called before every navigation to enable scroll restoration on back/forward.
+ *
+ * Uses _nativeReplaceState to avoid triggering the history.replaceState
+ * interception (which would cause spurious re-renders from notifyListeners).
  */
 function saveScrollPosition(): void {
   const state = window.history.state ?? {};
-  window.history.replaceState(
+  _nativeReplaceState.call(
+    window.history,
     { ...state, __nextcompat_scrollX: window.scrollX, __nextcompat_scrollY: window.scrollY },
     "",
   );
@@ -482,4 +496,38 @@ if (!isServer) {
     // Restore scroll position for back/forward navigation
     restoreScrollPosition(event.state);
   });
+
+  // ---------------------------------------------------------------------------
+  // history.pushState / replaceState interception (shallow routing)
+  //
+  // Next.js intercepts these native methods so that when user code calls
+  // `window.history.pushState(null, '', '/new-path?filter=abc')` directly,
+  // React hooks like usePathname() and useSearchParams() re-render with
+  // the new URL. This is the foundation for shallow routing patterns
+  // (filter UIs, tabs, URL search param state, etc.).
+  //
+  // We wrap the original methods, call through to the native implementation,
+  // then notify our listener system so useSyncExternalStore picks up the
+  // URL change.
+  // ---------------------------------------------------------------------------
+  const originalPushState = window.history.pushState.bind(window.history);
+  const originalReplaceState = window.history.replaceState.bind(window.history);
+
+  window.history.pushState = function patchedPushState(
+    data: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ): void {
+    originalPushState(data, unused, url);
+    notifyListeners();
+  };
+
+  window.history.replaceState = function patchedReplaceState(
+    data: unknown,
+    unused: string,
+    url?: string | URL | null,
+  ): void {
+    originalReplaceState(data, unused, url);
+    notifyListeners();
+  };
 }
