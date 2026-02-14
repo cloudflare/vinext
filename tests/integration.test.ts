@@ -596,6 +596,47 @@ describe("App Router integration", () => {
     expect(html).toContain("<title>App Basic</title>");
     expect(html).toContain("</body></html>");
   });
+
+  it("SSR renders 'use client' components with initial state", async () => {
+    const res = await fetch(`${baseUrl}/interactive`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Server-side renders the client component with initial state
+    expect(html).toContain("Interactive Page");
+    expect(html).toContain("Count:");
+    expect(html).toContain("0");
+    expect(html).toContain("Increment");
+  });
+
+  it("applies nested layouts (dashboard layout wraps dashboard pages)", async () => {
+    const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Should have both root layout and dashboard layout
+    expect(html).toContain('<html lang="en">');
+    expect(html).toContain('id="dashboard-layout"');
+    expect(html).toContain("Dashboard Nav");
+    expect(html).toContain("Welcome to your dashboard.");
+  });
+
+  it("nested layouts persist across child pages", async () => {
+    const res = await fetch(`${baseUrl}/dashboard/settings`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Dashboard layout should also wrap the settings page
+    expect(html).toContain('id="dashboard-layout"');
+    expect(html).toContain("Dashboard Nav");
+    expect(html).toContain("Settings");
+    expect(html).toContain("Configure your dashboard settings.");
+  });
+
+  it("returns Method Not Allowed for unsupported HTTP methods on route handlers", async () => {
+    const res = await fetch(`${baseUrl}/api/hello`, { method: "DELETE" });
+    expect(res.status).toBe(405);
+  });
 });
 
 describe("next/navigation shim", () => {
