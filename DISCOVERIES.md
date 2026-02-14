@@ -160,3 +160,15 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 ## ESM Build Issues
 
 - **`require()` is not available** in ESM builds. `scanMetadataFiles` was using `require("node:fs")` which worked in Vitest (CJS transform) but failed when the plugin was built to `dist/` and loaded by the Playwright fixture. Fixed by using standard `import` at the top of the file.
+
+## RSC Environment + Native Modules
+
+- **Native Node modules (satori, @resvg/resvg-js) crash Vite's RSC dev environment.** Even with `resolve.external` configured on the RSC environment, the module runner's `ESModulesEvaluator` cannot handle native addons properly in dev mode. The socket closes on the server side with no response. Adding `resolve.external: ["satori", "@resvg/resvg-js", "yoga-wasm-web"]` to the RSC environment config is the right direction, but Vite 7's environment-level externalization may not be fully working for the RSC runner yet. This is a Vite limitation, not a nextcompat bug. **Workaround**: dynamic icon.tsx/opengraph-image.tsx routes work in production builds (where everything is bundled by Rollup) but may fail in dev. Static .png/.svg icon files work in both modes.
+
+## Route Segment Config: force-static
+
+- **`export const dynamic = "force-static"`** treats the page as fully static. Headers/cookies contexts are replaced with empty values (empty `Headers()`, empty cookie `Map`), and searchParams are cleared to `new URLSearchParams()`. Response gets `Cache-Control: s-maxage=31536000, stale-while-revalidate` and `X-Nextcompat-Cache: STATIC`. If combined with `export const revalidate`, ISR still applies (the cache TTL comes from revalidate, not the 1-year default).
+
+## Route Segment Config: No-ops
+
+- **`fetchCache`, `maxDuration`, `preferredRegion`, `runtime`** are recognized but no-op in nextcompat. `fetchCache` controls Next.js's patched `fetch()` caching (not applicable — we don't patch fetch). `maxDuration` sets serverless function timeout (platform-specific). `preferredRegion` hints deployment region. `runtime` selects Edge/Node runtime. Pages with these exports render normally without errors.

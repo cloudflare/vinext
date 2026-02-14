@@ -640,6 +640,45 @@ export default async function handler(request) {
   const revalidateSeconds = typeof route.page?.revalidate === "number" ? route.page.revalidate : null;
   const dynamicConfig = route.page?.dynamic; // 'auto' | 'force-dynamic' | 'force-static' | 'error'
   const dynamicParamsConfig = route.page?.dynamicParams; // true (default) | false
+  const isForceStatic = dynamicConfig === "force-static";
+  const isDynamicError = dynamicConfig === "error";
+
+  // force-static: replace headers/cookies context with empty values and
+  // clear searchParams so dynamic APIs return defaults instead of real data
+  if (isForceStatic) {
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+    setNavigationContext({
+      pathname: cleanPathname,
+      searchParams: new URLSearchParams(),
+      params,
+    });
+  }
+
+  // dynamic = 'error': set a trap context that throws when headers/cookies are accessed
+  if (isDynamicError) {
+    const errorMsg = 'Page with \`dynamic = "error"\` used a dynamic API. ' +
+      'This page was expected to be fully static, but headers(), cookies(), ' +
+      'or searchParams was accessed. Remove the dynamic API usage or change ' +
+      'the dynamic config to "auto" or "force-dynamic".';
+    const throwingHeaders = new Proxy(new Headers(), {
+      get(target, prop) {
+        if (typeof prop === "string" && prop !== "then") throw new Error(errorMsg);
+        return Reflect.get(target, prop);
+      },
+    });
+    const throwingCookies = new Proxy(new Map(), {
+      get(target, prop) {
+        if (typeof prop === "string" && prop !== "then") throw new Error(errorMsg);
+        return Reflect.get(target, prop);
+      },
+    });
+    setHeadersContext({ headers: throwingHeaders, cookies: throwingCookies });
+    setNavigationContext({
+      pathname: cleanPathname,
+      searchParams: new URLSearchParams(),
+      params,
+    });
+  }
 
   // dynamicParams = false: only params from generateStaticParams are allowed
   if (dynamicParamsConfig === false && route.isDynamic && typeof route.page?.generateStaticParams === "function") {
@@ -765,6 +804,9 @@ export default async function handler(request) {
     const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8" };
     if (isForceDynamic) {
       responseHeaders["Cache-Control"] = "no-store, must-revalidate";
+    } else if ((isForceStatic || isDynamicError) && !revalidateSeconds) {
+      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
+      responseHeaders["X-Nextcompat-Cache"] = "STATIC";
     } else if (revalidateSeconds) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
       responseHeaders["X-Nextcompat-Cache"] = "MISS";
@@ -785,6 +827,17 @@ export default async function handler(request) {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store, must-revalidate",
+      },
+    });
+  }
+
+  // force-static / error without revalidate: treat as fully static (cache indefinitely)
+  if ((isForceStatic || isDynamicError) && (revalidateSeconds === null || revalidateSeconds === 0)) {
+    return new Response(htmlStream, {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
+        "X-Nextcompat-Cache": "STATIC",
       },
     });
   }

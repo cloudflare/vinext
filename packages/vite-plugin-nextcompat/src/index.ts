@@ -589,6 +589,18 @@ hydrate();
         if (hasAppDir) {
           viteConfig.environments = {
             rsc: {
+              resolve: {
+                // Externalize native/heavy packages so the RSC environment
+                // loads them natively via Node rather than through Vite's
+                // ESM module evaluator (which can't handle native addons).
+                // Note: Do NOT externalize react/react-dom here — they must
+                // be bundled with the "react-server" condition for RSC.
+                external: [
+                  "satori",
+                  "@resvg/resvg-js",
+                  "yoga-wasm-web",
+                ],
+              },
               build: {
                 rollupOptions: {
                   input: { index: VIRTUAL_RSC_ENTRY },

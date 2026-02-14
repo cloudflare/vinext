@@ -267,6 +267,21 @@ export async function revalidatePath(
   await activeHandler.revalidateTag([path, pathTag]);
 }
 
+/**
+ * Opt out of static rendering and indicate a particular component should not be cached.
+ *
+ * In Next.js, calling noStore() inside a Server Component ensures the component
+ * is dynamically rendered. In our implementation, this is a no-op since we don't
+ * have the same static/dynamic rendering split — all server rendering is on-demand.
+ * It's provided for API compatibility so apps importing it don't break.
+ */
+export function unstable_noStore(): void {
+  // No-op — all our renders are dynamic by default unless ISR is configured
+}
+
+// Also export as `noStore` (Next.js 15+ naming)
+export { unstable_noStore as noStore };
+
 interface UnstableCacheOptions {
   revalidate?: number | false;
   tags?: string[];

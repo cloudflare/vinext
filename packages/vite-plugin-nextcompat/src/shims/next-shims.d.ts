@@ -197,6 +197,8 @@ declare module "next/cache" {
     keyParts?: string[],
     options?: { revalidate?: number | false; tags?: string[] },
   ): T;
+  export function unstable_noStore(): void;
+  export function noStore(): void;
 }
 
 declare module "next/form" {
