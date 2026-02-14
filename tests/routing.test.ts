@@ -240,4 +240,13 @@ describe("matchAppRoute - URL matching", () => {
     expect(result).not.toBeNull();
     expect(result!.route.routePath).toBeTruthy();
   });
+
+  it("route groups are transparent in URL pattern", async () => {
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const patterns = routes.map((r) => r.pattern);
+
+    // (marketing)/features -> /features (no "(marketing)" in URL)
+    expect(patterns).toContain("/features");
+    expect(patterns.some((p) => p.includes("marketing"))).toBe(false);
+  });
 });

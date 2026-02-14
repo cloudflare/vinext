@@ -669,6 +669,15 @@ describe("App Router integration", () => {
     // Content should render (not the loading fallback, since nothing is async)
     expect(html).toContain("This page has a loading boundary");
   });
+
+  it("route groups are transparent in URL (app/(marketing)/features -> /features)", async () => {
+    const res = await fetch(`${baseUrl}/features`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Features");
+    expect(html).toContain("route group");
+  });
 });
 
 describe("next/navigation shim", () => {
