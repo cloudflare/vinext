@@ -98,6 +98,18 @@ a genuine edge case we choose not to support, we mark it as "skipped
 (intentional)" with a note explaining why and what the alternative is.
 The "Are We Vite Yet?" dashboard shows these separately from real failures.
 
+## Compatibility Target
+
+We target **the latest stable Next.js release only** (currently **16.x**).
+
+No multi-version matrix. No chasing old releases. If an API was removed or
+changed in 16.x, we implement the 16.x behavior. If someone is on an older
+version, they upgrade Next.js first (which they should be doing anyway),
+then migrate to nextcompat. One moving target is enough.
+
+We can always broaden version support later once the core is solid. Starting
+narrow keeps the scope sane.
+
 ## Design Principle: Deploy Anywhere by Default
 
 This is the guiding principle behind every implementation decision.
@@ -240,6 +252,7 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 | `app/loading.tsx` | P1 | Suspense fallback |
 | `app/error.tsx` | P1 | Error boundary |
 | `app/not-found.tsx` | P1 | 404 page |
+| `app/global-error.tsx` | P2 | Global error boundary |
 | `app/route.ts` | P0 | API route handlers |
 | `app/template.tsx` | P2 | Re-mounting layout |
 | `app/default.tsx` | P2 | Parallel route default |
@@ -250,6 +263,13 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 | `(.)intercepting/` | P2 | Intercepting routes |
 | `generateMetadata()` | P1 | App Router metadata/SEO (also `export const metadata`) |
 | `generateStaticParams()` | P1 | App Router equivalent of `getStaticPaths` |
+| `app/icon.*` | P2 | Icon routes |
+| `app/apple-icon.*` | P2 | Apple icon routes |
+| `app/opengraph-image.*` | P2 | Open Graph image routes |
+| `app/twitter-image.*` | P2 | Twitter image routes |
+| `app/robots.*` | P2 | robots.txt route |
+| `app/sitemap.*` | P2 | sitemap.xml route |
+| `app/manifest.*` | P2 | web manifest route |
 | `pages/` directory | P0 | Pages Router - starting here |
 | `pages/api/` | P0 | Pages Router API routes |
 | `middleware.ts` | P2 | Runs in Node, not Edge |
@@ -278,6 +298,27 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 | `i18n` | P2 | Internationalization routing |
 | `env` | P0 | Environment variables (including `NEXT_PUBLIC_*` client inlining) |
 | `experimental` | varies | Feature flags |
+
+### Metadata API (App Router)
+
+| Feature | Priority | Notes |
+|---|---|---|
+| `export const metadata` | P1 | Static metadata export |
+| `generateMetadata` | P1 | Dynamic metadata generation |
+| `viewport` | P2 | Viewport metadata |
+| `themeColor` | P2 | Theme color metadata |
+
+### Route Segment Config (App Router)
+
+| Config | Priority | Notes |
+|---|---|---|
+| `dynamic` | P1 | Static vs dynamic rendering |
+| `dynamicParams` | P2 | Param fallback control |
+| `revalidate` | P1 | ISR controls |
+| `runtime` | P2 | Runtime selection |
+| `preferredRegion` | P2 | Vercel-ism; acknowledged no-op (may wire to providers later) |
+| `fetchCache` | P2 | Fetch caching policy |
+| `maxDuration` | P2 | Execution time hint |
 
 ## Phased Execution Plan
 
@@ -400,6 +441,36 @@ Concretely:
 - Fork `NextInstance` base class
 - Create `ViteNextInstance` that calls our plugin instead of `next`
 - The test assertions stay identical - they don't care what's serving the HTML
+
+### Runtime Contract Black-Box Suite (New)
+
+We add a separate, minimal, request/response-only test suite that runs against
+both **real Next.js** and **nextcompat** with identical fixtures. The tests are
+black-box: they spin up a server and only assert on HTTP behavior (status,
+headers, body, redirects, cookies, cache headers) with no internal hooks.
+
+Why: this catches subtle runtime differences without depending on Next.js
+internals or build output. It becomes the contract for:
+- `NextRequest`/`NextResponse` semantics
+- `redirect()`/`notFound()` behavior
+- `cookies()`/`headers()` behavior
+- `fetch` caching, `revalidate`, `no-store`
+- `basePath`/`i18n`/`trailingSlash` routing
+
+### Third-Party Integration Test Pack (New)
+
+We add a curated set of real-world integrations as black-box tests, each with
+an official minimal fixture app:
+
+- `next-auth`
+- `@clerk/nextjs`
+- `@sentry/nextjs`
+- `next-intl`
+- `next-themes`
+- `next-mdx-remote`
+
+Each fixture is run against Next.js (baseline) and nextcompat. Failures are
+triaged and tracked in a public compatibility matrix.
 
 ### Iteration Loop ("Ralph Wiggum Style")
 
@@ -525,6 +596,31 @@ It also makes contribution dead simple - find a red test, make it green.
    Vite handles monorepos well natively, but Next.js-specific patterns
    (Turborepo caching, `transpilePackages`) need investigation. Punt to
    Phase 3+ once single-app compat is solid.
+
+## Compatibility Matrix
+
+Published matrix tracking per-feature status against latest Next.js (16.x):
+
+- Module shims (next/*) with behavior notes
+- File conventions and metadata routes
+- Rendering modes and cache semantics
+- Config flags and routing behavior
+- Third-party integration tests
+
+Part of the docs and surfaced by `nextcompat status` CLI command.
+
+## Routing Behavior Spec (Later)
+
+Deprioritized. A formal routing spec will emerge naturally from the test
+harness work and black-box contract tests rather than being written
+upfront. We'll codify it once we've learned enough from implementation.
+
+## Non-Goals (Explicit)
+
+- Edge Runtime parity (middleware runs in Node)
+- Canary-only Next.js features and unstable internal flags
+- Undocumented SWC/Turbopack behaviors
+- Provider-specific infrastructure (Vercel-only optimizers or caches)
 
 ## Remaining Open Questions
 
