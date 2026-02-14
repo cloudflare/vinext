@@ -4277,3 +4277,386 @@ describe("next/dist/* internal import shims", () => {
     expect(mod.RouterContext).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Extended fetch() with { next: { revalidate, tags } } caching
+// ---------------------------------------------------------------------------
+
+describe("fetch cache (extended fetch with next options)", () => {
+  // We need a mock server for fetch to hit
+  let mockServerUrl: string;
+  let mockServer: any;
+  let fetchCallCount: number;
+
+  beforeAll(async () => {
+    const http = await import("node:http");
+    fetchCallCount = 0;
+    mockServer = http.createServer((_req, res) => {
+      fetchCallCount++;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ count: fetchCallCount, timestamp: Date.now() }));
+    });
+    await new Promise<void>((resolve) => {
+      mockServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const addr = mockServer.address();
+    mockServerUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => {
+      mockServer.close(() => resolve());
+    });
+  });
+
+  it("exports withFetchCache, runWithFetchCache, getOriginalFetch, getCollectedFetchTags", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    expect(typeof mod.withFetchCache).toBe("function");
+    expect(typeof mod.runWithFetchCache).toBe("function");
+    expect(typeof mod.getOriginalFetch).toBe("function");
+    expect(typeof mod.getCollectedFetchTags).toBe("function");
+  });
+
+  it("passes through fetch without next options unchanged", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+
+    fetchCallCount = 0;
+    const cleanup = withFetchCache();
+    try {
+      const resp1 = await fetch(`${mockServerUrl}/plain`);
+      const data1 = await resp1.json();
+      expect(data1.count).toBe(1);
+
+      const resp2 = await fetch(`${mockServerUrl}/plain`);
+      const data2 = await resp2.json();
+      expect(data2.count).toBe(2); // NOT cached — no next options
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("caches fetch with { next: { revalidate } }", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    // Fresh cache handler for isolation
+    setCacheHandler(new MemoryCacheHandler());
+    fetchCallCount = 0;
+
+    const cleanup = withFetchCache();
+    try {
+      const resp1 = await fetch(`${mockServerUrl}/cached`, {
+        next: { revalidate: 60 },
+      });
+      const data1 = await resp1.json();
+      expect(data1.count).toBe(1);
+      expect(fetchCallCount).toBe(1);
+
+      // Second fetch should come from cache
+      const resp2 = await fetch(`${mockServerUrl}/cached`, {
+        next: { revalidate: 60 },
+      });
+      const data2 = await resp2.json();
+      expect(data2.count).toBe(1); // Same data!
+      expect(fetchCallCount).toBe(1); // No additional network call
+    } finally {
+      cleanup();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("cache: 'force-cache' caches indefinitely", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    fetchCallCount = 0;
+
+    const cleanup = withFetchCache();
+    try {
+      const resp1 = await fetch(`${mockServerUrl}/force`, {
+        cache: "force-cache",
+      });
+      const data1 = await resp1.json();
+      expect(data1.count).toBe(1);
+
+      // Second fetch should be cached
+      const resp2 = await fetch(`${mockServerUrl}/force`, {
+        cache: "force-cache",
+      });
+      const data2 = await resp2.json();
+      expect(data2.count).toBe(1);
+      expect(fetchCallCount).toBe(1);
+    } finally {
+      cleanup();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("cache: 'no-store' bypasses cache", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    fetchCallCount = 0;
+
+    const cleanup = withFetchCache();
+    try {
+      const resp1 = await fetch(`${mockServerUrl}/no-store`, {
+        cache: "no-store",
+      });
+      const data1 = await resp1.json();
+      expect(data1.count).toBe(1);
+
+      const resp2 = await fetch(`${mockServerUrl}/no-store`, {
+        cache: "no-store",
+      });
+      const data2 = await resp2.json();
+      expect(data2.count).toBe(2); // NOT cached
+    } finally {
+      cleanup();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("next.revalidate: false bypasses cache", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    fetchCallCount = 0;
+
+    const cleanup = withFetchCache();
+    try {
+      await fetch(`${mockServerUrl}/no-rev`, { next: { revalidate: false } });
+      await fetch(`${mockServerUrl}/no-rev`, { next: { revalidate: false } });
+      expect(fetchCallCount).toBe(2); // Both hit the network
+    } finally {
+      cleanup();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("next.revalidate: 0 bypasses cache", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    fetchCallCount = 0;
+
+    const cleanup = withFetchCache();
+    try {
+      await fetch(`${mockServerUrl}/zero`, { next: { revalidate: 0 } });
+      await fetch(`${mockServerUrl}/zero`, { next: { revalidate: 0 } });
+      expect(fetchCallCount).toBe(2);
+    } finally {
+      cleanup();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("revalidateTag invalidates fetch cache entries", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler, revalidateTag } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    fetchCallCount = 0;
+
+    const cleanup = withFetchCache();
+    try {
+      // First fetch — cache miss, hits network
+      const resp1 = await fetch(`${mockServerUrl}/tagged`, {
+        next: { revalidate: 3600, tags: ["posts"] },
+      });
+      const data1 = await resp1.json();
+      expect(data1.count).toBe(1);
+      expect(fetchCallCount).toBe(1);
+
+      // Second fetch — cache hit
+      const resp2 = await fetch(`${mockServerUrl}/tagged`, {
+        next: { revalidate: 3600, tags: ["posts"] },
+      });
+      const data2 = await resp2.json();
+      expect(data2.count).toBe(1);
+      expect(fetchCallCount).toBe(1);
+
+      // Invalidate the tag
+      await revalidateTag("posts");
+
+      // Third fetch — cache miss after tag invalidation
+      const resp3 = await fetch(`${mockServerUrl}/tagged`, {
+        next: { revalidate: 3600, tags: ["posts"] },
+      });
+      const data3 = await resp3.json();
+      expect(data3.count).toBe(2); // New data from network
+      expect(fetchCallCount).toBe(2);
+    } finally {
+      cleanup();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("collects fetch tags during render pass", async () => {
+    const { withFetchCache, getCollectedFetchTags } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cleanup = withFetchCache();
+    try {
+      await fetch(`${mockServerUrl}/a`, { next: { revalidate: 60, tags: ["tag-a", "tag-b"] } });
+      await fetch(`${mockServerUrl}/b`, { next: { revalidate: 60, tags: ["tag-b", "tag-c"] } });
+
+      const tags = getCollectedFetchTags();
+      expect(tags).toContain("tag-a");
+      expect(tags).toContain("tag-b");
+      expect(tags).toContain("tag-c");
+      expect(tags.length).toBe(3); // Deduplicated
+    } finally {
+      cleanup();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("different URLs produce separate cache entries", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    fetchCallCount = 0;
+
+    const cleanup = withFetchCache();
+    try {
+      await fetch(`${mockServerUrl}/url-a`, { next: { revalidate: 60 } });
+      await fetch(`${mockServerUrl}/url-b`, { next: { revalidate: 60 } });
+      expect(fetchCallCount).toBe(2); // Two different URLs = two network calls
+
+      // Now re-fetch both — should be cached
+      await fetch(`${mockServerUrl}/url-a`, { next: { revalidate: 60 } });
+      await fetch(`${mockServerUrl}/url-b`, { next: { revalidate: 60 } });
+      expect(fetchCallCount).toBe(2); // Still 2, both from cache
+    } finally {
+      cleanup();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("fetch with only tags (no revalidate) caches indefinitely", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    fetchCallCount = 0;
+
+    const cleanup = withFetchCache();
+    try {
+      await fetch(`${mockServerUrl}/tags-only`, { next: { tags: ["items"] } });
+      await fetch(`${mockServerUrl}/tags-only`, { next: { tags: ["items"] } });
+      expect(fetchCallCount).toBe(1); // Cached because tags imply force-cache
+    } finally {
+      cleanup();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
+  it("cleanup restores original fetch", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+
+    const originalFetch = globalThis.fetch;
+    const cleanup = withFetchCache();
+    expect(globalThis.fetch).not.toBe(originalFetch); // Patched
+    cleanup();
+    expect(globalThis.fetch).toBe(originalFetch); // Restored
+  });
+
+  it("runWithFetchCache auto-cleans up", async () => {
+    const { runWithFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    fetchCallCount = 0;
+    const originalFetch = globalThis.fetch;
+
+    const result = await runWithFetchCache(async () => {
+      expect(globalThis.fetch).not.toBe(originalFetch); // Patched inside
+      const resp = await fetch(`${mockServerUrl}/auto`, { next: { revalidate: 60 } });
+      return resp.json();
+    });
+
+    expect(result.count).toBe(fetchCallCount);
+    expect(globalThis.fetch).toBe(originalFetch); // Restored after
+
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("strips next property before passing to real fetch", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    // This test verifies the real fetch doesn't receive the `next` property
+    // which would cause warnings in some environments. If it throws, the test fails.
+    const cleanup = withFetchCache();
+    try {
+      const resp = await fetch(`${mockServerUrl}/strip`, {
+        next: { revalidate: 60, tags: ["test"] },
+        method: "GET",
+      });
+      expect(resp.ok).toBe(true);
+    } finally {
+      cleanup();
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+});

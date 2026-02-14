@@ -13,6 +13,7 @@ import {
   getRevalidateDuration,
 } from "./isr-cache.js";
 import type { CachedPagesValue } from "../shims/cache.js";
+import { withFetchCache } from "../shims/fetch-cache.js";
 import path from "node:path";
 import fs from "node:fs";
 import { Writable } from "node:stream";
@@ -174,6 +175,9 @@ export function createSSRHandler(
     }
 
     const { route, params } = match;
+
+    // Install patched fetch with Next.js caching semantics for this request
+    const cleanupFetchCache = withFetchCache();
 
     try {
       // Set SSR context for the router shim so useRouter() returns
@@ -543,6 +547,8 @@ hydrate();
         res.statusCode = 500;
         res.end(`Internal Server Error: ${(e as Error).message}`);
       }
+    } finally {
+      cleanupFetchCache();
     }
   };
 }

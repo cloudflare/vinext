@@ -161,6 +161,7 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
 import { getCacheHandler } from "next/cache";
+import { withFetchCache } from "nextcompat/fetch-cache";
 
 // ISR cache helpers
 async function isrGet(key) {
@@ -477,6 +478,17 @@ const __basePath = ${JSON.stringify(bp)};
 const __trailingSlash = ${JSON.stringify(ts)};
 
 export default async function handler(request) {
+  // Install patched fetch with Next.js caching semantics for this request.
+  // All fetch() calls during RSC rendering will go through the cache.
+  const cleanupFetchCache = withFetchCache();
+  try {
+    return await _handleRequest(request);
+  } finally {
+    cleanupFetchCache();
+  }
+}
+
+async function _handleRequest(request) {
   const url = new URL(request.url);
   let pathname = url.pathname;
   ${bp ? `

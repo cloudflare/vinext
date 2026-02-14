@@ -261,3 +261,12 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 ## URLPattern
 
 - **URLPattern is a Web API** available natively in Node 20+, Cloudflare Workers, and Deno. Next.js re-exports it from `next/server` for middleware route matching. Our export uses `globalThis.URLPattern` with a fallback that throws a helpful error.
+
+## Extended fetch() caching
+
+- **`globalThis.fetch` is patched per-request**, not globally at startup. `withFetchCache()` installs a patched fetch and returns a cleanup function — this ensures no cross-request state leakage and works correctly with concurrent requests (each request gets its own patched fetch scope).
+- **Cache key = `fetch:{METHOD}:{URL}` + optional body hash.** Headers are intentionally excluded from the key — Next.js data cache keys by URL, not by request headers. This matches Next.js behavior where `Authorization` headers don't affect cache keys (the expectation is that auth-dependent data uses `cache: 'no-store'`).
+- **`next: { tags }` without `revalidate` implies `force-cache`** — if you specify tags, Next.js assumes you want caching (so `revalidateTag()` has something to invalidate). We use a 1-year TTL for this case.
+- **`next: { revalidate: 0 }` is equivalent to `cache: 'no-store'`** — zero seconds means "never cache". This matches Next.js behavior where `revalidate: 0` opts out of the data cache entirely.
+- **Stale-while-revalidate for fetch**: When a cached fetch entry is stale (past TTL), we return the stale data immediately and trigger a background refetch. This mirrors the page-level ISR SWR pattern but at the individual fetch level.
+- **The `next` property must be stripped from `init` before passing to real fetch.** Standard `fetch()` implementations may warn or error on unknown properties. We use a spread-and-delete pattern to clean the init object.

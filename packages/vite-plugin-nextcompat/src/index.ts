@@ -111,6 +111,7 @@ import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext } from "next/router";
 import { getCacheHandler } from "next/cache";
+import { withFetchCache } from "nextcompat/fetch-cache";
 
 // ISR cache helpers (inlined for the server entry)
 async function isrGet(key) {
@@ -247,6 +248,7 @@ export async function renderPage(req, res, url, manifest) {
   }
 
   const { route, params } = match;
+  const cleanupFetchCache = withFetchCache();
   try {
     if (typeof setSSRContext === "function") {
       setSSRContext({ pathname: url.split("?")[0], query: { ...params, ...parseQuery(url) }, asPath: url });
@@ -371,6 +373,8 @@ export async function renderPage(req, res, url, manifest) {
     console.error("[nextcompat] SSR error:", e);
     res.writeHead(500);
     res.end("Internal Server Error: " + (e && e.message ? e.message : String(e)));
+  } finally {
+    cleanupFetchCache();
   }
 }
 
@@ -594,6 +598,7 @@ hydrate();
               "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
               "nextcompat/error-boundary": path.join(shimsDir, "error-boundary"),
               "nextcompat/metadata": path.join(shimsDir, "metadata"),
+              "nextcompat/fetch-cache": path.join(shimsDir, "fetch-cache"),
             },
           },
           // Enable JSX in .tsx/.jsx files
