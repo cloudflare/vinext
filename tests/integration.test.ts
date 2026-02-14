@@ -2301,3 +2301,97 @@ describe("ISR cache internals", () => {
     expect(result).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// next/dynamic shim unit tests
+// ---------------------------------------------------------------------------
+
+describe("next/dynamic shim", () => {
+  it("exports a default function", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+    );
+    expect(typeof mod.default).toBe("function");
+  });
+
+  it("exports flushPreloads", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+    );
+    expect(typeof mod.flushPreloads).toBe("function");
+  });
+
+  it("returns a component for SSR-enabled dynamic imports", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const FakeComponent = () => React.createElement("div", null, "Hello from dynamic");
+    const DynamicComponent = dynamic(() =>
+      Promise.resolve({ default: FakeComponent }),
+    );
+
+    // Flush preloads so the component is resolved
+    await flushPreloads();
+
+    // Should render the component on the server
+    const html = renderToStaticMarkup(React.createElement(DynamicComponent));
+    expect(html).toContain("Hello from dynamic");
+  });
+
+  it("renders loading state for ssr: false on server", async () => {
+    const { default: dynamic } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const FakeComponent = () => React.createElement("div", null, "Should not appear");
+    const Loading = () => React.createElement("span", null, "Loading...");
+    const DynamicComponent = dynamic(
+      () => Promise.resolve({ default: FakeComponent }),
+      { ssr: false, loading: Loading },
+    );
+
+    // On server with ssr: false, should render loading, not the component
+    const html = renderToStaticMarkup(React.createElement(DynamicComponent));
+    expect(html).toContain("Loading...");
+    expect(html).not.toContain("Should not appear");
+  });
+
+  it("renders nothing for ssr: false without loading on server", async () => {
+    const { default: dynamic } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const FakeComponent = () => React.createElement("div", null, "Should not appear");
+    const DynamicComponent = dynamic(
+      () => Promise.resolve({ default: FakeComponent }),
+      { ssr: false },
+    );
+
+    // On server with ssr: false and no loading component, should render nothing
+    const html = renderToStaticMarkup(React.createElement(DynamicComponent));
+    expect(html).toBe("");
+  });
+
+  it("accepts module without default export (bare component)", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const BareComponent = () => React.createElement("p", null, "Bare export");
+    const DynamicComponent = dynamic(() => Promise.resolve(BareComponent));
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(React.createElement(DynamicComponent));
+    expect(html).toContain("Bare export");
+  });
+});
