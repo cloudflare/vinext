@@ -1,0 +1,16 @@
+{
+  "name": "ecosystem-next-view-transitions",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "next-view-transitions": "^0.3.5",
+    "vite-plugin-nextcompat": "*",
+    "@vitejs/plugin-rsc": "^0.5.19",
+    "react-server-dom-webpack": "^19.2.4"
+  },
+  "devDependencies": {
+    "vite": "^7.3.1"
+  }
+}
