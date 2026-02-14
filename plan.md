@@ -465,6 +465,66 @@ well-understood model before tackling RSC.
 - [ ] Deployment guides (Cloudflare, AWS, Netlify, Fly, Railway, etc.)
 - [ ] **Validation**: Target 80%+ of e2e test suite passing
 
+### Phase 5: Benchmarks — nextcompat vs Next.js+Turbopack
+
+**Goal**: Quantify the developer experience and production performance advantage of nextcompat (Vite) over Next.js (Turbopack/webpack). Provide hard numbers for the README and migration guides.
+
+#### What to benchmark
+
+| Metric | What it measures | Why it matters |
+|--------|-----------------|----------------|
+| **Dev server cold start** | Time from `npm run dev` to first request served | First impression, CI/CD feedback loops |
+| **HMR latency** | Time from file save to update visible in browser | Inner development loop speed |
+| **Production build time** | Full `build` command, cold cache | CI/CD pipeline cost |
+| **Production bundle size** | Total JS + CSS output (gzipped) | Page load speed, bandwidth cost |
+| **SSR response time** | Time to first byte (TTFB) for server-rendered pages | User-facing performance |
+| **Memory usage** | Peak RSS during dev and build | Feasibility on small VPS / CI runners |
+
+#### Configurations to compare
+
+1. **Next.js + Turbopack (dev)** — `next dev` (Turbopack is now the default dev bundler in Next.js 15+; opt out with `--no-turbopack`)
+2. **Next.js + webpack (build)** — `next build` (Turbopack for production builds is not yet stable)
+3. **nextcompat + Vite (Rollup/esbuild)** — current stable Vite stack (Vite 7, Rollup for production, esbuild for dev transforms)
+4. **nextcompat + Vite (Rolldown)** — experimental Rust-based bundler being integrated into Vite. Enable via `environments.*.builder: 'rolldown'` or the `vite-rolldown` package. Not yet default but actively landing.
+
+#### Benchmark app
+
+Use a realistic mid-size app (not a hello-world) to make results meaningful:
+- 50+ pages (mix of static, SSR, ISR)
+- App Router with nested layouts, parallel routes
+- Server Components + "use client" boundary
+- `next/image`, `next/font`, metadata API
+- Server Actions, route handlers
+- Third-party deps (typical: tailwind, a UI library, a data-fetching lib)
+
+This can be derived from a popular Next.js template or our own fixture that exercises all major features.
+
+#### Benchmark harness
+
+- Use [hyperfine](https://github.com/sharkdp/hyperfine) for CLI timing (cold start, build time)
+- Use Playwright for HMR latency (save file → measure `page.waitForSelector` of changed content)
+- Use [autocannon](https://github.com/mcollina/autocannon) or `wrk` for SSR throughput/TTFB
+- Run on a consistent environment (same machine or CI runner with `--prepare` warmup)
+- Record results in a markdown table in the repo, or a simple JSON for automated tracking
+
+#### Rolldown-specific notes
+
+Rolldown is the Vite team's Rust-based replacement for Rollup + esbuild (unifying them into one tool). Status as of 2026:
+- Available as experimental in Vite via the Rolldown integration
+- Expected to become Vite's default bundler (likely Vite 8)
+- Key advantages: single Rust toolchain (no JS↔Rust FFI overhead between esbuild and Rollup), faster production builds, better tree-shaking
+- For our benchmark: run the same app with both `builder: 'rollup'` and `builder: 'rolldown'` to show the trajectory
+
+#### Expected outcome
+
+We expect Vite to win on cold start and HMR (esbuild/Rolldown is fast, Vite's lazy module evaluation means less upfront work). Build time should be competitive. With Rolldown, production builds should be significantly faster than webpack. Bundle size should be comparable or better (Rollup/Rolldown tree-shaking is excellent).
+
+The benchmark results give us:
+1. **Hard numbers for the README** — "X seconds cold start vs Y seconds"
+2. **Migration motivation** — developers can see concrete DX improvement
+3. **Regression detection** — track these numbers over time to avoid performance regressions
+4. **Rolldown readiness signal** — know when Rolldown is stable enough to recommend as default
+
 ## Test Harness Strategy
 
 This is the key innovation. Next.js has ~460+ e2e test suites. The plan:
