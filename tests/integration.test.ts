@@ -157,6 +157,27 @@ describe("Pages Router integration", () => {
     expect(html).toMatch(/html-proxy.*\.js/);
   });
 
+  // --- Catch-all Routes ---
+
+  it("renders catch-all routes with multiple segments", async () => {
+    const res = await fetch(`${baseUrl}/docs/getting-started/install`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Docs");
+    expect(html).toMatch(/Path:\s*(<!--\s*-->)?\s*getting-started\/install/);
+  });
+
+  it("renders catch-all routes with single segment", async () => {
+    const res = await fetch(`${baseUrl}/docs/intro`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toMatch(/Path:\s*(<!--\s*-->)?\s*intro/);
+  });
+
+  // --- Hydration ---
+
   it("hydration proxy script is fetchable", async () => {
     // Fetch the index page, find the proxy script URL, fetch it,
     // and verify it contains our hydration code

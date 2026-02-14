@@ -102,4 +102,39 @@ describe("matchRoute - URL matching", () => {
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/about");
   });
+
+  it("discovers catch-all routes [...slug]", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+
+    const catchAll = routes.find((r) => r.pattern.includes("slug"));
+    expect(catchAll).toBeTruthy();
+    expect(catchAll!.pattern).toBe("/docs/:slug+");
+    expect(catchAll!.isDynamic).toBe(true);
+    expect(catchAll!.params).toContain("slug");
+  });
+
+  it("matches catch-all routes with multiple segments", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+
+    const result = matchRoute("/docs/getting-started/install", routes);
+    expect(result).not.toBeNull();
+    expect(result!.route.pattern).toBe("/docs/:slug+");
+    expect(result!.params.slug).toEqual(["getting-started", "install"]);
+  });
+
+  it("matches catch-all routes with single segment", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+
+    const result = matchRoute("/docs/intro", routes);
+    expect(result).not.toBeNull();
+    expect(result!.params.slug).toEqual(["intro"]);
+  });
+
+  it("does not match catch-all with zero segments", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+
+    // /docs alone should NOT match [...slug] (requires at least 1 segment)
+    const result = matchRoute("/docs", routes);
+    expect(result).toBeNull();
+  });
 });
