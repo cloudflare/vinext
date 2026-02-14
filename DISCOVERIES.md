@@ -295,3 +295,32 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **Next.js generates CSS rules at build time** mapping each font's `className` to its `font-family`. Our runtime shim must do the same — without the CSS rule, `<div className={inter.className}>` has no effect.
 - **CSS variable injection**: When `variable` is specified (e.g., `variable: "--font-inter"`), a CSS rule like `.className { --font-inter: 'Inter', sans-serif; }` is generated. This enables the `var(--font-inter)` pattern in Tailwind/CSS modules.
 - **SSR font styles collection**: On the server (`typeof document === "undefined"`), CSS rules are collected into an array (`ssrFontStyles`) for injection in `<head>`. On the client, `<style>` tags are directly appended to `<head>`.
+
+## Next.js 16 Async Params
+
+- **Next.js 15+ changed `params` and `searchParams` to Promises**: Page components receive `{ params: Promise<{ slug: string }> }` and must `await params` to access values. This is a breaking change from pre-15 where params were plain objects.
+- **Backward compatibility via "thenable objects"**: `Object.assign(Promise.resolve(params), params)` creates an object that works both as a Promise (`await params`) and as a plain object (`params.id`). This lets pre-15 and post-15 code coexist.
+- **`generateMetadata` and `generateViewport` also receive thenable params**: They follow the same async pattern.
+- **`searchParams` must also be passed to page components**: Next.js passes `searchParams` as a prop to page components. Previously we only passed `params`.
+
+## useLinkStatus and onNavigate
+
+- **`useLinkStatus`** is a new hook from `next/link` (Next.js 16). Returns `{ pending: boolean }` indicating whether a navigation triggered by the enclosing `<Link>` is in progress.
+- **`onNavigate`** is a new prop on `<Link>` (Next.js 16) for View Transitions support. Called with `{ url: URL }` before navigation happens.
+- **`LinkStatusContext`** provides the pending state to descendant components via React context.
+
+## Production Server Compression
+
+- **Brotli preferred over gzip**: `negotiateEncoding` returns `br > gzip > deflate` based on Accept-Encoding header.
+- **1KB minimum threshold**: Bodies smaller than 1024 bytes skip compression — the overhead isn't worth it.
+- **SSR output intercepted for compression**: The `res.writeHead/write/end` methods are wrapped to buffer SSR output, then compress before sending. Original methods are restored after.
+- **Binary formats excluded**: Only text-based content types (HTML, JS, CSS, JSON, SVG, WASM) are compressed.
+
+## App Router Playground (Ecosystem Fixture)
+
+- **Vercel's official Next.js App Router demo** (github.com/vercel/next-app-router-playground) cloned as `fixtures/ecosystem/app-router-playground/`.
+- **Uses `'use cache'` extensively**: File-level and function-level caching directives. We strip these with a custom Vite plugin (not yet supported).
+- **Uses `#/*` path aliases**: tsconfig `paths` maps `#/*` to project root. Handled via Vite `resolve.alias`.
+- **`server-only` package** needs an empty shim module — it's a build-time guard that throws if imported in client bundles.
+- **MDX support** via `@next/mdx` + CodeHike — not yet replicated. Pages importing `.mdx` files will error.
+- **`connection()` from `next/server`** already shimmed as a no-op (forces dynamic rendering).
