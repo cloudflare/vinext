@@ -75,6 +75,9 @@ describe("Pages Router integration", () => {
     // "Post: <!-- -->42" — so we match with a regex instead
     expect(html).toMatch(/Post:\s*(<!--\s*-->)?\s*42/);
     expect(html).toContain("post-title");
+    // Router should have correct pathname and query during SSR
+    expect(html).toMatch(/Pathname:\s*(<!--\s*-->)?\s*\/posts\/42/);
+    expect(html).toMatch(/Query ID:\s*(<!--\s*-->)?\s*42/);
   });
 
   it("returns 404 for non-existent routes", async () => {

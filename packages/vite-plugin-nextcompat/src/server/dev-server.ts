@@ -38,6 +38,17 @@ export function createSSRHandler(
     const { route, params } = match;
 
     try {
+      // Set SSR context for the router shim so useRouter() returns
+      // the correct URL and params during server-side rendering.
+      const routerShim = await server.ssrLoadModule("next/router");
+      if (typeof routerShim.setSSRContext === "function") {
+        routerShim.setSSRContext({
+          pathname: url.split("?")[0],
+          query: { ...params, ...parseQuery(url) },
+          asPath: url,
+        });
+      }
+
       // Load the page module through Vite's SSR pipeline
       // This gives us HMR and transform support for free
       const pageModule = await server.ssrLoadModule(route.filePath);
@@ -223,6 +234,11 @@ hydrate();
 
       // Apply Vite's HTML transforms (injects HMR client, etc.)
       const transformedHtml = await server.transformIndexHtml(url, html);
+
+      // Clear SSR context after rendering
+      if (typeof routerShim.setSSRContext === "function") {
+        routerShim.setSSRContext(null);
+      }
 
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(transformedHtml);

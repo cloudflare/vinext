@@ -94,12 +94,43 @@ function resolveUrl(url: string | UrlObject): string {
   return result;
 }
 
+/**
+ * SSR context - set by the dev server before rendering each page.
+ * Provides the actual URL, route pattern, and params during SSR.
+ */
+interface SSRContext {
+  pathname: string;
+  query: Record<string, string | string[]>;
+  asPath: string;
+}
+
+let ssrContext: SSRContext | null = null;
+
+/**
+ * Set the router's SSR context. Called by the dev server before rendering.
+ */
+export function setSSRContext(ctx: SSRContext | null): void {
+  ssrContext = ctx;
+}
+
 function getPathnameAndQuery(): {
   pathname: string;
   query: Record<string, string>;
   asPath: string;
 } {
   if (typeof window === "undefined") {
+    if (ssrContext) {
+      // Flatten query values to strings for compatibility
+      const query: Record<string, string> = {};
+      for (const [key, value] of Object.entries(ssrContext.query)) {
+        query[key] = Array.isArray(value) ? value.join(",") : value;
+      }
+      return {
+        pathname: ssrContext.pathname,
+        query,
+        asPath: ssrContext.asPath,
+      };
+    }
     return { pathname: "/", query: {}, asPath: "/" };
   }
   const pathname = window.location.pathname;
