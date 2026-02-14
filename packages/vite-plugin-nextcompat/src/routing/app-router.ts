@@ -17,6 +17,17 @@ import { glob } from "glob";
 import path from "node:path";
 import fs from "node:fs";
 
+export interface InterceptingRoute {
+  /** The interception convention: "." | ".." | "../.." | "..." */
+  convention: string;
+  /** The URL pattern this intercepts (e.g. "/photos/:id") */
+  targetPattern: string;
+  /** Absolute path to the intercepting page component */
+  pagePath: string;
+  /** Parameter names for dynamic segments */
+  params: string[];
+}
+
 export interface ParallelSlot {
   /** Slot name (e.g. "team" from @team) */
   name: string;
@@ -28,6 +39,8 @@ export interface ParallelSlot {
   loadingPath: string | null;
   /** Absolute path to the slot's error component */
   errorPath: string | null;
+  /** Intercepting routes within this slot */
+  interceptingRoutes: InterceptingRoute[];
 }
 
 export interface AppRoute {
@@ -176,7 +189,7 @@ function fileToAppRoute(
   const notFoundPath = findFile(routeDir, "not-found");
 
   // Discover parallel slots (@team, @analytics, etc.) at the route's directory
-  const parallelSlots = discoverParallelSlots(routeDir);
+  const parallelSlots = discoverParallelSlots(routeDir, appDir);
 
   return {
     pattern: pattern === "/" ? "/" : pattern,
@@ -242,7 +255,7 @@ function discoverTemplates(segments: string[], appDir: string): string[] {
  * Discover parallel route slots (@team, @analytics, etc.) in a directory.
  * Returns a ParallelSlot for each @-prefixed subdirectory that has a page or default component.
  */
-function discoverParallelSlots(dir: string): ParallelSlot[] {
+function discoverParallelSlots(dir: string, appDir: string): ParallelSlot[] {
   if (!fs.existsSync(dir)) return [];
 
   const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -256,9 +269,10 @@ function discoverParallelSlots(dir: string): ParallelSlot[] {
 
     const pagePath = findFile(slotDir, "page");
     const defaultPath = findFile(slotDir, "default");
+    const interceptingRoutes = discoverInterceptingRoutes(slotDir, dir, appDir);
 
-    // Only include slots that have at least a page or default component
-    if (!pagePath && !defaultPath) continue;
+    // Only include slots that have at least a page, default, or intercepting route
+    if (!pagePath && !defaultPath && interceptingRoutes.length === 0) continue;
 
     slots.push({
       name: slotName,
@@ -266,10 +280,242 @@ function discoverParallelSlots(dir: string): ParallelSlot[] {
       defaultPath,
       loadingPath: findFile(slotDir, "loading"),
       errorPath: findFile(slotDir, "error"),
+      interceptingRoutes,
     });
   }
 
   return slots;
+}
+
+/**
+ * The interception convention prefix patterns.
+ * (.) — same level, (..) — one level up, (..)(..)" — two levels up, (...) — root
+ */
+const INTERCEPT_PATTERNS = [
+  { prefix: "(...)", convention: "..." },
+  { prefix: "(..)(..)", convention: "../.." },
+  { prefix: "(..)", convention: ".." },
+  { prefix: "(.)", convention: "." },
+] as const;
+
+/**
+ * Discover intercepting routes inside a parallel slot directory.
+ *
+ * Intercepting routes use conventions like (.)photo, (..)feed, (...), etc.
+ * They intercept navigation to another route and render within the slot instead.
+ *
+ * @param slotDir - The parallel slot directory (e.g. app/feed/@modal)
+ * @param routeDir - The directory of the route that owns this slot (e.g. app/feed)
+ * @param appDir - The root app directory
+ */
+function discoverInterceptingRoutes(
+  slotDir: string,
+  routeDir: string,
+  appDir: string,
+): InterceptingRoute[] {
+  if (!fs.existsSync(slotDir)) return [];
+
+  const results: InterceptingRoute[] = [];
+
+  // Recursively scan for page files inside intercepting directories
+  scanForInterceptingPages(slotDir, routeDir, appDir, results);
+
+  return results;
+}
+
+/**
+ * Recursively scan a directory tree for page.tsx files that are inside
+ * intercepting route directories.
+ */
+function scanForInterceptingPages(
+  currentDir: string,
+  routeDir: string,
+  appDir: string,
+  results: InterceptingRoute[],
+): void {
+  if (!fs.existsSync(currentDir)) return;
+
+  const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+
+    // Check if this directory name starts with an interception convention
+    const interceptMatch = matchInterceptConvention(entry.name);
+
+    if (interceptMatch) {
+      // This directory is the start of an intercepting route
+      // e.g. "(.)photos" means intercept same-level "photos" route
+      const restOfName = entry.name.slice(interceptMatch.prefix.length);
+      const interceptDir = path.join(currentDir, entry.name);
+
+      // Find page files within this intercepting directory tree
+      collectInterceptingPages(
+        interceptDir,
+        interceptDir,
+        interceptMatch.convention,
+        restOfName,
+        routeDir,
+        appDir,
+        results,
+      );
+    } else {
+      // Regular subdirectory — keep scanning for intercepting dirs
+      scanForInterceptingPages(
+        path.join(currentDir, entry.name),
+        routeDir,
+        appDir,
+        results,
+      );
+    }
+  }
+}
+
+/**
+ * Match a directory name against interception convention prefixes.
+ */
+function matchInterceptConvention(
+  name: string,
+): { prefix: string; convention: string } | null {
+  for (const pattern of INTERCEPT_PATTERNS) {
+    if (name.startsWith(pattern.prefix)) {
+      return pattern;
+    }
+  }
+  return null;
+}
+
+/**
+ * Collect page.tsx files inside an intercepting route directory tree
+ * and compute their target URL patterns.
+ */
+function collectInterceptingPages(
+  currentDir: string,
+  interceptRoot: string,
+  convention: string,
+  interceptSegment: string,
+  routeDir: string,
+  appDir: string,
+  results: InterceptingRoute[],
+): void {
+  // Check for page.tsx in current directory
+  const page = findFile(currentDir, "page");
+  if (page) {
+    const targetPattern = computeInterceptTarget(
+      convention,
+      interceptSegment,
+      currentDir,
+      interceptRoot,
+      routeDir,
+      appDir,
+    );
+    if (targetPattern) {
+      results.push({
+        convention,
+        targetPattern: targetPattern.pattern,
+        pagePath: page,
+        params: targetPattern.params,
+      });
+    }
+  }
+
+  // Recurse into subdirectories for nested intercepting routes
+  if (!fs.existsSync(currentDir)) return;
+  const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    collectInterceptingPages(
+      path.join(currentDir, entry.name),
+      interceptRoot,
+      convention,
+      interceptSegment,
+      routeDir,
+      appDir,
+      results,
+    );
+  }
+}
+
+/**
+ * Compute the target URL pattern for an intercepting route.
+ *
+ * - (.) same level: resolve relative to routeDir
+ * - (..) one level up: resolve relative to parent of routeDir
+ * - (..)(..)" two levels up: resolve relative to grandparent of routeDir
+ * - (...) root: resolve from appDir
+ */
+function computeInterceptTarget(
+  convention: string,
+  interceptSegment: string,
+  currentDir: string,
+  interceptRoot: string,
+  routeDir: string,
+  appDir: string,
+): { pattern: string; params: string[] } | null {
+  // Determine the base directory for target resolution
+  let baseDir: string;
+  switch (convention) {
+    case ".":
+      baseDir = routeDir;
+      break;
+    case "..":
+      baseDir = path.dirname(routeDir);
+      break;
+    case "../..":
+      baseDir = path.dirname(path.dirname(routeDir));
+      break;
+    case "...":
+      baseDir = appDir;
+      break;
+    default:
+      return null;
+  }
+
+  // Build the target URL segments from baseDir relative to appDir
+  const baseParts = path.relative(appDir, baseDir).split(path.sep).filter(Boolean);
+
+  // Add the intercept segment and any nested path segments
+  const nestedParts = path
+    .relative(interceptRoot, currentDir)
+    .split(path.sep)
+    .filter(Boolean);
+  const allSegments = [...baseParts, interceptSegment, ...nestedParts];
+
+  // Convert segments to URL pattern
+  const urlSegments: string[] = [];
+  const params: string[] = [];
+
+  for (const segment of allSegments) {
+    if (segment === ".") continue;
+    // Route groups and @ slots are transparent
+    if (segment.startsWith("(") && segment.endsWith(")")) continue;
+    if (segment.startsWith("@")) continue;
+
+    // Dynamic segments
+    const catchAllMatch = segment.match(/^\[\.\.\.(\w+)\]$/);
+    if (catchAllMatch) {
+      params.push(catchAllMatch[1]);
+      urlSegments.push(`:${catchAllMatch[1]}+`);
+      continue;
+    }
+    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.(\w+)\]\]$/);
+    if (optionalCatchAllMatch) {
+      params.push(optionalCatchAllMatch[1]);
+      urlSegments.push(`:${optionalCatchAllMatch[1]}*`);
+      continue;
+    }
+    const dynamicMatch = segment.match(/^\[(\w+)\]$/);
+    if (dynamicMatch) {
+      params.push(dynamicMatch[1]);
+      urlSegments.push(`:${dynamicMatch[1]}`);
+      continue;
+    }
+
+    urlSegments.push(segment);
+  }
+
+  const pattern = "/" + urlSegments.join("/");
+  return { pattern: pattern === "/" ? "/" : pattern, params };
 }
 
 /**

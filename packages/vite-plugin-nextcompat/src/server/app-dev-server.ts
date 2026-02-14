@@ -52,6 +52,10 @@ export function generateRscEntry(
       if (slot.defaultPath) getImportVar(slot.defaultPath);
       if (slot.loadingPath) getImportVar(slot.loadingPath);
       if (slot.errorPath) getImportVar(slot.errorPath);
+      // Register intercepting route page modules
+      for (const ir of slot.interceptingRoutes) {
+        getImportVar(ir.pagePath);
+      }
     }
   }
 
@@ -60,11 +64,22 @@ export function generateRscEntry(
     const layoutVars = route.layouts.map((l) => getImportVar(l));
     const templateVars = route.templates.map((t) => getImportVar(t));
     const slotEntries = route.parallelSlots.map((slot) => {
+      const interceptEntries = slot.interceptingRoutes.map((ir) => {
+        return `        {
+          convention: ${JSON.stringify(ir.convention)},
+          targetPattern: ${JSON.stringify(ir.targetPattern)},
+          page: ${getImportVar(ir.pagePath)},
+          params: ${JSON.stringify(ir.params)},
+        }`;
+      });
       return `      ${JSON.stringify(slot.name)}: {
         page: ${slot.pagePath ? getImportVar(slot.pagePath) : "null"},
         default: ${slot.defaultPath ? getImportVar(slot.defaultPath) : "null"},
         loading: ${slot.loadingPath ? getImportVar(slot.loadingPath) : "null"},
         error: ${slot.errorPath ? getImportVar(slot.errorPath) : "null"},
+        intercepts: [
+${interceptEntries.join(",\n")}
+        ],
       }`;
     });
     return `  {
@@ -204,7 +219,41 @@ function matchPattern(url, pattern) {
   return params;
 }
 
-async function buildPageElement(route, params) {
+// Build a global intercepting route lookup for RSC navigation.
+// Maps target URL patterns to { sourceRouteIndex, slotName, interceptPage, params }.
+const interceptLookup = [];
+for (let ri = 0; ri < routes.length; ri++) {
+  const r = routes[ri];
+  if (!r.slots) continue;
+  for (const [slotName, slotMod] of Object.entries(r.slots)) {
+    if (!slotMod.intercepts) continue;
+    for (const intercept of slotMod.intercepts) {
+      interceptLookup.push({
+        sourceRouteIndex: ri,
+        slotName,
+        targetPattern: intercept.targetPattern,
+        page: intercept.page,
+        params: intercept.params,
+      });
+    }
+  }
+}
+
+/**
+ * Check if a pathname matches any intercepting route.
+ * Returns the match info or null.
+ */
+function findIntercept(pathname) {
+  for (const entry of interceptLookup) {
+    const params = matchPattern(pathname, entry.targetPattern);
+    if (params !== null) {
+      return { ...entry, matchedParams: params };
+    }
+  }
+  return null;
+}
+
+async function buildPageElement(route, params, opts) {
   const PageComponent = route.page?.default;
   if (!PageComponent) {
     return createElement("div", null, "Page has no default export");
@@ -275,9 +324,20 @@ async function buildPageElement(route, params) {
       // Add parallel slot elements to the innermost layout
       if (i === route.layouts.length - 1 && route.slots) {
         for (const [slotName, slotMod] of Object.entries(route.slots)) {
-          const SlotPage = slotMod.page?.default || slotMod.default?.default;
+          // Check if this slot has an intercepting route that should activate
+          let SlotPage = null;
+          let slotParams = params;
+
+          if (opts && opts.interceptSlot === slotName && opts.interceptPage) {
+            // Use the intercepting route's page component
+            SlotPage = opts.interceptPage.default;
+            slotParams = opts.interceptParams || params;
+          } else {
+            SlotPage = slotMod.page?.default || slotMod.default?.default;
+          }
+
           if (SlotPage) {
-            let slotElement = createElement(SlotPage, { params });
+            let slotElement = createElement(SlotPage, { params: slotParams });
             // Wrap with slot-specific loading if present
             if (slotMod.loading?.default) {
               slotElement = createElement(Suspense,
@@ -587,7 +647,45 @@ export default async function handler(request) {
     }
   }
 
-  const element = await buildPageElement(route, params);
+  // Check for intercepting routes on RSC requests (client-side navigation).
+  // If the target URL matches an intercepting route in a parallel slot,
+  // render the source route with the intercepting page in the slot.
+  let interceptOpts = undefined;
+  if (isRscRequest) {
+    const intercept = findIntercept(cleanPathname);
+    if (intercept) {
+      const sourceRoute = routes[intercept.sourceRouteIndex];
+      if (sourceRoute && sourceRoute !== route) {
+        // Render the source route (e.g. /feed) with the intercepting page in the slot
+        const sourceMatch = matchRoute(sourceRoute.pattern, routes);
+        const sourceParams = sourceMatch ? sourceMatch.params : {};
+        setNavigationContext({
+          pathname: cleanPathname,
+          searchParams: url.searchParams,
+          params: intercept.matchedParams,
+        });
+        const interceptElement = await buildPageElement(sourceRoute, sourceParams, {
+          interceptSlot: intercept.slotName,
+          interceptPage: intercept.page,
+          interceptParams: intercept.matchedParams,
+        });
+        const interceptStream = renderToReadableStream(interceptElement);
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return new Response(interceptStream, {
+          headers: { "Content-Type": "text/x-component; charset=utf-8" },
+        });
+      }
+      // If sourceRoute === route, apply intercept opts to the normal render
+      interceptOpts = {
+        interceptSlot: intercept.slotName,
+        interceptPage: intercept.page,
+        interceptParams: intercept.matchedParams,
+      };
+    }
+  }
+
+  const element = await buildPageElement(route, params, interceptOpts);
 
   // Note: CSS is automatically injected by @vitejs/plugin-rsc's
   // rscCssTransform — no manual loadCss() call needed.

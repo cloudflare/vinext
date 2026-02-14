@@ -110,3 +110,18 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **App Router ISR**: `export const revalidate = N` in page modules. Read at runtime from `route.page.revalidate` in the generated RSC handler. The RSC stream output is tee'd — one copy for the response, one consumed for caching.
 - **`Cache-Control: s-maxage=N, stale-while-revalidate`** is set on all ISR responses (MISS/HIT/STALE). This enables CDN-level caching that mirrors server-side ISR behavior. CDNs like Cloudflare respect these headers natively.
 - **`X-Nextcompat-Cache: HIT|STALE|MISS`** header for observability — makes it easy to debug ISR behavior in browser DevTools or monitoring.
+
+## Parallel Routes
+
+- **`@slot` directories are invisible in URLs** — they are stripped from URL patterns the same way route groups `(group)` are. Slot pages (`@team/page.tsx`) don't create standalone routes.
+- **Parallel slots are props to the layout**, not separate routes. The innermost layout at the route directory level receives slot content as named props (e.g., `team`, `analytics`) alongside `children`.
+- **Slots need at least a `page.tsx` or `default.tsx`** to be discovered. A `default.tsx` provides fallback content when the slot shouldn't render anything (e.g., no modal active).
+- **Each slot can have its own `loading.tsx` and `error.tsx`**, wrapped independently with `Suspense` and `ErrorBoundary`.
+
+## Intercepting Routes
+
+- **Interception conventions**: `(.)` (same level), `(..)` (one level up), `(..)(..)` (two levels up), `(...)` (from root). These are directory name prefixes inside `@slot` directories.
+- **Intercepting routes only activate on client-side navigation** (RSC requests), not on direct/hard navigation (SSR). On SSR, the target route renders normally and the slot shows `default.tsx`.
+- **`(...)photos/[id]` from `app/feed/@modal/`** intercepts `/photos/:id` (resolves from app root). This is different from `(.)photos/[id]` which would resolve to `/feed/photos/:id` (same level as the route).
+- **The source route is rendered with the intercepting page in the slot**, not the target route. e.g., navigating from `/feed` to `/photos/42` renders the `/feed` layout with `@modal` showing the photo modal, not the `/photos/42` page.
+- **RSC payload contains both the source route content and the intercepted slot content**, so the client can render the feed page with the modal overlay in a single stream.

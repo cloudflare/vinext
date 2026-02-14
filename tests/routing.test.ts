@@ -371,4 +371,46 @@ describe("matchAppRoute - URL matching", () => {
     expect(homeRoute).toBeDefined();
     expect(homeRoute!.parallelSlots).toEqual([]);
   });
+
+  it("discovers intercepting routes inside parallel slots", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const feedRoute = routes.find((r) => r.pattern === "/feed");
+
+    expect(feedRoute).toBeDefined();
+    expect(feedRoute!.parallelSlots.length).toBe(1);
+
+    const modalSlot = feedRoute!.parallelSlots.find((s) => s.name === "modal");
+    expect(modalSlot).toBeDefined();
+    expect(modalSlot!.interceptingRoutes.length).toBe(1);
+
+    const intercept = modalSlot!.interceptingRoutes[0];
+    expect(intercept.convention).toBe("...");
+    expect(intercept.targetPattern).toBe("/photos/:id");
+    expect(intercept.params).toEqual(["id"]);
+    expect(intercept.pagePath).toContain("(...)photos");
+  });
+
+  it("intercepting route pages are not standalone routes", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const patterns = routes.map((r) => r.pattern);
+
+    // The intercepting page should not create a standalone route at its intercept path
+    // (it lives inside @modal which is filtered from route discovery)
+    expect(patterns.some((p) => p.includes("("))).toBe(false);
+    // But the actual target route should exist
+    expect(patterns).toContain("/photos/:id");
+  });
+
+  it("discovers the full photo page as a regular route", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const photoRoute = routes.find((r) => r.pattern === "/photos/:id");
+
+    expect(photoRoute).toBeDefined();
+    expect(photoRoute!.isDynamic).toBe(true);
+    expect(photoRoute!.params).toEqual(["id"]);
+    expect(photoRoute!.pagePath).toContain("photos/[id]/page.tsx");
+  });
 });

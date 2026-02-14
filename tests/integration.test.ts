@@ -878,6 +878,50 @@ describe("App Router integration", () => {
     expect(analyticsRes.status).toBe(404);
   });
 
+  // --- Intercepting routes ---
+
+  it("renders full photo page on direct navigation (SSR)", async () => {
+    const res = await fetch(`${baseUrl}/photos/42`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Direct navigation renders the full photo page, not the modal
+    // React SSR inserts <!-- --> between text and expressions
+    expect(html).toMatch(/Photo\s*(<!--\s*-->)?\s*42/);
+    expect(html).toContain("Full photo view");
+    expect(html).toContain('data-testid="photo-page"');
+    // Should NOT contain the modal version
+    expect(html).not.toContain('data-testid="photo-modal"');
+  });
+
+  it("renders feed page without modal on direct navigation (SSR)", async () => {
+    const res = await fetch(`${baseUrl}/feed`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Photo Feed");
+    expect(html).toContain('data-testid="feed-page"');
+    // Modal slot should render default (null), so no modal content
+    expect(html).not.toContain('data-testid="photo-modal"');
+  });
+
+  it("renders intercepted photo modal on RSC navigation from feed", async () => {
+    // RSC request simulates client-side navigation
+    const res = await fetch(`${baseUrl}/photos/42.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+
+    const rscPayload = await res.text();
+    // The RSC payload should contain the intercepted modal content
+    expect(rscPayload).toContain("Photo Modal");
+    expect(rscPayload).toContain("photo-modal");
+    // It should also contain the feed page content (the source route)
+    expect(rscPayload).toContain("Photo Feed");
+    expect(rscPayload).toContain("feed-page");
+  });
+
   it("returns Method Not Allowed for unsupported HTTP methods on route handlers", async () => {
     const res = await fetch(`${baseUrl}/api/hello`, { method: "DELETE" });
     expect(res.status).toBe(405);
