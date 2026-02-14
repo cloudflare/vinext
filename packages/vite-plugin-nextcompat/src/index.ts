@@ -42,6 +42,8 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
               "next/router": path.join(shimsDir, "router"),
               "next/image": path.join(shimsDir, "image"),
               "next/dynamic": path.join(shimsDir, "dynamic"),
+              "next/app": path.join(shimsDir, "app"),
+              "next/document": path.join(shimsDir, "document"),
             },
           },
           // Enable JSX in .tsx/.jsx files

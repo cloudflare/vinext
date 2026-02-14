@@ -93,4 +93,30 @@ describe("Pages Router integration", () => {
     const html = await res.text();
     expect(html).toContain("@vite/client");
   });
+
+  it("wraps pages with custom _app.tsx", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    const html = await res.text();
+    // _app.tsx wraps with an #app-wrapper div and a global nav
+    expect(html).toContain("app-wrapper");
+    expect(html).toContain("My App");
+  });
+
+  it("_app.tsx wrapping works on all pages", async () => {
+    const res = await fetch(`${baseUrl}/about`);
+    const html = await res.text();
+    expect(html).toContain("app-wrapper");
+    expect(html).toContain("About");
+  });
+
+  it("uses custom _document.tsx for HTML shell", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    const html = await res.text();
+    // Custom _document sets lang="en" on <html>
+    expect(html).toContain('lang="en"');
+    // Custom _document adds a meta description
+    expect(html).toContain("A nextcompat test app");
+    // Custom _document sets className on body
+    expect(html).toContain("custom-body");
+  });
 });

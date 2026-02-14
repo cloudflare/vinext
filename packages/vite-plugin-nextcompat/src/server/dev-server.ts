@@ -127,12 +127,48 @@ export function createSSRHandler(
         element = createElement(PageComponent, pageProps);
       }
 
-      // Render to HTML string
+      // Render page to HTML string
       const bodyHtml = ReactDOMServer.renderToString(element);
 
-      // Build the full HTML document
-      // Later: use _document.tsx if available
-      const html = `<!DOCTYPE html>
+      const nextDataScript = `<script>window.__NEXT_DATA__ = ${JSON.stringify({
+        props: { pageProps },
+        page: route.pattern,
+        query: params,
+      })}</script>`;
+
+      // Try to load custom _document.tsx
+      let html: string;
+      const docPath = path.join(pagesDir, "_document");
+      let DocumentComponent: any = null;
+      try {
+        const docModule = await server.ssrLoadModule(docPath);
+        DocumentComponent = docModule.default ?? null;
+      } catch {
+        // No custom _document, use default shell
+      }
+
+      if (DocumentComponent) {
+        // Render the custom Document component
+        const docElement = createElement(DocumentComponent);
+        let docHtml = "<!DOCTYPE html>" + ReactDOMServer.renderToString(docElement);
+        // Replace the __NEXT_MAIN__ placeholder with actual page content
+        docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
+        // Replace the NextScript placeholder comment with actual scripts
+        docHtml = docHtml.replace(
+          "<!-- __NEXT_SCRIPTS__ -->",
+          `${nextDataScript}\n  <script type="module" src="/@vite/client"></script>`,
+        );
+        // If no placeholder comment found, inject scripts before </body>
+        if (!docHtml.includes(nextDataScript)) {
+          docHtml = docHtml.replace(
+            "</body>",
+            `  ${nextDataScript}\n  <script type="module" src="/@vite/client"></script>\n</body>`,
+          );
+        }
+        html = docHtml;
+      } else {
+        // Default document shell
+        html = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -140,14 +176,11 @@ export function createSSRHandler(
 </head>
 <body>
   <div id="__next">${bodyHtml}</div>
-  <script>window.__NEXT_DATA__ = ${JSON.stringify({
-    props: { pageProps },
-    page: route.pattern,
-    query: params,
-  })}</script>
+  ${nextDataScript}
   <script type="module" src="/@vite/client"></script>
 </body>
 </html>`;
+      }
 
       // Apply Vite's HTML transforms (injects HMR client, etc.)
       const transformedHtml = await server.transformIndexHtml(url, html);
