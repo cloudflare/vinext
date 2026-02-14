@@ -15,13 +15,13 @@ interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"
   as?: string;
   /** Replace the current history entry instead of pushing */
   replace?: boolean;
-  /** Prefetch the page in the background (no-op for now) */
+  /** Prefetch the page in the background (default: true, uses IntersectionObserver) */
   prefetch?: boolean;
   /** Whether to pass the href to the child element */
   passHref?: boolean;
   /** Scroll to top on navigation (default: true) */
   scroll?: boolean;
-  /** Locale for i18n (no-op for now) */
+  /** Locale for i18n (used for locale-prefixed URLs) */
   locale?: string | false;
   children?: React.ReactNode;
 }

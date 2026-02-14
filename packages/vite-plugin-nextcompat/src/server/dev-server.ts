@@ -401,6 +401,26 @@ export function createSSRHandler(
         ? headShim.getSSRHeadHTML()
         : "";
 
+      // Collect SSR font links (Google Fonts <link> tags) and font class styles
+      let fontHeadHTML = "";
+      try {
+        const fontGoogle = await server.ssrLoadModule("next/font/google");
+        if (typeof fontGoogle.getSSRFontLinks === "function") {
+          const fontUrls = fontGoogle.getSSRFontLinks();
+          for (const url of fontUrls) {
+            fontHeadHTML += `<link rel="stylesheet" href="${url}" />\n  `;
+          }
+        }
+        if (typeof fontGoogle.getSSRFontStyles === "function") {
+          const fontStyles = fontGoogle.getSSRFontStyles();
+          if (fontStyles.length > 0) {
+            fontHeadHTML += `<style data-nextcompat-fonts>${fontStyles.join("\n")}</style>\n  `;
+          }
+        }
+      } catch {
+        // next/font/google not used — skip
+      }
+
       // Convert absolute file paths to Vite-servable URLs (relative to root)
       const viteRoot = server.config.root;
       const pageModuleUrl = "/" + path.relative(viteRoot, route.filePath);
@@ -476,9 +496,9 @@ hydrate();
         let docHtml = await renderToStringAsync(docElement);
         // Replace the __NEXT_MAIN__ placeholder with actual page content
         docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
-        // Inject SSR head tags into </head>
-        if (ssrHeadHTML) {
-          docHtml = docHtml.replace("</head>", `  ${ssrHeadHTML}\n</head>`);
+        // Inject SSR head tags and font styles into </head>
+        if (ssrHeadHTML || fontHeadHTML) {
+          docHtml = docHtml.replace("</head>", `  ${fontHeadHTML}${ssrHeadHTML}\n</head>`);
         }
         // Replace the NextScript placeholder with actual scripts
         docHtml = docHtml.replace(
@@ -500,7 +520,7 @@ hydrate();
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  ${ssrHeadHTML}
+  ${fontHeadHTML}${ssrHeadHTML}
 </head>
 <body>
   <div id="__next">${bodyHtml}</div>

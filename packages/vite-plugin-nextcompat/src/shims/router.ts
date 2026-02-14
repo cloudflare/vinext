@@ -55,7 +55,7 @@ interface NextRouter {
   back(): void;
   /** Reload the page */
   reload(): void;
-  /** Prefetch a page (no-op for now) */
+  /** Prefetch a page (injects <link rel="prefetch">) */
   prefetch(url: string): Promise<void>;
   /** Listen for route changes */
   events: RouterEvents;
