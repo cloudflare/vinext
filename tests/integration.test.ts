@@ -1050,6 +1050,22 @@ describe("App Router integration", () => {
     expect(res.status).toBe(404);
   });
 
+  it("notFound() escalates to nearest ancestor not-found.tsx", async () => {
+    // /dashboard/missing calls notFound() — should use dashboard/not-found.tsx
+    // (not the root not-found.tsx), wrapped in dashboard layout
+    const res = await fetch(`${baseUrl}/dashboard/missing`);
+    expect(res.status).toBe(404);
+
+    const html = await res.text();
+    // Should render the dashboard-specific not-found page
+    expect(html).toContain("Dashboard: Page Not Found");
+    expect(html).toContain("dashboard-not-found");
+    // Should be wrapped in the dashboard layout
+    expect(html).toContain("dashboard-layout");
+    // Should also be wrapped in the root layout
+    expect(html).toContain('<html lang="en">');
+  });
+
   it("redirect() from Server Component returns redirect response", async () => {
     const res = await fetch(`${baseUrl}/redirect-test`, { redirect: "manual" });
     expect(res.status).toBeGreaterThanOrEqual(300);
@@ -1177,6 +1193,43 @@ describe("App Router integration", () => {
     expect(html).toMatch(/name="theme-color".*content="#0070f3"/);
     // Color scheme
     expect(html).toMatch(/name="color-scheme".*content="light dark"/);
+  });
+
+  it("RSC stream for metadata-test page includes metadata head tags", async () => {
+    // The .rsc endpoint returns the RSC payload (serialized React tree).
+    // When the client deserializes and renders this, MetadataHead should produce
+    // <title> and <meta> tags that React 19 hoists to <head>.
+    const res = await fetch(`${baseUrl}/metadata-test.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+
+    const rscText = await res.text();
+    // The RSC stream contains serialized React elements, including title and meta
+    expect(rscText).toContain("Metadata Test Page"); // title text
+    expect(rscText).toContain("A page to test the metadata API"); // description
+    expect(rscText).toContain("OG Title"); // og:title
+  });
+
+  it("different pages have different metadata in RSC responses", async () => {
+    // Fetch RSC for home page and metadata-test page
+    const homeRes = await fetch(`${baseUrl}/.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    const metaRes = await fetch(`${baseUrl}/metadata-test.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+
+    const homeRsc = await homeRes.text();
+    const metaRsc = await metaRes.text();
+
+    // Home page should have its own title
+    expect(homeRsc).toContain("App Basic");
+    // Metadata-test should have its specific title
+    expect(metaRsc).toContain("Metadata Test Page");
+    // They should be different
+    expect(homeRsc).not.toContain("Metadata Test Page");
   });
 
   it("serves /icon from dynamic icon.tsx using ImageResponse", async () => {

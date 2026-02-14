@@ -188,11 +188,14 @@ function fileToAppRoute(
   const layouts = discoverLayouts(segments, appDir);
   const templates = discoverTemplates(segments, appDir);
 
-  // Discover loading, error, not-found in the route's directory
+  // Discover loading, error in the route's directory
   const routeDir = dir === "." ? appDir : path.join(appDir, dir);
   const loadingPath = findFile(routeDir, "loading");
   const errorPath = findFile(routeDir, "error");
-  const notFoundPath = findFile(routeDir, "not-found");
+
+  // Discover not-found: walk from route directory up to root (nearest wins).
+  // The route stores the closest not-found.tsx found when walking up the tree.
+  const notFoundPath = discoverNotFound(segments, appDir, routeDir);
 
   // Discover parallel slots (@team, @analytics, etc.).
   // Slots at the route's own directory use page.tsx; slots at ancestor directories
@@ -257,6 +260,32 @@ function discoverTemplates(segments: string[], appDir: string): string[] {
   }
 
   return templates;
+}
+
+/**
+ * Discover the nearest not-found file by walking from the route's directory
+ * up to the app root. Returns the first (closest) not-found file found, or null.
+ */
+function discoverNotFound(
+  segments: string[],
+  appDir: string,
+  _routeDir: string,
+): string | null {
+  // Build all directory paths from leaf to root and check each for not-found
+  const dirs: string[] = [];
+  let dir = appDir;
+  dirs.push(dir);
+  for (const segment of segments) {
+    dir = path.join(dir, segment);
+    dirs.push(dir);
+  }
+
+  // Walk from leaf (last) to root (first)
+  for (let i = dirs.length - 1; i >= 0; i--) {
+    const nf = findFile(dirs[i], "not-found");
+    if (nf) return nf;
+  }
+  return null;
 }
 
 /**
