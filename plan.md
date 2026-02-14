@@ -36,6 +36,38 @@ anywhere Vite deploys - which is everywhere.
 This is arguably the strongest practical motivation: not just cleaner
 internals, but **liberating Next.js apps from vendor lock-in**.
 
+## Design Principle: Deploy Anywhere by Default
+
+This is the guiding principle behind every implementation decision.
+
+Vercel optimizes for Vercel. Every feature they build assumes their
+infrastructure - their image optimizer, their edge network, their serverless
+runtime, their caching layer. If you're not on Vercel, you're an
+afterthought. The result is that the entire OpenNext project exists just to
+reverse-engineer Vercel's assumptions.
+
+**We do the opposite.** We build on Vite, whose output is standard and
+portable. Every feature we implement must work everywhere out of the box,
+with zero provider-specific configuration:
+
+- **Images**: Auto-detect the CDN, use its native transforms. No hardwired
+  optimizer. Works on Cloudflare, Netlify, AWS, self-hosted, whatever.
+- **Server runtime**: Standard Node.js. No Edge Runtime, no proprietary
+  serverless format. Just a server that runs anywhere Node runs.
+- **Build output**: Standard Vite build artifacts. Static assets are static
+  assets. Server code is server code. No proprietary `.nft.json` trace files,
+  no Vercel-specific routing manifests.
+- **Caching/ISR**: Use standard HTTP caching semantics, not a proprietary
+  revalidation protocol tied to a specific CDN.
+- **Middleware**: Runs in Node. Works the same on every platform.
+
+The litmus test for every feature: **"does this work if I deploy to a \$5
+VPS?"** If the answer is no, we're doing it wrong.
+
+This is what Vite gives us for free. Vite doesn't care where you deploy. Its
+ecosystem of tools and plugins assumes nothing about your hosting. That
+portability is the whole point of building on top of it.
+
 ## Why This Might Actually Work
 
 - Vite already handles JSX/TSX, CSS Modules, HMR, code splitting, SSR
