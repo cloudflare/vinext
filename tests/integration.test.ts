@@ -80,9 +80,13 @@ describe("Pages Router integration", () => {
     expect(html).toMatch(/Query ID:\s*(<!--\s*-->)?\s*42/);
   });
 
-  it("returns 404 for non-existent routes", async () => {
+  it("returns 404 with custom 404 page for non-existent routes", async () => {
     const res = await fetch(`${baseUrl}/nonexistent`);
     expect(res.status).toBe(404);
+    const html = await res.text();
+    // Should render the custom 404 page
+    expect(html).toContain("404 - Page Not Found");
+    expect(html).toContain("does not exist");
   });
 
   it("includes __NEXT_DATA__ script tag", async () => {

@@ -29,9 +29,8 @@ export function createSSRHandler(
     const match = matchRoute(url, routes);
 
     if (!match) {
-      // No route matched - let Vite handle it (404, static files, etc.)
-      res.statusCode = 404;
-      res.end("404 - Page not found");
+      // No route matched — try to render custom 404 page
+      await renderErrorPage(server, req, res, url, pagesDir, 404);
       return;
     }
 
@@ -243,13 +242,124 @@ hydrate();
       res.writeHead(200, { "Content-Type": "text/html" });
       res.end(transformedHtml);
     } catch (e) {
-      // Let Vite handle the error (nice overlay in dev)
+      // Let Vite fix the stack trace for better dev experience
       server.ssrFixStacktrace(e as Error);
       console.error(e);
-      res.statusCode = 500;
-      res.end(`Internal Server Error: ${(e as Error).message}`);
+      // Try to render custom 500 error page
+      try {
+        await renderErrorPage(server, req, res, url, pagesDir, 500);
+      } catch {
+        // If error page itself fails, fall back to plain text
+        res.statusCode = 500;
+        res.end(`Internal Server Error: ${(e as Error).message}`);
+      }
     }
   };
+}
+
+/**
+ * Render a custom error page (404.tsx, 500.tsx, or _error.tsx).
+ *
+ * Next.js resolution order:
+ * - 404: pages/404.tsx -> pages/_error.tsx -> default
+ * - 500: pages/500.tsx -> pages/_error.tsx -> default
+ * - other: pages/_error.tsx -> default
+ */
+async function renderErrorPage(
+  server: ViteDevServer,
+  _req: IncomingMessage,
+  res: ServerResponse,
+  url: string,
+  pagesDir: string,
+  statusCode: number,
+): Promise<void> {
+  // Try specific status page first, then _error, then fallback
+  const candidates =
+    statusCode === 404
+      ? ["404", "_error"]
+      : statusCode === 500
+        ? ["500", "_error"]
+        : ["_error"];
+
+  for (const candidate of candidates) {
+    try {
+      const errorModule = await server.ssrLoadModule(
+        path.join(pagesDir, candidate),
+      );
+      const ErrorComponent = errorModule.default;
+      if (!ErrorComponent) continue;
+
+      // Try to load _app.tsx to wrap the error page
+      let AppComponent: any = null;
+      try {
+        const appModule = await server.ssrLoadModule(
+          path.join(pagesDir, "_app"),
+        );
+        AppComponent = appModule.default ?? null;
+      } catch {
+        // No _app, that's fine
+      }
+
+      const createElement = React.createElement;
+      const errorProps = { statusCode };
+
+      let element: React.ReactElement;
+      if (AppComponent) {
+        element = createElement(AppComponent, {
+          Component: ErrorComponent,
+          pageProps: errorProps,
+        });
+      } else {
+        element = createElement(ErrorComponent, errorProps);
+      }
+
+      const bodyHtml = ReactDOMServer.renderToString(element);
+
+      // Try custom _document
+      let html: string;
+      let DocumentComponent: any = null;
+      try {
+        const docModule = await server.ssrLoadModule(
+          path.join(pagesDir, "_document"),
+        );
+        DocumentComponent = docModule.default ?? null;
+      } catch {
+        // No custom _document
+      }
+
+      if (DocumentComponent) {
+        const docElement = createElement(DocumentComponent);
+        let docHtml =
+          "<!DOCTYPE html>" + ReactDOMServer.renderToString(docElement);
+        docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
+        docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");
+        html = docHtml;
+      } else {
+        html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+<body>
+  <div id="__next">${bodyHtml}</div>
+</body>
+</html>`;
+      }
+
+      const transformedHtml = await server.transformIndexHtml(url, html);
+      res.writeHead(statusCode, { "Content-Type": "text/html" });
+      res.end(transformedHtml);
+      return;
+    } catch {
+      // This candidate doesn't exist, try next
+      continue;
+    }
+  }
+
+  // No custom error page found — use plain text fallback
+  res.writeHead(statusCode, { "Content-Type": "text/plain" });
+  res.end(`${statusCode} - ${statusCode === 404 ? "Page not found" : "Internal Server Error"}`);
 }
 
 function parseQuery(url: string): Record<string, string> {
