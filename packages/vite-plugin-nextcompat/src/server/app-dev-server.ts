@@ -601,11 +601,15 @@ export default async function handler(request) {
     return new Response("Page has no default export", { status: 500 });
   }
 
-  // Read ISR revalidate from route segment config (export const revalidate = N)
+  // Read route segment config from page module exports
   const revalidateSeconds = typeof route.page?.revalidate === "number" ? route.page.revalidate : null;
+  const dynamicConfig = route.page?.dynamic; // 'auto' | 'force-dynamic' | 'force-static' | 'error'
 
-  // ISR cache check for App Router pages with revalidate
-  if (revalidateSeconds !== null && revalidateSeconds > 0) {
+  // force-dynamic: skip ISR cache, set no-store Cache-Control
+  const isForceDynamic = dynamicConfig === "force-dynamic";
+
+  // ISR cache check for App Router pages with revalidate (skip if force-dynamic)
+  if (!isForceDynamic && revalidateSeconds !== null && revalidateSeconds > 0) {
     const cacheKey = "app:" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
     const cached = await isrGet(cacheKey);
 
@@ -698,7 +702,9 @@ export default async function handler(request) {
     setHeadersContext(null);
     setNavigationContext(null);
     const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8" };
-    if (revalidateSeconds) {
+    if (isForceDynamic) {
+      responseHeaders["Cache-Control"] = "no-store, must-revalidate";
+    } else if (revalidateSeconds) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
       responseHeaders["X-Nextcompat-Cache"] = "MISS";
     }
@@ -712,8 +718,18 @@ export default async function handler(request) {
   setHeadersContext(null);
   setNavigationContext(null);
 
+  // force-dynamic: return response with no-store header
+  if (isForceDynamic) {
+    return new Response(htmlStream, {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store, must-revalidate",
+      },
+    });
+  }
+
   // If ISR is enabled, cache the rendered HTML
-  if (revalidateSeconds !== null && revalidateSeconds > 0) {
+  if (!isForceDynamic && revalidateSeconds !== null && revalidateSeconds > 0) {
     // We need to tee the stream: one for caching, one for the response
     const [cacheStream, responseStream] = htmlStream.tee();
     const cacheKey = "app:" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));

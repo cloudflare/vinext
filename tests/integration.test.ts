@@ -1085,6 +1085,45 @@ describe("App Router integration", () => {
     // global-error content should NOT appear in normal rendering
     expect(html).not.toContain("Something went wrong!");
   });
+
+  it("export const dynamic = 'force-dynamic' sets no-store Cache-Control", async () => {
+    const res = await fetch(`${baseUrl}/dynamic-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Force Dynamic Page");
+    expect(html).toContain('data-testid="dynamic-test-page"');
+
+    // force-dynamic should set no-store Cache-Control
+    const cacheControl = res.headers.get("cache-control");
+    expect(cacheControl).toContain("no-store");
+  });
+
+  it("force-dynamic pages get fresh content on each request", async () => {
+    const res1 = await fetch(`${baseUrl}/dynamic-test`);
+    const html1 = await res1.text();
+    const ts1 = html1.match(/data-testid="timestamp">(<!-- -->)?(\d+)/);
+
+    // Small delay to ensure different timestamp
+    await new Promise((r) => setTimeout(r, 5));
+
+    const res2 = await fetch(`${baseUrl}/dynamic-test`);
+    const html2 = await res2.text();
+    const ts2 = html2.match(/data-testid="timestamp">(<!-- -->)?(\d+)/);
+
+    expect(ts1).toBeTruthy();
+    expect(ts2).toBeTruthy();
+    // Timestamps should be different (not cached)
+    expect(ts1![2]).not.toBe(ts2![2]);
+  });
+
+  it("non-force-dynamic pages do not set no-store", async () => {
+    const res = await fetch(`${baseUrl}/about`);
+    expect(res.status).toBe(200);
+    const cacheControl = res.headers.get("cache-control");
+    // Normal pages should not have no-store
+    expect(cacheControl).toBeNull();
+  });
 });
 
 describe("App Router Production build", () => {
