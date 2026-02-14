@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * next/link shim
  *
@@ -68,23 +70,35 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
 
     e.preventDefault();
 
-    // Use the Router singleton to navigate (which triggers client-side page swap)
-    try {
-      const routerModule = await import("next/router");
-      const Router = routerModule.default;
+    // Try RSC navigation first (App Router), then Pages Router
+    const win = window as any;
+    if (typeof win.__NEXTCOMPAT_RSC_NAVIGATE__ === "function") {
+      // App Router: push/replace history state, then fetch RSC stream
       if (replace) {
-        await Router.replace(resolvedHref);
+        window.history.replaceState(null, "", resolvedHref);
       } else {
-        await Router.push(resolvedHref);
+        window.history.pushState(null, "", resolvedHref);
       }
-    } catch {
-      // Fallback to hard navigation if router fails
-      if (replace) {
-        window.history.replaceState({}, "", resolvedHref);
-      } else {
-        window.history.pushState({}, "", resolvedHref);
+      win.__NEXTCOMPAT_RSC_NAVIGATE__(resolvedHref);
+    } else {
+      // Pages Router: use the Router singleton
+      try {
+        const routerModule = await import("next/router");
+        const Router = routerModule.default;
+        if (replace) {
+          await Router.replace(resolvedHref);
+        } else {
+          await Router.push(resolvedHref);
+        }
+      } catch {
+        // Fallback to hard navigation if router fails
+        if (replace) {
+          window.history.replaceState({}, "", resolvedHref);
+        } else {
+          window.history.pushState({}, "", resolvedHref);
+        }
+        window.dispatchEvent(new PopStateEvent("popstate"));
       }
-      window.dispatchEvent(new PopStateEvent("popstate"));
     }
 
     if (scroll) {

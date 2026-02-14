@@ -515,26 +515,32 @@ hydrate();
       },
 
       resolveId(id) {
+        // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
+        // browser entry imports our virtual module using the already-resolved
+        // ID (with \0 prefix). We need to re-resolve it so the client
+        // environment's import-analysis can find it.
+        const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+
         // Pages Router virtual modules
-        if (id === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
-        if (id === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
-        if (id.endsWith("/" + VIRTUAL_SERVER_ENTRY) || id.endsWith("\\" + VIRTUAL_SERVER_ENTRY)) {
+        if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
+        if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
+        if (cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_SERVER_ENTRY)) {
           return RESOLVED_SERVER_ENTRY;
         }
-        if (id.endsWith("/" + VIRTUAL_CLIENT_ENTRY) || id.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)) {
+        if (cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)) {
           return RESOLVED_CLIENT_ENTRY;
         }
         // App Router virtual modules
-        if (id === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
-        if (id === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
-        if (id === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
-        if (id.endsWith("/" + VIRTUAL_RSC_ENTRY) || id.endsWith("\\" + VIRTUAL_RSC_ENTRY)) {
+        if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
+        if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
+        if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
+        if (cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_RSC_ENTRY)) {
           return RESOLVED_RSC_ENTRY;
         }
-        if (id.endsWith("/" + VIRTUAL_APP_SSR_ENTRY) || id.endsWith("\\" + VIRTUAL_APP_SSR_ENTRY)) {
+        if (cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_APP_SSR_ENTRY)) {
           return RESOLVED_APP_SSR_ENTRY;
         }
-        if (id.endsWith("/" + VIRTUAL_APP_BROWSER_ENTRY) || id.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)) {
+        if (cleanId.endsWith("/" + VIRTUAL_APP_BROWSER_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)) {
           return RESOLVED_APP_BROWSER_ENTRY;
         }
       },

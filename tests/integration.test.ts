@@ -679,6 +679,16 @@ describe("App Router integration", () => {
     expect(html).toContain("route group");
   });
 
+  it("renders next/link as <a> tags with correct hrefs", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    const html = await res.text();
+
+    // Links should be rendered as <a> tags
+    expect(html).toMatch(/<a\s[^>]*href="\/about"[^>]*>Go to About<\/a>/);
+    expect(html).toMatch(/<a\s[^>]*href="\/blog\/hello-world"[^>]*>Go to Blog<\/a>/);
+    expect(html).toMatch(/<a\s[^>]*href="\/dashboard"[^>]*>Go to Dashboard<\/a>/);
+  });
+
   it("renders dynamic metadata from generateMetadata()", async () => {
     const res = await fetch(`${baseUrl}/blog/my-post`);
     expect(res.status).toBe(200);
