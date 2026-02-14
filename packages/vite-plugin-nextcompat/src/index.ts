@@ -576,6 +576,22 @@ hydrate();
               "next/amp": path.join(shimsDir, "amp"),
               "next/error": path.join(shimsDir, "error"),
               "next/constants": path.join(shimsDir, "constants"),
+              // Internal next/dist/* paths used by popular libraries
+              // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
+              "next/dist/shared/lib/app-router-context.shared-runtime": path.join(shimsDir, "internal", "app-router-context"),
+              "next/dist/shared/lib/app-router-context": path.join(shimsDir, "internal", "app-router-context"),
+              "next/dist/shared/lib/router-context.shared-runtime": path.join(shimsDir, "internal", "router-context"),
+              "next/dist/shared/lib/utils": path.join(shimsDir, "internal", "utils"),
+              "next/dist/server/api-utils": path.join(shimsDir, "internal", "api-utils"),
+              "next/dist/server/web/spec-extension/cookies": path.join(shimsDir, "internal", "cookies"),
+              "next/dist/compiled/@edge-runtime/cookies": path.join(shimsDir, "internal", "cookies"),
+              "next/dist/server/app-render/work-unit-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
+              "next/dist/client/components/work-unit-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
+              "next/dist/client/components/request-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
+              "next/dist/client/components/request-async-storage": path.join(shimsDir, "internal", "work-unit-async-storage"),
+              // Re-export public modules for internal path imports
+              "next/dist/client/components/navigation": path.join(shimsDir, "navigation"),
+              "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
               "nextcompat/error-boundary": path.join(shimsDir, "error-boundary"),
               "nextcompat/metadata": path.join(shimsDir, "metadata"),
             },

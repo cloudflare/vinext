@@ -4215,3 +4215,65 @@ describe("next/script SSR rendering", () => {
     expect(typeof scriptModule.initScriptLoader).toBe("function");
   });
 });
+
+// ─── next/dist/* internal import shims ──────────────────────────────────────
+describe("next/dist/* internal import shims", () => {
+  it("app-router-context exports AppRouterContext and types", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/internal/app-router-context.js"
+    );
+    expect(mod.AppRouterContext).toBeDefined();
+    expect(mod.GlobalLayoutRouterContext).toBeDefined();
+    expect(mod.LayoutRouterContext).toBeDefined();
+    expect(mod.MissingSlotContext).toBeDefined();
+    expect(mod.TemplateContext).toBeDefined();
+  });
+
+  it("utils exports NEXT_DATA type helpers", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/internal/utils.js"
+    );
+    expect(typeof mod.execOnce).toBe("function");
+    expect(typeof mod.getLocationOrigin).toBe("function");
+    expect(typeof mod.getURL).toBe("function");
+
+    // execOnce should only call the function once
+    let count = 0;
+    const fn = mod.execOnce(() => ++count);
+    fn(); fn(); fn();
+    expect(count).toBe(1);
+  });
+
+  it("api-utils exports NextApiRequestCookies type", async () => {
+    // This module is primarily type-only, but should resolve without errors
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/internal/api-utils.js"
+    );
+    expect(mod).toBeDefined();
+  });
+
+  it("cookies shim re-exports RequestCookies and ResponseCookies", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/internal/cookies.js"
+    );
+    expect(mod.RequestCookies).toBeDefined();
+    expect(mod.ResponseCookies).toBeDefined();
+  });
+
+  it("work-unit-async-storage exports AsyncLocalStorage instances", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/internal/work-unit-async-storage.js"
+    );
+    expect(mod.workUnitAsyncStorage).toBeDefined();
+    expect(mod.requestAsyncStorage).toBeDefined();
+    // Both should be the same AsyncLocalStorage instance
+    expect(mod.workUnitAsyncStorage).toBe(mod.requestAsyncStorage);
+  });
+
+  it("router-context exports RouterContext", async () => {
+    const mod = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/internal/router-context.js"
+    );
+    expect(mod.RouterContext).toBeDefined();
+  });
+});
