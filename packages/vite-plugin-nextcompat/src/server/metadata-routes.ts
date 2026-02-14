@@ -370,7 +370,21 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
   }
 
   scan(appDir, "");
-  return routes;
+
+  // Deduplicate: if both dynamic and static variants exist at the same URL,
+  // keep only the dynamic one (matches Next.js behavior).
+  const byUrl = new Map<string, MetadataFileRoute>();
+  for (const route of routes) {
+    const existing = byUrl.get(route.servedUrl);
+    if (!existing) {
+      byUrl.set(route.servedUrl, route);
+    } else if (route.isDynamic && !existing.isDynamic) {
+      // Dynamic takes priority over static
+      byUrl.set(route.servedUrl, route);
+    }
+    // If both are static or both dynamic, keep the first one found
+  }
+  return Array.from(byUrl.values());
 }
 
 function getStaticContentType(ext: string, fallback: string): string {

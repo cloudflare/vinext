@@ -2637,9 +2637,64 @@ describe("metadata routes integration (App Router)", () => {
 
     const iconRoute = routes.find((r: { type: string }) => r.type === "icon");
     expect(iconRoute).toBeDefined();
+    // Dynamic icon.tsx should take priority over static icon.png at same URL
     expect(iconRoute!.isDynamic).toBe(true);
     expect(iconRoute!.servedUrl).toBe("/icon");
     expect(iconRoute!.contentType).toBe("image/png");
+  });
+
+  it("scanMetadataFiles discovers static apple-icon.png at root", async () => {
+    const { scanMetadataFiles } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+    );
+    const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
+    const routes = scanMetadataFiles(appDir);
+
+    const appleIcon = routes.find((r: { type: string }) => r.type === "apple-icon");
+    expect(appleIcon).toBeDefined();
+    expect(appleIcon!.isDynamic).toBe(false);
+    expect(appleIcon!.servedUrl).toBe("/apple-icon");
+    expect(appleIcon!.contentType).toBe("image/png");
+  });
+
+  it("scanMetadataFiles discovers nested opengraph-image.png", async () => {
+    const { scanMetadataFiles } = await import(
+      "../packages/vite-plugin-nextcompat/src/server/metadata-routes.js"
+    );
+    const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
+    const routes = scanMetadataFiles(appDir);
+
+    const ogImage = routes.find(
+      (r: { type: string; servedUrl: string }) =>
+        r.type === "opengraph-image" && r.servedUrl === "/about/opengraph-image",
+    );
+    expect(ogImage).toBeDefined();
+    expect(ogImage!.isDynamic).toBe(false);
+    expect(ogImage!.contentType).toBe("image/png");
+  });
+
+  it("serves static /apple-icon as PNG with cache headers", async () => {
+    const res = await fetch(`${baseUrl}/apple-icon`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    const buf = await res.arrayBuffer();
+    // Verify it's a valid PNG (starts with PNG magic bytes)
+    const magic = new Uint8Array(buf.slice(0, 8));
+    expect(magic[0]).toBe(0x89);
+    expect(magic[1]).toBe(0x50); // P
+    expect(magic[2]).toBe(0x4e); // N
+    expect(magic[3]).toBe(0x47); // G
+  });
+
+  it("serves nested static /about/opengraph-image as PNG", async () => {
+    const res = await fetch(`${baseUrl}/about/opengraph-image`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    const buf = await res.arrayBuffer();
+    const magic = new Uint8Array(buf.slice(0, 4));
+    expect(magic[0]).toBe(0x89);
+    expect(magic[1]).toBe(0x50);
   });
 });
 

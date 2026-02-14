@@ -533,7 +533,10 @@ export default async function handler(request) {
         try {
           const data = fs.readFileSync(metaRoute.filePath);
           return new Response(data, {
-            headers: { "Content-Type": metaRoute.contentType },
+            headers: {
+              "Content-Type": metaRoute.contentType,
+              "Cache-Control": "public, max-age=0, must-revalidate",
+            },
           });
         } catch {
           return new Response("Not Found", { status: 404 });
