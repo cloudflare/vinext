@@ -97,52 +97,48 @@ async function waitForServer(url, timeoutMs = 60000) {
  * Returns { coldStartMs, peakRssKb, process }
  */
 async function startAndMeasure(cmd, args, cwd, url) {
-  return new Promise(async (resolve, reject) => {
-    let peakRssKb = 0;
+  let peakRssKb = 0;
 
-    const proc = spawn(cmd, args, {
-      cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, NODE_ENV: "production", PORT: new URL(url).port },
-    });
-
-    // Collect stderr/stdout for debugging
-    let output = "";
-    proc.stdout?.on("data", (d) => (output += d.toString()));
-    proc.stderr?.on("data", (d) => (output += d.toString()));
-
-    proc.on("error", (err) => reject(err));
-
-    // Poll RSS every 200ms
-    const rssInterval = setInterval(() => {
-      try {
-        const rssLine = execSync(`ps -o rss= -p ${proc.pid}`, { encoding: "utf-8" }).trim();
-        const rss = parseInt(rssLine, 10);
-        if (rss > peakRssKb) peakRssKb = rss;
-      } catch {
-        // process may have died
-      }
-    }, 200);
-
-    try {
-      const coldStartMs = await waitForServer(url, 60000);
-      clearInterval(rssInterval);
-
-      // Final RSS
-      try {
-        const rssLine = execSync(`ps -o rss= -p ${proc.pid}`, { encoding: "utf-8" }).trim();
-        const rss = parseInt(rssLine, 10);
-        if (rss > peakRssKb) peakRssKb = rss;
-      } catch {}
-
-      resolve({ coldStartMs, peakRssKb, process: proc, output });
-    } catch (err) {
-      clearInterval(rssInterval);
-      proc.kill("SIGTERM");
-      console.error("Server output:", output);
-      reject(err);
-    }
+  const proc = spawn(cmd, args, {
+    cwd,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, NODE_ENV: "production", PORT: new URL(url).port },
   });
+
+  // Collect stderr/stdout for debugging
+  let output = "";
+  proc.stdout?.on("data", (d) => (output += d.toString()));
+  proc.stderr?.on("data", (d) => (output += d.toString()));
+
+  // Poll RSS every 200ms
+  const rssInterval = setInterval(() => {
+    try {
+      const rssLine = execSync(`ps -o rss= -p ${proc.pid}`, { encoding: "utf-8" }).trim();
+      const rss = parseInt(rssLine, 10);
+      if (rss > peakRssKb) peakRssKb = rss;
+    } catch {
+      // process may have died
+    }
+  }, 200);
+
+  try {
+    const coldStartMs = await waitForServer(url, 60000);
+    clearInterval(rssInterval);
+
+    // Final RSS
+    try {
+      const rssLine = execSync(`ps -o rss= -p ${proc.pid}`, { encoding: "utf-8" }).trim();
+      const rss = parseInt(rssLine, 10);
+      if (rss > peakRssKb) peakRssKb = rss;
+    } catch { /* process may have died */ }
+
+    return { coldStartMs, peakRssKb, process: proc, output };
+  } catch (err) {
+    clearInterval(rssInterval);
+    proc.kill("SIGTERM");
+    console.error("Server output:", output);
+    throw err;
+  }
 }
 
 function kill(proc) {
@@ -164,20 +160,6 @@ function formatBytes(b) {
 function formatMs(ms) {
   if (ms < 1000) return `${Math.round(ms)} ms`;
   return `${(ms / 1000).toFixed(2)} s`;
-}
-
-// ─── Run autocannon ────────────────────────────────────────────────────────────
-async function runAutocannon(url, duration = 10) {
-  try {
-    const result = exec(
-      `autocannon -d ${duration} -c 10 -p 10 --json "${url}"`,
-      { timeout: (duration + 10) * 1000 }
-    );
-    return JSON.parse(result);
-  } catch (err) {
-    console.error("  autocannon failed:", err.message);
-    return null;
-  }
 }
 
 // ─── Main ──────────────────────────────────────────────────────────────────────
@@ -250,7 +232,7 @@ async function main() {
         { cwd: nextcompatDir, timeout: 600000 }
       );
       results.nextcompat.buildTime = parseHyperfine(ncJson);
-    } catch (err) {
+    } catch {
       // Fallback: manual timing
       console.log("  hyperfine failed, falling back to manual timing...");
       const buildTimes = { nextjs: [], nextcompat: [] };
