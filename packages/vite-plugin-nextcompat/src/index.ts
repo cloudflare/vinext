@@ -110,6 +110,27 @@ import { Writable } from "node:stream";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext } from "next/router";
+import { getCacheHandler } from "next/cache";
+
+// ISR cache helpers (inlined for the server entry)
+async function isrGet(key) {
+  const handler = getCacheHandler();
+  const result = await handler.get(key);
+  if (!result || !result.value) return null;
+  return { value: result, isStale: result.cacheState === "stale" };
+}
+async function isrSet(key, data, revalidateSeconds, tags) {
+  const handler = getCacheHandler();
+  await handler.set(key, data, { revalidate: revalidateSeconds, tags: tags || [] });
+}
+const pendingRegenerations = new Map();
+function triggerBackgroundRegeneration(key, renderFn) {
+  if (pendingRegenerations.has(key)) return;
+  const promise = renderFn()
+    .catch((err) => console.error("[nextcompat] ISR regen failed for " + key + ":", err))
+    .finally(() => pendingRegenerations.delete(key));
+  pendingRegenerations.set(key, promise);
+}
 
 function renderToStringAsync(element) {
   return new Promise((resolve, reject) => {
@@ -251,7 +272,36 @@ export async function renderPage(req, res, url, manifest) {
       }
       if (result && result.notFound) { res.writeHead(404); res.end("404"); return; }
     }
+    let isrRevalidateSeconds = null;
     if (typeof pageModule.getStaticProps === "function") {
+      const pathname = url.split("?")[0];
+      const cacheKey = "pages:" + (pathname === "/" ? "/" : pathname.replace(/\\/$/, ""));
+      const cached = await isrGet(cacheKey);
+
+      if (cached && !cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
+        // Fresh ISR cache hit
+        res.writeHead(200, { "Content-Type": "text/html", "X-Nextcompat-Cache": "HIT",
+          "Cache-Control": "s-maxage=" + (cached.value.value.revalidate || 60) + ", stale-while-revalidate" });
+        res.end(cached.value.value.html);
+        return;
+      }
+
+      if (cached && cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
+        // Stale ISR cache hit — serve stale, trigger background regen
+        triggerBackgroundRegeneration(cacheKey, async function() {
+          const freshResult = await pageModule.getStaticProps({ params });
+          if (freshResult && freshResult.props && typeof freshResult.revalidate === "number" && freshResult.revalidate > 0) {
+            // Re-render would be expensive, so just update the data for now
+            await isrSet(cacheKey, { kind: "PAGES", html: cached.value.value.html, pageData: freshResult.props, headers: undefined, status: undefined }, freshResult.revalidate);
+          }
+        });
+        res.writeHead(200, { "Content-Type": "text/html", "X-Nextcompat-Cache": "STALE",
+          "Cache-Control": "s-maxage=0, stale-while-revalidate" });
+        res.end(cached.value.value.html);
+        return;
+      }
+
+      // Cache miss — call getStaticProps
       const ctx = { params };
       const result = await pageModule.getStaticProps(ctx);
       if (result && result.props) pageProps = result.props;
@@ -261,6 +311,9 @@ export async function renderPage(req, res, url, manifest) {
         return;
       }
       if (result && result.notFound) { res.writeHead(404); res.end("404"); return; }
+      if (typeof result.revalidate === "number" && result.revalidate > 0) {
+        isrRevalidateSeconds = result.revalidate;
+      }
     }
 
     let element;
@@ -299,7 +352,20 @@ export async function renderPage(req, res, url, manifest) {
     }
 
     if (typeof setSSRContext === "function") setSSRContext(null);
-    res.writeHead(200, { "Content-Type": "text/html" });
+
+    // Cache the rendered HTML for ISR if revalidate was set
+    if (isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
+      const pathname = url.split("?")[0];
+      const cacheKey = "pages:" + (pathname === "/" ? "/" : pathname.replace(/\\/$/, ""));
+      await isrSet(cacheKey, { kind: "PAGES", html: html, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
+    }
+
+    const responseHeaders = { "Content-Type": "text/html" };
+    if (isrRevalidateSeconds) {
+      responseHeaders["Cache-Control"] = "s-maxage=" + isrRevalidateSeconds + ", stale-while-revalidate";
+      responseHeaders["X-Nextcompat-Cache"] = "MISS";
+    }
+    res.writeHead(200, responseHeaders);
     res.end(html);
   } catch (e) {
     console.error("[nextcompat] SSR error:", e);

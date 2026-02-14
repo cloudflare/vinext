@@ -137,19 +137,23 @@ export class MemoryCacheHandler implements CacheHandler {
     const entry = this.store.get(key);
     if (!entry) return null;
 
-    // Check time-based expiry
-    if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
-      this.store.delete(key);
-      return null;
-    }
-
-    // Check tag-based invalidation
+    // Check tag-based invalidation first — if tag was invalidated, treat as hard miss
     for (const tag of entry.tags) {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
       if (revalidatedAt && revalidatedAt >= entry.lastModified) {
         this.store.delete(key);
         return null;
       }
+    }
+
+    // Check time-based expiry — return stale entry with cacheState="stale"
+    // instead of deleting, so ISR can serve stale-while-revalidate
+    if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
+      return {
+        lastModified: entry.lastModified,
+        value: entry.value,
+        cacheState: "stale",
+      };
     }
 
     return {

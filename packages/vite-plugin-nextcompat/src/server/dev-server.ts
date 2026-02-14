@@ -2,6 +2,16 @@ import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute } from "../routing/pages-router.js";
+import {
+  isrGet,
+  isrSet,
+  isrCacheKey,
+  buildPagesCacheValue,
+  triggerBackgroundRegeneration,
+  setRevalidateDuration,
+  getRevalidateDuration,
+} from "./isr-cache.js";
+import type { CachedPagesValue } from "../shims/cache.js";
 import path from "node:path";
 import fs from "node:fs";
 import { Writable } from "node:stream";
@@ -165,7 +175,57 @@ export function createSSRHandler(
         }
       }
 
+      let isrRevalidateSeconds: number | null = null;
+
       if (typeof pageModule.getStaticProps === "function") {
+        // Check ISR cache before calling getStaticProps
+        const cacheKey = isrCacheKey("pages", url.split("?")[0]);
+        const cached = await isrGet(cacheKey);
+
+        if (cached && !cached.isStale && cached.value.value?.kind === "PAGES") {
+          // Fresh cache hit — serve directly
+          const cachedPage = cached.value.value as CachedPagesValue;
+          const cachedHtml = cachedPage.html;
+          const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
+          const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
+          res.writeHead(200, {
+            "Content-Type": "text/html",
+            "X-Nextcompat-Cache": "HIT",
+            "Cache-Control": `s-maxage=${revalidateSecs}, stale-while-revalidate`,
+          });
+          res.end(transformedHtml);
+          return;
+        }
+
+        if (cached && cached.isStale && cached.value.value?.kind === "PAGES") {
+          // Stale hit — serve stale immediately, trigger background regen
+          const cachedPage = cached.value.value as CachedPagesValue;
+          const cachedHtml = cachedPage.html;
+          const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
+
+          // Trigger background regeneration
+          triggerBackgroundRegeneration(cacheKey, async () => {
+            const freshResult = await pageModule.getStaticProps({ params });
+            if (freshResult && "props" in freshResult) {
+              const revalidate = typeof freshResult.revalidate === "number" ? freshResult.revalidate : 0;
+              if (revalidate > 0) {
+                // Re-render with fresh props (simplified — just update cache)
+                await isrSet(cacheKey, buildPagesCacheValue(cachedHtml, freshResult.props), revalidate);
+              }
+            }
+          });
+
+          const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
+          res.writeHead(200, {
+            "Content-Type": "text/html",
+            "X-Nextcompat-Cache": "STALE",
+            "Cache-Control": `s-maxage=${revalidateSecs}, stale-while-revalidate`,
+          });
+          res.end(transformedHtml);
+          return;
+        }
+
+        // Cache miss — call getStaticProps normally
         const context = { params };
         const result = await pageModule.getStaticProps(context);
         if (result && "props" in result) {
@@ -183,6 +243,11 @@ export function createSSRHandler(
           res.statusCode = 404;
           res.end("404 - Not Found");
           return;
+        }
+
+        // Extract revalidate period for ISR caching after render
+        if (typeof result?.revalidate === "number" && result.revalidate > 0) {
+          isrRevalidateSeconds = result.revalidate;
         }
       }
 
@@ -349,7 +414,24 @@ hydrate();
         routerShim.setSSRContext(null);
       }
 
-      res.writeHead(200, { "Content-Type": "text/html" });
+      // If ISR is enabled, cache the rendered HTML for future requests
+      if (isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
+        const cacheKey = isrCacheKey("pages", url.split("?")[0]);
+        await isrSet(
+          cacheKey,
+          buildPagesCacheValue(html, pageProps),
+          isrRevalidateSeconds,
+        );
+        setRevalidateDuration(cacheKey, isrRevalidateSeconds);
+      }
+
+      const cacheHeader = isrRevalidateSeconds
+        ? `s-maxage=${isrRevalidateSeconds}, stale-while-revalidate`
+        : undefined;
+      const headers: Record<string, string> = { "Content-Type": "text/html" };
+      if (cacheHeader) headers["Cache-Control"] = cacheHeader;
+      if (isrRevalidateSeconds) headers["X-Nextcompat-Cache"] = "MISS";
+      res.writeHead(200, headers);
       res.end(transformedHtml);
     } catch (e) {
       // Let Vite fix the stack trace for better dev experience

@@ -105,6 +105,27 @@ import { ErrorBoundary } from "nextcompat/error-boundary";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata } from "nextcompat/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
+import { getCacheHandler } from "next/cache";
+
+// ISR cache helpers
+async function isrGet(key) {
+  const handler = getCacheHandler();
+  const result = await handler.get(key);
+  if (!result || !result.value) return null;
+  return { value: result, isStale: result.cacheState === "stale" };
+}
+async function isrSet(key, data, revalidateSeconds) {
+  const handler = getCacheHandler();
+  await handler.set(key, data, { revalidate: revalidateSeconds });
+}
+const isrPendingRegens = new Map();
+function isrTriggerRegen(key, renderFn) {
+  if (isrPendingRegens.has(key)) return;
+  const promise = renderFn()
+    .catch((err) => console.error("[nextcompat] ISR regen failed for " + key + ":", err))
+    .finally(() => isrPendingRegens.delete(key));
+  isrPendingRegens.set(key, promise);
+}
 
 ${imports.join("\n")}
 
@@ -442,6 +463,52 @@ export default async function handler(request) {
     return new Response("Page has no default export", { status: 500 });
   }
 
+  // Read ISR revalidate from route segment config (export const revalidate = N)
+  const revalidateSeconds = typeof route.page?.revalidate === "number" ? route.page.revalidate : null;
+
+  // ISR cache check for App Router pages with revalidate
+  if (revalidateSeconds !== null && revalidateSeconds > 0) {
+    const cacheKey = "app:" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
+    const cached = await isrGet(cacheKey);
+
+    if (cached && cached.value.value && cached.value.value.kind === "APP_PAGE") {
+      const cachedPage = cached.value.value;
+      const cacheHeaders = {
+        "X-Nextcompat-Cache": cached.isStale ? "STALE" : "HIT",
+        "Cache-Control": cached.isStale
+          ? "s-maxage=0, stale-while-revalidate"
+          : "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+      };
+
+      if (cached.isStale) {
+        // Trigger background regeneration
+        isrTriggerRegen(cacheKey, async function() {
+          const freshElement = await buildPageElement(route, params);
+          const freshRscStream = renderToReadableStream(freshElement);
+          const ssrEntryFresh = await import.meta.viteRsc.loadModule("ssr", "index");
+          const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream);
+          // Consume the stream to get HTML string
+          const freshHtml = await new Response(freshHtmlStream).text();
+          await isrSet(cacheKey, { kind: "APP_PAGE", html: freshHtml, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, revalidateSeconds);
+        });
+      }
+
+      if (isRscRequest && cachedPage.rscData) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return new Response(cachedPage.rscData, {
+          headers: { "Content-Type": "text/x-component; charset=utf-8", ...cacheHeaders },
+        });
+      }
+
+      setHeadersContext(null);
+      setNavigationContext(null);
+      return new Response(cachedPage.html, {
+        headers: { "Content-Type": "text/html; charset=utf-8", ...cacheHeaders },
+      });
+    }
+  }
+
   const element = await buildPageElement(route, params);
 
   // Note: CSS is automatically injected by @vitejs/plugin-rsc's
@@ -454,9 +521,12 @@ export default async function handler(request) {
     // Direct RSC stream response (for client-side navigation)
     setHeadersContext(null);
     setNavigationContext(null);
-    return new Response(rscStream, {
-      headers: { "Content-Type": "text/x-component; charset=utf-8" },
-    });
+    const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8" };
+    if (revalidateSeconds) {
+      responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
+      responseHeaders["X-Nextcompat-Cache"] = "MISS";
+    }
+    return new Response(rscStream, { headers: responseHeaders });
   }
 
   // Delegate to SSR environment for HTML rendering
@@ -465,6 +535,27 @@ export default async function handler(request) {
 
   setHeadersContext(null);
   setNavigationContext(null);
+
+  // If ISR is enabled, cache the rendered HTML
+  if (revalidateSeconds !== null && revalidateSeconds > 0) {
+    // We need to tee the stream: one for caching, one for the response
+    const [cacheStream, responseStream] = htmlStream.tee();
+    const cacheKey = "app:" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
+    // Cache in background
+    new Response(cacheStream).text().then(function(html) {
+      return isrSet(cacheKey, { kind: "APP_PAGE", html: html, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, revalidateSeconds);
+    }).catch(function(err) {
+      console.error("[nextcompat] ISR cache store failed:", err);
+    });
+
+    return new Response(responseStream, {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+        "X-Nextcompat-Cache": "MISS",
+      },
+    });
+  }
 
   return new Response(htmlStream, {
     headers: { "Content-Type": "text/html; charset=utf-8" },

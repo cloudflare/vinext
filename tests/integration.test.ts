@@ -2123,3 +2123,158 @@ describe("metadata routes integration (App Router)", () => {
     expect(data.display).toBe("standalone");
   });
 });
+
+// ---------------------------------------------------------------------------
+// ISR (Incremental Static Regeneration) — Pages Router
+// ---------------------------------------------------------------------------
+
+describe("ISR (Pages Router)", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    server = await createServer({
+      root: FIXTURE_DIR,
+      configFile: false,
+      plugins: [nextcompat()],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+    await server.listen();
+    const address = server.httpServer?.address();
+    if (address && typeof address === "object") {
+      baseUrl = `http://localhost:${address.port}`;
+    }
+  });
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  it("renders ISR page on first request (cache MISS)", async () => {
+    const res = await fetch(`${baseUrl}/isr-test`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("ISR Page");
+    expect(html).toContain("Hello from ISR");
+    // First request should be a cache miss
+    expect(res.headers.get("x-nextcompat-cache")).toBe("MISS");
+    expect(res.headers.get("cache-control")).toContain("s-maxage=1");
+  });
+
+  it("serves cached ISR page on second request (cache HIT)", async () => {
+    // First request populates the cache
+    const res1 = await fetch(`${baseUrl}/isr-test`);
+    expect(res1.status).toBe(200);
+    const html1 = await res1.text();
+    const timestamp1Match = html1.match(/data-testid="timestamp">(\d+)</);
+    expect(timestamp1Match).toBeTruthy();
+    const timestamp1 = timestamp1Match![1];
+
+    // Second request should be a cache hit with same timestamp
+    const res2 = await fetch(`${baseUrl}/isr-test`);
+    expect(res2.status).toBe(200);
+    const html2 = await res2.text();
+    expect(res2.headers.get("x-nextcompat-cache")).toBe("HIT");
+    const timestamp2Match = html2.match(/data-testid="timestamp">(\d+)</);
+    expect(timestamp2Match).toBeTruthy();
+    expect(timestamp2Match![1]).toBe(timestamp1);
+  });
+
+  it("serves stale content after TTL expires then regenerates", async () => {
+    // First request populates cache
+    const res1 = await fetch(`${baseUrl}/isr-test`);
+    const html1 = await res1.text();
+    const timestamp1Match = html1.match(/data-testid="timestamp">(\d+)</);
+    const timestamp1 = timestamp1Match![1];
+
+    // Wait for TTL to expire (revalidate: 1 second)
+    await new Promise((r) => setTimeout(r, 1200));
+
+    // Request after TTL should get STALE content
+    const res2 = await fetch(`${baseUrl}/isr-test`);
+    expect(res2.status).toBe(200);
+    expect(res2.headers.get("x-nextcompat-cache")).toBe("STALE");
+    // Stale content should have the same timestamp as original
+    const html2 = await res2.text();
+    const timestamp2Match = html2.match(/data-testid="timestamp">(\d+)</);
+    expect(timestamp2Match![1]).toBe(timestamp1);
+
+    // Wait a moment for background regeneration to complete
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Next request should get fresh content from cache
+    const res3 = await fetch(`${baseUrl}/isr-test`);
+    expect(res3.status).toBe(200);
+    // Should be a HIT now (fresh entry from background regen)
+    expect(res3.headers.get("x-nextcompat-cache")).toBe("HIT");
+  });
+
+  it("sets Cache-Control header for ISR pages", async () => {
+    const res = await fetch(`${baseUrl}/isr-test`);
+    const cacheControl = res.headers.get("cache-control");
+    expect(cacheControl).toContain("s-maxage=1");
+    expect(cacheControl).toContain("stale-while-revalidate");
+  });
+
+  it("does not set ISR headers for non-ISR pages", async () => {
+    const res = await fetch(`${baseUrl}/about`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-nextcompat-cache")).toBeNull();
+    expect(res.headers.get("cache-control")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISR cache internals
+// ---------------------------------------------------------------------------
+
+describe("ISR cache internals", () => {
+  it("MemoryCacheHandler returns stale entries instead of null", async () => {
+    const { MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+    const handler = new MemoryCacheHandler();
+
+    // Set an entry with a very short TTL
+    await handler.set("test-stale", { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 0 }, { revalidate: 0.001 });
+
+    // Wait for it to expire
+    await new Promise((r) => setTimeout(r, 10));
+
+    // Should return the entry with cacheState: "stale"
+    const result = await handler.get("test-stale");
+    expect(result).not.toBeNull();
+    expect(result!.cacheState).toBe("stale");
+    expect(result!.value).not.toBeNull();
+  });
+
+  it("MemoryCacheHandler returns fresh entries without cacheState", async () => {
+    const { MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+    const handler = new MemoryCacheHandler();
+
+    await handler.set("test-fresh", { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 0 }, { revalidate: 60 });
+
+    const result = await handler.get("test-fresh");
+    expect(result).not.toBeNull();
+    expect(result!.cacheState).toBeUndefined();
+  });
+
+  it("MemoryCacheHandler still returns null for tag-invalidated entries", async () => {
+    const { MemoryCacheHandler } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+    const handler = new MemoryCacheHandler();
+
+    await handler.set("test-tag", { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: ["mytag"], revalidate: 0 }, { revalidate: 60, tags: ["mytag"] });
+
+    // Invalidate the tag
+    await handler.revalidateTag("mytag");
+
+    // Should return null (hard invalidation, not stale)
+    const result = await handler.get("test-tag");
+    expect(result).toBeNull();
+  });
+});
