@@ -140,6 +140,35 @@ export function matchRoute(
   return null;
 }
 
+/**
+ * Scan the pages/api/ directory and return API routes.
+ *
+ * Follows Next.js conventions:
+ * - pages/api/hello.ts -> /api/hello
+ * - pages/api/users/[id].ts -> /api/users/:id
+ */
+export async function apiRouter(pagesDir: string): Promise<Route[]> {
+  const apiDir = path.join(pagesDir, "api");
+  const files = await glob("**/*.{ts,tsx,js,jsx}", {
+    cwd: apiDir,
+  }).catch(() => [] as string[]);
+
+  const routes: Route[] = [];
+
+  for (const file of files) {
+    // Reuse fileToRoute but pretend the file is under a virtual "api/" prefix
+    const route = fileToRoute(path.join("api", file), pagesDir);
+    if (route) {
+      routes.push(route);
+    }
+  }
+
+  // Sort same as page routes
+  routes.sort((a, b) => routePrecedence(a.pattern) - routePrecedence(b.pattern));
+
+  return routes;
+}
+
 function matchPattern(
   url: string,
   pattern: string,

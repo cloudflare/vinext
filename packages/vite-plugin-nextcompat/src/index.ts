@@ -1,6 +1,7 @@
 import type { Plugin, ViteDevServer } from "vite";
-import { pagesRouter } from "./routing/pages-router.js";
+import { pagesRouter, apiRouter } from "./routing/pages-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
+import { handleApiRoute } from "./server/api-handler.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -78,6 +79,23 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
               const pathname = url.split("?")[0];
               if (pathname.includes(".") && !pathname.endsWith(".html")) {
                 return next();
+              }
+
+              // Handle API routes first (pages/api/*)
+              if (pathname.startsWith("/api/") || pathname === "/api") {
+                const apiRoutes = await apiRouter(pagesDir);
+                const handled = await handleApiRoute(
+                  server,
+                  req,
+                  res,
+                  url,
+                  apiRoutes,
+                );
+                if (handled) return;
+                // No API route matched — fall through to 404
+                res.statusCode = 404;
+                res.end("404 - API route not found");
+                return;
               }
 
               const routes = await pagesRouter(pagesDir);

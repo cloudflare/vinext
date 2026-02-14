@@ -119,4 +119,28 @@ describe("Pages Router integration", () => {
     // Custom _document sets className on body
     expect(html).toContain("custom-body");
   });
+
+  // --- API Routes ---
+
+  it("handles API routes returning JSON", async () => {
+    const res = await fetch(`${baseUrl}/api/hello`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+
+    const data = await res.json();
+    expect(data).toEqual({ message: "Hello from API!" });
+  });
+
+  it("handles dynamic API routes with query params", async () => {
+    const res = await fetch(`${baseUrl}/api/users/123`);
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data).toEqual({ user: { id: "123", name: "User 123" } });
+  });
+
+  it("returns 404 for non-existent API routes", async () => {
+    const res = await fetch(`${baseUrl}/api/nonexistent`);
+    expect(res.status).toBe(404);
+  });
 });
