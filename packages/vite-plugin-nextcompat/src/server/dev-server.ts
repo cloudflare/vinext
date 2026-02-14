@@ -3,8 +3,16 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute } from "../routing/pages-router.js";
 import path from "node:path";
+import fs from "node:fs";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
+
+const PAGE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
+
+/** Check if a file exists with any page extension (tsx, ts, jsx, js). */
+function findFileWithExtensions(basePath: string): boolean {
+  return PAGE_EXTENSIONS.some((ext) => fs.existsSync(basePath + ext));
+}
 
 /**
  * Create an SSR request handler for the Pages Router.
@@ -144,11 +152,13 @@ export function createSSRHandler(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let AppComponent: any = null;
       const appPath = path.join(pagesDir, "_app");
-      try {
-        const appModule = await server.ssrLoadModule(appPath);
-        AppComponent = appModule.default ?? null;
-      } catch {
-        // No _app.tsx, that's fine
+      if (findFileWithExtensions(appPath)) {
+        try {
+          const appModule = await server.ssrLoadModule(appPath);
+          AppComponent = appModule.default ?? null;
+        } catch {
+          // _app exists but failed to load
+        }
       }
 
       // React and ReactDOMServer are imported at the top level as native Node
@@ -241,11 +251,13 @@ hydrate();
       let html: string;
       const docPath = path.join(pagesDir, "_document");
       let DocumentComponent: any = null;
-      try {
-        const docModule = await server.ssrLoadModule(docPath);
-        DocumentComponent = docModule.default ?? null;
-      } catch {
-        // No custom _document, use default shell
+      if (findFileWithExtensions(docPath)) {
+        try {
+          const docModule = await server.ssrLoadModule(docPath);
+          DocumentComponent = docModule.default ?? null;
+        } catch {
+          // _document exists but failed to load
+        }
       }
 
       const scripts = `${nextDataScript}\n  ${hydrationScript}`;
@@ -341,21 +353,23 @@ async function renderErrorPage(
 
   for (const candidate of candidates) {
     try {
-      const errorModule = await server.ssrLoadModule(
-        path.join(pagesDir, candidate),
-      );
+      const candidatePath = path.join(pagesDir, candidate);
+      if (!findFileWithExtensions(candidatePath)) continue;
+
+      const errorModule = await server.ssrLoadModule(candidatePath);
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
       // Try to load _app.tsx to wrap the error page
       let AppComponent: any = null;
-      try {
-        const appModule = await server.ssrLoadModule(
-          path.join(pagesDir, "_app"),
-        );
-        AppComponent = appModule.default ?? null;
-      } catch {
-        // No _app, that's fine
+      const appPathErr = path.join(pagesDir, "_app");
+      if (findFileWithExtensions(appPathErr)) {
+        try {
+          const appModule = await server.ssrLoadModule(appPathErr);
+          AppComponent = appModule.default ?? null;
+        } catch {
+          // _app exists but failed to load
+        }
       }
 
       const createElement = React.createElement;
@@ -376,13 +390,14 @@ async function renderErrorPage(
       // Try custom _document
       let html: string;
       let DocumentComponent: any = null;
-      try {
-        const docModule = await server.ssrLoadModule(
-          path.join(pagesDir, "_document"),
-        );
-        DocumentComponent = docModule.default ?? null;
-      } catch {
-        // No custom _document
+      const docPathErr = path.join(pagesDir, "_document");
+      if (findFileWithExtensions(docPathErr)) {
+        try {
+          const docModule = await server.ssrLoadModule(docPathErr);
+          DocumentComponent = docModule.default ?? null;
+        } catch {
+          // _document exists but failed to load
+        }
       }
 
       if (DocumentComponent) {

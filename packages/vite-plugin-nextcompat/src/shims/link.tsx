@@ -9,6 +9,8 @@ import React, { forwardRef, type AnchorHTMLAttributes, type MouseEvent } from "r
 
 interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> {
   href: string | { pathname?: string; query?: Record<string, string> };
+  /** URL displayed in the browser (when href is a route pattern like /user/[id]) */
+  as?: string;
   /** Replace the current history entry instead of pushing */
   replace?: boolean;
   /** Prefetch the page in the background (no-op for now) */
@@ -33,10 +35,12 @@ function resolveHref(href: LinkProps["href"]): string {
 }
 
 const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
-  { href, replace = false, scroll = true, children, onClick, ...rest },
+  { href, as, replace = false, scroll = true, children, onClick, ...rest },
   ref,
 ) {
-  const resolvedHref = resolveHref(href);
+  // If `as` is provided, use it as the actual URL (legacy Next.js pattern
+  // where href is a route pattern like "/user/[id]" and as is "/user/1")
+  const resolvedHref = as ?? resolveHref(href);
 
   const handleClick = async (e: MouseEvent<HTMLAnchorElement>) => {
     if (onClick) onClick(e);
