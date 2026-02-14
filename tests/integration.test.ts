@@ -976,6 +976,14 @@ describe("App Router integration", () => {
     expect(location).toContain("/about");
   });
 
+  it("permanentRedirect() returns 308 status code", async () => {
+    const res = await fetch(`${baseUrl}/permanent-redirect-test`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    const location = res.headers.get("location");
+    expect(location).toBeTruthy();
+    expect(location).toContain("/about");
+  });
+
   it("renders error boundary wrapper for routes with error.tsx", async () => {
     const res = await fetch(`${baseUrl}/error-test`);
     expect(res.status).toBe(200);
@@ -2975,5 +2983,18 @@ describe("next/web-vitals shim", () => {
     expect(typeof useReportWebVitals).toBe("function");
     // Should run without throwing
     expect(() => useReportWebVitals(() => {})).not.toThrow();
+  });
+});
+
+describe("next/amp shim", () => {
+  it("exports useAmp and isInAmpMode as no-op functions", async () => {
+    const { useAmp, isInAmpMode } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/amp.js"
+    );
+    expect(typeof useAmp).toBe("function");
+    expect(typeof isInAmpMode).toBe("function");
+    // Both always return false
+    expect(useAmp()).toBe(false);
+    expect(isInAmpMode()).toBe(false);
   });
 });

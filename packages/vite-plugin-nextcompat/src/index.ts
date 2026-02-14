@@ -572,6 +572,7 @@ hydrate();
               "next/form": path.join(shimsDir, "form"),
               "next/og": path.join(shimsDir, "og"),
               "next/web-vitals": path.join(shimsDir, "web-vitals"),
+              "next/amp": path.join(shimsDir, "amp"),
               "nextcompat/error-boundary": path.join(shimsDir, "error-boundary"),
               "nextcompat/metadata": path.join(shimsDir, "metadata"),
             },

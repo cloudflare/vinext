@@ -145,7 +145,7 @@ import {
 } from "@vitejs/plugin-rsc/rsc";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader } from "next/headers";
 import { ErrorBoundary } from "nextcompat/error-boundary";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "nextcompat/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
@@ -884,28 +884,39 @@ export default async function handler(request) {
     throw ssrErr;
   }
 
+  // Check for draftMode Set-Cookie header (from draftMode().enable()/disable())
+  const draftCookie = getDraftModeCookieHeader();
+
   setHeadersContext(null);
   setNavigationContext(null);
 
+  // Helper to attach draftMode cookie to a response if present
+  function attachDraftCookie(response) {
+    if (draftCookie) {
+      response.headers.append("Set-Cookie", draftCookie);
+    }
+    return response;
+  }
+
   // force-dynamic: return response with no-store header
   if (isForceDynamic) {
-    return new Response(htmlStream, {
+    return attachDraftCookie(new Response(htmlStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store, must-revalidate",
       },
-    });
+    }));
   }
 
   // force-static / error without revalidate: treat as fully static (cache indefinitely)
   if ((isForceStatic || isDynamicError) && (revalidateSeconds === null || revalidateSeconds === 0)) {
-    return new Response(htmlStream, {
+    return attachDraftCookie(new Response(htmlStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
         "X-Nextcompat-Cache": "STATIC",
       },
-    });
+    }));
   }
 
   // If ISR is enabled, cache the rendered HTML
@@ -920,18 +931,18 @@ export default async function handler(request) {
       console.error("[nextcompat] ISR cache store failed:", err);
     });
 
-    return new Response(responseStream, {
+    return attachDraftCookie(new Response(responseStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
         "X-Nextcompat-Cache": "MISS",
       },
-    });
+    }));
   }
 
-  return new Response(htmlStream, {
+  return attachDraftCookie(new Response(htmlStream, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
+  }));
 }
 
 if (import.meta.hot) {

@@ -227,6 +227,11 @@ declare module "next/web-vitals" {
   export function useReportWebVitals(callback: ReportWebVitalsCallback): void;
 }
 
+declare module "next/amp" {
+  export function useAmp(): boolean;
+  export function isInAmpMode(): boolean;
+}
+
 declare module "next/og" {
   import { ReactElement } from "react";
 

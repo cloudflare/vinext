@@ -172,3 +172,15 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 ## Route Segment Config: No-ops
 
 - **`fetchCache`, `maxDuration`, `preferredRegion`, `runtime`** are recognized but no-op in nextcompat. `fetchCache` controls Next.js's patched `fetch()` caching (not applicable — we don't patch fetch). `maxDuration` sets serverless function timeout (platform-specific). `preferredRegion` hints deployment region. `runtime` selects Edge/Node runtime. Pages with these exports render normally without errors.
+
+## redirect()/notFound() in Server Components
+
+- **RSC `renderToReadableStream` strips error `digest` property.** When `redirect()` or `notFound()` throws an Error with a `digest` property, the RSC serialization layer (`@vitejs/plugin-rsc`) removes it — the SSR layer receives `digest: ''`. Fix: **pre-render the page component** by calling `PageComponent({ params })` before starting RSC rendering. Since Server Components are just functions, synchronous `redirect()`/`notFound()` throws are caught immediately. Async components are awaited. This intercepts the special errors before RSC streaming begins and returns proper HTTP responses (307/308 redirect, 404).
+
+## draftMode
+
+- **`draftMode()` uses `__prerender_bypass` cookie** (matching Next.js convention). `enable()` sets the cookie via a `Set-Cookie` header on the response. `disable()` clears it with `Max-Age=0`. The generated RSC entry calls `getDraftModeCookieHeader()` after rendering to attach the header. `isEnabled` reads from the request cookie context.
+
+## dynamic = "error"
+
+- **`dynamic = "error"` uses Proxy-based traps** on the headers/cookies context. When a page with `dynamic = "error"` tries to access `headers()`, `cookies()`, or `searchParams`, the Proxy throws an informative error. SearchParams are also cleared. Response gets the same caching headers as `force-static` (s-maxage=31536000).
