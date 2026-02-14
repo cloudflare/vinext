@@ -21,9 +21,26 @@ import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import fs from "node:fs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Detect Vite major version at runtime by resolving from cwd.
+ * The plugin may be installed in a workspace root with Vite 7 but used
+ * by a project that has Vite 8 — so we resolve from cwd, not from
+ * the plugin's own location.
+ */
+function getViteMajorVersion(): number {
+  try {
+    const require = createRequire(path.join(process.cwd(), "package.json"));
+    const vitePkg = require("vite/package.json");
+    return parseInt(vitePkg.version, 10);
+  } catch {
+    return 7; // default to Vite 7
+  }
+}
 
 // Virtual module IDs for Pages Router production build
 const VIRTUAL_SERVER_ENTRY = "virtual:nextcompat-server-entry";
@@ -613,9 +630,10 @@ hydrate();
             alias: nextShimMap,
           },
           // Enable JSX in .tsx/.jsx files
-          esbuild: {
-            jsx: "automatic",
-          },
+          // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`
+          ...(getViteMajorVersion() >= 8
+            ? { oxc: { jsx: "automatic" } }
+            : { esbuild: { jsx: "automatic" } }),
           // Define env vars for client bundle
           define: defines,
           // Set base path if configured
