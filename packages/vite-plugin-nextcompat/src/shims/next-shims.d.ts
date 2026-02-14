@@ -327,6 +327,16 @@ declare module "next/cache" {
   ): T;
   export function unstable_noStore(): void;
   export function noStore(): void;
+
+  // "use cache" APIs (Next.js 15+)
+  export interface CacheLifeConfig {
+    stale?: number;
+    revalidate?: number;
+    expire?: number;
+  }
+  export const cacheLifeProfiles: Record<string, CacheLifeConfig>;
+  export function cacheLife(profile: string | CacheLifeConfig): void;
+  export function cacheTag(...tags: string[]): void;
 }
 
 declare module "next/form" {

@@ -282,6 +282,87 @@ export function unstable_noStore(): void {
 // Also export as `noStore` (Next.js 15+ naming)
 export { unstable_noStore as noStore };
 
+// ---------------------------------------------------------------------------
+// cacheLife / cacheTag — Next.js 15+ "use cache" APIs
+// ---------------------------------------------------------------------------
+
+/**
+ * Cache life configuration. Controls stale-while-revalidate behavior.
+ */
+export interface CacheLifeConfig {
+  /** How long (seconds) the client can cache without checking the server */
+  stale?: number;
+  /** How frequently (seconds) the server cache refreshes */
+  revalidate?: number;
+  /** Max staleness (seconds) before deoptimizing to dynamic */
+  expire?: number;
+}
+
+/**
+ * Built-in cache life profiles matching Next.js 16.
+ */
+export const cacheLifeProfiles: Record<string, CacheLifeConfig> = {
+  default: { revalidate: 900, expire: 4294967294 },
+  seconds: { stale: 30, revalidate: 1, expire: 60 },
+  minutes: { stale: 300, revalidate: 60, expire: 3600 },
+  hours: { stale: 300, revalidate: 3600, expire: 86400 },
+  days: { stale: 300, revalidate: 86400, expire: 604800 },
+  weeks: { stale: 300, revalidate: 604800, expire: 2592000 },
+  max: { stale: 300, revalidate: 2592000, expire: 31536000 },
+};
+
+/**
+ * Set the cache lifetime for a "use cache" function.
+ *
+ * Accepts either a built-in profile name (e.g., "hours", "days") or a custom
+ * configuration object. In Next.js, this only works inside "use cache" functions.
+ *
+ * In our implementation, "use cache" directive support is not yet implemented,
+ * so this is a no-op that validates inputs for forward compatibility.
+ */
+export function cacheLife(profile: string | CacheLifeConfig): void {
+  if (typeof profile === "string") {
+    // Validate the profile name exists
+    if (!cacheLifeProfiles[profile]) {
+      console.warn(
+        `[nextcompat] cacheLife: unknown profile "${profile}". ` +
+          `Available profiles: ${Object.keys(cacheLifeProfiles).join(", ")}`,
+      );
+    }
+  } else if (typeof profile === "object" && profile !== null) {
+    // Validate the config shape
+    if (
+      profile.expire !== undefined &&
+      profile.revalidate !== undefined &&
+      profile.expire < profile.revalidate
+    ) {
+      console.warn(
+        "[nextcompat] cacheLife: expire must be >= revalidate",
+      );
+    }
+  }
+  // No-op: "use cache" directive is not yet supported.
+  // When implemented, this will set cache durations on the current cache store.
+}
+
+/**
+ * Tag a "use cache" function's cached result for on-demand revalidation.
+ *
+ * Tags set here can be invalidated via revalidateTag(). In Next.js, this only
+ * works inside "use cache" functions.
+ *
+ * In our implementation, "use cache" directive support is not yet implemented,
+ * so this is a no-op for forward compatibility.
+ */
+export function cacheTag(..._tags: string[]): void {
+  // No-op: "use cache" directive is not yet supported.
+  // When implemented, this will attach tags to the current cache store entry.
+}
+
+// ---------------------------------------------------------------------------
+// unstable_cache — the older caching API
+// ---------------------------------------------------------------------------
+
 interface UnstableCacheOptions {
   revalidate?: number | false;
   tags?: string[];

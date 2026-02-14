@@ -2554,6 +2554,65 @@ describe("next/cache shim", () => {
     expect(() => unstable_noStore()).not.toThrow();
     expect(() => noStore()).not.toThrow();
   });
+
+  it("exports cacheLife with built-in profiles", async () => {
+    const { cacheLife, cacheLifeProfiles } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+    expect(typeof cacheLife).toBe("function");
+    expect(typeof cacheLifeProfiles).toBe("object");
+
+    // Built-in profiles should exist
+    expect(cacheLifeProfiles).toHaveProperty("default");
+    expect(cacheLifeProfiles).toHaveProperty("seconds");
+    expect(cacheLifeProfiles).toHaveProperty("minutes");
+    expect(cacheLifeProfiles).toHaveProperty("hours");
+    expect(cacheLifeProfiles).toHaveProperty("days");
+    expect(cacheLifeProfiles).toHaveProperty("weeks");
+    expect(cacheLifeProfiles).toHaveProperty("max");
+
+    // Profile shapes
+    expect(cacheLifeProfiles.seconds).toEqual({ stale: 30, revalidate: 1, expire: 60 });
+    expect(cacheLifeProfiles.max).toEqual({ stale: 300, revalidate: 2592000, expire: 31536000 });
+
+    // Should run without throwing with valid inputs
+    expect(() => cacheLife("default")).not.toThrow();
+    expect(() => cacheLife("hours")).not.toThrow();
+    expect(() => cacheLife({ stale: 60, revalidate: 300, expire: 3600 })).not.toThrow();
+  });
+
+  it("cacheLife warns on unknown profile", async () => {
+    const { cacheLife } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    cacheLife("nonexistent-profile");
+    expect(consoleWarn).toHaveBeenCalledWith(
+      expect.stringContaining("unknown profile"),
+    );
+    consoleWarn.mockRestore();
+  });
+
+  it("cacheLife warns when expire < revalidate", async () => {
+    const { cacheLife } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    cacheLife({ revalidate: 3600, expire: 60 });
+    expect(consoleWarn).toHaveBeenCalledWith(
+      expect.stringContaining("expire must be >= revalidate"),
+    );
+    consoleWarn.mockRestore();
+  });
+
+  it("exports cacheTag as a no-op function", async () => {
+    const { cacheTag } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/cache.js"
+    );
+    expect(typeof cacheTag).toBe("function");
+    // Should accept multiple tags without throwing
+    expect(() => cacheTag("tag1", "tag2", "tag3")).not.toThrow();
+  });
 });
 
 describe("middleware runner", () => {
