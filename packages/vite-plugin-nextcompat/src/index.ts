@@ -471,6 +471,7 @@ hydrate();
               "next/navigation": path.join(shimsDir, "navigation"),
               "next/headers": path.join(shimsDir, "headers"),
               "nextcompat/error-boundary": path.join(shimsDir, "error-boundary"),
+              "nextcompat/metadata": path.join(shimsDir, "metadata"),
             },
           },
           // Enable JSX in .tsx/.jsx files

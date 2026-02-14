@@ -74,6 +74,7 @@ import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest } from "next/headers";
 import { ErrorBoundary } from "nextcompat/error-boundary";
+import { MetadataHead, mergeMetadata, resolveModuleMetadata } from "nextcompat/metadata";
 
 ${imports.join("\n")}
 
@@ -213,8 +214,30 @@ export default async function handler(request) {
     return new Response("Page has no default export", { status: 500 });
   }
 
+  // Resolve metadata from layouts and page
+  const metadataList = [];
+  for (const layoutMod of route.layouts) {
+    if (layoutMod) {
+      const meta = await resolveModuleMetadata(layoutMod, params);
+      if (meta) metadataList.push(meta);
+    }
+  }
+  if (route.page) {
+    const pageMeta = await resolveModuleMetadata(route.page, params);
+    if (pageMeta) metadataList.push(pageMeta);
+  }
+  const resolvedMetadata = metadataList.length > 0 ? mergeMetadata(metadataList) : null;
+
   // Build nested layout tree from outermost to innermost
   let element = createElement(PageComponent, { params });
+
+  // Add metadata head tags (React 19 hoists title/meta/link to <head>)
+  if (resolvedMetadata) {
+    element = createElement(Fragment, null,
+      createElement(MetadataHead, { metadata: resolvedMetadata }),
+      element,
+    );
+  }
 
   // Wrap with loading.tsx Suspense if present
   if (route.loading?.default) {

@@ -678,6 +678,33 @@ describe("App Router integration", () => {
     expect(html).toContain("Features");
     expect(html).toContain("route group");
   });
+
+  it("renders dynamic metadata from generateMetadata()", async () => {
+    const res = await fetch(`${baseUrl}/blog/my-post`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Title from generateMetadata should use the dynamic slug
+    expect(html).toContain("<title>Blog: my-post</title>");
+    expect(html).toMatch(/name="description".*content="Read about my-post"/);
+  });
+
+  it("renders static metadata (export const metadata) as head elements", async () => {
+    const res = await fetch(`${baseUrl}/metadata-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Metadata Test");
+    // Title from metadata should be rendered
+    expect(html).toContain("<title>Metadata Test Page</title>");
+    // Description meta tag
+    expect(html).toMatch(/name="description".*content="A page to test the metadata API"/);
+    // Keywords meta tag
+    expect(html).toMatch(/name="keywords".*content="test, metadata, nextcompat"/);
+    // Open Graph tags
+    expect(html).toMatch(/property="og:title".*content="OG Title"/);
+    expect(html).toMatch(/property="og:type".*content="website"/);
+  });
 });
 
 describe("next/navigation shim", () => {
