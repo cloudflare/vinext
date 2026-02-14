@@ -60,7 +60,9 @@ async function buildApp() {
   console.log(`\n  nextcompat build\n`);
   const appRoot = process.cwd();
 
-  // Step 1: Client build — produces hashed assets + SSR manifest
+  // Step 1: Client build — produces hashed page chunks + SSR manifest
+  // Uses the virtual client entry which imports all pages via dynamic import,
+  // enabling Vite to code-split each page into its own chunk.
   console.log("  Building client...");
   await build({
     root: appRoot,
@@ -68,12 +70,8 @@ async function buildApp() {
     build: {
       outDir: "dist/client",
       ssrManifest: true,
-      // We need an HTML entry for the client build. Since we use appType: "custom",
-      // Vite won't find index.html. We use a minimal one or rollup input.
       rollupOptions: {
-        // Use a dummy entry — the actual page JS is referenced via SSR manifest.
-        // We need at least one entry for the build to work.
-        input: path.resolve(appRoot, "pages"),
+        input: "virtual:nextcompat-client-entry",
       },
     },
   });

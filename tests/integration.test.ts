@@ -319,4 +319,126 @@ describe("Production build", () => {
     expect(entryContent).toContain("/about");
     expect(entryContent).toContain("/ssr");
   });
+
+  it("produces client bundle with page chunks and SSR manifest", async () => {
+    // Build the client bundle
+    await build({
+      root: FIXTURE_DIR,
+      configFile: false,
+      plugins: [nextcompat()],
+      logLevel: "silent",
+      build: {
+        outDir: path.join(outDir, "client"),
+        ssrManifest: true,
+        rollupOptions: {
+          input: "virtual:nextcompat-client-entry",
+        },
+      },
+    });
+
+    // Verify client output exists
+    const assetsDir = path.join(outDir, "client", "assets");
+    expect(fs.existsSync(assetsDir)).toBe(true);
+
+    // Verify SSR manifest was produced
+    const manifestPath = path.join(outDir, "client", ".vite", "ssr-manifest.json");
+    expect(fs.existsSync(manifestPath)).toBe(true);
+
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    // Manifest should have entries (module IDs -> asset URLs)
+    expect(Object.keys(manifest).length).toBeGreaterThan(0);
+
+    // There should be JS files in the assets directory
+    const assets = fs.readdirSync(assetsDir);
+    const jsFiles = assets.filter((f: string) => f.endsWith(".js"));
+    expect(jsFiles.length).toBeGreaterThan(0);
+  });
+
+  it("serves pages from production build end-to-end", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const manifestPath = path.join(outDir, "client", ".vite", "ssr-manifest.json");
+
+    // Both should exist from prior tests
+    if (!fs.existsSync(serverEntryPath) || !fs.existsSync(manifestPath)) {
+      // Build if needed (tests may run in isolation)
+      await build({
+        root: FIXTURE_DIR,
+        configFile: false,
+        plugins: [nextcompat()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(outDir, "server"),
+          ssr: "virtual:nextcompat-server-entry",
+          rollupOptions: { output: { entryFileNames: "entry.js" } },
+        },
+      });
+      await build({
+        root: FIXTURE_DIR,
+        configFile: false,
+        plugins: [nextcompat()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(outDir, "client"),
+          ssrManifest: true,
+          rollupOptions: { input: "virtual:nextcompat-client-entry" },
+        },
+      });
+    }
+
+    // Import the server entry
+    const serverEntry = await import(serverEntryPath);
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+
+    // Create a minimal HTTP server using the built entry
+    const { createServer: createHttpServer } = await import("node:http");
+    const httpServer = createHttpServer(async (req, res) => {
+      const url = req.url ?? "/";
+      const pathname = url.split("?")[0];
+
+      if (pathname.startsWith("/api/") || pathname === "/api") {
+        await serverEntry.handleApiRoute(req, res, url);
+        return;
+      }
+
+      await serverEntry.renderPage(req, res, url, manifest);
+    });
+
+    // Start on a random port
+    await new Promise<void>((resolve) => httpServer.listen(0, resolve));
+    const addr = httpServer.address() as { port: number };
+    const prodUrl = `http://localhost:${addr.port}`;
+
+    try {
+      // Test: index page renders
+      const indexRes = await fetch(`${prodUrl}/`);
+      expect(indexRes.status).toBe(200);
+      const indexHtml = await indexRes.text();
+      expect(indexHtml).toContain("Hello, nextcompat!");
+      expect(indexHtml).toContain("__NEXT_DATA__");
+
+      // Test: about page renders
+      const aboutRes = await fetch(`${prodUrl}/about`);
+      expect(aboutRes.status).toBe(200);
+      const aboutHtml = await aboutRes.text();
+      expect(aboutHtml).toContain("About");
+
+      // Test: SSR page with getServerSideProps
+      const ssrRes = await fetch(`${prodUrl}/ssr`);
+      expect(ssrRes.status).toBe(200);
+      const ssrHtml = await ssrRes.text();
+      expect(ssrHtml).toContain("Server-Side Rendered");
+
+      // Test: API route
+      const apiRes = await fetch(`${prodUrl}/api/hello`);
+      expect(apiRes.status).toBe(200);
+      const apiData = await apiRes.json();
+      expect(apiData).toEqual({ message: "Hello from API!" });
+
+      // Test: 404 for unknown route
+      const notFoundRes = await fetch(`${prodUrl}/nonexistent`);
+      expect(notFoundRes.status).toBe(404);
+    } finally {
+      httpServer.close();
+    }
+  });
 });

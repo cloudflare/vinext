@@ -18,6 +18,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Virtual module IDs for the production build
 const VIRTUAL_SERVER_ENTRY = "virtual:nextcompat-server-entry";
 const RESOLVED_SERVER_ENTRY = "\0" + VIRTUAL_SERVER_ENTRY;
+const VIRTUAL_CLIENT_ENTRY = "virtual:nextcompat-client-entry";
+const RESOLVED_CLIENT_ENTRY = "\0" + VIRTUAL_CLIENT_ENTRY;
 
 export interface NextcompatOptions {
   /** Root directory of the Next.js app (default: Vite root) */
@@ -52,9 +54,10 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
       return `import * as api_${i} from ${JSON.stringify(absPath)};`;
     });
 
-    // Build the route table
+    // Build the route table — include filePath for SSR manifest lookup
     const pageRouteEntries = pageRoutes.map((r: Route, i: number) => {
-      return `  { pattern: ${JSON.stringify(r.pattern)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i} }`;
+      const absPath = r.filePath.replace(/\\/g, "/");
+      return `  { pattern: ${JSON.stringify(r.pattern)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)} }`;
     });
 
     const apiRouteEntries = apiRoutes.map((r: Route, i: number) => {
@@ -148,18 +151,24 @@ function parseQuery(url) {
   return q;
 }
 
-function collectAssetTags(manifest) {
+function collectAssetTags(manifest, moduleIds) {
   if (!manifest) return "";
   const tags = [];
   const seen = new Set();
-  for (const files of Object.values(manifest)) {
+  // Collect assets for the specified module IDs
+  const idsToCheck = moduleIds && moduleIds.length > 0
+    ? moduleIds
+    : Object.keys(manifest);
+  for (const id of idsToCheck) {
+    const files = manifest[id];
+    if (!files) continue;
     for (const file of files) {
       if (seen.has(file)) continue;
       seen.add(file);
       if (file.endsWith(".css")) {
         tags.push('<link rel="stylesheet" href="/' + file + '" />');
       } else if (file.endsWith(".js")) {
-        tags.push('<script type="module" src="/' + file + '"></script>');
+        tags.push('<script type="module" src="/' + file + '" crossorigin></script>');
       }
     }
   }
@@ -224,7 +233,9 @@ export async function renderPage(req, res, url, manifest) {
 
     const bodyHtml = ReactDOMServer.renderToString(element);
     const ssrHeadHTML = typeof getSSRHeadHTML === "function" ? getSSRHeadHTML() : "";
-    const assetTags = collectAssetTags(manifest);
+    // Look up this page's assets + the client entry assets in the manifest
+    const pageModuleIds = route.filePath ? [route.filePath] : [];
+    const assetTags = collectAssetTags(manifest, pageModuleIds);
     const nextDataScript = "<script>window.__NEXT_DATA__ = " + JSON.stringify({
       props: { pageProps }, page: route.pattern, query: params
     }) + "</script>";
@@ -319,6 +330,84 @@ export async function handleApiRoute(req, res, url) {
 `;
   }
 
+  /**
+   * Generate the virtual client hydration entry module.
+   * This is the entry point for `vite build` (client bundle).
+   *
+   * It maps route patterns to dynamic imports of page modules so Vite
+   * code-splits each page into its own chunk. At runtime it reads
+   * __NEXT_DATA__ to determine which page to hydrate.
+   */
+  async function generateClientEntry(): Promise<string> {
+    const pageRoutes = await pagesRouter(pagesDir);
+
+    const hasApp = fs.existsSync(path.join(pagesDir, "_app.tsx")) || fs.existsSync(path.join(pagesDir, "_app.jsx")) || fs.existsSync(path.join(pagesDir, "_app.ts")) || fs.existsSync(path.join(pagesDir, "_app.js"));
+
+    // Build a map of route pattern -> dynamic import
+    const loaderEntries = pageRoutes.map((r: Route) => {
+      const absPath = r.filePath.replace(/\\/g, "/");
+      return `  ${JSON.stringify(r.pattern)}: () => import(${JSON.stringify(absPath)})`;
+    });
+
+    const appFileBase = path.join(pagesDir, "_app").replace(/\\/g, "/");
+
+    return `
+import React from "react";
+import { hydrateRoot } from "react-dom/client";
+
+const pageLoaders = {
+${loaderEntries.join(",\n")}
+};
+
+async function hydrate() {
+  const nextData = window.__NEXT_DATA__;
+  if (!nextData) {
+    console.error("[nextcompat] No __NEXT_DATA__ found");
+    return;
+  }
+
+  const { pageProps } = nextData.props;
+  const loader = pageLoaders[nextData.page];
+  if (!loader) {
+    console.error("[nextcompat] No page loader for route:", nextData.page);
+    return;
+  }
+
+  const pageModule = await loader();
+  const PageComponent = pageModule.default;
+  if (!PageComponent) {
+    console.error("[nextcompat] Page module has no default export");
+    return;
+  }
+
+  let element;
+  ${hasApp ? `
+  try {
+    const appModule = await import(${JSON.stringify(appFileBase)});
+    const AppComponent = appModule.default;
+    window.__NEXTCOMPAT_APP__ = AppComponent;
+    element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+  } catch {
+    element = React.createElement(PageComponent, pageProps);
+  }
+  ` : `
+  element = React.createElement(PageComponent, pageProps);
+  `}
+
+  const container = document.getElementById("__next");
+  if (!container) {
+    console.error("[nextcompat] No #__next element found");
+    return;
+  }
+
+  const root = hydrateRoot(container, element);
+  window.__NEXTCOMPAT_ROOT__ = root;
+}
+
+hydrate();
+`;
+  }
+
   return [
     {
       name: "nextcompat:config",
@@ -370,15 +459,22 @@ export async function handleApiRoute(req, res, url) {
 
       resolveId(id) {
         if (id === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
-        // Vite SSR build may resolve the entry relative to root
+        if (id === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
+        // Vite build may resolve virtual entries relative to root
         if (id.endsWith("/" + VIRTUAL_SERVER_ENTRY) || id.endsWith("\\" + VIRTUAL_SERVER_ENTRY)) {
           return RESOLVED_SERVER_ENTRY;
+        }
+        if (id.endsWith("/" + VIRTUAL_CLIENT_ENTRY) || id.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)) {
+          return RESOLVED_CLIENT_ENTRY;
         }
       },
 
       async load(id) {
         if (id === RESOLVED_SERVER_ENTRY) {
           return await generateServerEntry();
+        }
+        if (id === RESOLVED_CLIENT_ENTRY) {
+          return await generateClientEntry();
         }
       },
     },
