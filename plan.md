@@ -60,6 +60,14 @@ zero or minimal changes. That's different from reproducing every quirk.
 - **Codemods** (`npx nextcompat migrate`) that automatically transform
   code away from unsupported patterns. If we can't support a pattern, we
   can at least automate the migration off of it.
+- **AI-assisted migration**: For edge cases that are too contextual for
+  a mechanical codemod, use an LLM that understands both the Next.js API
+  surface and the nextcompat surface. `npx nextcompat migrate` scans the
+  project, flags incompatibilities, and offers AI-suggested fixes in
+  context - not generic "here's the docs" but actual code changes specific
+  to the user's file. Mechanical transforms (rename an import, swap an
+  API call) use traditional codemods. Anything that requires understanding
+  intent or refactoring a pattern gets the AI treatment.
 - **Runtime warnings** when we detect usage of an unsupported API, pointing
   to the docs for the recommended alternative
 
