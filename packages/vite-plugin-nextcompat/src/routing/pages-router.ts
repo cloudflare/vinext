@@ -12,8 +12,21 @@ export interface Route {
   params: string[];
 }
 
+// Route cache — invalidated when pages directory changes
+const routeCache = new Map<string, { routes: Route[]; promise: Promise<Route[]> }>();
+
+/**
+ * Invalidate cached routes for a given pages directory.
+ * Called by the file watcher when pages are added/removed.
+ */
+export function invalidateRouteCache(pagesDir: string): void {
+  routeCache.delete(`pages:${pagesDir}`);
+  routeCache.delete(`api:${pagesDir}`);
+}
+
 /**
  * Scan the pages/ directory and return a list of routes.
+ * Results are cached — call invalidateRouteCache() when files change.
  *
  * Follows Next.js Pages Router conventions:
  * - pages/index.tsx -> /
@@ -24,6 +37,18 @@ export interface Route {
  * - Ignores pages/api/ (handled separately later)
  */
 export async function pagesRouter(pagesDir: string): Promise<Route[]> {
+  const cacheKey = `pages:${pagesDir}`;
+  const cached = routeCache.get(cacheKey);
+  if (cached) return cached.promise;
+
+  const promise = scanPageRoutes(pagesDir);
+  routeCache.set(cacheKey, { routes: [], promise });
+  const routes = await promise;
+  routeCache.set(cacheKey, { routes, promise });
+  return routes;
+}
+
+async function scanPageRoutes(pagesDir: string): Promise<Route[]> {
   const files = await glob("**/*.{tsx,ts,jsx,js}", {
     cwd: pagesDir,
     ignore: ["api/**", "_*"],
@@ -142,12 +167,25 @@ export function matchRoute(
 
 /**
  * Scan the pages/api/ directory and return API routes.
+ * Results are cached — call invalidateRouteCache() when files change.
  *
  * Follows Next.js conventions:
  * - pages/api/hello.ts -> /api/hello
  * - pages/api/users/[id].ts -> /api/users/:id
  */
 export async function apiRouter(pagesDir: string): Promise<Route[]> {
+  const cacheKey = `api:${pagesDir}`;
+  const cached = routeCache.get(cacheKey);
+  if (cached) return cached.promise;
+
+  const promise = scanApiRoutes(pagesDir);
+  routeCache.set(cacheKey, { routes: [], promise });
+  const routes = await promise;
+  routeCache.set(cacheKey, { routes, promise });
+  return routes;
+}
+
+async function scanApiRoutes(pagesDir: string): Promise<Route[]> {
   const apiDir = path.join(pagesDir, "api");
   const files = await glob("**/*.{ts,tsx,js,jsx}", {
     cwd: apiDir,

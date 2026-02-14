@@ -207,6 +207,19 @@ describe("Pages Router integration", () => {
     expect(res.headers.get("x-custom-header")).toBe("nextcompat");
   });
 
+  // --- next/dynamic ---
+
+  it("renders dynamically imported components during SSR", async () => {
+    const res = await fetch(`${baseUrl}/dynamic-page`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Dynamic Import Page");
+    // The heavy component should be rendered server-side (ssr: true by default)
+    expect(html).toContain("Heavy Component");
+    expect(html).toContain("Loaded dynamically");
+  });
+
   // --- Hydration ---
 
   it("hydration proxy script is fetchable", async () => {

@@ -1,5 +1,5 @@
 import type { Plugin, ViteDevServer } from "vite";
-import { pagesRouter, apiRouter } from "./routing/pages-router.js";
+import { pagesRouter, apiRouter, invalidateRouteCache } from "./routing/pages-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import {
@@ -80,6 +80,20 @@ export default function nextcompat(options: NextcompatOptions = {}): Plugin[] {
       name: "nextcompat:pages-router",
 
       configureServer(server: ViteDevServer) {
+        // Watch pages directory for file additions/removals to invalidate route cache.
+        // Content changes don't affect routing, only new/deleted files do.
+        const pageExtensions = /\.(tsx?|jsx?)$/;
+        server.watcher.on("add", (filePath: string) => {
+          if (filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
+            invalidateRouteCache(pagesDir);
+          }
+        });
+        server.watcher.on("unlink", (filePath: string) => {
+          if (filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
+            invalidateRouteCache(pagesDir);
+          }
+        });
+
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
           server.middlewares.use(async (req: any, res: any, next: any) => {

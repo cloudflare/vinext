@@ -143,6 +143,13 @@ export function createSSRHandler(
         headShim.resetSSRHead();
       }
 
+      // Flush any pending dynamic() preloads so components are ready
+      // for synchronous renderToString
+      const dynamicShim = await server.ssrLoadModule("next/dynamic");
+      if (typeof dynamicShim.flushPreloads === "function") {
+        await dynamicShim.flushPreloads();
+      }
+
       // Render page to HTML string
       const bodyHtml = ReactDOMServer.renderToString(element);
 

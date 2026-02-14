@@ -24,6 +24,7 @@
     "vite": "^6.0.0"
   },
   "dependencies": {
+    "@unpic/react": "^0.1.14",
     "glob": "^11.0.0"
   },
   "devDependencies": {
