@@ -99,3 +99,14 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **`scanMetadataFiles()`** scans the `app/` directory root for metadata files and returns typed `MetadataFileRoute[]` with `type`, `servedUrl`, `isDynamic`, and `filePath` fields.
 - **Both static and dynamic metadata routes share the same route table** in the generated RSC entry. Static routes read from disk at request time; dynamic routes import the module and call the default export.
 - **React 19 auto-hoisting** means metadata rendered via `<MetadataHead>` anywhere in the tree gets moved to `<head>` automatically — no special placement needed.
+
+## ISR (Incremental Static Regeneration)
+
+- **Stale-while-revalidate requires returning stale cache entries, not null**. The original `MemoryCacheHandler.get()` deleted expired entries and returned null. ISR needs the stale entry to serve while background regeneration runs. Fixed by returning entries with `cacheState: "stale"` on expiry, while tag-invalidated entries are still hard-deleted (return null).
+- **Background regeneration dedup is essential**. Without it, 100 concurrent requests to a stale page would trigger 100 re-renders. A `Map<string, Promise>` keyed by cache key ensures only one regeneration per key at a time.
+- **ISR cache layer sits above CacheHandler**, not inside it. The `CacheHandler` interface is a dumb key-value store (matching Next.js 16's interface). ISR semantics (stale detection, background regen, dedup) live in a separate `isr-cache.ts` module. This preserves pluggable backends — Redis/KV users get ISR automatically.
+- **Revalidate duration tracking**: Cache hits need the original revalidate seconds for `Cache-Control` headers, but the `CacheHandler` interface doesn't expose this. Solution: a side `Map<string, number>` stores revalidate durations by cache key, populated on MISS, read on HIT/STALE.
+- **Pages Router ISR**: `getStaticProps` returns `{ revalidate: N }`. On MISS, render + cache. On HIT, serve cached HTML. On STALE, serve cached HTML + trigger background `getStaticProps` re-call.
+- **App Router ISR**: `export const revalidate = N` in page modules. Read at runtime from `route.page.revalidate` in the generated RSC handler. The RSC stream output is tee'd — one copy for the response, one consumed for caching.
+- **`Cache-Control: s-maxage=N, stale-while-revalidate`** is set on all ISR responses (MISS/HIT/STALE). This enables CDN-level caching that mirrors server-side ISR behavior. CDNs like Cloudflare respect these headers natively.
+- **`X-Nextcompat-Cache: HIT|STALE|MISS`** header for observability — makes it easy to debug ISR behavior in browser DevTools or monitoring.
