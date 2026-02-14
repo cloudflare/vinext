@@ -569,20 +569,76 @@ internals or build output. It becomes the contract for:
 - `fetch` caching, `revalidate`, `no-store`
 - `basePath`/`i18n`/`trailingSlash` routing
 
-### Third-Party Integration Test Pack (New)
+### Third-Party Integration Test Pack (Ecosystem Tests)
 
 We add a curated set of real-world integrations as black-box tests, each with
-an official minimal fixture app:
+a minimal fixture app under `fixtures/ecosystem/`. These run separately from
+the main test suite (`npm run test:ecosystem`) because they require installing
+third-party dependencies and some need API tokens.
 
-- `next-auth`
-- `@clerk/nextjs`
-- `@sentry/nextjs`
-- `next-intl`
-- `next-themes`
-- `next-mdx-remote`
+#### Tier 1: No credentials needed (run in CI)
 
-Each fixture is run against Next.js (baseline) and nextcompat. Failures are
-triaged and tracked in a public compatibility matrix.
+| Library | What to test | Status |
+|---|---|---|
+| `next-intl` | App Router + Pages Router i18n, `useTranslations`, `NextIntlClientProvider`, middleware locale detection | TODO |
+| `next-themes` | Theme provider, `useTheme`, SSR class injection, `suppressHydrationWarning` | TODO |
+| `next-mdx-remote` | Remote MDX rendering, custom components, RSC serialization | TODO |
+| `next-view-transitions` | `ViewTransitions` provider, `Link` wrapping, `useTransitionRouter` | TODO |
+| `nextjs-toploader` | NProgress bar, App Router integration, route change events | TODO |
+| `next-nprogress-bar` | Similar to toploader, App Router `useRouter` events | TODO |
+| `nuqs` | URL search params state management, `useQueryState`, shallow updates | TODO |
+| `next-safe-action` | Type-safe server actions, `useAction`, validation | TODO |
+
+#### Tier 2: Credentials required (run manually or in CI with secrets)
+
+| Library | What to test | Credentials needed | Status |
+|---|---|---|---|
+| `@clerk/nextjs` | `ClerkProvider`, `SignIn`/`SignUp` components, `auth()` in server components, middleware auth | Clerk publishable key + secret key | TODO |
+| `@sentry/nextjs` | Error boundary reporting, `Sentry.init`, source maps, `withSentry` wrapper, RSC error tracking | Sentry DSN | TODO |
+| `next-auth` / `auth.js` | OAuth providers, session management, `getServerSession`, middleware auth | OAuth client credentials | TODO |
+
+#### Implementation plan
+
+Each ecosystem fixture is a self-contained mini-app:
+
+```
+fixtures/ecosystem/
+  next-intl/
+    package.json          # deps: next-intl, react, react-dom
+    vite.config.ts        # uses vite-plugin-nextcompat
+    app/
+      layout.tsx
+      [locale]/
+        page.tsx
+    messages/
+      en.json
+      de.json
+  next-themes/
+    ...
+  clerk-auth/
+    ...
+```
+
+Test runner approach:
+1. Each fixture has its own `package.json` with the library as a dependency
+2. `npm run test:ecosystem` installs deps, starts dev server, runs assertions
+3. Tests use Playwright or plain fetch to verify SSR output and client behavior
+4. Tier 2 tests are skipped if env vars are missing (e.g., `CLERK_SECRET_KEY`)
+5. Results feed into the "Are We Vite Yet?" compatibility matrix
+
+Key things each fixture validates:
+- **Import resolution**: Library can `import` from `next/*` without errors
+- **SSR rendering**: Server-rendered HTML includes expected library output
+- **Client hydration**: No hydration mismatch warnings in console
+- **Runtime behavior**: Interactive features work (auth flows, theme switching, etc.)
+
+#### What we already shim for these libraries
+
+- `next/dist/shared/lib/app-router-context.shared-runtime` — used by @clerk/nextjs, next-intl, next-nprogress-bar, nextjs-toploader, next-view-transitions (type-only imports)
+- `next/dist/shared/lib/utils` — `execOnce`, `getLocationOrigin`, `getURL`
+- `next/dist/server/web/spec-extension/cookies` — `RequestCookies`, `ResponseCookies`
+- `next/dist/server/api-utils` — type-only re-exports
+- `next/dist/server/app-render/work-unit-async-storage.external` — `AsyncLocalStorage` instances (used by @sentry/nextjs)
 
 ### Iteration Loop ("Ralph Wiggum Style")
 
