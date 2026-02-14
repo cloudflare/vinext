@@ -50,6 +50,8 @@ export function generateRscEntry(
     if (route.loadingPath) getImportVar(route.loadingPath);
     if (route.errorPath) getImportVar(route.errorPath);
     if (route.notFoundPath) getImportVar(route.notFoundPath);
+    if (route.forbiddenPath) getImportVar(route.forbiddenPath);
+    if (route.unauthorizedPath) getImportVar(route.unauthorizedPath);
     // Register parallel slot modules
     for (const slot of route.parallelSlots) {
       if (slot.pagePath) getImportVar(slot.pagePath);
@@ -101,13 +103,21 @@ ${slotEntries.join(",\n")}
     loading: ${route.loadingPath ? getImportVar(route.loadingPath) : "null"},
     error: ${route.errorPath ? getImportVar(route.errorPath) : "null"},
     notFound: ${route.notFoundPath ? getImportVar(route.notFoundPath) : "null"},
+    forbidden: ${route.forbiddenPath ? getImportVar(route.forbiddenPath) : "null"},
+    unauthorized: ${route.unauthorizedPath ? getImportVar(route.unauthorizedPath) : "null"},
   }`;
   });
 
-  // Find root not-found page and root layouts for global 404 handling
+  // Find root not-found/forbidden/unauthorized pages and root layouts for global error handling
   const rootRoute = routes.find((r) => r.pattern === "/");
   const rootNotFoundVar = rootRoute?.notFoundPath
     ? getImportVar(rootRoute.notFoundPath)
+    : null;
+  const rootForbiddenVar = rootRoute?.forbiddenPath
+    ? getImportVar(rootRoute.forbiddenPath)
+    : null;
+  const rootUnauthorizedVar = rootRoute?.unauthorizedPath
+    ? getImportVar(rootRoute.unauthorizedPath)
     : null;
   const rootLayoutVars = rootRoute
     ? rootRoute.layouts.map((l) => getImportVar(l))
@@ -183,25 +193,33 @@ ${metaRouteEntries.join(",\n")}
 ];
 
 const rootNotFoundModule = ${rootNotFoundVar ? rootNotFoundVar : "null"};
+const rootForbiddenModule = ${rootForbiddenVar ? rootForbiddenVar : "null"};
+const rootUnauthorizedModule = ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"};
 const rootLayouts = [${rootLayoutVars.join(", ")}];
 
 /**
- * Render a not-found page with layouts and noindex meta.
- * Tries the route's not-found.tsx first, then root not-found.tsx.
- * Returns null if no not-found component is available.
+ * Render an HTTP access fallback page (not-found/forbidden/unauthorized) with layouts and noindex meta.
+ * Returns null if no matching component is available.
  */
-async function renderNotFoundPage(route, isRscRequest, request) {
-  // Determine which not-found component to use
-  const notFoundModule = route?.notFound ?? rootNotFoundModule;
+async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request) {
+  // Determine which boundary component to use based on status code
+  let boundaryModule;
+  if (statusCode === 403) {
+    boundaryModule = route?.forbidden ?? rootForbiddenModule;
+  } else if (statusCode === 401) {
+    boundaryModule = route?.unauthorized ?? rootUnauthorizedModule;
+  } else {
+    boundaryModule = route?.notFound ?? rootNotFoundModule;
+  }
   const layouts = route?.layouts ?? rootLayouts;
-  if (!notFoundModule) return null;
+  if (!boundaryModule) return null;
 
-  const NotFoundComponent = notFoundModule.default;
-  if (!NotFoundComponent) return null;
+  const BoundaryComponent = boundaryModule.default;
+  if (!BoundaryComponent) return null;
 
-  // Build element: noindex meta + not-found component wrapped in layouts
+  // Build element: noindex meta + boundary component wrapped in layouts
   const noindexMeta = createElement("meta", { name: "robots", content: "noindex" });
-  let element = createElement(Fragment, null, noindexMeta, createElement(NotFoundComponent));
+  let element = createElement(Fragment, null, noindexMeta, createElement(BoundaryComponent));
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
     if (LayoutComponent) {
@@ -213,7 +231,7 @@ async function renderNotFoundPage(route, isRscRequest, request) {
     setHeadersContext(null);
     setNavigationContext(null);
     return new Response(rscStream, {
-      status: 404,
+      status: statusCode,
       headers: { "Content-Type": "text/x-component; charset=utf-8" },
     });
   }
@@ -222,9 +240,14 @@ async function renderNotFoundPage(route, isRscRequest, request) {
   setHeadersContext(null);
   setNavigationContext(null);
   return new Response(htmlStream, {
-    status: 404,
+    status: statusCode,
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
+}
+
+/** Convenience: render a not-found page (404) */
+async function renderNotFoundPage(route, isRscRequest, request) {
+  return renderHTTPAccessFallbackPage(route, 404, isRscRequest, request);
 }
 
 function matchRoute(url, routes) {
@@ -728,10 +751,11 @@ export default async function handler(request) {
               headers: { Location: new URL(redirectUrl, request.url).toString() },
             });
           }
-          if (digest === "NEXT_NOT_FOUND") {
+          if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+            const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, { status: 404 });
+            return new Response(null, { status: statusCode });
           }
         }
         setHeadersContext(null);
@@ -913,7 +937,7 @@ export default async function handler(request) {
   try {
     element = await buildPageElement(route, params, interceptOpts);
   } catch (buildErr) {
-    // Check for redirect/notFound thrown during metadata resolution or async components
+    // Check for redirect/notFound/forbidden/unauthorized thrown during metadata resolution or async components
     if (buildErr && typeof buildErr === "object" && "digest" in buildErr) {
       const digest = String(buildErr.digest);
       if (digest.startsWith("NEXT_REDIRECT;")) {
@@ -924,13 +948,14 @@ export default async function handler(request) {
         setNavigationContext(null);
         return Response.redirect(new URL(redirectUrl, request.url), statusCode);
       }
-      if (digest === "NEXT_NOT_FOUND") {
-        // Render the nearest not-found.tsx with layouts + noindex
-        const nfResp = await renderNotFoundPage(route, isRscRequest, request);
-        if (nfResp) return nfResp;
+      if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+        const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
+        const fallbackResp = await renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request);
+        if (fallbackResp) return fallbackResp;
         setHeadersContext(null);
         setNavigationContext(null);
-        return new Response("Not Found", { status: 404 });
+        const statusText = statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
+        return new Response(statusText, { status: statusCode });
       }
     }
     throw buildErr;
@@ -939,7 +964,7 @@ export default async function handler(request) {
   // Note: CSS is automatically injected by @vitejs/plugin-rsc's
   // rscCssTransform — no manual loadCss() call needed.
 
-  // Helper: check if an error is a redirect/notFound thrown by the navigation shim
+  // Helper: check if an error is a redirect/notFound/forbidden/unauthorized thrown by the navigation shim
   async function handleRenderError(err) {
     if (err && typeof err === "object" && "digest" in err) {
       const digest = String(err.digest);
@@ -951,12 +976,14 @@ export default async function handler(request) {
         setNavigationContext(null);
         return Response.redirect(new URL(redirectUrl, request.url), statusCode);
       }
-      if (digest === "NEXT_NOT_FOUND") {
-        const nfResp = await renderNotFoundPage(route, isRscRequest, request);
-        if (nfResp) return nfResp;
+      if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+        const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
+        const fallbackResp = await renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request);
+        if (fallbackResp) return fallbackResp;
         setHeadersContext(null);
         setNavigationContext(null);
-        return new Response("Not Found", { status: 404 });
+        const statusText = statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
+        return new Response(statusText, { status: statusCode });
       }
     }
     return null;

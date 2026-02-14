@@ -440,4 +440,22 @@ describe("matchAppRoute - URL matching", () => {
     expect(photoRoute!.params).toEqual(["id"]);
     expect(photoRoute!.pagePath).toContain("photos/[id]/page.tsx");
   });
+
+  it("discovers forbidden.tsx boundary file at the root", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const homeRoute = routes.find((r) => r.pattern === "/");
+    expect(homeRoute).toBeDefined();
+    expect(homeRoute!.forbiddenPath).toBeTruthy();
+    expect(homeRoute!.forbiddenPath).toContain("forbidden.tsx");
+  });
+
+  it("discovers unauthorized.tsx boundary file at the root", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const homeRoute = routes.find((r) => r.pattern === "/");
+    expect(homeRoute).toBeDefined();
+    expect(homeRoute!.unauthorizedPath).toBeTruthy();
+    expect(homeRoute!.unauthorizedPath).toContain("unauthorized.tsx");
+  });
 });

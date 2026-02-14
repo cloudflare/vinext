@@ -84,6 +84,11 @@ declare module "next/navigation" {
   export function redirect(url: string, type?: "replace" | "push"): never;
   export function permanentRedirect(url: string): never;
   export function notFound(): never;
+  export function forbidden(): never;
+  export function unauthorized(): never;
+  export const HTTP_ERROR_FALLBACK_ERROR_CODE: string;
+  export function isHTTPAccessFallbackError(error: unknown): boolean;
+  export function getAccessFallbackHTTPStatus(error: unknown): number;
   export type ReadonlyURLSearchParams = URLSearchParams;
 
   // Context management (internal)

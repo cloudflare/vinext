@@ -26,11 +26,16 @@ export class ErrorBoundary extends React.Component<
   }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    // notFound() and redirect() must propagate past error boundaries.
-    // Re-throw them so they bubble up to the framework's not-found/redirect handler.
+    // notFound(), forbidden(), unauthorized(), and redirect() must propagate
+    // past error boundaries. Re-throw them so they bubble up to the
+    // framework's HTTP access fallback / redirect handler.
     if (error && typeof error === "object" && "digest" in error) {
       const digest = String((error as any).digest);
-      if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_REDIRECT;")) {
+      if (
+        digest === "NEXT_NOT_FOUND" || // legacy compat
+        digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;") ||
+        digest.startsWith("NEXT_REDIRECT;")
+      ) {
         throw error;
       }
     }

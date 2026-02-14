@@ -1099,6 +1099,30 @@ describe("App Router integration", () => {
     expect(html).toContain('<html lang="en">');
   });
 
+  it("forbidden() from Server Component returns 403 with forbidden.tsx", async () => {
+    const res = await fetch(`${baseUrl}/forbidden-test`);
+    expect(res.status).toBe(403);
+    const html = await res.text();
+    expect(html).toContain("403 - Forbidden");
+    expect(html).toContain("do not have permission");
+    // Should be wrapped in the root layout
+    expect(html).toContain('<html lang="en">');
+    // Should include noindex meta
+    expect(html).toContain('name="robots" content="noindex"');
+  });
+
+  it("unauthorized() from Server Component returns 401 with unauthorized.tsx", async () => {
+    const res = await fetch(`${baseUrl}/unauthorized-test`);
+    expect(res.status).toBe(401);
+    const html = await res.text();
+    expect(html).toContain("401 - Unauthorized");
+    expect(html).toContain("must be logged in");
+    // Should be wrapped in the root layout
+    expect(html).toContain('<html lang="en">');
+    // Should include noindex meta
+    expect(html).toContain('name="robots" content="noindex"');
+  });
+
   it("redirect() from Server Component returns redirect response", async () => {
     const res = await fetch(`${baseUrl}/redirect-test`, { redirect: "manual" });
     expect(res.status).toBeGreaterThanOrEqual(300);
@@ -1675,6 +1699,8 @@ describe("App Router Static export", () => {
         loadingPath: null,
         errorPath: null,
         notFoundPath: null,
+        forbiddenPath: null,
+        unauthorizedPath: null,
         isDynamic: true,
         params: ["id"],
       },
@@ -1721,6 +1747,8 @@ describe("App Router Static export", () => {
         loadingPath: null,
         errorPath: null,
         notFoundPath: null,
+        forbiddenPath: null,
+        unauthorizedPath: null,
         isDynamic: false,
         params: [],
       },
@@ -1788,8 +1816,66 @@ describe("next/navigation shim", () => {
       notFound();
       expect.unreachable("should have thrown");
     } catch (e: any) {
-      expect(e.digest).toBe("NEXT_NOT_FOUND");
+      expect(e.digest).toBe("NEXT_HTTP_ERROR_FALLBACK;404");
     }
+  });
+
+  it("forbidden() throws with correct digest", async () => {
+    const { forbidden } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    try {
+      forbidden();
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      expect(e.digest).toBe("NEXT_HTTP_ERROR_FALLBACK;403");
+    }
+  });
+
+  it("unauthorized() throws with correct digest", async () => {
+    const { unauthorized } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+    try {
+      unauthorized();
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      expect(e.digest).toBe("NEXT_HTTP_ERROR_FALLBACK;401");
+    }
+  });
+
+  it("isHTTPAccessFallbackError detects all HTTP access fallback errors", async () => {
+    const { notFound, forbidden, unauthorized, isHTTPAccessFallbackError, getAccessFallbackHTTPStatus } = await import(
+      "../packages/vite-plugin-nextcompat/src/shims/navigation.js"
+    );
+
+    // Test notFound
+    try { notFound(); } catch (e) {
+      expect(isHTTPAccessFallbackError(e)).toBe(true);
+      expect(getAccessFallbackHTTPStatus(e)).toBe(404);
+    }
+
+    // Test forbidden
+    try { forbidden(); } catch (e) {
+      expect(isHTTPAccessFallbackError(e)).toBe(true);
+      expect(getAccessFallbackHTTPStatus(e)).toBe(403);
+    }
+
+    // Test unauthorized
+    try { unauthorized(); } catch (e) {
+      expect(isHTTPAccessFallbackError(e)).toBe(true);
+      expect(getAccessFallbackHTTPStatus(e)).toBe(401);
+    }
+
+    // Test non-access error
+    expect(isHTTPAccessFallbackError(new Error("random"))).toBe(false);
+    expect(isHTTPAccessFallbackError(null)).toBe(false);
+
+    // Test legacy NEXT_NOT_FOUND format
+    const legacyErr = new Error("old");
+    (legacyErr as any).digest = "NEXT_NOT_FOUND";
+    expect(isHTTPAccessFallbackError(legacyErr)).toBe(true);
+    expect(getAccessFallbackHTTPStatus(legacyErr)).toBe(404);
   });
 
   it("setNavigationContext / useParams works on server side", async () => {

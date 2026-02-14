@@ -68,6 +68,10 @@ export interface AppRoute {
   errorPath: string | null;
   /** Not-found component path */
   notFoundPath: string | null;
+  /** Forbidden component path (403) */
+  forbiddenPath: string | null;
+  /** Unauthorized component path (401) */
+  unauthorizedPath: string | null;
   /** Whether this is a dynamic route */
   isDynamic: boolean;
   /** Parameter names for dynamic segments */
@@ -193,9 +197,10 @@ function fileToAppRoute(
   const loadingPath = findFile(routeDir, "loading");
   const errorPath = findFile(routeDir, "error");
 
-  // Discover not-found: walk from route directory up to root (nearest wins).
-  // The route stores the closest not-found.tsx found when walking up the tree.
-  const notFoundPath = discoverNotFound(segments, appDir, routeDir);
+  // Discover not-found/forbidden/unauthorized: walk from route directory up to root (nearest wins).
+  const notFoundPath = discoverBoundaryFile(segments, appDir, "not-found");
+  const forbiddenPath = discoverBoundaryFile(segments, appDir, "forbidden");
+  const unauthorizedPath = discoverBoundaryFile(segments, appDir, "unauthorized");
 
   // Discover parallel slots (@team, @analytics, etc.).
   // Slots at the route's own directory use page.tsx; slots at ancestor directories
@@ -212,6 +217,8 @@ function fileToAppRoute(
     loadingPath,
     errorPath,
     notFoundPath,
+    forbiddenPath,
+    unauthorizedPath,
     isDynamic,
     params,
   };
@@ -263,15 +270,16 @@ function discoverTemplates(segments: string[], appDir: string): string[] {
 }
 
 /**
- * Discover the nearest not-found file by walking from the route's directory
- * up to the app root. Returns the first (closest) not-found file found, or null.
+ * Discover the nearest boundary file (not-found, forbidden, unauthorized)
+ * by walking from the route's directory up to the app root.
+ * Returns the first (closest) file found, or null.
  */
-function discoverNotFound(
+function discoverBoundaryFile(
   segments: string[],
   appDir: string,
-  _routeDir: string,
+  fileName: string,
 ): string | null {
-  // Build all directory paths from leaf to root and check each for not-found
+  // Build all directory paths from leaf to root
   const dirs: string[] = [];
   let dir = appDir;
   dirs.push(dir);
@@ -282,8 +290,8 @@ function discoverNotFound(
 
   // Walk from leaf (last) to root (first)
   for (let i = dirs.length - 1; i >= 0; i--) {
-    const nf = findFile(dirs[i], "not-found");
-    if (nf) return nf;
+    const f = findFile(dirs[i], fileName);
+    if (f) return f;
   }
   return null;
 }

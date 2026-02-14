@@ -377,6 +377,41 @@ export function useServerInsertedHTML(_callback: () => unknown): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * HTTP Access Fallback error code — shared prefix for notFound/forbidden/unauthorized.
+ * Matches Next.js 16's unified error handling approach.
+ */
+export const HTTP_ERROR_FALLBACK_ERROR_CODE = "NEXT_HTTP_ERROR_FALLBACK";
+
+/**
+ * Check if an error is an HTTP Access Fallback error (notFound, forbidden, unauthorized).
+ */
+export function isHTTPAccessFallbackError(error: unknown): boolean {
+  if (error && typeof error === "object" && "digest" in error) {
+    const digest = String((error as any).digest);
+    return (
+      digest === "NEXT_NOT_FOUND" || // legacy compat
+      digest.startsWith(`${HTTP_ERROR_FALLBACK_ERROR_CODE};`)
+    );
+  }
+  return false;
+}
+
+/**
+ * Extract the HTTP status code from an HTTP Access Fallback error.
+ * Returns 404 for legacy NEXT_NOT_FOUND errors.
+ */
+export function getAccessFallbackHTTPStatus(error: unknown): number {
+  if (error && typeof error === "object" && "digest" in error) {
+    const digest = String((error as any).digest);
+    if (digest === "NEXT_NOT_FOUND") return 404;
+    if (digest.startsWith(`${HTTP_ERROR_FALLBACK_ERROR_CODE};`)) {
+      return parseInt(digest.split(";")[1], 10);
+    }
+  }
+  return 404;
+}
+
+/**
  * Throw a redirect. Caught by the framework to send a redirect response.
  */
 export function redirect(url: string, type?: "replace" | "push"): never {
@@ -395,11 +430,33 @@ export function permanentRedirect(url: string): never {
 }
 
 /**
- * Trigger a not-found response. Caught by the framework.
+ * Trigger a not-found response (404). Caught by the framework.
  */
 export function notFound(): never {
   const error = new Error("NEXT_NOT_FOUND");
-  (error as any).digest = "NEXT_NOT_FOUND";
+  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};404`;
+  throw error;
+}
+
+/**
+ * Trigger a forbidden response (403). Caught by the framework.
+ * In Next.js, this is gated behind experimental.authInterrupts — we
+ * support it unconditionally for maximum compatibility.
+ */
+export function forbidden(): never {
+  const error = new Error("NEXT_FORBIDDEN");
+  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};403`;
+  throw error;
+}
+
+/**
+ * Trigger an unauthorized response (401). Caught by the framework.
+ * In Next.js, this is gated behind experimental.authInterrupts — we
+ * support it unconditionally for maximum compatibility.
+ */
+export function unauthorized(): never {
+  const error = new Error("NEXT_UNAUTHORIZED");
+  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};401`;
   throw error;
 }
 
