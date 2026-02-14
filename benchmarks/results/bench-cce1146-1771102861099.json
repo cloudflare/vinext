@@ -1,0 +1,73 @@
+{
+  "timestamp": "2026-02-14T20:59:42.384Z",
+  "gitHash": "cce1146",
+  "runs": 3,
+  "system": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "nodeVersion": "v24.3.0",
+    "cpus": 8
+  },
+  "nextjs": {
+    "buildTime": {
+      "mean": 5430.762569333337,
+      "stddev": 98.76277708812101,
+      "min": 5297.409500000002,
+      "max": 5533.409208000005
+    },
+    "bundleSize": {
+      "raw": 564589,
+      "gzip": 172923,
+      "files": 14
+    },
+    "devColdStart": {
+      "meanMs": 1721.416597000003,
+      "meanRssKb": 90282.66666666667,
+      "runs": [
+        {
+          "coldStartMs": 1874.6656250000015,
+          "peakRssKb": 90320
+        },
+        {
+          "coldStartMs": 1642.0297500000088,
+          "peakRssKb": 90416
+        },
+        {
+          "coldStartMs": 1647.554415999999,
+          "peakRssKb": 90112
+        }
+      ]
+    }
+  },
+  "nextcompat": {
+    "buildTime": {
+      "mean": 2091.4828470000043,
+      "stddev": 12.665016252962074,
+      "min": 2075.8025830000042,
+      "max": 2106.8197080000027
+    },
+    "bundleSize": {
+      "raw": 242050,
+      "gzip": 77206,
+      "files": 3
+    },
+    "devColdStart": {
+      "meanMs": 1158.465610666671,
+      "meanRssKb": 90602.66666666667,
+      "runs": [
+        {
+          "coldStartMs": 1304.063083000001,
+          "peakRssKb": 90464
+        },
+        {
+          "coldStartMs": 1079.8415830000013,
+          "peakRssKb": 90656
+        },
+        {
+          "coldStartMs": 1091.492166000011,
+          "peakRssKb": 90688
+        }
+      ]
+    }
+  }
+}

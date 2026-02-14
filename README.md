@@ -250,6 +250,25 @@ The test suite covers routing, SSR, API routes, metadata, ISR, server actions, s
 
 The [Vercel App Router Playground](https://github.com/vercel/next-app-router-playground) runs on nextcompat as an integration test — all 11 sections render correctly in both dev and production builds.
 
+## Benchmarks
+
+Measured on an 8-core Apple Silicon machine, Node v24.3.0, with a shared 33-route App Router app (nested layouts, dynamic routes, client components, API routes). 3 runs each.
+
+| Metric | Next.js 16 (Turbopack) | nextcompat (Vite 7) | Delta |
+|--------|----------------------|--------------------|----|
+| Production build | 5.43s ±99ms | 2.09s ±13ms | **2.6x faster** |
+| Client bundle (gzip) | 168.9 KB (14 files) | 75.4 KB (3 files) | **55% smaller** |
+| Dev cold start | 1.72s | 1.16s | **33% faster** |
+| Dev peak RSS | 88 MB | 88 MB | Same |
+
+Reproduce with:
+
+```bash
+node benchmarks/run.mjs --runs=3
+```
+
+The benchmark uses `hyperfine` for build timing (falls back to manual `performance.now()` measurement), `gzipSync` for bundle size, and process RSS polling for memory. SSR throughput benchmarks (autocannon) are planned but require production server wiring.
+
 ## Compatibility estimate
 
 Based on a systematic audit of the Next.js 16 API surface:
