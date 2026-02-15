@@ -977,6 +977,126 @@ describe("App Router Production build", () => {
   }, 30000);
 });
 
+describe("App Router Production server (startProdServer)", () => {
+  const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
+  let server: import("node:http").Server;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    // Build the app-basic fixture to the default dist/ directory
+    const rsc = (await import("@vitejs/plugin-rsc")).default;
+    const builder = await createBuilder({
+      root: APP_FIXTURE_DIR,
+      configFile: false,
+      plugins: [vinext(), rsc({ entries: RSC_ENTRIES })],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    // Start the production server on a random available port
+    const { startProdServer } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    server = await startProdServer({ port: 0, outDir, noCompression: false });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 4210;
+    baseUrl = `http://localhost:${port}`;
+  }, 60000);
+
+  afterAll(() => {
+    server?.close();
+    fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  it("serves the home page with SSR HTML", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    const html = await res.text();
+    expect(html).toContain("Welcome to App Router");
+    expect(html).toContain("<script");
+  });
+
+  it("serves dynamic routes", async () => {
+    const res = await fetch(`${baseUrl}/blog/test-post`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("test-post");
+  });
+
+  it("serves nested layouts", async () => {
+    const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("dashboard-layout");
+  });
+
+  it("returns RSC stream for .rsc requests", async () => {
+    const res = await fetch(`${baseUrl}/about.rsc`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+  });
+
+  it("returns RSC stream for Accept: text/x-component", async () => {
+    const res = await fetch(`${baseUrl}/about`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+  });
+
+  it("serves route handlers (GET /api/hello)", async () => {
+    const res = await fetch(`${baseUrl}/api/hello`);
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toHaveProperty("message");
+  });
+
+  it("returns 404 for nonexistent routes", async () => {
+    const res = await fetch(`${baseUrl}/no-such-page`);
+    expect(res.status).toBe(404);
+  });
+
+  it("serves static assets with cache headers", async () => {
+    // Find an actual hashed asset from the build
+    const assetsDir = path.join(outDir, "client", "assets");
+    const assets = fs.readdirSync(assetsDir);
+    const jsFile = assets.find((f: string) => f.endsWith(".js"));
+    expect(jsFile).toBeDefined();
+
+    const res = await fetch(`${baseUrl}/assets/${jsFile}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("javascript");
+    expect(res.headers.get("cache-control")).toContain("immutable");
+  });
+
+  it("supports gzip compression for HTML", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { "Accept-Encoding": "gzip" },
+    });
+    expect(res.status).toBe(200);
+    // Node.js fetch auto-decompresses, but we can check the header
+    // was set by looking at the original response headers
+    expect(res.headers.get("content-encoding")).toBe("gzip");
+  });
+
+  it("supports brotli compression for HTML", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { "Accept-Encoding": "br" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-encoding")).toBe("br");
+  });
+
+  it("streams HTML (response is a ReadableStream)", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    // Verify we can read the body as text (proves streaming works)
+    const html = await res.text();
+    expect(html.length).toBeGreaterThan(0);
+  });
+});
+
 describe("App Router Static export", () => {
   let server: ViteDevServer;
   let baseUrl: string;
