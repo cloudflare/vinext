@@ -1,0 +1,14 @@
+{
+  "name": "vinext-cloudflare-app",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "vite": "^7.3.1",
+    "vinext": "*",
+    "@vitejs/plugin-rsc": "^0.5.19",
+    "@cloudflare/vite-plugin": "^1.0.0",
+    "wrangler": "^4.0.0"
+  }
+}

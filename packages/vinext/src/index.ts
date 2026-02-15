@@ -70,6 +70,7 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
   let nextConfig: ResolvedNextConfig;
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
+  let hasCloudflarePlugin = false;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
@@ -618,14 +619,33 @@ hydrate();
           "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
         };
 
+        // Detect if Cloudflare's vite plugin is present — if so, skip
+        // SSR externals (Workers bundle everything, can't have Node.js externals).
+        const pluginsFlat: any[] = [];
+        function flattenPlugins(arr: any[]) {
+          for (const p of arr) {
+            if (Array.isArray(p)) flattenPlugins(p);
+            else if (p) pluginsFlat.push(p);
+          }
+        }
+        flattenPlugins(config.plugins as any[] ?? []);
+        hasCloudflarePlugin = pluginsFlat.some(
+          (p: any) => p && typeof p === "object" && typeof p.name === "string" && (
+            p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")
+          ),
+        );
+
         const viteConfig: Record<string, any> = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           // Externalize React packages from SSR transform — they are CJS and
           // must be loaded natively by Node, not through Vite's ESM evaluator.
-          ssr: {
-            external: ["react", "react-dom", "react-dom/server"],
-          },
+          // Skip when targeting Cloudflare Workers (they bundle everything).
+          ...(hasCloudflarePlugin ? {} : {
+            ssr: {
+              external: ["react", "react-dom", "react-dom/server"],
+            },
+          }),
           resolve: {
             alias: nextShimMap,
           },
@@ -644,18 +664,21 @@ hydrate();
         if (hasAppDir) {
           viteConfig.environments = {
             rsc: {
-              resolve: {
-                // Externalize native/heavy packages so the RSC environment
-                // loads them natively via Node rather than through Vite's
-                // ESM module evaluator (which can't handle native addons).
-                // Note: Do NOT externalize react/react-dom here — they must
-                // be bundled with the "react-server" condition for RSC.
-                external: [
-                  "satori",
-                  "@resvg/resvg-js",
-                  "yoga-wasm-web",
-                ],
-              },
+              ...(hasCloudflarePlugin ? {} : {
+                resolve: {
+                  // Externalize native/heavy packages so the RSC environment
+                  // loads them natively via Node rather than through Vite's
+                  // ESM module evaluator (which can't handle native addons).
+                  // Note: Do NOT externalize react/react-dom here — they must
+                  // be bundled with the "react-server" condition for RSC.
+                  // Skip when targeting Cloudflare Workers.
+                  external: [
+                    "satori",
+                    "@resvg/resvg-js",
+                    "yoga-wasm-web",
+                  ],
+                },
+              }),
               build: {
                 rollupOptions: {
                   input: { index: VIRTUAL_RSC_ENTRY },
@@ -985,6 +1008,67 @@ hydrate();
             }
           });
         };
+      },
+    },
+    // Cloudflare Workers production build integration:
+    // After all environments are built, copy RSC/SSR outputs into the Worker
+    // directory and rewrite cross-environment imports so workerd can resolve them.
+    {
+      name: "vinext:cloudflare-build",
+      apply: "build",
+      enforce: "post",
+      closeBundle: {
+        sequential: true,
+        order: "post",
+        async handler() {
+          // Only act if Cloudflare plugin is present and this is the worker environment.
+          // The Cloudflare plugin names worker environments with the sanitized worker name.
+          const envName = (this as any).environment?.name as string | undefined;
+          if (!envName || !hasCloudflarePlugin) return;
+
+          // Worker environments are NOT "rsc", "ssr", or "client"
+          if (envName === "rsc" || envName === "ssr" || envName === "client") return;
+
+          const envConfig = (this as any).environment?.config;
+          if (!envConfig) return;
+          const buildRoot = envConfig.root ?? process.cwd();
+          const workerOutDir = path.resolve(buildRoot, envConfig.build.outDir);
+
+          // Copy RSC and SSR outputs into the worker directory
+          for (const childEnv of ["rsc", "ssr"]) {
+            const srcDir = path.resolve(buildRoot, "dist", childEnv);
+            const destDir = path.join(workerOutDir, childEnv);
+            if (!fs.existsSync(srcDir)) continue;
+            fs.cpSync(srcDir, destDir, { recursive: true });
+          }
+
+          // Rewrite imports in the worker entry from "../rsc/" → "./rsc/", "../ssr/" → "./ssr/"
+          const workerEntry = path.join(workerOutDir, "index.js");
+          if (fs.existsSync(workerEntry)) {
+            let code = fs.readFileSync(workerEntry, "utf-8");
+            code = code.replace(/from\s*"\.\.\/rsc\//g, 'from "./rsc/');
+            code = code.replace(/from\s*"\.\.\/ssr\//g, 'from "./ssr/');
+            code = code.replace(/import\(\s*"\.\.\/rsc\//g, 'import("./rsc/');
+            code = code.replace(/import\(\s*"\.\.\/ssr\//g, 'import("./ssr/');
+            fs.writeFileSync(workerEntry, code);
+          }
+
+          // Rewrite cross-env imports within RSC entry (rsc → ssr: "../../ssr/" → "../ssr/")
+          const rscEntry = path.join(workerOutDir, "rsc", "index.js");
+          if (fs.existsSync(rscEntry)) {
+            let code = fs.readFileSync(rscEntry, "utf-8");
+            code = code.replace(/import\(\s*"\.\.\/\.\.\/ssr\//g, 'import("../ssr/');
+            fs.writeFileSync(rscEntry, code);
+          }
+
+          // Rewrite cross-env imports within SSR entry (ssr → rsc: "../../rsc/" → "../rsc/")
+          const ssrEntry = path.join(workerOutDir, "ssr", "index.js");
+          if (fs.existsSync(ssrEntry)) {
+            let code = fs.readFileSync(ssrEntry, "utf-8");
+            code = code.replace(/import\(\s*"\.\.\/\.\.\/rsc\//g, 'import("../rsc/');
+            fs.writeFileSync(ssrEntry, code);
+          }
+        },
       },
     },
   ];

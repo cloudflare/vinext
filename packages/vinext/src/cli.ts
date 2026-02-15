@@ -78,33 +78,37 @@ function hasViteConfig(): boolean {
 
 function buildViteConfig(overrides: Record<string, unknown> = {}) {
   const isApp = hasAppDir();
+  const hasConfig = hasViteConfig();
 
-  // Base config: vinext plugin auto-configured
+  // If a vite.config exists, let Vite load it — only set root and overrides.
+  // The user's config already has vinext() + rsc() plugins configured.
+  // Adding them here too would duplicate the RSC transform (causes
+  // "Identifier has already been declared" errors in production builds).
+  if (hasConfig) {
+    return {
+      root: process.cwd(),
+      ...overrides,
+    };
+  }
+
+  // No vite.config — auto-configure everything
   const config: Record<string, unknown> = {
     root: process.cwd(),
+    configFile: false,
     plugins: isApp
       ? [
-          rsc(),
+          rsc({
+            entries: {
+              rsc: "virtual:vinext-rsc-entry",
+              ssr: "virtual:vinext-app-ssr-entry",
+              client: "virtual:vinext-app-browser-entry",
+            },
+          }),
           ...vinext(),
         ]
       : [vinext()],
     ...overrides,
   };
-
-  // For App Router, set up RSC virtual entries if no vite.config exists
-  if (isApp && !hasViteConfig()) {
-    (config as Record<string, unknown>).environments = {
-      rsc: {
-        build: { rollupOptions: { input: "virtual:vinext-rsc-entry" } },
-      },
-      ssr: {
-        build: { rollupOptions: { input: "virtual:vinext-app-ssr-entry" } },
-      },
-      client: {
-        build: { rollupOptions: { input: "virtual:vinext-app-browser-entry" } },
-      },
-    };
-  }
 
   return config;
 }
