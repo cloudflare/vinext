@@ -6,7 +6,44 @@
  * Client-side: reads from browser Location API and provides navigation.
  */
 
-import { useSyncExternalStore } from "react";
+import { useSyncExternalStore, createContext, useContext, type Context } from "react";
+
+// ─── Layout segment depth context ─────────────────────────────────────────────
+// Used by useSelectedLayoutSegments() to know which layout it's inside.
+// The context is created lazily because `createContext` is NOT available in
+// the react-server condition of React. In the RSC environment, this remains
+// null and the hooks fall back to returning all segments (depth 0).
+// In SSR and browser environments, the context is created and used normally.
+
+let _LayoutSegmentCtx: Context<number> | null = null;
+
+/**
+ * Get or create the layout segment context.
+ * Returns null in the RSC environment (createContext unavailable).
+ */
+export function getLayoutSegmentContext(): Context<number> | null {
+  if (_LayoutSegmentCtx === null && typeof createContext === "function") {
+    _LayoutSegmentCtx = createContext<number>(0);
+  }
+  return _LayoutSegmentCtx;
+}
+
+/**
+ * Read the layout segment depth from context. Returns 0 if no context
+ * is available (RSC environment, outside React tree, or root level).
+ */
+function useLayoutSegmentDepth(): number {
+  const ctx = getLayoutSegmentContext();
+  if (!ctx) return 0;
+  // useContext is safe here because if createContext exists, useContext does too.
+  // This branch is only taken in SSR/Browser, never in RSC.
+  // Try/catch for unit tests that call this hook outside a React render tree.
+  try {
+    return useContext(ctx);
+  } catch {
+    return 0;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Server-side request context (set by the RSC entry before rendering)
@@ -365,8 +402,10 @@ export function useSelectedLayoutSegment(
  * Returns all active segments below the layout where it's called.
  *
  * In Next.js, this returns the full array of segments from the current
- * layout down to the leaf page. In our implementation, we derive this
- * from the pathname.
+ * layout down to the leaf page. Each layout in the tree wraps its children
+ * with a LayoutSegmentProvider that records the URL segment depth at that
+ * level. This hook reads that depth from context and slices the pathname
+ * segments accordingly.
  *
  * @param parallelRoutesKey - Which parallel route to read (default: "children")
  */
@@ -374,9 +413,9 @@ export function useSelectedLayoutSegments(
   _parallelRoutesKey?: string,
 ): string[] {
   const pathname = usePathname();
-  // Split pathname into segments, filtering empty strings
+  const depth = useLayoutSegmentDepth();
   const segments = pathname.split("/").filter(Boolean);
-  return segments;
+  return segments.slice(depth);
 }
 
 /**

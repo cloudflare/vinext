@@ -96,6 +96,7 @@ ${interceptEntries.join(",\n")}
     page: ${route.pagePath ? getImportVar(route.pagePath) : "null"},
     routeHandler: ${route.routePath ? getImportVar(route.routePath) : "null"},
     layouts: [${layoutVars.join(", ")}],
+    layoutSegmentDepths: ${JSON.stringify(route.layoutSegmentDepths)},
     templates: [${templateVars.join(", ")}],
     slots: {
 ${slotEntries.join(",\n")}
@@ -157,6 +158,7 @@ import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies } from "next/headers";
 import { ErrorBoundary } from "vinext/error-boundary";
+import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
@@ -459,6 +461,14 @@ async function buildPageElement(route, params, opts, searchParams) {
       }
 
       element = createElement(LayoutComponent, layoutProps);
+
+      // Wrap the layout with LayoutSegmentProvider so useSelectedLayoutSegments()
+      // called INSIDE this layout knows its URL segment depth. The depth tells the
+      // hook how many URL segments are above this layout, so it returns only the
+      // segments below. We wrap the layout (not just children) because hooks are
+      // called from components rendered inside the layout's own JSX.
+      const layoutDepth = route.layoutSegmentDepths ? route.layoutSegmentDepths[i] : 0;
+      element = createElement(LayoutSegmentProvider, { depth: layoutDepth }, element);
     }
   }
 

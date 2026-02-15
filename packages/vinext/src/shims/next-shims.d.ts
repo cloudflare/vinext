@@ -99,6 +99,7 @@ declare module "next/navigation" {
   export function setNavigationContext(ctx: any): void;
   export function setClientParams(params: Record<string, string | string[]>): void;
   export function getClientParams(): Record<string, string | string[]>;
+  export function getLayoutSegmentContext(): import("react").Context<number> | null;
 }
 
 declare module "next/image" {

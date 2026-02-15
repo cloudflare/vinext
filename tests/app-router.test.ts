@@ -198,6 +198,50 @@ describe("App Router integration", () => {
     expect(analyticsRes.status).toBe(404);
   });
 
+  // --- useSelectedLayoutSegment(s) ---
+
+  it("useSelectedLayoutSegments returns segments relative to dashboard layout", async () => {
+    // At /dashboard/settings, the dashboard layout renders a SegmentDisplay.
+    // It should show segments relative to the dashboard layout: ["settings"]
+    const res = await fetch(`${baseUrl}/dashboard/settings`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // The SegmentDisplay renders: <span data-testid="segments">["settings"]</span>
+    expect(html).toContain('data-testid="segments"');
+    // Verify it returns ["settings"], not ["dashboard", "settings"]
+    expect(html).toMatch(/data-testid="segments"[^>]*>\[&quot;settings&quot;\]/);
+  });
+
+  it("useSelectedLayoutSegment returns first segment relative to dashboard layout", async () => {
+    const res = await fetch(`${baseUrl}/dashboard/settings`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // The SegmentDisplay renders: <span data-testid="segment">settings</span>
+    expect(html).toContain('data-testid="segment"');
+    expect(html).toMatch(/data-testid="segment"[^>]*>settings</);
+  });
+
+  it("useSelectedLayoutSegments returns empty array at leaf route", async () => {
+    // At /dashboard, the dashboard layout's segments should be empty (it IS the page)
+    const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // Should render: <span data-testid="segments">[]</span>
+    expect(html).toMatch(/data-testid="segments"[^>]*>\[\]/);
+  });
+
+  it("useSelectedLayoutSegment returns null at leaf route", async () => {
+    const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+
+    // Should render: <span data-testid="segment">null</span>
+    expect(html).toMatch(/data-testid="segment"[^>]*>null</);
+  });
+
   // --- Intercepting routes ---
 
   it("renders full photo page on direct navigation (SSR)", async () => {
@@ -1034,6 +1078,7 @@ describe("App Router Static export", () => {
         layouts: [],
         templates: [],
         parallelSlots: [],
+        layoutSegmentDepths: [],
         loadingPath: null,
         errorPath: null,
         notFoundPath: null,
@@ -1082,6 +1127,7 @@ describe("App Router Static export", () => {
         layouts: [],
         templates: [],
         parallelSlots: [],
+        layoutSegmentDepths: [],
         loadingPath: null,
         errorPath: null,
         notFoundPath: null,

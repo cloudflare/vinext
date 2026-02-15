@@ -72,6 +72,14 @@ export interface AppRoute {
   forbiddenPath: string | null;
   /** Unauthorized component path (401) */
   unauthorizedPath: string | null;
+  /**
+   * URL segment depth for each layout in the layouts array.
+   * Used by useSelectedLayoutSegments() to determine which segments are
+   * below a given layout. For example, root layout has depth 0, a layout
+   * at app/dashboard/ has depth 1 (one URL segment: "dashboard").
+   * Route groups and parallel slots don't contribute to the depth.
+   */
+  layoutSegmentDepths: number[];
   /** Whether this is a dynamic route */
   isDynamic: boolean;
   /** Parameter names for dynamic segments */
@@ -192,6 +200,12 @@ function fileToAppRoute(
   const layouts = discoverLayouts(segments, appDir);
   const templates = discoverTemplates(segments, appDir);
 
+  // Compute the URL segment depth for each layout.
+  // Each layout corresponds to a directory level. We need to count how many
+  // of the filesystem segments up to that layout's level contribute URL segments
+  // (i.e., are not route groups or parallel slots).
+  const layoutSegmentDepths = computeLayoutSegmentDepths(segments, appDir, layouts);
+
   // Discover loading, error in the route's directory
   const routeDir = dir === "." ? appDir : path.join(appDir, dir);
   const loadingPath = findFile(routeDir, "loading");
@@ -219,9 +233,50 @@ function fileToAppRoute(
     notFoundPath,
     forbiddenPath,
     unauthorizedPath,
+    layoutSegmentDepths,
     isDynamic,
     params,
   };
+}
+
+/**
+ * Compute the URL segment depth for each layout in the layouts array.
+ * Root layout = 0, then each directory level that contributes a URL segment
+ * increments the depth. Route groups and parallel slots don't contribute.
+ */
+function computeLayoutSegmentDepths(
+  segments: string[],
+  appDir: string,
+  layouts: string[],
+): number[] {
+  // Build a map: layout file path → depth in URL segments
+  // Walk the segments directory-by-directory, tracking cumulative URL depth
+  const depthMap = new Map<string, number>();
+
+  // Root layout (at appDir) always has depth 0
+  const rootLayout = findFile(appDir, "layout");
+  if (rootLayout) depthMap.set(rootLayout, 0);
+
+  let urlDepth = 0;
+  let currentDir = appDir;
+  for (const segment of segments) {
+    currentDir = path.join(currentDir, segment);
+
+    // Count URL-visible segments (skip route groups and parallel slots)
+    const isRouteGroup = segment.startsWith("(") && segment.endsWith(")");
+    const isParallelSlot = segment.startsWith("@");
+    if (!isRouteGroup && !isParallelSlot) {
+      urlDepth++;
+    }
+
+    const layout = findFile(currentDir, "layout");
+    if (layout) {
+      depthMap.set(layout, urlDepth);
+    }
+  }
+
+  // Map the ordered layouts array to their depths
+  return layouts.map((layoutPath) => depthMap.get(layoutPath) ?? 0);
 }
 
 /**

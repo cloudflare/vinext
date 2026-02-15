@@ -809,6 +809,7 @@ hydrate();
           "next/dist/client/components/navigation": path.join(shimsDir, "navigation"),
           "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
           "vinext/error-boundary": path.join(shimsDir, "error-boundary"),
+          "vinext/layout-segment-context": path.join(shimsDir, "layout-segment-context"),
           "vinext/metadata": path.join(shimsDir, "metadata"),
           "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
           "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
