@@ -17,6 +17,17 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { pipeline } from "node:stream";
 
+/** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
+function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      req.on("data", (chunk: Buffer) => controller.enqueue(new Uint8Array(chunk)));
+      req.on("end", () => controller.close());
+      req.on("error", (err) => controller.error(err));
+    },
+  });
+}
+
 export interface ProdServerOptions {
   /** Port to listen on */
   port?: number;
@@ -220,89 +231,49 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     }
 
     try {
+      // Convert Node.js req to Web Request for the server entry
+      const protocol = "http";
+      const hostHeader = req.headers.host ?? `${host}:${port}`;
+      const reqHeaders = Object.entries(req.headers).reduce((h, [k, v]) => {
+        if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
+        return h;
+      }, new Headers());
+      const hasBody = req.method !== "GET" && req.method !== "HEAD";
+      const webRequest = new Request(`${protocol}://${hostHeader}${url}`, {
+        method: req.method,
+        headers: reqHeaders,
+        body: hasBody ? readNodeStream(req) : undefined,
+        // @ts-expect-error — duplex needed for streaming request bodies
+        duplex: hasBody ? "half" : undefined,
+      });
+
+      let response: Response | undefined;
+
       // API routes
       if (pathname.startsWith("/api/") || pathname === "/api") {
         if (typeof handleApi === "function") {
-          await handleApi(req, res, url);
-          return;
-        }
-        res.writeHead(404);
-        res.end("404 - API route not found");
-        return;
-      }
-
-      // SSR page rendering
-      if (typeof renderPage === "function") {
-        // Wrap res to capture SSR output for compression.
-        // renderPage writes directly to res, so we intercept writeHead/write/end.
-        if (compress) {
-          const origWriteHead = res.writeHead.bind(res);
-          const origWrite = res.write.bind(res);
-          const origEnd = res.end.bind(res);
-          const chunks: Buffer[] = [];
-          let statusCode = 200;
-          let headers: Record<string, string | string[]> = {};
-          let headersSent = false;
-
-          (res as any).writeHead = (code: number, hdrs?: Record<string, string | string[]>) => {
-            statusCode = code;
-            if (hdrs) headers = { ...headers, ...hdrs };
-            return res;
-          };
-
-          (res as any).write = (chunk: string | Buffer) => {
-            chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-            return true;
-          };
-
-          (res as any).end = (chunk?: string | Buffer) => {
-            if (chunk) {
-              chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-            }
-            const body = Buffer.concat(chunks);
-            const ct = String(headers["Content-Type"] ?? headers["content-type"] ?? "text/html");
-            const baseType = ct.split(";")[0].trim();
-            const encoding = negotiateEncoding(req);
-
-            if (encoding && COMPRESSIBLE_TYPES.has(baseType) && body.length >= COMPRESS_THRESHOLD) {
-              if (!headersSent) {
-                headersSent = true;
-                const finalHeaders = { ...headers };
-                delete finalHeaders["Content-Length"];
-                delete finalHeaders["content-length"];
-                (finalHeaders as any)["Content-Encoding"] = encoding;
-                (finalHeaders as any)["Vary"] = "Accept-Encoding";
-                origWriteHead(statusCode, finalHeaders);
-              }
-              const compressor = createCompressor(encoding);
-              compressor.end(body);
-              pipeline(compressor, res as any, () => { /* ignore */ });
-              // Restore original methods
-              res.writeHead = origWriteHead;
-              res.write = origWrite;
-              res.end = origEnd;
-            } else {
-              if (!headersSent) {
-                headersSent = true;
-                origWriteHead(statusCode, headers);
-              }
-              origEnd(body);
-              // Restore original methods
-              res.writeHead = origWriteHead;
-              res.write = origWrite;
-              res.end = origEnd;
-            }
-          };
-
-          await renderPage(req, res, url, ssrManifest);
+          response = await handleApi(webRequest, url);
         } else {
-          await renderPage(req, res, url, ssrManifest);
+          response = new Response("404 - API route not found", { status: 404 });
         }
+      } else if (typeof renderPage === "function") {
+        // SSR page rendering
+        response = await renderPage(webRequest, url, ssrManifest);
+      }
+
+      if (!response) {
+        res.writeHead(404);
+        res.end("404 - Not found");
         return;
       }
 
-      res.writeHead(404);
-      res.end("404 - Not found");
+      // Pipe Web Response back to Node.js ServerResponse with optional compression
+      const responseBody = await response.text();
+      const ct = response.headers.get("content-type") ?? "text/html";
+      const responseHeaders: Record<string, string> = {};
+      response.headers.forEach((v, k) => { responseHeaders[k] = v; });
+
+      sendCompressed(req, res, responseBody, ct, response.status, responseHeaders, compress);
     } catch (e) {
       console.error("[vinext] Server error:", e);
       res.writeHead(500);

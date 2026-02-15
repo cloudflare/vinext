@@ -18,8 +18,12 @@ export default defineConfig({
       name: "app-router",
       testDir: "./tests/e2e/app-router",
     },
+    {
+      name: "cloudflare-pages-router",
+      testDir: "./tests/e2e/cloudflare-pages-router",
+    },
   ],
-  // Build the plugin, then start both Vite dev servers
+  // Build the plugin, then start dev servers
   webServer: [
     {
       command:
@@ -33,6 +37,13 @@ export default defineConfig({
       command: "npx vite --port 4174",
       cwd: "./fixtures/app-basic",
       port: 4174,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+    {
+      command: "npx vite build && npx wrangler dev --port 4177",
+      cwd: "./fixtures/cloudflare-pages",
+      port: 4177,
       reuseExistingServer: !process.env.CI,
       timeout: 30_000,
     },

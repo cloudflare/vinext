@@ -133,12 +133,11 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
         })
       : "null";
 
-    // The server entry is a self-contained module. It uses template literals
-    // with escaped backticks for string construction in the generated code.
+    // The server entry is a self-contained module that uses Web-standard APIs
+    // (Request/Response, renderToReadableStream) so it runs on Cloudflare Workers.
     return `
 import React from "react";
-import ReactDOMServer from "react-dom/server";
-import { Writable } from "node:stream";
+import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext } from "next/router";
@@ -168,24 +167,10 @@ function triggerBackgroundRegeneration(key, renderFn) {
   pendingRegenerations.set(key, promise);
 }
 
-function renderToStringAsync(element) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    const writable = new Writable({
-      write(chunk, _encoding, callback) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        callback();
-      },
-      final(callback) {
-        resolve(Buffer.concat(chunks).toString("utf-8"));
-        callback();
-      },
-    });
-    const { pipe } = ReactDOMServer.renderToPipeableStream(element, {
-      onAllReady() { pipe(writable); },
-      onError(error) { reject(error); },
-    });
-  });
+async function renderToStringAsync(element) {
+  const stream = await renderToReadableStream(element);
+  await stream.allReady;
+  return new Response(stream).text();
 }
 
 ${pageImports.join("\n")}
@@ -261,7 +246,6 @@ function collectAssetTags(manifest, moduleIds) {
   if (!manifest) return "";
   const tags = [];
   const seen = new Set();
-  // Collect assets for the specified module IDs
   const idsToCheck = moduleIds && moduleIds.length > 0
     ? moduleIds
     : Object.keys(manifest);
@@ -281,7 +265,7 @@ function collectAssetTags(manifest, moduleIds) {
   return tags.join("\\n  ");
 }
 
-// i18n helpers for production server
+// i18n helpers
 function extractLocale(url) {
   if (!i18nConfig) return { locale: undefined, url, hadPrefix: false };
   const pathname = url.split("?")[0];
@@ -295,9 +279,9 @@ function extractLocale(url) {
   return { locale: i18nConfig.defaultLocale, url, hadPrefix: false };
 }
 
-function detectLocale(req) {
+function detectLocaleFromHeaders(headers) {
   if (!i18nConfig) return null;
-  const acceptLang = req.headers && req.headers["accept-language"];
+  const acceptLang = headers.get("accept-language");
   if (!acceptLang) return null;
   const langs = acceptLang.split(",").map(function(part) {
     const pieces = part.trim().split(";");
@@ -318,10 +302,8 @@ function detectLocale(req) {
   return null;
 }
 
-function parseCookieLocale(req) {
-  if (!i18nConfig) return null;
-  const cookieHeader = req.headers && req.headers.cookie;
-  if (!cookieHeader) return null;
+function parseCookieLocaleFromHeader(cookieHeader) {
+  if (!i18nConfig || !cookieHeader) return null;
   const match = cookieHeader.match(/(?:^|;\\s*)NEXT_LOCALE=([^;]*)/);
   if (!match) return null;
   const value = decodeURIComponent(match[1].trim());
@@ -329,37 +311,121 @@ function parseCookieLocale(req) {
   return null;
 }
 
-export async function renderPage(req, res, url, manifest) {
-  // Extract locale from URL and handle i18n redirect
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  if (!cookieHeader) return cookies;
+  for (const part of cookieHeader.split(";")) {
+    const [key, ...rest] = part.split("=");
+    if (key) cookies[key.trim()] = rest.join("=").trim();
+  }
+  return cookies;
+}
+
+// Lightweight req/res facade for getServerSideProps and API routes.
+// Next.js pages expect ctx.req/ctx.res with Node-like shapes.
+function createReqRes(request, url, query, body) {
+  const headersObj = {};
+  for (const [k, v] of request.headers) headersObj[k.toLowerCase()] = v;
+
+  const req = {
+    method: request.method,
+    url: url,
+    headers: headersObj,
+    query: query,
+    body: body,
+    cookies: parseCookies(request.headers.get("cookie")),
+  };
+
+  let resStatusCode = 200;
+  const resHeaders = {};
+  // set-cookie needs array support (multiple Set-Cookie headers are common)
+  const setCookieHeaders = [];
+  let resBody = null;
+  let ended = false;
+  let resolveResponse;
+  const responsePromise = new Promise(function(r) { resolveResponse = r; });
+
+  const res = {
+    get statusCode() { return resStatusCode; },
+    set statusCode(code) { resStatusCode = code; },
+    writeHead: function(code, headers) {
+      resStatusCode = code;
+      if (headers) {
+        for (const [k, v] of Object.entries(headers)) {
+          if (k.toLowerCase() === "set-cookie") {
+            if (Array.isArray(v)) { for (const c of v) setCookieHeaders.push(c); }
+            else { setCookieHeaders.push(v); }
+          } else {
+            resHeaders[k] = v;
+          }
+        }
+      }
+      return res;
+    },
+    setHeader: function(name, value) {
+      if (name.toLowerCase() === "set-cookie") {
+        if (Array.isArray(value)) { for (const c of value) setCookieHeaders.push(c); }
+        else { setCookieHeaders.push(value); }
+      } else {
+        resHeaders[name.toLowerCase()] = value;
+      }
+      return res;
+    },
+    getHeader: function(name) {
+      if (name.toLowerCase() === "set-cookie") return setCookieHeaders.length > 0 ? setCookieHeaders : undefined;
+      return resHeaders[name.toLowerCase()];
+    },
+    end: function(data) {
+      if (ended) return;
+      ended = true;
+      if (data !== undefined && data !== null) resBody = data;
+      const h = new Headers(resHeaders);
+      for (const c of setCookieHeaders) h.append("set-cookie", c);
+      resolveResponse(new Response(resBody, { status: resStatusCode, headers: h }));
+    },
+    status: function(code) { resStatusCode = code; return res; },
+    json: function(data) {
+      resHeaders["content-type"] = "application/json";
+      res.end(JSON.stringify(data));
+    },
+    send: function(data) {
+      if (typeof data === "object" && data !== null) { res.json(data); }
+      else { if (!resHeaders["content-type"]) resHeaders["content-type"] = "text/plain"; res.end(String(data)); }
+    },
+    redirect: function(statusOrUrl, url2) {
+      if (typeof statusOrUrl === "string") { res.writeHead(307, { Location: statusOrUrl }); }
+      else { res.writeHead(statusOrUrl, { Location: url2 }); }
+      res.end();
+    },
+  };
+
+  return { req, res, responsePromise };
+}
+
+export async function renderPage(request, url, manifest) {
   const localeInfo = extractLocale(url);
   const locale = localeInfo.locale;
-  const routeUrl = localeInfo.url; // URL with locale prefix stripped
+  const routeUrl = localeInfo.url;
+  const cookieHeader = request.headers.get("cookie") || "";
 
   // i18n redirect: check NEXT_LOCALE cookie first, then Accept-Language
   if (i18nConfig && !localeInfo.hadPrefix) {
-    const cookieLocale = parseCookieLocale(req);
+    const cookieLocale = parseCookieLocaleFromHeader(cookieHeader);
     if (cookieLocale && cookieLocale !== i18nConfig.defaultLocale) {
-      // NEXT_LOCALE cookie overrides Accept-Language
-      res.writeHead(307, { Location: "/" + cookieLocale + routeUrl });
-      res.end();
-      return;
+      return new Response(null, { status: 307, headers: { Location: "/" + cookieLocale + routeUrl } });
     }
-    // If no cookie or cookie matches default, fall through to Accept-Language
     if (!cookieLocale && i18nConfig.localeDetection !== false) {
-      const detected = detectLocale(req);
+      const detected = detectLocaleFromHeaders(request.headers);
       if (detected && detected !== i18nConfig.defaultLocale) {
-        res.writeHead(307, { Location: "/" + detected + routeUrl });
-        res.end();
-        return;
+        return new Response(null, { status: 307, headers: { Location: "/" + detected + routeUrl } });
       }
     }
   }
 
   const match = matchRoute(routeUrl, pageRoutes);
   if (!match) {
-    res.writeHead(404, { "Content-Type": "text/html" });
-    res.end("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>");
-    return;
+    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
+      { status: 404, headers: { "Content-Type": "text/html" } });
   }
 
   const { route, params } = match;
@@ -376,7 +442,6 @@ export async function renderPage(req, res, url, manifest) {
       });
     }
 
-    // Set globalThis locale info for Link component locale prop support
     if (i18nConfig) {
       globalThis.__VINEXT_LOCALE__ = locale;
       globalThis.__VINEXT_LOCALES__ = i18nConfig.locales;
@@ -386,12 +451,10 @@ export async function renderPage(req, res, url, manifest) {
     const pageModule = route.module;
     const PageComponent = pageModule.default;
     if (!PageComponent) {
-      res.writeHead(500);
-      res.end("Page has no default export");
-      return;
+      return new Response("Page has no default export", { status: 500 });
     }
 
-    // Handle getStaticPaths for dynamic routes — enforce fallback: false
+    // Handle getStaticPaths for dynamic routes
     if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
       const pathsResult = await pageModule.getStaticPaths({
         locales: i18nConfig ? i18nConfig.locales : [],
@@ -412,16 +475,15 @@ export async function renderPage(req, res, url, manifest) {
           });
         });
         if (!isValidPath) {
-          res.writeHead(404, { "Content-Type": "text/html" });
-          res.end("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>");
-          return;
+          return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
+            { status: 404, headers: { "Content-Type": "text/html" } });
         }
       }
-      // fallback: true or "blocking" — always SSR on-demand
     }
 
     let pageProps = {};
     if (typeof pageModule.getServerSideProps === "function") {
+      const { req, res } = createReqRes(request, routeUrl, parseQuery(routeUrl), undefined);
       const ctx = {
         params, req, res,
         query: parseQuery(routeUrl),
@@ -434,11 +496,11 @@ export async function renderPage(req, res, url, manifest) {
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
         var gsspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
-        res.writeHead(gsspStatus, { Location: result.redirect.destination });
-        res.end();
-        return;
+        return new Response(null, { status: gsspStatus, headers: { Location: result.redirect.destination } });
       }
-      if (result && result.notFound) { res.writeHead(404); res.end("404"); return; }
+      if (result && result.notFound) {
+        return new Response("404", { status: 404 });
+      }
     }
     let isrRevalidateSeconds = null;
     if (typeof pageModule.getStaticProps === "function") {
@@ -447,29 +509,25 @@ export async function renderPage(req, res, url, manifest) {
       const cached = await isrGet(cacheKey);
 
       if (cached && !cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
-        // Fresh ISR cache hit
-        res.writeHead(200, { "Content-Type": "text/html", "X-Vinext-Cache": "HIT",
-          "Cache-Control": "s-maxage=" + (cached.value.value.revalidate || 60) + ", stale-while-revalidate" });
-        res.end(cached.value.value.html);
-        return;
+        return new Response(cached.value.value.html, { status: 200, headers: {
+          "Content-Type": "text/html", "X-Vinext-Cache": "HIT",
+          "Cache-Control": "s-maxage=" + (cached.value.value.revalidate || 60) + ", stale-while-revalidate",
+        }});
       }
 
       if (cached && cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
-        // Stale ISR cache hit — serve stale, trigger background regen
         triggerBackgroundRegeneration(cacheKey, async function() {
           const freshResult = await pageModule.getStaticProps({ params });
           if (freshResult && freshResult.props && typeof freshResult.revalidate === "number" && freshResult.revalidate > 0) {
-            // Re-render would be expensive, so just update the data for now
             await isrSet(cacheKey, { kind: "PAGES", html: cached.value.value.html, pageData: freshResult.props, headers: undefined, status: undefined }, freshResult.revalidate);
           }
         });
-        res.writeHead(200, { "Content-Type": "text/html", "X-Vinext-Cache": "STALE",
-          "Cache-Control": "s-maxage=0, stale-while-revalidate" });
-        res.end(cached.value.value.html);
-        return;
+        return new Response(cached.value.value.html, { status: 200, headers: {
+          "Content-Type": "text/html", "X-Vinext-Cache": "STALE",
+          "Cache-Control": "s-maxage=0, stale-while-revalidate",
+        }});
       }
 
-      // Cache miss — call getStaticProps
       const ctx = {
         params,
         locale: locale,
@@ -480,11 +538,11 @@ export async function renderPage(req, res, url, manifest) {
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
         var gspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
-        res.writeHead(gspStatus, { Location: result.redirect.destination });
-        res.end();
-        return;
+        return new Response(null, { status: gspStatus, headers: { Location: result.redirect.destination } });
       }
-      if (result && result.notFound) { res.writeHead(404); res.end("404"); return; }
+      if (result && result.notFound) {
+        return new Response("404", { status: 404 });
+      }
       if (typeof result.revalidate === "number" && result.revalidate > 0) {
         isrRevalidateSeconds = result.revalidate;
       }
@@ -502,7 +560,6 @@ export async function renderPage(req, res, url, manifest) {
 
     const bodyHtml = await renderToStringAsync(element);
     const ssrHeadHTML = typeof getSSRHeadHTML === "function" ? getSSRHeadHTML() : "";
-    // Look up this page's assets + the client entry assets in the manifest
     const pageModuleIds = route.filePath ? [route.filePath] : [];
     const assetTags = collectAssetTags(manifest, pageModuleIds);
     const nextDataPayload = {
@@ -550,76 +607,54 @@ export async function renderPage(req, res, url, manifest) {
       responseHeaders["Cache-Control"] = "s-maxage=" + isrRevalidateSeconds + ", stale-while-revalidate";
       responseHeaders["X-Vinext-Cache"] = "MISS";
     }
-    res.writeHead(200, responseHeaders);
-    res.end(html);
+    return new Response(html, { status: 200, headers: responseHeaders });
   } catch (e) {
     console.error("[vinext] SSR error:", e);
-    res.writeHead(500);
-    res.end("Internal Server Error: " + (e && e.message ? e.message : String(e)));
+    return new Response("Internal Server Error: " + (e && e.message ? e.message : String(e)), { status: 500 });
   } finally {
     cleanupFetchCache();
   }
 }
 
-export async function handleApiRoute(req, res, url) {
+export async function handleApiRoute(request, url) {
   const match = matchRoute(url, apiRoutes);
   if (!match) {
-    res.writeHead(404);
-    res.end("404 - API route not found");
-    return;
+    return new Response("404 - API route not found", { status: 404 });
   }
 
   const { route, params } = match;
   const handler = route.module.default;
   if (typeof handler !== "function") {
-    res.writeHead(500);
-    res.end("API route does not export a default function");
-    return;
+    return new Response("API route does not export a default function", { status: 500 });
   }
 
   const query = { ...params };
   const qs = url.split("?")[1];
   if (qs) { for (const [k, v] of new URLSearchParams(qs)) query[k] = v; }
 
-  const body = await new Promise((resolve) => {
-    const chunks = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", () => {
-      const raw = Buffer.concat(chunks).toString("utf-8");
-      if (!raw) return resolve(undefined);
-      const ct = req.headers["content-type"] || "";
-      if (ct.includes("application/json")) {
-        try { resolve(JSON.parse(raw)); } catch { resolve(raw); }
-      } else resolve(raw);
-    });
-  });
-
-  req.query = query;
-  req.body = body;
-  const cookieHeader = req.headers.cookie || "";
-  req.cookies = {};
-  for (const part of cookieHeader.split(";")) {
-    const [key, ...rest] = part.split("=");
-    if (key) req.cookies[key.trim()] = rest.join("=").trim();
+  // Parse request body
+  let body;
+  const ct = request.headers.get("content-type") || "";
+  const rawBody = await request.text();
+  if (!rawBody) {
+    body = undefined;
+  } else if (ct.includes("application/json")) {
+    try { body = JSON.parse(rawBody); } catch { body = rawBody; }
+  } else {
+    body = rawBody;
   }
-  res.status = function(code) { this.statusCode = code; return this; };
-  res.json = function(data) { this.setHeader("Content-Type", "application/json"); this.end(JSON.stringify(data)); };
-  res.send = function(data) {
-    if (typeof data === "object" && data !== null) { this.json(data); }
-    else { if (!this.getHeader("Content-Type")) this.setHeader("Content-Type", "text/plain"); this.end(String(data)); }
-  };
-  res.redirect = function(statusOrUrl, url2) {
-    if (typeof statusOrUrl === "string") { this.writeHead(307, { Location: statusOrUrl }); }
-    else { this.writeHead(statusOrUrl, { Location: url2 }); }
-    this.end();
-  };
+
+  const { req, res, responsePromise } = createReqRes(request, url, query, body);
 
   try {
     await handler(req, res);
+    // If handler didn't call res.end(), end it now.
+    // The end() method is idempotent — safe to call twice.
+    res.end();
+    return await responsePromise;
   } catch (e) {
     console.error("[vinext] API error:", e);
-    res.writeHead(500);
-    res.end("API Error: " + (e && e.message ? e.message : String(e)));
+    return new Response("API Error: " + (e && e.message ? e.message : String(e)), { status: 500 });
   }
 }
 `;

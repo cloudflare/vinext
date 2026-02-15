@@ -23,9 +23,8 @@ import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import path from "node:path";
 import fs from "node:fs";
-import { Writable } from "node:stream";
 import React from "react";
-import ReactDOMServer from "react-dom/server";
+import { renderToReadableStream } from "react-dom/server.edge";
 
 const PAGE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
 
@@ -34,31 +33,13 @@ function findFileWithExtensions(basePath: string): boolean {
 }
 
 /**
- * Render a React element to string using streaming renderer (Suspense support).
+ * Render a React element to string using renderToReadableStream (Suspense support).
+ * Uses Web Streams API — works in Node.js 18+ and Cloudflare Workers.
  */
-function renderToStringAsync(element: React.ReactElement): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    const writable = new Writable({
-      write(chunk, _encoding, callback) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        callback();
-      },
-      final(callback) {
-        resolve(Buffer.concat(chunks).toString("utf-8"));
-        callback();
-      },
-    });
-
-    const { pipe } = ReactDOMServer.renderToPipeableStream(element, {
-      onAllReady() {
-        pipe(writable);
-      },
-      onError(error: unknown) {
-        reject(error);
-      },
-    });
-  });
+async function renderToStringAsync(element: React.ReactElement): Promise<string> {
+  const stream = await renderToReadableStream(element);
+  await stream.allReady;
+  return new Response(stream).text();
 }
 
 export interface StaticExportOptions {
@@ -368,7 +349,7 @@ async function renderStaticPage(options: RenderStaticPageOptions): Promise<strin
 
   if (DocumentComponent) {
     const docElement = createElement(DocumentComponent);
-    // renderToPipeableStream auto-prepends <!DOCTYPE html> when root is <html>
+    // renderToReadableStream auto-prepends <!DOCTYPE html> when root is <html>
     let docHtml = await renderToStringAsync(docElement);
     docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
     if (ssrHeadHTML) {

@@ -17,47 +17,22 @@ import { withFetchCache } from "../shims/fetch-cache.js";
 import { reportRequestError } from "./instrumentation.js";
 import path from "node:path";
 import fs from "node:fs";
-import { Writable } from "node:stream";
 import React from "react";
-import ReactDOMServer from "react-dom/server";
+import { renderToReadableStream } from "react-dom/server.edge";
 
 const PAGE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
 
 /**
- * Render a React element to a string using renderToPipeableStream.
+ * Render a React element to a string using renderToReadableStream.
  *
- * Unlike renderToString, this supports Suspense boundaries — the stream
- * waits for all Suspense fallbacks to resolve before completing. This
- * gives Pages Router components access to React.lazy and Suspense.
- *
- * Returns the rendered HTML string once the full shell + all Suspense
- * boundaries have resolved.
+ * Uses the edge-compatible Web Streams API. Waits for all Suspense
+ * boundaries to resolve via stream.allReady before collecting output.
+ * Works in both Node.js 18+ and Cloudflare Workers.
  */
-function renderToStringAsync(element: React.ReactElement): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    const writable = new Writable({
-      write(chunk, _encoding, callback) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-        callback();
-      },
-      final(callback) {
-        resolve(Buffer.concat(chunks).toString("utf-8"));
-        callback();
-      },
-    });
-
-    const { pipe } = ReactDOMServer.renderToPipeableStream(element, {
-      onAllReady() {
-        // All content (including Suspense boundaries) has resolved.
-        // Pipe the full output to our writable.
-        pipe(writable);
-      },
-      onError(error: unknown) {
-        reject(error);
-      },
-    });
-  });
+async function renderToStringAsync(element: React.ReactElement): Promise<string> {
+  const stream = await renderToReadableStream(element);
+  await stream.allReady;
+  return new Response(stream).text();
 }
 
 /** Check if a file exists with any page extension (tsx, ts, jsx, js). */
@@ -433,8 +408,8 @@ export function createSSRHandler(
       }
 
       // Render page to HTML string using streaming renderer.
-      // renderToPipeableStream supports Suspense boundaries — it waits for
-      // all Suspense fallbacks to resolve before we collect the output.
+      // renderToReadableStream supports Suspense boundaries — we wait for
+      // stream.allReady so all Suspense fallbacks resolve before collecting output.
       const bodyHtml = await renderToStringAsync(element);
 
       // Collect any <Head> tags that were rendered
@@ -533,7 +508,7 @@ hydrate();
 
       if (DocumentComponent) {
         // Render the custom Document component
-        // renderToPipeableStream auto-prepends <!DOCTYPE html> when root is <html>
+        // renderToReadableStream auto-prepends <!DOCTYPE html> when root is <html>
         const docElement = createElement(DocumentComponent);
         let docHtml = await renderToStringAsync(docElement);
         // Replace the __NEXT_MAIN__ placeholder with actual page content

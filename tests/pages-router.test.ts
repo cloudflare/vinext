@@ -559,18 +559,38 @@ describe("Production build", () => {
     const serverEntry = await import(serverEntryPath);
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
 
-    // Create a minimal HTTP server using the built entry
+    // Create a minimal HTTP server using the built entry.
+    // The server entry uses Web-standard Request/Response, so we bridge
+    // from Node.js HTTP objects.
     const { createServer: createHttpServer } = await import("node:http");
     const httpServer = createHttpServer(async (req, res) => {
       const url = req.url ?? "/";
       const pathname = url.split("?")[0];
 
+      // Convert Node.js req to Web Request
+      const headers = new Headers();
+      for (const [k, v] of Object.entries(req.headers)) {
+        if (v) headers.set(k, Array.isArray(v) ? v.join(", ") : v);
+      }
+      const host = req.headers.host ?? "localhost";
+      const webRequest = new Request(`http://${host}${url}`, {
+        method: req.method,
+        headers,
+      });
+
+      let response: Response;
       if (pathname.startsWith("/api/") || pathname === "/api") {
-        await serverEntry.handleApiRoute(req, res, url);
-        return;
+        response = await serverEntry.handleApiRoute(webRequest, url);
+      } else {
+        response = await serverEntry.renderPage(webRequest, url, manifest);
       }
 
-      await serverEntry.renderPage(req, res, url, manifest);
+      // Pipe Web Response back to Node.js res
+      const body = await response.text();
+      const resHeaders: Record<string, string> = {};
+      response.headers.forEach((v: string, k: string) => { resHeaders[k] = v; });
+      res.writeHead(response.status, resHeaders);
+      res.end(body);
     });
 
     // Start on a random port
