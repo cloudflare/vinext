@@ -8017,3 +8017,134 @@ describe("NEXT_LOCALE cookie redirect behavior", () => {
     expect(res.status).toBe(200);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Chained middleware → config rewrites
+// ---------------------------------------------------------------------------
+
+describe("chained middleware → config rewrites", () => {
+  let chainServer: ViteDevServer;
+  let chainBaseUrl: string;
+  let chainTmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    chainTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-chain-rewrite-"));
+
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(chainTmpDir, "node_modules"), "junction");
+
+    // Config with afterFiles rewrite: /intermediate → /final
+    await fsp.writeFile(
+      path.join(chainTmpDir, "next.config.mjs"),
+      `export default {
+  async rewrites() {
+    return [
+      { source: "/intermediate", destination: "/final" },
+    ];
+  },
+};`,
+    );
+
+    await fsp.mkdir(path.join(chainTmpDir, "pages"), { recursive: true });
+
+    // Middleware: rewrites /original → /intermediate
+    await fsp.writeFile(
+      path.join(chainTmpDir, "middleware.ts"),
+      `import { NextResponse } from "next/server";
+export function middleware(request) {
+  const url = new URL(request.url);
+  if (url.pathname === "/original") {
+    return NextResponse.rewrite(new URL("/intermediate", request.url));
+  }
+  return NextResponse.next();
+}`,
+    );
+
+    // /original — should NOT be rendered (middleware rewrites away)
+    await fsp.writeFile(
+      path.join(chainTmpDir, "pages", "original.tsx"),
+      `export default function Original() { return <h1>ORIGINAL PAGE</h1>; }`,
+    );
+
+    // /intermediate — middleware rewrites to here, then config rewrites to /final
+    await fsp.writeFile(
+      path.join(chainTmpDir, "pages", "intermediate.tsx"),
+      `export default function Intermediate() { return <h1>INTERMEDIATE PAGE</h1>; }`,
+    );
+
+    // /final — the ultimate destination after both rewrites
+    await fsp.writeFile(
+      path.join(chainTmpDir, "pages", "final.tsx"),
+      `export default function Final() { return <h1>FINAL PAGE</h1>; }`,
+    );
+
+    // /direct-intermediate — tests that config rewrite works independently
+    await fsp.writeFile(
+      path.join(chainTmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins: any[] = [vinext()];
+    chainServer = await createServer({
+      root: chainTmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await chainServer.listen();
+    const addr = chainServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      chainBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (chainServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        chainServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(chainTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("middleware rewrite alone works: /original renders /intermediate content", async () => {
+    // Middleware rewrites /original → /intermediate
+    // Without chaining, we'd see INTERMEDIATE PAGE content
+    const res = await fetch(`${chainBaseUrl}/original`);
+    const html = await res.text();
+    // The middleware first rewrites to /intermediate, then the config rewrite
+    // rewrites /intermediate → /final. So we expect FINAL PAGE.
+    expect(html).toContain("FINAL PAGE");
+  });
+
+  it("config rewrite alone works: /intermediate renders /final content", async () => {
+    const res = await fetch(`${chainBaseUrl}/intermediate`);
+    const html = await res.text();
+    expect(html).toContain("FINAL PAGE");
+  });
+
+  it("chained: /original → middleware → /intermediate → config → /final", async () => {
+    const res = await fetch(`${chainBaseUrl}/original`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // Must reach the final page through both rewrites
+    expect(html).toContain("FINAL PAGE");
+    expect(html).not.toContain("ORIGINAL PAGE");
+    expect(html).not.toContain("INTERMEDIATE PAGE");
+  });
+
+  it("/final is directly accessible", async () => {
+    const res = await fetch(`${chainBaseUrl}/final`);
+    const html = await res.text();
+    expect(html).toContain("FINAL PAGE");
+  });
+});
