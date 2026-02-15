@@ -7686,7 +7686,7 @@ describe("applyNavigationLocale", () => {
     applyNavigationLocale = mod.applyNavigationLocale;
   });
 
-  beforeEach(() => {
+   beforeEach(() => {
     // Set up window globals that applyNavigationLocale reads
     (globalThis as any).window = globalThis;
     (globalThis as any).__VINEXT_DEFAULT_LOCALE__ = "en";
@@ -7694,7 +7694,7 @@ describe("applyNavigationLocale", () => {
 
   afterEach(() => {
     delete (globalThis as any).__VINEXT_DEFAULT_LOCALE__;
-    // Don't delete window itself — just clean up our additions
+    delete (globalThis as any).window;
   });
 
   it("returns url unchanged when no locale is specified", () => {
@@ -7739,5 +7739,203 @@ describe("applyNavigationLocale", () => {
 
   it("preserves hash when prefixing locale", () => {
     expect(applyNavigationLocale("/docs#intro", "de")).toBe("/de/docs#intro");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseCookieLocale (NEXT_LOCALE cookie support)
+// ---------------------------------------------------------------------------
+
+describe("parseCookieLocale", () => {
+  let parseCookieLocale: (req: any, i18nConfig: any) => string | null;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/server/dev-server.js");
+    parseCookieLocale = mod.parseCookieLocale;
+  });
+
+  const config = { locales: ["en", "fr", "de"], defaultLocale: "en", localeDetection: true };
+
+  it("returns null when no cookie header", () => {
+    expect(parseCookieLocale({ headers: {} }, config)).toBeNull();
+  });
+
+  it("returns null when cookie header has no NEXT_LOCALE", () => {
+    expect(parseCookieLocale({ headers: { cookie: "foo=bar; baz=qux" } }, config)).toBeNull();
+  });
+
+  it("returns locale from NEXT_LOCALE cookie", () => {
+    expect(parseCookieLocale({ headers: { cookie: "NEXT_LOCALE=fr" } }, config)).toBe("fr");
+  });
+
+  it("returns locale when NEXT_LOCALE is among multiple cookies", () => {
+    expect(parseCookieLocale({ headers: { cookie: "theme=dark; NEXT_LOCALE=de; session=abc" } }, config)).toBe("de");
+  });
+
+  it("returns null for invalid locale in cookie", () => {
+    expect(parseCookieLocale({ headers: { cookie: "NEXT_LOCALE=es" } }, config)).toBeNull();
+  });
+
+  it("returns locale for URL-encoded cookie value", () => {
+    expect(parseCookieLocale({ headers: { cookie: "NEXT_LOCALE=fr" } }, config)).toBe("fr");
+  });
+
+  it("returns default locale when cookie matches default", () => {
+    expect(parseCookieLocale({ headers: { cookie: "NEXT_LOCALE=en" } }, config)).toBe("en");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEXT_LOCALE cookie integration (i18n redirect behavior)
+// ---------------------------------------------------------------------------
+
+describe("NEXT_LOCALE cookie redirect behavior", () => {
+  let cookieServer: ViteDevServer;
+  let cookieBaseUrl: string;
+  let cookieTmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    cookieTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cookie-locale-"));
+
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(cookieTmpDir, "node_modules"), "junction");
+
+    await fsp.writeFile(
+      path.join(cookieTmpDir, "next.config.mjs"),
+      `export default {
+  i18n: {
+    locales: ["en", "fr", "de"],
+    defaultLocale: "en",
+  },
+};`,
+    );
+
+    await fsp.mkdir(path.join(cookieTmpDir, "pages"), { recursive: true });
+
+    await fsp.writeFile(
+      path.join(cookieTmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    await fsp.writeFile(
+      path.join(cookieTmpDir, "pages", "about.tsx"),
+      `export default function About() { return <h1>About</h1>; }`,
+    );
+
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins: any[] = [vinext()];
+    cookieServer = await createServer({
+      root: cookieTmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await cookieServer.listen();
+    const addr = cookieServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      cookieBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (cookieServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        cookieServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(cookieTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("NEXT_LOCALE cookie redirects to non-default locale", async () => {
+    const res = await fetch(`${cookieBaseUrl}/`, {
+      redirect: "manual",
+      headers: { Cookie: "NEXT_LOCALE=fr" },
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/fr");
+  });
+
+  it("NEXT_LOCALE cookie redirects on non-root paths", async () => {
+    const res = await fetch(`${cookieBaseUrl}/about`, {
+      redirect: "manual",
+      headers: { Cookie: "NEXT_LOCALE=de" },
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/de/about");
+  });
+
+  it("NEXT_LOCALE cookie matching default locale does NOT redirect", async () => {
+    const res = await fetch(`${cookieBaseUrl}/`, {
+      redirect: "manual",
+      headers: { Cookie: "NEXT_LOCALE=en" },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("NEXT_LOCALE cookie takes priority over Accept-Language", async () => {
+    const res = await fetch(`${cookieBaseUrl}/`, {
+      redirect: "manual",
+      headers: {
+        Cookie: "NEXT_LOCALE=de",
+        "Accept-Language": "fr",
+      },
+    });
+    expect(res.status).toBe(307);
+    // Cookie says "de", Accept-Language says "fr" — cookie wins
+    expect(res.headers.get("location")).toBe("/de");
+  });
+
+  it("NEXT_LOCALE cookie with default locale suppresses Accept-Language redirect", async () => {
+    const res = await fetch(`${cookieBaseUrl}/`, {
+      redirect: "manual",
+      headers: {
+        Cookie: "NEXT_LOCALE=en",
+        "Accept-Language": "fr",
+      },
+    });
+    // Cookie says "en" (default) — should NOT redirect even though Accept-Language says "fr"
+    expect(res.status).toBe(200);
+  });
+
+  it("invalid NEXT_LOCALE cookie falls through to Accept-Language", async () => {
+    const res = await fetch(`${cookieBaseUrl}/`, {
+      redirect: "manual",
+      headers: {
+        Cookie: "NEXT_LOCALE=es",
+        "Accept-Language": "fr",
+      },
+    });
+    // "es" is not a valid locale, so cookie is ignored and Accept-Language kicks in
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/fr");
+  });
+
+  it("no NEXT_LOCALE cookie falls through to Accept-Language", async () => {
+    const res = await fetch(`${cookieBaseUrl}/`, {
+      redirect: "manual",
+      headers: {
+        Cookie: "theme=dark",
+        "Accept-Language": "de",
+      },
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/de");
+  });
+
+  it("NEXT_LOCALE does not redirect when URL already has locale prefix", async () => {
+    const res = await fetch(`${cookieBaseUrl}/fr/about`, {
+      redirect: "manual",
+      headers: { Cookie: "NEXT_LOCALE=de" },
+    });
+    // URL has /fr/ prefix — locale is already specified, cookie should NOT cause redirect
+    expect(res.status).toBe(200);
   });
 });

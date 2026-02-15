@@ -311,19 +311,40 @@ function detectLocale(req) {
   return null;
 }
 
+function parseCookieLocale(req) {
+  if (!i18nConfig) return null;
+  const cookieHeader = req.headers && req.headers.cookie;
+  if (!cookieHeader) return null;
+  const match = cookieHeader.match(/(?:^|;\\s*)NEXT_LOCALE=([^;]*)/);
+  if (!match) return null;
+  const value = decodeURIComponent(match[1].trim());
+  if (i18nConfig.locales.indexOf(value) !== -1) return value;
+  return null;
+}
+
 export async function renderPage(req, res, url, manifest) {
   // Extract locale from URL and handle i18n redirect
   const localeInfo = extractLocale(url);
   const locale = localeInfo.locale;
   const routeUrl = localeInfo.url; // URL with locale prefix stripped
 
-  // Accept-Language redirect for i18n (only when no locale prefix and detection enabled)
-  if (i18nConfig && !localeInfo.hadPrefix && i18nConfig.localeDetection !== false) {
-    const detected = detectLocale(req);
-    if (detected && detected !== i18nConfig.defaultLocale) {
-      res.writeHead(307, { Location: "/" + detected + routeUrl });
+  // i18n redirect: check NEXT_LOCALE cookie first, then Accept-Language
+  if (i18nConfig && !localeInfo.hadPrefix) {
+    const cookieLocale = parseCookieLocale(req);
+    if (cookieLocale && cookieLocale !== i18nConfig.defaultLocale) {
+      // NEXT_LOCALE cookie overrides Accept-Language
+      res.writeHead(307, { Location: "/" + cookieLocale + routeUrl });
       res.end();
       return;
+    }
+    // If no cookie or cookie matches default, fall through to Accept-Language
+    if (!cookieLocale && i18nConfig.localeDetection !== false) {
+      const detected = detectLocale(req);
+      if (detected && detected !== i18nConfig.defaultLocale) {
+        res.writeHead(307, { Location: "/" + detected + routeUrl });
+        res.end();
+        return;
+      }
     }
   }
 

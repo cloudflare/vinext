@@ -125,6 +125,27 @@ export function detectLocaleFromHeaders(
 }
 
 /**
+ * Parse the NEXT_LOCALE cookie from a request.
+ * Returns the cookie value if it matches a configured locale, otherwise null.
+ */
+export function parseCookieLocale(
+  req: IncomingMessage,
+  i18nConfig: NextI18nConfig,
+): string | null {
+  const cookieHeader = req.headers.cookie;
+  if (!cookieHeader) return null;
+
+  // Simple cookie parsing — find NEXT_LOCALE=value
+  const match = cookieHeader.match(/(?:^|;\s*)NEXT_LOCALE=([^;]*)/);
+  if (!match) return null;
+
+  const value = decodeURIComponent(match[1].trim());
+  // Only return if it's a valid configured locale
+  if (i18nConfig.locales.includes(value)) return value;
+  return null;
+}
+
+/**
  * Create an SSR request handler for the Pages Router.
  *
  * For each request:
@@ -154,15 +175,25 @@ export function createSSRHandler(
       locale = parsed.locale;
       localeStrippedUrl = parsed.url;
 
-      // If no locale prefix and localeDetection is enabled, detect from Accept-Language
-      if (!parsed.hadPrefix && i18nConfig.localeDetection !== false) {
-        const detectedLocale = detectLocaleFromHeaders(req, i18nConfig);
-        if (detectedLocale && detectedLocale !== i18nConfig.defaultLocale) {
-          // Redirect to the detected locale
-          const redirectUrl = `/${detectedLocale}${url === "/" ? "" : url}`;
+      // If no locale prefix, check NEXT_LOCALE cookie first, then Accept-Language
+      if (!parsed.hadPrefix) {
+        const cookieLocale = parseCookieLocale(req, i18nConfig);
+        if (cookieLocale && cookieLocale !== i18nConfig.defaultLocale) {
+          // NEXT_LOCALE cookie overrides Accept-Language — redirect to cookie locale
+          const redirectUrl = `/${cookieLocale}${url === "/" ? "" : url}`;
           res.writeHead(307, { Location: redirectUrl });
           res.end();
           return;
+        }
+        // If no cookie or cookie matches default, fall through to Accept-Language detection
+        if (!cookieLocale && i18nConfig.localeDetection !== false) {
+          const detectedLocale = detectLocaleFromHeaders(req, i18nConfig);
+          if (detectedLocale && detectedLocale !== i18nConfig.defaultLocale) {
+            const redirectUrl = `/${detectedLocale}${url === "/" ? "" : url}`;
+            res.writeHead(307, { Location: redirectUrl });
+            res.end();
+            return;
+          }
         }
       }
     }
