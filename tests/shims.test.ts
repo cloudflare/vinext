@@ -2971,3 +2971,258 @@ describe("next/dist/* internal import shims", () => {
     expect(mod.RouterContext).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cloudflare KV CacheHandler
+// ---------------------------------------------------------------------------
+
+describe("KVCacheHandler", () => {
+  // In-memory mock of Cloudflare KV namespace
+  function createMockKV() {
+    const store = new Map<string, { value: string; expirationTtl?: number }>();
+    return {
+      store,
+      async get(key: string): Promise<string | null> {
+        return store.get(key)?.value ?? null;
+      },
+      async put(
+        key: string,
+        value: string,
+        options?: { expirationTtl?: number },
+      ): Promise<void> {
+        store.set(key, { value, expirationTtl: options?.expirationTtl });
+      },
+      async delete(key: string): Promise<void> {
+        store.delete(key);
+      },
+      async list(options?: { prefix?: string; limit?: number; cursor?: string }) {
+        const prefix = options?.prefix ?? "";
+        const keys: Array<{ name: string }> = [];
+        for (const k of store.keys()) {
+          if (k.startsWith(prefix)) keys.push({ name: k });
+        }
+        return { keys, list_complete: true };
+      },
+    };
+  }
+
+  it("stores and retrieves a cache entry", async () => {
+    const { KVCacheHandler } = await import(
+      "../packages/vinext/src/cloudflare/kv-cache-handler.js"
+    );
+    const kv = createMockKV();
+    const handler = new KVCacheHandler(kv as any);
+
+    await handler.set("test-key", {
+      kind: "PAGES",
+      html: "<h1>Hello</h1>",
+      pageData: { props: {} },
+      headers: undefined,
+      status: 200,
+    });
+
+    const result = await handler.get("test-key");
+    expect(result).not.toBeNull();
+    expect(result!.value).not.toBeNull();
+    expect(result!.value!.kind).toBe("PAGES");
+    if (result!.value!.kind === "PAGES") {
+      expect(result!.value!.html).toBe("<h1>Hello</h1>");
+      expect(result!.value!.status).toBe(200);
+    }
+  });
+
+  it("returns null for missing keys", async () => {
+    const { KVCacheHandler } = await import(
+      "../packages/vinext/src/cloudflare/kv-cache-handler.js"
+    );
+    const kv = createMockKV();
+    const handler = new KVCacheHandler(kv as any);
+
+    const result = await handler.get("nonexistent");
+    expect(result).toBeNull();
+  });
+
+  it("handles tag-based invalidation", async () => {
+    const { KVCacheHandler } = await import(
+      "../packages/vinext/src/cloudflare/kv-cache-handler.js"
+    );
+    const kv = createMockKV();
+    const handler = new KVCacheHandler(kv as any);
+
+    await handler.set(
+      "tagged-entry",
+      {
+        kind: "FETCH",
+        data: { headers: {}, body: '{"result":1}', url: "test" },
+        tags: ["my-tag"],
+        revalidate: 0,
+      },
+      { tags: ["my-tag"] },
+    );
+
+    // Before invalidation — entry exists
+    const before = await handler.get("tagged-entry");
+    expect(before).not.toBeNull();
+
+    // Invalidate the tag
+    await handler.revalidateTag("my-tag");
+
+    // After invalidation — entry should be treated as miss
+    const after = await handler.get("tagged-entry");
+    expect(after).toBeNull();
+  });
+
+  it("returns stale entry when past revalidation time", async () => {
+    const { KVCacheHandler } = await import(
+      "../packages/vinext/src/cloudflare/kv-cache-handler.js"
+    );
+    const kv = createMockKV();
+    const handler = new KVCacheHandler(kv as any);
+
+    // Set with very short revalidation (already expired)
+    await handler.set(
+      "stale-key",
+      {
+        kind: "PAGES",
+        html: "<h1>Stale</h1>",
+        pageData: {},
+        headers: undefined,
+        status: 200,
+      },
+      { revalidate: -1 }, // already past
+    );
+
+    // Manually fix the revalidateAt to be in the past
+    const raw = await kv.get("cache:stale-key");
+    const entry = JSON.parse(raw!);
+    entry.revalidateAt = Date.now() - 1000;
+    await kv.put("cache:stale-key", JSON.stringify(entry));
+
+    const result = await handler.get("stale-key");
+    expect(result).not.toBeNull();
+    expect(result!.cacheState).toBe("stale");
+    expect(result!.value!.kind).toBe("PAGES");
+  });
+
+  it("serializes and restores APP_PAGE with rscData ArrayBuffer", async () => {
+    const { KVCacheHandler } = await import(
+      "../packages/vinext/src/cloudflare/kv-cache-handler.js"
+    );
+    const kv = createMockKV();
+    const handler = new KVCacheHandler(kv as any);
+
+    const originalData = new TextEncoder().encode("RSC payload data");
+
+    await handler.set("app-page-key", {
+      kind: "APP_PAGE",
+      html: "<div>App page</div>",
+      rscData: originalData.buffer as ArrayBuffer,
+      headers: { "x-custom": "value" },
+      postponed: undefined,
+      status: 200,
+    });
+
+    const result = await handler.get("app-page-key");
+    expect(result).not.toBeNull();
+    expect(result!.value!.kind).toBe("APP_PAGE");
+    if (result!.value!.kind === "APP_PAGE") {
+      expect(result!.value!.html).toBe("<div>App page</div>");
+      // rscData should be restored as ArrayBuffer
+      expect(result!.value!.rscData).toBeInstanceOf(ArrayBuffer);
+      const restored = new TextDecoder().decode(result!.value!.rscData!);
+      expect(restored).toBe("RSC payload data");
+    }
+  });
+
+  it("serializes and restores APP_ROUTE with body ArrayBuffer", async () => {
+    const { KVCacheHandler } = await import(
+      "../packages/vinext/src/cloudflare/kv-cache-handler.js"
+    );
+    const kv = createMockKV();
+    const handler = new KVCacheHandler(kv as any);
+
+    const body = new TextEncoder().encode('{"ok":true}');
+
+    await handler.set("route-key", {
+      kind: "APP_ROUTE",
+      body: body.buffer as ArrayBuffer,
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+
+    const result = await handler.get("route-key");
+    expect(result).not.toBeNull();
+    if (result!.value!.kind === "APP_ROUTE") {
+      const restored = new TextDecoder().decode(result!.value!.body);
+      expect(restored).toBe('{"ok":true}');
+    }
+  });
+
+  it("sets KV expiration TTL based on revalidation period", async () => {
+    const { KVCacheHandler } = await import(
+      "../packages/vinext/src/cloudflare/kv-cache-handler.js"
+    );
+    const kv = createMockKV();
+    const handler = new KVCacheHandler(kv as any);
+
+    await handler.set(
+      "ttl-key",
+      {
+        kind: "PAGES",
+        html: "<h1>TTL</h1>",
+        pageData: {},
+        headers: undefined,
+        status: 200,
+      },
+      { revalidate: 60 }, // 60 seconds
+    );
+
+    // The KV entry should have an expiration TTL set
+    const stored = kv.store.get("cache:ttl-key");
+    expect(stored).toBeDefined();
+    expect(stored!.expirationTtl).toBeDefined();
+    // 10x the revalidation period = 600, but minimum is 60
+    expect(stored!.expirationTtl).toBe(600);
+  });
+
+  it("handles multiple tag invalidation in parallel", async () => {
+    const { KVCacheHandler } = await import(
+      "../packages/vinext/src/cloudflare/kv-cache-handler.js"
+    );
+    const kv = createMockKV();
+    const handler = new KVCacheHandler(kv as any);
+
+    await handler.set(
+      "multi-tag",
+      {
+        kind: "FETCH",
+        data: { headers: {}, body: "{}", url: "test" },
+        tags: ["tag-a", "tag-b"],
+        revalidate: 0,
+      },
+      { tags: ["tag-a", "tag-b"] },
+    );
+
+    // Invalidate both tags at once
+    await handler.revalidateTag(["tag-a", "tag-b"]);
+
+    const result = await handler.get("multi-tag");
+    expect(result).toBeNull();
+  });
+
+  it("handles corrupted KV entries gracefully", async () => {
+    const { KVCacheHandler } = await import(
+      "../packages/vinext/src/cloudflare/kv-cache-handler.js"
+    );
+    const kv = createMockKV();
+    const handler = new KVCacheHandler(kv as any);
+
+    // Put corrupted data directly
+    await kv.put("cache:corrupt-key", "not valid json {{{");
+
+    const result = await handler.get("corrupt-key");
+    expect(result).toBeNull();
+    // The corrupted entry should be cleaned up
+    expect(await kv.get("cache:corrupt-key")).toBeNull();
+  });
+});

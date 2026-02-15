@@ -20,6 +20,10 @@
     "./server/prod-server": {
       "import": "./dist/server/prod-server.js",
       "types": "./dist/server/prod-server.d.ts"
+    },
+    "./cloudflare": {
+      "import": "./dist/cloudflare/index.js",
+      "types": "./dist/cloudflare/index.d.ts"
     }
   },
   "scripts": {

@@ -1,0 +1,274 @@
+/**
+ * Cloudflare KV-backed CacheHandler for vinext.
+ *
+ * Provides persistent ISR caching on Cloudflare Workers using KV as the
+ * storage backend. Supports time-based expiry (stale-while-revalidate)
+ * and tag-based invalidation.
+ *
+ * Usage in worker/index.ts:
+ *
+ *   import { KVCacheHandler } from "vinext/cloudflare";
+ *   import { setCacheHandler } from "vinext/shims/cache";
+ *
+ *   export default {
+ *     async fetch(request: Request, env: Env) {
+ *       setCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
+ *       // ... rest of worker handler
+ *     }
+ *   };
+ *
+ * Wrangler config (wrangler.jsonc):
+ *
+ *   {
+ *     "kv_namespaces": [
+ *       { "binding": "VINEXT_CACHE", "id": "<your-kv-namespace-id>" }
+ *     ]
+ *   }
+ */
+
+import type {
+  CacheHandler,
+  CacheHandlerValue,
+  IncrementalCacheValue,
+} from "../shims/cache.js";
+
+// Cloudflare KV namespace interface (matches Workers types)
+interface KVNamespace {
+  get(key: string, options?: { type?: string }): Promise<string | null>;
+  get(key: string, options: { type: "arrayBuffer" }): Promise<ArrayBuffer | null>;
+  put(
+    key: string,
+    value: string | ArrayBuffer | ReadableStream,
+    options?: { expirationTtl?: number; metadata?: Record<string, unknown> },
+  ): Promise<void>;
+  delete(key: string): Promise<void>;
+  list(options?: {
+    prefix?: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<{
+    keys: Array<{ name: string; metadata?: Record<string, unknown> }>;
+    list_complete: boolean;
+    cursor?: string;
+  }>;
+}
+
+/** Shape stored in KV for each cache entry. */
+interface KVCacheEntry {
+  value: IncrementalCacheValue | null;
+  tags: string[];
+  lastModified: number;
+  /** Absolute timestamp (ms) after which the entry is "stale" (but still served). */
+  revalidateAt: number | null;
+}
+
+/** Key prefix for tag invalidation timestamps. */
+const TAG_PREFIX = "__tag:";
+
+/** Key prefix for cache entries. */
+const ENTRY_PREFIX = "cache:";
+
+export class KVCacheHandler implements CacheHandler {
+  private kv: KVNamespace;
+
+  constructor(kvNamespace: KVNamespace) {
+    this.kv = kvNamespace;
+  }
+
+  async get(
+    key: string,
+    _ctx?: Record<string, unknown>,
+  ): Promise<CacheHandlerValue | null> {
+    const raw = await this.kv.get(ENTRY_PREFIX + key);
+    if (!raw) return null;
+
+    let entry: KVCacheEntry;
+    try {
+      entry = JSON.parse(raw);
+    } catch {
+      // Corrupted entry — delete and treat as miss
+      await this.kv.delete(ENTRY_PREFIX + key);
+      return null;
+    }
+
+    // Restore ArrayBuffer fields that were base64-encoded for JSON storage
+    if (entry.value) {
+      restoreArrayBuffers(entry.value);
+    }
+
+    // Check tag-based invalidation (parallel for lower latency)
+    if (entry.tags.length > 0) {
+      const tagResults = await Promise.all(
+        entry.tags.map((tag) => this.kv.get(TAG_PREFIX + tag)),
+      );
+      for (let i = 0; i < entry.tags.length; i++) {
+        const tagTime = tagResults[i];
+        if (tagTime && Number(tagTime) >= entry.lastModified) {
+          // Tag was invalidated after this entry was stored — treat as miss
+          await this.kv.delete(ENTRY_PREFIX + key);
+          return null;
+        }
+      }
+    }
+
+    // Check time-based expiry — return stale with cacheState
+    if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
+      return {
+        lastModified: entry.lastModified,
+        value: entry.value,
+        cacheState: "stale",
+      };
+    }
+
+    return {
+      lastModified: entry.lastModified,
+      value: entry.value,
+    };
+  }
+
+  async set(
+    key: string,
+    data: IncrementalCacheValue | null,
+    ctx?: Record<string, unknown>,
+  ): Promise<void> {
+    // Collect and dedupe tags from data and context
+    const tagSet = new Set<string>();
+    if (data && "tags" in data && Array.isArray(data.tags)) {
+      for (const t of data.tags) tagSet.add(t);
+    }
+    if (ctx && "tags" in ctx && Array.isArray(ctx.tags)) {
+      for (const t of ctx.tags as string[]) tagSet.add(t);
+    }
+    const tags = [...tagSet];
+
+    // Determine revalidation time
+    let revalidateAt: number | null = null;
+    if (ctx) {
+      const revalidate =
+        (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
+      if (typeof revalidate === "number" && revalidate > 0) {
+        revalidateAt = Date.now() + revalidate * 1000;
+      }
+    }
+    if (
+      data &&
+      "revalidate" in data &&
+      typeof data.revalidate === "number" &&
+      data.revalidate > 0
+    ) {
+      revalidateAt = Date.now() + data.revalidate * 1000;
+    }
+
+    // Prepare entry — convert ArrayBuffers to base64 for JSON storage
+    const serializable = data ? serializeForJSON(data) : null;
+
+    const entry: KVCacheEntry = {
+      value: serializable,
+      tags,
+      lastModified: Date.now(),
+      revalidateAt,
+    };
+
+    // Calculate KV TTL — keep entries well beyond their revalidate window
+    // (10x revalidate period, clamped to 60s–30d) so stale-while-revalidate
+    // can serve stale content while background regeneration happens.
+    let expirationTtl: number | undefined;
+    if (revalidateAt !== null) {
+      const revalidateSeconds = Math.ceil((revalidateAt - Date.now()) / 1000);
+      // Keep in KV for 10x the revalidation period, up to 30 days
+      expirationTtl = Math.min(revalidateSeconds * 10, 30 * 24 * 3600);
+      // KV minimum TTL is 60 seconds
+      expirationTtl = Math.max(expirationTtl, 60);
+    }
+
+    await this.kv.put(ENTRY_PREFIX + key, JSON.stringify(entry), {
+      expirationTtl,
+    });
+  }
+
+  async revalidateTag(
+    tags: string | string[],
+    _durations?: { expire?: number },
+  ): Promise<void> {
+    const tagList = Array.isArray(tags) ? tags : [tags];
+    const now = Date.now();
+    // Store invalidation timestamp for each tag
+    // Use a long TTL (30 days) so recent invalidations are always found
+    await Promise.all(
+      tagList.map((tag) =>
+        this.kv.put(TAG_PREFIX + tag, String(now), {
+          expirationTtl: 30 * 24 * 3600,
+        }),
+      ),
+    );
+  }
+
+  resetRequestCache(): void {
+    // No-op — KV is stateless per request
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ArrayBuffer serialization helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Deep-clone a cache value, converting ArrayBuffer fields to base64 strings
+ * so the entire structure can be JSON.stringify'd for KV storage.
+ */
+function serializeForJSON(value: IncrementalCacheValue): IncrementalCacheValue {
+  if (value.kind === "APP_PAGE") {
+    return {
+      ...value,
+      rscData: value.rscData
+        ? (arrayBufferToBase64(value.rscData) as any)
+        : undefined,
+    };
+  }
+  if (value.kind === "APP_ROUTE") {
+    return {
+      ...value,
+      body: arrayBufferToBase64(value.body) as any,
+    };
+  }
+  if (value.kind === "IMAGE") {
+    return {
+      ...value,
+      buffer: arrayBufferToBase64(value.buffer) as any,
+    };
+  }
+  return value;
+}
+
+/**
+ * Restore base64 strings back to ArrayBuffers after JSON.parse.
+ */
+function restoreArrayBuffers(value: IncrementalCacheValue): void {
+  if (value.kind === "APP_PAGE" && typeof value.rscData === "string") {
+    (value as any).rscData = base64ToArrayBuffer(value.rscData as any);
+  }
+  if (value.kind === "APP_ROUTE" && typeof value.body === "string") {
+    (value as any).body = base64ToArrayBuffer(value.body as any);
+  }
+  if (value.kind === "IMAGE" && typeof value.buffer === "string") {
+    (value as any).buffer = base64ToArrayBuffer(value.buffer as any);
+  }
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes.buffer;
+}
