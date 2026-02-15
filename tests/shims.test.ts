@@ -1,0 +1,2973 @@
+import { describe, it, expect, vi } from "vitest";
+import path from "node:path";
+import { PAGES_FIXTURE_DIR } from "./helpers.js";
+import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
+
+const FIXTURE_DIR = PAGES_FIXTURE_DIR;
+
+describe("next/navigation shim", () => {
+  it("exports usePathname, useSearchParams, useParams, useRouter", async () => {
+    const nav = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    expect(typeof nav.usePathname).toBe("function");
+    expect(typeof nav.useSearchParams).toBe("function");
+    expect(typeof nav.useParams).toBe("function");
+    expect(typeof nav.useRouter).toBe("function");
+  });
+
+  it("exports redirect, notFound, permanentRedirect", async () => {
+    const nav = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    expect(typeof nav.redirect).toBe("function");
+    expect(typeof nav.notFound).toBe("function");
+    expect(typeof nav.permanentRedirect).toBe("function");
+  });
+
+  it("redirect() throws with correct digest", async () => {
+    const { redirect } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    try {
+      redirect("/login");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      expect(e.digest).toContain("NEXT_REDIRECT");
+      expect(e.digest).toContain("/login");
+    }
+  });
+
+  it("notFound() throws with correct digest", async () => {
+    const { notFound } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    try {
+      notFound();
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      expect(e.digest).toBe("NEXT_HTTP_ERROR_FALLBACK;404");
+    }
+  });
+
+  it("forbidden() throws with correct digest", async () => {
+    const { forbidden } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    try {
+      forbidden();
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      expect(e.digest).toBe("NEXT_HTTP_ERROR_FALLBACK;403");
+    }
+  });
+
+  it("unauthorized() throws with correct digest", async () => {
+    const { unauthorized } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    try {
+      unauthorized();
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      expect(e.digest).toBe("NEXT_HTTP_ERROR_FALLBACK;401");
+    }
+  });
+
+  it("isHTTPAccessFallbackError detects all HTTP access fallback errors", async () => {
+    const { notFound, forbidden, unauthorized, isHTTPAccessFallbackError, getAccessFallbackHTTPStatus } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+
+    // Test notFound
+    try { notFound(); } catch (e) {
+      expect(isHTTPAccessFallbackError(e)).toBe(true);
+      expect(getAccessFallbackHTTPStatus(e)).toBe(404);
+    }
+
+    // Test forbidden
+    try { forbidden(); } catch (e) {
+      expect(isHTTPAccessFallbackError(e)).toBe(true);
+      expect(getAccessFallbackHTTPStatus(e)).toBe(403);
+    }
+
+    // Test unauthorized
+    try { unauthorized(); } catch (e) {
+      expect(isHTTPAccessFallbackError(e)).toBe(true);
+      expect(getAccessFallbackHTTPStatus(e)).toBe(401);
+    }
+
+    // Test non-access error
+    expect(isHTTPAccessFallbackError(new Error("random"))).toBe(false);
+    expect(isHTTPAccessFallbackError(null)).toBe(false);
+
+    // Test legacy NEXT_NOT_FOUND format
+    const legacyErr = new Error("old");
+    (legacyErr as any).digest = "NEXT_NOT_FOUND";
+    expect(isHTTPAccessFallbackError(legacyErr)).toBe(true);
+    expect(getAccessFallbackHTTPStatus(legacyErr)).toBe(404);
+  });
+
+  it("setNavigationContext / useParams works on server side", async () => {
+    const { setNavigationContext, useParams } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    setNavigationContext({
+      pathname: "/blog/test",
+      searchParams: new URLSearchParams(""),
+      params: { slug: "test" },
+    });
+    const params = useParams();
+    expect(params).toEqual({ slug: "test" });
+    setNavigationContext(null);
+  });
+
+  it("setClientParams provides referential stability for identical params", async () => {
+    const { setClientParams, getClientParams } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    // Set params initially
+    setClientParams({ slug: "hello" });
+    const first = getClientParams();
+    // Set params with same values — should return same object reference
+    setClientParams({ slug: "hello" });
+    const second = getClientParams();
+    expect(first).toBe(second); // referential equality
+
+    // Set params with different values — should return new object
+    setClientParams({ slug: "world" });
+    const third = getClientParams();
+    expect(third).not.toBe(first);
+    expect(third).toEqual({ slug: "world" });
+
+    // Clean up
+    setClientParams({});
+  });
+
+  it("exports useSelectedLayoutSegment and useSelectedLayoutSegments", async () => {
+    const nav = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    expect(typeof nav.useSelectedLayoutSegment).toBe("function");
+    expect(typeof nav.useSelectedLayoutSegments).toBe("function");
+  });
+
+  it("useSelectedLayoutSegments returns path segments from server context", async () => {
+    const { setNavigationContext, useSelectedLayoutSegments } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    setNavigationContext({
+      pathname: "/dashboard/settings/profile",
+      searchParams: new URLSearchParams(""),
+      params: {},
+    });
+    const segments = useSelectedLayoutSegments();
+    expect(segments).toEqual(["dashboard", "settings", "profile"]);
+    setNavigationContext(null);
+  });
+
+  it("useSelectedLayoutSegment returns first segment or null", async () => {
+    const { setNavigationContext, useSelectedLayoutSegment } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    setNavigationContext({
+      pathname: "/blog/my-post",
+      searchParams: new URLSearchParams(""),
+      params: {},
+    });
+    expect(useSelectedLayoutSegment()).toBe("blog");
+
+    setNavigationContext({
+      pathname: "/",
+      searchParams: new URLSearchParams(""),
+      params: {},
+    });
+    expect(useSelectedLayoutSegment()).toBeNull();
+    setNavigationContext(null);
+  });
+});
+
+describe("next/headers shim", () => {
+  it("exports cookies, headers, draftMode", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    expect(typeof mod.cookies).toBe("function");
+    expect(typeof mod.headers).toBe("function");
+    expect(typeof mod.draftMode).toBe("function");
+  });
+
+  it("headers() returns request headers from context", async () => {
+    const { setHeadersContext, headers } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    const reqHeaders = new Headers({ "x-custom": "test-value" });
+    setHeadersContext({
+      headers: reqHeaders,
+      cookies: new Map(),
+    });
+
+    const h = await headers();
+    expect(h.get("x-custom")).toBe("test-value");
+    setHeadersContext(null);
+  });
+
+  it("cookies() returns parsed cookies from context", async () => {
+    const { setHeadersContext, cookies } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([
+        ["session", "abc123"],
+        ["theme", "dark"],
+      ]),
+    });
+
+    const c = await cookies();
+    expect(c.get("session")).toEqual({ name: "session", value: "abc123" });
+    expect(c.get("theme")).toEqual({ name: "theme", value: "dark" });
+    expect(c.has("session")).toBe(true);
+    expect(c.has("missing")).toBe(false);
+    expect(c.size).toBe(2);
+    setHeadersContext(null);
+  });
+
+  it("headersContextFromRequest parses cookies from Request", async () => {
+    const { headersContextFromRequest } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    const req = new Request("https://example.com", {
+      headers: { cookie: "a=1; b=2" },
+    });
+    const ctx = headersContextFromRequest(req);
+
+    expect(ctx.cookies.get("a")).toBe("1");
+    expect(ctx.cookies.get("b")).toBe("2");
+    expect(ctx.headers.get("cookie")).toBe("a=1; b=2");
+  });
+
+  it("throws when called outside request context", async () => {
+    const { headers, cookies } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    // Ensure context is cleared
+    const { setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    setHeadersContext(null);
+
+    await expect(headers()).rejects.toThrow("Server Component");
+    await expect(cookies()).rejects.toThrow("Server Component");
+  });
+
+  it("draftMode() returns isEnabled=false when no bypass cookie", async () => {
+    const { setHeadersContext, draftMode } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+    const dm = await draftMode();
+    expect(dm.isEnabled).toBe(false);
+    setHeadersContext(null);
+  });
+
+  it("draftMode() returns isEnabled=true when __prerender_bypass cookie is present", async () => {
+    const { setHeadersContext, draftMode } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["__prerender_bypass", "1"]]),
+    });
+    const dm = await draftMode();
+    expect(dm.isEnabled).toBe(true);
+    setHeadersContext(null);
+  });
+
+  it("draftMode().enable() sets the bypass cookie in context", async () => {
+    const { setHeadersContext, draftMode, getDraftModeCookieHeader } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+    const dm = await draftMode();
+    expect(dm.isEnabled).toBe(false);
+
+    dm.enable();
+    // After enabling, the cookie should be set on the context
+    const dm2 = await draftMode();
+    expect(dm2.isEnabled).toBe(true);
+
+    // The Set-Cookie header should be generated
+    const cookieHeader = getDraftModeCookieHeader();
+    expect(cookieHeader).toContain("__prerender_bypass=1");
+    expect(cookieHeader).toContain("HttpOnly");
+    setHeadersContext(null);
+  });
+
+  it("draftMode().disable() clears the bypass cookie", async () => {
+    const { setHeadersContext, draftMode, getDraftModeCookieHeader } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["__prerender_bypass", "1"]]),
+    });
+    const dm = await draftMode();
+    expect(dm.isEnabled).toBe(true);
+
+    dm.disable();
+    const dm2 = await draftMode();
+    expect(dm2.isEnabled).toBe(false);
+
+    const cookieHeader = getDraftModeCookieHeader();
+    expect(cookieHeader).toContain("Max-Age=0");
+    setHeadersContext(null);
+  });
+});
+
+describe("next/headers writable cookies", () => {
+  it("cookies().set() updates the cookie map and accumulates Set-Cookie headers", async () => {
+    const { setHeadersContext, cookies, getAndClearPendingCookies } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const c = await cookies();
+    c.set("token", "xyz", { path: "/", httpOnly: true, secure: true });
+
+    // Cookie should now be readable
+    expect(c.get("token")).toEqual({ name: "token", value: "xyz" });
+    expect(c.has("token")).toBe(true);
+
+    // Pending Set-Cookie headers should be accumulated
+    const pending = getAndClearPendingCookies();
+    expect(pending.length).toBe(1);
+    expect(pending[0]).toContain("token=xyz");
+    expect(pending[0]).toContain("Path=/");
+    expect(pending[0]).toContain("HttpOnly");
+    expect(pending[0]).toContain("Secure");
+
+    // After clearing, should be empty
+    expect(getAndClearPendingCookies().length).toBe(0);
+    setHeadersContext(null);
+  });
+
+  it("cookies().delete() removes from map and adds Max-Age=0 header", async () => {
+    const { setHeadersContext, cookies, getAndClearPendingCookies } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "abc"]]),
+    });
+
+    const c = await cookies();
+    expect(c.has("session")).toBe(true);
+    c.delete("session");
+    expect(c.has("session")).toBe(false);
+
+    const pending = getAndClearPendingCookies();
+    expect(pending.length).toBe(1);
+    expect(pending[0]).toContain("session=");
+    expect(pending[0]).toContain("Max-Age=0");
+    setHeadersContext(null);
+  });
+
+  it("cookies().set() with object syntax works", async () => {
+    const { setHeadersContext, cookies, getAndClearPendingCookies } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const c = await cookies();
+    c.set({ name: "pref", value: "dark", sameSite: "Lax" });
+    expect(c.get("pref")?.value).toBe("dark");
+
+    const pending = getAndClearPendingCookies();
+    expect(pending[0]).toContain("pref=dark");
+    expect(pending[0]).toContain("SameSite=Lax");
+    setHeadersContext(null);
+  });
+});
+
+describe("next/server shim", () => {
+  it("NextRequest wraps a standard Request with nextUrl and cookies", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("https://example.com/blog?page=2", {
+      headers: { cookie: "session=abc123; theme=dark" },
+    });
+
+    expect(req.nextUrl.pathname).toBe("/blog");
+    expect(req.nextUrl.searchParams.get("page")).toBe("2");
+    expect(req.cookies.get("session")).toEqual({ name: "session", value: "abc123" });
+    expect(req.cookies.get("theme")).toEqual({ name: "theme", value: "dark" });
+    expect(req.cookies.has("session")).toBe(true);
+    expect(req.cookies.has("missing")).toBe(false);
+  });
+
+  it("NextResponse.json() creates a JSON response", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.json({ message: "hello" }, { status: 201 });
+
+    expect(res.status).toBe(201);
+    expect(res.headers.get("content-type")).toBe("application/json");
+    const body = await res.json();
+    expect(body).toEqual({ message: "hello" });
+  });
+
+  it("NextResponse.redirect() creates a redirect response", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.redirect("https://example.com/new", 308);
+
+    expect(res.status).toBe(308);
+    expect(res.headers.get("Location")).toBe("https://example.com/new");
+  });
+
+  it("NextResponse.rewrite() sets x-middleware-rewrite header", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.rewrite("https://example.com/internal");
+
+    expect(res.headers.get("x-middleware-rewrite")).toBe("https://example.com/internal");
+  });
+
+  it("NextResponse.next() sets x-middleware-next header", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.next();
+
+    expect(res.headers.get("x-middleware-next")).toBe("1");
+  });
+
+  it("ResponseCookies set/get/delete work", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = new NextResponse();
+    res.cookies.set("token", "xyz", { path: "/", httpOnly: true });
+
+    const cookie = res.cookies.get("token");
+    expect(cookie).toBeTruthy();
+    expect(cookie!.value).toBe("xyz");
+
+    // Verify the Set-Cookie header was set
+    const setCookie = res.headers.getSetCookie();
+    expect(setCookie.length).toBeGreaterThan(0);
+    expect(setCookie[0]).toContain("token=xyz");
+    expect(setCookie[0]).toContain("HttpOnly");
+  });
+
+  it("userAgentFromString detects bots", async () => {
+    const { userAgentFromString } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const bot = userAgentFromString("Googlebot/2.1");
+    expect(bot.isBot).toBe(true);
+
+    const human = userAgentFromString("Mozilla/5.0");
+    expect(human.isBot).toBe(false);
+  });
+
+  it("after() runs a callback asynchronously without throwing", async () => {
+    const { after } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    let called = false;
+    after(() => {
+      called = true;
+    });
+    // after() schedules as a microtask, so await a tick
+    await new Promise((r) => setTimeout(r, 10));
+    expect(called).toBe(true);
+  });
+
+  it("after() handles a promise argument", async () => {
+    const { after } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    let resolved = false;
+    const p = new Promise<void>((resolve) => {
+      setTimeout(() => {
+        resolved = true;
+        resolve();
+      }, 5);
+    });
+    after(p);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resolved).toBe(true);
+  });
+
+  it("after() swallows errors from failing tasks", async () => {
+    const { after } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    after(() => {
+      throw new Error("task failed");
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(consoleError).toHaveBeenCalledWith(
+      "[vinext] after() task failed:",
+      expect.any(Error),
+    );
+    consoleError.mockRestore();
+  });
+
+  it("connection() returns a resolved promise", async () => {
+    const { connection } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const result = connection();
+    expect(result).toBeInstanceOf(Promise);
+    await expect(result).resolves.toBeUndefined();
+  });
+
+  it("URLPattern is exported and available in Node 20+", async () => {
+    const { URLPattern } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    // Node 22+ has URLPattern globally; if available, test it works
+    if (globalThis.URLPattern) {
+      expect(URLPattern).toBe(globalThis.URLPattern);
+      const pattern = new URLPattern({ pathname: "/blog/:slug" });
+      const match = pattern.exec({ pathname: "/blog/hello-world" });
+      expect(match).toBeTruthy();
+      expect(match!.pathname.groups.slug).toBe("hello-world");
+    } else {
+      // URLPattern not available — our export should be a fallback that throws
+      expect(typeof URLPattern).toBe("function");
+    }
+  });
+});
+
+describe("next/config shim", () => {
+  it("getConfig returns default empty config", async () => {
+    const { default: getConfig } = await import(
+      "../packages/vinext/src/shims/config.js"
+    );
+    const config = getConfig();
+    expect(config).toEqual({
+      serverRuntimeConfig: {},
+      publicRuntimeConfig: {},
+    });
+  });
+
+  it("setConfig updates the runtime config", async () => {
+    const { default: getConfig, setConfig } = await import(
+      "../packages/vinext/src/shims/config.js"
+    );
+    setConfig({
+      serverRuntimeConfig: { secret: "s3cr3t" },
+      publicRuntimeConfig: { appName: "test-app" },
+    });
+    const config = getConfig();
+    expect(config.serverRuntimeConfig.secret).toBe("s3cr3t");
+    expect(config.publicRuntimeConfig.appName).toBe("test-app");
+
+    // Reset for other tests
+    setConfig({ serverRuntimeConfig: {}, publicRuntimeConfig: {} });
+  });
+});
+
+describe("next/cache shim", () => {
+  it("exports revalidateTag, revalidatePath, unstable_cache", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    expect(typeof mod.revalidateTag).toBe("function");
+    expect(typeof mod.revalidatePath).toBe("function");
+    expect(typeof mod.unstable_cache).toBe("function");
+  });
+
+  it("exports setCacheHandler and getCacheHandler", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    expect(typeof mod.setCacheHandler).toBe("function");
+    expect(typeof mod.getCacheHandler).toBe("function");
+  });
+
+  it("default handler is MemoryCacheHandler", async () => {
+    const { getCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    const handler = getCacheHandler();
+    expect(handler).toBeInstanceOf(MemoryCacheHandler);
+  });
+
+  it("unstable_cache caches function results", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    // Fresh handler for isolation
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const expensive = async (x: number) => {
+      callCount++;
+      return x * 2;
+    };
+
+    const cached = unstable_cache(expensive, ["test-fn"], {
+      tags: ["test-tag"],
+    });
+
+    const r1 = await cached(5);
+    expect(r1).toBe(10);
+    expect(callCount).toBe(1);
+
+    const r2 = await cached(5);
+    expect(r2).toBe(10);
+    expect(callCount).toBe(1); // Should NOT call the function again
+
+    const r3 = await cached(10);
+    expect(r3).toBe(20);
+    expect(callCount).toBe(2); // Different args = different cache key
+
+    // Reset
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("revalidateTag invalidates cached entries", async () => {
+    const {
+      unstable_cache,
+      revalidateTag,
+      setCacheHandler,
+      MemoryCacheHandler,
+    } = await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const fn = async () => {
+      callCount++;
+      return "result-" + callCount;
+    };
+
+    const cached = unstable_cache(fn, ["revalidate-test"], {
+      tags: ["my-tag"],
+    });
+
+    const r1 = await cached();
+    expect(r1).toBe("result-1");
+    expect(callCount).toBe(1);
+
+    // Revalidate the tag
+    await revalidateTag("my-tag");
+
+    // Next call should re-execute the function
+    const r2 = await cached();
+    expect(r2).toBe("result-2");
+    expect(callCount).toBe(2);
+
+    // Reset
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("setCacheHandler swaps the active handler", async () => {
+    const { setCacheHandler, getCacheHandler, unstable_cache } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+
+    // Create a custom handler that tracks calls
+    const calls: string[] = [];
+    const customHandler = {
+      async get(key: string) {
+        calls.push(`get:${key}`);
+        return null;
+      },
+      async set(key: string) {
+        calls.push(`set:${key}`);
+      },
+      async revalidateTag(tags: string | string[]) {
+        const tagList = Array.isArray(tags) ? tags : [tags];
+        calls.push(`revalidateTag:${tagList.join(",")}`);
+      },
+      resetRequestCache() {
+        calls.push("reset");
+      },
+    };
+
+    const originalHandler = getCacheHandler();
+    setCacheHandler(customHandler);
+
+    const cached = unstable_cache(async () => 42, ["custom-test"]);
+    await cached();
+
+    expect(calls.some((c) => c.startsWith("get:"))).toBe(true);
+    expect(calls.some((c) => c.startsWith("set:"))).toBe(true);
+
+    // Restore
+    setCacheHandler(originalHandler);
+  });
+
+  it("MemoryCacheHandler.get/set round-trips values", async () => {
+    const { MemoryCacheHandler } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+
+    const handler = new MemoryCacheHandler();
+
+    await handler.set("test-key", {
+      kind: "FETCH",
+      data: { headers: {}, body: '{"x":1}', url: "test" },
+      tags: ["t1"],
+      revalidate: 3600,
+    });
+
+    const result = await handler.get("test-key");
+    expect(result).not.toBeNull();
+    expect(result!.value).not.toBeNull();
+    expect(result!.value!.kind).toBe("FETCH");
+    if (result!.value!.kind === "FETCH") {
+      expect(result!.value!.data.body).toBe('{"x":1}');
+    }
+  });
+
+  it("MemoryCacheHandler respects tag invalidation", async () => {
+    const { MemoryCacheHandler } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+
+    const handler = new MemoryCacheHandler();
+
+    await handler.set(
+      "tagged-entry",
+      {
+        kind: "FETCH",
+        data: { headers: {}, body: '"cached"', url: "test" },
+        tags: ["fresh-tag"],
+        revalidate: 3600,
+      },
+      { tags: ["fresh-tag"] },
+    );
+
+    // Should return the entry
+    let result = await handler.get("tagged-entry");
+    expect(result).not.toBeNull();
+
+    // Invalidate the tag
+    await handler.revalidateTag("fresh-tag");
+
+    // Should now return null (invalidated)
+    result = await handler.get("tagged-entry");
+    expect(result).toBeNull();
+  });
+
+  it("exports unstable_noStore and noStore as no-ops", async () => {
+    const { unstable_noStore, noStore } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    expect(typeof unstable_noStore).toBe("function");
+    expect(typeof noStore).toBe("function");
+    // Both should run without throwing
+    expect(() => unstable_noStore()).not.toThrow();
+    expect(() => noStore()).not.toThrow();
+  });
+
+  it("exports cacheLife with built-in profiles", async () => {
+    const { cacheLife, cacheLifeProfiles } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    expect(typeof cacheLife).toBe("function");
+    expect(typeof cacheLifeProfiles).toBe("object");
+
+    // Built-in profiles should exist
+    expect(cacheLifeProfiles).toHaveProperty("default");
+    expect(cacheLifeProfiles).toHaveProperty("seconds");
+    expect(cacheLifeProfiles).toHaveProperty("minutes");
+    expect(cacheLifeProfiles).toHaveProperty("hours");
+    expect(cacheLifeProfiles).toHaveProperty("days");
+    expect(cacheLifeProfiles).toHaveProperty("weeks");
+    expect(cacheLifeProfiles).toHaveProperty("max");
+
+    // Profile shapes
+    expect(cacheLifeProfiles.seconds).toEqual({ stale: 30, revalidate: 1, expire: 60 });
+    expect(cacheLifeProfiles.max).toEqual({ stale: 300, revalidate: 2592000, expire: 31536000 });
+
+    // Should run without throwing with valid inputs
+    expect(() => cacheLife("default")).not.toThrow();
+    expect(() => cacheLife("hours")).not.toThrow();
+    expect(() => cacheLife({ stale: 60, revalidate: 300, expire: 3600 })).not.toThrow();
+  });
+
+  it("cacheLife warns on unknown profile", async () => {
+    const { cacheLife } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    cacheLife("nonexistent-profile");
+    expect(consoleWarn).toHaveBeenCalledWith(
+      expect.stringContaining("unknown profile"),
+    );
+    consoleWarn.mockRestore();
+  });
+
+  it("cacheLife warns when expire < revalidate", async () => {
+    const { cacheLife } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    cacheLife({ revalidate: 3600, expire: 60 });
+    expect(consoleWarn).toHaveBeenCalledWith(
+      expect.stringContaining("expire must be >= revalidate"),
+    );
+    consoleWarn.mockRestore();
+  });
+
+  it("exports cacheTag as a no-op function", async () => {
+    const { cacheTag } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    expect(typeof cacheTag).toBe("function");
+    // Should accept multiple tags without throwing
+    expect(() => cacheTag("tag1", "tag2", "tag3")).not.toThrow();
+  });
+});
+
+describe("middleware runner", () => {
+  it("findMiddlewareFile finds middleware.ts at project root", async () => {
+    const { findMiddlewareFile } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    // pages-basic fixture has middleware.ts
+    const result = findMiddlewareFile(FIXTURE_DIR);
+    expect(result).not.toBeNull();
+    expect(result).toContain("middleware.ts");
+  });
+
+  it("findMiddlewareFile returns null when no middleware exists", async () => {
+    const { findMiddlewareFile } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const result = findMiddlewareFile("/tmp/nonexistent-dir-" + Date.now());
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchPattern / matchesMiddleware unit tests
+
+describe("middleware matcher patterns", () => {
+  it("matchPattern: exact path match", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchPattern("/about", "/about")).toBe(true);
+    expect(matchPattern("/about", "/other")).toBe(false);
+    expect(matchPattern("/", "/")).toBe(true);
+  });
+
+  it("matchPattern: named parameter (:param)", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchPattern("/user/123", "/user/:id")).toBe(true);
+    expect(matchPattern("/user/abc", "/user/:id")).toBe(true);
+    expect(matchPattern("/user/", "/user/:id")).toBe(false);
+    expect(matchPattern("/user/123/posts", "/user/:id")).toBe(false);
+  });
+
+  it("matchPattern: wildcard (:path*) matches zero or more segments", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchPattern("/dashboard", "/dashboard/:path*")).toBe(true);
+    expect(matchPattern("/dashboard/settings", "/dashboard/:path*")).toBe(true);
+    expect(matchPattern("/dashboard/settings/profile", "/dashboard/:path*")).toBe(true);
+    expect(matchPattern("/other", "/dashboard/:path*")).toBe(false);
+  });
+
+  it("matchPattern: one-or-more (:path+) requires at least one segment", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchPattern("/api/users", "/api/:path+")).toBe(true);
+    expect(matchPattern("/api/users/123", "/api/:path+")).toBe(true);
+    expect(matchPattern("/api", "/api/:path+")).toBe(false);
+    // /api/ has no actual segment after the slash
+    expect(matchPattern("/api/", "/api/:path+")).toBe(false);
+  });
+
+  it("matchPattern: regex patterns with groups", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    // Common Next.js matcher: /((?!api|_next|favicon\.ico).*)
+    expect(matchPattern("/about", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
+    expect(matchPattern("/dashboard/settings", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
+    expect(matchPattern("/api/hello", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
+    expect(matchPattern("/_next/static/chunk.js", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
+  });
+
+  it("matchPattern: dots are escaped in paths", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchPattern("/files/data.json", "/files/data.json")).toBe(true);
+    expect(matchPattern("/files/dataXjson", "/files/data.json")).toBe(false);
+  });
+
+  it("matchesMiddleware: no matcher — default exclusions", async () => {
+    const { matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    // Default: matches most paths
+    expect(matchesMiddleware("/", undefined)).toBe(true);
+    expect(matchesMiddleware("/about", undefined)).toBe(true);
+    expect(matchesMiddleware("/dashboard/settings", undefined)).toBe(true);
+
+    // Default: excludes /_next, /api, files with dots, /favicon.ico
+    expect(matchesMiddleware("/_next/static/chunk.js", undefined)).toBe(false);
+    expect(matchesMiddleware("/api/hello", undefined)).toBe(false);
+    expect(matchesMiddleware("/favicon.ico", undefined)).toBe(false);
+    expect(matchesMiddleware("/image.png", undefined)).toBe(false);
+  });
+
+  it("matchesMiddleware: single string matcher", async () => {
+    const { matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchesMiddleware("/about", "/about")).toBe(true);
+    expect(matchesMiddleware("/other", "/about")).toBe(false);
+  });
+
+  it("matchesMiddleware: array of string matchers", async () => {
+    const { matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const matcher = ["/about", "/dashboard/:path*"];
+    expect(matchesMiddleware("/about", matcher)).toBe(true);
+    expect(matchesMiddleware("/dashboard", matcher)).toBe(true);
+    expect(matchesMiddleware("/dashboard/settings", matcher)).toBe(true);
+    expect(matchesMiddleware("/other", matcher)).toBe(false);
+  });
+
+  it("matchesMiddleware: array of object matchers with source", async () => {
+    const { matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const matcher = [
+      { source: "/about" },
+      { source: "/dashboard/:path*" },
+    ];
+    expect(matchesMiddleware("/about", matcher)).toBe(true);
+    expect(matchesMiddleware("/dashboard/settings", matcher)).toBe(true);
+    expect(matchesMiddleware("/other", matcher)).toBe(false);
+  });
+
+  it("matchesMiddleware: mixed array of strings and objects", async () => {
+    const { matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const matcher = ["/about", { source: "/api/:path+" }] as any;
+    expect(matchesMiddleware("/about", matcher)).toBe(true);
+    expect(matchesMiddleware("/api/users", matcher)).toBe(true);
+    expect(matchesMiddleware("/api", matcher)).toBe(false);
+    expect(matchesMiddleware("/other", matcher)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RequestCookies comprehensive tests
+
+describe("RequestCookies API", () => {
+  it("get() returns cookie by name", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "token=abc123; session=xyz" });
+    const cookies = new RequestCookies(headers);
+
+    const token = cookies.get("token");
+    expect(token).toEqual({ name: "token", value: "abc123" });
+
+    const session = cookies.get("session");
+    expect(session).toEqual({ name: "session", value: "xyz" });
+  });
+
+  it("get() returns undefined for missing cookie", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "token=abc123" });
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.get("missing")).toBeUndefined();
+  });
+
+  it("getAll() returns all cookies", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "a=1; b=2; c=3" });
+    const cookies = new RequestCookies(headers);
+
+    const all = cookies.getAll();
+    expect(all).toHaveLength(3);
+    expect(all).toContainEqual({ name: "a", value: "1" });
+    expect(all).toContainEqual({ name: "b", value: "2" });
+    expect(all).toContainEqual({ name: "c", value: "3" });
+  });
+
+  it("has() checks cookie existence", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "token=abc" });
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.has("token")).toBe(true);
+    expect(cookies.has("missing")).toBe(false);
+  });
+
+  it("iterator yields [name, entry] pairs", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "x=1; y=2" });
+    const cookies = new RequestCookies(headers);
+
+    const entries = [...cookies];
+    expect(entries).toHaveLength(2);
+    expect(entries[0][0]).toBe("x");
+    expect(entries[0][1]).toEqual({ name: "x", value: "1" });
+    expect(entries[1][0]).toBe("y");
+    expect(entries[1][1]).toEqual({ name: "y", value: "2" });
+  });
+
+  it("handles empty cookie header", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.getAll()).toHaveLength(0);
+    expect(cookies.get("any")).toBeUndefined();
+    expect(cookies.has("any")).toBe(false);
+  });
+
+  it("handles cookies with = in value", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "data=base64=encoded=value" });
+    const cookies = new RequestCookies(headers);
+
+    const data = cookies.get("data");
+    expect(data).toBeDefined();
+    expect(data!.value).toBe("base64=encoded=value");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ResponseCookies comprehensive tests
+
+describe("ResponseCookies API", () => {
+  it("set() creates Set-Cookie header with options", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "abc123", {
+      path: "/",
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+      maxAge: 3600,
+    });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("token=abc123");
+    expect(setCookie[0]).toContain("Path=/");
+    expect(setCookie[0]).toContain("HttpOnly");
+    expect(setCookie[0]).toContain("Secure");
+    expect(setCookie[0]).toContain("SameSite=Lax");
+    expect(setCookie[0]).toContain("Max-Age=3600");
+  });
+
+  it("set() multiple cookies appends multiple Set-Cookie headers", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(2);
+    expect(setCookie[0]).toContain("a=1");
+    expect(setCookie[1]).toContain("b=2");
+  });
+
+  it("get() retrieves a cookie from Set-Cookie headers", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "xyz");
+    const result = cookies.get("token");
+    expect(result).toEqual({ name: "token", value: "xyz" });
+  });
+
+  it("getAll() returns all set cookies", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+    cookies.set("c", "3");
+
+    const all = cookies.getAll();
+    expect(all).toHaveLength(3);
+    expect(all).toContainEqual({ name: "a", value: "1" });
+    expect(all).toContainEqual({ name: "b", value: "2" });
+    expect(all).toContainEqual({ name: "c", value: "3" });
+  });
+
+  it("delete() sets Max-Age=0", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.delete("session");
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("session=");
+    expect(setCookie[0]).toContain("Max-Age=0");
+    expect(setCookie[0]).toContain("Path=/");
+  });
+
+  it("set() URL-encodes cookie values", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("data", "hello world; special=chars");
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie[0]).toContain("data=hello%20world%3B%20special%3Dchars");
+
+    // get() should decode it back
+    const result = cookies.get("data");
+    expect(result?.value).toBe("hello world; special=chars");
+  });
+
+  it("iterator yields [name, entry] pairs", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("x", "1");
+    cookies.set("y", "2");
+
+    const entries = [...cookies];
+    expect(entries).toHaveLength(2);
+    expect(entries[0][0]).toBe("x");
+    expect(entries[0][1]).toEqual({ name: "x", value: "1" });
+    expect(entries[1][0]).toBe("y");
+    expect(entries[1][1]).toEqual({ name: "y", value: "2" });
+  });
+
+  it("set() with domain option includes Domain directive", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "abc", { domain: ".example.com" });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie[0]).toContain("Domain=.example.com");
+  });
+
+  it("set() with expires option includes Expires directive", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    const expires = new Date("2030-01-01T00:00:00Z");
+    cookies.set("token", "abc", { expires });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie[0]).toContain("Expires=");
+    expect(setCookie[0]).toContain("2030");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NextRequest API tests
+
+describe("NextRequest API", () => {
+  it("cookies reads request cookies", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/test", {
+      headers: { cookie: "session=abc; theme=dark" },
+    });
+
+    expect(req.cookies.get("session")).toEqual({ name: "session", value: "abc" });
+    expect(req.cookies.get("theme")).toEqual({ name: "theme", value: "dark" });
+    expect(req.cookies.has("session")).toBe(true);
+    expect(req.cookies.has("missing")).toBe(false);
+  });
+
+  it("nextUrl provides URL properties", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost:3000/api/test?key=value#hash");
+
+    expect(req.nextUrl.pathname).toBe("/api/test");
+    expect(req.nextUrl.search).toBe("?key=value");
+    expect(req.nextUrl.searchParams.get("key")).toBe("value");
+    expect(req.nextUrl.host).toBe("localhost:3000");
+    expect(req.nextUrl.hostname).toBe("localhost");
+    expect(req.nextUrl.protocol).toBe("http:");
+    expect(req.nextUrl.hash).toBe("#hash");
+  });
+
+  it("nextUrl.clone() creates independent copy", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/test");
+    const cloned = req.nextUrl.clone();
+
+    cloned.pathname = "/other";
+    expect(req.nextUrl.pathname).toBe("/test");
+    expect(cloned.pathname).toBe("/other");
+  });
+
+  it("ip reads x-forwarded-for header", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/", {
+      headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" },
+    });
+    expect(req.ip).toBe("1.2.3.4");
+  });
+
+  it("ip returns undefined when no header", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/");
+    expect(req.ip).toBeUndefined();
+  });
+
+  it("geo reads Cloudflare headers", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/", {
+      headers: {
+        "cf-ipcountry": "US",
+        "cf-ipcity": "San Francisco",
+      },
+    });
+    expect(req.geo?.country).toBe("US");
+    expect(req.geo?.city).toBe("San Francisco");
+  });
+
+  it("geo returns undefined when no geo headers", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/");
+    expect(req.geo).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NextResponse.next() with request header forwarding
+
+describe("NextResponse.next() request header forwarding", () => {
+  it("forwards request headers as x-middleware-request-* headers", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.next({
+      request: {
+        headers: new Headers({
+          "x-custom-header": "custom-value",
+          "authorization": "Bearer token123",
+        }),
+      },
+    });
+
+    expect(res.headers.get("x-middleware-next")).toBe("1");
+    expect(res.headers.get("x-middleware-request-x-custom-header")).toBe("custom-value");
+    expect(res.headers.get("x-middleware-request-authorization")).toBe("Bearer token123");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NextResponse.redirect() with different status codes
+
+describe("NextResponse.redirect() status codes", () => {
+  it("defaults to 307 Temporary Redirect", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.redirect("https://example.com");
+    expect(res.status).toBe(307);
+  });
+
+  it("supports 301 Permanent Redirect", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.redirect("https://example.com", 301);
+    expect(res.status).toBe(301);
+    expect(res.headers.get("Location")).toBe("https://example.com");
+  });
+
+  it("supports 302 Found", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.redirect("https://example.com", 302);
+    expect(res.status).toBe(302);
+  });
+
+  it("supports 308 Permanent Redirect", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.redirect("https://example.com", 308);
+    expect(res.status).toBe(308);
+  });
+
+  it("accepts URL object", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const url = new URL("https://example.com/target");
+    const res = NextResponse.redirect(url);
+    expect(res.headers.get("Location")).toBe("https://example.com/target");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchConfigPattern unit tests (next.config.js redirects/rewrites)
+
+describe("matchConfigPattern", () => {
+  it("matches exact paths", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    expect(matchConfigPattern("/about", "/about")).toEqual({});
+    expect(matchConfigPattern("/", "/")).toEqual({});
+    expect(matchConfigPattern("/about", "/other")).toBeNull();
+  });
+
+  it("matches single :param segments", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    const result = matchConfigPattern("/blog/hello-world", "/blog/:slug");
+    expect(result).toEqual({ slug: "hello-world" });
+  });
+
+  it("matches multiple :param segments", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    const result = matchConfigPattern("/blog/2024/my-post", "/blog/:year/:slug");
+    expect(result).toEqual({ year: "2024", slug: "my-post" });
+  });
+
+  it("rejects when segment count differs for non-wildcard patterns", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    expect(matchConfigPattern("/blog/a/b", "/blog/:slug")).toBeNull();
+    expect(matchConfigPattern("/blog", "/blog/:slug")).toBeNull();
+  });
+
+  it("matches :path* catch-all (zero or more segments)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    // Zero segments
+    expect(matchConfigPattern("/docs", "/docs/:path*")).toEqual({ path: "" });
+    // One segment
+    expect(matchConfigPattern("/docs/intro", "/docs/:path*")).toEqual({ path: "intro" });
+    // Multiple segments
+    expect(matchConfigPattern("/docs/guide/getting-started", "/docs/:path*")).toEqual({
+      path: "guide/getting-started",
+    });
+  });
+
+  it("matches :path+ catch-all (one or more segments)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    // One segment
+    expect(matchConfigPattern("/api/users", "/api/:path+")).toEqual({ path: "users" });
+    // Multiple segments
+    expect(matchConfigPattern("/api/users/123", "/api/:path+")).toEqual({ path: "users/123" });
+    // Zero segments — should NOT match
+    expect(matchConfigPattern("/api", "/api/:path+")).toBeNull();
+  });
+
+  it("matches regex group patterns", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    // Common Next.js pattern: /:path(\\d+) for numeric paths
+    const result = matchConfigPattern("/123", "/:id(\\d+)");
+    if (result) {
+      expect(result.id).toBe("123");
+    }
+    // Non-numeric should not match
+    expect(matchConfigPattern("/abc", "/:id(\\d+)")).toBeNull();
+  });
+
+  it("handles dots in patterns", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    expect(matchConfigPattern("/feed.xml", "/feed.xml")).toEqual({});
+    // Dot should not match any character
+    expect(matchConfigPattern("/feedXxml", "/feed.xml")).toBeNull();
+  });
+});
+
+describe("next/form shim", () => {
+  it("exports default Form component", async () => {
+    const mod = await import("../packages/vinext/src/shims/form.js");
+    expect(mod.default).toBeDefined();
+    expect(typeof mod.default).toBe("object"); // forwardRef returns an object
+  });
+
+  it("re-exports useActionState from React", async () => {
+    const mod = await import("../packages/vinext/src/shims/form.js");
+    expect(typeof mod.useActionState).toBe("function");
+  });
+
+  it("renders a form element with string action in SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { default: Form } = await import("../packages/vinext/src/shims/form.js");
+
+    const html = renderToStaticMarkup(
+      React.createElement(
+        Form,
+        { action: "/search" },
+        React.createElement("input", { name: "q" }),
+        React.createElement("button", { type: "submit" }, "Search"),
+      ),
+    );
+    expect(html).toContain("<form");
+    expect(html).toContain('action="/search"');
+    expect(html).toContain('name="q"');
+    expect(html).toContain("Search");
+  });
+
+  it("renders a form with method prop", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { default: Form } = await import("../packages/vinext/src/shims/form.js");
+
+    const html = renderToStaticMarkup(
+      React.createElement(
+        Form,
+        { action: "/api/submit", method: "POST" },
+        React.createElement("button", { type: "submit" }, "Submit"),
+      ),
+    );
+    expect(html).toContain("<form");
+    expect(html).toContain('method="POST"');
+  });
+
+  it("renders children inside the form", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { default: Form } = await import("../packages/vinext/src/shims/form.js");
+
+    const html = renderToStaticMarkup(
+      React.createElement(
+        Form,
+        { action: "/search" },
+        React.createElement("label", null, "Query:"),
+        React.createElement("input", { name: "q", placeholder: "Search..." }),
+        React.createElement("button", null, "Go"),
+      ),
+    );
+    expect(html).toContain("Query:");
+    expect(html).toContain('placeholder="Search..."');
+    expect(html).toContain("Go");
+  });
+
+  it("passes className and id through to form element", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { default: Form } = await import("../packages/vinext/src/shims/form.js");
+
+    const html = renderToStaticMarkup(
+      React.createElement(
+        Form,
+        { action: "/search", className: "search-form", id: "main-search" },
+      ),
+    );
+    expect(html).toContain('class="search-form"');
+    expect(html).toContain('id="main-search"');
+  });
+});
+
+describe("next/font/google shim", () => {
+  it("returns className, style, and variable for a Google Font", async () => {
+    const { Inter } = await import(
+      "../packages/vinext/src/shims/font-google.js"
+    );
+    const result = Inter({ subsets: ["latin"], weight: ["400", "700"] });
+
+    expect(result.className).toMatch(/^__font_inter_/);
+    expect(result.style.fontFamily).toContain("Inter");
+    expect(result.variable).toBe("--font-inter");
+  });
+
+  it("Proxy returns font loaders for any family", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/font-google.js"
+    );
+    const googleFonts = mod.default;
+    const loader = googleFonts.Poppins;
+    expect(typeof loader).toBe("function");
+
+    const result = loader({ weight: "400" });
+    expect(result.className).toMatch(/^__font_poppins_/);
+    expect(result.style.fontFamily).toContain("Poppins");
+  });
+
+  it("converts PascalCase to font family name", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/font-google.js"
+    );
+    const googleFonts = mod.default;
+    const result = googleFonts.RobotoMono({ weight: "400" });
+
+    expect(result.style.fontFamily).toContain("Roboto Mono");
+    expect(result.variable).toBe("--font-roboto-mono");
+  });
+
+  it("uses custom variable name when provided", async () => {
+    const { Inter } = await import(
+      "../packages/vinext/src/shims/font-google.js"
+    );
+    const result = Inter({ variable: "--custom-font" });
+    expect(result.variable).toBe("--custom-font");
+  });
+
+  it("uses custom fallback fonts", async () => {
+    const { Inter } = await import(
+      "../packages/vinext/src/shims/font-google.js"
+    );
+    const result = Inter({ fallback: ["Helvetica", "Arial", "sans-serif"] });
+    expect(result.style.fontFamily).toContain("Helvetica");
+    expect(result.style.fontFamily).toContain("Arial");
+  });
+
+  it("generates CSS rules for className (SSR)", async () => {
+    const { Inter, getSSRFontStyles } = await import(
+      "../packages/vinext/src/shims/font-google.js"
+    );
+    // Clear any previously collected styles
+    getSSRFontStyles();
+
+    const result = Inter({ subsets: ["latin"], weight: ["400"] });
+
+    // getSSRFontStyles should return CSS rules mapping className to font-family
+    const styles = getSSRFontStyles();
+    const allCss = styles.join("\n");
+    expect(allCss).toContain(`.${result.className}`);
+    expect(allCss).toContain("font-family:");
+    expect(allCss).toContain("Inter");
+  });
+
+  it("generates CSS variable rule when variable is specified", async () => {
+    const { Inter, getSSRFontStyles } = await import(
+      "../packages/vinext/src/shims/font-google.js"
+    );
+    getSSRFontStyles(); // clear
+
+    Inter({ variable: "--font-inter" });
+    const styles = getSSRFontStyles();
+    const allCss = styles.join("\n");
+    expect(allCss).toContain("--font-inter:");
+  });
+});
+
+describe("next/font/local shim", () => {
+  it("returns className, style for a local font", async () => {
+    const { default: localFont } = await import(
+      "../packages/vinext/src/shims/font-local.js"
+    );
+    const result = localFont({ src: "./my-font.woff2" });
+
+    expect(result.className).toMatch(/^__font_local_/);
+    expect(result.style.fontFamily).toMatch(/__local_font_/);
+  });
+
+  it("includes variable when specified", async () => {
+    const { default: localFont } = await import(
+      "../packages/vinext/src/shims/font-local.js"
+    );
+    const result = localFont({
+      src: "./my-font.woff2",
+      variable: "--font-custom",
+    });
+    expect(result.variable).toBe("--font-custom");
+  });
+
+  it("accepts array of font sources", async () => {
+    const { default: localFont } = await import(
+      "../packages/vinext/src/shims/font-local.js"
+    );
+    const result = localFont({
+      src: [
+        { path: "./regular.woff2", weight: "400" },
+        { path: "./bold.woff2", weight: "700" },
+      ],
+    });
+
+    expect(result.className).toMatch(/^__font_local_/);
+    expect(result.style.fontFamily).toBeTruthy();
+  });
+});
+
+describe("next/og shim", () => {
+  it("exports ImageResponse class", async () => {
+    const og = await import(
+      "../packages/vinext/src/shims/og.js"
+    );
+    expect(og.ImageResponse).toBeDefined();
+    expect(typeof og.ImageResponse).toBe("function");
+  });
+
+  it("ImageResponse extends Response", async () => {
+    const og = await import(
+      "../packages/vinext/src/shims/og.js"
+    );
+    // Check the prototype chain
+    expect(og.ImageResponse.prototype instanceof Response).toBe(true);
+  });
+
+  it("generates a PNG image from JSX", async () => {
+    const React = await import("react");
+    const og = await import(
+      "../packages/vinext/src/shims/og.js"
+    );
+
+    // Simple colored div — no text so no font needed
+    const element = React.createElement(
+      "div",
+      {
+        style: {
+          display: "flex",
+          width: "100%",
+          height: "100%",
+          backgroundColor: "#ff6600",
+          alignItems: "center",
+          justifyContent: "center",
+        },
+      },
+    );
+
+    const response = new og.ImageResponse(element, {
+      width: 100,
+      height: 100,
+    });
+
+    expect(response).toBeInstanceOf(Response);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("image/png");
+
+    // Read the response body — should be valid PNG data
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+
+    // PNG magic bytes: 0x89 0x50 0x4E 0x47
+    expect(bytes[0]).toBe(0x89);
+    expect(bytes[1]).toBe(0x50); // P
+    expect(bytes[2]).toBe(0x4e); // N
+    expect(bytes[3]).toBe(0x47); // G
+  });
+
+  it("respects custom status and headers", async () => {
+    const React = await import("react");
+    const og = await import(
+      "../packages/vinext/src/shims/og.js"
+    );
+
+    const element = React.createElement("div", {
+      style: { display: "flex", width: "100%", height: "100%", backgroundColor: "blue" },
+    });
+
+    const response = new og.ImageResponse(element, {
+      width: 50,
+      height: 50,
+      status: 201,
+      headers: { "x-custom": "test-value" },
+    });
+
+    expect(response.status).toBe(201);
+    expect(response.headers.get("x-custom")).toBe("test-value");
+    expect(response.headers.get("content-type")).toBe("image/png");
+  });
+
+  it("uses default dimensions of 1200x630", async () => {
+    const React = await import("react");
+    const og = await import(
+      "../packages/vinext/src/shims/og.js"
+    );
+
+    const element = React.createElement("div", {
+      style: { display: "flex", width: "100%", height: "100%", backgroundColor: "green" },
+    });
+
+    // No width/height specified — should use defaults
+    const response = new og.ImageResponse(element);
+    expect(response).toBeInstanceOf(Response);
+
+    // Verify it produces valid PNG
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    expect(bytes[0]).toBe(0x89); // PNG magic
+  });
+});
+
+describe("metadata route serializers", () => {
+  it("sitemapToXml converts sitemap entries to valid XML", async () => {
+    const { sitemapToXml } = await import(
+      "../packages/vinext/src/server/metadata-routes.js"
+    );
+    const xml = sitemapToXml([
+      { url: "https://example.com", lastModified: "2025-01-01", priority: 1 },
+      { url: "https://example.com/about", changeFrequency: "monthly" as const },
+    ]);
+    expect(xml).toContain('<?xml version="1.0" encoding="UTF-8"?>');
+    expect(xml).toContain("<urlset");
+    expect(xml).toContain("<loc>https://example.com</loc>");
+    expect(xml).toContain("<lastmod>2025-01-01</lastmod>");
+    expect(xml).toContain("<priority>1</priority>");
+    expect(xml).toContain("<loc>https://example.com/about</loc>");
+    expect(xml).toContain("<changefreq>monthly</changefreq>");
+  });
+
+  it("sitemapToXml handles Date objects", async () => {
+    const { sitemapToXml } = await import(
+      "../packages/vinext/src/server/metadata-routes.js"
+    );
+    const xml = sitemapToXml([
+      { url: "https://example.com", lastModified: new Date("2025-06-15") },
+    ]);
+    expect(xml).toContain("<lastmod>2025-06-15T00:00:00.000Z</lastmod>");
+  });
+
+  it("robotsToText converts robots config to text", async () => {
+    const { robotsToText } = await import(
+      "../packages/vinext/src/server/metadata-routes.js"
+    );
+    const text = robotsToText({
+      rules: { userAgent: "*", allow: "/", disallow: "/private/" },
+      sitemap: "https://example.com/sitemap.xml",
+    });
+    expect(text).toContain("User-Agent: *");
+    expect(text).toContain("Allow: /");
+    expect(text).toContain("Disallow: /private/");
+    expect(text).toContain("Sitemap: https://example.com/sitemap.xml");
+  });
+
+  it("robotsToText handles multiple rules", async () => {
+    const { robotsToText } = await import(
+      "../packages/vinext/src/server/metadata-routes.js"
+    );
+    const text = robotsToText({
+      rules: [
+        { userAgent: "Googlebot", allow: "/" },
+        { userAgent: "Bingbot", disallow: "/secret" },
+      ],
+    });
+    expect(text).toContain("User-Agent: Googlebot");
+    expect(text).toContain("User-Agent: Bingbot");
+    expect(text).toContain("Disallow: /secret");
+  });
+
+  it("manifestToJson converts manifest config to JSON", async () => {
+    const { manifestToJson } = await import(
+      "../packages/vinext/src/server/metadata-routes.js"
+    );
+    const json = manifestToJson({
+      name: "Test App",
+      short_name: "Test",
+      start_url: "/",
+      display: "standalone",
+    });
+    const parsed = JSON.parse(json);
+    expect(parsed.name).toBe("Test App");
+    expect(parsed.display).toBe("standalone");
+  });
+
+  it("scanMetadataFiles discovers metadata files in app directory", async () => {
+    const { scanMetadataFiles } = await import(
+      "../packages/vinext/src/server/metadata-routes.js"
+    );
+    const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
+    const routes = scanMetadataFiles(appDir);
+
+    // Should find our test fixture files
+    const types = routes.map((r: { type: string }) => r.type);
+    expect(types).toContain("sitemap");
+    expect(types).toContain("robots");
+    expect(types).toContain("manifest");
+
+    // Sitemap should be dynamic (.ts)
+    const sitemap = routes.find((r: { type: string }) => r.type === "sitemap");
+    expect(sitemap).toBeDefined();
+    expect(sitemap!.isDynamic).toBe(true);
+    expect(sitemap!.servedUrl).toBe("/sitemap.xml");
+    expect(sitemap!.contentType).toBe("application/xml");
+  });
+});
+
+describe("next/dynamic shim", () => {
+  it("exports a default function", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    expect(typeof mod.default).toBe("function");
+  });
+
+  it("exports flushPreloads", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    expect(typeof mod.flushPreloads).toBe("function");
+  });
+
+  it("returns a component for SSR-enabled dynamic imports", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const FakeComponent = () => React.createElement("div", null, "Hello from dynamic");
+    const DynamicComponent = dynamic(() =>
+      Promise.resolve({ default: FakeComponent }),
+    );
+
+    // Flush preloads so the component is resolved
+    await flushPreloads();
+
+    // Should render the component on the server
+    const html = renderToStaticMarkup(React.createElement(DynamicComponent));
+    expect(html).toContain("Hello from dynamic");
+  });
+
+  it("renders loading state for ssr: false on server", async () => {
+    const { default: dynamic } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const FakeComponent = () => React.createElement("div", null, "Should not appear");
+    const Loading = () => React.createElement("span", null, "Loading...");
+    const DynamicComponent = dynamic(
+      () => Promise.resolve({ default: FakeComponent }),
+      { ssr: false, loading: Loading },
+    );
+
+    // On server with ssr: false, should render loading, not the component
+    const html = renderToStaticMarkup(React.createElement(DynamicComponent));
+    expect(html).toContain("Loading...");
+    expect(html).not.toContain("Should not appear");
+  });
+
+  it("renders nothing for ssr: false without loading on server", async () => {
+    const { default: dynamic } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const FakeComponent = () => React.createElement("div", null, "Should not appear");
+    const DynamicComponent = dynamic(
+      () => Promise.resolve({ default: FakeComponent }),
+      { ssr: false },
+    );
+
+    // On server with ssr: false and no loading component, should render nothing
+    const html = renderToStaticMarkup(React.createElement(DynamicComponent));
+    expect(html).toBe("");
+  });
+
+  it("accepts module without default export (bare component)", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const BareComponent = () => React.createElement("p", null, "Bare export");
+    const DynamicComponent = dynamic(() => Promise.resolve(BareComponent));
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(React.createElement(DynamicComponent));
+    expect(html).toContain("Bare export");
+  });
+
+  it("forwards props to the underlying component", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const Greeter = ({ name }: { name: string }) =>
+      React.createElement("span", null, `Hello ${name}`);
+    const DynamicGreeter = dynamic(() => Promise.resolve({ default: Greeter }));
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(
+      React.createElement(DynamicGreeter, { name: "World" }),
+    );
+    expect(html).toContain("Hello World");
+  });
+
+  it("renders loading fallback when component not yet resolved (SSR)", async () => {
+    const { default: dynamic } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    let resolveLoader!: (val: any) => void;
+    const loaderPromise = new Promise((r) => { resolveLoader = r; });
+    const SlowComponent = () => React.createElement("div", null, "Loaded");
+    const Loading = () => React.createElement("span", null, "Please wait...");
+
+    const DynamicSlow = dynamic(() => loaderPromise as any, { loading: Loading });
+
+    // DON'T flush preloads — component should still be unresolved
+    const html = renderToStaticMarkup(React.createElement(DynamicSlow));
+    expect(html).toContain("Please wait...");
+    expect(html).not.toContain("Loaded");
+
+    // Clean up — resolve to avoid unhandled rejection
+    resolveLoader({ default: SlowComponent });
+  });
+
+  it("flushPreloads resolves multiple dynamic components", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const CompA = () => React.createElement("div", null, "Component A");
+    const CompB = () => React.createElement("div", null, "Component B");
+
+    const DynA = dynamic(() =>
+      new Promise<any>((r) => setTimeout(() => r({ default: CompA }), 10)),
+    );
+    const DynB = dynamic(() =>
+      new Promise<any>((r) => setTimeout(() => r({ default: CompB }), 10)),
+    );
+
+    await flushPreloads();
+
+    const htmlA = renderToStaticMarkup(React.createElement(DynA));
+    const htmlB = renderToStaticMarkup(React.createElement(DynB));
+    expect(htmlA).toContain("Component A");
+    expect(htmlB).toContain("Component B");
+  });
+
+  it("flushPreloads second call resolves immediately (queue drained)", async () => {
+    const { flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+
+    // First call should drain whatever's in the queue
+    await flushPreloads();
+
+    // Second call should resolve immediately with empty array
+    const result = await flushPreloads();
+    expect(result).toEqual([]);
+  });
+
+  it("loading component receives isLoading and pastDelay props", async () => {
+    const { default: dynamic } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    let receivedProps: any = null;
+    const Loading = (props: any) => {
+      receivedProps = props;
+      return React.createElement("span", null, "Loading");
+    };
+
+    const FakeComp = () => React.createElement("div", null, "Content");
+    const DynComp = dynamic(
+      () => Promise.resolve({ default: FakeComp }),
+      { ssr: false, loading: Loading },
+    );
+
+    renderToStaticMarkup(React.createElement(DynComp));
+    expect(receivedProps).not.toBeNull();
+    expect(receivedProps.isLoading).toBe(true);
+    expect(receivedProps.pastDelay).toBe(true);
+    expect(receivedProps.error).toBeNull();
+  });
+
+  it("renders loading fallback for ssr: false with props forwarded", async () => {
+    const { default: dynamic } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const HeavyChart = ({ title }: { title: string }) =>
+      React.createElement("canvas", null, title);
+    const Loading = () => React.createElement("div", null, "Chart loading...");
+
+    const DynamicChart = dynamic(
+      () => Promise.resolve({ default: HeavyChart }),
+      { ssr: false, loading: Loading },
+    );
+
+    // On server: should show loading, not the chart
+    const html = renderToStaticMarkup(
+      React.createElement(DynamicChart, { title: "Revenue" }),
+    );
+    expect(html).toContain("Chart loading...");
+    expect(html).not.toContain("Revenue");
+  });
+
+  it("handles module with both default and named exports", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const MainComponent = () => React.createElement("div", null, "Main");
+    const namedHelper = () => "helper";
+
+    const DynComp = dynamic(() =>
+      Promise.resolve({ default: MainComponent, namedHelper }),
+    );
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(React.createElement(DynComp));
+    expect(html).toContain("Main");
+  });
+
+  it("loader rejection does not crash flushPreloads", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+
+    dynamic(() => Promise.reject(new Error("Module not found")));
+
+    // flushPreloads should NOT throw even though the loader rejected
+    await expect(flushPreloads()).resolves.not.toThrow();
+  });
+
+  it("loader rejection renders loading component with error", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const LoadingComp = (props: { error?: Error | null; isLoading?: boolean }) => {
+      if (props.error) {
+        return React.createElement("div", null, `Error: ${props.error.message}`);
+      }
+      return React.createElement("div", null, "Loading...");
+    };
+
+    const DynComp = dynamic(
+      () => Promise.reject(new Error("chunk load fail")),
+      { loading: LoadingComp },
+    );
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(React.createElement(DynComp));
+    expect(html).toContain("Error: chunk load fail");
+  });
+
+  it("loader rejection without loading component renders nothing", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const DynComp = dynamic(
+      () => Promise.reject(new Error("fail")),
+    );
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(React.createElement(DynComp));
+    expect(html).toBe("");
+  });
+
+  it("loader rejection with non-Error value is wrapped", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const LoadingComp = (props: { error?: Error | null }) => {
+      if (props.error) {
+        return React.createElement("div", null, `Error: ${props.error.message}`);
+      }
+      return React.createElement("div", null, "Loading...");
+    };
+
+    const DynComp = dynamic(
+      () => Promise.reject("string error"),
+      { loading: LoadingComp },
+    );
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(React.createElement(DynComp));
+    expect(html).toContain("Error: string error");
+  });
+});
+
+describe("basePath config validation", () => {
+  it("resolveNextConfig preserves basePath with leading slash", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({ basePath: "/my-app" });
+    expect(config.basePath).toBe("/my-app");
+  });
+
+  it("resolveNextConfig handles nested basePath", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({ basePath: "/a/b/c" });
+    expect(config.basePath).toBe("/a/b/c");
+  });
+
+  it("resolveNextConfig defaults to empty string", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({});
+    expect(config.basePath).toBe("");
+  });
+
+  it("resolveNextConfig handles undefined basePath", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({ basePath: undefined });
+    expect(config.basePath).toBe("");
+  });
+});
+
+describe("next/web-vitals shim", () => {
+  it("exports useReportWebVitals as a no-op function", async () => {
+    const { useReportWebVitals } = await import(
+      "../packages/vinext/src/shims/web-vitals.js"
+    );
+    expect(typeof useReportWebVitals).toBe("function");
+    // Should run without throwing
+    expect(() => useReportWebVitals(() => {})).not.toThrow();
+  });
+});
+
+describe("next/amp shim", () => {
+  it("exports useAmp and isInAmpMode as no-op functions", async () => {
+    const { useAmp, isInAmpMode } = await import(
+      "../packages/vinext/src/shims/amp.js"
+    );
+    expect(typeof useAmp).toBe("function");
+    expect(typeof isInAmpMode).toBe("function");
+    // Both always return false
+    expect(useAmp()).toBe(false);
+    expect(isInAmpMode()).toBe(false);
+  });
+});
+
+describe("Pages Router router helpers", () => {
+  describe("isExternalUrl", () => {
+    it("detects https:// as external", () => {
+      expect(isExternalUrl("https://example.com")).toBe(true);
+      expect(isExternalUrl("https://example.com/path")).toBe(true);
+    });
+
+    it("detects http:// as external", () => {
+      expect(isExternalUrl("http://example.com")).toBe(true);
+    });
+
+    it("detects protocol-relative // as external", () => {
+      expect(isExternalUrl("//cdn.example.com/img.png")).toBe(true);
+    });
+
+    it("returns false for relative paths", () => {
+      expect(isExternalUrl("/about")).toBe(false);
+      expect(isExternalUrl("/")).toBe(false);
+      expect(isExternalUrl("about")).toBe(false);
+    });
+
+    it("returns false for hash-only", () => {
+      expect(isExternalUrl("#section")).toBe(false);
+    });
+
+    it("returns false for query-only", () => {
+      expect(isExternalUrl("?foo=1")).toBe(false);
+    });
+  });
+
+  describe("isHashOnlyChange", () => {
+    it("returns true for hash-only strings starting with #", () => {
+      // This works even without window because of the startsWith check
+      expect(isHashOnlyChange("#foo")).toBe(true);
+      expect(isHashOnlyChange("#")).toBe(true);
+      expect(isHashOnlyChange("#section-2")).toBe(true);
+    });
+
+    it("returns false for absolute paths without window context", () => {
+      // Without a real browser window, URL-based comparison returns false
+      // because typeof window === "undefined" → returns false
+      expect(isHashOnlyChange("/about")).toBe(false);
+      expect(isHashOnlyChange("/about#foo")).toBe(false);
+    });
+
+    it("returns false for full URLs without window context", () => {
+      expect(isHashOnlyChange("https://example.com#foo")).toBe(false);
+    });
+  });
+});
+
+describe("next/server enhancements", () => {
+  it("NextRequest.ip extracts from x-forwarded-for header", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("https://example.com", {
+      headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" },
+    });
+    expect(req.ip).toBe("1.2.3.4");
+  });
+
+  it("NextRequest.ip returns undefined without forwarded header", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("https://example.com");
+    expect(req.ip).toBeUndefined();
+  });
+
+  it("NextRequest.geo extracts from Cloudflare/Vercel headers", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("https://example.com", {
+      headers: {
+        "cf-ipcountry": "US",
+        "cf-ipcity": "San Francisco",
+      },
+    });
+    const geo = req.geo;
+    expect(geo).toBeDefined();
+    expect(geo!.country).toBe("US");
+    expect(geo!.city).toBe("San Francisco");
+  });
+
+  it("NextRequest.geo returns undefined without geo headers", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("https://example.com");
+    expect(req.geo).toBeUndefined();
+  });
+
+  it("ResponseCookies.getAll returns all set cookies", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+    const all = cookies.getAll();
+    expect(all).toHaveLength(2);
+    expect(all.find((c: any) => c.name === "a")?.value).toBe("1");
+    expect(all.find((c: any) => c.name === "b")?.value).toBe("2");
+  });
+});
+
+describe("next/image enhancements", () => {
+  it("exports StaticImageData type", async () => {
+    const imageModule = await import(
+      "../packages/vinext/src/shims/image.js"
+    );
+    // StaticImageData is an interface, so we can't check at runtime
+    // but getImageProps uses it — verify that function exists
+    expect(typeof imageModule.getImageProps).toBe("function");
+  });
+
+  it("getImageProps returns img props from Image props", async () => {
+    const { getImageProps } = await import(
+      "../packages/vinext/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Test",
+      width: 800,
+      height: 600,
+      priority: true,
+    });
+    expect(result.props.src).toBe("/photo.jpg");
+    expect(result.props.alt).toBe("Test");
+    expect(result.props.width).toBe(800);
+    expect(result.props.height).toBe(600);
+    expect(result.props.loading).toBe("eager");
+  });
+
+  it("getImageProps handles fill mode", async () => {
+    const { getImageProps } = await import(
+      "../packages/vinext/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/bg.jpg",
+      alt: "Background",
+      fill: true,
+    });
+    expect(result.props.width).toBeUndefined();
+    expect(result.props.height).toBeUndefined();
+    expect(result.props.style?.position).toBe("absolute");
+  });
+
+  it("getImageProps handles StaticImageData", async () => {
+    const { getImageProps } = await import(
+      "../packages/vinext/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: { src: "/imported.jpg", width: 1200, height: 800, blurDataURL: "data:..." },
+      alt: "Imported",
+    });
+    expect(result.props.src).toBe("/imported.jpg");
+    expect(result.props.width).toBe(1200);
+    expect(result.props.height).toBe(800);
+  });
+
+  it("getImageProps generates srcSet for local images with width", async () => {
+    const { getImageProps } = await import(
+      "../packages/vinext/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Test",
+      width: 1200,
+      height: 800,
+    });
+    expect(result.props.srcSet).toBeDefined();
+    expect(result.props.srcSet).toContain("/photo.jpg");
+    expect(result.props.srcSet).toContain("w");
+  });
+
+  it("getImageProps does not generate srcSet for fill images", async () => {
+    const { getImageProps } = await import(
+      "../packages/vinext/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/bg.jpg",
+      alt: "Background",
+      fill: true,
+    });
+    expect(result.props.srcSet).toBeUndefined();
+    expect(result.props.sizes).toBe("100vw"); // fill implies 100vw
+  });
+
+  it("getImageProps includes fetchPriority for priority images", async () => {
+    const { getImageProps } = await import(
+      "../packages/vinext/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/hero.jpg",
+      alt: "Hero",
+      width: 1200,
+      height: 800,
+      priority: true,
+    });
+    expect(result.props.fetchPriority).toBe("high");
+    expect(result.props.loading).toBe("eager");
+  });
+
+  it("getImageProps includes data-nimg attribute", async () => {
+    const { getImageProps } = await import(
+      "../packages/vinext/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Photo",
+      width: 800,
+      height: 600,
+    });
+    expect((result.props as any)["data-nimg"]).toBe("1");
+
+    const fillResult = getImageProps({
+      src: "/bg.jpg",
+      alt: "BG",
+      fill: true,
+    });
+    expect((fillResult.props as any)["data-nimg"]).toBe("fill");
+  });
+
+  it("getImageProps includes blur placeholder background styles", async () => {
+    const { getImageProps } = await import(
+      "../packages/vinext/src/shims/image.js"
+    );
+    const blurUrl = "data:image/jpeg;base64,/9j/4AAQ";
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Blurry",
+      width: 800,
+      height: 600,
+      placeholder: "blur",
+      blurDataURL: blurUrl,
+    });
+    expect(result.props.style?.backgroundImage).toContain(blurUrl);
+    expect(result.props.style?.backgroundSize).toBe("cover");
+  });
+
+  it("getImageProps uses custom loader function", async () => {
+    const { getImageProps } = await import(
+      "../packages/vinext/src/shims/image.js"
+    );
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Custom",
+      width: 800,
+      height: 600,
+      loader: ({ src, width, quality }) => `https://cdn.example.com${src}?w=${width}&q=${quality}`,
+    });
+    expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=800&q=75");
+  });
+});
+
+describe("next/image component rendering", () => {
+  it("renders basic image with src, alt, width, height", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/photo.jpg", alt: "Test photo", width: 800, height: 600 }),
+    );
+    expect(html).toContain('src="/photo.jpg"');
+    expect(html).toContain('alt="Test photo"');
+    expect(html).toContain('width="800"');
+    expect(html).toContain('height="600"');
+  });
+
+  it("renders fill image with absolute positioning", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/bg.jpg", alt: "Background", fill: true }),
+    );
+    expect(html).toContain("position:absolute");
+    expect(html).toContain('data-nimg="fill"');
+    // fill images should not have width/height attributes
+    expect(html).not.toContain('width=');
+    expect(html).not.toContain('height=');
+  });
+
+  it("renders priority image with fetchpriority=high and loading=eager", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/hero.jpg", alt: "Hero", width: 1200, height: 800, priority: true }),
+    );
+    expect(html).toContain('fetchPriority="high"');
+    expect(html).toContain('loading="eager"');
+  });
+
+  it("renders lazy loading by default (no priority)", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/photo.jpg", alt: "Photo", width: 800, height: 600 }),
+    );
+    expect(html).toContain('loading="lazy"');
+    expect(html).not.toContain('fetchPriority');
+  });
+
+  it("renders srcSet for local images with width", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/photo.jpg", alt: "Photo", width: 1200, height: 800 }),
+    );
+    expect(html).toContain("srcSet");
+    expect(html).toContain("/photo.jpg");
+    expect(html).toContain("w");
+  });
+
+  it("renders blur placeholder with background-image", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const blurUrl = "data:image/jpeg;base64,/9j/4AAQ";
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Blurry",
+        width: 800,
+        height: 600,
+        placeholder: "blur",
+        blurDataURL: blurUrl,
+      }),
+    );
+    expect(html).toContain(blurUrl);
+    expect(html).toContain("background-image");
+    expect(html).toContain("background-size:cover");
+  });
+
+  it("renders with custom loader function", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Custom",
+        width: 800,
+        height: 600,
+        loader: ({ src, width, quality }: { src: string; width: number; quality?: number }) =>
+          `https://cdn.example.com${src}?w=${width}&q=${quality}`,
+      }),
+    );
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=800&amp;q=75"');
+  });
+
+  it("renders with custom sizes attribute", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Responsive",
+        width: 1200,
+        height: 800,
+        sizes: "(max-width: 768px) 100vw, 50vw",
+      }),
+    );
+    expect(html).toContain('sizes="(max-width: 768px) 100vw, 50vw"');
+  });
+
+  it("renders fill image with sizes=100vw by default", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/bg.jpg", alt: "BG", fill: true }),
+    );
+    expect(html).toContain('sizes="100vw"');
+  });
+
+  it("handles StaticImageData import objects", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const staticImport = { src: "/imported.jpg", width: 1200, height: 800, blurDataURL: "data:..." };
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: staticImport, alt: "Imported" }),
+    );
+    expect(html).toContain('src="/imported.jpg"');
+    expect(html).toContain('width="1200"');
+    expect(html).toContain('height="800"');
+  });
+
+  it("renders with className", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Styled",
+        width: 800,
+        height: 600,
+        className: "rounded-lg shadow-md",
+      }),
+    );
+    expect(html).toContain('class="rounded-lg shadow-md"');
+  });
+
+  it("includes data-nimg=1 for non-fill images", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/photo.jpg", alt: "Test", width: 800, height: 600 }),
+    );
+    expect(html).toContain('data-nimg="1"');
+  });
+
+  it("always sets decoding=async", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/photo.jpg", alt: "Test", width: 800, height: 600 }),
+    );
+    expect(html).toContain('decoding="async"');
+  });
+});
+
+describe("next/navigation enhancements", () => {
+  it("exports ReadonlyURLSearchParams type alias", async () => {
+    // This is a type-only export, we verify the module loads without error
+    const nav = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    // ReadonlyURLSearchParams is a type export, not a runtime value
+    // But useServerInsertedHTML should be exported
+    expect(typeof nav.useServerInsertedHTML).toBe("function");
+  });
+
+  it("useServerInsertedHTML is a no-op function", async () => {
+    const { useServerInsertedHTML } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    // Should not throw
+    expect(() => useServerInsertedHTML(() => null)).not.toThrow();
+  });
+});
+
+describe("next/legacy/image shim", () => {
+  it("renders LegacyImage with layout=fill as modern Image with fill prop", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const LegacyImage = (await import("../packages/vinext/src/shims/legacy-image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(LegacyImage, {
+        src: "/photo.jpg",
+        alt: "Test",
+        layout: "fill",
+        objectFit: "cover",
+        objectPosition: "center",
+      }),
+    );
+    expect(html).toContain("photo.jpg");
+    expect(html).toContain("alt");
+    // fill mode should produce absolute positioning styles
+    expect(html).toContain("position:absolute");
+  });
+
+  it("renders LegacyImage with layout=intrinsic using width/height", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const LegacyImage = (await import("../packages/vinext/src/shims/legacy-image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(LegacyImage, {
+        src: "/photo.jpg",
+        alt: "Test",
+        layout: "intrinsic",
+        width: 640,
+        height: 480,
+      }),
+    );
+    expect(html).toContain('width="640"');
+    expect(html).toContain('height="480"');
+  });
+
+  it("renders LegacyImage with string width/height (converts to number)", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const LegacyImage = (await import("../packages/vinext/src/shims/legacy-image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(LegacyImage, {
+        src: "/photo.jpg",
+        alt: "Test",
+        width: "200",
+        height: "150",
+      }),
+    );
+    expect(html).toContain('width="200"');
+    expect(html).toContain('height="150"');
+  });
+});
+
+describe("next/error shim", () => {
+  it("renders 404 error page", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(ErrorComponent, { statusCode: 404 }),
+    );
+    expect(html).toContain("404");
+    expect(html).toContain("could not be found");
+  });
+
+  it("renders 500 error page", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(ErrorComponent, { statusCode: 500 }),
+    );
+    expect(html).toContain("500");
+    expect(html).toContain("Internal Server Error");
+  });
+
+  it("renders custom title", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const ErrorComponent = (await import("../packages/vinext/src/shims/error.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(ErrorComponent, { statusCode: 403, title: "Forbidden" }),
+    );
+    expect(html).toContain("403");
+    expect(html).toContain("Forbidden");
+  });
+});
+
+describe("next/constants shim", () => {
+  it("exports all phase constants", async () => {
+    const constants = await import("../packages/vinext/src/shims/constants.js");
+    expect(constants.PHASE_PRODUCTION_BUILD).toBe("phase-production-build");
+    expect(constants.PHASE_DEVELOPMENT_SERVER).toBe("phase-development-server");
+    expect(constants.PHASE_PRODUCTION_SERVER).toBe("phase-production-server");
+    expect(constants.PHASE_EXPORT).toBe("phase-export");
+    expect(constants.PHASE_INFO).toBe("phase-info");
+    expect(constants.PHASE_TEST).toBe("phase-test");
+  });
+});
+
+describe("next/script SSR rendering", () => {
+  it("beforeInteractive renders <script> tag in SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        src: "https://example.com/analytics.js",
+        strategy: "beforeInteractive",
+        id: "analytics",
+      }),
+    );
+    expect(html).toContain("<script");
+    expect(html).toContain('src="https://example.com/analytics.js"');
+    expect(html).toContain('id="analytics"');
+  });
+
+  it("afterInteractive returns null in SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        src: "https://example.com/chat.js",
+        strategy: "afterInteractive",
+      }),
+    );
+    // afterInteractive should not render anything server-side
+    expect(html).toBe("");
+  });
+
+  it("lazyOnload returns null in SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        src: "https://example.com/tracking.js",
+        strategy: "lazyOnload",
+      }),
+    );
+    expect(html).toBe("");
+  });
+
+  it("default strategy (no strategy prop) returns null in SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        src: "https://example.com/default.js",
+      }),
+    );
+    // Default is afterInteractive → null in SSR
+    expect(html).toBe("");
+  });
+
+  it("beforeInteractive with dangerouslySetInnerHTML renders inline script", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        strategy: "beforeInteractive",
+        id: "inline-script",
+        dangerouslySetInnerHTML: { __html: "console.log('hello')" },
+      }),
+    );
+    expect(html).toContain("<script");
+    expect(html).toContain('id="inline-script"');
+    expect(html).toContain("console.log('hello')");
+  });
+
+  it("exports handleClientScriptLoad and initScriptLoader", async () => {
+    const scriptModule = await import("../packages/vinext/src/shims/script.js");
+    expect(typeof scriptModule.handleClientScriptLoad).toBe("function");
+    expect(typeof scriptModule.initScriptLoader).toBe("function");
+  });
+});
+
+describe("next/dist/* internal import shims", () => {
+  it("app-router-context exports AppRouterContext and types", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/internal/app-router-context.js"
+    );
+    expect(mod.AppRouterContext).toBeDefined();
+    expect(mod.GlobalLayoutRouterContext).toBeDefined();
+    expect(mod.LayoutRouterContext).toBeDefined();
+    expect(mod.MissingSlotContext).toBeDefined();
+    expect(mod.TemplateContext).toBeDefined();
+  });
+
+  it("utils exports NEXT_DATA type helpers", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/internal/utils.js"
+    );
+    expect(typeof mod.execOnce).toBe("function");
+    expect(typeof mod.getLocationOrigin).toBe("function");
+    expect(typeof mod.getURL).toBe("function");
+
+    // execOnce should only call the function once
+    let count = 0;
+    const fn = mod.execOnce(() => ++count);
+    fn(); fn(); fn();
+    expect(count).toBe(1);
+  });
+
+  it("api-utils exports NextApiRequestCookies type", async () => {
+    // This module is primarily type-only, but should resolve without errors
+    const mod = await import(
+      "../packages/vinext/src/shims/internal/api-utils.js"
+    );
+    expect(mod).toBeDefined();
+  });
+
+  it("cookies shim re-exports RequestCookies and ResponseCookies", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/internal/cookies.js"
+    );
+    expect(mod.RequestCookies).toBeDefined();
+    expect(mod.ResponseCookies).toBeDefined();
+  });
+
+  it("work-unit-async-storage exports AsyncLocalStorage instances", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/internal/work-unit-async-storage.js"
+    );
+    expect(mod.workUnitAsyncStorage).toBeDefined();
+    expect(mod.requestAsyncStorage).toBeDefined();
+    // Both should be the same AsyncLocalStorage instance
+    expect(mod.workUnitAsyncStorage).toBe(mod.requestAsyncStorage);
+  });
+
+  it("router-context exports RouterContext", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/internal/router-context.js"
+    );
+    expect(mod.RouterContext).toBeDefined();
+  });
+});
