@@ -93,14 +93,27 @@ function dynamic<P extends object = object>(
   if (isServer) {
     // Eagerly load the module and store the resolved component
     let Loaded: ComponentType<P> | null = null;
-    const loadPromise = loader().then((mod) => {
-      Loaded = resolveComponent(mod);
-    });
+    let loadError: Error | null = null;
+    const loadPromise = loader()
+      .then((mod) => {
+        Loaded = resolveComponent(mod);
+      })
+      .catch((err) => {
+        // Capture error so flushPreloads() doesn't reject.
+        // The component will render the loading fallback with the error.
+        loadError = err instanceof Error ? err : new Error(String(err));
+      });
 
     // Register in the preload queue so SSR handler can await it
     preloadQueue.push(loadPromise);
 
     const ServerDynamic = (props: P) => {
+      if (loadError) {
+        // Loader failed — render loading component with error or nothing
+        return LoadingComponent
+          ? React.createElement(LoadingComponent, { isLoading: false, pastDelay: true, error: loadError })
+          : null;
+      }
       if (Loaded) {
         return React.createElement(Loaded, props);
       }

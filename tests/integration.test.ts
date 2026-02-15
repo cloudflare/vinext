@@ -5181,6 +5181,84 @@ describe("next/dynamic shim", () => {
     const html = renderToStaticMarkup(React.createElement(DynComp));
     expect(html).toContain("Main");
   });
+
+  it("loader rejection does not crash flushPreloads", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+
+    dynamic(() => Promise.reject(new Error("Module not found")));
+
+    // flushPreloads should NOT throw even though the loader rejected
+    await expect(flushPreloads()).resolves.not.toThrow();
+  });
+
+  it("loader rejection renders loading component with error", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const LoadingComp = (props: { error?: Error | null; isLoading?: boolean }) => {
+      if (props.error) {
+        return React.createElement("div", null, `Error: ${props.error.message}`);
+      }
+      return React.createElement("div", null, "Loading...");
+    };
+
+    const DynComp = dynamic(
+      () => Promise.reject(new Error("chunk load fail")),
+      { loading: LoadingComp },
+    );
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(React.createElement(DynComp));
+    expect(html).toContain("Error: chunk load fail");
+  });
+
+  it("loader rejection without loading component renders nothing", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const DynComp = dynamic(
+      () => Promise.reject(new Error("fail")),
+    );
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(React.createElement(DynComp));
+    expect(html).toBe("");
+  });
+
+  it("loader rejection with non-Error value is wrapped", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const LoadingComp = (props: { error?: Error | null }) => {
+      if (props.error) {
+        return React.createElement("div", null, `Error: ${props.error.message}`);
+      }
+      return React.createElement("div", null, "Loading...");
+    };
+
+    const DynComp = dynamic(
+      () => Promise.reject("string error"),
+      { loading: LoadingComp },
+    );
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(React.createElement(DynComp));
+    expect(html).toContain("Error: string error");
+  });
 });
 
 // ---------------------------------------------------------------------------
