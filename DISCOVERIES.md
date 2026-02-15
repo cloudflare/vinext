@@ -379,3 +379,20 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **`no_bundle: true` in output `wrangler.json`** — The Cloudflare plugin generates a `wrangler.json` with `no_bundle: true` and `rules: [{ type: "ESModule", globs: ["**/*.js", "**/*.mjs"] }]`. This tells wrangler to treat all `.js` files as ES modules and skip re-bundling (since Vite already bundled everything). The `assets.directory` points to `../client` for serving static files.
 - **`node:async_hooks` is the only Node.js import** — The RSC bundle imports `node:async_hooks` (used by React's async context). Cloudflare Workers supports this via the `nodejs_compat` compatibility flag. The `node:fs` "import" is actually a unenv polyfill (stub) provided by the Cloudflare plugin, not a real fs import.
 - **API route correctly reports `"runtime": "Cloudflare-Workers"`** — The `navigator.userAgent` in workerd returns `"Cloudflare-Workers"`, confirming the code runs in the Workers runtime, not Node.js.
+
+## Bugs Found During Test Gap Analysis
+
+### basePath Middleware Double-Stripping (FIXED)
+- **Symptom**: Pages Router with `basePath: "/app"` returned 404 for all sub-pages (`/app/about`, `/app/api/hello`), even though the index page (`/app/`) worked.
+- **Root cause**: When `basePath` is configured, the vinext plugin sets Vite's `base` to `basePath + "/"`. Vite's connect middleware stack strips the base prefix from `req.url` before passing it to our middleware. So a request to `/app/about` arrives as `/about`. Our middleware then tried to strip `/app` again — `/about` doesn't start with `/app`, so the `else if` branch returned `next()` (letting Vite handle it as a 404). The index page worked because `/` matched the special case for root paths.
+- **Fix**: Removed the `else if` branch that rejected URLs not starting with basePath. Since Vite already strips the base, the filtering is redundant.
+
+### Middleware Matcher Wildcard/One-or-More Pattern Bug (FIXED)
+- **Symptom**: Middleware `config.matcher` patterns like `/dashboard/:path*` and `/api/:path+` never matched any paths.
+- **Root cause**: In `matchPattern()`, dot escaping (`.` → `\\.`) ran AFTER the named parameter replacement. This corrupted the regex metacharacters: `(?:.*)` (from `:path*`) became `(?:\\.*)`  and `(?:.+)` became `(?:\\.+)`.
+- **Fix**: Moved dot escaping before the pattern replacements. Also fixed the regex templates: `/:path*` now produces `(?:/.*)?` (making the slash-and-match optional, so `/dashboard` matches `/dashboard/:path*` with zero segments), and `/:path+` produces `(?:/.+)`.
+
+### redirect() in Server Actions Was Broken (FIXED)
+- **Symptom**: Calling `redirect("/target")` inside a server action caused the client to throw an unhandled error instead of navigating.
+- **Root cause**: The action handler's inner catch block (lines 626-628 in `app-dev-server.ts`) caught the `NEXT_REDIRECT` digest error thrown by `redirect()` and packaged it as `{ ok: false, data: redirectError }`. The client entry re-threw this error (line 1243: `if (!result.returnValue.ok) throw result.returnValue.data`), but nobody caught it to handle the navigation.
+- **Fix**: The action handler now detects `NEXT_REDIRECT` digest in the catch block, extracts the URL/type/status, and returns a 200 response with `x-action-redirect` / `x-action-redirect-type` headers instead of the RSC stream. The browser entry checks for this header before calling `createFromFetch` and performs client-side navigation via `history.replaceState` + `__VINEXT_RSC_NAVIGATE__`. Cannot use a real HTTP redirect because `fetch()` would follow it automatically and receive page HTML instead of an RSC stream.
