@@ -3515,6 +3515,152 @@ export default function Help({ path }) {
   });
 });
 
+// ---------------------------------------------------------------------------
+// CSS Modules support
+// ---------------------------------------------------------------------------
+
+describe("CSS Modules support (Pages Router)", () => {
+  let cssServer: ViteDevServer;
+  let cssBaseUrl: string;
+  let cssTmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    cssTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-css-"));
+
+    // Symlink node_modules
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(cssTmpDir, "node_modules"), "junction");
+
+    // next.config.mjs
+    await fsp.writeFile(
+      path.join(cssTmpDir, "next.config.mjs"),
+      `export default {};`,
+    );
+
+    // Create directories
+    await fsp.mkdir(path.join(cssTmpDir, "pages"), { recursive: true });
+    await fsp.mkdir(path.join(cssTmpDir, "styles"), { recursive: true });
+
+    // CSS module file
+    await fsp.writeFile(
+      path.join(cssTmpDir, "styles", "card.module.css"),
+      `.card { border: 1px solid #ddd; border-radius: 8px; padding: 16px; }
+.cardTitle { font-size: 1.5rem; font-weight: bold; }
+.cardBody { color: #666; line-height: 1.6; }`,
+    );
+
+    // Page using CSS modules
+    await fsp.writeFile(
+      path.join(cssTmpDir, "pages", "index.tsx"),
+      `import styles from "../styles/card.module.css";
+export default function CSSModulesTest() {
+  return (
+    <div>
+      <h1>CSS Modules Test</h1>
+      <div className={styles.card}>
+        <h2 className={styles.cardTitle}>Card Title</h2>
+        <p className={styles.cardBody}>Card body content</p>
+      </div>
+      <div id="class-names" data-card={styles.card} data-title={styles.cardTitle} data-body={styles.cardBody}>
+        debug
+      </div>
+    </div>
+  );
+}`,
+    );
+
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins: any[] = [vinext()];
+    cssServer = await createServer({
+      root: cssTmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await cssServer.listen();
+    const addr = cssServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      cssBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (cssServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        cssServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(cssTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("renders page with CSS module class names in SSR", async () => {
+    const res = await fetch(`${cssBaseUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("CSS Modules Test");
+    expect(html).toContain("Card Title");
+    expect(html).toContain("Card body content");
+  });
+
+  it("CSS module class names are scoped (hashed) in SSR output", async () => {
+    const res = await fetch(`${cssBaseUrl}/`);
+    const html = await res.text();
+    // Vite CSS modules produce hashed class names like "_card_xxxxx_1"
+    // The debug div has data attributes with the class names
+    const dataMatch = html.match(/data-card="([^"]+)"/);
+    expect(dataMatch).not.toBeNull();
+    const cardClass = dataMatch![1];
+    // The class should NOT be just "card" — it should be hashed/scoped
+    expect(cardClass).not.toBe("card");
+    // Vite CSS module format: usually contains the original name as a substring
+    expect(cardClass.length).toBeGreaterThan(3);
+  });
+
+  it("different CSS module classes have different hashed names", async () => {
+    const res = await fetch(`${cssBaseUrl}/`);
+    const html = await res.text();
+    const cardMatch = html.match(/data-card="([^"]+)"/);
+    const titleMatch = html.match(/data-title="([^"]+)"/);
+    const bodyMatch = html.match(/data-body="([^"]+)"/);
+    expect(cardMatch).not.toBeNull();
+    expect(titleMatch).not.toBeNull();
+    expect(bodyMatch).not.toBeNull();
+    // All three should be different
+    const classes = [cardMatch![1], titleMatch![1], bodyMatch![1]];
+    const unique = new Set(classes);
+    expect(unique.size).toBe(3);
+  });
+
+  it("CSS module class names are applied as className attribute", async () => {
+    const res = await fetch(`${cssBaseUrl}/`);
+    const html = await res.text();
+    // Extract the card class name from data attribute
+    const cardMatch = html.match(/data-card="([^"]+)"/);
+    expect(cardMatch).not.toBeNull();
+    const cardClass = cardMatch![1];
+    // The same class should appear as a className on a div
+    expect(html).toContain(`class="${cardClass}"`);
+  });
+
+  it("CSS module class names are consistent across SSR requests", async () => {
+    const res1 = await fetch(`${cssBaseUrl}/`);
+    const html1 = await res1.text();
+    const res2 = await fetch(`${cssBaseUrl}/`);
+    const html2 = await res2.text();
+    const card1 = html1.match(/data-card="([^"]+)"/)?.[1];
+    const card2 = html2.match(/data-card="([^"]+)"/)?.[1];
+    expect(card1).toBe(card2);
+  });
+});
+
 describe("next/font/google shim", () => {
   it("returns className, style, and variable for a Google Font", async () => {
     const { Inter } = await import(
