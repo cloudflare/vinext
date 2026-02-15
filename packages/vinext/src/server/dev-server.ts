@@ -247,6 +247,7 @@ export function createSSRHandler(
 
       // Collect page props via data fetching methods
       let pageProps: Record<string, unknown> = {};
+      let isrRevalidateSeconds: number | null = null;
 
       // Handle getStaticPaths for dynamic routes: validate the path
       // and respect fallback: false (return 404 for unlisted paths).
@@ -300,7 +301,8 @@ export function createSSRHandler(
         }
         if (result && "redirect" in result) {
           const { redirect } = result;
-          res.writeHead(redirect.permanent ? 308 : 307, {
+          const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
+          res.writeHead(status, {
             Location: redirect.destination,
           });
           res.end();
@@ -311,9 +313,6 @@ export function createSSRHandler(
           return;
         }
       }
-
-      let isrRevalidateSeconds: number | null = null;
-
       if (typeof pageModule.getStaticProps === "function") {
         // Check ISR cache before calling getStaticProps
         const cacheKey = isrCacheKey("pages", url.split("?")[0]);
@@ -375,7 +374,8 @@ export function createSSRHandler(
         }
         if (result && "redirect" in result) {
           const { redirect } = result;
-          res.writeHead(redirect.permanent ? 308 : 307, {
+          const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
+          res.writeHead(status, {
             Location: redirect.destination,
           });
           res.end();

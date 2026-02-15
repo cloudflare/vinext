@@ -8169,3 +8169,256 @@ export function middleware(request) {
     expect(html).toContain("FINAL PAGE");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Additional Next.js edge cases (batch 2)
+// ---------------------------------------------------------------------------
+
+describe("Pages Router edge cases (batch 2)", () => {
+  let edgeServer: ViteDevServer;
+  let edgeBaseUrl: string;
+  let edgeTmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    edgeTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-edge2-"));
+
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(edgeTmpDir, "node_modules"), "junction");
+
+    await fsp.writeFile(
+      path.join(edgeTmpDir, "next.config.mjs"),
+      `export default {};`,
+    );
+
+    await fsp.mkdir(path.join(edgeTmpDir, "pages"), { recursive: true });
+    await fsp.mkdir(path.join(edgeTmpDir, "pages", "api"), { recursive: true });
+
+    // Index page
+    await fsp.writeFile(
+      path.join(edgeTmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    // GSSP permanent redirect
+    await fsp.writeFile(
+      path.join(edgeTmpDir, "pages", "perm-redirect.tsx"),
+      `export async function getServerSideProps() {
+  return { redirect: { destination: "/target", permanent: true } };
+}
+export default function PermanentRedirect() { return <h1>Should not see this</h1>; }`,
+    );
+
+    // GSSP redirect with custom statusCode
+    await fsp.writeFile(
+      path.join(edgeTmpDir, "pages", "custom-redirect.tsx"),
+      `export async function getServerSideProps() {
+  return { redirect: { destination: "/target", statusCode: 302 } };
+}
+export default function CustomRedirect() { return <h1>Should not see this</h1>; }`,
+    );
+
+    // Target of redirects
+    await fsp.writeFile(
+      path.join(edgeTmpDir, "pages", "target.tsx"),
+      `export default function Target() { return <h1>Target Page</h1>; }`,
+    );
+
+    // getStaticProps notFound
+    await fsp.writeFile(
+      path.join(edgeTmpDir, "pages", "gsp-notfound.tsx"),
+      `export async function getStaticProps() {
+  return { notFound: true };
+}
+export default function GspNotFound() { return <h1>Should not see this</h1>; }`,
+    );
+
+    // getStaticProps with empty props
+    await fsp.writeFile(
+      path.join(edgeTmpDir, "pages", "empty-props.tsx"),
+      `export async function getStaticProps() {
+  return { props: {} };
+}
+export default function EmptyProps() { return <h1>Empty Props Page</h1>; }`,
+    );
+
+    // GSSP props with nested objects
+    await fsp.writeFile(
+      path.join(edgeTmpDir, "pages", "nested-props.tsx"),
+      `export async function getServerSideProps() {
+  return { props: { user: { name: "Alice", settings: { theme: "dark", lang: "en" } } } };
+}
+export default function NestedProps({ user }) {
+  return <div><h1>Nested Props</h1><p id="name">{user.name}</p><p id="theme">{user.settings.theme}</p></div>;
+}`,
+    );
+
+    // API route with different methods
+    await fsp.writeFile(
+      path.join(edgeTmpDir, "pages", "api", "methods.ts"),
+      `export default function handler(req, res) {
+  if (req.method === "POST") {
+    res.status(201).json({ method: "POST", received: true });
+  } else if (req.method === "PUT") {
+    res.status(200).json({ method: "PUT", updated: true });
+  } else if (req.method === "DELETE") {
+    res.status(200).json({ method: "DELETE", deleted: true });
+  } else if (req.method === "PATCH") {
+    res.status(200).json({ method: "PATCH", patched: true });
+  } else {
+    res.status(200).json({ method: req.method });
+  }
+}`,
+    );
+
+    // API route with request body parsing
+    await fsp.writeFile(
+      path.join(edgeTmpDir, "pages", "api", "echo.ts"),
+      `export default async function handler(req, res) {
+  if (req.method === "POST") {
+    // Body should be parsed by the dev server
+    const body = req.body;
+    res.status(200).json({ echo: body });
+  } else {
+    res.status(405).json({ error: "Method not allowed" });
+  }
+}`,
+    );
+
+    // Custom 404 page
+    await fsp.writeFile(
+      path.join(edgeTmpDir, "pages", "404.tsx"),
+      `export default function Custom404() { return <h1>Custom 404 - Not Found</h1>; }`,
+    );
+
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins: any[] = [vinext()];
+    edgeServer = await createServer({
+      root: edgeTmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await edgeServer.listen();
+    const addr = edgeServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      edgeBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (edgeServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        edgeServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(edgeTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  // --- GSSP redirect variants ---
+
+  it("GSSP redirect with permanent: true returns 308", async () => {
+    const res = await fetch(`${edgeBaseUrl}/perm-redirect`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/target");
+  });
+
+  it("GSSP redirect with statusCode: 302 returns 302", async () => {
+    const res = await fetch(`${edgeBaseUrl}/custom-redirect`, { redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/target");
+  });
+
+  // --- getStaticProps edge cases ---
+
+  it("getStaticProps notFound returns 404", async () => {
+    const res = await fetch(`${edgeBaseUrl}/gsp-notfound`);
+    expect(res.status).toBe(404);
+  });
+
+  it("getStaticProps with empty props renders page", async () => {
+    const res = await fetch(`${edgeBaseUrl}/empty-props`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Empty Props Page");
+  });
+
+  // --- GSSP with nested objects ---
+
+  it("GSSP passes nested object props correctly", async () => {
+    const res = await fetch(`${edgeBaseUrl}/nested-props`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Alice");
+    expect(html).toContain("dark");
+  });
+
+  it("__NEXT_DATA__ contains nested GSSP props", async () => {
+    const res = await fetch(`${edgeBaseUrl}/nested-props`);
+    const html = await res.text();
+    // __NEXT_DATA__ is injected as: <script>window.__NEXT_DATA__ = {...}</script>
+    const match = html.match(/window\.__NEXT_DATA__\s*=\s*(\{[\s\S]*?\})(?:;|<)/);
+    expect(match).not.toBeNull();
+    const data = JSON.parse(match![1]);
+    expect(data.props.pageProps.user.name).toBe("Alice");
+    expect(data.props.pageProps.user.settings.theme).toBe("dark");
+    expect(data.props.pageProps.user.settings.lang).toBe("en");
+  });
+
+  // --- API route HTTP methods ---
+
+  it("API route handles POST", async () => {
+    const res = await fetch(`${edgeBaseUrl}/api/methods`, { method: "POST" });
+    expect(res.status).toBe(201);
+    const json = await res.json();
+    expect(json.method).toBe("POST");
+    expect(json.received).toBe(true);
+  });
+
+  it("API route handles PUT", async () => {
+    const res = await fetch(`${edgeBaseUrl}/api/methods`, { method: "PUT" });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.method).toBe("PUT");
+    expect(json.updated).toBe(true);
+  });
+
+  it("API route handles DELETE", async () => {
+    const res = await fetch(`${edgeBaseUrl}/api/methods`, { method: "DELETE" });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.method).toBe("DELETE");
+    expect(json.deleted).toBe(true);
+  });
+
+  it("API route handles PATCH", async () => {
+    const res = await fetch(`${edgeBaseUrl}/api/methods`, { method: "PATCH" });
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.method).toBe("PATCH");
+    expect(json.patched).toBe(true);
+  });
+
+  // --- 404 edge cases ---
+
+  it("custom 404 page renders for unknown routes", async () => {
+    const res = await fetch(`${edgeBaseUrl}/nonexistent`);
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toContain("Custom 404 - Not Found");
+  });
+
+  it("custom 404 page renders for getStaticProps notFound", async () => {
+    const res = await fetch(`${edgeBaseUrl}/gsp-notfound`);
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toContain("Custom 404 - Not Found");
+  });
+});
