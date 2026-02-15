@@ -4673,6 +4673,156 @@ describe("next/dynamic shim", () => {
     const html = renderToStaticMarkup(React.createElement(DynamicComponent));
     expect(html).toContain("Bare export");
   });
+
+  it("forwards props to the underlying component", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const Greeter = ({ name }: { name: string }) =>
+      React.createElement("span", null, `Hello ${name}`);
+    const DynamicGreeter = dynamic(() => Promise.resolve({ default: Greeter }));
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(
+      React.createElement(DynamicGreeter, { name: "World" }),
+    );
+    expect(html).toContain("Hello World");
+  });
+
+  it("renders loading fallback when component not yet resolved (SSR)", async () => {
+    const { default: dynamic } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    let resolveLoader!: (val: any) => void;
+    const loaderPromise = new Promise((r) => { resolveLoader = r; });
+    const SlowComponent = () => React.createElement("div", null, "Loaded");
+    const Loading = () => React.createElement("span", null, "Please wait...");
+
+    const DynamicSlow = dynamic(() => loaderPromise as any, { loading: Loading });
+
+    // DON'T flush preloads — component should still be unresolved
+    const html = renderToStaticMarkup(React.createElement(DynamicSlow));
+    expect(html).toContain("Please wait...");
+    expect(html).not.toContain("Loaded");
+
+    // Clean up — resolve to avoid unhandled rejection
+    resolveLoader({ default: SlowComponent });
+  });
+
+  it("flushPreloads resolves multiple dynamic components", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const CompA = () => React.createElement("div", null, "Component A");
+    const CompB = () => React.createElement("div", null, "Component B");
+
+    const DynA = dynamic(() =>
+      new Promise<any>((r) => setTimeout(() => r({ default: CompA }), 10)),
+    );
+    const DynB = dynamic(() =>
+      new Promise<any>((r) => setTimeout(() => r({ default: CompB }), 10)),
+    );
+
+    await flushPreloads();
+
+    const htmlA = renderToStaticMarkup(React.createElement(DynA));
+    const htmlB = renderToStaticMarkup(React.createElement(DynB));
+    expect(htmlA).toContain("Component A");
+    expect(htmlB).toContain("Component B");
+  });
+
+  it("flushPreloads second call resolves immediately (queue drained)", async () => {
+    const { flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+
+    // First call should drain whatever's in the queue
+    await flushPreloads();
+
+    // Second call should resolve immediately with empty array
+    const result = await flushPreloads();
+    expect(result).toEqual([]);
+  });
+
+  it("loading component receives isLoading and pastDelay props", async () => {
+    const { default: dynamic } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    let receivedProps: any = null;
+    const Loading = (props: any) => {
+      receivedProps = props;
+      return React.createElement("span", null, "Loading");
+    };
+
+    const FakeComp = () => React.createElement("div", null, "Content");
+    const DynComp = dynamic(
+      () => Promise.resolve({ default: FakeComp }),
+      { ssr: false, loading: Loading },
+    );
+
+    renderToStaticMarkup(React.createElement(DynComp));
+    expect(receivedProps).not.toBeNull();
+    expect(receivedProps.isLoading).toBe(true);
+    expect(receivedProps.pastDelay).toBe(true);
+    expect(receivedProps.error).toBeNull();
+  });
+
+  it("renders loading fallback for ssr: false with props forwarded", async () => {
+    const { default: dynamic } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const HeavyChart = ({ title }: { title: string }) =>
+      React.createElement("canvas", null, title);
+    const Loading = () => React.createElement("div", null, "Chart loading...");
+
+    const DynamicChart = dynamic(
+      () => Promise.resolve({ default: HeavyChart }),
+      { ssr: false, loading: Loading },
+    );
+
+    // On server: should show loading, not the chart
+    const html = renderToStaticMarkup(
+      React.createElement(DynamicChart, { title: "Revenue" }),
+    );
+    expect(html).toContain("Chart loading...");
+    expect(html).not.toContain("Revenue");
+  });
+
+  it("handles module with both default and named exports", async () => {
+    const { default: dynamic, flushPreloads } = await import(
+      "../packages/vinext/src/shims/dynamic.js"
+    );
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+
+    const MainComponent = () => React.createElement("div", null, "Main");
+    const namedHelper = () => "helper";
+
+    const DynComp = dynamic(() =>
+      Promise.resolve({ default: MainComponent, namedHelper }),
+    );
+
+    await flushPreloads();
+
+    const html = renderToStaticMarkup(React.createElement(DynComp));
+    expect(html).toContain("Main");
+  });
 });
 
 // ---------------------------------------------------------------------------
