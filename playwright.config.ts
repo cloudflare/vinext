@@ -22,8 +22,12 @@ export default defineConfig({
       name: "cloudflare-pages-router",
       testDir: "./tests/e2e/cloudflare-pages-router",
     },
+    {
+      name: "pages-router-prod",
+      testDir: "./tests/e2e/pages-router-prod",
+    },
   ],
-  // Build the plugin, then start dev servers
+  // Build the plugin, then start dev servers and the production server
   webServer: [
     {
       command:
@@ -46,6 +50,16 @@ export default defineConfig({
       port: 4177,
       reuseExistingServer: !process.env.CI,
       timeout: 30_000,
+    },
+    {
+      // Use node to invoke the CLI directly — npx vinext may not be on PATH
+      // in fixture subdirectories since vinext is a workspace dependency.
+      command:
+        "npx tsc -p ../../packages/vinext/tsconfig.json && node ../../packages/vinext/dist/cli.js build && node ../../packages/vinext/dist/cli.js start --port 4175",
+      cwd: "./fixtures/pages-basic",
+      port: 4175,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
     },
   ],
 });
