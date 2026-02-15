@@ -4195,6 +4195,195 @@ describe("next/image enhancements", () => {
   });
 });
 
+// ─── next/image component rendering ─────────────────────────────────────────
+describe("next/image component rendering", () => {
+  it("renders basic image with src, alt, width, height", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/photo.jpg", alt: "Test photo", width: 800, height: 600 }),
+    );
+    expect(html).toContain('src="/photo.jpg"');
+    expect(html).toContain('alt="Test photo"');
+    expect(html).toContain('width="800"');
+    expect(html).toContain('height="600"');
+  });
+
+  it("renders fill image with absolute positioning", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/bg.jpg", alt: "Background", fill: true }),
+    );
+    expect(html).toContain("position:absolute");
+    expect(html).toContain('data-nimg="fill"');
+    // fill images should not have width/height attributes
+    expect(html).not.toContain('width=');
+    expect(html).not.toContain('height=');
+  });
+
+  it("renders priority image with fetchpriority=high and loading=eager", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/hero.jpg", alt: "Hero", width: 1200, height: 800, priority: true }),
+    );
+    expect(html).toContain('fetchPriority="high"');
+    expect(html).toContain('loading="eager"');
+  });
+
+  it("renders lazy loading by default (no priority)", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/photo.jpg", alt: "Photo", width: 800, height: 600 }),
+    );
+    expect(html).toContain('loading="lazy"');
+    expect(html).not.toContain('fetchPriority');
+  });
+
+  it("renders srcSet for local images with width", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/photo.jpg", alt: "Photo", width: 1200, height: 800 }),
+    );
+    expect(html).toContain("srcSet");
+    expect(html).toContain("/photo.jpg");
+    expect(html).toContain("w");
+  });
+
+  it("renders blur placeholder with background-image", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const blurUrl = "data:image/jpeg;base64,/9j/4AAQ";
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Blurry",
+        width: 800,
+        height: 600,
+        placeholder: "blur",
+        blurDataURL: blurUrl,
+      }),
+    );
+    expect(html).toContain(blurUrl);
+    expect(html).toContain("background-image");
+    expect(html).toContain("background-size:cover");
+  });
+
+  it("renders with custom loader function", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Custom",
+        width: 800,
+        height: 600,
+        loader: ({ src, width, quality }: { src: string; width: number; quality?: number }) =>
+          `https://cdn.example.com${src}?w=${width}&q=${quality}`,
+      }),
+    );
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=800&amp;q=75"');
+  });
+
+  it("renders with custom sizes attribute", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Responsive",
+        width: 1200,
+        height: 800,
+        sizes: "(max-width: 768px) 100vw, 50vw",
+      }),
+    );
+    expect(html).toContain('sizes="(max-width: 768px) 100vw, 50vw"');
+  });
+
+  it("renders fill image with sizes=100vw by default", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/bg.jpg", alt: "BG", fill: true }),
+    );
+    expect(html).toContain('sizes="100vw"');
+  });
+
+  it("handles StaticImageData import objects", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const staticImport = { src: "/imported.jpg", width: 1200, height: 800, blurDataURL: "data:..." };
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: staticImport, alt: "Imported" }),
+    );
+    expect(html).toContain('src="/imported.jpg"');
+    expect(html).toContain('width="1200"');
+    expect(html).toContain('height="800"');
+  });
+
+  it("renders with className", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, {
+        src: "/photo.jpg",
+        alt: "Styled",
+        width: 800,
+        height: 600,
+        className: "rounded-lg shadow-md",
+      }),
+    );
+    expect(html).toContain('class="rounded-lg shadow-md"');
+  });
+
+  it("includes data-nimg=1 for non-fill images", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/photo.jpg", alt: "Test", width: 800, height: 600 }),
+    );
+    expect(html).toContain('data-nimg="1"');
+  });
+
+  it("always sets decoding=async", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Image = (await import("../packages/vinext/src/shims/image.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Image, { src: "/photo.jpg", alt: "Test", width: 800, height: 600 }),
+    );
+    expect(html).toContain('decoding="async"');
+  });
+});
+
 // ─── next/navigation enhancements (ReadonlyURLSearchParams, useServerInsertedHTML) ──
 describe("next/navigation enhancements", () => {
   it("exports ReadonlyURLSearchParams type alias", async () => {
