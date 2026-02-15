@@ -384,6 +384,35 @@ export async function renderPage(req, res, url, manifest) {
       return;
     }
 
+    // Handle getStaticPaths for dynamic routes — enforce fallback: false
+    if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
+      const pathsResult = await pageModule.getStaticPaths({
+        locales: i18nConfig ? i18nConfig.locales : [],
+        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : "",
+      });
+      const fallback = pathsResult && pathsResult.fallback !== undefined ? pathsResult.fallback : false;
+
+      if (fallback === false) {
+        const paths = pathsResult && pathsResult.paths ? pathsResult.paths : [];
+        const isValidPath = paths.some(function(p) {
+          return Object.entries(p.params).every(function(entry) {
+            var key = entry[0], val = entry[1];
+            var actual = params[key];
+            if (Array.isArray(val)) {
+              return Array.isArray(actual) && val.join("/") === actual.join("/");
+            }
+            return String(val) === String(actual);
+          });
+        });
+        if (!isValidPath) {
+          res.writeHead(404, { "Content-Type": "text/html" });
+          res.end("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>");
+          return;
+        }
+      }
+      // fallback: true or "blocking" — always SSR on-demand
+    }
+
     let pageProps = {};
     if (typeof pageModule.getServerSideProps === "function") {
       const ctx = {
@@ -397,7 +426,8 @@ export async function renderPage(req, res, url, manifest) {
       const result = await pageModule.getServerSideProps(ctx);
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
-        res.writeHead(result.redirect.permanent ? 308 : 307, { Location: result.redirect.destination });
+        var gsspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
+        res.writeHead(gsspStatus, { Location: result.redirect.destination });
         res.end();
         return;
       }
@@ -442,7 +472,8 @@ export async function renderPage(req, res, url, manifest) {
       const result = await pageModule.getStaticProps(ctx);
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
-        res.writeHead(result.redirect.permanent ? 308 : 307, { Location: result.redirect.destination });
+        var gspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
+        res.writeHead(gspStatus, { Location: result.redirect.destination });
         res.end();
         return;
       }
@@ -468,7 +499,7 @@ export async function renderPage(req, res, url, manifest) {
     const pageModuleIds = route.filePath ? [route.filePath] : [];
     const assetTags = collectAssetTags(manifest, pageModuleIds);
     const nextDataPayload = {
-      props: { pageProps }, page: route.pattern, query: params,
+      props: { pageProps }, page: route.pattern, query: params, isFallback: false,
     };
     if (i18nConfig) {
       nextDataPayload.locale = locale;
