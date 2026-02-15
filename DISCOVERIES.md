@@ -474,3 +474,28 @@ The `KVCacheHandler` stores `ArrayBuffer` body data by encoding the entire buffe
 - **Symptom**: When a `next/form` GET submission navigates to `/search?q=vite`, the RSC fetch went to `/search.rsc` without `?q=vite`, so the server rendered without `searchParams`. Affected all client-side RSC fetches: navigation, initial hydration, server actions, HMR re-renders, prefetch in `Link` and `useRouter().prefetch()`.
 - **Root cause**: All `.rsc` fetch calls in the browser entry (`app-dev-server.ts` lines 1273, 1317, 1331, 1353) used `pathname + ".rsc"` without appending `url.search`. Similarly, `link.tsx` and `navigation.ts` prefetch calls appended `.rsc` to the full href string (including query), producing malformed URLs like `/search?q=hello.rsc` instead of `/search.rsc?q=hello`.
 - **Fix**: All 6 `.rsc` fetch sites now correctly insert `.rsc` after the pathname but before the query string. For `app-dev-server.ts`, this means `pathname + ".rsc" + search`. For `link.tsx` and `navigation.ts`, the href is split at `?` to insert `.rsc` before the query portion.
+
+## E2E Test Coverage Audit (2026-02-15)
+
+Comprehensive audit of the test suite inspired by Next.js's `test/e2e/app-dir/` (365 test directories). Key findings:
+
+### Pages Router Production Build — No Client Hydration
+- **Discovery**: `vinext build` + `vinext start` (Node.js production server) serves SSR HTML correctly but does **not** load client-side JavaScript bundles. Interactive components (useState, onClick) render their initial state but are not hydrated — clicks do nothing.
+- **Root cause**: The production build (`cli.ts` two-phase build) produces server + client bundles, but `prod-server.ts` doesn't inject `<script>` tags referencing the client entry. The SSR-rendered HTML is served as-is.
+- **Impact**: The Node.js production server is effectively SSR-only (read-only HTML). Client hydration currently only works in dev mode (Vite HMR) and on Cloudflare Workers (via `vinext:cloudflare-build`).
+- **Mitigation**: The Node.js production server is deprioritized — Cloudflare Workers IS the production target. But this should be fixed in Phase 9 (DX Polish) for local testing parity.
+
+### Pages Router on Workers — Browser Back Button
+- **Discovery**: `page.goBack()` does not work correctly after Link-based navigation on Cloudflare Workers Pages Router. After clicking `<Link href="/about">` and pressing browser back, the page stays on `/about` instead of returning to the previous page.
+- **Root cause**: The client-side router's `popstate` event handler may not be fully wired up in the Workers build. Link clicks navigate correctly (full page load or client-side), but history popstate events don't trigger re-rendering.
+- **Impact**: Browser back/forward navigation is broken for the Pages Router on Workers. The App Router on Workers handles this correctly (RSC client router manages history).
+- **Tracked for**: Phase 9 DX Polish.
+
+### Suspense/React.lazy Works in Pages Router SSR
+- **Confirmed**: `React.lazy` + `Suspense` components are correctly resolved during SSR using `renderToPipeableStream`. The lazy component's content appears in the SSR HTML (verified with JavaScript disabled). This is because `renderToPipeableStream` (unlike `renderToString`) waits for lazy components to resolve.
+
+### Test Coverage Summary After Audit
+- **Before audit**: ~105 E2E tests across 5 projects
+- **After audit**: ~180 E2E tests across 5 projects
+- **Key additions**: App Router API routes (15 tests, was 0), error boundary reset, catch-all/optional catch-all routes, route groups, nested dynamic routes, server-side redirects, loading.tsx, route segment configs, production interactive tests, Cloudflare interactive/dynamic route tests
+- **Remaining gaps**: No App Router production build E2E project, ISR/revalidation E2E, `next/script` component, `global-error.tsx` testing
