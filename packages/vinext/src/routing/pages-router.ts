@@ -253,3 +253,15 @@ function matchPattern(
 
   return params;
 }
+
+/**
+ * Convert internal route pattern (e.g., "/posts/:id", "/docs/:slug+")
+ * to Next.js bracket format (e.g., "/posts/[id]", "/docs/[...slug]").
+ * Used for __NEXT_DATA__.page which apps expect in Next.js format.
+ */
+export function patternToNextFormat(pattern: string): string {
+  return pattern
+    .replace(/:(\w+)\*/g, "[[...$1]]")   // optional catch-all :slug* -> [[...slug]]
+    .replace(/:(\w+)\+/g, "[...$1]")     // catch-all :slug+ -> [...slug]
+    .replace(/:(\w+)/g, "[$1]");          // dynamic :id -> [id]
+}

@@ -1,7 +1,7 @@
 import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Route } from "../routing/pages-router.js";
-import { matchRoute } from "../routing/pages-router.js";
+import { matchRoute, patternToNextFormat } from "../routing/pages-router.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import {
   isrGet,
@@ -503,7 +503,7 @@ hydrate();
 
       const nextDataScript = `<script>window.__NEXT_DATA__ = ${JSON.stringify({
         props: { pageProps },
-        page: route.pattern,
+        page: patternToNextFormat(route.pattern),
         query: params,
         isFallback: false,
         locale: locale ?? i18nConfig?.defaultLocale,

@@ -250,6 +250,13 @@ function parseQuery(url) {
   return q;
 }
 
+function patternToNextFormat(pattern) {
+  return pattern
+    .replace(/:([\\w]+)\\*/g, "[[...$1]]")
+    .replace(/:([\\w]+)\\+/g, "[...$1]")
+    .replace(/:([\\w]+)/g, "[$1]");
+}
+
 function collectAssetTags(manifest, moduleIds) {
   if (!manifest) return "";
   const tags = [];
@@ -499,7 +506,7 @@ export async function renderPage(req, res, url, manifest) {
     const pageModuleIds = route.filePath ? [route.filePath] : [];
     const assetTags = collectAssetTags(manifest, pageModuleIds);
     const nextDataPayload = {
-      props: { pageProps }, page: route.pattern, query: params, isFallback: false,
+      props: { pageProps }, page: patternToNextFormat(route.pattern), query: params, isFallback: false,
     };
     if (i18nConfig) {
       nextDataPayload.locale = locale;

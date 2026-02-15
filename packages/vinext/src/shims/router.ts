@@ -23,10 +23,12 @@ function stripBasePath(p: string): string {
   return p;
 }
 
+type BeforePopStateCallback = (state: { url: string; as: string; options: { shallow: boolean } }) => boolean;
+
 interface NextRouter {
   /** Current pathname */
   pathname: string;
-  /** Current route pattern (same as pathname for now) */
+  /** Current route pattern (e.g., "/posts/[id]") */
   route: string;
   /** Query parameters */
   query: Record<string, string | string[]>;
@@ -57,6 +59,8 @@ interface NextRouter {
   reload(): void;
   /** Prefetch a page (injects <link rel="prefetch">) */
   prefetch(url: string): Promise<void>;
+  /** Register a callback to run before popstate navigation */
+  beforePopState(cb: BeforePopStateCallback): void;
   /** Listen for route changes */
   events: RouterEvents;
 }
@@ -192,6 +196,28 @@ export function setSSRContext(ctx: SSRContext | null): void {
   ssrContext = ctx;
 }
 
+/**
+ * Extract param names from a Next.js route pattern.
+ * E.g., "/posts/[id]" → ["id"], "/docs/[...slug]" → ["slug"],
+ * "/shop/[[...path]]" → ["path"], "/blog/[year]/[month]" → ["year", "month"]
+ * Also handles internal format: "/posts/:id" → ["id"], "/docs/:slug+" → ["slug"]
+ */
+function extractRouteParamNames(pattern: string): string[] {
+  const names: string[] = [];
+  // Match Next.js bracket format: [id], [...slug], [[...slug]]
+  const bracketMatches = pattern.matchAll(/\[{1,2}(?:\.\.\.)?([\w-]+)\]{1,2}/g);
+  for (const m of bracketMatches) {
+    names.push(m[1]);
+  }
+  if (names.length > 0) return names;
+  // Fallback: match internal :param format
+  const colonMatches = pattern.matchAll(/:([\w-]+)[+*]?/g);
+  for (const m of colonMatches) {
+    names.push(m[1]);
+  }
+  return names;
+}
+
 function getPathnameAndQuery(): {
   pathname: string;
   query: Record<string, string>;
@@ -209,6 +235,21 @@ function getPathnameAndQuery(): {
   }
   const pathname = stripBasePath(window.location.pathname);
   const query: Record<string, string> = {};
+  // Include dynamic route params from __NEXT_DATA__ (e.g., { id: "42" } from /posts/[id]).
+  // Only include keys that are part of the route pattern (not stale query params).
+  const nextData = (window as any).__NEXT_DATA__;
+  if (nextData && nextData.query && nextData.page) {
+    const routeParamNames = extractRouteParamNames(nextData.page);
+    for (const key of routeParamNames) {
+      const value = nextData.query[key];
+      if (typeof value === "string") {
+        query[key] = value;
+      } else if (Array.isArray(value)) {
+        query[key] = value.join(",");
+      }
+    }
+  }
+  // URL search params always reflect the current URL
   const params = new URLSearchParams(window.location.search);
   for (const [key, value] of params) {
     query[key] = value;
@@ -315,6 +356,7 @@ async function navigateClient(url: string): Promise<void> {
     root.render(element);
   } catch (err) {
     console.error("[vinext] Client navigation failed:", err);
+    routerEvents.emit("routeChangeError", err, url);
     window.location.href = url;
   } finally {
     _navInProgress = false;
@@ -463,10 +505,15 @@ export function useRouter(): NextRouter {
     ? ssrContext?.defaultLocale
     : (window as any).__VINEXT_DEFAULT_LOCALE__;
 
+  // route is the route pattern (e.g., "/posts/[id]"), not the actual path
+  const route = typeof window !== "undefined"
+    ? ((window as any).__NEXT_DATA__?.page ?? pathname)
+    : pathname;
+
   const router = useMemo(
     (): NextRouter => ({
       pathname,
-      route: pathname,
+      route,
       query,
       asPath,
       basePath: __basePath,
@@ -481,13 +528,18 @@ export function useRouter(): NextRouter {
       back,
       reload,
       prefetch,
+      beforePopState: (cb: BeforePopStateCallback) => { _beforePopStateCb = cb; },
       events: routerEvents,
     }),
-    [pathname, query, asPath, locale, locales, defaultLocale, push, replace, back, reload, prefetch],
+    [pathname, query, asPath, locale, locales, defaultLocale, push, replace, back, reload, prefetch, route],
   );
 
   return router;
 }
+
+// beforePopState callback: called before handling browser back/forward.
+// If it returns false, the navigation is cancelled.
+let _beforePopStateCb: BeforePopStateCallback | undefined;
 
 // Module-level popstate listener: handles browser back/forward by re-rendering
 // the React root with the page at the new URL. This runs regardless of whether
@@ -496,6 +548,13 @@ if (typeof window !== "undefined") {
   window.addEventListener("popstate", (e: PopStateEvent) => {
     const browserUrl = window.location.pathname + window.location.search;
     const appUrl = stripBasePath(window.location.pathname) + window.location.search;
+
+    // Check beforePopState callback
+    if (_beforePopStateCb !== undefined) {
+      const shouldContinue = (_beforePopStateCb as BeforePopStateCallback)({ url: appUrl, as: appUrl, options: { shallow: false } });
+      if (!shouldContinue) return;
+    }
+
     routerEvents.emit("routeChangeStart", appUrl);
     navigateClient(browserUrl).then(() => {
       routerEvents.emit("routeChangeComplete", appUrl);
@@ -537,7 +596,7 @@ const Router = {
     const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
     if (hash) {
       scrollToHash(hash);
-    } else {
+    } else if (options?.scroll !== false) {
       window.scrollTo(0, 0);
     }
     window.dispatchEvent(new CustomEvent("vinext:navigate"));
@@ -572,7 +631,7 @@ const Router = {
     const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
     if (hash) {
       scrollToHash(hash);
-    } else {
+    } else if (options?.scroll !== false) {
       window.scrollTo(0, 0);
     }
     window.dispatchEvent(new CustomEvent("vinext:navigate"));
@@ -588,6 +647,9 @@ const Router = {
       link.as = "document";
       document.head.appendChild(link);
     }
+  },
+  beforePopState: (cb: BeforePopStateCallback) => {
+    _beforePopStateCb = cb;
   },
   events: routerEvents,
 };
