@@ -372,7 +372,9 @@ export function useRouter(): NextRouter {
       const full = withBasePath(resolved);
       routerEvents.emit("routeChangeStart", resolved);
       window.history.pushState({}, "", full);
-      await navigateClient(full);
+      if (!options?.shallow) {
+        await navigateClient(full);
+      }
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved);
 
@@ -412,7 +414,9 @@ export function useRouter(): NextRouter {
       const full = withBasePath(resolved);
       routerEvents.emit("routeChangeStart", resolved);
       window.history.replaceState({}, "", full);
-      await navigateClient(full);
+      if (!options?.shallow) {
+        await navigateClient(full);
+      }
       setState(getPathnameAndQuery());
       routerEvents.emit("routeChangeComplete", resolved);
 
@@ -525,7 +529,9 @@ const Router = {
     const full = withBasePath(resolved);
     routerEvents.emit("routeChangeStart", resolved);
     window.history.pushState({}, "", full);
-    await navigateClient(full);
+    if (!options?.shallow) {
+      await navigateClient(full);
+    }
     routerEvents.emit("routeChangeComplete", resolved);
 
     const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
@@ -558,7 +564,9 @@ const Router = {
     const full = withBasePath(resolved);
     routerEvents.emit("routeChangeStart", resolved);
     window.history.replaceState({}, "", full);
-    await navigateClient(full);
+    if (!options?.shallow) {
+      await navigateClient(full);
+    }
     routerEvents.emit("routeChangeComplete", resolved);
 
     const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
