@@ -81,7 +81,11 @@ declare module "next/navigation" {
   export function useSelectedLayoutSegment(parallelRoutesKey?: string): string | null;
   export function useSelectedLayoutSegments(parallelRoutesKey?: string): string[];
   export function useServerInsertedHTML(callback: () => unknown): void;
-  export function redirect(url: string, type?: "replace" | "push"): never;
+  export enum RedirectType {
+    push = "push",
+    replace = "replace",
+  }
+  export function redirect(url: string, type?: "replace" | "push" | RedirectType): never;
   export function permanentRedirect(url: string): never;
   export function notFound(): never;
   export function forbidden(): never;

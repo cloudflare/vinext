@@ -318,6 +318,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       return;
     }
 
+    // Don't intercept links with target (e.g. target="_blank")
+    if (e.currentTarget.target && e.currentTarget.target !== "_self") {
+      return;
+    }
+
     // External links: let the browser handle it
     if (
       resolvedHref.startsWith("http://") ||

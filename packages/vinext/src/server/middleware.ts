@@ -17,6 +17,7 @@
 import type { ViteDevServer } from "vite";
 import fs from "node:fs";
 import path from "node:path";
+import { NextRequest } from "../shims/server.js";
 
 /** Possible middleware file names. */
 const MIDDLEWARE_FILES = [
@@ -171,10 +172,13 @@ export async function runMiddleware(
     return { continue: true };
   }
 
+  // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
+  const nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+
   // Execute the middleware
   let response: Response | undefined;
   try {
-    response = await middlewareFn(request);
+    response = await middlewareFn(nextRequest);
   } catch (e: any) {
     console.error("[vinext] Middleware error:", e);
     return {

@@ -436,9 +436,17 @@ export function getAccessFallbackHTTPStatus(error: unknown): number {
 }
 
 /**
+ * Enum matching Next.js RedirectType for type-safe redirect calls.
+ */
+export enum RedirectType {
+  push = "push",
+  replace = "replace",
+}
+
+/**
  * Throw a redirect. Caught by the framework to send a redirect response.
  */
-export function redirect(url: string, type?: "replace" | "push"): never {
+export function redirect(url: string, type?: "replace" | "push" | RedirectType): never {
   const error = new Error(`NEXT_REDIRECT:${url}`);
   (error as any).digest = `NEXT_REDIRECT;${type ?? "replace"};${url}`;
   throw error;
