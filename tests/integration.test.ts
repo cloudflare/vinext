@@ -7251,3 +7251,299 @@ describe("production server compression", () => {
     expect(writtenHeaders["Content-Encoding"]).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Edge cases from Next.js test suite
+// ---------------------------------------------------------------------------
+
+describe("Next.js edge cases", () => {
+  // Uses the Pages Router fixture (FIXTURE_DIR = PAGES_FIXTURE_DIR)
+  let edgeServer: ViteDevServer;
+  let edgeBaseUrl: string;
+
+  beforeAll(async () => {
+    ({ server: edgeServer, baseUrl: edgeBaseUrl } = await startFixtureServer(FIXTURE_DIR));
+  }, 30000);
+
+  afterAll(async () => {
+    await edgeServer?.close();
+  });
+
+  // --- Edge case 1: Query params must NOT leak into getStaticProps params ---
+
+  it("getStaticProps query params do not leak into params", async () => {
+    // Visit a static page with query params — params should only contain the dynamic segments
+    const res = await fetch(`${edgeBaseUrl}/articles/1?utm_source=test&ref=google`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // The page renders the article title based on params.id
+    expect(html).toContain("First Article");
+    // React SSR may insert comment nodes: "Article ID: <!-- -->1"
+    expect(html).toMatch(/Article ID:.*1/);
+    // Query params should NOT affect the rendered page content (they may appear in Vite module URLs)
+    // Check the __NEXT_DATA__ doesn't leak query params into getStaticProps
+    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    expect(dataMatch).not.toBeNull();
+    const data = JSON.parse(dataMatch![1]);
+    expect(data.props.pageProps.id).toBe("1");
+    expect(data.props.pageProps.title).toBe("First Article");
+    // getStaticProps params should only contain route params, not URL query
+    expect(data.query).not.toHaveProperty("utm_source");
+    expect(data.query).not.toHaveProperty("ref");
+  });
+
+  it("__NEXT_DATA__ query contains dynamic params for static pages", async () => {
+    const res = await fetch(`${edgeBaseUrl}/articles/2?extra=value`);
+    const html = await res.text();
+    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    expect(dataMatch).not.toBeNull();
+    const data = JSON.parse(dataMatch![1]);
+    // query should contain the dynamic segment
+    expect(data.query.id).toBe("2");
+    // Verify the page props are correct
+    expect(data.props.pageProps.id).toBe("2");
+    expect(data.props.pageProps.title).toBe("Second Article");
+  });
+
+  // --- Edge case 2: getServerSideProps with notFound returns 404 status ---
+
+  it("getServerSideProps notFound returns 404 status code", async () => {
+    // The /posts/missing page always returns notFound: true
+    const res = await fetch(`${edgeBaseUrl}/posts/missing`);
+    expect(res.status).toBe(404);
+  });
+
+  it("getServerSideProps notFound renders custom 404 page content", async () => {
+    const res = await fetch(`${edgeBaseUrl}/posts/missing`);
+    const html = await res.text();
+    // Should render the custom 404 page
+    expect(html).toContain("404");
+  });
+
+  // --- Edge case 3: UTF-8 encoding in SSR ---
+
+  it("SSR response declares UTF-8 charset", async () => {
+    const res = await fetch(`${edgeBaseUrl}/about`);
+    const html = await res.text();
+    // React outputs charSet (camelCase) in JSX which becomes charset in HTML
+    expect(html).toMatch(/char[Ss]et.*utf-8/i);
+  });
+});
+
+describe("multi-byte character SSR", () => {
+  let mbServer: ViteDevServer;
+  let mbBaseUrl: string;
+  let mbTmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    mbTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-mb-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(mbTmpDir, "node_modules"), "junction");
+
+    await fsp.writeFile(path.join(mbTmpDir, "next.config.mjs"), `export default {};`);
+    await fsp.mkdir(path.join(mbTmpDir, "pages"), { recursive: true });
+
+    // Page with multi-byte characters (Japanese, Chinese, Korean, emoji)
+    await fsp.writeFile(
+      path.join(mbTmpDir, "pages", "index.tsx"),
+      `export default function MultiByteTest() {
+  const japanese = "マルチバイト".repeat(28);
+  const chinese = "你好世界";
+  const korean = "안녕하세요";
+  const emoji = "🎉🚀💻🌍";
+  return (
+    <div>
+      <h1>Multi-Byte Test</h1>
+      <p id="japanese">{japanese}</p>
+      <p id="chinese">{chinese}</p>
+      <p id="korean">{korean}</p>
+      <p id="emoji">{emoji}</p>
+    </div>
+  );
+}`,
+    );
+
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins: any[] = [vinext()];
+    mbServer = await createServer({
+      root: mbTmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+    await mbServer.listen();
+    const addr = mbServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      mbBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (mbServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        mbServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(mbTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("renders Japanese characters correctly (28 repetitions)", async () => {
+    const res = await fetch(`${mbBaseUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("マルチバイト".repeat(28));
+  });
+
+  it("renders Chinese characters correctly", async () => {
+    const res = await fetch(`${mbBaseUrl}/`);
+    const html = await res.text();
+    expect(html).toContain("你好世界");
+  });
+
+  it("renders Korean characters correctly", async () => {
+    const res = await fetch(`${mbBaseUrl}/`);
+    const html = await res.text();
+    expect(html).toContain("안녕하세요");
+  });
+
+  it("renders emoji correctly", async () => {
+    const res = await fetch(`${mbBaseUrl}/`);
+    const html = await res.text();
+    expect(html).toContain("🎉🚀💻🌍");
+  });
+
+  it("response has correct UTF-8 content-type", async () => {
+    const res = await fetch(`${mbBaseUrl}/`);
+    const contentType = res.headers.get("content-type") ?? "";
+    expect(contentType).toContain("text/html");
+  });
+});
+
+// --- Edge case: Cross-locale redirect from getServerSideProps ---
+
+describe("i18n cross-locale redirect from getServerSideProps", () => {
+  let localeRedirectServer: ViteDevServer;
+  let localeRedirectBaseUrl: string;
+  let localeRedirectTmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    localeRedirectTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-locale-redirect-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(localeRedirectTmpDir, "node_modules"), "junction");
+
+    await fsp.writeFile(
+      path.join(localeRedirectTmpDir, "next.config.mjs"),
+      `export default {
+  i18n: {
+    locales: ["en", "fr", "de"],
+    defaultLocale: "en",
+  },
+};`,
+    );
+
+    await fsp.mkdir(path.join(localeRedirectTmpDir, "pages"), { recursive: true });
+
+    // Home page
+    await fsp.writeFile(
+      path.join(localeRedirectTmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    // Page that redirects to a different locale
+    await fsp.writeFile(
+      path.join(localeRedirectTmpDir, "pages", "redirect-to-fr.tsx"),
+      `export function getServerSideProps({ locale }) {
+  if (locale !== "fr") {
+    return {
+      redirect: {
+        destination: "/fr/redirect-to-fr",
+        permanent: false,
+      },
+    };
+  }
+  return { props: { locale } };
+}
+export default function Page({ locale }) {
+  return <h1>French page: {locale}</h1>;
+}`,
+    );
+
+    // Page that returns notFound for non-default locale
+    await fsp.writeFile(
+      path.join(localeRedirectTmpDir, "pages", "en-only.tsx"),
+      `export function getServerSideProps({ locale }) {
+  if (locale !== "en") {
+    return { notFound: true };
+  }
+  return { props: { locale } };
+}
+export default function Page({ locale }) {
+  return <h1>English only: {locale}</h1>;
+}`,
+    );
+
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins: any[] = [vinext()];
+    localeRedirectServer = await createServer({
+      root: localeRedirectTmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+    await localeRedirectServer.listen();
+    const addr = localeRedirectServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      localeRedirectBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (localeRedirectServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        localeRedirectServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(localeRedirectTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("getServerSideProps can redirect to a different locale", async () => {
+    const res = await fetch(`${localeRedirectBaseUrl}/redirect-to-fr`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/fr/redirect-to-fr");
+  });
+
+  it("following the cross-locale redirect renders the correct page", async () => {
+    const res = await fetch(`${localeRedirectBaseUrl}/fr/redirect-to-fr`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("French page");
+  });
+
+  it("getServerSideProps notFound for non-default locale returns 404", async () => {
+    const res = await fetch(`${localeRedirectBaseUrl}/fr/en-only`);
+    expect(res.status).toBe(404);
+  });
+
+  it("getServerSideProps renders for default locale", async () => {
+    const res = await fetch(`${localeRedirectBaseUrl}/en-only`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("English only");
+  });
+});
