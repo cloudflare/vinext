@@ -181,7 +181,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `next/font/local` | Partial | Runtime `@font-face` injection. Not extracted at build time |
 | `next/og` | Full | Real implementation via [Satori](https://github.com/vercel/satori) + resvg — generates actual PNG images |
 | `next/cache` | Partial | `revalidateTag`, `revalidatePath`, `unstable_cache`, pluggable `CacheHandler`. `"use cache"` directive not supported |
-| `next/form` | Full | GET form interception + POST server action delegation |
+| `next/form` | Full | GET form interception + POST server action delegation. Re-exports `useActionState` from React 19 |
 | `next/legacy/image` | Full | Translates legacy props to modern Image |
 | `next/error` | Full | Default error page component |
 | `next/config` | Full | `getConfig` / `setConfig` |
@@ -333,20 +333,20 @@ fixtures/                 # Test fixtures
 
 tests/
   routing.test.ts         # 45 unit tests
-  integration.test.ts     # 416 integration tests
-  e2e/                    # 73 Playwright E2E tests
+  integration.test.ts     # 478 integration tests
+  e2e/                    # 76 Playwright E2E tests
 ```
 
 ## Tests
 
 ```bash
-npm test              # Run vitest (461 unit + integration tests)
-npm run test:e2e      # Run Playwright E2E tests (73 tests)
+npm test              # Run vitest (523 unit + integration tests)
+npm run test:e2e      # Run Playwright E2E tests (76 tests)
 npm run typecheck     # TypeScript checking (tsgo)
 npm run lint          # Linting (oxlint)
 ```
 
-The test suite covers routing, SSR, API routes, metadata, ISR, server actions (including redirect-after-action), basePath, middleware matchers, cookies, static export, streaming, client hydration, navigation, error boundaries, and more.
+The test suite covers routing, SSR, API routes, metadata, ISR, server actions (including `useActionState` and redirect-after-action), basePath, middleware matchers, cookies, i18n routing (locale detection, Accept-Language redirect, locale context in getServerSideProps), CSS modules, `next/dynamic`, `next/form`, parameterized redirects/rewrites with catch-all patterns, static export, streaming, client hydration, navigation, error boundaries, and more.
 
 The [Vercel App Router Playground](https://github.com/vercel/next-app-router-playground) runs on vinext as an integration test — all 11 sections render correctly in both dev and production builds.
 

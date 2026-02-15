@@ -396,3 +396,16 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **Symptom**: Calling `redirect("/target")` inside a server action caused the client to throw an unhandled error instead of navigating.
 - **Root cause**: The action handler's inner catch block (lines 626-628 in `app-dev-server.ts`) caught the `NEXT_REDIRECT` digest error thrown by `redirect()` and packaged it as `{ ok: false, data: redirectError }`. The client entry re-threw this error (line 1243: `if (!result.returnValue.ok) throw result.returnValue.data`), but nobody caught it to handle the navigation.
 - **Fix**: The action handler now detects `NEXT_REDIRECT` digest in the catch block, extracts the URL/type/status, and returns a 200 response with `x-action-redirect` / `x-action-redirect-type` headers instead of the RSC stream. The browser entry checks for this header before calling `createFromFetch` and performs client-side navigation via `history.replaceState` + `__VINEXT_RSC_NAVIGATE__`. Cannot use a real HTTP redirect because `fetch()` would follow it automatically and receive page HTML instead of an RSC stream.
+
+### applyHeaders Regex Group Corruption (FIXED)
+- **Symptom**: The `next.config.js` custom headers rule `source: "/api/(.*)"` stopped matching `/api/hello` after the `applyHeaders()` metacharacter escaping was added.
+- **Root cause**: The glob `*` → `.*` replacement (`.replace(/\*/g, ".*")`) ran AFTER regex groups were restored from placeholders. So `(.*)` (already valid regex) had its `*` converted again to `(..**)`. The placeholder approach used the group content as the key (`___GROUP_.*___`), but the `*` inside that was corrupted during the glob conversion step.
+- **Fix**: Changed the placeholder strategy to use numeric indices (`___GROUP_0___`, `___GROUP_1___`) instead of embedding group content in the placeholder. Regex group contents are stored in an array and restored by index after all transformations, ensuring they pass through untouched.
+
+### matchConfigPattern Couldn't Handle Catch-All Patterns (FIXED)
+- **Symptom**: `next.config.js` redirects/rewrites with patterns like `/docs/:path*`, `/api/:path+`, or `/:id(\d+)` silently failed to match.
+- **Root cause**: The `matchConfigPattern()` function used simple segment-count comparison (`parts.length !== pathParts.length`). Catch-all patterns like `:path*` match variable numbers of segments, which this approach couldn't handle. Regex constraint patterns like `:id(\d+)` weren't supported at all.
+- **Fix**: Rewrote `matchConfigPattern()` with three matching tiers:
+  1. **Regex branch**: Activated when the pattern contains `(` or `\`. Extracts named params and their constraints, builds a regex with proper capture groups. Handles `:param*`, `:param+`, `:param(constraint)`, and plain `:param`.
+  2. **Catch-all branch**: For patterns ending with `:param*` or `:param+` without regex groups. Checks prefix match and extracts the remaining path segments.
+  3. **Segment-based branch**: Simple exact-segment matching for patterns with only plain `:param` tokens.
