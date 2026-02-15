@@ -6,24 +6,28 @@
  * Client-side: reads from browser Location API and provides navigation.
  */
 
-import { useSyncExternalStore, createContext, useContext, type Context } from "react";
+// Use namespace import for RSC safety: the react-server condition doesn't export
+// createContext/useContext/useSyncExternalStore as named exports, and strict ESM
+// would throw at link time for missing bindings. With `import * as React`, the
+// bindings are just `undefined` on the namespace object and we can guard at runtime.
+import * as React from "react";
 
 // ─── Layout segment depth context ─────────────────────────────────────────────
 // Used by useSelectedLayoutSegments() to know which layout it's inside.
-// The context is created lazily because `createContext` is NOT available in
+// The context is created lazily because `React.createContext` is NOT available in
 // the react-server condition of React. In the RSC environment, this remains
 // null and the hooks fall back to returning all segments (depth 0).
 // In SSR and browser environments, the context is created and used normally.
 
-let _LayoutSegmentCtx: Context<number> | null = null;
+let _LayoutSegmentCtx: React.Context<number> | null = null;
 
 /**
  * Get or create the layout segment context.
  * Returns null in the RSC environment (createContext unavailable).
  */
-export function getLayoutSegmentContext(): Context<number> | null {
-  if (_LayoutSegmentCtx === null && typeof createContext === "function") {
-    _LayoutSegmentCtx = createContext<number>(0);
+export function getLayoutSegmentContext(): React.Context<number> | null {
+  if (_LayoutSegmentCtx === null && typeof React.createContext === "function") {
+    _LayoutSegmentCtx = React.createContext<number>(0);
   }
   return _LayoutSegmentCtx;
 }
@@ -39,7 +43,7 @@ function useLayoutSegmentDepth(): number {
   // This branch is only taken in SSR/Browser, never in RSC.
   // Try/catch for unit tests that call this hook outside a React render tree.
   try {
-    return useContext(ctx);
+    return React.useContext(ctx);
   } catch {
     return 0;
   }
@@ -155,7 +159,7 @@ export function usePathname(): string {
     return _serverContext?.pathname ?? "/";
   }
   // Client-side: use the hook system for reactivity
-  return useSyncExternalStore(
+   return React.useSyncExternalStore(
     (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
     getPathnameSnapshot,
     () => _serverContext?.pathname ?? "/",
@@ -171,7 +175,7 @@ export function useSearchParams(): URLSearchParams {
     // Return a safe fallback — the client will hydrate with the real value.
     return _serverContext?.searchParams ?? new URLSearchParams();
   }
-  return useSyncExternalStore(
+   return React.useSyncExternalStore(
     (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
     getSearchParamsSnapshot,
     () => _serverContext?.searchParams ?? new URLSearchParams(),
