@@ -124,6 +124,15 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
       ? `import { default as DocumentComponent } from ${JSON.stringify(docFileBase)};`
       : `const DocumentComponent = null;`;
 
+    // Serialize i18n config for embedding in the server entry
+    const i18nConfigJson = nextConfig?.i18n
+      ? JSON.stringify({
+          locales: nextConfig.i18n.locales,
+          defaultLocale: nextConfig.i18n.defaultLocale,
+          localeDetection: nextConfig.i18n.localeDetection,
+        })
+      : "null";
+
     // The server entry is a self-contained module. It uses template literals
     // with escaped backticks for string construction in the generated code.
     return `
@@ -135,6 +144,9 @@ import { flushPreloads } from "next/dynamic";
 import { setSSRContext } from "next/router";
 import { getCacheHandler } from "next/cache";
 import { withFetchCache } from "vinext/fetch-cache";
+
+// i18n config (embedded at build time)
+const i18nConfig = ${i18nConfigJson};
 
 // ISR cache helpers (inlined for the server entry)
 async function isrGet(key) {
@@ -262,8 +274,60 @@ function collectAssetTags(manifest, moduleIds) {
   return tags.join("\\n  ");
 }
 
+// i18n helpers for production server
+function extractLocale(url) {
+  if (!i18nConfig) return { locale: undefined, url, hadPrefix: false };
+  const pathname = url.split("?")[0];
+  const parts = pathname.split("/").filter(Boolean);
+  const query = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+  if (parts.length > 0 && i18nConfig.locales.includes(parts[0])) {
+    const locale = parts[0];
+    const rest = "/" + parts.slice(1).join("/");
+    return { locale, url: (rest || "/") + query, hadPrefix: true };
+  }
+  return { locale: i18nConfig.defaultLocale, url, hadPrefix: false };
+}
+
+function detectLocale(req) {
+  if (!i18nConfig) return null;
+  const acceptLang = req.headers && req.headers["accept-language"];
+  if (!acceptLang) return null;
+  const langs = acceptLang.split(",").map(function(part) {
+    const pieces = part.trim().split(";");
+    const q = pieces[1] ? parseFloat(pieces[1].replace("q=", "")) : 1;
+    return { lang: pieces[0].trim().toLowerCase(), q: q };
+  }).sort(function(a, b) { return b.q - a.q; });
+  for (let k = 0; k < langs.length; k++) {
+    const lang = langs[k].lang;
+    for (let j = 0; j < i18nConfig.locales.length; j++) {
+      if (i18nConfig.locales[j].toLowerCase() === lang) return i18nConfig.locales[j];
+    }
+    const prefix = lang.split("-")[0];
+    for (let j = 0; j < i18nConfig.locales.length; j++) {
+      const loc = i18nConfig.locales[j].toLowerCase();
+      if (loc === prefix || loc.startsWith(prefix + "-")) return i18nConfig.locales[j];
+    }
+  }
+  return null;
+}
+
 export async function renderPage(req, res, url, manifest) {
-  const match = matchRoute(url, pageRoutes);
+  // Extract locale from URL and handle i18n redirect
+  const localeInfo = extractLocale(url);
+  const locale = localeInfo.locale;
+  const routeUrl = localeInfo.url; // URL with locale prefix stripped
+
+  // Accept-Language redirect for i18n (only when no locale prefix and detection enabled)
+  if (i18nConfig && !localeInfo.hadPrefix && i18nConfig.localeDetection !== false) {
+    const detected = detectLocale(req);
+    if (detected && detected !== i18nConfig.defaultLocale) {
+      res.writeHead(307, { Location: "/" + detected + routeUrl });
+      res.end();
+      return;
+    }
+  }
+
+  const match = matchRoute(routeUrl, pageRoutes);
   if (!match) {
     res.writeHead(404, { "Content-Type": "text/html" });
     res.end("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>");
@@ -274,7 +338,21 @@ export async function renderPage(req, res, url, manifest) {
   const cleanupFetchCache = withFetchCache();
   try {
     if (typeof setSSRContext === "function") {
-      setSSRContext({ pathname: url.split("?")[0], query: { ...params, ...parseQuery(url) }, asPath: url });
+      setSSRContext({
+        pathname: routeUrl.split("?")[0],
+        query: { ...params, ...parseQuery(routeUrl) },
+        asPath: routeUrl,
+        locale: locale,
+        locales: i18nConfig ? i18nConfig.locales : undefined,
+        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+      });
+    }
+
+    // Set globalThis locale info for Link component locale prop support
+    if (i18nConfig) {
+      globalThis.__VINEXT_LOCALE__ = locale;
+      globalThis.__VINEXT_LOCALES__ = i18nConfig.locales;
+      globalThis.__VINEXT_DEFAULT_LOCALE__ = i18nConfig.defaultLocale;
     }
 
     const pageModule = route.module;
@@ -287,7 +365,14 @@ export async function renderPage(req, res, url, manifest) {
 
     let pageProps = {};
     if (typeof pageModule.getServerSideProps === "function") {
-      const ctx = { params, req, res, query: parseQuery(url), resolvedUrl: url };
+      const ctx = {
+        params, req, res,
+        query: parseQuery(routeUrl),
+        resolvedUrl: routeUrl,
+        locale: locale,
+        locales: i18nConfig ? i18nConfig.locales : undefined,
+        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+      };
       const result = await pageModule.getServerSideProps(ctx);
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
@@ -299,7 +384,7 @@ export async function renderPage(req, res, url, manifest) {
     }
     let isrRevalidateSeconds = null;
     if (typeof pageModule.getStaticProps === "function") {
-      const pathname = url.split("?")[0];
+      const pathname = routeUrl.split("?")[0];
       const cacheKey = "pages:" + (pathname === "/" ? "/" : pathname.replace(/\\/$/, ""));
       const cached = await isrGet(cacheKey);
 
@@ -327,7 +412,12 @@ export async function renderPage(req, res, url, manifest) {
       }
 
       // Cache miss — call getStaticProps
-      const ctx = { params };
+      const ctx = {
+        params,
+        locale: locale,
+        locales: i18nConfig ? i18nConfig.locales : undefined,
+        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+      };
       const result = await pageModule.getStaticProps(ctx);
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
@@ -356,9 +446,20 @@ export async function renderPage(req, res, url, manifest) {
     // Look up this page's assets + the client entry assets in the manifest
     const pageModuleIds = route.filePath ? [route.filePath] : [];
     const assetTags = collectAssetTags(manifest, pageModuleIds);
-    const nextDataScript = "<script>window.__NEXT_DATA__ = " + JSON.stringify({
-      props: { pageProps }, page: route.pattern, query: params
-    }) + "</script>";
+    const nextDataPayload = {
+      props: { pageProps }, page: route.pattern, query: params,
+    };
+    if (i18nConfig) {
+      nextDataPayload.locale = locale;
+      nextDataPayload.locales = i18nConfig.locales;
+      nextDataPayload.defaultLocale = i18nConfig.defaultLocale;
+    }
+    const localeGlobals = i18nConfig
+      ? ";window.__VINEXT_LOCALE__=" + JSON.stringify(locale) +
+        ";window.__VINEXT_LOCALES__=" + JSON.stringify(i18nConfig.locales) +
+        ";window.__VINEXT_DEFAULT_LOCALE__=" + JSON.stringify(i18nConfig.defaultLocale)
+      : "";
+    const nextDataScript = "<script>window.__NEXT_DATA__ = " + JSON.stringify(nextDataPayload) + localeGlobals + "</script>";
 
     let html;
     if (DocumentComponent) {
