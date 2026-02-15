@@ -96,3 +96,63 @@ test.describe("Server Actions", () => {
     await expect(page.locator('[data-testid="redirect-btn"]')).toBeVisible();
   });
 });
+
+test.describe("useActionState", () => {
+  test("action-state-test page SSR renders with initial state", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/action-state-test`);
+    await expect(page.locator("h1")).toHaveText("useActionState Test");
+    await expect(page.locator("#count")).toHaveText("Count: 0");
+  });
+
+  test("useActionState counter increments via server action", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/action-state-test`);
+    await expect(page.locator("h1")).toHaveText("useActionState Test");
+
+    // Wait for hydration
+    await expect(async () => {
+      const ready = await page.evaluate(
+        () => !!(window as any).__VINEXT_RSC_ROOT__,
+      );
+      expect(ready).toBe(true);
+    }).toPass({ timeout: 10_000 });
+
+    // Initial state
+    await expect(page.locator("#count")).toHaveText("Count: 0");
+
+    // Click increment — use polling to handle server action latency
+    await expect(async () => {
+      await page.click('button:has-text("Increment")');
+      await expect(page.locator("#count")).toHaveText("Count: 1", { timeout: 3_000 });
+    }).toPass({ timeout: 15_000 });
+
+    // Click again — count should go to 2
+    await expect(async () => {
+      await page.click('button:has-text("Increment")');
+      await expect(page.locator("#count")).toHaveText("Count: 2", { timeout: 3_000 });
+    }).toPass({ timeout: 15_000 });
+  });
+
+  test("useActionState counter decrements via server action", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/action-state-test`);
+    await expect(page.locator("h1")).toHaveText("useActionState Test");
+
+    await expect(async () => {
+      const ready = await page.evaluate(
+        () => !!(window as any).__VINEXT_RSC_ROOT__,
+      );
+      expect(ready).toBe(true);
+    }).toPass({ timeout: 10_000 });
+
+    // Click decrement from 0 — should go to -1
+    await expect(async () => {
+      await page.click('button:has-text("Decrement")');
+      await expect(page.locator("#count")).toHaveText("Count: -1", { timeout: 3_000 });
+    }).toPass({ timeout: 15_000 });
+  });
+});

@@ -20,9 +20,13 @@
 
 import {
   forwardRef,
+  useActionState,
   type FormHTMLAttributes,
   type ForwardedRef,
 } from "react";
+
+// Re-export useActionState from React 19 to match Next.js's next/form module
+export { useActionState };
 
 interface FormProps extends FormHTMLAttributes<HTMLFormElement> {
   /** Target URL for GET forms, or server action for POST forms */

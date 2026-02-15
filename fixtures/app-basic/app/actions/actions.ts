@@ -47,3 +47,21 @@ export async function complexDataAction(): Promise<{
     nested: { key: "value" },
   };
 }
+
+/**
+ * Server action for useActionState — accepts previous state and formData,
+ * returns new state. This is the idiomatic Next.js 15+ pattern.
+ */
+export async function counterAction(
+  prevState: { count: number },
+  formData: FormData,
+): Promise<{ count: number }> {
+  const action = formData.get("action") as string;
+  if (action === "increment") {
+    return { count: prevState.count + 1 };
+  }
+  if (action === "decrement") {
+    return { count: prevState.count - 1 };
+  }
+  return prevState;
+}

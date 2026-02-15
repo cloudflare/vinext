@@ -3661,6 +3661,92 @@ export default function CSSModulesTest() {
   });
 });
 
+// ---------------------------------------------------------------------------
+// next/form shim
+// ---------------------------------------------------------------------------
+
+describe("next/form shim", () => {
+  it("exports default Form component", async () => {
+    const mod = await import("../packages/vinext/src/shims/form.js");
+    expect(mod.default).toBeDefined();
+    expect(typeof mod.default).toBe("object"); // forwardRef returns an object
+  });
+
+  it("re-exports useActionState from React", async () => {
+    const mod = await import("../packages/vinext/src/shims/form.js");
+    expect(typeof mod.useActionState).toBe("function");
+  });
+
+  it("renders a form element with string action in SSR", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { default: Form } = await import("../packages/vinext/src/shims/form.js");
+
+    const html = renderToStaticMarkup(
+      React.createElement(
+        Form,
+        { action: "/search" },
+        React.createElement("input", { name: "q" }),
+        React.createElement("button", { type: "submit" }, "Search"),
+      ),
+    );
+    expect(html).toContain("<form");
+    expect(html).toContain('action="/search"');
+    expect(html).toContain('name="q"');
+    expect(html).toContain("Search");
+  });
+
+  it("renders a form with method prop", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { default: Form } = await import("../packages/vinext/src/shims/form.js");
+
+    const html = renderToStaticMarkup(
+      React.createElement(
+        Form,
+        { action: "/api/submit", method: "POST" },
+        React.createElement("button", { type: "submit" }, "Submit"),
+      ),
+    );
+    expect(html).toContain("<form");
+    expect(html).toContain('method="POST"');
+  });
+
+  it("renders children inside the form", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { default: Form } = await import("../packages/vinext/src/shims/form.js");
+
+    const html = renderToStaticMarkup(
+      React.createElement(
+        Form,
+        { action: "/search" },
+        React.createElement("label", null, "Query:"),
+        React.createElement("input", { name: "q", placeholder: "Search..." }),
+        React.createElement("button", null, "Go"),
+      ),
+    );
+    expect(html).toContain("Query:");
+    expect(html).toContain('placeholder="Search..."');
+    expect(html).toContain("Go");
+  });
+
+  it("passes className and id through to form element", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { default: Form } = await import("../packages/vinext/src/shims/form.js");
+
+    const html = renderToStaticMarkup(
+      React.createElement(
+        Form,
+        { action: "/search", className: "search-form", id: "main-search" },
+      ),
+    );
+    expect(html).toContain('class="search-form"');
+    expect(html).toContain('id="main-search"');
+  });
+});
+
 describe("next/font/google shim", () => {
   it("returns className, style, and variable for a Google Font", async () => {
     const { Inter } = await import(
