@@ -169,7 +169,12 @@ function tryServeStatic(
   pathname: string,
   compress: boolean,
 ): boolean {
-  const staticFile = path.join(clientDir, pathname);
+  // Resolve the path and guard against directory traversal (e.g. /../../../etc/passwd)
+  const resolvedClient = path.resolve(clientDir);
+  const staticFile = path.resolve(clientDir, "." + decodeURIComponent(pathname));
+  if (!staticFile.startsWith(resolvedClient + path.sep) && staticFile !== resolvedClient) {
+    return false;
+  }
   if (
     pathname === "/" ||
     !fs.existsSync(staticFile) ||
@@ -214,7 +219,9 @@ function tryServeStatic(
  * Convert a Node.js IncomingMessage to a Web Request object.
  */
 function nodeToWebRequest(req: IncomingMessage): Request {
-  const origin = `http://${req.headers.host || "localhost"}`;
+  const proto = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim() || "http";
+  const host = (req.headers["x-forwarded-host"] as string) || req.headers.host || "localhost";
+  const origin = `${proto}://${host}`;
   const url = new URL(req.url ?? "/", origin);
 
   const headers = new Headers();
@@ -276,10 +283,12 @@ async function sendWebResponse(
     return;
   }
 
-  // Check if we should compress the response
+  // Check if we should compress the response.
+  // Skip if the upstream already compressed (avoid double-compression).
+  const alreadyEncoded = webResponse.headers.has("content-encoding");
   const contentType = webResponse.headers.get("content-type") ?? "";
   const baseType = contentType.split(";")[0].trim();
-  const encoding = compress ? negotiateEncoding(req) : null;
+  const encoding = (compress && !alreadyEncoded) ? negotiateEncoding(req) : null;
   const shouldCompress = !!(encoding && COMPRESSIBLE_TYPES.has(baseType));
 
   if (shouldCompress) {
@@ -290,6 +299,12 @@ async function sendWebResponse(
   }
 
   res.writeHead(status, nodeHeaders);
+
+  // HEAD requests: send headers only, skip the body
+  if (req.method === "HEAD") {
+    res.end();
+    return;
+  }
 
   // Convert Web ReadableStream to Node.js Readable and pipe to response.
   // Readable.fromWeb() is available since Node.js 17.
@@ -461,8 +476,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
     try {
       // Convert Node.js req to Web Request for the server entry
-      const protocol = "http";
-      const hostHeader = req.headers.host ?? `${host}:${port}`;
+      const protocol = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim() || "http";
+      const hostHeader = (req.headers["x-forwarded-host"] as string) || req.headers.host || `${host}:${port}`;
       const reqHeaders = Object.entries(req.headers).reduce((h, [k, v]) => {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
         return h;
