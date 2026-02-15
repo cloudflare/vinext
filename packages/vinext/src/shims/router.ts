@@ -112,6 +112,20 @@ function resolveUrl(url: string | UrlObject): string {
   return result;
 }
 
+/**
+ * Apply locale prefix to a URL for client-side navigation.
+ * Same logic as Link's applyLocaleToHref but reads from window globals.
+ */
+export function applyNavigationLocale(url: string, locale?: string): string {
+  if (!locale || typeof window === "undefined") return url;
+  const defaultLocale = (window as any).__VINEXT_DEFAULT_LOCALE__;
+  // Default locale doesn't get a prefix
+  if (locale === defaultLocale) return url;
+  // Don't double-prefix
+  if (url.startsWith(`/${locale}/`) || url === `/${locale}`) return url;
+  return `/${locale}${url.startsWith("/") ? url : `/${url}`}`;
+}
+
 /** Check if a URL is external */
 export function isExternalUrl(url: string): boolean {
   return url.startsWith("http://") || url.startsWith("https://") || url.startsWith("//");
@@ -336,7 +350,7 @@ export function useRouter(): NextRouter {
 
   const push = useCallback(
     async (url: string | UrlObject, _as?: string, options?: TransitionOptions): Promise<boolean> => {
-      const resolved = resolveUrl(url);
+      const resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
 
       // External URLs — delegate to browser
       if (isExternalUrl(resolved)) {
@@ -377,7 +391,7 @@ export function useRouter(): NextRouter {
 
   const replace = useCallback(
     async (url: string | UrlObject, _as?: string, options?: TransitionOptions): Promise<boolean> => {
-      const resolved = resolveUrl(url);
+      const resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
 
       // External URLs — delegate to browser
       if (isExternalUrl(resolved)) {
@@ -489,8 +503,8 @@ if (typeof window !== "undefined") {
 
 // Also export a default Router singleton for `import Router from 'next/router'`
 const Router = {
-  push: async (url: string | UrlObject) => {
-    const resolved = resolveUrl(url);
+  push: async (url: string | UrlObject, _as?: string, options?: TransitionOptions) => {
+    const resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
 
     // External URLs
     if (isExternalUrl(resolved)) {
@@ -523,8 +537,8 @@ const Router = {
     window.dispatchEvent(new CustomEvent("vinext:navigate"));
     return true;
   },
-  replace: async (url: string | UrlObject) => {
-    const resolved = resolveUrl(url);
+  replace: async (url: string | UrlObject, _as?: string, options?: TransitionOptions) => {
+    const resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
 
     // External URLs
     if (isExternalUrl(resolved)) {

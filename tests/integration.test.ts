@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { createServer, build, createBuilder, type ViteDevServer } from "vite";
 import path from "node:path";
 import fs from "node:fs";
@@ -7671,5 +7671,73 @@ export default function Page({ locale }) {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("English only");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyNavigationLocale (router.push/replace locale option)
+// ---------------------------------------------------------------------------
+
+describe("applyNavigationLocale", () => {
+  let applyNavigationLocale: (url: string, locale?: string) => string;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/shims/router.js");
+    applyNavigationLocale = mod.applyNavigationLocale;
+  });
+
+  beforeEach(() => {
+    // Set up window globals that applyNavigationLocale reads
+    (globalThis as any).window = globalThis;
+    (globalThis as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+  });
+
+  afterEach(() => {
+    delete (globalThis as any).__VINEXT_DEFAULT_LOCALE__;
+    // Don't delete window itself — just clean up our additions
+  });
+
+  it("returns url unchanged when no locale is specified", () => {
+    expect(applyNavigationLocale("/about")).toBe("/about");
+  });
+
+  it("returns url unchanged when locale is undefined", () => {
+    expect(applyNavigationLocale("/about", undefined)).toBe("/about");
+  });
+
+  it("returns url unchanged when locale matches default locale", () => {
+    expect(applyNavigationLocale("/about", "en")).toBe("/about");
+  });
+
+  it("prefixes non-default locale to absolute path", () => {
+    expect(applyNavigationLocale("/about", "fr")).toBe("/fr/about");
+  });
+
+  it("prefixes non-default locale to root path", () => {
+    expect(applyNavigationLocale("/", "fr")).toBe("/fr/");
+  });
+
+  it("prefixes non-default locale to nested path", () => {
+    expect(applyNavigationLocale("/blog/post-1", "de")).toBe("/de/blog/post-1");
+  });
+
+  it("does not double-prefix if URL already starts with locale", () => {
+    expect(applyNavigationLocale("/fr/about", "fr")).toBe("/fr/about");
+  });
+
+  it("does not double-prefix if URL is exactly the locale", () => {
+    expect(applyNavigationLocale("/fr", "fr")).toBe("/fr");
+  });
+
+  it("handles relative paths by adding leading slash", () => {
+    expect(applyNavigationLocale("about", "fr")).toBe("/fr/about");
+  });
+
+  it("preserves query strings when prefixing locale", () => {
+    expect(applyNavigationLocale("/search?q=hello", "fr")).toBe("/fr/search?q=hello");
+  });
+
+  it("preserves hash when prefixing locale", () => {
+    expect(applyNavigationLocale("/docs#intro", "de")).toBe("/de/docs#intro");
   });
 });
