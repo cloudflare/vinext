@@ -6,41 +6,38 @@ This project is built almost entirely by AI (Claude Opus 4 via OpenCode). This f
 
 | Metric | Value |
 |--------|-------|
-| **Total cost** | **$274.85** |
-| **Total tokens** | **374.4M** |
-| Output tokens | 1,376,059 |
-| Cache read tokens | 363,293,004 |
-| Cache write tokens | 9,454,370 |
-| Input tokens | 233,278 |
-| Reasoning tokens | 3,328 |
-| Sessions | 18 |
-| Messages | 3,864 |
-| Commits | 128 |
+| **Total cost** | **$323.83** |
+| **Output tokens** | **1,545,528** |
+| Sessions | 21+ |
+| Messages | 4,678+ |
+| Commits | 164 |
 | Model | claude-opus-4-6 |
+
+_Note: OpenCode's cost tracking format changed — cache read/write tokens are no longer tracked separately in storage. The $323.83 figure reflects the main session plus sub-agent costs._
 
 ## What that bought
 
 - Full Pages Router + App Router reimplementation
 - 48 Next.js module shims (next/link, next/image, next/navigation, etc.)
 - RSC (React Server Components) with streaming
-- Server Actions, ISR, middleware, i18n, metadata API
+- Server Actions, ISR, middleware, i18n (Accept-Language, NEXT_LOCALE cookie, locale prop), metadata API
 - Production server with compression
-- 388 vitest tests + 51 Playwright E2E tests
+- 590 vitest tests + 81 Playwright E2E tests
 - 3 ecosystem library integrations (next-themes, next-view-transitions, nuqs)
 - Benchmark infrastructure (3-way: Next.js vs Vite/Rollup vs Vite/Rolldown)
 - CLI (vinext dev/build/start/lint)
-- ~15,000 lines of TypeScript
-- ~5,000 lines of tests
+- ~16,000 lines of TypeScript
+- ~8,000 lines of tests
 - 820-line project plan
-- 370-line discoveries journal
+- 440-line discoveries journal
 - Comprehensive README
 
 ## Cost per unit
 
 | Per... | Cost |
 |--------|------|
-| Per commit | $2.15 |
-| Per test | $0.63 |
+| Per commit | $1.97 |
+| Per test | $0.48 |
 | Per feature | ~$5.50 |
 
 ## Session log
@@ -49,10 +46,11 @@ Updated automatically. Main session handles the bulk of the work; sub-agent sess
 
 | Date | Session | Cost | Messages | Notes |
 |------|---------|------|----------|-------|
-| Feb 13-14 | ses_3a6987be... (main) | $261.04 | 3,627 | Core development |
-| Feb 14 | ses_3a19ffee... | $2.83 | 42 | Sub-agents |
-| Feb 14 | ses_3a21f1d6... | $1.42 | 6 | Sub-agent |
-| Various | 15 other sessions | $9.56 | 189 | Exploration, planning |
+| Feb 13-14 | ses_3a6987be... (main) | $322.78 | 4,651 | Core development (ongoing) |
+| Feb 14 | ses_3a084744... | $0.31 | 9 | Sub-agent: i18n locale redirect code search |
+| Feb 14 | ses_3a079c6e... | $0.51 | 11 | Sub-agent: middleware + rewrite flow analysis |
+| Feb 14 | ses_3a073a63... | $0.23 | 7 | Sub-agent: searchParams handling search |
+| Various | 15+ other sessions | ~$10 | ~200 | Exploration, planning, rename |
 
 ## Notes
 
