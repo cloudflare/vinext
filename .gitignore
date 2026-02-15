@@ -4,5 +4,6 @@ dist/
 .vite/
 .turbo/
 .next/
+.wrangler/
 test-results/
 playwright-report/
