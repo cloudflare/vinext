@@ -433,9 +433,9 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 
 Items flagged during code review that were intentionally deferred. Documented here so future agents or contributors can pick them up.
 
-### Client Assets / Hydration for Pages Router on Workers
+### ~~Client Assets / Hydration for Pages Router on Workers~~ FIXED
 
-The `@cloudflare/vite-plugin` only builds the worker environment — there's no client JS bundle emitted for Pages Router apps. SSR content renders correctly but there's no client-side interactivity (no React hydration, no `useRouter`, no client-side navigation). Fixing this requires multi-environment build coordination similar to how `@vitejs/plugin-rsc` handles it for the App Router (RSC + SSR + client environments). This is the biggest gap for Pages Router on Cloudflare Workers.
+Fixed in the "Pages Router Client Hydration on Workers" section above. The solution adds a `client` Vite environment when Cloudflare plugin is detected, embeds the build manifest in the worker entry, and the CF plugin auto-configures Workers Assets.
 
 ### Response Streaming in prod-server.ts
 
@@ -448,6 +448,27 @@ Several globals are used for per-request state: `globalThis.__VINEXT_LOCALE__`, 
 ### Base64 Chunking for Large KV Payloads
 
 The `KVCacheHandler` stores `ArrayBuffer` body data by encoding the entire buffer to base64 in a single operation. For very large payloads (multi-MB ISR pages), this could cause memory spikes. A chunked encoding approach would be more memory-efficient, but typical ISR payloads are well under 1MB so this is a micro-optimization that isn't worth the complexity right now.
+
+## Strategic Shift: Cloudflare-First (2026-02-15)
+
+- **Project focus changed**: vinext is no longer "deploy anywhere." Cloudflare Workers is THE primary deployment target. The thesis is now: "any Next.js app deploys to Cloudflare with one command and runs better there than anywhere else."
+- **Non-Cloudflare targets are non-goals**: AWS, Netlify, generic Node.js servers are not tested or maintained. If they work because we use standard APIs, fine. We won't spend engineering effort on them.
+- **Workers has near-full Node.js compat**: `nodejs_compat` covers ~85% of Node APIs. The old assumption that Workers is a "constrained environment" is outdated.
+- **`node:fs` on Workers**: Built-in via `nodejs_compat` (compat date 2025-09-01+). Provides read-only `/bundle/` (all Worker bundle files), writable `/tmp/` (per-request, non-persistent), and `/dev/*` devices. All operations are synchronous. 128MB max file size. [Docs](https://developers.cloudflare.com/workers/runtime-apis/nodejs/fs/).
+- **`worker-fs-mount` for persistent fs**: [`worker-fs-mount`](https://github.com/danlapid/worker-fs-mount) extends `node:fs` with mount points backed by real persistent storage. Three backends available: `durable-object-fs` (SQLite in DO), `r2-fs` (R2 bucket), `memory-fs` (ephemeral). Configured via wrangler alias: `"node:fs/promises" = "worker-fs-mount/fs"`, then `mount("/mnt/storage", env.STORAGE_SERVICE)`. Standard `fs.readFile`/`fs.writeFile` work against persistent storage. This means libraries that depend on `node:fs` can work on Workers with real persistence.
+- **Priority order going forward**: (1) Client hydration on Workers, (2) `vinext deploy` one-command deployment, (3) Cloudflare platform integration (KV/R2/D1/AI bindings), (4) DX polish.
+- **`vinext start` deprioritized**: The Node.js production server is a local testing convenience, not the production target. Workers IS the production server.
+
+## Pages Router Client Hydration on Workers (FIXED, 2026-02-15)
+
+- **Root cause**: `@cloudflare/vite-plugin` only builds the worker environment. For Pages Router (no `@vitejs/plugin-rsc`), there was no `client` Vite environment defined, so no client JS bundles were emitted. The worker served SSR HTML but with no `<script>` tags — no React hydration, no interactivity.
+- **Three things were missing**: (1) No client build producing JS bundles, (2) No `<script>` tag in the SSR HTML referencing the client entry, (3) No assets directory configured in wrangler for serving client JS.
+- **Fix — client environment**: When Cloudflare plugin is detected AND it's a Pages Router app, vinext now defines a `client` Vite environment with `virtual:vinext-client-entry` as the entry point. This triggers Vite's multi-environment build to produce `dist/client/` with code-split JS chunks alongside the worker build.
+- **Fix — manifest embedding**: The `vinext:cloudflare-build` plugin now handles the `client` environment's `closeBundle` hook (in addition to the worker's). When the client build finishes, it: (1) reads the build manifest from `dist/client/.vite/manifest.json` to find the client entry chunk filename, (2) reads the SSR manifest from `dist/client/.vite/ssr-manifest.json` for per-page asset mapping, (3) prepends `globalThis.__VINEXT_CLIENT_ENTRY__` and `globalThis.__VINEXT_SSR_MANIFEST__` to the worker entry JS.
+- **Fix — script injection**: `collectAssetTags()` in the server entry now checks for `globalThis.__VINEXT_CLIENT_ENTRY__` and injects a `<script type="module">` tag for the hydration entry. It also falls back to `globalThis.__VINEXT_SSR_MANIFEST__` when the manifest parameter is null/empty (as it is when called from the Worker entry).
+- **Build order matters**: The Cloudflare plugin builds the worker first, THEN child/other environments. The client `closeBundle` runs AFTER the worker is fully built, which is when we patch the worker entry. Attempting to embed the manifest in the worker's own `closeBundle` fails because `dist/client/` doesn't exist yet.
+- **Assets auto-configured**: The `@cloudflare/vite-plugin` automatically detects the `client` environment output and adds `"assets": {"directory": "../client"}` to the generated `wrangler.json`. No manual configuration needed.
+- **Verification**: Counter click, Head title, GSSP data, link navigation all work in Playwright E2E tests against `wrangler dev` (miniflare).
 
 ### RSC Client Navigation Drops Query String (FIXED)
 - **Symptom**: When a `next/form` GET submission navigates to `/search?q=vite`, the RSC fetch went to `/search.rsc` without `?q=vite`, so the server rendered without `searchParams`. Affected all client-side RSC fetches: navigation, initial hydration, server actions, HMR re-renders, prefetch in `Link` and `useRouter().prefetch()`.

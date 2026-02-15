@@ -348,22 +348,33 @@ function patternToNextFormat(pattern) {
 }
 
 function collectAssetTags(manifest, moduleIds) {
-  if (!manifest) return "";
+  // Fall back to embedded manifest (set by vinext:cloudflare-build for Workers)
+  const m = (manifest && Object.keys(manifest).length > 0)
+    ? manifest
+    : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
   const tags = [];
   const seen = new Set();
-  const idsToCheck = moduleIds && moduleIds.length > 0
-    ? moduleIds
-    : Object.keys(manifest);
-  for (const id of idsToCheck) {
-    const files = manifest[id];
-    if (!files) continue;
-    for (const file of files) {
-      if (seen.has(file)) continue;
-      seen.add(file);
-      if (file.endsWith(".css")) {
-        tags.push('<link rel="stylesheet" href="/' + file + '" />');
-      } else if (file.endsWith(".js")) {
-        tags.push('<script type="module" src="/' + file + '" crossorigin></script>');
+  // Inject the client entry script if embedded by vinext:cloudflare-build
+  if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
+    const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
+    seen.add(entry);
+    tags.push('<script type="module" src="/' + entry + '" crossorigin></script>');
+  }
+  if (m) {
+    const idsToCheck = moduleIds && moduleIds.length > 0
+      ? moduleIds
+      : Object.keys(m);
+    for (const id of idsToCheck) {
+      const files = m[id];
+      if (!files) continue;
+      for (const file of files) {
+        if (seen.has(file)) continue;
+        seen.add(file);
+        if (file.endsWith(".css")) {
+          tags.push('<link rel="stylesheet" href="/' + file + '" />');
+        } else if (file.endsWith(".js")) {
+          tags.push('<script type="module" src="/' + file + '" crossorigin></script>');
+        }
       }
     }
   }
@@ -1003,6 +1014,22 @@ hydrate();
               },
             },
           };
+        } else if (hasCloudflarePlugin) {
+          // Pages Router on Cloudflare Workers: add a client environment
+          // so the multi-environment build produces client JS bundles
+          // alongside the worker. Without this, only the worker is built
+          // and there's no client-side hydration.
+          viteConfig.environments = {
+            client: {
+              build: {
+                manifest: true,
+                ssrManifest: true,
+                rollupOptions: {
+                  input: { index: VIRTUAL_CLIENT_ENTRY },
+                },
+              },
+            },
+          };
         }
 
         return viteConfig;
@@ -1319,7 +1346,8 @@ hydrate();
     },
     // Cloudflare Workers production build integration:
     // After all environments are built, copy RSC/SSR outputs into the Worker
-    // directory and rewrite cross-environment imports so workerd can resolve them.
+    // directory, rewrite cross-environment imports so workerd can resolve them,
+    // and embed the client manifest for Pages Router hydration.
     {
       name: "vinext:cloudflare-build",
       apply: "build",
@@ -1328,13 +1356,92 @@ hydrate();
         sequential: true,
         order: "post",
         async handler() {
-          // Only act if Cloudflare plugin is present and this is the worker environment.
-          // The Cloudflare plugin names worker environments with the sanitized worker name.
+          // Only act if Cloudflare plugin is present.
           const envName = (this as any).environment?.name as string | undefined;
           if (!envName || !hasCloudflarePlugin) return;
 
-          // Worker environments are NOT "rsc", "ssr", or "client"
-          if (envName === "rsc" || envName === "ssr" || envName === "client") return;
+          // Skip RSC and SSR environments — they're handled by the worker env
+          if (envName === "rsc" || envName === "ssr") return;
+
+          // Client environment: embed manifest in the worker entry for hydration.
+          // The client builds AFTER the worker, so this is the right time to
+          // read the client manifest and patch the worker entry.
+          if (envName === "client") {
+            const envConfig = (this as any).environment?.config;
+            if (!envConfig) return;
+            const buildRoot = envConfig.root ?? process.cwd();
+
+            // Find the worker output directory by scanning dist/ for
+            // a directory containing wrangler.json (the worker output)
+            const distDir = path.resolve(buildRoot, "dist");
+            if (!fs.existsSync(distDir)) return;
+            let workerOutDir: string | null = null;
+            for (const entry of fs.readdirSync(distDir)) {
+              const candidate = path.join(distDir, entry);
+              if (entry === "client" || entry === "rsc" || entry === "ssr") continue;
+              if (fs.statSync(candidate).isDirectory() &&
+                  fs.existsSync(path.join(candidate, "wrangler.json"))) {
+                workerOutDir = candidate;
+                break;
+              }
+            }
+            if (!workerOutDir) return;
+
+            const workerEntry = path.join(workerOutDir, "index.js");
+            if (!fs.existsSync(workerEntry)) return;
+
+            const clientDir = path.resolve(buildRoot, "dist", "client");
+            let clientEntryFile: string | null = null;
+            let ssrManifestData: Record<string, string[]> | null = null;
+
+            // Read build manifest to find the client entry chunk filename
+            const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
+            if (fs.existsSync(buildManifestPath)) {
+              try {
+                const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
+                for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
+                  if (value && value.isEntry && value.file) {
+                    clientEntryFile = value.file;
+                    break;
+                  }
+                }
+              } catch { /* ignore parse errors */ }
+            }
+
+            // Fallback: scan dist/client/assets/ for the client entry chunk
+            if (!clientEntryFile) {
+              const assetsDir = path.join(clientDir, "assets");
+              if (fs.existsSync(assetsDir)) {
+                const files = fs.readdirSync(assetsDir);
+                const entry = files.find((f: string) =>
+                  f.includes("vinext-client-entry") && f.endsWith(".js"));
+                if (entry) clientEntryFile = "assets/" + entry;
+              }
+            }
+
+            // Read SSR manifest for per-page CSS/JS injection
+            const ssrManifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
+            if (fs.existsSync(ssrManifestPath)) {
+              try {
+                ssrManifestData = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8"));
+              } catch { /* ignore parse errors */ }
+            }
+
+            // Prepend globals to worker entry
+            if (clientEntryFile || ssrManifestData) {
+              let code = fs.readFileSync(workerEntry, "utf-8");
+              const globals: string[] = [];
+              if (clientEntryFile) {
+                globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`);
+              }
+              if (ssrManifestData) {
+                globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+              }
+              code = globals.join("\n") + "\n" + code;
+              fs.writeFileSync(workerEntry, code);
+            }
+            return;
+          }
 
           const envConfig = (this as any).environment?.config;
           if (!envConfig) return;
@@ -1375,6 +1482,8 @@ hydrate();
             code = code.replace(/import\(\s*"\.\.\/\.\.\/rsc\//g, 'import("../rsc/');
             fs.writeFileSync(ssrEntry, code);
           }
+
+
         },
       },
     },

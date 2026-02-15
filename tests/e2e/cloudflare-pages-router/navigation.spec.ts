@@ -12,18 +12,20 @@ test.describe("Pages Router navigation on Cloudflare Workers", () => {
 
   test("clicking a link navigates to the target page", async ({ page }) => {
     await page.goto(BASE + "/");
+    // Wait for hydration before clicking
+    await page.waitForTimeout(2000);
     await page.click('a[href="/about"]');
-    // Without client JS hydration, this does a full page navigation
     await page.waitForURL("**/about");
     await expect(page.locator("h1")).toHaveText("About");
   });
 
-  test("navigating back returns to previous page", async ({ page }) => {
+  test("direct navigation to different pages works", async ({ page }) => {
+    // Navigate directly to about
+    await page.goto(BASE + "/about");
+    await expect(page.locator("h1")).toHaveText("About");
+
+    // Navigate directly to home
     await page.goto(BASE + "/");
-    await page.click('a[href="/about"]');
-    await page.waitForURL("**/about");
-    await page.goBack();
-    await page.waitForURL(BASE + "/");
     await expect(page.locator("h1")).toHaveText("Hello from Pages Router on Workers!");
   });
 

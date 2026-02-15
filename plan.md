@@ -1,40 +1,77 @@
-# vinext: Next.js API Surface Reimplemented on Vite
+# vinext: Run Next.js Apps on Cloudflare Workers
 
 ## Thesis
 
-Next.js has become the dominant React meta-framework, but its internals are a
-mess - bespoke compiler (SWC fork), Turbopack, custom HMR protocol, enormous
-dependency surface. Meanwhile, Vite has won the build tooling war and become
-the de facto standard. The question: **can we reimplement the Next.js API
-surface - file conventions, routing, data fetching, rendering - as a Vite
-plugin?**
+Next.js is locked to Vercel. Cloudflare Workers is a fundamentally better
+runtime — edge-first, V8 isolates, zero cold starts, global by default —
+but you can't run Next.js on it without heroics. The
+[OpenNext](https://opennext.js.org/) project exists solely to bridge this
+gap, but it's constantly chasing Next.js internals that Vercel changes
+without notice.
 
-Not a "Vite-flavored alternative." A direct, API-compatible reimplementation
-where existing Next.js apps can `npm uninstall next && npm install vinext`
-and largely Just Work.
+**vinext takes a different approach.** Instead of adapting Next.js's build
+output for Workers, we reimplement the Next.js API surface on Vite —
+a direct, API-compatible reimplementation where existing Next.js apps can
+`npm uninstall next && npm install vinext` and run natively on Cloudflare
+Workers. Not an adapter. Not a compatibility layer. A new build from
+scratch that treats Workers as the primary target.
 
-## Why This Matters: The Deployment Problem
+The goal: **any Next.js app deploys to Cloudflare with one command, and
+it runs better there than anywhere else — including Vercel.**
 
-Next.js is effectively locked to Vercel. Running it anywhere else is a
-nightmare. The [OpenNext](https://opennext.js.org/) project exists solely to
-bridge this gap, with separate adapters maintained by different teams:
+## Why Cloudflare Workers
 
-- **AWS adapter** (maintained by SST community)
-- **Cloudflare adapter** (maintained by Cloudflare team)
-- **Netlify adapter** (maintained by Netlify team)
+Cloudflare Workers offers things no other runtime does:
 
-Each adapter is constantly chasing Next.js updates, reimplementing internal
-behaviors that Vercel changes without notice. NHS England, Udacity, Gymshark
-all use OpenNext because there's no other option.
+- **Zero cold starts** — V8 isolates, not containers. No 250ms Lambda spin-up.
+- **Global by default** — Code runs in 300+ cities. No region selection.
+- **Near-full Node.js compatibility** — `nodejs_compat` covers ~85% of
+  Node.js APIs. `node:fs` is built-in (read-only `/bundle/` for Worker
+  bundle files, writable `/tmp/` per-request) and can be extended with
+  persistent mounts via [`worker-fs-mount`](https://github.com/danlapid/worker-fs-mount)
+  — R2, Durable Objects (SQLite), or in-memory backends, all behind
+  standard `fs.readFile`/`fs.writeFile` APIs.
+  [Docs](https://developers.cloudflare.com/workers/runtime-apis/nodejs/fs/).
+- **Integrated platform** — KV, R2, D1, Durable Objects, Queues, AI,
+  Vectorize are all native bindings, not external services with network hops.
+- **Web-standard APIs** — Workers speaks `Request`/`Response`/`fetch`
+  natively. Standard Node.js APIs work too via `nodejs_compat`.
+- **Smart Placement** — Automatically colocates compute with data when
+  latency to a backend dominates.
 
-**If we rebuild on Vite, this problem disappears.** Vite's ecosystem already
-has deployment adapters everywhere. The build output is standard, portable,
-and understood by every hosting platform. No more reverse-engineering Vercel's
-proprietary server runtime. A Next.js-compatible app built on Vite deploys
-anywhere Vite deploys - which is everywhere.
+Workers is not a constrained environment. It's Node-compatible AND has
+platform capabilities that Node.js alone doesn't offer. The only reason
+Next.js doesn't run there is that Next.js is built for Vercel's
+infrastructure, and OpenNext's Cloudflare adapter is constantly playing
+catch-up with Next.js internals.
 
-This is arguably the strongest practical motivation: not just cleaner
-internals, but **liberating Next.js apps from vendor lock-in**.
+vinext eliminates that problem. Keep your Next.js code. Deploy to Workers.
+Get the full Cloudflare platform — KV for caching, R2 for storage, D1 for
+databases, Durable Objects for stateful logic, AI for inference — all
+as native bindings from your existing server code.
+
+## Why Vite (Not Just Adapting Next.js)
+
+We build on Vite rather than adapting Next.js's build output because:
+
+- **Vite already handles** JSX/TSX, CSS Modules, HMR, code splitting, SSR
+- **`@vitejs/plugin-rsc`** handles the full RSC pipeline (server/client
+  boundaries, streaming, HMR)
+- **`@cloudflare/vite-plugin`** runs code in `workerd` during dev for
+  production-identical behavior — real Workers runtime, not a Node.js
+  approximation
+- **Standard build output** — no proprietary `.nft.json` trace files or
+  Vercel-specific routing manifests to reverse-engineer
+- **The hard parts (bundling, transforms, dev server) are what Vite does best**
+
+Building on Vite means we're not chasing Next.js internals. We implement
+the public API surface — the documented contract that apps actually depend
+on — and produce standard Vite output that the Cloudflare plugin knows
+how to deploy.
+
+If vinext happens to work on other platforms (Node.js, Deno, etc.) because
+we use Web-standard APIs, great. But Cloudflare Workers is THE target. We
+will break non-Cloudflare paths to ship a better Workers experience.
 
 ## Design Principle: Pragmatic Compatibility, Not Bug-for-Bug Parity
 
@@ -116,53 +153,52 @@ don't implement it. `getInitialProps`, legacy `<Image>` from `next/legacy/image`
 is upgrading to current Next.js APIs (which they should do regardless), then
 migrating to vinext.
 
-## Design Principle: Deploy Anywhere by Default
+## Design Principle: Cloudflare-First
 
 This is the guiding principle behind every implementation decision.
 
-Vercel optimizes for Vercel. Every feature they build assumes their
-infrastructure - their image optimizer, their edge network, their serverless
-runtime, their caching layer. If you're not on Vercel, you're an
-afterthought. The result is that the entire OpenNext project exists just to
-reverse-engineer Vercel's assumptions.
+Vercel optimizes for Vercel. **We optimize for Cloudflare.** Every feature
+we build assumes Cloudflare Workers as the production runtime. If it also
+works on Node.js or other platforms, great — but we will not compromise the
+Cloudflare experience to maintain generic portability.
 
-**We do the opposite.** We build on Vite, whose output is standard and
-portable. Every feature we implement must work everywhere out of the box,
-with zero provider-specific configuration:
+Concretely:
 
-- **Images**: Auto-detect the CDN, use its native transforms. No hardwired
-  optimizer. Works on Cloudflare, Netlify, AWS, self-hosted, whatever.
-- **Server runtime**: Target standard Web APIs (Request/Response, fetch,
-  streams, crypto) that work across Node.js, Cloudflare Workers, Deno, and
-  other WinterCG-compatible runtimes. No proprietary serverless format. If
-  your runtime speaks Web standards, vinext runs on it.
-- **Build output**: Standard Vite build artifacts. Static assets are static
-  assets. Server code is server code. No proprietary `.nft.json` trace files,
-  no Vercel-specific routing manifests.
-- **Caching/ISR**: Use standard HTTP caching semantics (Cache-Control,
-  stale-while-revalidate) that every CDN and runtime understands, not a
-  proprietary revalidation protocol tied to a specific vendor.
-- **Middleware**: Runs on standard Web APIs. Works the same on every
-  platform - Node, Workers, Deno, anywhere.
+- **Runtime**: Cloudflare Workers with `nodejs_compat`. We use both Web
+  standard APIs (Request/Response/fetch/streams) and Node.js APIs freely —
+  Workers supports both. No need to avoid Node APIs "for portability."
+- **`node:fs`**: Built into Workers — read-only `/bundle/` directory for
+  bundled files, writable `/tmp/` per-request. For persistent storage,
+  [`worker-fs-mount`](https://github.com/danlapid/worker-fs-mount) adds
+  mount points backed by R2, Durable Objects (SQLite), or in-memory
+  storage behind standard `fs.readFile`/`fs.writeFile` APIs. Libraries
+  that use `node:fs` aren't automatically incompatible.
+- **Caching/ISR**: Cloudflare KV is the default cache backend. The
+  `KVCacheHandler` ships with vinext. HTTP cache headers
+  (`Cache-Control`, `stale-while-revalidate`) work natively with
+  Cloudflare's CDN.
+- **Images**: Cloudflare Image Resizing is the default optimization
+  backend. `@unpic/react` auto-detects it.
+- **Static assets**: Served via Workers Assets (the `assets` config in
+  wrangler). No separate CDN or S3 bucket needed.
+- **Build output**: Vite builds the worker + client bundles.
+  `@cloudflare/vite-plugin` handles the Workers-specific output format.
+  `wrangler deploy` ships it.
+- **Dev/prod parity**: `vinext dev` runs in `workerd` via the Cloudflare
+  Vite plugin, not a Node.js approximation. What works in dev works in
+  production.
+- **Bindings**: KV, R2, D1, Durable Objects, Queues, AI, Vectorize
+  should be accessible from `getServerSideProps`, API routes, Server
+  Components, and Server Actions with minimal boilerplate.
 
-The litmus test for every feature: **"does this work on a \$5 VPS *and*
-on Cloudflare Workers?"** If it requires Node-specific APIs where a Web
-standard exists, we're doing it wrong. If it requires a specific hosting
-provider's infrastructure, we're doing it wrong.
+The litmus test for every feature: **"does this work on Cloudflare
+Workers?"** If it does, ship it. If it also works on Node.js, that's a
+bonus we don't break gratuitously, but we don't block on it either.
 
-This is what Vite gives us for free. Vite doesn't care where you deploy.
-The ecosystem of Vite plugins already handles platform-specific deployment:
-
-- **`@cloudflare/vite-plugin`** (310k weekly downloads) - runs code in
-  `workerd` during dev for production-identical behavior on Workers. Uses
-  the same Vite Environment API that `@vitejs/plugin-rsc` is built on,
-  and the RSC plugin explicitly supports it via `loadModuleDevProxy`.
-- **Netlify, Vercel, AWS** - standard Vite build output already works
-  with their existing deployment tooling.
-- **Any Node.js host** - `vite build` produces a standard server bundle.
-
-Our job is to produce standard Vite output. The platform plugins handle the
-rest. We never write provider-specific code.
+`@cloudflare/vite-plugin` (310k weekly downloads) is our key dependency.
+It runs code in `workerd` during dev, handles the Workers build output,
+and integrates with Vite's Environment API that `@vitejs/plugin-rsc` also
+uses. The two plugins compose cleanly.
 
 ## Why This Might Actually Work
 
@@ -374,156 +410,137 @@ resolution (e.g. `rsc` uses `react-server` condition). Our job:
 
 ## Phased Execution Plan
 
-### Phase 0: Pages Router Foundation (Week 1-2)
+### Phases 0–5: COMPLETE
 
-**Goal**: Simplest Pages Router app renders. Start with the easier,
-well-understood model before tackling RSC.
+Pages Router, App Router, Cloudflare Workers integration, benchmarks,
+production server, middleware, ISR, and more. See git history and
+DISCOVERIES.md for details.
 
-- [ ] Scaffold the Vite plugin structure (on top of `@vitejs/plugin-rsc`)
-- [ ] Implement `pages/` directory file-system routing
-  - Page discovery and route generation
-  - Dynamic route segments `[param]`
-  - `_app.tsx`, `_document.tsx` support
-- [ ] Implement basic SSR rendering pipeline
-  - Server-side React rendering to HTML
-  - Client hydration bundle generation
-- [ ] Implement `next/head` shim
-- [ ] Implement `next/link` shim (basic - renders `<a>` with client nav)
-- [ ] Implement `next/router` shim (`useRouter`, `router.push`, etc.)
-- [ ] `NEXT_PUBLIC_*` environment variable convention: inline into client
-  bundle at build time, keep everything else server-only
-- [ ] Create CLI: `vinext dev` wrapping `vite dev` with our plugin
-- [ ] **Validation**: `reproduction-template-pages` and `with-typescript`
-  examples render and navigate
+**Current state** (as of Phase 5 completion):
+- 638 vitest tests, 117+ Playwright E2E tests (5 projects)
+- Pages Router + App Router fully working
+- Cloudflare Workers: SSR, API routes, KV cache handler
+- Benchmarks: 7x faster builds, 55% smaller bundles vs Next.js 16
 
-### Phase 1: Pages Router Complete + Production (Week 3-5)
+### Phase 6: Client Hydration on Workers
 
-**Goal**: Full Pages Router compat. Production builds. Test harness online.
+**Goal**: Full client-side interactivity on Cloudflare Workers. This is
+the #1 blocker — without it, Workers-deployed apps are SSR-only.
 
-- [ ] `getServerSideProps` (server-side data fetching per request)
-- [ ] `getStaticProps` + `getStaticPaths` (static generation)
-- [ ] `pages/api/` routes (API endpoints)
-- [ ] `_error.tsx`, `404.tsx`, `500.tsx` (error pages)
-- [ ] `next/dynamic` (dynamic imports / code splitting)
-- [ ] `next/image` shim (via `@unpic/react` + `vite-imagetools` for local)
-- [ ] CSS Modules support (Vite handles natively)
-- [ ] `next.config.js` parsing (basic: `env`, `basePath`, `rewrites`,
-  `redirects`, `headers`)
-- [ ] `vinext build` (production build via `vite build`)
-- [ ] `vinext start` (production server)
-- [ ] **Validation**: `api-routes-rest`, `api-routes-cors`, `with-docker`
-- [ ] **Test harness**: Extract and adapt Next.js e2e test infrastructure
-- [ ] **Test harness**: Begin running Pages Router e2e tests, track pass rate
+- [ ] Multi-environment build for Workers: client JS bundles alongside
+  worker bundle. The `@cloudflare/vite-plugin` currently only builds the
+  worker environment. Need to coordinate client bundle output with
+  Workers Assets serving.
+- [ ] Pages Router hydration: `__NEXT_DATA__` + client entry + React
+  hydrate in the browser, served via Workers Assets
+- [ ] App Router hydration: RSC stream + client entry (already works in
+  Node dev, need to verify on Workers build)
+- [ ] Client-side navigation works end-to-end on Workers (Link, router.push)
+- [ ] E2E tests for hydration + interactivity on Workers
+- [ ] **Validation**: Interactive app (form submission, client state, navigation)
+  works on `wrangler dev` and `wrangler deploy`
 
-### Phase 2: App Router (Week 6-9)
+### Phase 7: `vinext deploy` — One-Command Cloudflare Deployment
 
-**Goal**: App Router basics work. RSC rendering online.
+**Goal**: `vinext deploy` takes any Next.js app from zero to deployed on
+Cloudflare Workers with no manual configuration.
 
-- [ ] Implement `app/` directory file-system routing
-  - `page.tsx` and `layout.tsx` discovery
-  - Dynamic route segments `[param]`
-- [ ] RSC support (server/client component boundary via `'use client'`)
-  - Wire up `@vitejs/plugin-rsc` environments (rsc/ssr/client entries)
-- [ ] `app/route.ts` API route handlers (GET, POST, etc.)
-- [ ] `next/navigation` hooks (`useRouter`, `usePathname`, `useSearchParams`)
-- [ ] `next/headers` (`cookies()`, `headers()`)
-- [ ] `next/server` (`NextRequest`, `NextResponse`)
-- [ ] `app/loading.tsx` (Suspense boundaries)
-- [ ] `app/error.tsx` (Error boundaries)
-- [ ] `app/not-found.tsx`
-- [ ] Server Actions (`'use server'`)
-- [ ] Metadata API (`export const metadata`, `generateMetadata()`)
-- [ ] `generateStaticParams()` (static generation for App Router)
-- [ ] `next/font` (`next/font/google`, `next/font/local`)
-- [ ] **Validation**: `hello-world`, `basic-css`, `next-forms` examples
-- [ ] **Test harness**: Begin running App Router e2e tests
+- [ ] **`vinext deploy` command**: Runs `vite build` + `wrangler deploy`
+  in sequence. Handles all intermediate steps.
+- [ ] **Auto-generate `wrangler.jsonc`**: If no wrangler config exists,
+  generate one with sensible defaults (`compatibility_date`, `nodejs_compat`,
+  `assets` config for static files).
+- [ ] **Auto-generate worker entry**: If no `worker/index.ts` exists,
+  generate the appropriate entry based on detected router (App Router vs
+  Pages Router). No boilerplate needed from the user.
+- [ ] **Auto-detect Cloudflare plugin**: If `@cloudflare/vite-plugin` isn't
+  in the project, prompt to install it (or auto-install with consent).
+- [ ] **Auto-configure RSC plugin**: For App Router, ensure
+  `@vitejs/plugin-rsc` is configured with the right entries.
+- [ ] **KV namespace setup**: If ISR/caching is detected (`revalidate`
+  in any page), auto-create a KV namespace and wire the `KVCacheHandler`.
+- [ ] **Static assets**: Configure Workers Assets to serve `public/` and
+  client build output.
+- [ ] **Environment variables**: Read from `.env` / `.env.local` and set
+  as wrangler secrets (or prompt the user).
+- [ ] **`vinext deploy --preview`**: Deploy to a preview URL for testing.
+- [ ] **`vinext deploy --production`**: Deploy to production.
+- [ ] **Validation**: Fresh Next.js app → `npm install vinext` →
+  `vinext deploy` → working URL on workers.dev in under 60 seconds.
 
-### Phase 3: Advanced Features (Week 10-13)
+### Phase 8: Cloudflare Platform Integration
 
-**Goal**: Majority of e2e tests passing across both routers.
+**Goal**: Cloudflare's platform capabilities (KV, R2, D1, DO, AI, Queues)
+are trivially accessible from Next.js server code. This is the "better
+than anywhere else" differentiator.
 
-- [ ] Middleware (`middleware.ts`) - running in Node, not Edge
-- [ ] Streaming SSR
-- [ ] Route groups, catch-all routes, optional catch-all
-- [ ] `output: 'export'` (static export)
-- [ ] ISR (Incremental Static Regeneration)
-- [ ] `next/og` (OG image generation)
-- [ ] `next/script`
-- [ ] `next/form`
-- [ ] Full `next.config.js` compatibility
-- [ ] **Validation**: Target 50%+ of e2e test suite passing
+- [ ] **Bindings access pattern**: Define how `getServerSideProps`, API
+  routes, Server Components, and Server Actions access `env` bindings.
+  Options: (a) `getCloudflareContext()` helper, (b) extend the existing
+  request context, (c) AsyncLocalStorage-based injection.
+- [ ] **KV**: Available in server code for caching, session storage, config.
+- [ ] **R2**: Available for file uploads, asset storage, user content.
+- [ ] **D1**: Available for database queries from server code.
+- [ ] **Durable Objects**: Available for stateful server-side logic
+  (collaborative editing, WebSockets, rate limiting).
+- [ ] **Workers AI**: Available for inference from server code.
+- [ ] **Queues**: Available for background job processing from Server Actions.
+- [ ] **`node:fs` with persistent mounts**: Document and support
+  [`worker-fs-mount`](https://github.com/danlapid/worker-fs-mount) for
+  persistent filesystem backed by R2 or Durable Objects. Libraries that
+  depend on `node:fs` for file I/O can work with real persistent storage.
+- [ ] **Validation**: Example app using KV + R2 + D1 from
+  getServerSideProps/API routes/Server Components.
+
+### Phase 9: Developer Experience Polish
+
+**Goal**: Production-ready DX. Migration is smooth, errors are helpful,
+the workflow feels native.
+
+- [ ] **`vinext dev` defaults to workerd**: Use `@cloudflare/vite-plugin`
+  by default so dev runs in the Workers runtime, not Node.js. True
+  dev/prod parity.
+- [ ] **`vinext check`**: Compatibility scanner — point at a Next.js app,
+  get a report of what works, what needs changes, and what's unsupported.
+- [ ] **`vinext migrate`**: Automated codemods for common migration
+  patterns (import rewrites, config translation, etc.).
+- [ ] **Error messages**: When something fails on Workers, the error
+  should explain the Workers-specific context (e.g., "this API isn't
+  available in Workers — use KV instead of fs.writeFile for persistent
+  storage, or use worker-fs-mount for a drop-in fs replacement").
+- [ ] **Cloudflare dashboard integration**: Link to the deployed Worker
+  in the Cloudflare dashboard after `vinext deploy`.
+- [ ] **ISR E2E tests** (issue #8)
+- [ ] **`"use cache"` directive** — implement or integrate with
+  Cloudflare's caching layer
 - [ ] **Are We Vite Yet?** dashboard live and auto-updating
 
-### Phase 4: Parity Push (Week 14+)
+### Phase 10: Scale & Ecosystem
 
-**Goal**: Maximize e2e test pass rate. Production-ready.
+**Goal**: Real-world apps migrate successfully. Third-party ecosystem works.
 
-- [ ] Parallel routes (`@slot`)
-- [ ] Intercepting routes
-- [ ] i18n routing
-- [ ] Performance optimization (bundle size, cold start, HMR speed)
-- [ ] Deployment guides (Cloudflare, AWS, Netlify, Fly, Railway, etc.)
-- [ ] **Validation**: Target 80%+ of e2e test suite passing
+- [ ] **Ecosystem library testing**: Top Next.js libraries work on vinext +
+  Workers (next-intl, next-themes, next-auth, @clerk/nextjs, nuqs, etc.)
+- [ ] **Large app validation**: Test with 100+ page apps, monorepos
+- [ ] **Performance at scale**: Cold start, memory usage, response time
+  under real traffic patterns on Workers
+- [ ] **Documentation site**: Full docs for vinext + Cloudflare workflow
+- [ ] **PPR (Partial Prerendering)**: Implement if/when Next.js 16
+  stabilizes the API (now "Cache Components")
 
-### Phase 5: Benchmarks — vinext vs Next.js+Turbopack
+### Benchmarks (Phase 5 — COMPLETE)
 
-**Goal**: Quantify the developer experience and production performance advantage of vinext (Vite) over Next.js (Turbopack/webpack). Provide hard numbers for the README and migration guides.
+Results from Phase 5, retained for reference:
 
-#### What to benchmark
+| Metric | Next.js 16 (Turbopack) | vinext (Rollup) | vinext (Rolldown) |
+|--------|----------------------|-----------------|-------------------|
+| Production build | 6.59s | 2.43s (2.7x faster) | 946ms (7.0x faster) |
+| Client bundle (gzip) | 168.9 KB | 75.4 KB (55% smaller) | 73.8 KB (56% smaller) |
+| Dev cold start | 2.20s | 1.37s (1.6x faster) | 1.21s (1.8x faster) |
 
-| Metric | What it measures | Why it matters |
-|--------|-----------------|----------------|
-| **Dev server cold start** | Time from `npm run dev` to first request served | First impression, CI/CD feedback loops |
-| **HMR latency** | Time from file save to update visible in browser | Inner development loop speed |
-| **Production build time** | Full `build` command, cold cache | CI/CD pipeline cost |
-| **Production bundle size** | Total JS + CSS output (gzipped) | Page load speed, bandwidth cost |
-| **SSR response time** | Time to first byte (TTFB) for server-rendered pages | User-facing performance |
-| **Memory usage** | Peak RSS during dev and build | Feasibility on small VPS / CI runners |
-
-#### Configurations to compare
-
-1. **Next.js + Turbopack (dev)** — `next dev` (Turbopack is now the default dev bundler in Next.js 15+; opt out with `--no-turbopack`)
-2. **Next.js + webpack (build)** — `next build` (Turbopack for production builds is not yet stable)
-3. **vinext + Vite (Rollup/esbuild)** — current stable Vite stack (Vite 7, Rollup for production, esbuild for dev transforms)
-4. **vinext + Vite (Rolldown)** — experimental Rust-based bundler being integrated into Vite. Enable via `environments.*.builder: 'rolldown'` or the `vite-rolldown` package. Not yet default but actively landing.
-
-#### Benchmark app
-
-Use a realistic mid-size app (not a hello-world) to make results meaningful:
-- 50+ pages (mix of static, SSR, ISR)
-- App Router with nested layouts, parallel routes
-- Server Components + "use client" boundary
-- `next/image`, `next/font`, metadata API
-- Server Actions, route handlers
-- Third-party deps (typical: tailwind, a UI library, a data-fetching lib)
-
-This can be derived from a popular Next.js template or our own fixture that exercises all major features.
-
-#### Benchmark harness
-
-- Use [hyperfine](https://github.com/sharkdp/hyperfine) for CLI timing (cold start, build time)
-- Use Playwright for HMR latency (save file → measure `page.waitForSelector` of changed content)
-- Use [autocannon](https://github.com/mcollina/autocannon) or `wrk` for SSR throughput/TTFB
-- Run on a consistent environment (same machine or CI runner with `--prepare` warmup)
-- Record results in a markdown table in the repo, or a simple JSON for automated tracking
-
-#### Rolldown-specific notes
-
-Rolldown is the Vite team's Rust-based replacement for Rollup + esbuild (unifying them into one tool). Status as of 2026:
-- Available as experimental in Vite via the Rolldown integration
-- Expected to become Vite's default bundler (likely Vite 8)
-- Key advantages: single Rust toolchain (no JS↔Rust FFI overhead between esbuild and Rollup), faster production builds, better tree-shaking
-- For our benchmark: run the same app with both `builder: 'rollup'` and `builder: 'rolldown'` to show the trajectory
-
-#### Expected outcome
-
-We expect Vite to win on cold start and HMR (esbuild/Rolldown is fast, Vite's lazy module evaluation means less upfront work). Build time should be competitive. With Rolldown, production builds should be significantly faster than webpack. Bundle size should be comparable or better (Rollup/Rolldown tree-shaking is excellent).
-
-The benchmark results give us:
-1. **Hard numbers for the README** — "X seconds cold start vs Y seconds"
-2. **Migration motivation** — developers can see concrete DX improvement
-3. **Regression detection** — track these numbers over time to avoid performance regressions
-4. **Rolldown readiness signal** — know when Rolldown is stable enough to recommend as default
+Future benchmarks should compare Workers-deployed vinext vs Vercel-deployed
+Next.js (TTFB, cold start, global latency) — that's the real comparison
+users care about.
 
 ## Test Harness Strategy
 
@@ -720,11 +737,11 @@ It also makes contribution dead simple - find a red test, make it green.
    everything through Vercel's optimizer or requires you to configure a
    single loader manually.
 
-4. ~~**Edge Runtime**~~ **RESOLVED: Skip it. Run middleware in Node.**
-   Vercel has effectively abandoned the Edge Runtime too. Middleware runs
-   in Node with the standard Node APIs. Minor behavioral differences
-   (e.g. no `crypto.subtle` by default) are acceptable and can be polyfilled
-   if needed. This massively simplifies the implementation.
+4. ~~**Edge Runtime**~~ **RESOLVED: Workers IS the runtime.** Since
+   Cloudflare Workers is the primary target, everything — middleware,
+   SSR, API routes, Server Components — runs in `workerd` natively.
+   This is actually a simpler model than Node.js: one runtime, globally
+   distributed, with Web standard APIs + `nodejs_compat`.
 
 5. **Turbopack-specific behaviors**: Treating the public API as the contract.
    If a behavior only exists because of Turbopack internals, it's not part
@@ -785,10 +802,18 @@ upfront. We'll codify it once we've learned enough from implementation.
 
 ## Non-Goals (Explicit)
 
-- Edge Runtime parity (middleware runs in Node)
-- Canary-only Next.js features and unstable internal flags
-- Undocumented SWC/Turbopack behaviors
-- Provider-specific infrastructure (Vercel-only optimizers or caches)
+- **Generic multi-platform deployment** — AWS, Netlify, Fly.io, generic
+  Node.js servers are not targets. If vinext happens to work there because
+  we use standard APIs, fine. But we won't spend engineering effort on
+  non-Cloudflare deployment paths or maintain adapters for other platforms.
+- **Node.js production server as primary** — `vinext start` exists for
+  local testing convenience, but the real production target is Workers.
+  We won't optimize Node.js server performance or add Node-specific
+  production features.
+- **Canary-only Next.js features** and unstable internal flags
+- **Undocumented SWC/Turbopack behaviors**
+- **Vercel-specific infrastructure** (Vercel's image optimizer, their
+  edge network, their caching layer, their serverless format)
 
 ## Remaining Open Questions
 
@@ -797,24 +822,24 @@ upfront. We'll codify it once we've learned enough from implementation.
 
 ## Success Criteria
 
-- **Phase 0**: Pages Router hello-world renders. Basic routing works.
-- **Phase 1**: Full Pages Router compat. Production builds. `getServerSideProps`/`getStaticProps`/API routes all work.
-- **Phase 2**: App Router basics work. RSC renders. Server Actions function.
-- **Phase 3**: 50%+ of Next.js e2e tests pass. Are We Vite Yet? dashboard live.
-- **Phase 4**: 80%+ pass rate. Real-world apps can migrate. Deploy-anywhere guides.
+- **Phases 0–5**: DONE. Full Pages + App Router, Workers integration, benchmarks.
+- **Phase 6**: Interactive apps work on Workers (client hydration, navigation, state).
+- **Phase 7**: `vinext deploy` takes a Next.js app to a workers.dev URL in one command.
+- **Phase 8**: Cloudflare bindings (KV, R2, D1, AI) accessible from Next.js server code.
+- **Phase 9**: Smooth migration DX. `vinext check` reports compat. Helpful error messages.
+- **Phase 10**: Real-world apps migrate. Ecosystem libraries work. Production-ready.
 
 ## Prior Art & References
 
-- [OpenNext](https://opennext.js.org/) - Deploy Next.js anywhere (AWS/Cloudflare/Netlify adapters). Proves demand for portability.
+- [OpenNext](https://opennext.js.org/) - Deploy Next.js anywhere (AWS/Cloudflare/Netlify adapters). Proves demand but demonstrates the fragility of adapter-based approaches.
 - [`@vitejs/plugin-rsc`](https://www.npmjs.com/package/@vitejs/plugin-rsc) - Official Vite RSC plugin. Our foundation.
 - [`@cloudflare/vite-plugin`](https://www.npmjs.com/package/@cloudflare/vite-plugin) - Cloudflare Workers Vite plugin (310k weekly downloads). Compatible with plugin-rsc via Environment API.
+- [`worker-fs-mount`](https://github.com/danlapid/worker-fs-mount) - Mount WorkerEntrypoints as virtual filesystems. Backends: R2, Durable Objects (SQLite), in-memory.
+- [Cloudflare `node:fs` docs](https://developers.cloudflare.com/workers/runtime-apis/nodejs/fs/) - Built-in VFS: `/bundle/` (read-only), `/tmp/` (per-request writable), `/dev/*` devices.
 - [`vite-imagetools`](https://www.npmjs.com/package/vite-imagetools) - Sharp-powered image optimization for Vite (109k weekly downloads)
-- [`@unpic/react`](https://www.npmjs.com/package/@unpic/react) - Universal image component, auto-detects CDNs (40k weekly downloads)
+- [`@unpic/react`](https://www.npmjs.com/package/@unpic/react) - Universal image component, auto-detects CDNs including Cloudflare Image Resizing (40k weekly downloads)
 - [Vike](https://vike.dev/) - Vite-based SSR framework (different API)
-- [Vinxi](https://vinxi.vercel.app/) - Framework-agnostic server layer on Vite/Nitro
-- [TanStack Start](https://tanstack.com/start) - Full-stack React on Vite (different API)
 - [Waku](https://waku.gg/) - Minimal RSC framework on Vite
 - [Are We Turbo Yet?](https://areweturboyet.com/) - Vercel's Turbopack progress tracker. Inspiration for our dashboard.
 - Next.js repo: https://github.com/vercel/next.js
-- Next.js e2e tests: `test/e2e/`, especially `test/e2e/app-dir/`
 - Existing POC: AI chatbot example (internal, built by team member)
