@@ -4159,52 +4159,429 @@ describe("i18n config parsing", () => {
 });
 
 // ---------------------------------------------------------------------------
+// i18n utility functions (unit tests)
+// ---------------------------------------------------------------------------
+
+describe("extractLocaleFromUrl", () => {
+  let extractLocaleFromUrl: typeof import("../packages/vinext/src/server/dev-server.js").extractLocaleFromUrl;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/server/dev-server.js");
+    extractLocaleFromUrl = mod.extractLocaleFromUrl;
+  });
+
+  const i18nConfig = {
+    locales: ["en", "fr", "de"],
+    defaultLocale: "en",
+    localeDetection: true,
+  };
+
+  it("extracts locale prefix from URL", () => {
+    const result = extractLocaleFromUrl("/fr/about", i18nConfig);
+    expect(result).toEqual({ locale: "fr", url: "/about", hadPrefix: true });
+  });
+
+  it("extracts locale from root URL", () => {
+    const result = extractLocaleFromUrl("/de/", i18nConfig);
+    expect(result).toEqual({ locale: "de", url: "/", hadPrefix: true });
+  });
+
+  it("returns default locale when no prefix", () => {
+    const result = extractLocaleFromUrl("/about", i18nConfig);
+    expect(result).toEqual({ locale: "en", url: "/about", hadPrefix: false });
+  });
+
+  it("preserves query string", () => {
+    const result = extractLocaleFromUrl("/fr/page?foo=bar", i18nConfig);
+    expect(result.locale).toBe("fr");
+    expect(result.url).toBe("/page?foo=bar");
+    expect(result.hadPrefix).toBe(true);
+  });
+
+  it("does not match unknown locale prefixes", () => {
+    const result = extractLocaleFromUrl("/es/about", i18nConfig);
+    expect(result).toEqual({ locale: "en", url: "/es/about", hadPrefix: false });
+  });
+
+  it("handles root path without prefix", () => {
+    const result = extractLocaleFromUrl("/", i18nConfig);
+    expect(result).toEqual({ locale: "en", url: "/", hadPrefix: false });
+  });
+
+  it("handles multi-segment paths", () => {
+    const result = extractLocaleFromUrl("/fr/docs/api/routes", i18nConfig);
+    expect(result.locale).toBe("fr");
+    expect(result.url).toBe("/docs/api/routes");
+  });
+});
+
+describe("detectLocaleFromHeaders", () => {
+  let detectLocaleFromHeaders: typeof import("../packages/vinext/src/server/dev-server.js").detectLocaleFromHeaders;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/server/dev-server.js");
+    detectLocaleFromHeaders = mod.detectLocaleFromHeaders;
+  });
+
+  const i18nConfig = {
+    locales: ["en", "fr", "de"],
+    defaultLocale: "en",
+    localeDetection: true,
+  };
+
+  function fakeReq(acceptLanguage?: string) {
+    return { headers: acceptLanguage ? { "accept-language": acceptLanguage } : {} } as any;
+  }
+
+  it("returns null when no Accept-Language header", () => {
+    expect(detectLocaleFromHeaders(fakeReq(), i18nConfig)).toBeNull();
+  });
+
+  it("detects exact locale match", () => {
+    expect(detectLocaleFromHeaders(fakeReq("fr"), i18nConfig)).toBe("fr");
+  });
+
+  it("detects locale by quality preference", () => {
+    expect(detectLocaleFromHeaders(fakeReq("de;q=0.9,fr;q=0.8"), i18nConfig)).toBe("de");
+  });
+
+  it("detects locale via prefix match (en-US -> en)", () => {
+    expect(detectLocaleFromHeaders(fakeReq("en-US"), i18nConfig)).toBe("en");
+  });
+
+  it("detects locale via prefix match (fr-FR -> fr)", () => {
+    expect(detectLocaleFromHeaders(fakeReq("fr-FR,en;q=0.5"), i18nConfig)).toBe("fr");
+  });
+
+  it("returns null for unrecognized language", () => {
+    expect(detectLocaleFromHeaders(fakeReq("ja"), i18nConfig)).toBeNull();
+  });
+
+  it("picks highest quality match", () => {
+    // fr has higher quality than en
+    expect(detectLocaleFromHeaders(fakeReq("en;q=0.5,fr;q=0.9"), i18nConfig)).toBe("fr");
+  });
+
+  it("handles complex Accept-Language with fallback", () => {
+    // Japanese first (no match), then French
+    expect(detectLocaleFromHeaders(fakeReq("ja;q=1.0,fr;q=0.8,en;q=0.5"), i18nConfig)).toBe("fr");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // i18n routing integration (Pages Router)
 // ---------------------------------------------------------------------------
 
 describe("i18n routing (Pages Router)", () => {
-  let server: ViteDevServer;
-  let baseUrl: string;
+  let i18nServer: ViteDevServer;
+  let i18nBaseUrl: string;
+  let i18nTmpDir: string;
 
-  // Create a fixture server with i18n config
   beforeAll(async () => {
-    const vinext = (
-      await import("../packages/vinext/src/index.js")
-    ).default;
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
 
-    server = await createServer({
-      root: FIXTURE_DIR,
+    i18nTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-i18n-"));
+
+    // Symlink node_modules from root
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(i18nTmpDir, "node_modules"), "junction");
+
+    // next.config.mjs with i18n
+    await fsp.writeFile(
+      path.join(i18nTmpDir, "next.config.mjs"),
+      `export default {
+  i18n: {
+    locales: ["en", "fr", "de"],
+    defaultLocale: "en",
+  },
+};`,
+    );
+
+    await fsp.mkdir(path.join(i18nTmpDir, "pages"), { recursive: true });
+
+    // Home page
+    await fsp.writeFile(
+      path.join(i18nTmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    // About page — uses getServerSideProps to expose locale
+    await fsp.writeFile(
+      path.join(i18nTmpDir, "pages", "about.tsx"),
+      `export function getServerSideProps({ locale, locales, defaultLocale }) {
+  return { props: { locale: locale || null, locales: locales || [], defaultLocale: defaultLocale || null } };
+}
+export default function About({ locale, locales, defaultLocale }) {
+  return (
+    <div>
+      <h1>About</h1>
+      <p id="locale">{locale}</p>
+      <p id="locales">{locales.join(",")}</p>
+      <p id="defaultLocale">{defaultLocale}</p>
+    </div>
+  );
+}`,
+    );
+
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins: any[] = [vinext()];
+    i18nServer = await createServer({
+      root: i18nTmpDir,
       configFile: false,
-      plugins: [vinext()],
+      plugins,
       server: { port: 0 },
       logLevel: "silent",
     });
-    await server.listen();
-    const addr = server.httpServer?.address();
+
+    await i18nServer.listen();
+    const addr = i18nServer.httpServer?.address();
     if (addr && typeof addr === "object") {
-      baseUrl = `http://localhost:${addr.port}`;
+      i18nBaseUrl = `http://localhost:${addr.port}`;
     }
-  });
+  }, 30000);
 
   afterAll(async () => {
-    await server?.close();
+    try {
+      (i18nServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        i18nServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(i18nTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  // --- Basic routing ---
+
+  it("renders the home page without locale prefix (default locale)", async () => {
+    const res = await fetch(`${i18nBaseUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Home");
   });
 
-  it("renders pages at locale-prefixed URLs when i18n configured", async () => {
-    // The pages-basic fixture doesn't have i18n in its next.config,
-    // so locale prefixes won't be stripped. But we can test that
-    // the server still works normally without i18n.
-    const res = await fetch(`${baseUrl}/about`);
+  it("renders the about page without locale prefix", async () => {
+    const res = await fetch(`${i18nBaseUrl}/about`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("About");
   });
 
-  it("passes locale context to getServerSideProps when available", async () => {
-    // Without i18n config, locale should be undefined in GSSP context
-    // This test verifies the SSR context plumbing works
-    const res = await fetch(`${baseUrl}/ssr`);
+  it("renders the about page with default locale prefix (/en/about)", async () => {
+    const res = await fetch(`${i18nBaseUrl}/en/about`);
     expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
+  });
+
+  it("renders the about page with non-default locale prefix (/fr/about)", async () => {
+    const res = await fetch(`${i18nBaseUrl}/fr/about`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
+  });
+
+  it("renders the home page with non-default locale prefix (/de/)", async () => {
+    const res = await fetch(`${i18nBaseUrl}/de/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Home");
+  });
+
+  // --- Locale context in getServerSideProps ---
+
+  it("passes default locale to getServerSideProps when no prefix", async () => {
+    const res = await fetch(`${i18nBaseUrl}/about`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // locale should be "en" (default)
+    expect(html).toMatch(/<p id="locale">.*en.*<\/p>/);
+    // locales array
+    expect(html).toMatch(/<p id="locales">.*en,fr,de.*<\/p>/);
+    // defaultLocale
+    expect(html).toMatch(/<p id="defaultLocale">.*en.*<\/p>/);
+  });
+
+  it("passes correct locale to getServerSideProps for /fr/about", async () => {
+    const res = await fetch(`${i18nBaseUrl}/fr/about`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/<p id="locale">.*fr.*<\/p>/);
+  });
+
+  it("passes correct locale to getServerSideProps for /de/about", async () => {
+    const res = await fetch(`${i18nBaseUrl}/de/about`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/<p id="locale">.*de.*<\/p>/);
+  });
+
+  // --- __NEXT_DATA__ locale info ---
+
+  it("includes locale info in __NEXT_DATA__ script", async () => {
+    const res = await fetch(`${i18nBaseUrl}/fr/about`);
+    const html = await res.text();
+    // Extract the JSON object from __NEXT_DATA__ (handles nested braces)
+    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    expect(dataMatch).not.toBeNull();
+    const data = JSON.parse(dataMatch![1]);
+    expect(data.locale).toBe("fr");
+    expect(data.locales).toEqual(["en", "fr", "de"]);
+    expect(data.defaultLocale).toBe("en");
+  });
+
+  it("includes locale info in __NEXT_DATA__ for default locale", async () => {
+    const res = await fetch(`${i18nBaseUrl}/about`);
+    const html = await res.text();
+    const dataMatch = html.match(/__NEXT_DATA__\s*=\s*(\{[^<]+\})/);
+    expect(dataMatch).not.toBeNull();
+    const data = JSON.parse(dataMatch![1]);
+    expect(data.locale).toBe("en");
+    expect(data.defaultLocale).toBe("en");
+  });
+
+  // --- Accept-Language detection + redirect ---
+
+  it("redirects to detected locale based on Accept-Language header", async () => {
+    const res = await fetch(`${i18nBaseUrl}/about`, {
+      redirect: "manual",
+      headers: { "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8" },
+    });
+    // Should 307 redirect to /fr/about
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/fr/about");
+  });
+
+  it("redirects to /de for Accept-Language: de on root", async () => {
+    const res = await fetch(`${i18nBaseUrl}/`, {
+      redirect: "manual",
+      headers: { "Accept-Language": "de" },
+    });
+    expect(res.status).toBe(307);
+    // Redirect to /{locale}{url} — for root ("/"), produces "/de/"
+    // Implementation uses `/${detectedLocale}${url}` where url is "/"
+    const loc = res.headers.get("location");
+    // Accept either /de or /de/ depending on implementation
+    expect(loc).toMatch(/^\/de\/?$/);
+  });
+
+  it("does not redirect when Accept-Language matches default locale", async () => {
+    const res = await fetch(`${i18nBaseUrl}/about`, {
+      redirect: "manual",
+      headers: { "Accept-Language": "en-US,en;q=0.9" },
+    });
+    // Should NOT redirect — default locale matches
+    expect(res.status).toBe(200);
+  });
+
+  it("does not redirect when URL already has locale prefix", async () => {
+    const res = await fetch(`${i18nBaseUrl}/fr/about`, {
+      redirect: "manual",
+      headers: { "Accept-Language": "de" },
+    });
+    // Already has /fr prefix — should serve directly, no redirect
+    expect(res.status).toBe(200);
+  });
+
+  it("does not redirect for unknown Accept-Language", async () => {
+    const res = await fetch(`${i18nBaseUrl}/about`, {
+      redirect: "manual",
+      headers: { "Accept-Language": "ja" },
+    });
+    // Japanese not in locales — falls back to default, no redirect
+    expect(res.status).toBe(200);
+  });
+
+  // --- 404 for unknown locale prefix ---
+
+  it("returns 404 for unknown locale prefix", async () => {
+    const res = await fetch(`${i18nBaseUrl}/es/about`);
+    // "es" is not in locales — should not match as a locale
+    // The URL /es/about won't match any page
+    expect(res.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// i18n localeDetection: false
+// ---------------------------------------------------------------------------
+
+describe("i18n localeDetection: false", () => {
+  let noDetectServer: ViteDevServer;
+  let noDetectBaseUrl: string;
+  let noDetectTmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    noDetectTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-i18n-nodetect-"));
+
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(noDetectTmpDir, "node_modules"), "junction");
+
+    await fsp.writeFile(
+      path.join(noDetectTmpDir, "next.config.mjs"),
+      `export default {
+  i18n: {
+    locales: ["en", "fr"],
+    defaultLocale: "en",
+    localeDetection: false,
+  },
+};`,
+    );
+
+    await fsp.mkdir(path.join(noDetectTmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(noDetectTmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins: any[] = [vinext()];
+    noDetectServer = await createServer({
+      root: noDetectTmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await noDetectServer.listen();
+    const addr = noDetectServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      noDetectBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (noDetectServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        noDetectServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(noDetectTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("does NOT redirect based on Accept-Language when localeDetection is false", async () => {
+    const res = await fetch(`${noDetectBaseUrl}/`, {
+      redirect: "manual",
+      headers: { "Accept-Language": "fr" },
+    });
+    // localeDetection: false means no auto-redirect — serve with default locale
+    expect(res.status).toBe(200);
+  });
+
+  it("still serves locale-prefixed URLs when localeDetection is false", async () => {
+    const res = await fetch(`${noDetectBaseUrl}/fr/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Home");
   });
 });
 

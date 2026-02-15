@@ -70,7 +70,7 @@ function findFileWithExtensions(basePath: string): boolean {
  * e.g. /fr/about -> { locale: "fr", url: "/about", hadPrefix: true }
  *      /about    -> { locale: "en", url: "/about", hadPrefix: false } (defaultLocale)
  */
-function extractLocaleFromUrl(
+export function extractLocaleFromUrl(
   url: string,
   i18nConfig: NextI18nConfig,
 ): { locale: string; url: string; hadPrefix: boolean } {
@@ -91,7 +91,7 @@ function extractLocaleFromUrl(
  * Detect the preferred locale from the Accept-Language header.
  * Returns the best matching locale or null.
  */
-function detectLocaleFromHeaders(
+export function detectLocaleFromHeaders(
   req: IncomingMessage,
   i18nConfig: NextI18nConfig,
 ): string | null {
