@@ -26,8 +26,12 @@ export default defineConfig({
       name: "pages-router-prod",
       testDir: "./tests/e2e/pages-router-prod",
     },
+    {
+      name: "cloudflare-workers",
+      testDir: "./tests/e2e/cloudflare-workers",
+    },
   ],
-  // Build the plugin, then start dev servers and the production server
+  // Build the plugin, then start dev servers, production server, and Workers
   webServer: [
     {
       command:
@@ -58,6 +62,15 @@ export default defineConfig({
         "npx tsc -p ../../packages/vinext/tsconfig.json && node ../../packages/vinext/dist/cli.js build && node ../../packages/vinext/dist/cli.js start --port 4175",
       cwd: "./fixtures/pages-basic",
       port: 4175,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+    {
+      // Build cloudflare-app with Vite, then serve with wrangler dev (miniflare)
+      command:
+        "npx vite build && npx wrangler dev --config dist/vinext_cloudflare_app/wrangler.json --port 4176",
+      cwd: "./fixtures/cloudflare-app",
+      port: 4176,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,
     },
