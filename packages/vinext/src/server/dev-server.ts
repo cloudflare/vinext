@@ -195,6 +195,13 @@ export function createSSRHandler(
         });
       }
 
+      // Set globalThis locale info for Link component locale prop support during SSR
+      if (i18nConfig) {
+        (globalThis as any).__VINEXT_LOCALE__ = locale ?? i18nConfig.defaultLocale;
+        (globalThis as any).__VINEXT_LOCALES__ = i18nConfig.locales;
+        (globalThis as any).__VINEXT_DEFAULT_LOCALE__ = i18nConfig.defaultLocale;
+      }
+
       // Load the page module through Vite's SSR pipeline
       // This gives us HMR and transform support for free
       const pageModule = await server.ssrLoadModule(route.filePath);

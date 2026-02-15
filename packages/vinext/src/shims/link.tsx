@@ -212,15 +212,59 @@ function getSharedObserver(): IntersectionObserver | null {
   return sharedObserver;
 }
 
+function getDefaultLocale(): string | undefined {
+  if (typeof window !== "undefined") {
+    return (window as any).__VINEXT_DEFAULT_LOCALE__ as string | undefined;
+  }
+  return (globalThis as any).__VINEXT_DEFAULT_LOCALE__ as string | undefined;
+}
+
+/**
+ * Apply locale prefix to a URL path based on the locale prop.
+ * - locale="fr" → prepend /fr (unless it already has a locale prefix)
+ * - locale={false} → use the href as-is (no locale prefix, link to default)
+ * - locale=undefined → use current locale (href as-is in most cases)
+ */
+function applyLocaleToHref(href: string, locale: string | false | undefined): string {
+  if (locale === false) {
+    // Explicit false: no locale prefix
+    return href;
+  }
+
+  if (locale === undefined) {
+    // No locale prop: keep current behavior (href as-is)
+    return href;
+  }
+
+  // locale is a string: prepend the locale prefix if not already present
+  const defaultLocale = getDefaultLocale();
+  // For the default locale, Next.js doesn't add a prefix
+  if (locale === defaultLocale) {
+    return href;
+  }
+
+  // Check if href already starts with the locale
+  if (href.startsWith(`/${locale}/`) || href === `/${locale}`) {
+    return href;
+  }
+
+  return `/${locale}${href.startsWith("/") ? href : `/${href}`}`;
+}
+
 const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   { href, as, replace = false, prefetch: prefetchProp, scroll = true, children, onClick, onNavigate, ...rest },
   forwardedRef,
 ) {
+  // Extract locale from rest props
+  const { locale, ...restWithoutLocale } = rest as any;
+
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
   // where href is a route pattern like "/user/[id]" and as is "/user/1")
   const resolvedHref = as ?? resolveHref(href);
+  // Apply locale prefix if specified
+  const localizedHref = applyLocaleToHref(resolvedHref, locale);
   // Full href with basePath for browser URLs and fetches
-  const fullHref = withBasePath(resolvedHref);
+  const fullHref = withBasePath(localizedHref);
 
   // Prefetching: observe the element when it enters the viewport.
   // prefetch={false} disables, prefetch={true} or undefined/null (default) enables.
@@ -242,19 +286,19 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (!node) return;
 
     // Don't prefetch external URLs
-    if (resolvedHref.startsWith("http://") || resolvedHref.startsWith("https://") || resolvedHref.startsWith("//")) return;
+    if (localizedHref.startsWith("http://") || localizedHref.startsWith("https://") || localizedHref.startsWith("//")) return;
 
     const observer = getSharedObserver();
     if (!observer) return;
 
-    observerCallbacks.set(node, () => prefetchUrl(resolvedHref));
+    observerCallbacks.set(node, () => prefetchUrl(localizedHref));
     observer.observe(node);
 
     return () => {
       observer.unobserve(node);
       observerCallbacks.delete(node);
     };
-  }, [shouldPrefetch, resolvedHref]);
+  }, [shouldPrefetch, localizedHref]);
 
   const handleClick = async (e: MouseEvent<HTMLAnchorElement>) => {
     if (onClick) onClick(e);
@@ -364,7 +408,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   };
 
   // Remove props that shouldn't be on <a>
-  const { passHref: _p, locale: _l, ...anchorProps } = rest;
+  const { passHref: _p, ...anchorProps } = restWithoutLocale;
 
   return (
     <a ref={setRefs} href={fullHref} onClick={handleClick} {...anchorProps}>

@@ -4737,6 +4737,132 @@ export default function About({ locale, locales, defaultLocale }) {
 });
 
 // ---------------------------------------------------------------------------
+// Link locale prop
+// ---------------------------------------------------------------------------
+
+describe("Link locale prop", () => {
+  let linkLocaleServer: ViteDevServer;
+  let linkLocaleBaseUrl: string;
+  let linkLocaleTmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    linkLocaleTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-link-locale-"));
+
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(linkLocaleTmpDir, "node_modules"), "junction");
+
+    await fsp.writeFile(
+      path.join(linkLocaleTmpDir, "next.config.mjs"),
+      `export default {
+  i18n: {
+    locales: ["en", "fr", "de"],
+    defaultLocale: "en",
+  },
+};`,
+    );
+
+    await fsp.mkdir(path.join(linkLocaleTmpDir, "pages"), { recursive: true });
+
+    // Page with Link components using locale prop
+    await fsp.writeFile(
+      path.join(linkLocaleTmpDir, "pages", "index.tsx"),
+      `import Link from "next/link";
+
+export default function Home() {
+  return (
+    <div>
+      <h1>Link Locale Test</h1>
+      <Link href="/about" locale="fr" id="link-fr">French About</Link>
+      <Link href="/about" locale="de" id="link-de">German About</Link>
+      <Link href="/about" locale="en" id="link-en">English About</Link>
+      <Link href="/about" id="link-default">Default About</Link>
+      <Link href="/about" locale={false} id="link-no-locale">No Locale</Link>
+    </div>
+  );
+}`,
+    );
+
+    await fsp.writeFile(
+      path.join(linkLocaleTmpDir, "pages", "about.tsx"),
+      `export default function About() { return <h1>About</h1>; }`,
+    );
+
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins: any[] = [vinext()];
+    linkLocaleServer = await createServer({
+      root: linkLocaleTmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await linkLocaleServer.listen();
+    const addr = linkLocaleServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      linkLocaleBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (linkLocaleServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        linkLocaleServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(linkLocaleTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("Link with locale='fr' renders href with /fr prefix", async () => {
+    const res = await fetch(`${linkLocaleBaseUrl}/`);
+    const html = await res.text();
+    // React may render attributes in any order — check both
+    expect(html).toMatch(/href="\/fr\/about"[^>]*id="link-fr"|id="link-fr"[^>]*href="\/fr\/about"/);
+  });
+
+  it("Link with locale='de' renders href with /de prefix", async () => {
+    const res = await fetch(`${linkLocaleBaseUrl}/`);
+    const html = await res.text();
+    expect(html).toMatch(/href="\/de\/about"[^>]*id="link-de"|id="link-de"[^>]*href="\/de\/about"/);
+  });
+
+  it("Link with locale='en' (default) renders href without locale prefix", async () => {
+    const res = await fetch(`${linkLocaleBaseUrl}/`);
+    const html = await res.text();
+    // Default locale should NOT have a prefix in the URL
+    // The <a> with id="link-en" should have href="/about" (not /en/about)
+    const linkMatch = html.match(/href="([^"]*)"[^>]*id="link-en"|id="link-en"[^>]*href="([^"]*)"/);
+    expect(linkMatch).not.toBeNull();
+    const href = linkMatch![1] || linkMatch![2];
+    expect(href).toBe("/about");
+  });
+
+  it("Link without locale prop renders href without locale prefix", async () => {
+    const res = await fetch(`${linkLocaleBaseUrl}/`);
+    const html = await res.text();
+    const linkMatch = html.match(/href="([^"]*)"[^>]*id="link-default"|id="link-default"[^>]*href="([^"]*)"/);
+    expect(linkMatch).not.toBeNull();
+    const href = linkMatch![1] || linkMatch![2];
+    expect(href).toBe("/about");
+  });
+
+  it("Link with locale={false} renders href without locale prefix", async () => {
+    const res = await fetch(`${linkLocaleBaseUrl}/`);
+    const html = await res.text();
+    const linkMatch = html.match(/href="([^"]*)"[^>]*id="link-no-locale"|id="link-no-locale"[^>]*href="([^"]*)"/);
+    expect(linkMatch).not.toBeNull();
+    const href = linkMatch![1] || linkMatch![2];
+    expect(href).toBe("/about");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // i18n localeDetection: false
 // ---------------------------------------------------------------------------
 
