@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "vinext-cloudflare-app",
-  "compatibility_date": "2026-02-14",
+  "compatibility_date": "2026-02-12",
   "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.ts",
   "assets": {

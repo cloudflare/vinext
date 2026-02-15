@@ -12,9 +12,10 @@ export default defineConfig({
         ssr: "virtual:vinext-app-ssr-entry",
         client: "virtual:vinext-app-browser-entry",
       },
-      // In dev: RSC and SSR run on Node.js, Worker calls via RPC.
-      // In build: This flag is ignored — cross-env imports become static import() calls.
-      loadModuleDevProxy: true,
+      // loadModuleDevProxy defaults to false — Worker calls RSC/SSR via
+      // __VITE_ENVIRONMENT_RUNNER_IMPORT__ directly inside the same workerd
+      // isolate (no Node.js RPC hop). This works because childEnvironments
+      // puts all module runners in the same Durable Object.
     }),
     cloudflare({
       // Link RSC/SSR as child environments so they're built with workerd
