@@ -409,3 +409,22 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
   1. **Regex branch**: Activated when the pattern contains `(` or `\`. Extracts named params and their constraints, builds a regex with proper capture groups. Handles `:param*`, `:param+`, `:param(constraint)`, and plain `:param`.
   2. **Catch-all branch**: For patterns ending with `:param*` or `:param+` without regex groups. Checks prefix match and extracts the remaining path segments.
   3. **Segment-based branch**: Simple exact-segment matching for patterns with only plain `:param` tokens.
+
+### next/dynamic Loader Rejection Crashes SSR (FIXED)
+- **Symptom**: If a `dynamic()` loader function throws or rejects during SSR, `flushPreloads()` crashes via `Promise.all()` rejection, taking down the entire SSR render.
+- **Root cause**: The `loadPromise` from `loader().then(...)` was pushed directly into `preloadQueue`. `flushPreloads()` calls `Promise.all(pending)`, which rejects on the first rejection. No `.catch()` handler existed on the load promise.
+- **Fix**: Added `.catch()` to the load promise that captures the error into a `loadError` variable instead of propagating the rejection. The `ServerDynamic` component checks `loadError` and renders the loading component with `{ error: loadError, isLoading: false }` (or nothing if no loading component).
+
+### GSSP Redirect `statusCode` Was Ignored (FIXED)
+- **Symptom**: `getServerSideProps` returning `{ redirect: { destination: "/target", statusCode: 302 } }` used 307 instead of 302.
+- **Root cause**: The redirect handler only checked `redirect.permanent` (true → 308, false → 307). The `statusCode` property was never read.
+- **Fix**: Added `redirect.statusCode ?? (redirect.permanent ? 308 : 307)` to both GSSP and GSP redirect handlers in `dev-server.ts`.
+
+### Undeclared `isrRevalidateSeconds` Variable (FIXED)
+- **Symptom**: Pages using `getStaticProps` with a `revalidate` value in isolated test fixtures (no `_document.tsx`, no pre-existing ISR infrastructure) crashed with `ReferenceError: isrRevalidateSeconds is not defined`.
+- **Root cause**: The variable `isrRevalidateSeconds` was assigned at line ~390 in `dev-server.ts` but never declared with `let`. In the main fixture, the variable was accidentally captured from a surrounding scope, masking the bug.
+- **Fix**: Added `let isrRevalidateSeconds: number | null = null;` declaration at the top of the SSR handler function.
+
+### NEXT_LOCALE Cookie Not Supported (FIXED)
+- **Symptom**: Next.js uses a `NEXT_LOCALE` cookie to remember a user's explicit locale preference. Our dev server and production server only used `Accept-Language` header detection for i18n redirects — the cookie was completely ignored.
+- **Fix**: Added `parseCookieLocale()` function that extracts and validates the `NEXT_LOCALE` cookie value against configured locales. The i18n redirect logic now checks the cookie first (higher priority than Accept-Language). If the cookie matches the default locale, no redirect occurs (suppressing Accept-Language-based redirect). Implemented in both dev server and production virtual server entry.

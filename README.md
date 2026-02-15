@@ -204,7 +204,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | Intercepting routes | Full | `(.)`, `(..)`, `(..)(..)`, `(...)` conventions |
 | Route handlers (`route.ts`) | Full | Named HTTP methods, auto OPTIONS/HEAD, cookie attachment |
 | Middleware (`middleware.ts`) | Full | Matcher patterns (string, array, regex, `:param`, `:path*`, `:path+`), redirect/rewrite/next/custom response |
-| i18n routing | Partial | Pages Router locale prefix + Accept-Language detection. No domain-based routing |
+| i18n routing | Partial | Pages Router locale prefix, Accept-Language detection, NEXT_LOCALE cookie, `locale` prop on Link + router.push/replace. No domain-based routing |
 | `basePath` | Full | Applied everywhere — URLs, Link, Router, navigation hooks |
 | `trailingSlash` | Full | 308 redirects to canonical form |
 
@@ -333,20 +333,20 @@ fixtures/                 # Test fixtures
 
 tests/
   routing.test.ts         # 45 unit tests
-  integration.test.ts     # 497 integration tests
-  e2e/                    # 76 Playwright E2E tests
+  integration.test.ts     # 545 integration tests
+  e2e/                    # 81 Playwright E2E tests
 ```
 
 ## Tests
 
 ```bash
-npm test              # Run vitest (542 unit + integration tests)
-npm run test:e2e      # Run Playwright E2E tests (76 tests)
+npm test              # Run vitest (590 unit + integration tests)
+npm run test:e2e      # Run Playwright E2E tests (81 tests)
 npm run typecheck     # TypeScript checking (tsgo)
 npm run lint          # Linting (oxlint)
 ```
 
-The test suite covers routing, SSR, API routes, metadata, ISR, server actions (including `useActionState` and redirect-after-action), basePath, middleware matchers, cookies, i18n routing (locale detection, Accept-Language redirect, locale context in getServerSideProps), CSS modules, `next/dynamic`, `next/form`, parameterized redirects/rewrites with catch-all patterns, static export, streaming, client hydration, navigation, error boundaries, and more.
+The test suite covers routing, SSR, API routes, metadata, ISR, server actions (including `useActionState` and redirect-after-action), basePath, middleware matchers, cookies, i18n routing (locale detection, Accept-Language redirect, NEXT_LOCALE cookie override, locale context in getServerSideProps), CSS modules, `next/dynamic` (including error handling), `next/form` GET interception, parameterized redirects/rewrites with catch-all patterns, chained middleware → config rewrites, GSSP redirect statusCode variants, static export, streaming, client hydration, navigation, error boundaries, and more.
 
 The [Vercel App Router Playground](https://github.com/vercel/next-app-router-playground) runs on vinext as an integration test — all 11 sections render correctly in both dev and production builds.
 
