@@ -1,21 +1,27 @@
 # vinext
 
-A Vite plugin that reimplements the Next.js API surface so existing Next.js applications can run on Vite and deploy anywhere.
+Run your Next.js app on Cloudflare Workers. One command to deploy.
 
-> **Status: Experimental.** This project is under active development. It covers a large portion of the Next.js API but is not yet production-ready. See [API Coverage](#api-coverage) for details.
+> **Status: Experimental.** Under active development. Covers ~85% of the Next.js API surface. See [API Coverage](#api-coverage) for details.
 
 > **Note:** This project is heavily AI-driven — the majority of the code, tests, and documentation were written with Claude Code (Anthropic's coding agent). Human direction guides architecture, priorities, and design decisions; AI handles implementation.
 
 ## Why
 
-Next.js is tightly coupled to Vercel's infrastructure. If you want to deploy to Cloudflare Workers, a $5 VPS, AWS, Fly.io, or anywhere else, you're fighting the framework rather than working with it.
+Next.js is locked to Vercel. Cloudflare Workers is a better runtime —
+zero cold starts, global by default, integrated platform (KV, R2, D1, AI) —
+but you can't run Next.js on it without fighting OpenNext adapters that
+constantly lag behind.
 
-vinext lets you keep your existing Next.js code — pages, layouts, API routes, server components — and run it on Vite. No vendor lock-in. Standard Web APIs. Deploy anywhere.
+vinext reimplements the Next.js API surface on Vite, with Cloudflare Workers
+as the primary deployment target. Keep your existing Next.js code — pages,
+layouts, API routes, server components — and deploy to Workers. No adapter
+layer. No compatibility hacks. A clean build from scratch.
 
 ### Design principles
 
-- **Deploy anywhere by default.** Everything uses standard Web APIs (Request/Response/fetch/streams). If it works on a $5 VPS, it works everywhere.
-- **Cloudflare Workers is a first-class target.** Designed to work with `@cloudflare/vite-plugin`.
+- **Cloudflare-first.** Workers is THE deployment target. Every feature is built and tested for Workers. If it also works on Node.js, that's a bonus.
+- **Near-full Node.js compatibility.** Workers with `nodejs_compat` supports ~85% of Node APIs. `node:fs` is built-in ([docs](https://developers.cloudflare.com/workers/runtime-apis/nodejs/fs/)) and can be extended with persistent mounts via [`worker-fs-mount`](https://github.com/danlapid/worker-fs-mount) (R2, Durable Objects backends).
 - **Pragmatic compatibility, not bug-for-bug parity.** Targets 95%+ of real-world Next.js apps. Edge cases that depend on undocumented Vercel behavior are intentionally not supported.
 - **Latest Next.js only.** Targets Next.js 16.x. No support for deprecated APIs from older versions.
 - **Incremental adoption.** Drop in the plugin, fix what breaks, deploy.
@@ -40,9 +46,9 @@ Replace `next` with `vinext` in your scripts:
 ```
 
 ```bash
-vinext dev          # Development server
-vinext build        # Production build
-vinext start        # Production server
+vinext dev          # Development server (runs in workerd via Cloudflare plugin)
+vinext build        # Production build (worker + client bundles)
+vinext start        # Local production server (for testing)
 ```
 
 That's it. No `vite.config.ts` needed. vinext auto-detects your `app/` or `pages/` directory, loads `next.config.js`, and configures Vite with RSC support automatically.
@@ -53,16 +59,16 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 | Command | Description |
 |---------|-------------|
-| `vinext dev` | Start Vite dev server with HMR |
-| `vinext build` | Multi-environment production build (RSC + SSR + client) |
-| `vinext start` | Start production server with SSR, compression, middleware |
+| `vinext dev` | Start dev server with HMR (workerd runtime via Cloudflare plugin) |
+| `vinext build` | Multi-environment production build (RSC + SSR + client + worker) |
+| `vinext start` | Start local production server for testing |
 | `vinext lint` | Delegate to eslint (with eslint-config-next) or oxlint |
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
-### Deploy to Cloudflare Workers
+## Deploy to Cloudflare Workers
 
-Cloudflare Workers is a first-class deployment target. Both App Router and Pages Router work on Workers.
+Cloudflare Workers is the primary deployment target. Both App Router and Pages Router work on Workers.
 
 #### App Router on Workers
 
@@ -183,7 +189,7 @@ export default {
 
 See `fixtures/cloudflare-pages/` for a complete working example.
 
-> **Note:** Pages Router on Workers currently has SSR but no client-side hydration. The `@cloudflare/vite-plugin` only builds the worker environment — client JS bundles are not yet emitted. SSR content renders correctly but there's no React interactivity. See [Future Work](#whats-experimental--known-limitations) for details.
+> Both Pages Router and App Router have full client-side hydration on Workers. Interactive components, client-side navigation, and React state all work.
 
 #### Cloudflare KV Cache Handler
 
@@ -196,6 +202,15 @@ import { KVCacheHandler } from "vinext/cloudflare";
 const cacheHandler = new KVCacheHandler(env.MY_KV_NAMESPACE);
 ```
 
+#### Node.js compatibility on Workers
+
+Workers with `nodejs_compat` supports ~85% of Node.js APIs. `node:fs` is
+built-in with a virtual filesystem (`/bundle/` for read-only bundle access,
+`/tmp/` for per-request writes). For persistent filesystem operations, use
+[`worker-fs-mount`](https://github.com/danlapid/worker-fs-mount) to mount
+R2 or Durable Object storage behind standard `fs.readFile`/`fs.writeFile`
+APIs. [Cloudflare node:fs docs](https://developers.cloudflare.com/workers/runtime-apis/nodejs/fs/).
+
 #### Build and deploy
 
 ```bash
@@ -204,6 +219,8 @@ npx wrangler deploy   # Deploys to Cloudflare Workers
 ```
 
 Both `wrangler dev` (local dev with miniflare) and `npx vite dev` (Vite dev server) work for local development.
+
+> **Coming soon: `vinext deploy`** — a single command that handles build + deploy + auto-generates wrangler config and worker entry if they don't exist. Zero manual setup.
 
 ### Advanced: custom Vite config
 
@@ -334,12 +351,13 @@ The `CacheHandler` interface matches Next.js 16's shape, so community adapters s
 
 These are intentional exclusions, not bugs:
 
-- **Vercel-specific features** — `@vercel/og` edge runtime, Vercel Analytics integration, Vercel KV/Blob/Postgres bindings. Use the platform-agnostic equivalents.
+- **Vercel-specific features** — `@vercel/og` edge runtime, Vercel Analytics integration, Vercel KV/Blob/Postgres bindings. Use Cloudflare equivalents (KV, R2, D1).
 - **AMP** — Deprecated since Next.js 13. `useAmp()` returns `false`.
 - **`next export` (legacy)** — Use `output: 'export'` in config instead.
 - **Turbopack/webpack configuration** — This runs on Vite. Use Vite plugins instead of webpack loaders/plugins.
 - **`next/jest`** — Use Vitest.
 - **`create-next-app` scaffolding** — Not a goal.
+- **Non-Cloudflare deployment targets** — AWS Lambda, Netlify Functions, generic Node.js servers are not tested or maintained. If they happen to work, great. We won't break them gratuitously, but we won't block Cloudflare features to maintain compatibility.
 - **Bug-for-bug parity with undocumented behavior** — If it's not in the Next.js docs, we probably don't replicate it.
 
 ## What's experimental / known limitations
@@ -352,7 +370,7 @@ These are intentional exclusions, not bugs:
 - **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same Node.js process / Worker).
 - **Production builds work** but haven't been as battle-tested as dev mode. The build uses Vite's `createBuilder` API with `@vitejs/plugin-rsc` for multi-environment output (RSC + SSR + client).
 - **Cloudflare Workers dev mode works** for both App Router and Pages Router via `wrangler dev` / `npx vite dev`. Production builds and `wrangler deploy` also work.
-- **Pages Router on Workers lacks client hydration.** SSR content renders but there's no client-side interactivity — the `@cloudflare/vite-plugin` only builds the worker environment. Fixing this requires multi-environment build coordination for client JS bundles.
+- **Both routers have full hydration on Workers.** Client JS bundles are built alongside the worker and served via Workers Assets.
 
 ## Architecture
 
@@ -431,8 +449,8 @@ tests/
 ## Tests
 
 ```bash
-npm test              # Run vitest (605 unit + integration tests)
-npm run test:e2e      # Run Playwright E2E tests (99 tests)
+npm test              # Run vitest (638 unit + integration tests)
+npm run test:e2e      # Run Playwright E2E tests (117+ tests across 5 projects)
 npm run typecheck     # TypeScript checking (tsgo)
 npm run lint          # Linting (oxlint)
 ```
