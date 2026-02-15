@@ -631,6 +631,157 @@ describe("Production build", () => {
       httpServer.close();
     }
   });
+
+  it("server entry exports runMiddleware function", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(serverEntryPath);
+    expect(typeof serverEntry.runMiddleware).toBe("function");
+  });
+
+  it("runMiddleware skips non-matching paths", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(serverEntryPath);
+    // The middleware matcher is /((?!api|_next|favicon\.ico).*) so /api should not match
+    const request = new Request("http://localhost/api/hello");
+    const result = await serverEntry.runMiddleware(request);
+    expect(result.continue).toBe(true);
+    expect(result.redirectUrl).toBeUndefined();
+  });
+
+  it("runMiddleware handles redirect (/old-page -> /about)", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(serverEntryPath);
+    const request = new Request("http://localhost/old-page");
+    const result = await serverEntry.runMiddleware(request);
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).toContain("/about");
+    expect(result.redirectStatus).toBe(307);
+  });
+
+  it("runMiddleware handles rewrite (/rewritten -> /ssr)", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(serverEntryPath);
+    const request = new Request("http://localhost/rewritten");
+    const result = await serverEntry.runMiddleware(request);
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toContain("/ssr");
+  });
+
+  it("runMiddleware handles block (/blocked -> 403)", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(serverEntryPath);
+    const request = new Request("http://localhost/blocked");
+    const result = await serverEntry.runMiddleware(request);
+    expect(result.continue).toBe(false);
+    expect(result.response).toBeInstanceOf(Response);
+    expect(result.response.status).toBe(403);
+  });
+
+  it("runMiddleware sets x-middleware-test header on matched paths", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(serverEntryPath);
+    // /about matches the middleware but doesn't redirect/rewrite/block
+    const request = new Request("http://localhost/about");
+    const result = await serverEntry.runMiddleware(request);
+    expect(result.continue).toBe(true);
+    expect(result.responseHeaders).toBeDefined();
+    expect(result.responseHeaders.get("x-middleware-test")).toBe("active");
+  });
+});
+
+describe("Production server middleware (Pages Router)", () => {
+  const outDir = path.resolve(FIXTURE_DIR, "dist");
+  let prodServer: import("node:http").Server;
+  let prodUrl: string;
+
+  beforeAll(async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const manifestPath = path.join(outDir, "client", ".vite", "ssr-manifest.json");
+
+    // Build if needed (tests may run in isolation)
+    if (!fs.existsSync(serverEntryPath) || !fs.existsSync(manifestPath)) {
+      await build({
+        root: FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(outDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: { output: { entryFileNames: "entry.js" } },
+        },
+      });
+      await build({
+        root: FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(outDir, "client"),
+          ssrManifest: true,
+          rollupOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+    }
+
+    const { startProdServer } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    prodServer = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir,
+    });
+    const addr = prodServer.address() as { port: number };
+    prodUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterAll(async () => {
+    if (prodServer) {
+      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+    }
+  });
+
+  it("redirects /old-page to /about via middleware", async () => {
+    const res = await fetch(`${prodUrl}/old-page`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("rewrites /rewritten to render /ssr content", async () => {
+    const res = await fetch(`${prodUrl}/rewritten`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // /rewritten should serve the content of /ssr page
+    expect(html).toContain("Server-Side Rendered");
+  });
+
+  it("blocks /blocked with 403 via middleware", async () => {
+    const res = await fetch(`${prodUrl}/blocked`);
+    expect(res.status).toBe(403);
+    const text = await res.text();
+    expect(text).toContain("Access Denied");
+  });
+
+  it("sets x-middleware-test header on matched requests", async () => {
+    const res = await fetch(`${prodUrl}/about`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-middleware-test")).toBe("active");
+  });
+
+  it("does not run middleware on /api routes", async () => {
+    const res = await fetch(`${prodUrl}/api/hello`);
+    expect(res.status).toBe(200);
+    // Middleware matcher excludes /api, so no x-middleware-test header
+    expect(res.headers.get("x-middleware-test")).toBeNull();
+  });
+
+  it("serves normal pages without middleware interference", async () => {
+    const res = await fetch(`${prodUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Hello, vinext!");
+  });
 });
 
 describe("Static export (Pages Router)", () => {

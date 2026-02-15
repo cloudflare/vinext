@@ -133,6 +133,94 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
         })
       : "null";
 
+    // Generate middleware code if middleware.ts exists
+    const middlewareImportCode = middlewarePath
+      ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};
+import { NextRequest } from "next/server";`
+      : "";
+
+    // The matcher config is read from the middleware module at import time.
+    // We inline the matching + execution logic so the prod server can call it.
+    const middlewareExportCode = middlewarePath
+      ? `
+// --- Middleware support ---
+function matchesMiddleware(pathname, matcher) {
+  if (!matcher) {
+    return !pathname.startsWith("/_next") && !pathname.startsWith("/api") && !pathname.includes(".") && pathname !== "/favicon.ico";
+  }
+  var patterns = [];
+  if (typeof matcher === "string") { patterns.push(matcher); }
+  else if (Array.isArray(matcher)) {
+    for (var m of matcher) {
+      if (typeof m === "string") patterns.push(m);
+      else if (m && typeof m === "object" && "source" in m) patterns.push(m.source);
+    }
+  }
+  return patterns.some(function(p) { return matchMiddlewarePattern(pathname, p); });
+}
+
+function matchMiddlewarePattern(pathname, pattern) {
+  if (pattern.includes("(") || pattern.includes("\\\\")) {
+    try { return new RegExp("^" + pattern + "$").test(pathname); } catch {}
+  }
+  var regexStr = pattern
+    .replace(/\\./g, "\\\\.")
+    .replace(/\\/:([\\w]+)\\*/g, "(?:/.*)?")
+    .replace(/\\/:([\\w]+)\\+/g, "(?:/.+)")
+    .replace(/:([\\w]+)/g, "([^/]+)");
+  try { return new RegExp("^" + regexStr + "$").test(pathname); } catch { return pathname === pattern; }
+}
+
+export async function runMiddleware(request) {
+  var middlewareFn = middlewareModule.default || middlewareModule.middleware;
+  if (typeof middlewareFn !== "function") return { continue: true };
+
+  var config = middlewareModule.config;
+  var matcher = config && config.matcher;
+  var url = new URL(request.url);
+
+  if (!matchesMiddleware(url.pathname, matcher)) return { continue: true };
+
+  var nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+  var response;
+  try { response = await middlewareFn(nextRequest); }
+  catch (e) {
+    console.error("[vinext] Middleware error:", e);
+    return { continue: false, response: new Response("Middleware Error: " + (e && e.message ? e.message : String(e)), { status: 500 }) };
+  }
+
+  if (!response) return { continue: true };
+
+  if (response.headers.get("x-middleware-next") === "1") {
+    var rHeaders = new Headers();
+    for (var [key, value] of response.headers) {
+      if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") rHeaders.set(key, value);
+    }
+    return { continue: true, responseHeaders: rHeaders };
+  }
+
+  if (response.status >= 300 && response.status < 400) {
+    var location = response.headers.get("Location") || response.headers.get("location");
+    if (location) return { continue: false, redirectUrl: location, redirectStatus: response.status };
+  }
+
+  var rewriteUrl = response.headers.get("x-middleware-rewrite");
+  if (rewriteUrl) {
+    var rwHeaders = new Headers();
+    for (var [k, v] of response.headers) { if (k !== "x-middleware-rewrite") rwHeaders.set(k, v); }
+    var rewritePath;
+    try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
+    catch { rewritePath = rewriteUrl; }
+    return { continue: true, rewriteUrl: rewritePath, responseHeaders: rwHeaders };
+  }
+
+  return { continue: false, response: response };
+}
+`
+      : `
+export async function runMiddleware() { return { continue: true }; }
+`;
+
     // The server entry is a self-contained module that uses Web-standard APIs
     // (Request/Response, renderToReadableStream) so it runs on Cloudflare Workers.
     return `
@@ -143,6 +231,7 @@ import { flushPreloads } from "next/dynamic";
 import { setSSRContext } from "next/router";
 import { getCacheHandler } from "next/cache";
 import { withFetchCache } from "vinext/fetch-cache";
+${middlewareImportCode}
 
 // i18n config (embedded at build time)
 const i18nConfig = ${i18nConfigJson};
@@ -657,6 +746,8 @@ export async function handleApiRoute(request, url) {
     return new Response("API Error: " + (e && e.message ? e.message : String(e)), { status: 500 });
   }
 }
+
+${middlewareExportCode}
 `;
   }
 

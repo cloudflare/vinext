@@ -459,7 +459,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
   // Import the server entry module (use file:// URL for reliable dynamic import)
   const serverEntry = await import(pathToFileURL(serverEntryPath).href);
-  const { renderPage, handleApiRoute: handleApi } = serverEntry;
+  const { renderPage, handleApiRoute: handleApi, runMiddleware } = serverEntry;
 
   const server = createServer(async (req, res) => {
     const url = req.url ?? "/";
@@ -482,27 +482,65 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
         return h;
       }, new Headers());
-      const hasBody = req.method !== "GET" && req.method !== "HEAD";
+      const method = req.method ?? "GET";
+      const hasBody = method !== "GET" && method !== "HEAD";
       const webRequest = new Request(`${protocol}://${hostHeader}${url}`, {
-        method: req.method,
+        method,
         headers: reqHeaders,
         body: hasBody ? readNodeStream(req) : undefined,
         // @ts-expect-error — duplex needed for streaming request bodies
         duplex: hasBody ? "half" : undefined,
       });
 
+      // Run middleware before routing
+      let resolvedUrl = url;
+      const middlewareHeaders: Record<string, string> = {};
+      if (typeof runMiddleware === "function") {
+        const result = await runMiddleware(webRequest);
+
+        if (!result.continue) {
+          if (result.redirectUrl) {
+            res.writeHead(result.redirectStatus ?? 307, {
+              Location: result.redirectUrl,
+            });
+            res.end();
+            return;
+          }
+          if (result.response) {
+            // Use arrayBuffer() to handle binary response bodies correctly
+            const body = Buffer.from(await result.response.arrayBuffer());
+            res.writeHead(result.response.status, Object.fromEntries(result.response.headers));
+            res.end(body);
+            return;
+          }
+        }
+
+        // Collect middleware response headers to merge into final response
+        if (result.responseHeaders) {
+          for (const [key, value] of result.responseHeaders) {
+            middlewareHeaders[key] = value;
+          }
+        }
+
+        // Apply middleware rewrite
+        if (result.rewriteUrl) {
+          resolvedUrl = result.rewriteUrl;
+        }
+      }
+
+      const resolvedPathname = resolvedUrl.split("?")[0];
       let response: Response | undefined;
 
       // API routes
-      if (pathname.startsWith("/api/") || pathname === "/api") {
+      if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
         if (typeof handleApi === "function") {
-          response = await handleApi(webRequest, url);
+          response = await handleApi(webRequest, resolvedUrl);
         } else {
           response = new Response("404 - API route not found", { status: 404 });
         }
       } else if (typeof renderPage === "function") {
         // SSR page rendering
-        response = await renderPage(webRequest, url, ssrManifest);
+        response = await renderPage(webRequest, resolvedUrl, ssrManifest);
       }
 
       if (!response) {
@@ -511,10 +549,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         return;
       }
 
-      // Pipe Web Response back to Node.js ServerResponse with optional compression
+      // Merge middleware headers into the response
       const responseBody = await response.text();
       const ct = response.headers.get("content-type") ?? "text/html";
-      const responseHeaders: Record<string, string> = {};
+      const responseHeaders: Record<string, string> = { ...middlewareHeaders };
       response.headers.forEach((v, k) => { responseHeaders[k] = v; });
 
       sendCompressed(req, res, responseBody, ct, response.status, responseHeaders, compress);
