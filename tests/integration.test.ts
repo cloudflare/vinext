@@ -1608,6 +1608,27 @@ describe("App Router integration", () => {
     expect(cacheControl).toContain("s-maxage=60");
     expect(cacheControl).toContain("stale-while-revalidate");
   });
+
+  it("search page renders Form component with SSR", async () => {
+    const res = await fetch(`${baseUrl}/search`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Search");
+    expect(html).toContain("Enter a search term");
+    // Form should render as a <form> element with action="/search"
+    expect(html).toContain('action="/search"');
+    expect(html).toContain('id="search-form"');
+    expect(html).toContain('id="search-input"');
+  });
+
+  it("search page renders query results when searchParams provided", async () => {
+    const res = await fetch(`${baseUrl}/search?q=hello`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // React SSR may insert comment nodes between static text and dynamic values
+    expect(html).toMatch(/Results for:.*hello/);
+    expect(html).not.toContain("Enter a search term");
+  });
 });
 
 describe("App Router Production build", () => {
