@@ -620,11 +620,55 @@ async function _handleRequest(request) {
       const args = await decodeReply(body, { temporaryReferences });
       const action = await loadServerAction(actionId);
       let returnValue;
+      let actionRedirect = null;
       try {
         const data = await action.apply(null, args);
         returnValue = { ok: true, data };
       } catch (e) {
-        returnValue = { ok: false, data: e };
+        // Detect redirect() / permanentRedirect() called inside the action.
+        // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
+        if (e && typeof e === "object" && "digest" in e) {
+          const digest = String(e.digest);
+          if (digest.startsWith("NEXT_REDIRECT;")) {
+            const parts = digest.split(";");
+            actionRedirect = {
+              url: parts[2],
+              type: parts[1] || "replace",       // "push" or "replace"
+              status: parts[3] ? parseInt(parts[3], 10) : 307,
+            };
+            returnValue = { ok: true, data: undefined };
+          } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+            // notFound() / forbidden() / unauthorized() in action — package as error
+            returnValue = { ok: false, data: e };
+          } else {
+            returnValue = { ok: false, data: e };
+          }
+        } else {
+          returnValue = { ok: false, data: e };
+        }
+      }
+
+      // If the action called redirect(), signal the client to navigate.
+      // We can't use a real HTTP redirect (the fetch would follow it automatically
+      // and receive a page HTML instead of RSC stream). Instead, we return a 200
+      // with x-action-redirect header that the client entry detects and handles.
+      if (actionRedirect) {
+        const actionPendingCookies = getAndClearPendingCookies();
+        const actionDraftCookie = getDraftModeCookieHeader();
+        setHeadersContext(null);
+        setNavigationContext(null);
+        const redirectHeaders = new Headers({
+          "Content-Type": "text/x-component; charset=utf-8",
+          "x-action-redirect": actionRedirect.url,
+          "x-action-redirect-type": actionRedirect.type,
+          "x-action-redirect-status": String(actionRedirect.status),
+        });
+        for (const cookie of actionPendingCookies) {
+          redirectHeaders.append("Set-Cookie", cookie);
+        }
+        if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
+        // Send an empty RSC-like body (client will navigate instead of parsing)
+        return new Response("", { status: 200, headers: redirectHeaders });
       }
 
       // After the action, re-render the current page so the client
@@ -1226,13 +1270,30 @@ setServerCallback(async (id, args) => {
   const temporaryReferences = createTemporaryReferenceSet();
   const body = await encodeReply(args, { temporaryReferences });
 
-  const response = fetch(window.location.pathname + ".rsc", {
+  const fetchResponse = await fetch(window.location.pathname + ".rsc", {
     method: "POST",
     headers: { "x-rsc-action": id },
     body,
   });
 
-  const result = await createFromFetch(response, { temporaryReferences });
+  // Check for redirect signal from server action that called redirect()
+  const actionRedirect = fetchResponse.headers.get("x-action-redirect");
+  if (actionRedirect) {
+    // Navigate to the redirect target using client-side navigation
+    const redirectType = fetchResponse.headers.get("x-action-redirect-type") || "replace";
+    if (redirectType === "push") {
+      window.history.pushState(null, "", actionRedirect);
+    } else {
+      window.history.replaceState(null, "", actionRedirect);
+    }
+    // Trigger RSC navigation to the redirect target
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
+      window.__VINEXT_RSC_NAVIGATE__(actionRedirect);
+    }
+    return undefined;
+  }
+
+  const result = await createFromFetch(Promise.resolve(fetchResponse), { temporaryReferences });
 
   // The RSC response for actions contains { root, returnValue }.
   // Re-render the page with the updated tree.

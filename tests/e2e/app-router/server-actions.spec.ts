@@ -74,4 +74,25 @@ test.describe("Server Actions", () => {
     );
     await expect(page.locator('[data-testid="like-btn"]')).toBeVisible();
   });
+
+  test("server action with redirect() navigates to target page", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/action-redirect-test`);
+    await expect(page.locator("h1")).toHaveText("Action Redirect Test");
+    await waitForHydration(page);
+
+    // Click the redirect button — should invoke redirectAction() which calls redirect("/about")
+    await page.click('[data-testid="redirect-btn"]');
+
+    // Should navigate to /about
+    await expect(page).toHaveURL(/\/about/, { timeout: 10_000 });
+    await expect(page.locator("h1")).toHaveText("About");
+  });
+
+  test("action-redirect-test page SSR renders correctly", async ({ page }) => {
+    await page.goto(`${BASE}/action-redirect-test`);
+    await expect(page.locator("h1")).toHaveText("Action Redirect Test");
+    await expect(page.locator('[data-testid="redirect-btn"]')).toBeVisible();
+  });
 });

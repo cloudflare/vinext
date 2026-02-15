@@ -1,5 +1,7 @@
 "use server";
 
+import { redirect } from "next/navigation";
+
 // Simple in-memory counter for testing server actions
 let likeCount = 0;
 
@@ -15,4 +17,33 @@ export async function getLikes(): Promise<number> {
 export async function addMessage(formData: FormData): Promise<string> {
   const message = formData.get("message") as string;
   return `Received: ${message}`;
+}
+
+/**
+ * Server action that calls redirect() — should result in a redirect response.
+ */
+export async function redirectAction(): Promise<void> {
+  redirect("/about");
+}
+
+/**
+ * Server action that throws a regular error.
+ */
+export async function errorAction(): Promise<string> {
+  throw new Error("Action failed intentionally");
+}
+
+/**
+ * Server action that returns complex data (object, array, Date).
+ */
+export async function complexDataAction(): Promise<{
+  items: string[];
+  count: number;
+  nested: { key: string };
+}> {
+  return {
+    items: ["alpha", "beta", "gamma"],
+    count: 3,
+    nested: { key: "value" },
+  };
 }
