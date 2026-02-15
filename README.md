@@ -60,6 +60,79 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
+### Deploy to Cloudflare Workers
+
+vinext production builds work on Cloudflare Workers. You need `@cloudflare/vite-plugin`, `@vitejs/plugin-rsc`, and a `vite.config.ts`:
+
+```bash
+npm install @cloudflare/vite-plugin @vitejs/plugin-rsc wrangler
+```
+
+**`vite.config.ts`**
+
+```ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+import rsc from "@vitejs/plugin-rsc";
+import { cloudflare } from "@cloudflare/vite-plugin";
+
+export default defineConfig({
+  plugins: [
+    vinext(),
+    rsc({
+      entries: {
+        rsc: "virtual:vinext-rsc-entry",
+        ssr: "virtual:vinext-app-ssr-entry",
+        client: "virtual:vinext-app-browser-entry",
+      },
+      loadModuleDevProxy: true,
+    }),
+    cloudflare({
+      viteEnvironment: {
+        childEnvironments: ["rsc", "ssr"],
+      },
+    }),
+  ],
+});
+```
+
+**`wrangler.jsonc`**
+
+```jsonc
+{
+  "name": "my-app",
+  "compatibility_date": "2025-04-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  "assets": { "not_found_handling": "none" }
+}
+```
+
+**`worker/index.ts`**
+
+```ts
+export default {
+  async fetch(request: Request): Promise<Response> {
+    // @ts-expect-error — injected by @vitejs/plugin-rsc
+    const rscModule = await import.meta.viteRsc.loadModule("rsc", "index");
+    const result = await rscModule.default(request);
+    if (result instanceof Response) return result;
+    return new Response("Not Found", { status: 404 });
+  },
+};
+```
+
+Build and deploy:
+
+```bash
+npx vite build        # Builds RSC + SSR + client + worker bundles
+npx wrangler deploy   # Deploys to Cloudflare Workers
+```
+
+> **Note:** Dev mode on Workers is not yet supported (blocked by a `react-server` condition issue in workerd's module runner). Production builds work fully. Use `vinext dev` on Node.js for development.
+
+See `fixtures/cloudflare-app/` for a complete working example.
+
 ### Advanced: custom Vite config
 
 If you need custom Vite configuration, create a `vite.config.ts`. vinext will merge its config with yours:
@@ -130,7 +203,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | Parallel routes `@slot` | Full | Discovery, layout props, `default.tsx`, inherited slots |
 | Intercepting routes | Full | `(.)`, `(..)`, `(..)(..)`, `(...)` conventions |
 | Route handlers (`route.ts`) | Full | Named HTTP methods, auto OPTIONS/HEAD, cookie attachment |
-| Middleware (`middleware.ts`) | Full | Matcher patterns, redirect/rewrite/next/custom response |
+| Middleware (`middleware.ts`) | Full | Matcher patterns (string, array, regex, `:param`, `:path*`, `:path+`), redirect/rewrite/next/custom response |
 | i18n routing | Partial | Pages Router locale prefix + Accept-Language detection. No domain-based routing |
 | `basePath` | Full | Applied everywhere — URLs, Link, Router, navigation hooks |
 | `trailingSlash` | Full | 308 redirects to canonical form |
@@ -145,7 +218,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `getStaticPaths` | Full | `fallback: false`, `true`, `"blocking"` |
 | `getServerSideProps` | Full | Full context including locale |
 | ISR | Full | Stale-while-revalidate, pluggable `CacheHandler`, background regeneration |
-| Server Actions (`"use server"`) | Full | Action execution, FormData, re-render after mutation |
+| Server Actions (`"use server"`) | Full | Action execution, FormData, re-render after mutation, `redirect()` in actions |
 | React Server Components | Full | Via `@vitejs/plugin-rsc`. `"use client"` boundaries work correctly |
 | Streaming SSR | Full | Both routers |
 | Metadata API | Full | `metadata`, `generateMetadata`, `viewport`, `generateViewport`, title templates |
@@ -199,6 +272,7 @@ These are intentional exclusions, not bugs:
 - **PPR (Partial Prerendering)** is not implemented. This is still experimental in Next.js itself.
 - **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same Node.js process / Worker).
 - **Production builds work** but haven't been as battle-tested as dev mode. The build uses Vite's `createBuilder` API with `@vitejs/plugin-rsc` for multi-environment output (RSC + SSR + client).
+- **Cloudflare Workers dev mode** is not yet supported. Production builds and `wrangler deploy` work. Dev mode is blocked by workerd's module runner not respecting Vite's `react-server` resolve conditions, causing CJS `require("react")` instead of the RSC-specific entry.
 
 ## Architecture
 
@@ -253,25 +327,26 @@ packages/vinext/
 fixtures/                 # Test fixtures
   pages-basic/            # Pages Router test app
   app-basic/              # App Router test app
+  cloudflare-app/         # Cloudflare Workers deployment example
   ecosystem/
     app-router-playground/  # Vercel's Next.js App Router Playground running on vinext
 
 tests/
-  routing.test.ts         # 41 unit tests
-  integration.test.ts     # 335 integration tests
-  e2e/                    # 51 Playwright E2E tests
+  routing.test.ts         # 45 unit tests
+  integration.test.ts     # 416 integration tests
+  e2e/                    # 73 Playwright E2E tests
 ```
 
 ## Tests
 
 ```bash
-npm test              # Run vitest (376 unit + integration tests)
-npm run test:e2e      # Run Playwright E2E tests (51 tests)
+npm test              # Run vitest (461 unit + integration tests)
+npm run test:e2e      # Run Playwright E2E tests (73 tests)
 npm run typecheck     # TypeScript checking (tsgo)
 npm run lint          # Linting (oxlint)
 ```
 
-The test suite covers routing, SSR, API routes, metadata, ISR, server actions, static export, streaming, client hydration, navigation, error boundaries, and more.
+The test suite covers routing, SSR, API routes, metadata, ISR, server actions (including redirect-after-action), basePath, middleware matchers, cookies, static export, streaming, client hydration, navigation, error boundaries, and more.
 
 The [Vercel App Router Playground](https://github.com/vercel/next-app-router-playground) runs on vinext as an integration test — all 11 sections render correctly in both dev and production builds.
 
