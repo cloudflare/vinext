@@ -64,7 +64,7 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 
 ## Middleware
 
-- **middleware.ts runs in Node**, not Edge Runtime. This is a deliberate departure from Next.js (which uses Edge Runtime). Since vinext targets "deploy anywhere" including $5 VPS, Node is the pragmatic choice. The middleware uses standard Web APIs (`Request`/`Response`/`NextRequest`/`NextResponse`) so the API surface is compatible.
+- **middleware.ts runs on standard Web APIs**, not Next.js Edge Runtime. The middleware uses `Request`/`Response`/`NextRequest`/`NextResponse` which work in Node.js 18+, Cloudflare Workers, and any Web-standard runtime.
 - **Middleware detection**: We check for `middleware.ts/.tsx/.js/.mjs` at the project root and also in `src/` subdirectory (Next.js convention).
 - **Two integration paths**: Pages Router uses Vite's `server.ssrLoadModule()` in the connect middleware. App Router imports the middleware module directly in the generated RSC entry (since the RSC entry runs in its own Vite environment where `ssrLoadModule` isn't available).
 - **Matcher patterns**: Next.js matcher uses a custom path pattern syntax that's similar to but not identical to regex. Patterns like `/((?!api|_next).*)` are common. We convert these to proper RegExp for matching.
@@ -77,8 +77,8 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 
 ## Streaming SSR
 
-- **Pages Router now uses `renderToPipeableStream`** instead of `renderToString`. This enables Suspense support — `React.lazy` components resolve before the stream completes, and Suspense boundaries are handled correctly.
-- **`onAllReady` vs `onShellReady`**: We use `onAllReady` (waits for all Suspense boundaries to resolve) rather than `onShellReady` (starts streaming after initial shell). This is because the Pages Router needs the complete HTML string for `transformIndexHtml` (dev) and head tag injection. True progressive streaming (using `onShellReady`) would require rearchitecting how `<Head>` tags and `__NEXT_DATA__` are injected.
+- **Pages Router now uses `renderToReadableStream`** (from `react-dom/server.edge`) instead of `renderToString` or `renderToPipeableStream`. This uses the Web-standard ReadableStream API, which works in both Node.js 18+ and Cloudflare Workers. The switch was made unconditionally — not gated on Cloudflare detection.
+- **`allReady` promise**: We `await allReady` on the ReadableStream before consuming it, waiting for all Suspense boundaries to resolve. This is because the Pages Router needs the complete HTML string for `transformIndexHtml` (dev) and head tag injection. True progressive streaming would require rearchitecting how `<Head>` tags and `__NEXT_DATA__` are injected.
 - **App Router already streams**: The App Router SSR entry uses `renderToReadableStream` from `react-dom/server.edge` through `@vitejs/plugin-rsc`. No changes were needed there.
 - **`createBuilder` API is required for RSC production builds**: Calling `build()` directly from the Vite JS API doesn't trigger the RSC plugin's multi-environment build pipeline. Must use `createBuilder()` + `builder.buildApp()` instead, which runs the 5-step RSC/SSR/client build sequence.
 - **`renderToPipeableStream` auto-prepends `<!DOCTYPE html>`** when the root element is `<html>`. The old `renderToString` did NOT do this. After switching to streaming, we had a double `<!DOCTYPE html>` bug in `_document` rendering. Fixed by removing the manual `"<!DOCTYPE html>" +` prefix.
@@ -428,6 +428,26 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 ### NEXT_LOCALE Cookie Not Supported (FIXED)
 - **Symptom**: Next.js uses a `NEXT_LOCALE` cookie to remember a user's explicit locale preference. Our dev server and production server only used `Accept-Language` header detection for i18n redirects — the cookie was completely ignored.
 - **Fix**: Added `parseCookieLocale()` function that extracts and validates the `NEXT_LOCALE` cookie value against configured locales. The i18n redirect logic now checks the cookie first (higher priority than Accept-Language). If the cookie matches the default locale, no redirect occurs (suppressing Accept-Language-based redirect). Implemented in both dev server and production virtual server entry.
+
+## Future Work / Known Gaps
+
+Items flagged during code review that were intentionally deferred. Documented here so future agents or contributors can pick them up.
+
+### Client Assets / Hydration for Pages Router on Workers
+
+The `@cloudflare/vite-plugin` only builds the worker environment — there's no client JS bundle emitted for Pages Router apps. SSR content renders correctly but there's no client-side interactivity (no React hydration, no `useRouter`, no client-side navigation). Fixing this requires multi-environment build coordination similar to how `@vitejs/plugin-rsc` handles it for the App Router (RSC + SSR + client environments). This is the biggest gap for Pages Router on Cloudflare Workers.
+
+### Response Streaming in prod-server.ts
+
+`prod-server.ts` currently does `await response.text()` which buffers the entire response body before sending it over the Node.js HTTP socket. This isn't a problem now — Pages Router buffers via `renderToStringAsync` anyway — but would cause unnecessary memory usage and TTFB delays if streaming SSR is added to the Pages Router path. The fix would be to pipe `response.body` (ReadableStream) directly to the Node.js response using `Readable.fromWeb()`.
+
+### Request-Scoped Globals
+
+Several globals are used for per-request state: `globalThis.__VINEXT_LOCALE__`, `globalThis.__VINEXT_BASEPATH__`, etc. On Workers, isolates handle requests sequentially so there's no practical state bleed risk, but this is architecturally fragile. The correct fix is to use `AsyncLocalStorage` (available on Workers via `nodejs_compat`) to scope all per-request state. This would also be necessary if we ever support concurrent request handling.
+
+### Base64 Chunking for Large KV Payloads
+
+The `KVCacheHandler` stores `ArrayBuffer` body data by encoding the entire buffer to base64 in a single operation. For very large payloads (multi-MB ISR pages), this could cause memory spikes. A chunked encoding approach would be more memory-efficient, but typical ISR payloads are well under 1MB so this is a micro-optimization that isn't worth the complexity right now.
 
 ### RSC Client Navigation Drops Query String (FIXED)
 - **Symptom**: When a `next/form` GET submission navigates to `/search?q=vite`, the RSC fetch went to `/search.rsc` without `?q=vite`, so the server rendered without `searchParams`. Affected all client-side RSC fetches: navigation, initial hydration, server actions, HMR re-renders, prefetch in `Link` and `useRouter().prefetch()`.
