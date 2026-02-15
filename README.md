@@ -168,7 +168,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 
 | Module | Coverage | Notes |
 |--------|----------|-------|
-| `next/link` | Full | All props including `prefetch` (IntersectionObserver), `onNavigate`, scroll restoration, basePath |
+| `next/link` | Full | All props including `prefetch` (IntersectionObserver), `onNavigate`, scroll restoration, basePath, `locale` prop for i18n |
 | `next/image` | Partial | Remote images via [@unpic/react](https://unpic.pics) (28 CDNs). Local images via `<img>` + srcSet. No build-time optimization/resizing |
 | `next/head` | Full | SSR collection + client-side DOM manipulation |
 | `next/router` | Full | `useRouter`, `Router` singleton, events, client-side navigation, SSR context, i18n |
@@ -333,14 +333,14 @@ fixtures/                 # Test fixtures
 
 tests/
   routing.test.ts         # 45 unit tests
-  integration.test.ts     # 478 integration tests
+  integration.test.ts     # 497 integration tests
   e2e/                    # 76 Playwright E2E tests
 ```
 
 ## Tests
 
 ```bash
-npm test              # Run vitest (523 unit + integration tests)
+npm test              # Run vitest (542 unit + integration tests)
 npm run test:e2e      # Run Playwright E2E tests (76 tests)
 npm run typecheck     # TypeScript checking (tsgo)
 npm run lint          # Linting (oxlint)
