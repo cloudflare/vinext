@@ -784,6 +784,104 @@ describe("Production server middleware (Pages Router)", () => {
   });
 });
 
+describe("Production server next.config.js features (Pages Router)", () => {
+  const outDir = path.resolve(FIXTURE_DIR, "dist");
+  let prodServer: import("node:http").Server;
+  let prodUrl: string;
+
+  beforeAll(async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const manifestPath = path.join(outDir, "client", ".vite", "ssr-manifest.json");
+
+    // Build if needed (tests may run in isolation)
+    if (!fs.existsSync(serverEntryPath) || !fs.existsSync(manifestPath)) {
+      await build({
+        root: FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(outDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: { output: { entryFileNames: "entry.js" } },
+        },
+      });
+      await build({
+        root: FIXTURE_DIR,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(outDir, "client"),
+          ssrManifest: true,
+          rollupOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+    }
+
+    const { startProdServer } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    prodServer = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir,
+    });
+    const addr = prodServer.address() as { port: number };
+    prodUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterAll(async () => {
+    if (prodServer) {
+      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+    }
+  });
+
+  it("server entry exports vinextConfig with correct shape", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(serverEntryPath);
+    expect(serverEntry.vinextConfig).toBeDefined();
+    expect(serverEntry.vinextConfig.redirects).toBeInstanceOf(Array);
+    expect(serverEntry.vinextConfig.rewrites).toBeDefined();
+    expect(serverEntry.vinextConfig.headers).toBeInstanceOf(Array);
+    expect(typeof serverEntry.vinextConfig.basePath).toBe("string");
+    expect(typeof serverEntry.vinextConfig.trailingSlash).toBe("boolean");
+  });
+
+  it("applies redirects from next.config.js (/old-about -> /about)", async () => {
+    const res = await fetch(`${prodUrl}/old-about`, { redirect: "manual" });
+    expect(res.status).toBe(308); // permanent redirect
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("applies beforeFiles rewrites from next.config.js (/before-rewrite -> /about)", async () => {
+    const res = await fetch(`${prodUrl}/before-rewrite`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
+  });
+
+  it("applies afterFiles rewrites from next.config.js (/after-rewrite -> /about)", async () => {
+    const res = await fetch(`${prodUrl}/after-rewrite`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
+  });
+
+  it("applies custom headers from next.config.js on /api routes", async () => {
+    const res = await fetch(`${prodUrl}/api/hello`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-custom-header")).toBe("vinext");
+  });
+
+  it("serves normal pages unaffected by config rules", async () => {
+    const res = await fetch(`${prodUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Hello, vinext!");
+  });
+});
+
 describe("Static export (Pages Router)", () => {
   let server: ViteDevServer;
   const exportDir = path.resolve(FIXTURE_DIR, "out");

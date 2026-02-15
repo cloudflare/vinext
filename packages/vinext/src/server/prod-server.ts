@@ -23,6 +23,7 @@ import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import { matchRedirect, matchRewrite, matchHeaders } from "../config/config-matchers.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -444,8 +445,10 @@ interface PagesRouterServerOptions {
  * Start the Pages Router production server.
  *
  * Uses the server entry (dist/server/entry.js) which exports:
- * - renderPage(req, res, url, manifest) — SSR rendering
- * - handleApiRoute(req, res, url) — API route handling
+ * - renderPage(request, url, manifest) — SSR rendering (Web Request → Response)
+ * - handleApiRoute(request, url) — API route handling (Web Request → Response)
+ * - runMiddleware(request) — middleware execution
+ * - vinextConfig — embedded next.config.js settings
  */
 async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const { port, host, clientDir, serverEntryPath, compress } = options;
@@ -459,22 +462,60 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
   // Import the server entry module (use file:// URL for reliable dynamic import)
   const serverEntry = await import(pathToFileURL(serverEntryPath).href);
-  const { renderPage, handleApiRoute: handleApi, runMiddleware } = serverEntry;
+  const { renderPage, handleApiRoute: handleApi, runMiddleware, vinextConfig } = serverEntry;
+
+  // Extract config values (embedded at build time in the server entry)
+  const basePath: string = vinextConfig?.basePath ?? "";
+  const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
+  const configRedirects = vinextConfig?.redirects ?? [];
+  const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
+  const configHeaders = vinextConfig?.headers ?? [];
 
   const server = createServer(async (req, res) => {
-    const url = req.url ?? "/";
-    const pathname = url.split("?")[0];
+    const rawUrl = req.url ?? "/";
+    let url = rawUrl;
+    let pathname = url.split("?")[0];
 
-    // Serve static assets from client build
+    // ── 1. Static assets ──────────────────────────────────────────
+    // Serve static files from client build. When basePath is configured,
+    // Vite's `base` config ensures assets are under basePath/assets/.
+    // We check both with and without basePath.
+    const staticLookupPath = basePath && pathname.startsWith(basePath)
+      ? pathname.slice(basePath.length) || "/"
+      : pathname;
     if (
-      pathname !== "/" &&
-      !pathname.startsWith("/api/") &&
-      tryServeStatic(req, res, clientDir, pathname, compress)
+      staticLookupPath !== "/" &&
+      !staticLookupPath.startsWith("/api/") &&
+      tryServeStatic(req, res, clientDir, staticLookupPath, compress)
     ) {
       return;
     }
 
     try {
+      // ── 2. Strip basePath ─────────────────────────────────────────
+      if (basePath && pathname.startsWith(basePath)) {
+        const stripped = pathname.slice(basePath.length) || "/";
+        const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+        url = stripped + qs;
+        pathname = stripped;
+      }
+
+      // ── 3. Trailing slash normalization ───────────────────────────
+      if (pathname !== "/" && !pathname.startsWith("/api")) {
+        const hasTrailing = pathname.endsWith("/");
+        if (trailingSlash && !hasTrailing) {
+          const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+          res.writeHead(308, { Location: basePath + pathname + "/" + qs });
+          res.end();
+          return;
+        } else if (!trailingSlash && hasTrailing) {
+          const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+          res.writeHead(308, { Location: basePath + pathname.replace(/\/+$/, "") + qs });
+          res.end();
+          return;
+        }
+      }
+
       // Convert Node.js req to Web Request for the server entry
       const protocol = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim() || "http";
       const hostHeader = (req.headers["x-forwarded-host"] as string) || req.headers.host || `${host}:${port}`;
@@ -492,7 +533,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         duplex: hasBody ? "half" : undefined,
       });
 
-      // Run middleware before routing
+      // ── 4. Run middleware ─────────────────────────────────────────
       let resolvedUrl = url;
       const middlewareHeaders: Record<string, string> = {};
       if (typeof runMiddleware === "function") {
@@ -528,19 +569,80 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
       }
 
-      const resolvedPathname = resolvedUrl.split("?")[0];
-      let response: Response | undefined;
+      let resolvedPathname = resolvedUrl.split("?")[0];
 
-      // API routes
+      // ── 5. Apply custom headers from next.config.js ───────────────
+      if (configHeaders.length) {
+        const matched = matchHeaders(resolvedPathname, configHeaders);
+        for (const h of matched) {
+          middlewareHeaders[h.key.toLowerCase()] = h.value;
+        }
+      }
+
+      // ── 6. Apply redirects from next.config.js ────────────────────
+      if (configRedirects.length) {
+        const redirect = matchRedirect(resolvedPathname, configRedirects);
+        if (redirect) {
+          // Guard against double-prefixing: only add basePath if destination
+          // doesn't already start with it.
+          const dest = basePath && !redirect.destination.startsWith(basePath)
+            ? basePath + redirect.destination
+            : redirect.destination;
+          res.writeHead(redirect.permanent ? 308 : 307, { Location: dest });
+          res.end();
+          return;
+        }
+      }
+
+      // ── 7. Apply beforeFiles rewrites from next.config.js ─────────
+      if (configRewrites.beforeFiles?.length) {
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles);
+        if (rewritten) {
+          resolvedUrl = rewritten;
+          resolvedPathname = rewritten.split("?")[0];
+        }
+      }
+
+      // ── 8. API routes ─────────────────────────────────────────────
       if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
+        let response: Response;
         if (typeof handleApi === "function") {
           response = await handleApi(webRequest, resolvedUrl);
         } else {
           response = new Response("404 - API route not found", { status: 404 });
         }
-      } else if (typeof renderPage === "function") {
-        // SSR page rendering
+
+        // Merge middleware + config headers into the response
+        const responseBody = await response.text();
+        const ct = response.headers.get("content-type") ?? "text/html";
+        const responseHeaders: Record<string, string> = { ...middlewareHeaders };
+        response.headers.forEach((v, k) => { responseHeaders[k] = v; });
+
+        sendCompressed(req, res, responseBody, ct, response.status, responseHeaders, compress);
+        return;
+      }
+
+      // ── 9. Apply afterFiles rewrites from next.config.js ──────────
+      if (configRewrites.afterFiles?.length) {
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles);
+        if (rewritten) {
+          resolvedUrl = rewritten;
+          resolvedPathname = rewritten.split("?")[0];
+        }
+      }
+
+      // ── 10. SSR page rendering ────────────────────────────────────
+      let response: Response | undefined;
+      if (typeof renderPage === "function") {
         response = await renderPage(webRequest, resolvedUrl, ssrManifest);
+
+        // ── 11. Fallback rewrites (if SSR returned 404) ─────────────
+        if (response && response.status === 404 && configRewrites.fallback?.length) {
+          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback);
+          if (fallbackRewrite) {
+            response = await renderPage(webRequest, fallbackRewrite, ssrManifest);
+          }
+        }
       }
 
       if (!response) {
@@ -549,7 +651,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         return;
       }
 
-      // Merge middleware headers into the response
+      // Merge middleware + config headers into the response
       const responseBody = await response.text();
       const ct = response.headers.get("content-type") ?? "text/html";
       const responseHeaders: Record<string, string> = { ...middlewareHeaders };

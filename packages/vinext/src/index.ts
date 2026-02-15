@@ -15,6 +15,7 @@ import {
   type NextRedirect,
   type NextRewrite,
 } from "./config/next-config.js";
+
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
@@ -133,6 +134,18 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
         })
       : "null";
 
+    // Serialize the full resolved config for the production server.
+    // This embeds redirects, rewrites, headers, basePath, trailingSlash
+    // so prod-server.ts can apply them without loading next.config.js at runtime.
+    const vinextConfigJson = JSON.stringify({
+      basePath: nextConfig?.basePath ?? "",
+      trailingSlash: nextConfig?.trailingSlash ?? false,
+      redirects: nextConfig?.redirects ?? [],
+      rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
+      headers: nextConfig?.headers ?? [],
+      i18n: nextConfig?.i18n ?? null,
+    });
+
     // Generate middleware code if middleware.ts exists
     const middlewareImportCode = middlewarePath
       ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};
@@ -235,6 +248,9 @@ ${middlewareImportCode}
 
 // i18n config (embedded at build time)
 const i18nConfig = ${i18nConfigJson};
+
+// Full resolved config for production server (embedded at build time)
+export const vinextConfig = ${vinextConfigJson};
 
 // ISR cache helpers (inlined for the server entry)
 async function isrGet(key) {
