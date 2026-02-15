@@ -62,7 +62,11 @@ Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted
 
 ### Deploy to Cloudflare Workers
 
-vinext production builds work on Cloudflare Workers. You need `@cloudflare/vite-plugin`, `@vitejs/plugin-rsc`, and a `vite.config.ts`:
+Cloudflare Workers is a first-class deployment target. Both App Router and Pages Router work on Workers.
+
+#### App Router on Workers
+
+You need `@cloudflare/vite-plugin`, `@vitejs/plugin-rsc`, and a `vite.config.ts`:
 
 ```bash
 npm install @cloudflare/vite-plugin @vitejs/plugin-rsc wrangler
@@ -85,7 +89,6 @@ export default defineConfig({
         ssr: "virtual:vinext-app-ssr-entry",
         client: "virtual:vinext-app-browser-entry",
       },
-      loadModuleDevProxy: true,
     }),
     cloudflare({
       viteEnvironment: {
@@ -101,7 +104,7 @@ export default defineConfig({
 ```jsonc
 {
   "name": "my-app",
-  "compatibility_date": "2025-04-01",
+  "compatibility_date": "2026-02-12",
   "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.ts",
   "assets": { "not_found_handling": "none" }
@@ -122,16 +125,85 @@ export default {
 };
 ```
 
-Build and deploy:
+See `fixtures/cloudflare-app/` for a complete working example.
+
+#### Pages Router on Workers
+
+Pages Router apps can also deploy to Workers. No RSC plugin needed:
 
 ```bash
-npx vite build        # Builds RSC + SSR + client + worker bundles
+npm install @cloudflare/vite-plugin wrangler
+```
+
+**`vite.config.ts`**
+
+```ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+import { cloudflare } from "@cloudflare/vite-plugin";
+
+export default defineConfig({
+  plugins: [
+    vinext(),
+    cloudflare(),
+  ],
+});
+```
+
+**`wrangler.jsonc`**
+
+```jsonc
+{
+  "name": "my-pages-app",
+  "compatibility_date": "2026-02-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts"
+}
+```
+
+**`worker/index.ts`**
+
+```ts
+import { renderPage, handleApiRoute } from "virtual:vinext-server-entry";
+
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith("/api/")) {
+      const apiResponse = await handleApiRoute(request, url);
+      if (apiResponse) return apiResponse;
+    }
+    const manifest = {};
+    const response = await renderPage(request, url, manifest);
+    if (response) return response;
+    return new Response("Not Found", { status: 404 });
+  },
+};
+```
+
+See `fixtures/cloudflare-pages/` for a complete working example.
+
+> **Note:** Pages Router on Workers currently has SSR but no client-side hydration. The `@cloudflare/vite-plugin` only builds the worker environment — client JS bundles are not yet emitted. SSR content renders correctly but there's no React interactivity. See [Future Work](#whats-experimental--known-limitations) for details.
+
+#### Cloudflare KV Cache Handler
+
+For production ISR/caching on Workers, use the built-in KV cache handler:
+
+```ts
+import { KVCacheHandler } from "vinext/cloudflare";
+
+// In your worker entry:
+const cacheHandler = new KVCacheHandler(env.MY_KV_NAMESPACE);
+```
+
+#### Build and deploy
+
+```bash
+npx vite build        # Builds worker + client bundles
 npx wrangler deploy   # Deploys to Cloudflare Workers
 ```
 
-> **Note:** Dev mode on Workers is not yet supported (blocked by a `react-server` condition issue in workerd's module runner). Production builds work fully. Use `vinext dev` on Node.js for development.
-
-See `fixtures/cloudflare-app/` for a complete working example.
+Both `wrangler dev` (local dev with miniflare) and `npx vite dev` (Vite dev server) work for local development.
 
 ### Advanced: custom Vite config
 
@@ -245,8 +317,15 @@ The cache is **pluggable**. The default `MemoryCacheHandler` works out of the bo
 ```ts
 import { setCacheHandler } from "next/cache";
 
-// Example: Redis, Cloudflare KV, DynamoDB, etc.
+// Example: Redis, DynamoDB, etc.
 setCacheHandler(new MyCacheHandler());
+```
+
+For Cloudflare Workers, use the built-in KV cache handler:
+
+```ts
+import { KVCacheHandler } from "vinext/cloudflare";
+setCacheHandler(new KVCacheHandler(env.MY_KV_NAMESPACE));
 ```
 
 The `CacheHandler` interface matches Next.js 16's shape, so community adapters should be compatible.
@@ -272,7 +351,8 @@ These are intentional exclusions, not bugs:
 - **PPR (Partial Prerendering)** is not implemented. This is still experimental in Next.js itself.
 - **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same Node.js process / Worker).
 - **Production builds work** but haven't been as battle-tested as dev mode. The build uses Vite's `createBuilder` API with `@vitejs/plugin-rsc` for multi-environment output (RSC + SSR + client).
-- **Cloudflare Workers dev mode** is not yet supported. Production builds and `wrangler deploy` work. Dev mode is blocked by workerd's module runner not respecting Vite's `react-server` resolve conditions, causing CJS `require("react")` instead of the RSC-specific entry.
+- **Cloudflare Workers dev mode works** for both App Router and Pages Router via `wrangler dev` / `npx vite dev`. Production builds and `wrangler deploy` also work.
+- **Pages Router on Workers lacks client hydration.** SSR content renders but there's no client-side interactivity — the `@cloudflare/vite-plugin` only builds the worker environment. Fixing this requires multi-environment build coordination for client JS bundles.
 
 ## Architecture
 
@@ -289,7 +369,7 @@ The result is a standard Vite application that happens to be API-compatible with
 
 ```
 Request → Vite dev server middleware → Route match → getServerSideProps/getStaticProps
-  → renderToPipeableStream(App + Page) → HTML with __NEXT_DATA__ → Client hydration
+  → renderToReadableStream(App + Page) → HTML with __NEXT_DATA__ → Client hydration
 ```
 
 ### App Router flow
@@ -306,11 +386,12 @@ Request → RSC entry (Vite rsc environment) → Route match → Build layout/pa
 packages/vinext/
   src/
     index.ts              # Main plugin — resolve aliases, config, virtual modules
+    cli.ts                # vinext CLI (dev/build/start/lint)
     routing/
       pages-router.ts     # Pages Router file-system scanner
       app-router.ts       # App Router file-system scanner
     server/
-      dev-server.ts       # Pages Router SSR request handler
+      dev-server.ts       # Pages Router SSR request handler (Web Request/Response)
       app-dev-server.ts   # App Router RSC entry generator
       prod-server.ts      # Production server with compression
       api-handler.ts      # Pages Router API routes
@@ -318,6 +399,8 @@ packages/vinext/
       middleware.ts        # middleware.ts runner
       metadata-routes.ts  # File-based metadata route scanner
       instrumentation.ts  # instrumentation.ts support
+    cloudflare/
+      kv-cache-handler.ts # Cloudflare KV-backed CacheHandler for ISR
     shims/                # One file per next/* module
     build/
       static-export.ts    # output: 'export' support
@@ -327,21 +410,29 @@ packages/vinext/
 fixtures/                 # Test fixtures
   pages-basic/            # Pages Router test app
   app-basic/              # App Router test app
-  cloudflare-app/         # Cloudflare Workers deployment example
+  cloudflare-app/         # App Router on Cloudflare Workers
+  cloudflare-pages/       # Pages Router on Cloudflare Workers
   ecosystem/
     app-router-playground/  # Vercel's Next.js App Router Playground running on vinext
 
 tests/
-  routing.test.ts         # 45 unit tests
-  integration.test.ts     # 545 integration tests
-  e2e/                    # 81 Playwright E2E tests
+  routing.test.ts         # Route scanning unit tests
+  shims.test.ts           # Module shim tests (incl. KV cache handler)
+  pages-router.test.ts    # Pages Router integration tests
+  app-router.test.ts      # App Router integration tests
+  features.test.ts        # Cross-cutting feature tests
+  ecosystem.test.ts       # Ecosystem library tests
+  e2e/                    # Playwright E2E tests
+    app-router/           # App Router E2E (64 tests)
+    pages-router/         # Pages Router E2E (22 tests)
+    cloudflare-pages-router/  # Pages Router on Workers E2E (13 tests)
 ```
 
 ## Tests
 
 ```bash
-npm test              # Run vitest (590 unit + integration tests)
-npm run test:e2e      # Run Playwright E2E tests (81 tests)
+npm test              # Run vitest (605 unit + integration tests)
+npm run test:e2e      # Run Playwright E2E tests (99 tests)
 npm run typecheck     # TypeScript checking (tsgo)
 npm run lint          # Linting (oxlint)
 ```
