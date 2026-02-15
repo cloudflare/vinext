@@ -3605,6 +3605,377 @@ describe("basePath support (Pages Router)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// basePath deep testing — HTTP routing integration
+// ---------------------------------------------------------------------------
+describe("basePath HTTP routing (Pages Router)", () => {
+  let bpServer: ViteDevServer;
+  let bpBaseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    // Create a temporary fixture directory with basePath configured
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-bp-"));
+
+    // Symlink node_modules from project root so React etc. are resolvable
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    // next.config.mjs with basePath
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `/** @type {import('next').NextConfig} */
+export default {
+  basePath: "/app",
+};
+`,
+    );
+
+    // pages directory
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+
+    // index page
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `import Link from "next/link";
+
+export default function Home() {
+  return (
+    <div>
+      <h1>BasePath Home</h1>
+      <Link href="/about">Go to About</Link>
+    </div>
+  );
+}
+`,
+    );
+
+    // about page
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "about.tsx"),
+      `export default function About() {
+  return <h1>BasePath About</h1>;
+}
+`,
+    );
+
+    // API route
+    await fsp.mkdir(path.join(tmpDir, "pages", "api"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "api", "hello.ts"),
+      `export default function handler(req, res) {
+  res.json({ message: "hello from basePath" });
+}
+`,
+    );
+
+    // Start server
+    const plugins: any[] = [vinext()];
+    bpServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await bpServer.listen();
+    const addr = bpServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      bpBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (bpServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        bpServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore close errors */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("Vite base is set to basePath + /", () => {
+    expect(bpServer.config.base).toBe("/app/");
+  });
+
+  it("process.env.__NEXT_ROUTER_BASEPATH define is /app", () => {
+    const define = bpServer.config.define?.["process.env.__NEXT_ROUTER_BASEPATH"];
+    expect(define).toBe(JSON.stringify("/app"));
+  });
+
+  it("GET /app/ serves the index page", async () => {
+    const res = await fetch(`${bpBaseUrl}/app/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("BasePath Home");
+  });
+
+  it("GET /app (without trailing slash) returns 404 — Vite base requires trailing slash", async () => {
+    // With Vite's base set to /app/, a bare /app request doesn't match the
+    // base and Vite returns 404. This matches how Vite handles base paths.
+    // Users would typically configure a reverse proxy or Vite's server.origin
+    // to redirect /app → /app/ in production.
+    const res = await fetch(`${bpBaseUrl}/app`, { redirect: "manual" });
+    expect(res.status).toBe(404);
+  });
+
+  it("GET /app/about serves the about page", async () => {
+    const res = await fetch(`${bpBaseUrl}/app/about`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("BasePath About");
+  });
+
+  it("GET /about (without basePath) does NOT serve pages", async () => {
+    const res = await fetch(`${bpBaseUrl}/about`);
+    // Without basePath prefix, the Pages Router middleware should not match.
+    // The response should be a 404 or Vite's default fallback.
+    expect(res.status).not.toBe(200);
+  });
+
+  it("GET /app/api/hello serves the API route", async () => {
+    const res = await fetch(`${bpBaseUrl}/app/api/hello`);
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.message).toBe("hello from basePath");
+  });
+
+  it("GET /api/hello (without basePath) does NOT serve API routes", async () => {
+    const res = await fetch(`${bpBaseUrl}/api/hello`);
+    expect(res.status).not.toBe(200);
+  });
+
+  it("Link component renders href with basePath prefix in SSR", async () => {
+    const res = await fetch(`${bpBaseUrl}/app/`);
+    const html = await res.text();
+    // The Link component should render <a href="/app/about">
+    expect(html).toContain('href="/app/about"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// basePath with nested path (e.g. /docs/v2)
+// ---------------------------------------------------------------------------
+describe("basePath with nested path (/docs/v2)", () => {
+  let nestedServer: ViteDevServer;
+  let nestedBaseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-bp-nested-"));
+
+    // Symlink node_modules from project root
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { basePath: "/docs/v2" };`,
+    );
+
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() {
+  return <h1>Nested BasePath Home</h1>;
+}`,
+    );
+
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "guide.tsx"),
+      `export default function Guide() {
+  return <h1>Nested BasePath Guide</h1>;
+}`,
+    );
+
+    const plugins: any[] = [vinext()];
+    nestedServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await nestedServer.listen();
+    const addr = nestedServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      nestedBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    // Force close the server (httpServer.close can hang if connections are still open)
+    try {
+      (nestedServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        nestedServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore close errors */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("Vite base is set to /docs/v2/", () => {
+    expect(nestedServer.config.base).toBe("/docs/v2/");
+  });
+
+  it("GET /docs/v2/ serves the index page", async () => {
+    const res = await fetch(`${nestedBaseUrl}/docs/v2/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Nested BasePath Home");
+  });
+
+  it("GET /docs/v2/guide serves the guide page", async () => {
+    const res = await fetch(`${nestedBaseUrl}/docs/v2/guide`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Nested BasePath Guide");
+  });
+
+  it("GET /docs/ (partial basePath) does NOT serve pages", async () => {
+    const res = await fetch(`${nestedBaseUrl}/docs/`);
+    expect(res.status).not.toBe(200);
+  });
+
+  it("GET /guide (without basePath) does NOT serve pages", async () => {
+    const res = await fetch(`${nestedBaseUrl}/guide`);
+    expect(res.status).not.toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// basePath config validation
+// ---------------------------------------------------------------------------
+describe("basePath config validation", () => {
+  it("resolveNextConfig preserves basePath with leading slash", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({ basePath: "/my-app" });
+    expect(config.basePath).toBe("/my-app");
+  });
+
+  it("resolveNextConfig handles nested basePath", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({ basePath: "/a/b/c" });
+    expect(config.basePath).toBe("/a/b/c");
+  });
+
+  it("resolveNextConfig defaults to empty string", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({});
+    expect(config.basePath).toBe("");
+  });
+
+  it("resolveNextConfig handles undefined basePath", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({ basePath: undefined });
+    expect(config.basePath).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// basePath with trailingSlash interaction
+// ---------------------------------------------------------------------------
+describe("basePath + trailingSlash interaction", () => {
+  let tsServer: ViteDevServer;
+  let tsBaseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-bp-ts-"));
+
+    // Symlink node_modules from project root
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { basePath: "/app", trailingSlash: true };`,
+    );
+
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() {
+  return <h1>TrailingSlash Home</h1>;
+}`,
+    );
+
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "about.tsx"),
+      `export default function About() {
+  return <h1>TrailingSlash About</h1>;
+}`,
+    );
+
+    const plugins: any[] = [vinext()];
+    tsServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await tsServer.listen();
+    const addr = tsServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      tsBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (tsServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        tsServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore close errors */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("GET /app/about redirects to /app/about/ with trailingSlash:true", async () => {
+    const res = await fetch(`${tsBaseUrl}/app/about`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    const location = res.headers.get("location");
+    expect(location).toBe("/app/about/");
+  });
+
+  it("GET /app/about/ serves the about page with trailingSlash:true", async () => {
+    const res = await fetch(`${tsBaseUrl}/app/about/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("TrailingSlash About");
+  });
+});
+
 describe("next/web-vitals shim", () => {
   it("exports useReportWebVitals as a no-op function", async () => {
     const { useReportWebVitals } = await import(

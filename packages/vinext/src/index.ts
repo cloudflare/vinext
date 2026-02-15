@@ -845,15 +845,19 @@ hydrate();
 
               // Strip basePath prefix from URL for route matching.
               // All internal routing uses basePath-free paths.
+              //
+              // NOTE: When basePath is set, we also set Vite's `base` config to
+              // `basePath + "/"`. Vite's connect middleware stack strips the base
+              // prefix from req.url before passing it to our middleware, so the
+              // URL will already lack the basePath prefix. We still attempt to
+              // strip it (for robustness) but don't reject paths that don't start
+              // with basePath — Vite has already done the filtering.
               const bp = nextConfig?.basePath ?? "";
               if (bp && pathname.startsWith(bp)) {
                 const stripped = pathname.slice(bp.length) || "/";
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                 url = stripped + qs;
                 pathname = stripped;
-              } else if (bp && pathname !== "/") {
-                // URL doesn't start with basePath — let Vite handle it
-                return next();
               }
 
               // Normalize trailing slash based on next.config.js trailingSlash setting.
