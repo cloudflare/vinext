@@ -1270,7 +1270,7 @@ setServerCallback(async (id, args) => {
   const temporaryReferences = createTemporaryReferenceSet();
   const body = await encodeReply(args, { temporaryReferences });
 
-  const fetchResponse = await fetch(window.location.pathname + ".rsc", {
+  const fetchResponse = await fetch(window.location.pathname + ".rsc" + window.location.search, {
     method: "POST",
     headers: { "x-rsc-action": id },
     body,
@@ -1314,7 +1314,7 @@ setServerCallback(async (id, args) => {
 
 async function main() {
   // Initial hydration: fetch the RSC stream for the current page
-  const rscResponse = await fetch(window.location.pathname + ".rsc");
+  const rscResponse = await fetch(window.location.pathname + ".rsc" + window.location.search);
   const root = await createFromReadableStream(rscResponse.body);
 
   // Hydrate the document
@@ -1328,7 +1328,7 @@ async function main() {
     try {
       const url = new URL(href, window.location.origin);
       const rscPayload = await createFromFetch(
-        fetch(url.pathname + ".rsc", {
+        fetch(url.pathname + ".rsc" + url.search, {
           headers: { Accept: "text/x-component" },
         })
       );
@@ -1350,7 +1350,7 @@ async function main() {
     import.meta.hot.on("rsc:update", async () => {
       try {
         const rscPayload = await createFromFetch(
-          fetch(window.location.pathname + ".rsc")
+          fetch(window.location.pathname + ".rsc" + window.location.search)
         );
         reactRoot.render(rscPayload);
       } catch (err) {

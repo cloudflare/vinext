@@ -156,7 +156,10 @@ function prefetchUrl(href: string): void {
     if (typeof win.__VINEXT_RSC_NAVIGATE__ === "function") {
       // App Router: prefetch the RSC payload
       // Use low priority fetch (no credentials needed for RSC prefetch)
-      fetch(fullHref.split("#")[0] + ".rsc", {
+      const [beforeHash] = fullHref.split("#");
+      const qIdx = beforeHash.indexOf("?");
+      const rscUrl = qIdx === -1 ? beforeHash + ".rsc" : beforeHash.slice(0, qIdx) + ".rsc" + beforeHash.slice(qIdx);
+      fetch(rscUrl, {
         priority: "low" as any,
         // @ts-expect-error — purpose is a valid fetch option in some browsers
         purpose: "prefetch",

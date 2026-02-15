@@ -29,7 +29,7 @@ test.describe("next/form GET interception", () => {
     await expect(page.locator("#search-result")).toHaveText("Results for: hello");
   });
 
-  test.fixme("Form GET submission navigates without full page reload", async ({ page }) => {
+  test("Form GET submission navigates without full page reload", async ({ page }) => {
     await page.goto(`${BASE}/search`);
     await expect(page.locator("h1")).toHaveText("Search");
     await waitForHydration(page);
@@ -54,7 +54,7 @@ test.describe("next/form GET interception", () => {
     expect(marker).toBe(true);
   });
 
-  test.fixme("Form GET submission updates URL query params", async ({ page }) => {
+  test("Form GET submission updates URL query params", async ({ page }) => {
     await page.goto(`${BASE}/search`);
     await expect(page.locator("h1")).toHaveText("Search");
     await waitForHydration(page);
@@ -68,7 +68,7 @@ test.describe("next/form GET interception", () => {
     expect(url.searchParams.get("q")).toBe("react");
   });
 
-  test.fixme("multiple Form submissions work sequentially", async ({ page }) => {
+  test("multiple Form submissions work sequentially", async ({ page }) => {
     await page.goto(`${BASE}/search`);
     await waitForHydration(page);
 

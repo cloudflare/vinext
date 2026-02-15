@@ -331,7 +331,10 @@ export function useRouter() {
       if (isServer) return;
       // Prefetch the RSC payload for the target route
       const fullHref = withBasePath(href);
-      fetch(fullHref.split("#")[0] + ".rsc", {
+      const beforeHash = fullHref.split("#")[0];
+      const qIdx = beforeHash.indexOf("?");
+      const rscUrl = qIdx === -1 ? beforeHash + ".rsc" : beforeHash.slice(0, qIdx) + ".rsc" + beforeHash.slice(qIdx);
+      fetch(rscUrl, {
         priority: "low" as RequestInit["priority"],
       }).catch(() => {
         // Silently ignore prefetch failures
