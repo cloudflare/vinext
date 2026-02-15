@@ -2757,6 +2757,533 @@ describe("middleware runner", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// matchPattern / matchesMiddleware unit tests
+// ---------------------------------------------------------------------------
+describe("middleware matcher patterns", () => {
+  it("matchPattern: exact path match", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchPattern("/about", "/about")).toBe(true);
+    expect(matchPattern("/about", "/other")).toBe(false);
+    expect(matchPattern("/", "/")).toBe(true);
+  });
+
+  it("matchPattern: named parameter (:param)", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchPattern("/user/123", "/user/:id")).toBe(true);
+    expect(matchPattern("/user/abc", "/user/:id")).toBe(true);
+    expect(matchPattern("/user/", "/user/:id")).toBe(false);
+    expect(matchPattern("/user/123/posts", "/user/:id")).toBe(false);
+  });
+
+  it("matchPattern: wildcard (:path*) matches zero or more segments", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchPattern("/dashboard", "/dashboard/:path*")).toBe(true);
+    expect(matchPattern("/dashboard/settings", "/dashboard/:path*")).toBe(true);
+    expect(matchPattern("/dashboard/settings/profile", "/dashboard/:path*")).toBe(true);
+    expect(matchPattern("/other", "/dashboard/:path*")).toBe(false);
+  });
+
+  it("matchPattern: one-or-more (:path+) requires at least one segment", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchPattern("/api/users", "/api/:path+")).toBe(true);
+    expect(matchPattern("/api/users/123", "/api/:path+")).toBe(true);
+    expect(matchPattern("/api", "/api/:path+")).toBe(false);
+    // /api/ has no actual segment after the slash
+    expect(matchPattern("/api/", "/api/:path+")).toBe(false);
+  });
+
+  it("matchPattern: regex patterns with groups", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    // Common Next.js matcher: /((?!api|_next|favicon\.ico).*)
+    expect(matchPattern("/about", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
+    expect(matchPattern("/dashboard/settings", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
+    expect(matchPattern("/api/hello", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
+    expect(matchPattern("/_next/static/chunk.js", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
+  });
+
+  it("matchPattern: dots are escaped in paths", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchPattern("/files/data.json", "/files/data.json")).toBe(true);
+    expect(matchPattern("/files/dataXjson", "/files/data.json")).toBe(false);
+  });
+
+  it("matchesMiddleware: no matcher — default exclusions", async () => {
+    const { matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    // Default: matches most paths
+    expect(matchesMiddleware("/", undefined)).toBe(true);
+    expect(matchesMiddleware("/about", undefined)).toBe(true);
+    expect(matchesMiddleware("/dashboard/settings", undefined)).toBe(true);
+
+    // Default: excludes /_next, /api, files with dots, /favicon.ico
+    expect(matchesMiddleware("/_next/static/chunk.js", undefined)).toBe(false);
+    expect(matchesMiddleware("/api/hello", undefined)).toBe(false);
+    expect(matchesMiddleware("/favicon.ico", undefined)).toBe(false);
+    expect(matchesMiddleware("/image.png", undefined)).toBe(false);
+  });
+
+  it("matchesMiddleware: single string matcher", async () => {
+    const { matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(matchesMiddleware("/about", "/about")).toBe(true);
+    expect(matchesMiddleware("/other", "/about")).toBe(false);
+  });
+
+  it("matchesMiddleware: array of string matchers", async () => {
+    const { matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const matcher = ["/about", "/dashboard/:path*"];
+    expect(matchesMiddleware("/about", matcher)).toBe(true);
+    expect(matchesMiddleware("/dashboard", matcher)).toBe(true);
+    expect(matchesMiddleware("/dashboard/settings", matcher)).toBe(true);
+    expect(matchesMiddleware("/other", matcher)).toBe(false);
+  });
+
+  it("matchesMiddleware: array of object matchers with source", async () => {
+    const { matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const matcher = [
+      { source: "/about" },
+      { source: "/dashboard/:path*" },
+    ];
+    expect(matchesMiddleware("/about", matcher)).toBe(true);
+    expect(matchesMiddleware("/dashboard/settings", matcher)).toBe(true);
+    expect(matchesMiddleware("/other", matcher)).toBe(false);
+  });
+
+  it("matchesMiddleware: mixed array of strings and objects", async () => {
+    const { matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const matcher = ["/about", { source: "/api/:path+" }] as any;
+    expect(matchesMiddleware("/about", matcher)).toBe(true);
+    expect(matchesMiddleware("/api/users", matcher)).toBe(true);
+    expect(matchesMiddleware("/api", matcher)).toBe(false);
+    expect(matchesMiddleware("/other", matcher)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RequestCookies comprehensive tests
+// ---------------------------------------------------------------------------
+describe("RequestCookies API", () => {
+  it("get() returns cookie by name", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "token=abc123; session=xyz" });
+    const cookies = new RequestCookies(headers);
+
+    const token = cookies.get("token");
+    expect(token).toEqual({ name: "token", value: "abc123" });
+
+    const session = cookies.get("session");
+    expect(session).toEqual({ name: "session", value: "xyz" });
+  });
+
+  it("get() returns undefined for missing cookie", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "token=abc123" });
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.get("missing")).toBeUndefined();
+  });
+
+  it("getAll() returns all cookies", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "a=1; b=2; c=3" });
+    const cookies = new RequestCookies(headers);
+
+    const all = cookies.getAll();
+    expect(all).toHaveLength(3);
+    expect(all).toContainEqual({ name: "a", value: "1" });
+    expect(all).toContainEqual({ name: "b", value: "2" });
+    expect(all).toContainEqual({ name: "c", value: "3" });
+  });
+
+  it("has() checks cookie existence", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "token=abc" });
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.has("token")).toBe(true);
+    expect(cookies.has("missing")).toBe(false);
+  });
+
+  it("iterator yields [name, entry] pairs", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "x=1; y=2" });
+    const cookies = new RequestCookies(headers);
+
+    const entries = [...cookies];
+    expect(entries).toHaveLength(2);
+    expect(entries[0][0]).toBe("x");
+    expect(entries[0][1]).toEqual({ name: "x", value: "1" });
+    expect(entries[1][0]).toBe("y");
+    expect(entries[1][1]).toEqual({ name: "y", value: "2" });
+  });
+
+  it("handles empty cookie header", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.getAll()).toHaveLength(0);
+    expect(cookies.get("any")).toBeUndefined();
+    expect(cookies.has("any")).toBe(false);
+  });
+
+  it("handles cookies with = in value", async () => {
+    const { RequestCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers({ cookie: "data=base64=encoded=value" });
+    const cookies = new RequestCookies(headers);
+
+    const data = cookies.get("data");
+    expect(data).toBeDefined();
+    expect(data!.value).toBe("base64=encoded=value");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ResponseCookies comprehensive tests
+// ---------------------------------------------------------------------------
+describe("ResponseCookies API", () => {
+  it("set() creates Set-Cookie header with options", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "abc123", {
+      path: "/",
+      httpOnly: true,
+      secure: true,
+      sameSite: "Lax",
+      maxAge: 3600,
+    });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("token=abc123");
+    expect(setCookie[0]).toContain("Path=/");
+    expect(setCookie[0]).toContain("HttpOnly");
+    expect(setCookie[0]).toContain("Secure");
+    expect(setCookie[0]).toContain("SameSite=Lax");
+    expect(setCookie[0]).toContain("Max-Age=3600");
+  });
+
+  it("set() multiple cookies appends multiple Set-Cookie headers", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(2);
+    expect(setCookie[0]).toContain("a=1");
+    expect(setCookie[1]).toContain("b=2");
+  });
+
+  it("get() retrieves a cookie from Set-Cookie headers", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "xyz");
+    const result = cookies.get("token");
+    expect(result).toEqual({ name: "token", value: "xyz" });
+  });
+
+  it("getAll() returns all set cookies", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("a", "1");
+    cookies.set("b", "2");
+    cookies.set("c", "3");
+
+    const all = cookies.getAll();
+    expect(all).toHaveLength(3);
+    expect(all).toContainEqual({ name: "a", value: "1" });
+    expect(all).toContainEqual({ name: "b", value: "2" });
+    expect(all).toContainEqual({ name: "c", value: "3" });
+  });
+
+  it("delete() sets Max-Age=0", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.delete("session");
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie).toHaveLength(1);
+    expect(setCookie[0]).toContain("session=");
+    expect(setCookie[0]).toContain("Max-Age=0");
+    expect(setCookie[0]).toContain("Path=/");
+  });
+
+  it("set() URL-encodes cookie values", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("data", "hello world; special=chars");
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie[0]).toContain("data=hello%20world%3B%20special%3Dchars");
+
+    // get() should decode it back
+    const result = cookies.get("data");
+    expect(result?.value).toBe("hello world; special=chars");
+  });
+
+  it("iterator yields [name, entry] pairs", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("x", "1");
+    cookies.set("y", "2");
+
+    const entries = [...cookies];
+    expect(entries).toHaveLength(2);
+    expect(entries[0][0]).toBe("x");
+    expect(entries[0][1]).toEqual({ name: "x", value: "1" });
+    expect(entries[1][0]).toBe("y");
+    expect(entries[1][1]).toEqual({ name: "y", value: "2" });
+  });
+
+  it("set() with domain option includes Domain directive", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("token", "abc", { domain: ".example.com" });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie[0]).toContain("Domain=.example.com");
+  });
+
+  it("set() with expires option includes Expires directive", async () => {
+    const { ResponseCookies } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    const expires = new Date("2030-01-01T00:00:00Z");
+    cookies.set("token", "abc", { expires });
+
+    const setCookie = headers.getSetCookie();
+    expect(setCookie[0]).toContain("Expires=");
+    expect(setCookie[0]).toContain("2030");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NextRequest API tests
+// ---------------------------------------------------------------------------
+describe("NextRequest API", () => {
+  it("cookies reads request cookies", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/test", {
+      headers: { cookie: "session=abc; theme=dark" },
+    });
+
+    expect(req.cookies.get("session")).toEqual({ name: "session", value: "abc" });
+    expect(req.cookies.get("theme")).toEqual({ name: "theme", value: "dark" });
+    expect(req.cookies.has("session")).toBe(true);
+    expect(req.cookies.has("missing")).toBe(false);
+  });
+
+  it("nextUrl provides URL properties", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost:3000/api/test?key=value#hash");
+
+    expect(req.nextUrl.pathname).toBe("/api/test");
+    expect(req.nextUrl.search).toBe("?key=value");
+    expect(req.nextUrl.searchParams.get("key")).toBe("value");
+    expect(req.nextUrl.host).toBe("localhost:3000");
+    expect(req.nextUrl.hostname).toBe("localhost");
+    expect(req.nextUrl.protocol).toBe("http:");
+    expect(req.nextUrl.hash).toBe("#hash");
+  });
+
+  it("nextUrl.clone() creates independent copy", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/test");
+    const cloned = req.nextUrl.clone();
+
+    cloned.pathname = "/other";
+    expect(req.nextUrl.pathname).toBe("/test");
+    expect(cloned.pathname).toBe("/other");
+  });
+
+  it("ip reads x-forwarded-for header", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/", {
+      headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" },
+    });
+    expect(req.ip).toBe("1.2.3.4");
+  });
+
+  it("ip returns undefined when no header", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/");
+    expect(req.ip).toBeUndefined();
+  });
+
+  it("geo reads Cloudflare headers", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/", {
+      headers: {
+        "cf-ipcountry": "US",
+        "cf-ipcity": "San Francisco",
+      },
+    });
+    expect(req.geo?.country).toBe("US");
+    expect(req.geo?.city).toBe("San Francisco");
+  });
+
+  it("geo returns undefined when no geo headers", async () => {
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://localhost/");
+    expect(req.geo).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NextResponse.next() with request header forwarding
+// ---------------------------------------------------------------------------
+describe("NextResponse.next() request header forwarding", () => {
+  it("forwards request headers as x-middleware-request-* headers", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.next({
+      request: {
+        headers: new Headers({
+          "x-custom-header": "custom-value",
+          "authorization": "Bearer token123",
+        }),
+      },
+    });
+
+    expect(res.headers.get("x-middleware-next")).toBe("1");
+    expect(res.headers.get("x-middleware-request-x-custom-header")).toBe("custom-value");
+    expect(res.headers.get("x-middleware-request-authorization")).toBe("Bearer token123");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NextResponse.redirect() with different status codes
+// ---------------------------------------------------------------------------
+describe("NextResponse.redirect() status codes", () => {
+  it("defaults to 307 Temporary Redirect", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.redirect("https://example.com");
+    expect(res.status).toBe(307);
+  });
+
+  it("supports 301 Permanent Redirect", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.redirect("https://example.com", 301);
+    expect(res.status).toBe(301);
+    expect(res.headers.get("Location")).toBe("https://example.com");
+  });
+
+  it("supports 302 Found", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.redirect("https://example.com", 302);
+    expect(res.status).toBe(302);
+  });
+
+  it("supports 308 Permanent Redirect", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const res = NextResponse.redirect("https://example.com", 308);
+    expect(res.status).toBe(308);
+  });
+
+  it("accepts URL object", async () => {
+    const { NextResponse } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const url = new URL("https://example.com/target");
+    const res = NextResponse.redirect(url);
+    expect(res.headers.get("Location")).toBe("https://example.com/target");
+  });
+});
+
 describe("next/font/google shim", () => {
   it("returns className, style, and variable for a Google Font", async () => {
     const { Inter } = await import(

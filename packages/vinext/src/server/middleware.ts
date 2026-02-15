@@ -54,7 +54,7 @@ type MatcherConfig =
  * If no matcher is configured, middleware runs on all paths
  * except static files and internal Next.js paths.
  */
-function matchesMiddleware(
+export function matchesMiddleware(
   pathname: string,
   matcher: MatcherConfig | undefined,
 ): boolean {
@@ -92,7 +92,7 @@ function matchesMiddleware(
  *   /api/:path+     -> one or more segments
  *   /((?!api|_next).*)  -> regex patterns
  */
-function matchPattern(pathname: string, pattern: string): boolean {
+export function matchPattern(pathname: string, pattern: string): boolean {
   // Handle regex patterns (starts with /)
   if (pattern.includes("(") || pattern.includes("\\")) {
     try {
@@ -103,16 +103,18 @@ function matchPattern(pathname: string, pattern: string): boolean {
     }
   }
 
-  // Convert Next.js path patterns to regex
+  // Convert Next.js path patterns to regex.
+  // Escape dots FIRST (before replacements that produce regex metacharacters
+  // like .* and .+ which must not be escaped).
   const regexStr = pattern
-    // :path* -> match zero or more segments
-    .replace(/:(\w+)\*/g, "(?:.*)")
-    // :path+ -> match one or more segments
-    .replace(/:(\w+)\+/g, "(?:.+)")
+    // Escape dots in the literal path segments
+    .replace(/\./g, "\\.")
+    // /:path* -> optionally match slash + zero or more segments
+    .replace(/\/:(\w+)\*/g, "(?:/.*)?")
+    // /:path+ -> match slash + one or more segments
+    .replace(/\/:(\w+)\+/g, "(?:/.+)")
     // :param -> match one segment
-    .replace(/:(\w+)/g, "([^/]+)")
-    // Escape dots
-    .replace(/\./g, "\\.");
+    .replace(/:(\w+)/g, "([^/]+)");
 
   try {
     const re = new RegExp("^" + regexStr + "$");
