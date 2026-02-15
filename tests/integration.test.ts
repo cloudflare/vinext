@@ -3284,6 +3284,237 @@ describe("NextResponse.redirect() status codes", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// matchConfigPattern unit tests (next.config.js redirects/rewrites)
+// ---------------------------------------------------------------------------
+describe("matchConfigPattern", () => {
+  it("matches exact paths", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    expect(matchConfigPattern("/about", "/about")).toEqual({});
+    expect(matchConfigPattern("/", "/")).toEqual({});
+    expect(matchConfigPattern("/about", "/other")).toBeNull();
+  });
+
+  it("matches single :param segments", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    const result = matchConfigPattern("/blog/hello-world", "/blog/:slug");
+    expect(result).toEqual({ slug: "hello-world" });
+  });
+
+  it("matches multiple :param segments", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    const result = matchConfigPattern("/blog/2024/my-post", "/blog/:year/:slug");
+    expect(result).toEqual({ year: "2024", slug: "my-post" });
+  });
+
+  it("rejects when segment count differs for non-wildcard patterns", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    expect(matchConfigPattern("/blog/a/b", "/blog/:slug")).toBeNull();
+    expect(matchConfigPattern("/blog", "/blog/:slug")).toBeNull();
+  });
+
+  it("matches :path* catch-all (zero or more segments)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    // Zero segments
+    expect(matchConfigPattern("/docs", "/docs/:path*")).toEqual({ path: "" });
+    // One segment
+    expect(matchConfigPattern("/docs/intro", "/docs/:path*")).toEqual({ path: "intro" });
+    // Multiple segments
+    expect(matchConfigPattern("/docs/guide/getting-started", "/docs/:path*")).toEqual({
+      path: "guide/getting-started",
+    });
+  });
+
+  it("matches :path+ catch-all (one or more segments)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    // One segment
+    expect(matchConfigPattern("/api/users", "/api/:path+")).toEqual({ path: "users" });
+    // Multiple segments
+    expect(matchConfigPattern("/api/users/123", "/api/:path+")).toEqual({ path: "users/123" });
+    // Zero segments — should NOT match
+    expect(matchConfigPattern("/api", "/api/:path+")).toBeNull();
+  });
+
+  it("matches regex group patterns", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    // Common Next.js pattern: /:path(\\d+) for numeric paths
+    const result = matchConfigPattern("/123", "/:id(\\d+)");
+    if (result) {
+      expect(result.id).toBe("123");
+    }
+    // Non-numeric should not match
+    expect(matchConfigPattern("/abc", "/:id(\\d+)")).toBeNull();
+  });
+
+  it("handles dots in patterns", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    expect(matchConfigPattern("/feed.xml", "/feed.xml")).toEqual({});
+    // Dot should not match any character
+    expect(matchConfigPattern("/feedXxml", "/feed.xml")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Parameterized redirects/rewrites integration tests
+// ---------------------------------------------------------------------------
+describe("parameterized redirects and rewrites", () => {
+  let prServer: ViteDevServer;
+  let prBaseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-rr-"));
+
+    // Symlink node_modules
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    // next.config.mjs with parameterized redirects and rewrites
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default {
+  async redirects() {
+    return [
+      { source: "/old-blog/:slug", destination: "/blog/:slug", permanent: false },
+      { source: "/legacy/:year/:month", destination: "/archive/:year-:month", permanent: true },
+    ];
+  },
+  async rewrites() {
+    return [
+      { source: "/posts/:id", destination: "/blog/:id" },
+      { source: "/docs/:path*", destination: "/help/:path*" },
+    ];
+  },
+  async headers() {
+    return [
+      {
+        source: "/api/:path*",
+        headers: [{ key: "X-Api-Version", value: "2" }],
+      },
+      {
+        source: "/blog/:slug",
+        headers: [{ key: "X-Content-Type", value: "blog" }],
+      },
+    ];
+  },
+};`,
+    );
+
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.mkdir(path.join(tmpDir, "pages", "blog"), { recursive: true });
+    await fsp.mkdir(path.join(tmpDir, "pages", "help"), { recursive: true });
+    await fsp.mkdir(path.join(tmpDir, "pages", "api"), { recursive: true });
+
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "blog", "[slug].tsx"),
+      `export function getServerSideProps({ params }) {
+  return { props: { slug: params.slug } };
+}
+export default function BlogPost({ slug }) {
+  return <h1>Blog: {slug}</h1>;
+}`,
+    );
+
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "help", "[[...path]].tsx"),
+      `export function getServerSideProps({ params }) {
+  return { props: { path: params.path || [] } };
+}
+export default function Help({ path }) {
+  return <h1>Help: {path.join("/")}</h1>;
+}`,
+    );
+
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "api", "test.ts"),
+      `export default function handler(req, res) {
+  res.json({ ok: true });
+}`,
+    );
+
+    const plugins: any[] = [vinext()];
+    prServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await prServer.listen();
+    const addr = prServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      prBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (prServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        prServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("parameterized redirect: /old-blog/:slug -> /blog/:slug", async () => {
+    const res = await fetch(`${prBaseUrl}/old-blog/my-post`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toBe("/blog/my-post");
+  });
+
+  it("permanent redirect with multiple params", async () => {
+    const res = await fetch(`${prBaseUrl}/legacy/2024/06`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/archive/2024-06");
+  });
+
+  it("parameterized rewrite: /posts/:id -> /blog/:id", async () => {
+    const res = await fetch(`${prBaseUrl}/posts/hello-world`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // React SSR may insert comment nodes (<!-- -->) between text segments
+    expect(html).toMatch(/Blog:.*hello-world/);
+  });
+
+  it("custom headers with :path* pattern", async () => {
+    const res = await fetch(`${prBaseUrl}/api/test`);
+    expect(res.headers.get("x-api-version")).toBe("2");
+  });
+
+  it("custom headers with :slug pattern", async () => {
+    const res = await fetch(`${prBaseUrl}/blog/my-post`);
+    expect(res.headers.get("x-content-type")).toBe("blog");
+  });
+});
+
 describe("next/font/google shim", () => {
   it("returns className, style, and variable for a Google Font", async () => {
     const { Inter } = await import(

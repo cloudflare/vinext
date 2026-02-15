@@ -1093,13 +1093,80 @@ function getNextPublicEnvDefines(): Record<string, string> {
 }
 
 /**
- * Match a Next.js route pattern (e.g. "/blog/:slug") against a pathname.
+ * Match a Next.js route pattern (e.g. "/blog/:slug", "/docs/:path*") against a pathname.
  * Returns matched params or null.
+ *
+ * Supports:
+ *   :param     — matches a single path segment
+ *   :param*    — matches zero or more segments (catch-all)
+ *   :param+    — matches one or more segments
+ *   (regex)    — inline regex patterns in the source
  */
-function matchConfigPattern(
+export function matchConfigPattern(
   pathname: string,
   pattern: string,
 ): Record<string, string> | null {
+  // If the pattern contains regex groups like (\\d+) or (.*), use regex matching
+  if (pattern.includes("(") || pattern.includes("\\")) {
+    try {
+      // Extract named params and their constraints from the pattern.
+      // :param(constraint) -> use constraint as the regex group
+      // :param -> ([^/]+)
+      // :param* -> (.*)
+      // :param+ -> (.+)
+      const paramNames: string[] = [];
+      const regexStr = pattern
+        .replace(/\./g, "\\.")
+        // :param* with optional constraint
+        .replace(/:(\w+)\*(?:\(([^)]+)\))?/g, (_m, name, constraint) => {
+          paramNames.push(name);
+          return constraint ? `(${constraint})` : "(.*)";
+        })
+        // :param+ with optional constraint
+        .replace(/:(\w+)\+(?:\(([^)]+)\))?/g, (_m, name, constraint) => {
+          paramNames.push(name);
+          return constraint ? `(${constraint})` : "(.+)";
+        })
+        // :param(constraint) — named param with inline regex constraint
+        .replace(/:(\w+)\(([^)]+)\)/g, (_m, name, constraint) => {
+          paramNames.push(name);
+          return `(${constraint})`;
+        })
+        // :param — plain named param
+        .replace(/:(\w+)/g, (_m, name) => {
+          paramNames.push(name);
+          return "([^/]+)";
+        });
+      const re = new RegExp("^" + regexStr + "$");
+      const match = re.exec(pathname);
+      if (!match) return null;
+      const params: Record<string, string> = {};
+      for (let i = 0; i < paramNames.length; i++) {
+        params[paramNames[i]] = match[i + 1] ?? "";
+      }
+      return params;
+    } catch {
+      // Fall through to segment-based matching
+    }
+  }
+
+  // Check for catch-all patterns (:param* or :param+) without regex groups
+  const catchAllMatch = pattern.match(/:(\w+)(\*|\+)$/);
+  if (catchAllMatch) {
+    const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
+    const paramName = catchAllMatch[1];
+    const isPlus = catchAllMatch[2] === "+";
+
+    if (!pathname.startsWith(prefix.replace(/\/$/, ""))) return null;
+
+    const rest = pathname.slice(prefix.replace(/\/$/, "").length);
+    // For :path+ we need at least one segment (non-empty after the prefix)
+    if (isPlus && (!rest || rest === "/")) return null;
+    // For :path* zero segments is fine
+    return { [paramName]: rest.startsWith("/") ? rest.slice(1) : rest };
+  }
+
+  // Simple segment-based matching for exact patterns and :param
   const parts = pattern.split("/");
   const pathParts = pathname.split("/");
 
@@ -1170,9 +1237,25 @@ function applyHeaders(
   headers: Array<{ source: string; headers: Array<{ key: string; value: string }> }>,
 ): void {
   for (const rule of headers) {
-    const sourceRegex = new RegExp(
-      "^" + rule.source.replace(/\*/g, ".*").replace(/:\w+/g, "[^/]+") + "$",
-    );
+    // Escape regex metacharacters in the source, then convert Next.js patterns.
+    // Strategy: extract regex groups first, process the rest, then restore groups.
+    const groups: string[] = [];
+    const withPlaceholders = rule.source.replace(/\(([^)]+)\)/g, (_m, inner) => {
+      groups.push(inner);
+      return `___GROUP_${groups.length - 1}___`;
+    });
+    const escaped = withPlaceholders
+      // Escape dots and other metacharacters
+      .replace(/\./g, "\\.")
+      .replace(/\+/g, "\\+")
+      .replace(/\?/g, "\\?")
+      // Convert glob * to .*
+      .replace(/\*/g, ".*")
+      // Convert :param to [^/]+
+      .replace(/:\w+/g, "[^/]+")
+      // Restore regex groups (contents are untouched)
+      .replace(/___GROUP_(\d+)___/g, (_m, idx) => `(${groups[Number(idx)]})`);
+    const sourceRegex = new RegExp("^" + escaped + "$");
     if (sourceRegex.test(pathname)) {
       for (const header of rule.headers) {
         res.setHeader(header.key, header.value);
