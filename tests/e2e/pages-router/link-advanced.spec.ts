@@ -7,6 +7,22 @@ test.describe("Link advanced props (Pages Router)", () => {
     await page.goto(`${BASE}/link-test`);
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 
+    // Intercept window.scrollTo to detect if scroll-to-top was called
+    await page.evaluate(() => {
+      (window as any).__scrollToTopCalled = false;
+      const orig = window.scrollTo.bind(window);
+      window.scrollTo = (...args: any[]) => {
+        // Detect scrollTo(0, 0) or scrollTo({ top: 0 })
+        if (
+          (args[0] === 0 && args[1] === 0) ||
+          (typeof args[0] === "object" && args[0]?.top === 0)
+        ) {
+          (window as any).__scrollToTopCalled = true;
+        }
+        return orig(...args);
+      };
+    });
+
     // Scroll down to the links section (past the 200vh tall content)
     await page.locator('[data-testid="links"]').scrollIntoViewIfNeeded();
 
@@ -18,12 +34,11 @@ test.describe("Link advanced props (Pages Router)", () => {
     await page.click('[data-testid="link-no-scroll"]');
     await expect(page.locator("h1")).toHaveText("About");
 
-    // Scroll position should NOT have been reset to 0
-    // (Note: scroll={false} means "don't scroll to top on navigation")
-    // After navigation, the browser may or may not maintain exact position
-    // but the key behavior is that scrollTo(0,0) was NOT called.
-    // We navigate back and check the original page still shows correct path.
-    // The real test is that scroll wasn't forced to top.
+    // scroll={false} means scrollTo(0,0) should NOT have been called
+    const scrollToTopCalled = await page.evaluate(
+      () => (window as any).__scrollToTopCalled,
+    );
+    expect(scrollToTopCalled).toBe(false);
   });
 
   test("replace does not add to browser history", async ({ page }) => {
