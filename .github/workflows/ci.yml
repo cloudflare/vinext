@@ -41,6 +41,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci --legacy-peer-deps
+      - name: Build plugin (needed by ecosystem fixtures)
+        run: npx tsc -p packages/vinext/tsconfig.json
       - run: npm test
 
   e2e:
@@ -53,7 +55,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci --legacy-peer-deps
-      - run: npx tsc -p packages/vinext/tsconfig.json
+      - name: Build plugin
+        run: npx tsc -p packages/vinext/tsconfig.json
       - run: npx playwright install chromium
       - run: npx playwright test
         env:
