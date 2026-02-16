@@ -1846,6 +1846,71 @@ describe("fetch cache (extended fetch with next options)", () => {
     }
   });
 
+  it("serves stale fetch cache entry and triggers background revalidation", async () => {
+    const { withFetchCache } = await import(
+      "../packages/vinext/src/shims/fetch-cache.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+
+    // Fresh cache handler for isolation
+    setCacheHandler(new MemoryCacheHandler());
+    fetchCallCount = 0;
+
+    // Make the staleness deterministic without sleeping.
+    const originalNow = Date.now;
+    let now = originalNow();
+    Date.now = () => now;
+
+    const cleanup = withFetchCache();
+    try {
+      const resp1 = await fetch(`${mockServerUrl}/swr`, {
+        next: { revalidate: 1 },
+      });
+      const data1 = await resp1.json();
+      expect(data1.count).toBe(1);
+      expect(fetchCallCount).toBe(1);
+
+      // Advance time past the revalidate window so the entry becomes stale.
+      now += 2000;
+
+      // Second fetch returns stale cached value but triggers background refetch.
+      const resp2 = await fetch(`${mockServerUrl}/swr`, {
+        next: { revalidate: 1 },
+      });
+      const data2 = await resp2.json();
+      expect(data2.count).toBe(1);
+
+      // Wait for the background revalidation fetch to hit the network.
+      await new Promise<void>((resolve, reject) => {
+        const start = originalNow();
+        const tick = () => {
+          if (fetchCallCount >= 2) return resolve();
+          if (originalNow() - start > 1000) {
+            return reject(
+              new Error("timed out waiting for background revalidation"),
+            );
+          }
+          setTimeout(tick, 10);
+        };
+        tick();
+      });
+
+      // Third fetch should read the refreshed cache value.
+      const resp3 = await fetch(`${mockServerUrl}/swr`, {
+        next: { revalidate: 1 },
+      });
+      const data3 = await resp3.json();
+      expect(data3.count).toBe(2);
+      expect(fetchCallCount).toBe(2);
+    } finally {
+      cleanup();
+      setCacheHandler(new MemoryCacheHandler());
+      Date.now = originalNow;
+    }
+  });
+
   it("cache: 'force-cache' caches indefinitely", async () => {
     const { withFetchCache } = await import(
       "../packages/vinext/src/shims/fetch-cache.js"
@@ -3397,4 +3462,3 @@ export default function NestedProps({ user }) {
     expect(html).toContain("Custom 404 - Not Found");
   });
 });
-
