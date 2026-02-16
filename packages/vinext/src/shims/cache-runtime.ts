@@ -124,8 +124,18 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
   const cacheVariant = variant ?? "";
 
   const cachedFn = async (...args: any[]): Promise<any> => {
-    const argsKey = args.length > 0 ? ":" + stableStringify(args) : "";
-    const cacheKey = `use-cache:${id}${argsKey}`;
+    // Build the cache key.  If the arguments contain non-serializable values
+    // (React elements, functions, Symbols, circular references, etc.) we skip
+    // caching entirely and just run the function directly.  This keeps
+    // "use cache" on component functions (which return JSX) harmless.
+    let cacheKey: string;
+    try {
+      const argsKey = args.length > 0 ? ":" + stableStringify(args) : "";
+      cacheKey = `use-cache:${id}${argsKey}`;
+    } catch {
+      // Non-serializable arguments — run without caching
+      return fn(...args);
+    }
 
     // "use cache: private" uses per-request in-memory cache
     if (cacheVariant === "private") {
@@ -165,28 +175,54 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
     const effectiveLife = resolveCacheLife(ctx.lifeConfigs);
     const revalidateSeconds = effectiveLife.revalidate ?? cacheLifeProfiles.default.revalidate ?? 900;
 
-    // Store in cache
-    const cacheValue = {
-      kind: "FETCH" as const,
-      data: {
-        headers: {},
-        body: JSON.stringify(result),
-        url: cacheKey,
-      },
-      tags: ctx.tags,
-      revalidate: revalidateSeconds,
-    };
+    // Store in cache — skip if the result is a React element or otherwise
+    // not safely JSON-serializable.  React elements have a $$typeof Symbol
+    // that JSON.stringify silently drops, producing corrupt data on parse-back.
+    if (!isReactElement(result)) {
+      try {
+        const body = JSON.stringify(result);
+        if (body !== undefined) {
+          const cacheValue = {
+            kind: "FETCH" as const,
+            data: {
+              headers: {},
+              body,
+              url: cacheKey,
+            },
+            tags: ctx.tags,
+            revalidate: revalidateSeconds,
+          };
 
-    await handler.set(cacheKey, cacheValue, {
-      fetchCache: true,
-      tags: ctx.tags,
-      revalidate: revalidateSeconds,
-    });
+          await handler.set(cacheKey, cacheValue, {
+            fetchCache: true,
+            tags: ctx.tags,
+            revalidate: revalidateSeconds,
+          });
+        }
+      } catch {
+        // Result not serializable (circular refs, etc.) — skip caching
+      }
+    }
 
     return result;
   };
 
   return cachedFn as T;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: detect React elements (which can't be safely JSON-serialized)
+// ---------------------------------------------------------------------------
+
+// React element $$typeof symbols — check both the internal Symbol values
+// used by different React versions.
+const REACT_ELEMENT_SYMBOL = Symbol.for("react.element");
+const REACT_TRANSITIONAL_ELEMENT_SYMBOL = Symbol.for("react.transitional.element");
+
+function isReactElement(value: unknown): boolean {
+  if (value === null || value === undefined || typeof value !== "object") return false;
+  const v = value as Record<string | symbol, unknown>;
+  return v.$$typeof === REACT_ELEMENT_SYMBOL || v.$$typeof === REACT_TRANSITIONAL_ELEMENT_SYMBOL;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,20 +247,36 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
 // Stable JSON serialization (handles undefined, Date, etc.)
 // ---------------------------------------------------------------------------
 
-function stableStringify(value: unknown): string {
+function stableStringify(value: unknown, seen?: Set<unknown>): string {
   if (value === undefined) return "undefined";
   if (value === null) return "null";
 
+  // Bail on non-serializable primitives so the caller can skip caching
+  if (typeof value === "function") throw new Error("Cannot serialize function");
+  if (typeof value === "symbol") throw new Error("Cannot serialize symbol");
+
   if (Array.isArray(value)) {
-    return "[" + value.map(stableStringify).join(",") + "]";
+    // Circular reference detection
+    if (!seen) seen = new Set();
+    if (seen.has(value)) throw new Error("Circular reference");
+    seen.add(value);
+    const result = "[" + value.map(v => stableStringify(v, seen)).join(",") + "]";
+    seen.delete(value);
+    return result;
   }
 
   if (typeof value === "object" && value !== null) {
     if (value instanceof Date) {
       return `Date(${value.getTime()})`;
     }
+    // Circular reference detection
+    if (!seen) seen = new Set();
+    if (seen.has(value)) throw new Error("Circular reference");
+    seen.add(value);
     const keys = Object.keys(value).sort();
-    return "{" + keys.map(k => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(",") + "}";
+    const result = "{" + keys.map(k => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k], seen)}`).join(",") + "}";
+    seen.delete(value);
+    return result;
   }
 
   return JSON.stringify(value);

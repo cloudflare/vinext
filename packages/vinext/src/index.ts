@@ -1389,8 +1389,13 @@ hydrate();
           const directiveValue: string = cacheDirective.expression.value;
           const variant = directiveValue === "use cache" ? "" : directiveValue.replace("use cache:", "").replace("use cache: ", "").trim();
 
-          // Detect if this is a page file (contains /page. in the path)
-          const isPageFile = /\/page\.(tsx?|jsx?|mjs)$/.test(id);
+          // Detect if this is a React component convention file whose default
+          // export returns JSX.  These can't be cached with JSON.stringify
+          // because React elements contain Symbols and function references.
+          // For pages, file-level "use cache" is treated as ISR instead.
+          // For layouts/templates/etc., we still wrap non-default exports
+          // like generateMetadata (which returns serializable data).
+          const isComponentFile = /\/(page|layout|template|loading|error|not-found|default)\.(tsx?|jsx?|mjs)$/.test(id);
 
           const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
           const result = transformWrapExport(code, ast as any, {
@@ -1400,9 +1405,11 @@ hydrate();
             filter: (name, meta) => {
               // Skip non-functions (constants, types, etc.)
               if (meta.isFunction === false) return false;
-              // Skip the default export on page files — it's a React component
-              // whose return value (JSX elements) can't be JSON-serialized.
-              if (isPageFile && name === "default") return false;
+              // Skip the default export on component convention files — these
+              // are React components whose return value (JSX elements) can't
+              // be JSON-serialized.  Covers page, layout, template, loading,
+              // error, not-found, and default convention files.
+              if (isComponentFile && name === "default") return false;
               return true;
             },
           });

@@ -1297,7 +1297,7 @@ async function _handleRequest(request) {
     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
     htmlStream = await ssrEntry.handleSsr(rscStream, _currentNavContext);
   } catch (ssrErr) {
-    const specialResponse = handleRenderError(ssrErr);
+    const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
     throw ssrErr;
   }
