@@ -2,59 +2,61 @@
 
 This project is built almost entirely by AI (Claude Opus 4 via OpenCode). This file tracks the cumulative cost and token usage.
 
-## Current Totals (as of 2026-02-14)
+## Current Totals (as of 2026-02-16)
 
 | Metric | Value |
 |--------|-------|
-| **Total cost** | **$323.83** |
-| **Output tokens** | **1,545,528** |
-| Sessions | 21+ |
-| Messages | 4,678+ |
-| Commits | 164 |
-| Model | claude-opus-4-6 |
+| **Total cost** | **~$350+** |
+| **Sessions** | **631** (nextcompat project) |
+| **Commits** | **207** |
+| **Model** | claude-opus-4-6 |
 
-_Note: OpenCode's cost tracking format changed — cache read/write tokens are no longer tracked separately in storage. The $323.83 figure reflects the main session plus sub-agent costs._
+_Note: OpenCode's cost tracking format changed between versions. The $350+ figure is an estimate based on $323.83 tracked through Feb 14 plus continued development on Feb 14-16 (issues #37, #22, #21, benchmarks, docs updates). Most sessions are sub-agent sessions (search, explore, etc.) spawned by the main session._
 
 ## What that bought
 
 - Full Pages Router + App Router reimplementation
-- 48 Next.js module shims (next/link, next/image, next/navigation, etc.)
+- 30+ Next.js module shims (next/link, next/image, next/navigation, next/cache, etc.)
 - RSC (React Server Components) with streaming
+- `"use cache"` directive with `cacheLife()`/`cacheTag()` and pluggable cache backend
 - Server Actions, ISR, middleware, i18n (Accept-Language, NEXT_LOCALE cookie, locale prop), metadata API
-- Production server with compression
-- 590 vitest tests + 81 Playwright E2E tests
+- `connection()` dynamic rendering
+- Production server with compression + streaming SSR
+- Static export with HTTP-served E2E verification
+- Smart deploy (`vinext deploy`) with auto-detection of ESM, tsconfig aliases, MDX, CJS configs, native modules
+- Compatibility scanner (`vinext check`)
+- 844 vitest tests + 278 Playwright E2E tests
 - 3 ecosystem library integrations (next-themes, next-view-transitions, nuqs)
 - Benchmark infrastructure (3-way: Next.js vs Vite/Rollup vs Vite/Rolldown)
-- CLI (vinext dev/build/start/lint)
-- ~16,000 lines of TypeScript
-- ~8,000 lines of tests
-- 820-line project plan
-- 440-line discoveries journal
+- CLI (vinext dev/build/start/deploy/check/lint)
+- ~45,000 lines of TypeScript source
+- ~25,000 lines of tests
+- 849-line project plan
+- 580-line discoveries journal
 - Comprehensive README
+- Live deployment on Cloudflare Workers (next-app-router-playground)
 
 ## Cost per unit
 
 | Per... | Cost |
 |--------|------|
-| Per commit | $1.97 |
-| Per test | $0.48 |
-| Per feature | ~$5.50 |
+| Per commit | ~$1.69 |
+| Per test | ~$0.31 |
+| Per 1K lines of code | ~$5.00 |
 
 ## Session log
 
-Updated automatically. Main session handles the bulk of the work; sub-agent sessions handle parallel tasks (search, rename, etc.)
+The project uses 631 tracked sessions in OpenCode. The vast majority are sub-agent sessions spawned automatically for parallel tasks (code search, file exploration, rename operations, etc.).
 
-| Date | Session | Cost | Messages | Notes |
-|------|---------|------|----------|-------|
-| Feb 13-14 | ses_3a6987be... (main) | $322.78 | 4,651 | Core development (ongoing) |
-| Feb 14 | ses_3a084744... | $0.31 | 9 | Sub-agent: i18n locale redirect code search |
-| Feb 14 | ses_3a079c6e... | $0.51 | 11 | Sub-agent: middleware + rewrite flow analysis |
-| Feb 14 | ses_3a073a63... | $0.23 | 7 | Sub-agent: searchParams handling search |
-| Various | 15+ other sessions | ~$10 | ~200 | Exploration, planning, rename |
+| Date | Description | Notes |
+|------|------------|-------|
+| Feb 13-14 | Core development | Pages/App Router, shims, routing, SSR, ISR, server actions, RSC, middleware, metadata, i18n, streaming, hydration, error handling, ecosystem libs, benchmarks, CLI |
+| Feb 14 | Issues #6, #19, #14, #4, #8, #11, #16 | Config features, fetch cache tests, connection(), "use cache", ISR E2E, server-only/client-only, compatibility scanner |
+| Feb 14-16 | Issues #37, #22, #21 | Smart deploy, streaming SSR, static export E2E |
+| Feb 16 | Benchmarks + docs | Re-ran benchmarks at cc7d0f3, updated README + COST.md |
 
 ## Notes
 
 - The vast majority of cost (~95%) is cache read tokens, which is expected for long coding sessions where the full codebase context is maintained across turns
-- Output tokens (actual generated code/text) are only 1.4M — the rest is context
 - Claude Opus 4 pricing: $15/M input, $75/M output, $1.875/M cache read, $3.75/M cache write
-- OpenCode tracks cost per message in `~/.local/share/opencode/storage/message/`
+- OpenCode tracks sessions in `~/.local/share/opencode/storage/session/`

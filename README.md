@@ -2,7 +2,7 @@
 
 Run your Next.js app on Cloudflare Workers. One command to deploy.
 
-> **Status: Experimental.** Under active development. Covers ~85% of the Next.js API surface. See [API Coverage](#api-coverage) for details.
+> **Status: Experimental.** Under active development. Covers ~94% of the Next.js API surface. See [API Coverage](#api-coverage) for details.
 
 > **Note:** This project is heavily AI-driven — the majority of the code, tests, and documentation were written with Claude Code (Anthropic's coding agent). Human direction guides architecture, priorities, and design decisions; AI handles implementation.
 
@@ -62,6 +62,8 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 | `vinext dev` | Start dev server with HMR (workerd runtime via Cloudflare plugin) |
 | `vinext build` | Multi-environment production build (RSC + SSR + client + worker) |
 | `vinext start` | Start local production server for testing |
+| `vinext deploy` | Build and deploy to Cloudflare Workers (auto-generates wrangler config + worker entry) |
+| `vinext check` | Scan your Next.js app for compatibility issues before migrating |
 | `vinext lint` | Delegate to eslint (with eslint-config-next) or oxlint |
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
@@ -220,7 +222,13 @@ npx wrangler deploy   # Deploys to Cloudflare Workers
 
 Both `wrangler dev` (local dev with miniflare) and `npx vite dev` (Vite dev server) work for local development.
 
-> **Coming soon: `vinext deploy`** — a single command that handles build + deploy + auto-generates wrangler config and worker entry if they don't exist. Zero manual setup.
+`vinext deploy` handles build + deploy + auto-generates wrangler config and worker entry if they don't exist. It also auto-detects and fixes common migration issues:
+
+- Adds `"type": "module"` to package.json if missing
+- Detects tsconfig.json path aliases and maps them to Vite `resolve.alias`
+- Detects MDX usage and configures `@mdx-js/rollup`
+- Renames CJS config files (postcss.config.js, etc.) to `.cjs` when needed
+- Detects native Node.js modules (sharp, resvg, satori) and stubs them for Workers
 
 ### Advanced: custom Vite config
 
@@ -247,7 +255,7 @@ export default defineConfig({
 
 ## API coverage
 
-**~85% of the Next.js API surface has full or partial support.** The remaining gaps are mostly newer experimental features (`"use cache"`, PPR) and build-time optimizations (image resizing, font self-hosting).
+**~94% of the Next.js API surface has full or partial support.** The remaining gap is PPR (experimental in Next.js itself). Partial implementations have correct runtime behavior but may lack build-time optimizations (image resizing, font self-hosting).
 
 The coverage below is against Next.js 16.x.
 
@@ -269,7 +277,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `next/font/google` | Partial | Runtime CDN loading. No self-hosting, font subsetting, or fallback metrics |
 | `next/font/local` | Partial | Runtime `@font-face` injection. Not extracted at build time |
 | `next/og` | Full | Real implementation via [Satori](https://github.com/vercel/satori) + resvg — generates actual PNG images |
-| `next/cache` | Partial | `revalidateTag`, `revalidatePath`, `unstable_cache`, pluggable `CacheHandler`. `"use cache"` directive not supported |
+| `next/cache` | Full | `revalidateTag`, `revalidatePath`, `unstable_cache`, pluggable `CacheHandler`, `"use cache"` directive with `cacheLife()` and `cacheTag()` |
 | `next/form` | Full | GET form interception + POST server action delegation. Re-exports `useActionState` from React 19 |
 | `next/legacy/image` | Full | Translates legacy props to modern Image |
 | `next/error` | Full | Default error page component |
@@ -313,9 +321,10 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | Metadata API | Full | `metadata`, `generateMetadata`, `viewport`, `generateViewport`, title templates |
 | `generateStaticParams` | Full | With `dynamicParams` enforcement |
 | Metadata file routes | Full | sitemap.xml, robots.txt, manifest, favicon, OG images (static + dynamic) |
-| Static export (`output: 'export'`) | Partial | Core functions exist, not yet a standalone CLI command |
+| Static export (`output: 'export'`) | Full | `output: 'export'` in next.config.js, generates static HTML/JSON for all routes |
+| `connection()` | Full | Forces dynamic rendering, overrides ISR `revalidate` config |
 | Route segment config | Partial | `revalidate`, `dynamic`, `dynamicParams`. Missing: `runtime`, `preferredRegion` |
-| `"use cache"` directive | Not yet | `cacheLife()` and `cacheTag()` are no-ops |
+| `"use cache"` directive | Full | File-level and function-level. `cacheLife()` (with profiles: default, seconds, minutes, hours, days, weeks, max), `cacheTag()`, stale-while-revalidate. Pluggable cache backend |
 | PPR (Partial Prerendering) | Not yet | |
 
 ### Configuration
@@ -362,7 +371,6 @@ These are intentional exclusions, not bugs:
 
 ## What's experimental / known limitations
 
-- **`"use cache"` is not supported.** The directive is stripped (treated as a no-op) so apps don't crash, but caching doesn't happen. This is a Next.js 15+ feature that's becoming important in 16.
 - **Image optimization doesn't happen at build time.** Remote images work great via `@unpic/react` (auto-detects 28 CDN providers). Local images are served as-is without resizing or format conversion.
 - **Google Fonts are loaded from the CDN, not self-hosted.** This means no `size-adjust` fallback font metrics and a dependency on Google's CDN at runtime. Local fonts work but `@font-face` CSS is injected at runtime.
 - **`useSelectedLayoutSegment(s)`** derives segments from the pathname rather than being truly layout-aware. Works correctly in most cases but may differ from Next.js in edge cases with parallel routes.
@@ -404,7 +412,9 @@ Request → RSC entry (Vite rsc environment) → Route match → Build layout/pa
 packages/vinext/
   src/
     index.ts              # Main plugin — resolve aliases, config, virtual modules
-    cli.ts                # vinext CLI (dev/build/start/lint)
+    cli.ts                # vinext CLI (dev/build/start/deploy/check/lint)
+    check.ts              # Compatibility scanner — detects unsupported Next.js APIs
+    deploy.ts             # Deploy to Cloudflare Workers — auto-detect + fix migration issues
     routing/
       pages-router.ts     # Pages Router file-system scanner
       app-router.ts       # App Router file-system scanner
@@ -440,22 +450,28 @@ tests/
   app-router.test.ts      # App Router integration tests
   features.test.ts        # Cross-cutting feature tests
   ecosystem.test.ts       # Ecosystem library tests
-  e2e/                    # Playwright E2E tests
-    app-router/           # App Router E2E (64 tests)
-    pages-router/         # Pages Router E2E (22 tests)
-    cloudflare-pages-router/  # Pages Router on Workers E2E (13 tests)
+  check.test.ts           # Compatibility scanner tests
+  deploy.test.ts          # Deploy auto-detection tests
+  fetch-cache.test.ts     # Fetch cache + ISR tests
+  static-export.test.ts   # Static export E2E tests (HTTP server)
+  e2e/                    # Playwright E2E tests (278 tests)
+    app-router/           # App Router E2E (18 spec files)
+    pages-router/         # Pages Router E2E (13 spec files)
+    pages-router-prod/    # Pages Router production E2E
+    cloudflare-workers/   # App Router on Workers E2E
+    cloudflare-pages-router/  # Pages Router on Workers E2E
 ```
 
 ## Tests
 
 ```bash
-npm test              # Run vitest (638 unit + integration tests)
-npm run test:e2e      # Run Playwright E2E tests (117+ tests across 5 projects)
+npm test              # Run vitest (844 unit + integration tests)
+npm run test:e2e      # Run Playwright E2E tests (278 tests across 5 projects)
 npm run typecheck     # TypeScript checking (tsgo)
 npm run lint          # Linting (oxlint)
 ```
 
-The test suite covers routing, SSR, API routes, metadata, ISR, server actions (including `useActionState` and redirect-after-action), basePath, middleware matchers, cookies, i18n routing (locale detection, Accept-Language redirect, NEXT_LOCALE cookie override, locale context in getServerSideProps), CSS modules, `next/dynamic` (including error handling), `next/form` GET interception, parameterized redirects/rewrites with catch-all patterns, chained middleware → config rewrites, GSSP redirect statusCode variants, static export, streaming, client hydration, navigation, error boundaries, and more.
+The test suite covers routing, SSR, API routes, metadata, ISR, server actions (including `useActionState` and redirect-after-action), `"use cache"` (file-level and function-level with `cacheLife`/`cacheTag`), `connection()` dynamic rendering, basePath, middleware matchers, cookies, i18n routing (locale detection, Accept-Language redirect, NEXT_LOCALE cookie override, locale context in getServerSideProps), CSS modules, `next/dynamic` (including error handling), `next/form` GET interception, parameterized redirects/rewrites with catch-all patterns, chained middleware → config rewrites, GSSP redirect statusCode variants, static export (with HTTP serving verification), streaming SSR, client hydration, navigation, error boundaries, deploy auto-detection (ESM, tsconfig aliases, MDX, CJS configs, native modules), compatibility scanner, and more.
 
 The [Vercel App Router Playground](https://github.com/vercel/next-app-router-playground) runs on vinext as an integration test — all 11 sections render correctly in both dev and production builds.
 
@@ -467,27 +483,27 @@ Measured on an 8-core Apple Silicon machine, Node v24.3.0, with a shared 33-rout
 
 | Framework | Mean | StdDev | vs Next.js |
 |-----------|------|--------|------------|
-| Next.js 16 (Turbopack) | 6.59s | ±169ms | baseline |
-| vinext (Vite 7 / Rollup) | 2.43s | ±7ms | **2.7x faster** |
-| vinext (Vite 8 / Rolldown) | 946ms | ±16ms | **7.0x faster** |
+| Next.js 16 (Turbopack) | 6.03s | ±198ms | baseline |
+| vinext (Vite 7 / Rollup) | 2.52s | ±180ms | **2.4x faster** |
+| vinext (Vite 8 / Rolldown) | 972ms | ±63ms | **6.2x faster** |
 
 ### Client Bundle Size (gzipped)
 
 | Framework | Files | Gzipped | vs Next.js |
 |-----------|-------|---------|------------|
 | Next.js 16 | 14 | 168.9 KB | baseline |
-| vinext (Rollup) | 3 | 75.4 KB | **55% smaller** |
-| vinext (Rolldown) | 4 | 73.8 KB | **56% smaller** |
+| vinext (Rollup) | 3 | 76.4 KB | **55% smaller** |
+| vinext (Rolldown) | 4 | 74.6 KB | **56% smaller** |
 
 ### Dev Server Cold Start
 
 | Framework | Mean | Peak RSS | vs Next.js |
 |-----------|------|----------|------------|
-| Next.js 16 (Turbopack) | 2.20s | 87 MB | baseline |
-| vinext (Vite 7 / Rollup) | 1.37s | 88 MB | **1.6x faster** |
-| vinext (Vite 8 / Rolldown) | 1.21s | 88 MB | **1.8x faster** |
+| Next.js 16 (Turbopack) | 1.94s | 89 MB | baseline |
+| vinext (Vite 7 / Rollup) | 1.35s | 88 MB | **1.4x faster** |
+| vinext (Vite 8 / Rolldown) | 1.29s | 89 MB | **1.5x faster** |
 
-Vite 8 (Rolldown) delivers sub-second production builds — **7x faster** than Next.js 16 with Turbopack. Bundle sizes are consistent between Rollup and Rolldown, both roughly half the size of Next.js output.
+Vite 8 (Rolldown) delivers sub-second production builds — **6x faster** than Next.js 16 with Turbopack. Bundle sizes are consistent between Rollup and Rolldown, both roughly half the size of Next.js output.
 
 Reproduce with:
 
@@ -503,12 +519,12 @@ Based on a systematic audit of the Next.js 16 API surface:
 
 | | Count | Percentage |
 |---|---|---|
-| Full implementation | 28 features | 58% |
-| Partial implementation | 13 features | 27% |
-| Intentional stubs (deprecated/unnecessary) | 4 features | 8% |
-| Not yet implemented | 3 features | 6% |
+| Full implementation | 42 features | 82% |
+| Partial implementation | 6 features | 12% |
+| Intentional stubs (deprecated/unnecessary) | 2 features | 4% |
+| Not yet implemented | 1 feature | 2% |
 
-**~85% of the API surface has full or partial support.** The three unimplemented features (`"use cache"`, PPR, and full build-time image optimization) are either experimental in Next.js itself or require deep integration with a build pipeline.
+**94% of the API surface has full or partial support.** The one unimplemented feature (PPR) is still experimental in Next.js itself. Partial implementations cover areas where runtime behavior is correct but build-time optimization is missing (image resizing, font self-hosting).
 
 For a typical Next.js application that uses:
 - Pages Router or App Router (or both)
@@ -516,9 +532,9 @@ For a typical Next.js application that uses:
 - Server-side rendering and API routes
 - `next/link`, `next/image`, `next/head`, `next/navigation`
 - Middleware, rewrites, redirects
-- Server Actions
+- Server Actions, `"use cache"`
 
-...the migration path should be straightforward. Install the plugin, run `vite dev`, and fix any import issues.
+...the migration path should be straightforward. Run `vinext check` to scan for issues, then `vinext deploy` to build and deploy.
 
 ## Contributing
 
