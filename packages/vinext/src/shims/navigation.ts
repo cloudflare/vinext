@@ -430,13 +430,60 @@ export function useSelectedLayoutSegments(
 export type ReadonlyURLSearchParams = URLSearchParams;
 
 /**
- * useServerInsertedHTML — for injecting HTML from server components.
- * Used by styling libraries (styled-components, emotion) for SSR.
- * In our implementation, this is a no-op since we don't have the same
- * streaming injection mechanism.
+ * useServerInsertedHTML — inject HTML during SSR from client components.
+ *
+ * Used by CSS-in-JS libraries (styled-components, emotion, StyleX) to inject
+ * <style> tags during SSR so styles appear in the initial HTML (no FOUC).
+ *
+ * The callback is called once after each SSR render pass. The returned JSX/HTML
+ * is serialized and injected into the HTML stream.
+ *
+ * Usage (in a "use client" component wrapping children):
+ *   useServerInsertedHTML(() => {
+ *     const styles = sheet.getStyleElement();
+ *     sheet.instance.clearTag();
+ *     return <>{styles}</>;
+ *   });
  */
-export function useServerInsertedHTML(_callback: () => unknown): void {
-  // No-op — styles should be handled via Vite's CSS pipeline
+
+// Collected callbacks for the current SSR render pass
+const _serverInsertedHTMLCallbacks: Array<() => unknown> = [];
+
+export function useServerInsertedHTML(callback: () => unknown): void {
+  if (typeof document !== "undefined") {
+    // Client-side: no-op (styles are already in the DOM)
+    return;
+  }
+  _serverInsertedHTMLCallbacks.push(callback);
+}
+
+/**
+ * Flush all collected useServerInsertedHTML callbacks.
+ * Returns an array of results (React elements or strings).
+ * Clears the callback list so the next render starts fresh.
+ *
+ * Called by the SSR entry after renderToReadableStream completes.
+ */
+export function flushServerInsertedHTML(): unknown[] {
+  const results: unknown[] = [];
+  for (const cb of _serverInsertedHTMLCallbacks) {
+    try {
+      const result = cb();
+      if (result != null) results.push(result);
+    } catch {
+      // Ignore errors from individual callbacks
+    }
+  }
+  _serverInsertedHTMLCallbacks.length = 0;
+  return results;
+}
+
+/**
+ * Clear all collected useServerInsertedHTML callbacks without flushing.
+ * Used for cleanup between requests.
+ */
+export function clearServerInsertedHTML(): void {
+  _serverInsertedHTMLCallbacks.length = 0;
 }
 
 // ---------------------------------------------------------------------------

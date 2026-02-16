@@ -1409,6 +1409,10 @@ export async function handleSsr(rscStream, navContext) {
     setNavigationContext(navContext);
   }
 
+  // Clear any stale callbacks from previous requests
+  const { clearServerInsertedHTML, flushServerInsertedHTML } = await import("next/navigation");
+  clearServerInsertedHTML();
+
   try {
     // Deserialize RSC stream back to React VDOM
     const root = await createFromReadableStream(rscStream);
@@ -1418,14 +1422,69 @@ export async function handleSsr(rscStream, navContext) {
       await import.meta.viteRsc.loadBootstrapScriptContent("index");
 
     // Render HTML (traditional SSR)
+    // useServerInsertedHTML callbacks are registered during this render
     const htmlStream = await renderToReadableStream(root, {
       bootstrapScriptContent,
     });
 
-    return htmlStream;
+    // Flush useServerInsertedHTML callbacks (CSS-in-JS style injection)
+    const insertedElements = flushServerInsertedHTML();
+    if (insertedElements.length === 0) {
+      return htmlStream;
+    }
+
+    // Render the inserted elements to HTML strings
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { createElement, Fragment } = await import("react");
+    let insertedHTML = "";
+    for (const el of insertedElements) {
+      try {
+        insertedHTML += renderToStaticMarkup(createElement(Fragment, null, el));
+      } catch {
+        // Skip elements that can't be rendered
+      }
+    }
+
+    if (!insertedHTML) {
+      return htmlStream;
+    }
+
+    // Inject the collected HTML before </head> using a TransformStream
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    let injected = false;
+
+    const transform = new TransformStream({
+      transform(chunk, controller) {
+        if (injected) {
+          controller.enqueue(chunk);
+          return;
+        }
+        const text = decoder.decode(chunk, { stream: true });
+        const headEnd = text.indexOf("</head>");
+        if (headEnd !== -1) {
+          // Inject before </head>
+          const before = text.slice(0, headEnd);
+          const after = text.slice(headEnd);
+          controller.enqueue(encoder.encode(before + insertedHTML + after));
+          injected = true;
+        } else {
+          controller.enqueue(chunk);
+        }
+      },
+      flush(controller) {
+        // If </head> was never found, append at the end
+        if (!injected && insertedHTML) {
+          controller.enqueue(encoder.encode(insertedHTML));
+        }
+      },
+    });
+
+    return htmlStream.pipeThrough(transform);
   } finally {
     // Clean up so we don't leak context between requests
     setNavigationContext(null);
+    clearServerInsertedHTML();
   }
 }
 `;
