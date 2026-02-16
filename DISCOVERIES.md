@@ -494,8 +494,15 @@ Comprehensive audit of the test suite inspired by Next.js's `test/e2e/app-dir/` 
 ### Suspense/React.lazy Works in Pages Router SSR
 - **Confirmed**: `React.lazy` + `Suspense` components are correctly resolved during SSR using `renderToPipeableStream`. The lazy component's content appears in the SSR HTML (verified with JavaScript disabled). This is because `renderToPipeableStream` (unlike `renderToString`) waits for lazy components to resolve.
 
+### Pages Router ISR Background Regen Bug — Stale HTML Re-Cached
+- **Found**: When ISR background regeneration runs after a STALE response, `dev-server.ts` line 324 calls `getStaticProps` for fresh props but re-caches the OLD `cachedHtml` string instead of re-rendering the page. The props are fresh but the HTML still contains the old timestamp/data.
+- **Impact**: After a STALE→regen cycle, the next HIT serves the same HTML as before. The cache state transitions correctly (MISS→HIT→STALE→HIT), but the content doesn't actually update.
+- **Root cause**: `triggerBackgroundRegeneration` callback stores `buildPagesCacheValue(cachedHtml, freshResult.props)` — it passes `cachedHtml` (the stale HTML) instead of re-rendering the component with the fresh props.
+- **Fix needed**: The regen callback needs to call `renderToPipeableStream` (or equivalent) with the fresh props to produce new HTML before caching.
+- **Severity**: Medium — ISR cache headers and state machine work correctly. The unit tests pass because they create a fresh server per test run, so the first MISS re-renders from scratch.
+
 ### Test Coverage Summary After Audit
 - **Before audit**: ~105 E2E tests across 5 projects
 - **After audit**: ~180 E2E tests across 5 projects
 - **Key additions**: App Router API routes (15 tests, was 0), error boundary reset, catch-all/optional catch-all routes, route groups, nested dynamic routes, server-side redirects, loading.tsx, route segment configs, production interactive tests, Cloudflare interactive/dynamic route tests
-- **Remaining gaps**: No App Router production build E2E project, ISR/revalidation E2E, `next/script` component, `global-error.tsx` testing
+- **Remaining gaps**: No App Router production build E2E project, `next/script` component, `global-error.tsx` testing
