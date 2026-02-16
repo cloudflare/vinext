@@ -162,7 +162,7 @@ import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
-import { getCacheHandler } from "next/cache";
+import { getCacheHandler, _consumeRequestScopedCacheLife } from "next/cache";
 import { withFetchCache } from "vinext/fetch-cache";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 
@@ -187,6 +187,10 @@ async function isrSet(key, data, revalidateSeconds) {
   await handler.set(key, data, { revalidate: revalidateSeconds });
 }
 const isrPendingRegens = new Map();
+// Track routes that have "use cache" with cacheLife() — maps ISR cache key to revalidate seconds.
+// Populated on the first render when cacheLife() is called, used on subsequent requests to
+// check the ISR cache even when the page doesn't have export const revalidate.
+const _cacheLifeRouteMap = new Map();
 function isrTriggerRegen(key, renderFn) {
   if (isrPendingRegens.has(key)) return;
   const promise = renderFn()
@@ -877,7 +881,7 @@ async function _handleRequest(request) {
   }
 
   // Read route segment config from page module exports
-  const revalidateSeconds = typeof route.page?.revalidate === "number" ? route.page.revalidate : null;
+  let revalidateSeconds = typeof route.page?.revalidate === "number" ? route.page.revalidate : null;
   const dynamicConfig = route.page?.dynamic; // 'auto' | 'force-dynamic' | 'force-static' | 'error'
   const dynamicParamsConfig = route.page?.dynamicParams; // true (default) | false
   const isForceStatic = dynamicConfig === "force-static";
@@ -953,30 +957,38 @@ async function _handleRequest(request) {
   // force-dynamic: skip ISR cache, set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
-  // ISR cache check for App Router pages with revalidate (skip if force-dynamic)
+  // ISR cache check for App Router pages with revalidate or "use cache" (skip if force-dynamic).
+  const _isrCacheKey = "app:" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
+  // Check cacheLifeRouteMap for pages that used cacheLife() on a previous render
+  const _cacheLifeRevalidate = _cacheLifeRouteMap.get(_isrCacheKey);
+  if (revalidateSeconds === null && typeof _cacheLifeRevalidate === "number") {
+    revalidateSeconds = _cacheLifeRevalidate;
+  }
   if (!isForceDynamic && revalidateSeconds !== null && revalidateSeconds > 0) {
-    const cacheKey = "app:" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
-    const cached = await isrGet(cacheKey);
+    const cached = await isrGet(_isrCacheKey);
 
     if (cached && cached.value.value && cached.value.value.kind === "APP_PAGE") {
       const cachedPage = cached.value.value;
+      // Use revalidateSeconds from export, or fall back to the duration stored
+      // in the ISR cache (set by cacheLife() on the first render), or default 900.
+      const effectiveRevalidate = revalidateSeconds ?? 900;
       const cacheHeaders = {
         "X-Vinext-Cache": cached.isStale ? "STALE" : "HIT",
         "Cache-Control": cached.isStale
           ? "s-maxage=0, stale-while-revalidate"
-          : "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+          : "s-maxage=" + effectiveRevalidate + ", stale-while-revalidate",
       };
 
       if (cached.isStale) {
         // Trigger background regeneration
-        isrTriggerRegen(cacheKey, async function() {
+        isrTriggerRegen(_isrCacheKey, async function() {
           const freshElement = await buildPageElement(route, params, undefined, url.searchParams);
           const freshRscStream = renderToReadableStream(freshElement);
           const ssrEntryFresh = await import.meta.viteRsc.loadModule("ssr", "index");
           const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream, _currentNavContext);
           // Consume the stream to get HTML string
           const freshHtml = await new Response(freshHtmlStream).text();
-          await isrSet(cacheKey, { kind: "APP_PAGE", html: freshHtml, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, revalidateSeconds);
+          await isrSet(_isrCacheKey, { kind: "APP_PAGE", html: freshHtml, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, effectiveRevalidate);
         });
       }
 
@@ -1155,6 +1167,15 @@ async function _handleRequest(request) {
   // during rendering. If so, treat as dynamic (skip ISR, set no-store).
   const dynamicUsedDuringRender = consumeDynamicUsage();
 
+  // Check if cacheLife() was called during rendering (e.g., page with file-level "use cache").
+  // If so, it dynamically sets the ISR revalidation period and records it in the route map
+  // so subsequent requests can look up the ISR cache without re-rendering.
+  const requestCacheLife = _consumeRequestScopedCacheLife();
+  if (requestCacheLife && requestCacheLife.revalidate !== undefined && revalidateSeconds === null) {
+    revalidateSeconds = requestCacheLife.revalidate;
+    _cacheLifeRouteMap.set(_isrCacheKey, revalidateSeconds);
+  }
+
   // force-dynamic or dynamic API usage: return response with no-store header
   if (isForceDynamic || dynamicUsedDuringRender) {
     return attachDraftCookie(new Response(htmlStream, {
@@ -1176,14 +1197,13 @@ async function _handleRequest(request) {
     }));
   }
 
-  // If ISR is enabled (and no dynamic API was used), cache the rendered HTML
+  // If ISR is enabled (via export const revalidate OR cacheLife()), cache the rendered HTML
   if (!isForceDynamic && !dynamicUsedDuringRender && revalidateSeconds !== null && revalidateSeconds > 0) {
     // We need to tee the stream: one for caching, one for the response
     const [cacheStream, responseStream] = htmlStream.tee();
-    const cacheKey = "app:" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
     // Cache in background
     new Response(cacheStream).text().then(function(html) {
-      return isrSet(cacheKey, { kind: "APP_PAGE", html: html, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, revalidateSeconds);
+      return isrSet(_isrCacheKey, { kind: "APP_PAGE", html: html, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, revalidateSeconds);
     }).catch(function(err) {
       console.error("[vinext] ISR cache store failed:", err);
     });

@@ -1,4 +1,5 @@
 import type { Plugin, ViteDevServer } from "vite";
+import { parseAst } from "vite";
 import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, type Route } from "./routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
@@ -933,6 +934,7 @@ hydrate();
           "vinext/layout-segment-context": path.join(shimsDir, "layout-segment-context"),
           "vinext/metadata": path.join(shimsDir, "metadata"),
           "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
+          "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
           "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
         };
 
@@ -1345,6 +1347,112 @@ hydrate();
             }
           });
         };
+      },
+    },
+    // "use cache" directive transform:
+    // Detects "use cache" at file-level or function-level and wraps the
+    // exports/functions with registerCachedFunction() from vinext/cache-runtime.
+    // Runs without enforce so it executes after JSX transform (parseAst needs plain JS).
+    {
+      name: "vinext:use-cache",
+
+      async transform(code, id) {
+        // Only process app source files, not node_modules or virtual modules
+        if (id.includes("node_modules")) return null;
+        if (id.startsWith("\0")) return null;
+        if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
+        if (!code.includes("use cache")) return null;
+
+        // Lazy-load the transforms to avoid startup cost
+        const { transformWrapExport, transformHoistInlineDirective } = await import("@vitejs/plugin-rsc/transforms");
+        const ast = parseAst(code);
+
+        // Check for file-level "use cache" directive
+        const cacheDirective = (ast.body as any[]).find(
+          (node: any) =>
+            node.type === "ExpressionStatement" &&
+            node.expression?.type === "Literal" &&
+            typeof node.expression.value === "string" &&
+            node.expression.value.startsWith("use cache"),
+        );
+
+        if (cacheDirective) {
+          // File-level "use cache" — wrap non-component exports with caching.
+          // Page components (default export) are NOT wrapped because React
+          // elements can't be JSON-serialized. For pages, file-level "use cache"
+          // is treated as ISR — the cacheLife() call inside the component sets
+          // the revalidation period, handled by the existing ISR cache layer.
+          const directiveValue: string = cacheDirective.expression.value;
+          const variant = directiveValue === "use cache" ? "" : directiveValue.replace("use cache:", "").replace("use cache: ", "").trim();
+
+          // Detect if this is a page file (contains /page. in the path)
+          const isPageFile = /\/page\.(tsx?|jsx?|mjs)$/.test(id);
+
+          const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
+          const result = transformWrapExport(code, ast as any, {
+            runtime: (value, name) =>
+              `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
+            rejectNonAsyncFunction: false,
+            filter: (name, meta) => {
+              // Skip non-functions (constants, types, etc.)
+              if (meta.isFunction === false) return false;
+              // Skip the default export on page files — it's a React component
+              // whose return value (JSX elements) can't be JSON-serialized.
+              if (isPageFile && name === "default") return false;
+              return true;
+            },
+          });
+
+          if (result.exportNames.length > 0) {
+            // Remove the directive itself so it doesn't cause runtime errors
+            const output = result.output;
+            output.overwrite(cacheDirective.start, cacheDirective.end, `/* "use cache" — wrapped by vinext */`);
+            return {
+              code: output.toString(),
+              map: output.generateMap({ hires: "boundary" }),
+            };
+          }
+
+          // Even if no exports were wrapped, still strip the directive
+          // (e.g., page-only file with just a default export)
+          const { default: MagicString } = await import("magic-string");
+          const output = new MagicString(code);
+          output.overwrite(cacheDirective.start, cacheDirective.end, `/* "use cache" — handled by vinext */`);
+          return {
+            code: output.toString(),
+            map: output.generateMap({ hires: "boundary" }),
+          };
+        }
+
+        // Check for function-level "use cache" directives
+        // (e.g., async function getData() { "use cache"; ... })
+        const hasInlineCache = code.includes("use cache") && !cacheDirective;
+        if (hasInlineCache) {
+          const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
+
+          try {
+            const result = transformHoistInlineDirective(code, ast as any, {
+              directive: /^use cache(:\s*\w+)?$/,
+              runtime: (value, name, meta) => {
+                const directiveMatch = meta.directiveMatch[0];
+                const variant = directiveMatch === "use cache" ? "" : directiveMatch.replace("use cache:", "").replace("use cache: ", "").trim();
+                return `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
+              },
+              rejectNonAsyncFunction: false,
+            });
+
+            if (result.names.length > 0) {
+              return {
+                code: result.output.toString(),
+                map: result.output.generateMap({ hires: "boundary" }),
+              };
+            }
+          } catch {
+            // If hoisting fails (e.g., complex closure), fall through
+          }
+        }
+
+        return null;
       },
     },
     // Cloudflare Workers production build integration:

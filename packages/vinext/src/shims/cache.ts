@@ -18,6 +18,28 @@
  */
 
 // ---------------------------------------------------------------------------
+// Lazy accessor for cache context — avoids circular imports with cache-runtime.
+// The cache-runtime module sets this on load.
+// ---------------------------------------------------------------------------
+
+interface CacheContextLike {
+  tags: string[];
+  lifeConfigs: import("./cache-runtime.js").CacheContext["lifeConfigs"];
+  variant: string;
+}
+
+/** @internal Set by cache-runtime.ts on import to avoid circular dependency */
+let _getCacheContextFn: (() => CacheContextLike | null) | null = null;
+
+/**
+ * Register the cache context accessor. Called by cache-runtime.ts on load.
+ * @internal
+ */
+export function _registerCacheContextAccessor(fn: () => CacheContextLike | null): void {
+  _getCacheContextFn = fn;
+}
+
+// ---------------------------------------------------------------------------
 // CacheHandler interface — matches Next.js 16's CacheHandler class shape.
 // Implement this to provide a custom cache backend.
 // ---------------------------------------------------------------------------
@@ -283,6 +305,53 @@ export function unstable_noStore(): void {
 export { unstable_noStore as noStore };
 
 // ---------------------------------------------------------------------------
+// Request-scoped cacheLife for page-level "use cache" directives.
+// When cacheLife() is called outside a "use cache" function context (e.g.,
+// in a page component with file-level "use cache"), the resolved config is
+// stored here so the server can read it after rendering and apply ISR caching.
+// ---------------------------------------------------------------------------
+
+let _requestScopedCacheLife: CacheLifeConfig | null = null;
+
+/**
+ * Set a request-scoped cache life config. Called by cacheLife() when outside
+ * a "use cache" function context.
+ * @internal
+ */
+export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
+  if (_requestScopedCacheLife === null) {
+    _requestScopedCacheLife = { ...config };
+  } else {
+    // Minimum-wins rule
+    if (config.stale !== undefined) {
+      _requestScopedCacheLife.stale = _requestScopedCacheLife.stale !== undefined
+        ? Math.min(_requestScopedCacheLife.stale, config.stale)
+        : config.stale;
+    }
+    if (config.revalidate !== undefined) {
+      _requestScopedCacheLife.revalidate = _requestScopedCacheLife.revalidate !== undefined
+        ? Math.min(_requestScopedCacheLife.revalidate, config.revalidate)
+        : config.revalidate;
+    }
+    if (config.expire !== undefined) {
+      _requestScopedCacheLife.expire = _requestScopedCacheLife.expire !== undefined
+        ? Math.min(_requestScopedCacheLife.expire, config.expire)
+        : config.expire;
+    }
+  }
+}
+
+/**
+ * Consume and reset the request-scoped cache life. Returns null if none was set.
+ * @internal
+ */
+export function _consumeRequestScopedCacheLife(): CacheLifeConfig | null {
+  const config = _requestScopedCacheLife;
+  _requestScopedCacheLife = null;
+  return config;
+}
+
+// ---------------------------------------------------------------------------
 // cacheLife / cacheTag — Next.js 15+ "use cache" APIs
 // ---------------------------------------------------------------------------
 
@@ -317,10 +386,15 @@ export const cacheLifeProfiles: Record<string, CacheLifeConfig> = {
  * Accepts either a built-in profile name (e.g., "hours", "days") or a custom
  * configuration object. In Next.js, this only works inside "use cache" functions.
  *
- * In our implementation, "use cache" directive support is not yet implemented,
- * so this is a no-op that validates inputs for forward compatibility.
+ * When called inside a "use cache" function, this sets the cache TTL.
+ * The "minimum-wins" rule applies: if called multiple times, the shortest
+ * duration for each field wins.
+ *
+ * When called outside a "use cache" context, this is a validated no-op.
  */
 export function cacheLife(profile: string | CacheLifeConfig): void {
+  let resolvedConfig: CacheLifeConfig;
+
   if (typeof profile === "string") {
     // Validate the profile name exists
     if (!cacheLifeProfiles[profile]) {
@@ -328,7 +402,9 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
         `[vinext] cacheLife: unknown profile "${profile}". ` +
           `Available profiles: ${Object.keys(cacheLifeProfiles).join(", ")}`,
       );
+      return;
     }
+    resolvedConfig = { ...cacheLifeProfiles[profile] };
   } else if (typeof profile === "object" && profile !== null) {
     // Validate the config shape
     if (
@@ -340,9 +416,25 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
         "[vinext] cacheLife: expire must be >= revalidate",
       );
     }
+    resolvedConfig = { ...profile };
+  } else {
+    return;
   }
-  // No-op: "use cache" directive is not yet supported.
-  // When implemented, this will set cache durations on the current cache store.
+
+  // If we're inside a "use cache" context, push the config
+  try {
+    const ctx = _getCacheContextFn?.();
+    if (ctx) {
+      ctx.lifeConfigs.push(resolvedConfig);
+      return;
+    }
+  } catch {
+    // Fall through to request-scoped
+  }
+
+  // Outside a "use cache" context (e.g., page component with file-level "use cache"):
+  // store as request-scoped so the server can read it after rendering.
+  _setRequestScopedCacheLife(resolvedConfig);
 }
 
 /**
@@ -351,12 +443,20 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
  * Tags set here can be invalidated via revalidateTag(). In Next.js, this only
  * works inside "use cache" functions.
  *
- * In our implementation, "use cache" directive support is not yet implemented,
- * so this is a no-op for forward compatibility.
+ * When called inside a "use cache" function, tags are attached to the cached
+ * entry. They can later be invalidated via revalidateTag().
+ *
+ * When called outside a "use cache" context, this is a no-op.
  */
-export function cacheTag(..._tags: string[]): void {
-  // No-op: "use cache" directive is not yet supported.
-  // When implemented, this will attach tags to the current cache store entry.
+export function cacheTag(...tags: string[]): void {
+  try {
+    const ctx = _getCacheContextFn?.();
+    if (ctx) {
+      ctx.tags.push(...tags);
+    }
+  } catch {
+    // Not in a cache context — no-op
+  }
 }
 
 // ---------------------------------------------------------------------------

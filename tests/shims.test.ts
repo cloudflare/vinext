@@ -845,6 +845,245 @@ describe("next/cache shim", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// "use cache" runtime tests
+// ---------------------------------------------------------------------------
+
+describe('"use cache" runtime', () => {
+  it("registerCachedFunction caches return values", async () => {
+    const { registerCachedFunction } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    // Reset state
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const fn = async (x: number) => {
+      callCount++;
+      return { result: x * 2 };
+    };
+
+    const cached = registerCachedFunction(fn, "test:double");
+
+    const r1 = await cached(5);
+    expect(r1).toEqual({ result: 10 });
+    expect(callCount).toBe(1);
+
+    // Second call with same args — should be cached
+    const r2 = await cached(5);
+    expect(r2).toEqual({ result: 10 });
+    expect(callCount).toBe(1); // Not called again
+
+    // Different args — cache miss
+    const r3 = await cached(7);
+    expect(r3).toEqual({ result: 14 });
+    expect(callCount).toBe(2);
+  });
+
+  it("registerCachedFunction respects cacheLife inside cached function", async () => {
+    const { registerCachedFunction } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler, cacheLife } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const fn = async () => {
+      cacheLife("seconds"); // revalidate: 1s
+      callCount++;
+      return { ts: Date.now() };
+    };
+
+    const cached = registerCachedFunction(fn, "test:cachelife");
+
+    await cached();
+    expect(callCount).toBe(1);
+
+    // Immediate second call — cached
+    await cached();
+    expect(callCount).toBe(1);
+  });
+
+  it("registerCachedFunction collects cacheTag", async () => {
+    const { registerCachedFunction } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler, cacheTag } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+
+    const fn = async () => {
+      cacheTag("my-tag", "another-tag");
+      return { data: "tagged" };
+    };
+
+    const cached = registerCachedFunction(fn, "test:tags");
+    await cached();
+
+    // The cache entry should have tags
+    const entry = await handler.get("use-cache:test:tags");
+    expect(entry).not.toBeNull();
+    expect(entry?.value).toHaveProperty("kind", "FETCH");
+    if (entry?.value && entry.value.kind === "FETCH") {
+      expect(entry.value.tags).toContain("my-tag");
+      expect(entry.value.tags).toContain("another-tag");
+    }
+  });
+
+  it("revalidateTag invalidates cached entries", async () => {
+    const { registerCachedFunction } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler, cacheTag, revalidateTag } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const fn = async () => {
+      cacheTag("invalidate-me");
+      callCount++;
+      return { count: callCount };
+    };
+
+    const cached = registerCachedFunction(fn, "test:invalidate");
+
+    const r1 = await cached();
+    expect(r1).toEqual({ count: 1 });
+    expect(callCount).toBe(1);
+
+    // Cached
+    const r2 = await cached();
+    expect(r2).toEqual({ count: 1 });
+    expect(callCount).toBe(1);
+
+    // Invalidate the tag
+    await revalidateTag("invalidate-me");
+
+    // Should re-execute
+    const r3 = await cached();
+    expect(r3).toEqual({ count: 2 });
+    expect(callCount).toBe(2);
+  });
+
+  it("private variant uses per-request cache", async () => {
+    const { registerCachedFunction, clearPrivateCache } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+
+    let callCount = 0;
+    const fn = async () => {
+      callCount++;
+      return { count: callCount };
+    };
+
+    const cached = registerCachedFunction(fn, "test:private", "private");
+
+    const r1 = await cached();
+    expect(r1).toEqual({ count: 1 });
+
+    // Same request — cached
+    const r2 = await cached();
+    expect(r2).toEqual({ count: 1 });
+
+    // Clear private cache (simulates new request)
+    clearPrivateCache();
+
+    // Should re-execute
+    const r3 = await cached();
+    expect(r3).toEqual({ count: 2 });
+  });
+
+  it("cacheLife minimum-wins rule applies", async () => {
+    const { registerCachedFunction } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler, cacheLife } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+
+    const fn = async () => {
+      cacheLife("hours");   // revalidate: 3600
+      cacheLife("seconds"); // revalidate: 1  — this should win
+      return { data: "min-wins" };
+    };
+
+    const cached = registerCachedFunction(fn, "test:min-wins");
+    await cached();
+
+    // The entry should have the minimum revalidate (1 second from "seconds" profile)
+    const entry = await handler.get("use-cache:test:min-wins");
+    expect(entry).not.toBeNull();
+    if (entry?.value && entry.value.kind === "FETCH") {
+      expect(entry.value.revalidate).toBe(1);
+    }
+  });
+
+  it("getCacheContext returns null outside cache function", async () => {
+    const { getCacheContext } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    expect(getCacheContext()).toBeNull();
+  });
+
+  it("stableStringify produces consistent keys for same objects", async () => {
+    const { registerCachedFunction } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const fn = async (_opts: Record<string, unknown>) => {
+      callCount++;
+      return { result: "ok" };
+    };
+
+    const cached = registerCachedFunction(fn, "test:stable-key");
+
+    // Different key order, same content — should be same cache key
+    await cached({ b: 2, a: 1 });
+    expect(callCount).toBe(1);
+
+    await cached({ a: 1, b: 2 });
+    expect(callCount).toBe(1); // Same cache key, still cached
+  });
+
+  it("cached function with no args works correctly", async () => {
+    const { registerCachedFunction } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const fn = async () => {
+      callCount++;
+      return { hello: "world" };
+    };
+
+    const cached = registerCachedFunction(fn, "test:no-args");
+    const r1 = await cached();
+    const r2 = await cached();
+    expect(r1).toEqual({ hello: "world" });
+    expect(r2).toEqual({ hello: "world" });
+    expect(callCount).toBe(1);
+  });
+});
+
 describe("middleware runner", () => {
   it("findMiddlewareFile finds middleware.ts at project root", async () => {
     const { findMiddlewareFile } = await import(

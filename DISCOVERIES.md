@@ -506,3 +506,12 @@ Comprehensive audit of the test suite inspired by Next.js's `test/e2e/app-dir/` 
 - **After audit**: ~180 E2E tests across 5 projects
 - **Key additions**: App Router API routes (15 tests, was 0), error boundary reset, catch-all/optional catch-all routes, route groups, nested dynamic routes, server-side redirects, loading.tsx, route segment configs, production interactive tests, Cloudflare interactive/dynamic route tests
 - **Remaining gaps**: No App Router production build E2E project, `next/script` component, `global-error.tsx` testing
+
+### "use cache" Implementation — Architecture Decisions
+
+- **@vitejs/plugin-rsc does NOT handle "use cache"** despite the plan saying it does. It only handles "use server" and "use client". However, it exports reusable transform utilities (`transformWrapExport`, `transformHoistInlineDirective`) that accept arbitrary directives.
+- **Vite's `parseAst` can't parse JSX/TSX** — it's a plain JS parser (Rollup's acorn). The `vinext:use-cache` plugin must NOT use `enforce: "pre"` — it needs to run after the JSX transform (esbuild/oxc) converts TSX to plain JS.
+- **File-level "use cache" on page components can't wrap the default export** — React elements (JSX) are not JSON-serializable, so `registerCachedFunction(PageComponent)` would try to cache the React element tree, which fails on the second request ("Objects are not valid as a React child"). Instead, file-level "use cache" on pages is handled through ISR: `cacheLife()` sets the revalidation period via request-scoped state, which the server reads after rendering.
+- **cacheLife() has dual behavior** — inside a `"use cache"` function context (AsyncLocalStorage), it pushes to `ctx.lifeConfigs`. Outside (e.g., page component), it sets `_requestScopedCacheLife` which the server consumes after render to enable ISR.
+- **Request-scoped cacheLife needs a persistent route map** — On the first render of a "use cache" page, `cacheLife()` sets the revalidation and the ISR store fires. On subsequent requests, `revalidateSeconds` is null (no export const revalidate), so the ISR cache check would be skipped. A `_cacheLifeRouteMap` persists the effective revalidation period across requests so the ISR cache hit works.
+- **"use cache: private" uses per-request Map** — not the pluggable CacheHandler. Cleared at the start of each request via `clearPrivateCache()`.
