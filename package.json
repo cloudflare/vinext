@@ -17,6 +17,7 @@
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@typescript/native-preview": "^7.0.0-dev.20260213.1",
+    "image-size": "2.0.2",
     "oxlint": "^1.47.0",
     "playwright": "^1.52.0",
     "typescript": "^5.7.0",

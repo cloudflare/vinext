@@ -1392,6 +1392,103 @@ hydrate();
         };
       },
     },
+    // Local image import transform:
+    // When a source file imports a local image (e.g., `import hero from './hero.jpg'`),
+    // this plugin transforms the default import to a StaticImageData object with
+    // { src, width, height } so the next/image shim can set correct dimensions
+    // on <img> tags, preventing CLS.
+    //
+    // Vite's default image import returns a URL string. We intercept this by
+    // adding a `?vinext-meta` suffix: the original import gets the URL from Vite,
+    // and we resolve the `?vinext-meta` virtual module to provide dimensions.
+    {
+      name: "vinext:image-imports",
+      enforce: "pre",
+
+      // Cache of image dimensions to avoid re-reading files
+      _dimCache: new Map<string, { width: number; height: number }>(),
+
+      resolveId(source, _importer) {
+        if (!source.endsWith("?vinext-meta")) return null;
+        // Resolve the real image path from the importer
+        const realPath = source.replace("?vinext-meta", "");
+        return `\0vinext-image-meta:${realPath}`;
+      },
+
+      async load(id) {
+        if (!id.startsWith("\0vinext-image-meta:")) return null;
+        const imagePath = id.replace("\0vinext-image-meta:", "");
+
+        // Read from cache first
+        const cache = (this as any)._dimCache as Map<string, { width: number; height: number }>;
+        let dims = cache.get(imagePath);
+        if (!dims) {
+          try {
+            const { imageSize } = await import("image-size");
+            const buffer = fs.readFileSync(imagePath);
+            const result = imageSize(buffer);
+            dims = { width: result.width ?? 0, height: result.height ?? 0 };
+            cache.set(imagePath, dims);
+          } catch {
+            dims = { width: 0, height: 0 };
+          }
+        }
+
+        return `export default ${JSON.stringify(dims)};`;
+      },
+
+      async transform(code, id) {
+        // Only transform source files that import images
+        if (id.includes("node_modules")) return null;
+        if (id.startsWith("\0")) return null;
+        if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
+
+        // Quick check: does this file import an image?
+        const imageImportRe = /import\s+(\w+)\s+from\s+['"]([^'"]+\.(png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?))['"];?/g;
+        if (!imageImportRe.test(code)) return null;
+
+        // Reset regex lastIndex
+        imageImportRe.lastIndex = 0;
+
+        const { default: MagicString } = await import("magic-string");
+        const s = new MagicString(code);
+        let hasChanges = false;
+
+        let match;
+        while ((match = imageImportRe.exec(code)) !== null) {
+          const [fullMatch, varName, importPath] = match;
+          const matchStart = match.index;
+          const matchEnd = matchStart + fullMatch.length;
+
+          // Resolve the absolute path of the image
+          const dir = path.dirname(id);
+          const absImagePath = path.resolve(dir, importPath);
+
+          if (!fs.existsSync(absImagePath)) continue;
+
+          // Replace the single import with two:
+          // 1. Original import (Vite gives us the URL string)
+          // 2. Meta import (we provide { width, height })
+          // Combined into a StaticImageData object
+          const urlVar = `__vinext_img_url_${varName}`;
+          const metaVar = `__vinext_img_meta_${varName}`;
+          const replacement =
+            `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
+            `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
+            `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
+
+          s.overwrite(matchStart, matchEnd, replacement);
+          hasChanges = true;
+        }
+
+        if (!hasChanges) return null;
+
+        return {
+          code: s.toString(),
+          map: s.generateMap({ hires: "boundary" }),
+        };
+      },
+    } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },
     // "use cache" directive transform:
     // Detects "use cache" at file-level or function-level and wraps the
     // exports/functions with registerCachedFunction() from vinext/cache-runtime.
