@@ -1,0 +1,460 @@
+/**
+ * Unit tests for fetch cache shim.
+ *
+ * Tests the patched fetch() with Next.js caching semantics:
+ * - next.revalidate for TTL-based caching
+ * - next.tags for tag-based invalidation
+ * - cache: 'no-store' and cache: 'force-cache'
+ * - Stale-while-revalidate behavior
+ * - next property stripping
+ * - Independent cache entries per URL
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+// We need to mock fetch at the module level BEFORE fetch-cache.ts captures
+// `originalFetch`. Use vi.stubGlobal to intercept at import time.
+let requestCount = 0;
+const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+  requestCount++;
+  const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+  return new Response(JSON.stringify({ url, count: requestCount }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+});
+
+// Stub globalThis.fetch BEFORE importing modules that capture it
+vi.stubGlobal("fetch", fetchMock);
+
+// Now import — these will capture fetchMock as "originalFetch"
+const { withFetchCache, getCollectedFetchTags, getOriginalFetch } = await import("../packages/vinext/src/shims/fetch-cache.js");
+const { getCacheHandler, revalidateTag, MemoryCacheHandler, setCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+
+describe("fetch cache shim", () => {
+  let cleanup: (() => void) | null = null;
+
+  beforeEach(() => {
+    // Reset state
+    requestCount = 0;
+    fetchMock.mockClear();
+    // Reset the cache handler to a fresh instance for each test
+    setCacheHandler(new MemoryCacheHandler());
+    // Install the patched fetch
+    cleanup = withFetchCache();
+  });
+
+  afterEach(() => {
+    cleanup?.();
+    cleanup = null;
+  });
+
+  // ── Basic caching with next.revalidate ──────────────────────────────
+
+  it("caches fetch with next.revalidate and returns cached on second call", async () => {
+    const res1 = await fetch("https://api.example.com/data", {
+      next: { revalidate: 60 },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    // Second call should return cached data (no new network request)
+    const res2 = await fetch("https://api.example.com/data", {
+      next: { revalidate: 60 },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(1); // Same count = cached
+    expect(fetchMock).toHaveBeenCalledTimes(1); // Only one real fetch
+  });
+
+  it("cache: 'force-cache' caches indefinitely", async () => {
+    const res1 = await fetch("https://api.example.com/force", {
+      cache: "force-cache",
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/force", {
+      cache: "force-cache",
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(1); // Cached
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ── No caching (no-store, revalidate: 0, revalidate: false) ─────────
+
+  it("cache: 'no-store' bypasses cache entirely", async () => {
+    const res1 = await fetch("https://api.example.com/nostore", {
+      cache: "no-store",
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/nostore", {
+      cache: "no-store",
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2); // Fresh fetch each time
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("next.revalidate: 0 skips caching", async () => {
+    const res1 = await fetch("https://api.example.com/rev0", {
+      next: { revalidate: 0 },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/rev0", {
+      next: { revalidate: 0 },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2); // Not cached
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("next.revalidate: false skips caching", async () => {
+    const res1 = await fetch("https://api.example.com/revfalse", {
+      next: { revalidate: false },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/revfalse", {
+      next: { revalidate: false },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2); // Not cached
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("no cache or next options passes through without caching", async () => {
+    const res1 = await fetch("https://api.example.com/passthrough");
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/passthrough");
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2); // Pass-through, no caching
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // ── Tag-based invalidation ──────────────────────────────────────────
+
+  it("next.tags caches and revalidateTag invalidates", async () => {
+    const res1 = await fetch("https://api.example.com/posts", {
+      next: { tags: ["posts"] },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    // Cached
+    const res2 = await fetch("https://api.example.com/posts", {
+      next: { tags: ["posts"] },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Invalidate via tag
+    await revalidateTag("posts");
+
+    // Should re-fetch after tag invalidation
+    const res3 = await fetch("https://api.example.com/posts", {
+      next: { tags: ["posts"] },
+    });
+    const data3 = await res3.json();
+    expect(data3.count).toBe(2); // Fresh fetch
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("revalidateTag only invalidates matching tags", async () => {
+    // Cache two different tagged fetches
+    await fetch("https://api.example.com/posts-tag", {
+      next: { tags: ["posts"] },
+    });
+    await fetch("https://api.example.com/users-tag", {
+      next: { tags: ["users"] },
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Invalidate only "posts"
+    await revalidateTag("posts");
+
+    // Posts should re-fetch
+    const postRes = await fetch("https://api.example.com/posts-tag", {
+      next: { tags: ["posts"] },
+    });
+    const postData = await postRes.json();
+    expect(postData.count).toBe(3); // Fresh fetch (count continues from 2)
+
+    // Users should still be cached
+    const userRes = await fetch("https://api.example.com/users-tag", {
+      next: { tags: ["users"] },
+    });
+    const userData = await userRes.json();
+    expect(userData.count).toBe(2); // Still the cached version
+    expect(fetchMock).toHaveBeenCalledTimes(3); // Only posts re-fetched
+  });
+
+  // ── TTL expiry (stale-while-revalidate) ─────────────────────────────
+
+  it("returns stale data after TTL expires and triggers background refetch", async () => {
+    const res1 = await fetch("https://api.example.com/stale-test", {
+      next: { revalidate: 1 },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    // Manually expire the cache entry
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const cacheKey = "fetch:GET:https://api.example.com/stale-test";
+    const store = (handler as any).store as Map<string, any>;
+    const entry = store.get(cacheKey);
+    if (entry) {
+      entry.revalidateAt = Date.now() - 1000; // Expired 1 second ago
+    }
+
+    // Should return stale data immediately
+    const res2 = await fetch("https://api.example.com/stale-test", {
+      next: { revalidate: 1 },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(1); // Stale data (same as first fetch)
+
+    // Wait for background refetch
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fetchMock).toHaveBeenCalledTimes(2); // Original + background refetch
+  });
+
+  // ── Independent cache entries per URL ───────────────────────────────
+
+  it("different URLs get independent cache entries", async () => {
+    const res1 = await fetch("https://api.example.com/url-a", {
+      next: { revalidate: 60 },
+    });
+    const data1 = await res1.json();
+    expect(data1.url).toBe("https://api.example.com/url-a");
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/url-b", {
+      next: { revalidate: 60 },
+    });
+    const data2 = await res2.json();
+    expect(data2.url).toBe("https://api.example.com/url-b");
+    expect(data2.count).toBe(2); // Different URL = different cache
+
+    // Re-fetch url-a should be cached
+    const res3 = await fetch("https://api.example.com/url-a", {
+      next: { revalidate: 60 },
+    });
+    const data3 = await res3.json();
+    expect(data3.count).toBe(1); // Cached
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("same URL with different methods get separate cache entries", async () => {
+    const getRes = await fetch("https://api.example.com/method-test", {
+      method: "GET",
+      next: { revalidate: 60 },
+    });
+    const getData = await getRes.json();
+    expect(getData.count).toBe(1);
+
+    const postRes = await fetch("https://api.example.com/method-test", {
+      method: "POST",
+      body: "test",
+      next: { revalidate: 60 },
+    });
+    const postData = await postRes.json();
+    expect(postData.count).toBe(2); // Different method = different cache
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // ── next property stripping ─────────────────────────────────────────
+
+  it("strips next property before passing to real fetch", async () => {
+    await fetch("https://api.example.com/strip-test", {
+      next: { revalidate: 60, tags: ["test"] },
+      headers: { "X-Custom": "value" },
+    });
+
+    // Verify the mock was called with init that does NOT have `next`
+    const call = fetchMock.mock.calls[0];
+    const init = call[1] as RequestInit;
+    expect(init).toBeDefined();
+    expect((init as any).next).toBeUndefined();
+    expect((init as any).headers).toEqual({ "X-Custom": "value" });
+  });
+
+  it("strips next property for no-store fetches too", async () => {
+    await fetch("https://api.example.com/strip-nostore", {
+      cache: "no-store",
+      next: { tags: ["test"] },
+    });
+
+    const call = fetchMock.mock.calls[0];
+    const init = call[1] as RequestInit;
+    expect((init as any).next).toBeUndefined();
+  });
+
+  // ── Tag collection during rendering ─────────────────────────────────
+
+  it("collects tags during render pass via getCollectedFetchTags", async () => {
+    await fetch("https://api.example.com/tag-collect-a", {
+      next: { tags: ["posts", "list"] },
+    });
+    await fetch("https://api.example.com/tag-collect-b", {
+      next: { tags: ["users"] },
+    });
+
+    const tags = getCollectedFetchTags();
+    expect(tags).toContain("posts");
+    expect(tags).toContain("list");
+    expect(tags).toContain("users");
+    expect(tags).toHaveLength(3);
+  });
+
+  it("does not collect duplicate tags", async () => {
+    await fetch("https://api.example.com/dup-tag-a", {
+      next: { tags: ["data"] },
+    });
+    await fetch("https://api.example.com/dup-tag-b", {
+      next: { tags: ["data"] },
+    });
+
+    const tags = getCollectedFetchTags();
+    expect(tags.filter(t => t === "data")).toHaveLength(1);
+  });
+
+  // ── Only caches successful responses ────────────────────────────────
+
+  it("does not cache non-2xx responses", async () => {
+    // Override mock to return 404 once
+    fetchMock.mockImplementationOnce(async () => {
+      requestCount++;
+      return new Response("Not found", { status: 404 });
+    });
+
+    const res1 = await fetch("https://api.example.com/missing-page", {
+      next: { revalidate: 60 },
+    });
+    expect(res1.status).toBe(404);
+
+    // Should re-fetch since 404 wasn't cached
+    const res2 = await fetch("https://api.example.com/missing-page", {
+      next: { revalidate: 60 },
+    });
+    expect(res2.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // ── URL and Request object inputs ───────────────────────────────────
+
+  it("handles URL objects as input", async () => {
+    const url = new URL("https://api.example.com/url-obj");
+    const res = await fetch(url, { next: { revalidate: 60 } });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.count).toBe(1);
+
+    // Cached on second call
+    const res2 = await fetch(url, { next: { revalidate: 60 } });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("handles Request objects as input", async () => {
+    const req = new Request("https://api.example.com/req-obj");
+    const res = await fetch(req, { next: { revalidate: 60 } });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.count).toBe(1);
+
+    // Cached on second call with same URL
+    const req2 = new Request("https://api.example.com/req-obj");
+    const res2 = await fetch(req2, { next: { revalidate: 60 } });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ── force-cache with next.revalidate ────────────────────────────────
+
+  it("cache: 'force-cache' with next.revalidate uses the specified TTL", async () => {
+    const res1 = await fetch("https://api.example.com/force-ttl", {
+      cache: "force-cache",
+      next: { revalidate: 1 },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    // Verify it's cached
+    const res2 = await fetch("https://api.example.com/force-ttl", {
+      cache: "force-cache",
+      next: { revalidate: 1 },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(1);
+
+    // Expire the cache manually
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    const cacheKey = "fetch:GET:https://api.example.com/force-ttl";
+    const entry = store.get(cacheKey);
+    if (entry) {
+      entry.revalidateAt = Date.now() - 1000;
+    }
+
+    // Should return stale
+    const res3 = await fetch("https://api.example.com/force-ttl", {
+      cache: "force-cache",
+      next: { revalidate: 1 },
+    });
+    const data3 = await res3.json();
+    expect(data3.count).toBe(1); // Stale data returned
+    // Background refetch
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // ── Cleanup restores original fetch ─────────────────────────────────
+
+  it("cleanup function restores previous fetch", () => {
+    const patchedFetch = globalThis.fetch;
+    cleanup!();
+    cleanup = null;
+
+    // After cleanup, fetch should be fetchMock (the "previous" from withFetchCache)
+    expect(globalThis.fetch).toBe(fetchMock);
+    expect(globalThis.fetch).not.toBe(patchedFetch);
+
+    // Re-install for afterEach cleanup
+    cleanup = withFetchCache();
+  });
+
+  // ── getOriginalFetch ────────────────────────────────────────────────
+
+  it("getOriginalFetch returns the module-level original fetch", () => {
+    const orig = getOriginalFetch();
+    expect(typeof orig).toBe("function");
+    // It should be fetchMock since that was the global fetch when the module loaded
+    expect(orig).toBe(fetchMock);
+  });
+
+  // ── next: {} empty passes through ───────────────────────────────────
+
+  it("next: {} with no revalidate or tags passes through", async () => {
+    const res1 = await fetch("https://api.example.com/empty-next", { next: {} });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/empty-next", { next: {} });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2); // Not cached
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
