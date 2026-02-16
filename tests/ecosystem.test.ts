@@ -202,3 +202,111 @@ describe("nuqs", () => {
     expect(html).toContain('data-testid="next-page"');
   });
 });
+
+// ─── better-auth ──────────────────────────────────────────────────────────────
+describe("better-auth", () => {
+  let proc: ChildProcess | null = null;
+  let baseUrl: string;
+  let fetchPage: (path: string) => Promise<{ html: string; status: number }>;
+
+  beforeAll(async () => {
+    const fixture = await startFixture("better-auth", 4403);
+    proc = fixture.process;
+    baseUrl = fixture.baseUrl;
+    fetchPage = fixture.fetchPage;
+  }, 30000);
+
+  afterAll(() => killProcess(proc));
+
+  it("renders SSR content", async () => {
+    const { html, status } = await fetchPage("/");
+    expect(status).toBe(200);
+    expect(html).toContain("better-auth test");
+    expect(html).toContain('data-testid="ssr-content"');
+  });
+
+  it("renders client-side auth status component", async () => {
+    const { html } = await fetchPage("/");
+    // The AuthStatus client component should be SSR-rendered in its loading
+    // or signed-out state
+    expect(html).toMatch(/data-testid="auth-(loading|signed-out)"/);
+  });
+
+  it("auth API catch-all route responds to GET", async () => {
+    // better-auth exposes GET /api/auth/get-session
+    const res = await fetch(`${baseUrl}/api/auth/get-session`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("sign-up flow creates user and returns session", async () => {
+    const res = await fetch(`${baseUrl}/api/auth/sign-up/email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "test@example.com",
+        password: "password123456",
+        name: "Test User",
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.user).toBeDefined();
+    expect(data.user.email).toBe("test@example.com");
+    expect(data.user.name).toBe("Test User");
+  });
+
+  it("session is accessible after sign-in with cookie", async () => {
+    // Sign in to get a session cookie
+    const signinRes = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "test@example.com",
+        password: "password123456",
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    expect(signinRes.status).toBe(200);
+
+    const cookies = signinRes.headers.getSetCookie();
+    const cookieHeader = cookies.join("; ");
+
+    // Fetch session using the cookie
+    const sessionRes = await fetch(`${baseUrl}/api/auth/get-session`, {
+      headers: { cookie: cookieHeader },
+      signal: AbortSignal.timeout(10000),
+    });
+    expect(sessionRes.status).toBe(200);
+    const session = await sessionRes.json();
+    expect(session.user.email).toBe("test@example.com");
+  });
+
+  it("server component can access session via headers()", async () => {
+    // Sign in first to get a session cookie
+    const signinRes = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: "test@example.com",
+        password: "password123456",
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const cookies = signinRes.headers.getSetCookie();
+    const cookieHeader = cookies.join("; ");
+
+    // Fetch the protected server component page with the session cookie.
+    // This exercises: headers() shim -> auth.api.getSession() -> SSR render
+    const res = await fetch(`${baseUrl}/protected`, {
+      headers: { cookie: cookieHeader },
+      signal: AbortSignal.timeout(15000),
+    });
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('data-testid="protected-heading"');
+    expect(html).toContain("Logged in as test@example.com");
+  });
+});
