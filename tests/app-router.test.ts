@@ -4,6 +4,7 @@ import path from "node:path";
 import fs from "node:fs";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES, startFixtureServer, fetchHtml } from "./helpers.js";
+import { generateRscEntry } from "../packages/vinext/src/server/app-dev-server.js";
 
 describe("App Router integration", () => {
   let server: ViteDevServer;
@@ -1393,5 +1394,290 @@ describe("metadata routes integration (App Router)", () => {
     const magic = new Uint8Array(buf.slice(0, 4));
     expect(magic[0]).toBe(0x89);
     expect(magic[1]).toBe(0x50);
+  });
+});
+
+describe("App Router next.config.js features (dev server integration)", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+  const configPath = path.join(APP_FIXTURE_DIR, "next.config.mjs");
+
+  beforeAll(async () => {
+    // Write a temporary next.config.mjs with redirects, rewrites, and headers
+    fs.writeFileSync(configPath, `
+export default {
+  redirects() {
+    return [
+      { source: "/old-about", destination: "/about", permanent: true },
+      { source: "/old-blog/:slug", destination: "/blog/:slug", permanent: false },
+    ];
+  },
+  rewrites() {
+    return {
+      beforeFiles: [
+        { source: "/rewrite-about", destination: "/about" },
+      ],
+      afterFiles: [
+        { source: "/after-rewrite-about", destination: "/about" },
+      ],
+      fallback: [],
+    };
+  },
+  headers() {
+    return [
+      {
+        source: "/api/(.*)",
+        headers: [{ key: "X-Custom-Header", value: "vinext-app" }],
+      },
+      {
+        source: "/about",
+        headers: [{ key: "X-Page-Header", value: "about-page" }],
+      },
+    ];
+  },
+};
+`);
+    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+    // Clean up the temporary next.config.mjs
+    if (fs.existsSync(configPath)) {
+      fs.unlinkSync(configPath);
+    }
+  });
+
+  it("applies redirects from next.config.js (permanent)", async () => {
+    const res = await fetch(`${baseUrl}/old-about`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("applies redirects with dynamic params", async () => {
+    const res = await fetch(`${baseUrl}/old-blog/hello`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/blog/hello");
+  });
+
+  it("applies beforeFiles rewrites from next.config.js", async () => {
+    const res = await fetch(`${baseUrl}/rewrite-about`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
+  });
+
+  it("applies afterFiles rewrites from next.config.js", async () => {
+    const res = await fetch(`${baseUrl}/after-rewrite-about`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
+  });
+
+  it("applies custom headers from next.config.js on API routes", async () => {
+    const res = await fetch(`${baseUrl}/api/hello`);
+    expect(res.headers.get("x-custom-header")).toBe("vinext-app");
+  });
+
+  it("applies custom headers from next.config.js on page routes", async () => {
+    const res = await fetch(`${baseUrl}/about`);
+    expect(res.headers.get("x-page-header")).toBe("about-page");
+  });
+
+  it("does not redirect for non-matching paths", async () => {
+    const res = await fetch(`${baseUrl}/about`);
+    expect(res.status).toBe(200);
+    expect(res.redirected).toBe(false);
+  });
+});
+
+describe("App Router next.config.js features (generateRscEntry)", () => {
+  // Use a minimal route list for testing — we only care about the generated config handling code
+  const minimalRoutes = [
+    {
+      pattern: "/",
+      pagePath: "/tmp/test/app/page.tsx",
+      routePath: null,
+      layouts: ["/tmp/test/app/layout.tsx"],
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      notFoundPath: null,
+      forbiddenPath: null,
+      unauthorizedPath: null,
+      layoutSegmentDepths: [0],
+      isDynamic: false,
+      params: [],
+    },
+    {
+      pattern: "/about",
+      pagePath: "/tmp/test/app/about/page.tsx",
+      routePath: null,
+      layouts: ["/tmp/test/app/layout.tsx"],
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      notFoundPath: null,
+      forbiddenPath: null,
+      unauthorizedPath: null,
+      layoutSegmentDepths: [0],
+      isDynamic: false,
+      params: [],
+    },
+    {
+      pattern: "/blog/:slug",
+      pagePath: "/tmp/test/app/blog/[slug]/page.tsx",
+      routePath: null,
+      layouts: ["/tmp/test/app/layout.tsx"],
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      notFoundPath: null,
+      forbiddenPath: null,
+      unauthorizedPath: null,
+      layoutSegmentDepths: [0],
+      isDynamic: true,
+      params: ["slug"],
+    },
+  ] as any[];
+
+  it("generates redirect handling code when redirects are provided", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      redirects: [
+        { source: "/old-about", destination: "/about", permanent: true },
+        { source: "/old-blog/:slug", destination: "/blog/:slug", permanent: false },
+      ],
+    });
+    expect(code).toContain("__configRedirects");
+    expect(code).toContain("__applyConfigRedirects");
+    expect(code).toContain("/old-about");
+    expect(code).toContain("/old-blog/:slug");
+    expect(code).toContain("permanent");
+  });
+
+  it("generates rewrite handling code when rewrites are provided", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      rewrites: {
+        beforeFiles: [{ source: "/before-rewrite", destination: "/about" }],
+        afterFiles: [{ source: "/after-rewrite", destination: "/about" }],
+        fallback: [{ source: "/fallback-rewrite", destination: "/about" }],
+      },
+    });
+    expect(code).toContain("__configRewrites");
+    expect(code).toContain("__applyConfigRewrites");
+    expect(code).toContain("beforeFiles");
+    expect(code).toContain("afterFiles");
+    expect(code).toContain("fallback");
+    expect(code).toContain("/before-rewrite");
+    expect(code).toContain("/after-rewrite");
+    expect(code).toContain("/fallback-rewrite");
+  });
+
+  it("generates custom header handling code when headers are provided", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      headers: [
+        { source: "/api/(.*)", headers: [{ key: "X-Custom-Header", value: "vinext" }] },
+      ],
+    });
+    expect(code).toContain("__configHeaders");
+    expect(code).toContain("__applyConfigHeaders");
+    expect(code).toContain("X-Custom-Header");
+    expect(code).toContain("vinext");
+  });
+
+  it("embeds empty config arrays when no config is provided", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    expect(code).toContain("__configRedirects = []");
+    expect(code).toContain('__configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]}');
+    expect(code).toContain("__configHeaders = []");
+  });
+
+  it("embeds basePath and trailingSlash alongside config", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "/app", true, {
+      redirects: [{ source: "/old", destination: "/new", permanent: true }],
+    });
+    expect(code).toContain('__basePath = "/app"');
+    expect(code).toContain("__trailingSlash = true");
+    expect(code).toContain("/old");
+  });
+
+  it("includes config pattern matching function for regex patterns", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      redirects: [{ source: "/docs/:path*", destination: "/wiki/:path*", permanent: false }],
+    });
+    expect(code).toContain("__matchConfigPattern");
+    // Should handle catch-all patterns
+    expect(code).toContain(":path*");
+  });
+
+  it("applies redirects before middleware in the handler", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      redirects: [{ source: "/old", destination: "/new", permanent: true }],
+    });
+    // The redirect check should appear before middleware and route matching
+    const redirectIdx = code.indexOf("__applyConfigRedirects(pathname)");
+    const routeMatchIdx = code.indexOf("matchRoute(cleanPathname");
+    expect(redirectIdx).toBeGreaterThan(-1);
+    expect(routeMatchIdx).toBeGreaterThan(-1);
+    expect(redirectIdx).toBeLessThan(routeMatchIdx);
+  });
+
+  it("applies beforeFiles rewrites before route matching", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      rewrites: {
+        beforeFiles: [{ source: "/old", destination: "/new" }],
+        afterFiles: [],
+        fallback: [],
+      },
+    });
+    const beforeIdx = code.indexOf("__configRewrites.beforeFiles");
+    const routeMatchIdx = code.indexOf("matchRoute(cleanPathname");
+    expect(beforeIdx).toBeGreaterThan(-1);
+    expect(routeMatchIdx).toBeGreaterThan(-1);
+    expect(beforeIdx).toBeLessThan(routeMatchIdx);
+  });
+
+  it("applies afterFiles rewrites in the handler code", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      rewrites: {
+        beforeFiles: [],
+        afterFiles: [{ source: "/old", destination: "/new" }],
+        fallback: [],
+      },
+    });
+    expect(code).toContain("__configRewrites.afterFiles");
+    // afterFiles rewrite applies in the request handler, after beforeFiles
+    const afterIdx = code.indexOf("__configRewrites.afterFiles");
+    const beforeIdx = code.indexOf("__configRewrites.beforeFiles");
+    expect(afterIdx).toBeGreaterThan(-1);
+    expect(beforeIdx).toBeGreaterThan(-1);
+    expect(afterIdx).toBeGreaterThan(beforeIdx);
+  });
+
+  it("applies fallback rewrites when no route matches", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      rewrites: {
+        beforeFiles: [],
+        afterFiles: [],
+        fallback: [{ source: "/fallback", destination: "/about" }],
+      },
+    });
+    // Fallback rewrites should be inside a "!match" block
+    expect(code).toContain("__configRewrites.fallback");
+    const fallbackIdx = code.indexOf("__configRewrites.fallback");
+    const noMatchIdx = code.indexOf("if (!match");
+    expect(fallbackIdx).toBeGreaterThan(noMatchIdx);
+  });
+
+  it("adds basePath prefix to redirect destinations", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "/app", false, {
+      redirects: [{ source: "/old", destination: "/new", permanent: true }],
+    });
+    // Generated code should prepend basePath to redirect destination
+    expect(code).toContain("__basePath");
+    expect(code).toContain("__redir.destination.startsWith(__basePath)");
   });
 });

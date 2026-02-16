@@ -709,7 +709,11 @@ It also makes contribution dead simple - find a red test, make it green.
    (`rsc`, `ssr`, `client`), handles `'use server'`/`'use client'` directive
    boundaries, RSC stream serialization/deserialization, CSS code-splitting
    across server/client, and HMR for server components. We build on top of
-   this rather than rolling our own. It even supports `"use cache"` already.
+   this rather than rolling our own. **Note:** plugin-rsc does NOT support
+   `"use cache"` — it only handles `"use client"` and `"use server"`. We
+   implemented our own `vinext:use-cache` Vite plugin using plugin-rsc's
+   reusable transform utilities (`transformWrapExport`,
+   `transformHoistInlineDirective` from `@vitejs/plugin-rsc/transforms`).
 
 2. ~~**Scope of Pages Router support**~~ **RESOLVED: Pages Router first.**
    It's simpler (no RSC, no server/client component boundaries), it's what

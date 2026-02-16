@@ -8,6 +8,21 @@
  */
 import type { AppRoute } from "../routing/app-router.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
+import type { NextRedirect, NextRewrite, NextHeader } from "../config/next-config.js";
+
+/**
+ * Resolved config options relevant to App Router request handling.
+ * Passed from the Vite plugin where the full next.config.js is loaded.
+ */
+export interface AppRouterConfig {
+  redirects?: NextRedirect[];
+  rewrites?: {
+    beforeFiles: NextRewrite[];
+    afterFiles: NextRewrite[];
+    fallback: NextRewrite[];
+  };
+  headers?: NextHeader[];
+}
 
 /**
  * Generate the virtual RSC entry module.
@@ -24,9 +39,13 @@ export function generateRscEntry(
   globalErrorPath?: string | null,
   basePath?: string,
   trailingSlash?: boolean,
+  config?: AppRouterConfig,
 ): string {
   const bp = basePath ?? "";
   const ts = trailingSlash ?? false;
+  const redirects = config?.redirects ?? [];
+  const rewrites = config?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
+  const headers = config?.headers ?? [];
   // Build import map for all page and layout files
   const imports: string[] = [];
   const importMap: Map<string, string> = new Map();
@@ -510,13 +529,112 @@ function matchMiddlewarePath(pathname, matcher) {
 
 const __basePath = ${JSON.stringify(bp)};
 const __trailingSlash = ${JSON.stringify(ts)};
+const __configRedirects = ${JSON.stringify(redirects)};
+const __configRewrites = ${JSON.stringify(rewrites)};
+const __configHeaders = ${JSON.stringify(headers)};
+
+// ── Config pattern matching (redirects, rewrites, headers) ──────────────
+function __matchConfigPattern(pathname, pattern) {
+  if (pattern.includes("(") || pattern.includes("\\\\")) {
+    try {
+      const paramNames = [];
+      const regexStr = pattern
+        .replace(/\\./g, "\\\\.")
+        .replace(/:([a-zA-Z_]\\w*)\\*(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.*)"; })
+        .replace(/:([a-zA-Z_]\\w*)\\+(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.+)"; })
+        .replace(/:([a-zA-Z_]\\w*)\\(([^)]+)\\)/g, (_, name, c) => { paramNames.push(name); return "(" + c + ")"; })
+        .replace(/:([a-zA-Z_]\\w*)/g, (_, name) => { paramNames.push(name); return "([^/]+)"; });
+      const re = new RegExp("^" + regexStr + "$");
+      const match = re.exec(pathname);
+      if (!match) return null;
+      const params = {};
+      for (let i = 0; i < paramNames.length; i++) params[paramNames[i]] = match[i + 1] || "";
+      return params;
+    } catch { /* fall through */ }
+  }
+  const catchAllMatch = pattern.match(/:([a-zA-Z_]\\w*)(\\*|\\+)$/);
+  if (catchAllMatch) {
+    const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
+    const paramName = catchAllMatch[1];
+    const isPlus = catchAllMatch[2] === "+";
+    if (!pathname.startsWith(prefix.replace(/\\/$/, ""))) return null;
+    const rest = pathname.slice(prefix.replace(/\\/$/, "").length);
+    if (isPlus && (!rest || rest === "/")) return null;
+    return { [paramName]: rest.startsWith("/") ? rest.slice(1) : rest };
+  }
+  const parts = pattern.split("/");
+  const pathParts = pathname.split("/");
+  if (parts.length !== pathParts.length) return null;
+  const params = {};
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i].startsWith(":")) params[parts[i].slice(1)] = pathParts[i];
+    else if (parts[i] !== pathParts[i]) return null;
+  }
+  return params;
+}
+
+function __applyConfigRedirects(pathname) {
+  for (const rule of __configRedirects) {
+    const params = __matchConfigPattern(pathname, rule.source);
+    if (params) {
+      let dest = rule.destination;
+      for (const [key, value] of Object.entries(params)) dest = dest.replace(":" + key, value);
+      return { destination: dest, permanent: rule.permanent };
+    }
+  }
+  return null;
+}
+
+function __applyConfigRewrites(pathname, rules) {
+  for (const rule of rules) {
+    const params = __matchConfigPattern(pathname, rule.source);
+    if (params) {
+      let dest = rule.destination;
+      for (const [key, value] of Object.entries(params)) dest = dest.replace(":" + key, value);
+      return dest;
+    }
+  }
+  return null;
+}
+
+function __applyConfigHeaders(pathname) {
+  const result = [];
+  for (const rule of __configHeaders) {
+    const groups = [];
+    const withPlaceholders = rule.source.replace(/\\(([^)]+)\\)/g, (_, inner) => {
+      groups.push(inner);
+      return "___GROUP_" + (groups.length - 1) + "___";
+    });
+    const escaped = withPlaceholders
+      .replace(/\\./g, "\\\\.")
+      .replace(/\\+/g, "\\\\+")
+      .replace(/\\?/g, "\\\\?")
+      .replace(/\\*/g, ".*")
+      .replace(/:[a-zA-Z_]\\w*/g, "[^/]+")
+      .replace(/___GROUP_(\\d+)___/g, (_, idx) => "(" + groups[Number(idx)] + ")");
+    const sourceRegex = new RegExp("^" + escaped + "$");
+    if (sourceRegex.test(pathname)) result.push(...rule.headers);
+  }
+  return result;
+}
 
 export default async function handler(request) {
   // Install patched fetch with Next.js caching semantics for this request.
   // All fetch() calls during RSC rendering will go through the cache.
   const cleanupFetchCache = withFetchCache();
   try {
-    return await _handleRequest(request);
+    const response = await _handleRequest(request);
+    // Apply custom headers from next.config.js to all non-redirect responses
+    if (__configHeaders.length && response && response.headers) {
+      const url = new URL(request.url);
+      let pathname = url.pathname;
+      ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
+      const extraHeaders = __applyConfigHeaders(pathname);
+      for (const h of extraHeaders) {
+        response.headers.set(h.key, h.value);
+      }
+    }
+    return response;
   } finally {
     cleanupFetchCache();
   }
@@ -540,6 +658,26 @@ async function _handleRequest(request) {
     } else if (!__trailingSlash && hasTrailing) {
       return Response.redirect(new URL(__basePath + pathname.replace(/\\/+$/, "") + url.search, request.url), 308);
     }
+  }
+
+  // ── Apply redirects from next.config.js ───────────────────────────────
+  if (__configRedirects.length) {
+    const __redir = __applyConfigRedirects(pathname);
+    if (__redir) {
+      const __redirDest = __basePath && !__redir.destination.startsWith(__basePath)
+        ? __basePath + __redir.destination
+        : __redir.destination;
+      return new Response(null, {
+        status: __redir.permanent ? 308 : 307,
+        headers: { Location: __redirDest },
+      });
+    }
+  }
+
+  // ── Apply beforeFiles rewrites from next.config.js ────────────────────
+  if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
+    const __rewritten = __applyConfigRewrites(pathname, __configRewrites.beforeFiles);
+    if (__rewritten) pathname = __rewritten;
   }
 
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
@@ -735,7 +873,22 @@ async function _handleRequest(request) {
     }
   }
 
-  const match = matchRoute(cleanPathname, routes);
+  // ── Apply afterFiles rewrites from next.config.js ──────────────────────
+  if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
+    const __afterRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.afterFiles);
+    if (__afterRewritten) cleanPathname = __afterRewritten;
+  }
+
+  let match = matchRoute(cleanPathname, routes);
+
+  // ── Fallback rewrites from next.config.js (if no route matched) ───────
+  if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
+    const __fallbackRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.fallback);
+    if (__fallbackRewritten) {
+      cleanPathname = __fallbackRewritten;
+      match = matchRoute(cleanPathname, routes);
+    }
+  }
 
   if (!match) {
     // Render custom not-found page if available, otherwise plain 404
