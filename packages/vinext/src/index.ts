@@ -926,6 +926,9 @@ hydrate();
           // Re-export public modules for internal path imports
           "next/dist/client/components/navigation": path.join(shimsDir, "navigation"),
           "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
+          // server-only / client-only marker packages
+          "server-only": path.join(shimsDir, "server-only"),
+          "client-only": path.join(shimsDir, "client-only"),
           "vinext/error-boundary": path.join(shimsDir, "error-boundary"),
           "vinext/layout-segment-context": path.join(shimsDir, "layout-segment-context"),
           "vinext/metadata": path.join(shimsDir, "metadata"),

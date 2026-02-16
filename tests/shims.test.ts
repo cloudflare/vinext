@@ -3226,3 +3226,32 @@ describe("KVCacheHandler", () => {
     expect(await kv.get("cache:corrupt-key")).toBeNull();
   });
 });
+
+// ─── server-only / client-only shims ─────────────────────────────────────────
+
+describe("server-only shim", () => {
+  it("can be imported without error", async () => {
+    const mod = await import("../packages/vinext/src/shims/server-only.js");
+    expect(mod).toBeDefined();
+  });
+
+  it("exports nothing (empty marker module)", async () => {
+    const mod = await import("../packages/vinext/src/shims/server-only.js");
+    // The module should have no named exports (just the default module namespace)
+    const keys = Object.keys(mod).filter((k) => k !== "__esModule" && k !== "default");
+    expect(keys).toHaveLength(0);
+  });
+});
+
+describe("client-only shim", () => {
+  it("can be imported without error", async () => {
+    const mod = await import("../packages/vinext/src/shims/client-only.js");
+    expect(mod).toBeDefined();
+  });
+
+  it("exports nothing (empty marker module)", async () => {
+    const mod = await import("../packages/vinext/src/shims/client-only.js");
+    const keys = Object.keys(mod).filter((k) => k !== "__esModule" && k !== "default");
+    expect(keys).toHaveLength(0);
+  });
+});
