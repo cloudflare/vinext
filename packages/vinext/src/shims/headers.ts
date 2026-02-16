@@ -20,11 +20,40 @@ interface HeadersContext {
 let _headersContext: HeadersContext | null = null;
 
 /**
+ * Dynamic usage flag — set when a component calls connection(), cookies(),
+ * headers(), or noStore() during rendering. When true, ISR caching is
+ * bypassed and the response gets Cache-Control: no-store.
+ */
+let _dynamicUsageDetected = false;
+
+/**
+ * Mark the current render as requiring dynamic (uncached) rendering.
+ * Called by connection(), cookies(), headers(), and noStore().
+ */
+export function markDynamicUsage(): void {
+  _dynamicUsageDetected = true;
+}
+
+/**
+ * Check and reset the dynamic usage flag.
+ * Called by the server after rendering to decide on caching.
+ */
+export function consumeDynamicUsage(): boolean {
+  const used = _dynamicUsageDetected;
+  _dynamicUsageDetected = false;
+  return used;
+}
+
+/**
  * Set the headers/cookies context for the current RSC render.
  * Called by the framework's RSC entry before rendering each request.
  */
 export function setHeadersContext(ctx: HeadersContext | null): void {
   _headersContext = ctx;
+  // Reset dynamic usage flag at the start of each request
+  if (ctx !== null) {
+    _dynamicUsageDetected = false;
+  }
 }
 
 /**

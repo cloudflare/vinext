@@ -375,10 +375,12 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
 
 /**
  * connection() — signals that the response requires a live connection
- * (not a static/cached response). No-op in our implementation.
+ * (not a static/cached response). Opts the page out of ISR caching
+ * and sets Cache-Control: no-store on the response.
  */
 export async function connection(): Promise<void> {
-  // No-op — all our responses are dynamic
+  const { markDynamicUsage } = await import("./headers.js");
+  markDynamicUsage();
 }
 
 /**

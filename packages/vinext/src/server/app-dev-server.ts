@@ -156,7 +156,7 @@ import {
 } from "@vitejs/plugin-rsc/rsc";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage } from "next/headers";
 import { ErrorBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -1151,8 +1151,12 @@ async function _handleRequest(request) {
     return response;
   }
 
-  // force-dynamic: return response with no-store header
-  if (isForceDynamic) {
+  // Check if any component called connection(), cookies(), headers(), or noStore()
+  // during rendering. If so, treat as dynamic (skip ISR, set no-store).
+  const dynamicUsedDuringRender = consumeDynamicUsage();
+
+  // force-dynamic or dynamic API usage: return response with no-store header
+  if (isForceDynamic || dynamicUsedDuringRender) {
     return attachDraftCookie(new Response(htmlStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
@@ -1172,8 +1176,8 @@ async function _handleRequest(request) {
     }));
   }
 
-  // If ISR is enabled, cache the rendered HTML
-  if (!isForceDynamic && revalidateSeconds !== null && revalidateSeconds > 0) {
+  // If ISR is enabled (and no dynamic API was used), cache the rendered HTML
+  if (!isForceDynamic && !dynamicUsedDuringRender && revalidateSeconds !== null && revalidateSeconds > 0) {
     // We need to tee the stream: one for caching, one for the response
     const [cacheStream, responseStream] = htmlStream.tee();
     const cacheKey = "app:" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
