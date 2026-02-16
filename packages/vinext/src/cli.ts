@@ -6,6 +6,7 @@
  *   vinext dev     Start development server (Vite)
  *   vinext build   Build for production
  *   vinext start   Start production server
+ *   vinext deploy  Deploy to Cloudflare Workers
  *   vinext lint    Run linter (delegates to eslint/oxlint)
  *
  * Automatically configures Vite with the vinext plugin — no vite.config.ts
@@ -18,6 +19,7 @@ import rsc from "@vitejs/plugin-rsc";
 import path from "node:path";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
+import { deploy as runDeploy } from "./deploy.js";
 
 const VERSION = "0.0.1";
 
@@ -252,6 +254,36 @@ async function lint() {
   }
 }
 
+async function deployCommand() {
+  const parsed = parseArgs(rawArgs);
+  if (parsed.help) return printHelp("deploy");
+
+  console.log(`\n  vinext deploy  (Vite ${viteVersion})\n`);
+
+  // Parse deploy-specific flags
+  const preview = rawArgs.includes("--preview");
+  const skipBuild = rawArgs.includes("--skip-build");
+  const dryRun = rawArgs.includes("--dry-run");
+
+  // Parse --name flag
+  let name: string | undefined;
+  const nameIdx = rawArgs.indexOf("--name");
+  if (nameIdx !== -1 && rawArgs[nameIdx + 1]) {
+    name = rawArgs[nameIdx + 1];
+  } else {
+    const nameEq = rawArgs.find((a) => a.startsWith("--name="));
+    if (nameEq) name = nameEq.split("=")[1];
+  }
+
+  await runDeploy({
+    root: process.cwd(),
+    preview,
+    skipBuild,
+    dryRun,
+    name,
+  });
+}
+
 // ─── Help ─────────────────────────────────────────────────────────────────────
 
 function printHelp(cmd?: string) {
@@ -302,6 +334,35 @@ function printHelp(cmd?: string) {
     return;
   }
 
+  if (cmd === "deploy") {
+    console.log(`
+  vinext deploy - Deploy to Cloudflare Workers
+
+  Usage: vinext deploy [options]
+
+  One-command deployment to Cloudflare Workers. Automatically:
+    - Detects App Router or Pages Router
+    - Generates wrangler.jsonc, worker/index.ts, vite.config.ts if missing
+    - Installs @cloudflare/vite-plugin and wrangler if needed
+    - Builds the project with Vite
+    - Deploys via wrangler
+
+  Options:
+    --preview           Deploy to a preview environment
+    --name <name>       Custom Worker name (default: from package.json)
+    --skip-build        Skip the build step (use existing dist/)
+    --dry-run           Generate config files without building or deploying
+    -h, --help          Show this help
+
+  Examples:
+    vinext deploy                   Build and deploy to production
+    vinext deploy --preview         Deploy to a preview URL
+    vinext deploy --dry-run         See what files would be generated
+    vinext deploy --name my-app     Deploy with a custom Worker name
+`);
+    return;
+  }
+
   if (cmd === "lint") {
     console.log(`
   vinext lint - Run linter
@@ -326,6 +387,7 @@ function printHelp(cmd?: string) {
     dev      Start development server
     build    Build for production
     start    Start production server
+    deploy   Deploy to Cloudflare Workers
     lint     Run linter
 
   Options:
@@ -337,6 +399,7 @@ function printHelp(cmd?: string) {
     vinext dev -p 4000          Start dev server on port 4000
     vinext build                Build for production
     vinext start                Start production server
+    vinext deploy               Deploy to Cloudflare Workers
     vinext lint                 Run linter
 
   vinext is a drop-in replacement for the \`next\` CLI.
@@ -374,6 +437,13 @@ switch (command) {
 
   case "start":
     start().catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+    break;
+
+  case "deploy":
+    deployCommand().catch((e) => {
       console.error(e);
       process.exit(1);
     });
