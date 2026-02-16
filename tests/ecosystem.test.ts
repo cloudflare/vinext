@@ -209,6 +209,22 @@ describe("better-auth", () => {
   let baseUrl: string;
   let fetchPage: (path: string) => Promise<{ html: string; status: number }>;
 
+  /** Strip Set-Cookie attributes — keep only name=value pairs for Cookie header */
+  function toCookieHeader(setCookies: string[]): string {
+    return setCookies.map((c) => c.split(";")[0]).join("; ");
+  }
+
+  /** Sign up a user, return session cookies as a Cookie header string */
+  async function signUpUser(email: string, password: string, name: string) {
+    const res = await fetch(`${baseUrl}/api/auth/sign-up/email`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, name }),
+      signal: AbortSignal.timeout(10000),
+    });
+    return { res, cookieHeader: toCookieHeader(res.headers.getSetCookie()) };
+  }
+
   beforeAll(async () => {
     const fixture = await startFixture("better-auth", 4403);
     proc = fixture.process;
@@ -241,38 +257,35 @@ describe("better-auth", () => {
   });
 
   it("sign-up flow creates user and returns session", async () => {
-    const res = await fetch(`${baseUrl}/api/auth/sign-up/email`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: "test@example.com",
-        password: "password123456",
-        name: "Test User",
-      }),
-      signal: AbortSignal.timeout(10000),
-    });
+    const { res } = await signUpUser(
+      "signup-test@example.com",
+      "password123456",
+      "Signup Test",
+    );
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.user).toBeDefined();
-    expect(data.user.email).toBe("test@example.com");
-    expect(data.user.name).toBe("Test User");
+    expect(data.user.email).toBe("signup-test@example.com");
+    expect(data.user.name).toBe("Signup Test");
   });
 
   it("session is accessible after sign-in with cookie", async () => {
+    // Create a user first (self-contained — no dependency on other tests)
+    await signUpUser("signin-test@example.com", "password123456", "Signin Test");
+
     // Sign in to get a session cookie
     const signinRes = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        email: "test@example.com",
+        email: "signin-test@example.com",
         password: "password123456",
       }),
       signal: AbortSignal.timeout(10000),
     });
     expect(signinRes.status).toBe(200);
 
-    const cookies = signinRes.headers.getSetCookie();
-    const cookieHeader = cookies.join("; ");
+    const cookieHeader = toCookieHeader(signinRes.headers.getSetCookie());
 
     // Fetch session using the cookie
     const sessionRes = await fetch(`${baseUrl}/api/auth/get-session`, {
@@ -281,22 +294,23 @@ describe("better-auth", () => {
     });
     expect(sessionRes.status).toBe(200);
     const session = await sessionRes.json();
-    expect(session.user.email).toBe("test@example.com");
+    expect(session.user.email).toBe("signin-test@example.com");
   });
 
   it("server component can access session via headers()", async () => {
-    // Sign in first to get a session cookie
+    // Create and sign in a user (self-contained)
+    await signUpUser("protected-test@example.com", "password123456", "Protected Test");
+
     const signinRes = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        email: "test@example.com",
+        email: "protected-test@example.com",
         password: "password123456",
       }),
       signal: AbortSignal.timeout(10000),
     });
-    const cookies = signinRes.headers.getSetCookie();
-    const cookieHeader = cookies.join("; ");
+    const cookieHeader = toCookieHeader(signinRes.headers.getSetCookie());
 
     // Fetch the protected server component page with the session cookie.
     // This exercises: headers() shim -> auth.api.getSession() -> SSR render
@@ -307,6 +321,6 @@ describe("better-auth", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('data-testid="protected-heading"');
-    expect(html).toContain("Logged in as test@example.com");
+    expect(html).toContain("Logged in as protected-test@example.com");
   });
 });
