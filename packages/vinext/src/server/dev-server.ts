@@ -27,12 +27,129 @@ const PAGE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
  *
  * Uses the edge-compatible Web Streams API. Waits for all Suspense
  * boundaries to resolve via stream.allReady before collecting output.
- * Works in both Node.js 18+ and Cloudflare Workers.
+ * Used for _document rendering and error pages (small, non-streaming).
  */
 async function renderToStringAsync(element: React.ReactElement): Promise<string> {
   const stream = await renderToReadableStream(element);
   await stream.allReady;
   return new Response(stream).text();
+}
+
+/** Body placeholder used to split the document shell for streaming. */
+const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
+
+/**
+ * Stream a Pages Router page response using progressive SSR.
+ *
+ * Sends the HTML shell (head, layout, Suspense fallbacks) immediately
+ * when the React shell is ready, then streams Suspense content as it
+ * resolves. This gives the browser content to render while slow data
+ * loads are still in flight.
+ *
+ * `__NEXT_DATA__` and the hydration script are appended after the body
+ * stream completes (the data is known before rendering starts, but
+ * deferring them reduces TTFB and lets the browser start parsing the
+ * shell sooner).
+ */
+async function streamPageToResponse(
+  res: ServerResponse,
+  element: React.ReactElement,
+  options: {
+    url: string;
+    server: ViteDevServer;
+    fontHeadHTML: string;
+    scripts: string;
+    DocumentComponent: React.ComponentType | null;
+    statusCode?: number;
+    extraHeaders?: Record<string, string>;
+    /** Called after renderToReadableStream resolves (shell ready) to collect head HTML */
+    getHeadHTML: () => string;
+  },
+): Promise<void> {
+  const {
+    url,
+    server,
+    fontHeadHTML,
+    scripts,
+    DocumentComponent,
+    statusCode = 200,
+    extraHeaders,
+    getHeadHTML,
+  } = options;
+
+  // Start the React body stream FIRST — the promise resolves when the
+  // shell is ready (synchronous content outside Suspense boundaries).
+  // This triggers the render which populates <Head> tags.
+  const bodyStream = await renderToReadableStream(element);
+
+  // Now that the shell has rendered, collect head HTML
+  const headHTML = getHeadHTML();
+
+  // Build the document shell with a placeholder for the body
+  let shellTemplate: string;
+
+  if (DocumentComponent) {
+    const docElement = React.createElement(DocumentComponent);
+    let docHtml = await renderToStringAsync(docElement);
+    // Replace __NEXT_MAIN__ with our stream marker
+    docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
+    // Inject head tags
+    if (headHTML || fontHeadHTML) {
+      docHtml = docHtml.replace("</head>", `  ${fontHeadHTML}${headHTML}\n</head>`);
+    }
+    // Inject scripts: replace placeholder or append before </body>
+    docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", scripts);
+    if (!docHtml.includes("__NEXT_DATA__")) {
+      docHtml = docHtml.replace("</body>", `  ${scripts}\n</body>`);
+    }
+    shellTemplate = docHtml;
+  } else {
+    shellTemplate = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${fontHeadHTML}${headHTML}
+</head>
+<body>
+  <div id="__next">${STREAM_BODY_MARKER}</div>
+  ${scripts}
+</body>
+</html>`;
+  }
+
+  // Apply Vite's HTML transforms (injects HMR client, etc.) on the full
+  // shell template, then split at the body marker.
+  const transformedShell = await server.transformIndexHtml(url, shellTemplate);
+  const markerIdx = transformedShell.indexOf(STREAM_BODY_MARKER);
+  const prefix = transformedShell.slice(0, markerIdx);
+  const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
+
+  // Send headers and start streaming
+  const headers: Record<string, string> = {
+    "Content-Type": "text/html",
+    "Transfer-Encoding": "chunked",
+    ...extraHeaders,
+  };
+  res.writeHead(statusCode, headers);
+
+  // Write the document prefix (head, opening body)
+  res.write(prefix);
+
+  // Pipe the React body stream through (Suspense content streams progressively)
+  const reader = bodyStream.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  // Write the document suffix (closing tags, scripts)
+  res.end(suffix);
 }
 
 /** Check if a file exists with any page extension (tsx, ts, jsx, js). */
@@ -407,15 +524,9 @@ export function createSSRHandler(
         await dynamicShim.flushPreloads();
       }
 
-      // Render page to HTML string using streaming renderer.
-      // renderToReadableStream supports Suspense boundaries — we wait for
-      // stream.allReady so all Suspense fallbacks resolve before collecting output.
-      const bodyHtml = await renderToStringAsync(element);
-
-      // Collect any <Head> tags that were rendered
-      const ssrHeadHTML = typeof headShim.getSSRHeadHTML === "function"
-        ? headShim.getSSRHeadHTML()
-        : "";
+      // Collect any <Head> tags that were rendered during data fetching
+      // (shell head tags — Suspense children's head tags arrive late,
+      // matching Next.js behavior)
 
       // Collect SSR font links (Google Fonts <link> tags) and font class styles
       let fontHeadHTML = "";
@@ -423,8 +534,8 @@ export function createSSRHandler(
         const fontGoogle = await server.ssrLoadModule("next/font/google");
         if (typeof fontGoogle.getSSRFontLinks === "function") {
           const fontUrls = fontGoogle.getSSRFontLinks();
-          for (const url of fontUrls) {
-            fontHeadHTML += `<link rel="stylesheet" href="${url}" />\n  `;
+          for (const fontUrl of fontUrls) {
+            fontHeadHTML += `<link rel="stylesheet" href="${fontUrl}" />\n  `;
           }
         }
         if (typeof fontGoogle.getSSRFontStyles === "function") {
@@ -492,7 +603,6 @@ hydrate();
       })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${JSON.stringify(locale ?? i18nConfig.defaultLocale)};window.__VINEXT_LOCALES__=${JSON.stringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${JSON.stringify(i18nConfig.defaultLocale)}` : ""}</script>`;
 
       // Try to load custom _document.tsx
-      let html: string;
       const docPath = path.join(pagesDir, "_document");
       let DocumentComponent: any = null;
       if (findFileWithExtensions(docPath)) {
@@ -504,75 +614,55 @@ hydrate();
         }
       }
 
-      const scripts = `${nextDataScript}\n  ${hydrationScript}`;
+      const allScripts = `${nextDataScript}\n  ${hydrationScript}`;
 
-      if (DocumentComponent) {
-        // Render the custom Document component
-        // renderToReadableStream auto-prepends <!DOCTYPE html> when root is <html>
-        const docElement = createElement(DocumentComponent);
-        let docHtml = await renderToStringAsync(docElement);
-        // Replace the __NEXT_MAIN__ placeholder with actual page content
-        docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
-        // Inject SSR head tags and font styles into </head>
-        if (ssrHeadHTML || fontHeadHTML) {
-          docHtml = docHtml.replace("</head>", `  ${fontHeadHTML}${ssrHeadHTML}\n</head>`);
-        }
-        // Replace the NextScript placeholder with actual scripts
-        docHtml = docHtml.replace(
-          "<!-- __NEXT_SCRIPTS__ -->",
-          scripts,
-        );
-        // If no placeholder found, inject scripts before </body>
-        if (!docHtml.includes(nextDataScript)) {
-          docHtml = docHtml.replace(
-            "</body>",
-            `  ${scripts}\n</body>`,
-          );
-        }
-        html = docHtml;
-      } else {
-        // Default document shell
-        html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  ${fontHeadHTML}${ssrHeadHTML}
-</head>
-<body>
-  <div id="__next">${bodyHtml}</div>
-  ${scripts}
-</body>
-</html>`;
+      // Build cache headers for ISR responses
+      const extraHeaders: Record<string, string> = {};
+      if (isrRevalidateSeconds) {
+        extraHeaders["Cache-Control"] = `s-maxage=${isrRevalidateSeconds}, stale-while-revalidate`;
+        extraHeaders["X-Vinext-Cache"] = "MISS";
       }
 
-      // Apply Vite's HTML transforms (injects HMR client, etc.)
-      const transformedHtml = await server.transformIndexHtml(url, html);
+      // Stream the page using progressive SSR.
+      // The shell (layouts, non-suspended content) arrives immediately.
+      // Suspense content streams in as it resolves.
+      await streamPageToResponse(res, element, {
+        url,
+        server,
+        fontHeadHTML,
+        scripts: allScripts,
+        DocumentComponent,
+        extraHeaders,
+        // Collect head HTML AFTER the shell renders (inside streamPageToResponse,
+        // after renderToReadableStream resolves). Head tags from Suspense
+        // children arrive late — this matches Next.js behavior.
+        getHeadHTML: () => typeof headShim.getSSRHeadHTML === "function"
+          ? headShim.getSSRHeadHTML()
+          : "",
+      });
 
       // Clear SSR context after rendering
       if (typeof routerShim.setSSRContext === "function") {
         routerShim.setSSRContext(null);
       }
 
-      // If ISR is enabled, cache the rendered HTML for future requests
+      // If ISR is enabled, we need the full HTML for caching.
+      // For ISR, re-render synchronously to get the complete HTML string.
+      // This runs after the stream is already sent, so it doesn't affect TTFB.
       if (isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
+        const isrElement = AppComponent
+          ? createElement(AppComponent, { Component: pageModule.default, pageProps })
+          : createElement(pageModule.default, pageProps);
+        const isrBodyHtml = await renderToStringAsync(isrElement);
+        const isrHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
         const cacheKey = isrCacheKey("pages", url.split("?")[0]);
         await isrSet(
           cacheKey,
-          buildPagesCacheValue(html, pageProps),
+          buildPagesCacheValue(isrHtml, pageProps),
           isrRevalidateSeconds,
         );
         setRevalidateDuration(cacheKey, isrRevalidateSeconds);
       }
-
-      const cacheHeader = isrRevalidateSeconds
-        ? `s-maxage=${isrRevalidateSeconds}, stale-while-revalidate`
-        : undefined;
-      const headers: Record<string, string> = { "Content-Type": "text/html" };
-      if (cacheHeader) headers["Cache-Control"] = cacheHeader;
-      if (isrRevalidateSeconds) headers["X-Vinext-Cache"] = "MISS";
-      res.writeHead(200, headers);
-      res.end(transformedHtml);
     } catch (e) {
       // Let Vite fix the stack trace for better dev experience
       server.ssrFixStacktrace(e as Error);

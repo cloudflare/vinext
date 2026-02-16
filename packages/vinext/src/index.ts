@@ -675,7 +675,6 @@ export async function renderPage(request, url, manifest) {
     if (typeof resetSSRHead === "function") resetSSRHead();
     if (typeof flushPreloads === "function") await flushPreloads();
 
-    const bodyHtml = await renderToStringAsync(element);
     const ssrHeadHTML = typeof getSSRHeadHTML === "function" ? getSSRHeadHTML() : "";
     const pageModuleIds = route.filePath ? [route.filePath] : [];
     const assetTags = collectAssetTags(manifest, pageModuleIds);
@@ -694,29 +693,69 @@ export async function renderPage(request, url, manifest) {
       : "";
     const nextDataScript = "<script>window.__NEXT_DATA__ = " + JSON.stringify(nextDataPayload) + localeGlobals + "</script>";
 
-    let html;
+    // Build the document shell with a placeholder for the streamed body
+    var BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
+    var shellHtml;
     if (DocumentComponent) {
       const docElement = React.createElement(DocumentComponent);
-      html = await renderToStringAsync(docElement);
-      html = html.replace("__NEXT_MAIN__", bodyHtml);
+      shellHtml = await renderToStringAsync(docElement);
+      shellHtml = shellHtml.replace("__NEXT_MAIN__", BODY_MARKER);
       if (ssrHeadHTML || assetTags) {
-        html = html.replace("</head>", "  " + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>");
+        shellHtml = shellHtml.replace("</head>", "  " + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>");
       }
-      html = html.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
-      if (!html.includes("__NEXT_DATA__")) {
-        html = html.replace("</body>", "  " + nextDataScript + "\\n</body>");
+      shellHtml = shellHtml.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
+      if (!shellHtml.includes("__NEXT_DATA__")) {
+        shellHtml = shellHtml.replace("</body>", "  " + nextDataScript + "\\n</body>");
       }
     } else {
-      html = "<!DOCTYPE html>\\n<html>\\n<head>\\n  <meta charset=\\"utf-8\\" />\\n  <meta name=\\"viewport\\" content=\\"width=device-width, initial-scale=1\\" />\\n  " + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>\\n<body>\\n  <div id=\\"__next\\">" + bodyHtml + "</div>\\n  " + nextDataScript + "\\n</body>\\n</html>";
+      shellHtml = "<!DOCTYPE html>\\n<html>\\n<head>\\n  <meta charset=\\"utf-8\\" />\\n  <meta name=\\"viewport\\" content=\\"width=device-width, initial-scale=1\\" />\\n  " + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>\\n<body>\\n  <div id=\\"__next\\">" + BODY_MARKER + "</div>\\n  " + nextDataScript + "\\n</body>\\n</html>";
     }
 
     if (typeof setSSRContext === "function") setSSRContext(null);
 
-    // Cache the rendered HTML for ISR if revalidate was set
+    // Split the shell at the body marker
+    var markerIdx = shellHtml.indexOf(BODY_MARKER);
+    var shellPrefix = shellHtml.slice(0, markerIdx);
+    var shellSuffix = shellHtml.slice(markerIdx + BODY_MARKER.length);
+
+    // Start the React body stream — progressive SSR (no allReady wait)
+    var bodyStream = await renderToReadableStream(element);
+    var encoder = new TextEncoder();
+
+    // Create a composite stream: prefix + body + suffix
+    var compositeStream = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(encoder.encode(shellPrefix));
+        var reader = bodyStream.getReader();
+        try {
+          for (;;) {
+            var chunk = await reader.read();
+            if (chunk.done) break;
+            controller.enqueue(chunk.value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        controller.enqueue(encoder.encode(shellSuffix));
+        controller.close();
+      }
+    });
+
+    // Cache the rendered HTML for ISR (needs the full string — re-render synchronously)
     if (isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
-      const pathname = url.split("?")[0];
-      const cacheKey = "pages:" + (pathname === "/" ? "/" : pathname.replace(/\\/$/, ""));
-      await isrSet(cacheKey, { kind: "PAGES", html: html, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
+      // Tee the stream so we can cache and respond simultaneously would be ideal,
+      // but ISR responses are rare on first hit. Re-render to get complete HTML for cache.
+      var isrElement;
+      if (AppComponent) {
+        isrElement = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+      } else {
+        isrElement = React.createElement(PageComponent, pageProps);
+      }
+      var isrHtml = await renderToStringAsync(isrElement);
+      var fullHtml = shellPrefix + isrHtml + shellSuffix;
+      var isrPathname = url.split("?")[0];
+      var isrCacheKey = "pages:" + (isrPathname === "/" ? "/" : isrPathname.replace(/\\/$/, ""));
+      await isrSet(isrCacheKey, { kind: "PAGES", html: fullHtml, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
     }
 
     const responseHeaders = { "Content-Type": "text/html" };
@@ -724,7 +763,7 @@ export async function renderPage(request, url, manifest) {
       responseHeaders["Cache-Control"] = "s-maxage=" + isrRevalidateSeconds + ", stale-while-revalidate";
       responseHeaders["X-Vinext-Cache"] = "MISS";
     }
-    return new Response(html, { status: 200, headers: responseHeaders });
+    return new Response(compositeStream, { status: 200, headers: responseHeaders });
   } catch (e) {
     console.error("[vinext] SSR error:", e);
     return new Response("Internal Server Error: " + (e && e.message ? e.message : String(e)), { status: 500 });

@@ -352,17 +352,17 @@ describe("Pages Router integration", () => {
   });
 
   it("renders Suspense + React.lazy content via streaming SSR", async () => {
-    // renderToPipeableStream waits for lazy components to resolve,
-    // so the final HTML should contain the lazy component's content
-    // (not just the Suspense fallback).
+    // With progressive streaming SSR (onShellReady), if the Suspense
+    // content resolves before the shell finishes, React inlines it
+    // directly (no fallback in the wire HTML). If it resolves after,
+    // the fallback appears with streaming replacement scripts.
+    // Our lazy component resolves synchronously in tests.
     const res = await fetch(`${baseUrl}/suspense-test`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("Suspense Test");
-    // The lazy component should have resolved and rendered its content
+    // The lazy component's content should be in the response
     expect(html).toContain("Hello from lazy component");
-    // The loading fallback should NOT be in the final HTML
-    expect(html).not.toContain("Loading...");
   });
 
   // --- getStaticPaths tests ---
