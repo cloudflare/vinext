@@ -109,6 +109,31 @@ describe("scanImports", () => {
     expect(items[0].detail).toContain("not recognized");
   });
 
+  it("recognizes `import { Metadata } from 'next'` as supported", () => {
+    writeFile("app/layout.tsx", `import { Metadata } from "next";\nexport const metadata: Metadata = { title: "App" };`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next");
+    expect(items[0].status).toBe("supported");
+  });
+
+  it("skips `import type` statements entirely", () => {
+    writeFile("app/page.tsx", `import type { Metadata } from "next";\nimport Link from "next/link";`);
+
+    const items = scanImports(tmpDir);
+    // Should only find next/link, not next (since import type is skipped)
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/link");
+  });
+
+  it("skips `import type` for next/* paths too", () => {
+    writeFile("app/page.tsx", `import type { NextRequest } from "next/server";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(0);
+  });
+
   it("sorts unsupported first, then partial, then supported", () => {
     writeFile("app/page.tsx", `
       import Link from "next/link";

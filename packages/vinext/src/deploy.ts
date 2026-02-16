@@ -47,6 +47,16 @@ interface ProjectInfo {
   projectName: string;
   /** Pages that use `revalidate` (ISR) */
   hasISR: boolean;
+  /** package.json has "type": "module" */
+  hasTypeModule: boolean;
+  /** tsconfig.json paths/baseUrl for Vite alias generation */
+  tsconfigAliases: Record<string, string> | null;
+  /** .mdx files detected in app/ or pages/ */
+  hasMDX: boolean;
+  /** CodeHike is a dependency */
+  hasCodeHike: boolean;
+  /** Native Node modules that need stubbing for Workers */
+  nativeModulesToStub: string[];
 }
 
 // ─── Detection ───────────────────────────────────────────────────────────────
@@ -106,6 +116,38 @@ export function detectProject(root: string): ProjectInfo {
   // Detect ISR usage (rough heuristic: search for `revalidate` exports)
   const hasISR = detectISR(root, isAppRouter);
 
+  // Detect "type": "module" in package.json
+  let hasTypeModule = false;
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+      hasTypeModule = pkg.type === "module";
+    } catch {
+      // ignore
+    }
+  }
+
+  // Detect tsconfig paths/baseUrl for Vite alias generation
+  const tsconfigAliases = detectTsconfigAliases(root);
+
+  // Detect MDX usage
+  const hasMDX = detectMDX(root, isAppRouter, hasPages);
+
+  // Detect CodeHike dependency
+  let hasCodeHike = false;
+  if (fs.existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+      hasCodeHike = "codehike" in allDeps;
+    } catch {
+      // ignore
+    }
+  }
+
+  // Detect native Node modules that need stubbing for Workers
+  const nativeModulesToStub = detectNativeModules(root);
+
   return {
     root,
     isAppRouter,
@@ -118,6 +160,11 @@ export function detectProject(root: string): ProjectInfo {
     hasWrangler,
     projectName,
     hasISR,
+    hasTypeModule,
+    tsconfigAliases,
+    hasMDX,
+    hasCodeHike,
+    nativeModulesToStub,
   };
 }
 
@@ -149,6 +196,178 @@ function scanDirForPattern(dir: string, pattern: RegExp): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Parse tsconfig.json paths/baseUrl and return a map of alias → directory
+ * that can be used for Vite `resolve.alias`.
+ */
+function detectTsconfigAliases(root: string): Record<string, string> | null {
+  const tsconfigPath = path.join(root, "tsconfig.json");
+  if (!fs.existsSync(tsconfigPath)) return null;
+
+  try {
+    // Strip JSON comments (// and /* */) for jsonc support
+    const raw = fs.readFileSync(tsconfigPath, "utf-8");
+    const stripped = raw
+      .replace(/\/\/[^\n]*/g, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "");
+    const tsconfig = JSON.parse(stripped);
+    const { baseUrl, paths } = tsconfig.compilerOptions ?? {};
+    if (!paths || typeof paths !== "object") return null;
+
+    const aliases: Record<string, string> = {};
+    const base = baseUrl ? path.resolve(root, baseUrl) : root;
+
+    for (const [pattern, targets] of Object.entries(paths)) {
+      if (!Array.isArray(targets) || targets.length === 0) continue;
+      const target = targets[0] as string;
+      // Convert TS path pattern to Vite alias:
+      //   "#/*" → ["./"] becomes { "#": "<root>" }
+      //   "@/*" → ["./src/*"] becomes { "@": "<root>/src" }
+      const aliasKey = pattern.replace(/\/\*$/, "");
+      const aliasTarget = path.resolve(base, target.replace(/\/\*$/, ""));
+      aliases[aliasKey] = aliasTarget;
+    }
+
+    return Object.keys(aliases).length > 0 ? aliases : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detect .mdx files in the project's app/ or pages/ directory,
+ * or `pageExtensions` including "mdx" in next.config.
+ */
+function detectMDX(root: string, isAppRouter: boolean, hasPages: boolean): boolean {
+  // Check next.config for pageExtensions with mdx
+  const configFiles = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+  for (const f of configFiles) {
+    const p = path.join(root, f);
+    if (fs.existsSync(p)) {
+      try {
+        const content = fs.readFileSync(p, "utf-8");
+        if (/pageExtensions.*mdx/i.test(content) || /@next\/mdx/.test(content)) return true;
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  // Check for .mdx files in app/ or pages/
+  const dirs: string[] = [];
+  if (isAppRouter) dirs.push(path.join(root, "app"));
+  if (hasPages) dirs.push(path.join(root, "pages"));
+
+  for (const dir of dirs) {
+    if (fs.existsSync(dir) && scanDirForExtension(dir, ".mdx")) return true;
+  }
+
+  return false;
+}
+
+function scanDirForExtension(dir: string, ext: string): boolean {
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules") {
+      if (scanDirForExtension(fullPath, ext)) return true;
+    } else if (entry.isFile() && entry.name.endsWith(ext)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Known native Node modules that can't run in Workers */
+const NATIVE_MODULES_TO_STUB = [
+  "@resvg/resvg-js",
+  "satori",
+  "lightningcss",
+  "@napi-rs/canvas",
+  "sharp",
+];
+
+/**
+ * Detect native Node modules in dependencies that need stubbing for Workers.
+ */
+function detectNativeModules(root: string): string[] {
+  const pkgPath = path.join(root, "package.json");
+  if (!fs.existsSync(pkgPath)) return [];
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+    return NATIVE_MODULES_TO_STUB.filter((mod) => mod in allDeps);
+  } catch {
+    return [];
+  }
+}
+
+// ─── Project Preparation (pre-build transforms) ─────────────────────────────
+
+/** Common CJS config files that may need renaming when adding "type": "module" */
+const CJS_CONFIG_FILES = [
+  "postcss.config.js",
+  "tailwind.config.js",
+  ".eslintrc.js",
+  "prettier.config.js",
+  "stylelint.config.js",
+  "commitlint.config.js",
+  "jest.config.js",
+  "babel.config.js",
+  ".babelrc.js",
+];
+
+/**
+ * Ensure package.json has "type": "module".
+ * Returns true if it was added (i.e. it wasn't already there).
+ */
+export function ensureESModule(root: string): boolean {
+  const pkgPath = path.join(root, "package.json");
+  if (!fs.existsSync(pkgPath)) return false;
+
+  try {
+    const raw = fs.readFileSync(pkgPath, "utf-8");
+    const pkg = JSON.parse(raw);
+    if (pkg.type === "module") return false;
+
+    pkg.type = "module";
+    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Rename CJS config files (that use `module.exports`) to .cjs
+ * to avoid breakage when "type": "module" is added.
+ * Returns array of [oldName, newName] pairs that were renamed.
+ */
+export function renameCJSConfigs(root: string): Array<[string, string]> {
+  const renamed: Array<[string, string]> = [];
+
+  for (const fileName of CJS_CONFIG_FILES) {
+    const filePath = path.join(root, fileName);
+    if (!fs.existsSync(filePath)) continue;
+
+    try {
+      const content = fs.readFileSync(filePath, "utf-8");
+      // Only rename if it actually uses CJS patterns
+      if (/\bmodule\.exports\b/.test(content) || /\brequire\s*\(/.test(content)) {
+        const newName = fileName.replace(/\.js$/, ".cjs");
+        const newPath = path.join(root, newName);
+        fs.renameSync(filePath, newPath);
+        renamed.push([fileName, newName]);
+      }
+    } catch {
+      // skip unreadable files
+    }
+  }
+
+  return renamed;
 }
 
 // ─── File Generation ─────────────────────────────────────────────────────────
@@ -254,43 +473,123 @@ export default {
 }
 
 /** Generate vite.config.ts for App Router */
-export function generateAppRouterViteConfig(): string {
-  return `import { defineConfig } from "vite";
-import vinext from "vinext";
-import rsc from "@vitejs/plugin-rsc";
-import { cloudflare } from "@cloudflare/vite-plugin";
+export function generateAppRouterViteConfig(info?: ProjectInfo): string {
+  const imports: string[] = [
+    `import { defineConfig } from "vite";`,
+    `import vinext from "vinext";`,
+    `import rsc from "@vitejs/plugin-rsc";`,
+    `import { cloudflare } from "@cloudflare/vite-plugin";`,
+  ];
 
-export default defineConfig({
-  plugins: [
-    vinext(),
-    rsc({
+  if (info?.hasMDX) {
+    imports.push(`import mdx from "@mdx-js/rollup";`);
+    if (info.hasCodeHike) {
+      imports.push(`import { remarkCodeHike, recmaCodeHike } from "codehike/mdx";`);
+    }
+  }
+
+  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
+    imports.push(`import path from "node:path";`);
+  }
+
+  const plugins: string[] = [
+    `    vinext(),`,
+  ];
+
+  if (info?.hasMDX) {
+    if (info.hasCodeHike) {
+      plugins.push(`    mdx({
+      remarkPlugins: [[remarkCodeHike, { components: { code: "Code" } }]],
+      recmaPlugins: [[recmaCodeHike, { components: { code: "Code" } }]],
+    }),`);
+    } else {
+      plugins.push(`    mdx(),`);
+    }
+  }
+
+  plugins.push(`    rsc({
       entries: {
         rsc: "virtual:vinext-rsc-entry",
         ssr: "virtual:vinext-app-ssr-entry",
         client: "virtual:vinext-app-browser-entry",
       },
-    }),
-    cloudflare({
+    }),`);
+
+  plugins.push(`    cloudflare({
       viteEnvironment: {
         childEnvironments: ["rsc", "ssr"],
       },
-    }),
-  ],
+    }),`);
+
+  // Build resolve.alias from tsconfig aliases + native module stubs
+  let resolveBlock = "";
+  const aliases: string[] = [];
+
+  if (info?.tsconfigAliases) {
+    for (const [key, target] of Object.entries(info.tsconfigAliases)) {
+      aliases.push(`      "${key}": "${target}",`);
+    }
+  }
+
+  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
+    for (const mod of info.nativeModulesToStub) {
+      aliases.push(`      "${mod}": path.resolve(__dirname, "empty-stub.js"),`);
+    }
+  }
+
+  if (aliases.length > 0) {
+    resolveBlock = `\n  resolve: {\n    alias: {\n${aliases.join("\n")}\n    },\n  },`;
+  }
+
+  return `${imports.join("\n")}
+
+export default defineConfig({
+  plugins: [
+${plugins.join("\n")}
+  ],${resolveBlock}
 });
 `;
 }
 
 /** Generate vite.config.ts for Pages Router */
-export function generatePagesRouterViteConfig(): string {
-  return `import { defineConfig } from "vite";
-import vinext from "vinext";
-import { cloudflare } from "@cloudflare/vite-plugin";
+export function generatePagesRouterViteConfig(info?: ProjectInfo): string {
+  const imports: string[] = [
+    `import { defineConfig } from "vite";`,
+    `import vinext from "vinext";`,
+    `import { cloudflare } from "@cloudflare/vite-plugin";`,
+  ];
+
+  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
+    imports.push(`import path from "node:path";`);
+  }
+
+  // Build resolve.alias from tsconfig aliases + native module stubs
+  let resolveBlock = "";
+  const aliases: string[] = [];
+
+  if (info?.tsconfigAliases) {
+    for (const [key, target] of Object.entries(info.tsconfigAliases)) {
+      aliases.push(`      "${key}": "${target}",`);
+    }
+  }
+
+  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
+    for (const mod of info.nativeModulesToStub) {
+      aliases.push(`      "${mod}": path.resolve(__dirname, "empty-stub.js"),`);
+    }
+  }
+
+  if (aliases.length > 0) {
+    resolveBlock = `\n  resolve: {\n    alias: {\n${aliases.join("\n")}\n    },\n  },`;
+  }
+
+  return `${imports.join("\n")}
 
 export default defineConfig({
   plugins: [
     vinext(),
     cloudflare(),
-  ],
+  ],${resolveBlock}
 });
 `;
 }
@@ -313,6 +612,15 @@ export function getMissingDeps(info: ProjectInfo): MissingDep[] {
   }
   if (info.isAppRouter && !info.hasRscPlugin) {
     missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
+  }
+  if (info.hasMDX) {
+    // Check if @mdx-js/rollup is already installed
+    const hasMdxRollup = fs.existsSync(
+      path.join(info.root, "node_modules", "@mdx-js", "rollup"),
+    );
+    if (!hasMdxRollup) {
+      missing.push({ name: "@mdx-js/rollup", version: "latest" });
+    }
   }
 
   return missing;
@@ -370,8 +678,8 @@ export function getFilesToGenerate(info: ProjectInfo): GeneratedFile[] {
 
   if (!info.hasViteConfig) {
     const viteContent = info.isAppRouter
-      ? generateAppRouterViteConfig()
-      : generatePagesRouterViteConfig();
+      ? generateAppRouterViteConfig(info)
+      : generatePagesRouterViteConfig(info);
     files.push({
       path: path.join(info.root, "vite.config.ts"),
       content: viteContent,
@@ -482,7 +790,19 @@ export async function deploy(options: DeployOptions): Promise<void> {
     if (info.isAppRouter) info.hasRscPlugin = true;
   }
 
-  // Step 3: Generate missing config files
+  // Step 3: Ensure ESM + rename CJS configs
+  if (!info.hasTypeModule) {
+    const renamedConfigs = renameCJSConfigs(root);
+    for (const [oldName, newName] of renamedConfigs) {
+      console.log(`  Renamed ${oldName} → ${newName} (CJS → .cjs)`);
+    }
+    if (ensureESModule(root)) {
+      console.log(`  Added "type": "module" to package.json`);
+      info.hasTypeModule = true;
+    }
+  }
+
+  // Step 4: Generate missing config files
   const filesToGenerate = getFilesToGenerate(info);
   if (filesToGenerate.length > 0) {
     console.log();
@@ -494,14 +814,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
     return;
   }
 
-  // Step 4: Build
+  // Step 5: Build
   if (!options.skipBuild) {
     await runBuild(info);
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }
 
-  // Step 5: Deploy via wrangler
+  // Step 6: Deploy via wrangler
   const url = runWranglerDeploy(root, options.preview ?? false);
 
   console.log("\n  ─────────────────────────────────────────");

@@ -11,6 +11,8 @@ import {
   generatePagesRouterViteConfig,
   getMissingDeps,
   getFilesToGenerate,
+  ensureESModule,
+  renameCJSConfigs,
 } from "../packages/vinext/src/deploy.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
@@ -490,6 +492,301 @@ describe("getFilesToGenerate", () => {
     const viteFile = files.find((f) => f.description === "vite.config.ts");
     expect(viteFile).toBeDefined();
     expect(viteFile!.content).not.toContain("plugin-rsc");
+  });
+});
+
+// ─── ensureESModule ──────────────────────────────────────────────────────────
+
+describe("ensureESModule", () => {
+  it("adds 'type': 'module' when missing", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "package.json", JSON.stringify({ name: "test-app" }));
+
+    const added = ensureESModule(tmpDir);
+    expect(added).toBe(true);
+
+    const pkg = JSON.parse(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8"));
+    expect(pkg.type).toBe("module");
+  });
+
+  it("returns false when already has 'type': 'module'", () => {
+    writeFile(tmpDir, "package.json", JSON.stringify({ name: "test-app", type: "module" }));
+
+    const added = ensureESModule(tmpDir);
+    expect(added).toBe(false);
+  });
+
+  it("returns false when no package.json", () => {
+    const added = ensureESModule(tmpDir);
+    expect(added).toBe(false);
+  });
+
+  it("preserves existing package.json fields", () => {
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({
+        name: "test-app",
+        version: "1.0.0",
+        dependencies: { react: "^19.0.0" },
+      }),
+    );
+
+    ensureESModule(tmpDir);
+    const pkg = JSON.parse(fs.readFileSync(path.join(tmpDir, "package.json"), "utf-8"));
+    expect(pkg.name).toBe("test-app");
+    expect(pkg.version).toBe("1.0.0");
+    expect(pkg.dependencies.react).toBe("^19.0.0");
+    expect(pkg.type).toBe("module");
+  });
+});
+
+// ─── renameCJSConfigs ────────────────────────────────────────────────────────
+
+describe("renameCJSConfigs", () => {
+  it("renames postcss.config.js using module.exports to .cjs", () => {
+    writeFile(tmpDir, "postcss.config.js", "module.exports = { plugins: {} };");
+
+    const renamed = renameCJSConfigs(tmpDir);
+    expect(renamed).toEqual([["postcss.config.js", "postcss.config.cjs"]]);
+    expect(fs.existsSync(path.join(tmpDir, "postcss.config.cjs"))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "postcss.config.js"))).toBe(false);
+  });
+
+  it("renames tailwind.config.js using require() to .cjs", () => {
+    writeFile(tmpDir, "tailwind.config.js", `const plugin = require("tailwindcss/plugin");\nmodule.exports = {};`);
+
+    const renamed = renameCJSConfigs(tmpDir);
+    expect(renamed).toEqual([["tailwind.config.js", "tailwind.config.cjs"]]);
+  });
+
+  it("does not rename ESM config files", () => {
+    writeFile(tmpDir, "postcss.config.js", "export default { plugins: {} };");
+
+    const renamed = renameCJSConfigs(tmpDir);
+    expect(renamed).toEqual([]);
+    expect(fs.existsSync(path.join(tmpDir, "postcss.config.js"))).toBe(true);
+  });
+
+  it("renames multiple CJS configs at once", () => {
+    writeFile(tmpDir, "postcss.config.js", "module.exports = {};");
+    writeFile(tmpDir, "tailwind.config.js", "module.exports = {};");
+    writeFile(tmpDir, ".eslintrc.js", "module.exports = {};");
+
+    const renamed = renameCJSConfigs(tmpDir);
+    expect(renamed).toHaveLength(3);
+    expect(renamed.map((r) => r[0])).toContain("postcss.config.js");
+    expect(renamed.map((r) => r[0])).toContain("tailwind.config.js");
+    expect(renamed.map((r) => r[0])).toContain(".eslintrc.js");
+  });
+
+  it("returns empty array when no CJS configs exist", () => {
+    const renamed = renameCJSConfigs(tmpDir);
+    expect(renamed).toEqual([]);
+  });
+});
+
+// ─── detectProject: new fields ──────────────────────────────────────────────
+
+describe("detectProject — new detection features", () => {
+  it("detects hasTypeModule when package.json has type: module", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "package.json", JSON.stringify({ name: "test", type: "module" }));
+    const info = detectProject(tmpDir);
+    expect(info.hasTypeModule).toBe(true);
+  });
+
+  it("hasTypeModule is false when missing", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "package.json", JSON.stringify({ name: "test" }));
+    const info = detectProject(tmpDir);
+    expect(info.hasTypeModule).toBe(false);
+  });
+
+  it("detects tsconfig paths as aliases", () => {
+    mkdir(tmpDir, "app");
+    writeFile(
+      tmpDir,
+      "tsconfig.json",
+      JSON.stringify({
+        compilerOptions: {
+          baseUrl: ".",
+          paths: { "#/*": ["./*"], "@/*": ["./src/*"] },
+        },
+      }),
+    );
+    const info = detectProject(tmpDir);
+    expect(info.tsconfigAliases).toBeDefined();
+    expect(info.tsconfigAliases!["#"]).toBe(tmpDir);
+    expect(info.tsconfigAliases!["@"]).toBe(path.join(tmpDir, "src"));
+  });
+
+  it("tsconfigAliases is null when no tsconfig.json", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    expect(info.tsconfigAliases).toBeNull();
+  });
+
+  it("tsconfigAliases is null when no paths in tsconfig", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "tsconfig.json", JSON.stringify({ compilerOptions: { strict: true } }));
+    const info = detectProject(tmpDir);
+    expect(info.tsconfigAliases).toBeNull();
+  });
+
+  it("detects MDX via .mdx files in app/", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "app/about/page.mdx", "# About\nHello world");
+    const info = detectProject(tmpDir);
+    expect(info.hasMDX).toBe(true);
+  });
+
+  it("detects MDX via @next/mdx in next.config", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "next.config.mjs", `import mdx from "@next/mdx";\nexport default mdx()({});`);
+    const info = detectProject(tmpDir);
+    expect(info.hasMDX).toBe(true);
+  });
+
+  it("hasMDX is false when no MDX usage", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "app/page.tsx", "export default function Home() { return <div/> }");
+    const info = detectProject(tmpDir);
+    expect(info.hasMDX).toBe(false);
+  });
+
+  it("detects CodeHike dependency", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { codehike: "^1.0.0" } }));
+    const info = detectProject(tmpDir);
+    expect(info.hasCodeHike).toBe(true);
+  });
+
+  it("hasCodeHike is false when not a dependency", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { react: "^19.0.0" } }));
+    const info = detectProject(tmpDir);
+    expect(info.hasCodeHike).toBe(false);
+  });
+
+  it("detects native modules to stub", () => {
+    mkdir(tmpDir, "app");
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ dependencies: { "@resvg/resvg-js": "^2.0.0", satori: "^0.10.0" } }),
+    );
+    const info = detectProject(tmpDir);
+    expect(info.nativeModulesToStub).toContain("@resvg/resvg-js");
+    expect(info.nativeModulesToStub).toContain("satori");
+  });
+
+  it("nativeModulesToStub is empty when no native deps", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { react: "^19.0.0" } }));
+    const info = detectProject(tmpDir);
+    expect(info.nativeModulesToStub).toEqual([]);
+  });
+});
+
+// ─── Generated Vite config with new features ────────────────────────────────
+
+describe("generateAppRouterViteConfig — with project info", () => {
+  it("includes MDX plugin when hasMDX is true", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "app/about/page.mdx", "# About");
+    const info = detectProject(tmpDir);
+    const config = generateAppRouterViteConfig(info);
+    expect(config).toContain('@mdx-js/rollup');
+    expect(config).toContain("mdx()");
+  });
+
+  it("includes CodeHike plugins when hasCodeHike is true", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "app/about/page.mdx", "# About");
+    writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { codehike: "^1.0.0" } }));
+    const info = detectProject(tmpDir);
+    const config = generateAppRouterViteConfig(info);
+    expect(config).toContain("remarkCodeHike");
+    expect(config).toContain("recmaCodeHike");
+    expect(config).toContain("codehike/mdx");
+  });
+
+  it("includes resolve.alias for tsconfig paths", () => {
+    mkdir(tmpDir, "app");
+    writeFile(
+      tmpDir,
+      "tsconfig.json",
+      JSON.stringify({
+        compilerOptions: { baseUrl: ".", paths: { "#/*": ["./*"] } },
+      }),
+    );
+    const info = detectProject(tmpDir);
+    const config = generateAppRouterViteConfig(info);
+    expect(config).toContain("resolve:");
+    expect(config).toContain("alias:");
+    expect(config).toContain('"#"');
+  });
+
+  it("includes native module stubs in resolve.alias", () => {
+    mkdir(tmpDir, "app");
+    writeFile(
+      tmpDir,
+      "package.json",
+      JSON.stringify({ dependencies: { "@resvg/resvg-js": "^2.0.0" } }),
+    );
+    const info = detectProject(tmpDir);
+    const config = generateAppRouterViteConfig(info);
+    expect(config).toContain("@resvg/resvg-js");
+    expect(config).toContain("empty-stub.js");
+  });
+
+  it("still works without info (backward compatible)", () => {
+    const config = generateAppRouterViteConfig();
+    expect(config).toContain("vinext()");
+    expect(config).toContain("rsc(");
+    expect(config).toContain("cloudflare(");
+    expect(config).not.toContain("mdx");
+    expect(config).not.toContain("resolve:");
+  });
+});
+
+describe("generatePagesRouterViteConfig — with project info", () => {
+  it("includes resolve.alias for tsconfig paths", () => {
+    mkdir(tmpDir, "pages");
+    writeFile(
+      tmpDir,
+      "tsconfig.json",
+      JSON.stringify({
+        compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } },
+      }),
+    );
+    const info = detectProject(tmpDir);
+    const config = generatePagesRouterViteConfig(info);
+    expect(config).toContain("resolve:");
+    expect(config).toContain('"@"');
+  });
+
+  it("still works without info (backward compatible)", () => {
+    const config = generatePagesRouterViteConfig();
+    expect(config).toContain("vinext()");
+    expect(config).toContain("cloudflare()");
+    expect(config).not.toContain("resolve:");
+  });
+});
+
+// ─── getMissingDeps with MDX ─────────────────────────────────────────────────
+
+describe("getMissingDeps — MDX", () => {
+  it("reports @mdx-js/rollup when MDX detected but not installed", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "app/about/page.mdx", "# About");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+    const missing = getMissingDeps(info);
+    expect(missing).toContainEqual(expect.objectContaining({ name: "@mdx-js/rollup" }));
   });
 });
 

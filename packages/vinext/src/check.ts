@@ -36,6 +36,7 @@ export interface CheckResult {
 // ── Import support map ─────────────────────────────────────────────────────
 
 const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
+  "next": { status: "supported", detail: "type-only exports (Metadata, NextPage, etc.)" },
   "next/link": { status: "supported" },
   "next/image": { status: "supported", detail: "uses @unpic/react (no local optimization yet)" },
   "next/router": { status: "supported" },
@@ -137,12 +138,18 @@ export function scanImports(root: string): CheckItem[] {
   const importUsage = new Map<string, string[]>();
 
   const importRegex = /(?:import\s+(?:[\w{},\s*]+\s+from\s+)?|require\s*\()['"]([^'"]+)['"]\)?/g;
+  // Skip `import type` and `import { type ... }` — they're erased at compile time
+  const typeOnlyImportRegex = /import\s+type\s+/;
 
   for (const file of files) {
     const content = fs.readFileSync(file, "utf-8");
     let match;
     while ((match = importRegex.exec(content)) !== null) {
       const mod = match[1];
+      // Skip type-only imports (no runtime effect)
+      const lineStart = content.lastIndexOf("\n", match.index) + 1;
+      const line = content.slice(lineStart, match.index + match[0].length);
+      if (typeOnlyImportRegex.test(line)) continue;
       // Only track next/* imports and server-only/client-only
       if (mod.startsWith("next/") || mod === "next" || mod === "server-only" || mod === "client-only") {
         // Normalize: next/font/google -> next/font/google
