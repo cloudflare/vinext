@@ -525,3 +525,56 @@ Comprehensive audit of the test suite inspired by Next.js's `test/e2e/app-dir/` 
 - **Custom headers are applied in the handler wrapper** — rather than modifying 30+ response creation points, we apply `__applyConfigHeaders` on the Response object returned by `_handleRequest`, since Response headers are mutable on newly created Response objects.
 - **i18n is NOT needed for App Router** — Next.js's `i18n` config option (from `next.config.js`) is Pages Router only. App Router uses middleware or next-intl for i18n. This is a non-issue.
 - **Order of operations matches Next.js**: basePath strip → trailing slash → redirects → beforeFiles rewrites → middleware → afterFiles rewrites → route matching → fallback rewrites (on 404).
+
+---
+
+## "use cache" Routes Returning 404/500 on Cloudflare Workers — FIXED (commit 0abccd9)
+
+**Date**: Feb 15-16, 2026
+
+Three separate bugs combined to break every route using `"use cache"` on the deployed playground:
+
+### Bug 1: `vinext:use-cache` plugin wrapped layout/template default exports
+
+The plugin's `isPageFile` check at `index.ts:1393` only excluded `/page.tsx` files from `registerCachedFunction` wrapping. Layout files (`layout.tsx`), template files, loading, error, not-found, and default convention files were all getting their default exports wrapped. Since these are React components that return JSX, `registerCachedFunction` would try to `JSON.stringify(result)` on JSX elements, which silently strips `$$typeof` Symbols and function references — producing corrupt data.
+
+**Fix**: Renamed `isPageFile` to `isComponentFile` and expanded the regex to match all convention files:
+```
+/(page|layout|template|loading|error|not-found|default)\.(tsx?|jsx?|mjs)$/
+```
+Non-default exports like `generateMetadata` (which return serializable data) are still correctly wrapped.
+
+### Bug 2: Missing `await` on `handleRenderError(ssrErr)` in SSR catch path
+
+In `app-dev-server.ts:1300`, the call to `handleRenderError(ssrErr)` was missing `await`. Since `handleRenderError` is an `async` function, it returns a Promise. The check `if (specialResponse) return specialResponse` was always truthy (Promise is truthy), so the handler returned the Promise which resolved to `null`. The worker entry then hit `if (result === null) return new Response("Not Found", { status: 404 })`.
+
+The pre-render check at line 1268 correctly used `await handleRenderError(preRenderErr)`. Only the SSR error path was wrong.
+
+**Fix**: Added `await` before the `handleRenderError(ssrErr)` call.
+
+### Bug 3: `registerCachedFunction` corrupted React elements on cache hit
+
+`JSON.stringify(reactElement)` doesn't throw — it silently drops Symbol-keyed properties (`$$typeof`) and function values (`type`). The first render would work (returns the original result), but the cached value stored via `JSON.stringify` is corrupt. On cache hit, `JSON.parse` returns `{key, ref, props}` without `$$typeof`, which React rejects with "Objects are not valid as a React child".
+
+Also, `stableStringify` (used for cache key generation) had no handling for functions, Symbols, or circular references — it could infinite-loop or produce corrupted keys when called with React element props.
+
+**Fix**: 
+- Added `isReactElement()` check using `Symbol.for("react.element")` and `Symbol.for("react.transitional.element")` — skips caching entirely for JSX results
+- Made `stableStringify` throw on functions/Symbols and detect circular references
+- Wrapped `stableStringify(args)` in try-catch — falls back to running without caching
+- Wrapped `JSON.stringify(result)` in try-catch for additional safety
+
+### Bonus: Missing CodeHike MDX plugins
+
+The `vite.config.ts` for the playground had `remarkPlugins: [], rehypePlugins: []`. CodeHike's `Grid` component uses `# !!col` block annotations in MDX files, which require `remarkCodeHike` and `recmaCodeHike` plugins from `codehike/mdx`.
+
+**Fix**: Added CodeHike plugins to the MDX config in `vite.config.ts`:
+```ts
+import { remarkCodeHike, recmaCodeHike } from "codehike/mdx";
+const codeHikeConfig = { components: { code: "MyCode", inlineCode: "MyInlineCode" } };
+mdx({ remarkPlugins: [[remarkCodeHike, codeHikeConfig]], recmaPlugins: [[recmaCodeHike, codeHikeConfig]] })
+```
+
+### Route Status After Fix
+
+All 19 tested routes return HTTP 200 and render correctly on Cloudflare Workers, matching the Vercel reference demo at https://app-router.vercel.app/.
