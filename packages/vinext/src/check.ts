@@ -295,6 +295,7 @@ export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
   const hasPages = fs.existsSync(path.join(root, "pages"));
   const hasApp = fs.existsSync(path.join(root, "app"));
+  const hasProxy = fs.existsSync(path.join(root, "proxy.ts")) || fs.existsSync(path.join(root, "proxy.js"));
   const hasMiddleware = fs.existsSync(path.join(root, "middleware.ts")) || fs.existsSync(path.join(root, "middleware.js"));
 
   if (hasPages) {
@@ -337,8 +338,10 @@ export function checkConventions(root: string): CheckItem[] {
     if (notFounds.length) items.push({ name: `${notFounds.length} not-found page(s)`, status: "supported" });
   }
 
-  if (hasMiddleware) {
-    items.push({ name: "middleware.ts", status: "supported" });
+  if (hasProxy) {
+    items.push({ name: "proxy.ts (Next.js 16)", status: "supported" });
+  } else if (hasMiddleware) {
+    items.push({ name: "middleware.ts (deprecated in Next.js 16)", status: "supported" });
   }
 
   if (!hasPages && !hasApp) {

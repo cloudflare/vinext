@@ -1,10 +1,14 @@
 /**
- * middleware.ts runner
+ * proxy.ts / middleware.ts runner
  *
- * Loads and executes the user's middleware.ts file before routing.
- * Runs in Node (not Edge Runtime), per the vinext design.
+ * Loads and executes the user's proxy.ts (Next.js 16) or middleware.ts file
+ * before routing. Runs in Node (not Edge Runtime), per the vinext design.
  *
- * Middleware receives a NextRequest and can:
+ * In Next.js 16, proxy.ts replaces middleware.ts:
+ * - proxy.ts: default export function, runs on Node.js runtime
+ * - middleware.ts: deprecated but still supported for Edge runtime use cases
+ *
+ * The proxy/middleware receives a NextRequest and can:
  * - Return NextResponse.next() to continue to the route
  * - Return NextResponse.redirect() to redirect
  * - Return NextResponse.rewrite() to rewrite the URL
@@ -19,7 +23,19 @@ import fs from "node:fs";
 import path from "node:path";
 import { NextRequest } from "../shims/server.js";
 
-/** Possible middleware file names. */
+/**
+ * Possible proxy/middleware file names.
+ * proxy.ts (Next.js 16) is checked first, then middleware.ts (deprecated).
+ */
+const PROXY_FILES = [
+  "proxy.ts",
+  "proxy.js",
+  "proxy.mjs",
+  "src/proxy.ts",
+  "src/proxy.js",
+  "src/proxy.mjs",
+];
+
 const MIDDLEWARE_FILES = [
   "middleware.ts",
   "middleware.tsx",
@@ -32,12 +48,27 @@ const MIDDLEWARE_FILES = [
 ];
 
 /**
- * Find the middleware file in the project root.
+ * Find the proxy or middleware file in the project root.
+ * Checks for proxy.ts (Next.js 16) first, then falls back to middleware.ts.
+ * If middleware.ts is found, logs a deprecation warning.
  */
 export function findMiddlewareFile(root: string): string | null {
+  // Check proxy.ts first (Next.js 16 replacement for middleware.ts)
+  for (const file of PROXY_FILES) {
+    const fullPath = path.join(root, file);
+    if (fs.existsSync(fullPath)) {
+      return fullPath;
+    }
+  }
+
+  // Fall back to middleware.ts (deprecated in Next.js 16)
   for (const file of MIDDLEWARE_FILES) {
     const fullPath = path.join(root, file);
     if (fs.existsSync(fullPath)) {
+      console.warn(
+        "[vinext] middleware.ts is deprecated in Next.js 16. " +
+          "Rename to proxy.ts and export a default function.",
+      );
       return fullPath;
     }
   }
@@ -157,9 +188,10 @@ export async function runMiddleware(
   // Load the middleware module via Vite's SSR module loader
   const mod = await server.ssrLoadModule(middlewarePath);
 
-  const middlewareFn = mod.default ?? mod.middleware;
+  // Accept: default export, named "proxy" (Next.js 16), or named "middleware"
+  const middlewareFn = mod.default ?? mod.proxy ?? mod.middleware;
   if (typeof middlewareFn !== "function") {
-    // No middleware function exported — continue as normal
+    // No proxy/middleware function exported — continue as normal
     return { continue: true };
   }
 

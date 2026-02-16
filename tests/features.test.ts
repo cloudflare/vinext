@@ -414,7 +414,7 @@ describe("ISR cache internals", () => {
     );
     const handler = new MemoryCacheHandler();
 
-    await handler.set("test-fresh", { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 0 }, { revalidate: 60 });
+    await handler.set("test-fresh", { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 60 }, { revalidate: 60 });
 
     const result = await handler.get("test-fresh");
     expect(result).not.toBeNull();

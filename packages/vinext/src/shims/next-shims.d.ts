@@ -323,8 +323,10 @@ declare module "next/cache" {
 
   export function setCacheHandler(handler: CacheHandler): void;
   export function getCacheHandler(): CacheHandler;
-  export function revalidateTag(tag: string): Promise<void>;
+  export function revalidateTag(tag: string, profile?: string | { expire?: number }): Promise<void>;
   export function revalidatePath(path: string, type?: "page" | "layout"): Promise<void>;
+  export function updateTag(tag: string): Promise<void>;
+  export function refresh(): void;
   export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     fn: T,
     keyParts?: string[],

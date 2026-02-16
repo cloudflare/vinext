@@ -694,8 +694,8 @@ async function _handleRequest(request) {
   let cleanPathname = pathname.replace(/\\.rsc$/, "");
 
   ${middlewarePath ? `
-  // Run middleware if present and path matches
-  const middlewareFn = middlewareModule.default || middlewareModule.middleware;
+   // Run proxy/middleware if present and path matches
+  const middlewareFn = middlewareModule.default || middlewareModule.proxy || middlewareModule.middleware;
   const middlewareMatcher = middlewareModule.config?.matcher;
   if (typeof middlewareFn === "function" && matchMiddlewarePath(cleanPathname, middlewareMatcher)) {
     try {

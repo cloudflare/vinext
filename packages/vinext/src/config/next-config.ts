@@ -86,6 +86,12 @@ export interface NextConfig {
   };
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
   output?: "export" | "standalone";
+  /**
+   * Enable Cache Components (Next.js 16).
+   * When true, enables the "use cache" directive for pages, components, and functions.
+   * Replaces the removed experimental.ppr and experimental.dynamicIO flags.
+   */
+  cacheComponents?: boolean;
   /** Transpile packages (Vite handles this natively) */
   transpilePackages?: string[];
   /** Webpack config (ignored — we use Vite) */
@@ -102,6 +108,7 @@ export interface ResolvedNextConfig {
   basePath: string;
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
+  cacheComponents: boolean;
   redirects: NextRedirect[];
   rewrites: {
     beforeFiles: NextRewrite[];
@@ -168,6 +175,7 @@ export async function resolveNextConfig(
       basePath: "",
       trailingSlash: false,
       output: "",
+      cacheComponents: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],
@@ -235,6 +243,7 @@ export async function resolveNextConfig(
     basePath: config.basePath ?? "",
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
+    cacheComponents: config.cacheComponents ?? false,
     redirects,
     rewrites,
     headers,

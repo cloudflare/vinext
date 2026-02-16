@@ -413,7 +413,9 @@ describe("checkConventions", () => {
     writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
 
     const items = checkConventions(tmpDir);
-    expect(items.find((i) => i.name === "middleware.ts")?.status).toBe("supported");
+    const mw = items.find((i) => i.name.includes("middleware.ts"));
+    expect(mw?.status).toBe("supported");
+    expect(mw?.name).toContain("deprecated");
   });
 
   it("detects middleware.js", () => {
@@ -421,7 +423,30 @@ describe("checkConventions", () => {
     writeFile("pages/index.tsx", `export default function Home() { return <div/>; }`);
 
     const items = checkConventions(tmpDir);
-    expect(items.find((i) => i.name === "middleware.ts")?.status).toBe("supported");
+    const mw = items.find((i) => i.name.includes("middleware.ts"));
+    expect(mw?.status).toBe("supported");
+    expect(mw?.name).toContain("deprecated");
+  });
+
+  it("detects proxy.ts (Next.js 16)", () => {
+    writeFile("proxy.ts", `export default function proxy() {}`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const proxy = items.find((i) => i.name.includes("proxy.ts"));
+    expect(proxy?.status).toBe("supported");
+    expect(proxy?.name).toContain("Next.js 16");
+  });
+
+  it("prefers proxy.ts over middleware.ts in check", () => {
+    writeFile("proxy.ts", `export default function proxy() {}`);
+    writeFile("middleware.ts", `export function middleware() {}`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    // Should show proxy.ts, not middleware.ts
+    expect(items.find((i) => i.name.includes("proxy.ts"))).toBeDefined();
+    expect(items.find((i) => i.name.includes("middleware.ts"))).toBeUndefined();
   });
 
   it("reports unsupported when no pages/ or app/ directory", () => {

@@ -684,6 +684,71 @@ describe("next/cache shim", () => {
     setCacheHandler(new MemoryCacheHandler());
   });
 
+  it("revalidateTag accepts optional cacheLife profile (Next.js 16)", async () => {
+    const {
+      revalidateTag,
+      setCacheHandler,
+      MemoryCacheHandler,
+    } = await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    // Should not throw with profile argument
+    await revalidateTag("my-tag", "max");
+    await revalidateTag("my-tag", "hours");
+    await revalidateTag("my-tag", { expire: 3600 });
+
+    // Should still work without profile (deprecated single-arg form)
+    await revalidateTag("my-tag");
+
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("exports updateTag function (Next.js 16)", async () => {
+    const mod = await import("../packages/vinext/src/shims/cache.js");
+    expect(typeof mod.updateTag).toBe("function");
+  });
+
+  it("updateTag invalidates cached entries", async () => {
+    const {
+      unstable_cache,
+      updateTag,
+      setCacheHandler,
+      MemoryCacheHandler,
+    } = await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const fn = async () => {
+      callCount++;
+      return "result-" + callCount;
+    };
+
+    const cached = unstable_cache(fn, ["update-tag-test"], {
+      tags: ["user-1"],
+    });
+
+    const r1 = await cached();
+    expect(r1).toBe("result-1");
+
+    // updateTag expires the cache
+    await updateTag("user-1");
+
+    const r2 = await cached();
+    expect(r2).toBe("result-2");
+    expect(callCount).toBe(2);
+
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("exports refresh function (Next.js 16)", async () => {
+    const mod = await import("../packages/vinext/src/shims/cache.js");
+    expect(typeof mod.refresh).toBe("function");
+    // refresh() is a no-op on the server but should not throw
+    mod.refresh();
+  });
+
   it("setCacheHandler swaps the active handler", async () => {
     const { setCacheHandler, getCacheHandler, unstable_cache } = await import(
       "../packages/vinext/src/shims/cache.js"
@@ -1101,6 +1166,46 @@ describe("middleware runner", () => {
     );
     const result = findMiddlewareFile("/tmp/nonexistent-dir-" + Date.now());
     expect(result).toBeNull();
+  });
+
+  it("findMiddlewareFile prefers proxy.ts over middleware.ts (Next.js 16)", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const os = await import("node:os");
+    const { findMiddlewareFile } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+
+    // Create a temp directory with both proxy.ts and middleware.ts
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-proxy-test-"));
+    try {
+      fs.writeFileSync(path.join(tmpDir, "proxy.ts"), "export default function proxy() {}");
+      fs.writeFileSync(path.join(tmpDir, "middleware.ts"), "export function middleware() {}");
+      const result = findMiddlewareFile(tmpDir);
+      expect(result).not.toBeNull();
+      expect(result).toContain("proxy.ts");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("findMiddlewareFile finds proxy.js", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const os = await import("node:os");
+    const { findMiddlewareFile } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-proxy-test-"));
+    try {
+      fs.writeFileSync(path.join(tmpDir, "proxy.js"), "module.exports = function proxy() {}");
+      const result = findMiddlewareFile(tmpDir);
+      expect(result).not.toBeNull();
+      expect(result).toContain("proxy.js");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -2464,6 +2569,40 @@ describe("basePath config validation", () => {
     );
     const config = await resolveNextConfig({ basePath: undefined });
     expect(config.basePath).toBe("");
+  });
+});
+
+describe("cacheComponents config (Next.js 16)", () => {
+  it("resolveNextConfig defaults cacheComponents to false", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({});
+    expect(config.cacheComponents).toBe(false);
+  });
+
+  it("resolveNextConfig reads cacheComponents: true", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({ cacheComponents: true });
+    expect(config.cacheComponents).toBe(true);
+  });
+
+  it("resolveNextConfig reads cacheComponents: false", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({ cacheComponents: false });
+    expect(config.cacheComponents).toBe(false);
+  });
+
+  it("resolveNextConfig handles null input with cacheComponents default", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig(null);
+    expect(config.cacheComponents).toBe(false);
   });
 });
 

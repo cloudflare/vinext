@@ -272,8 +272,31 @@ export function getCacheHandler(): CacheHandler {
  * Works with both `fetch(..., { next: { tags: ['myTag'] } })` and
  * `unstable_cache(fn, keys, { tags: ['myTag'] })`.
  */
-export async function revalidateTag(tag: string): Promise<void> {
-  await activeHandler.revalidateTag(tag);
+/**
+ * Revalidate cached data associated with a specific cache tag.
+ *
+ * Next.js 16 updated signature: requires a cacheLife profile as second argument
+ * for stale-while-revalidate (SWR) behavior. The single-argument form is
+ * deprecated but still supported for backward compatibility.
+ *
+ * @param tag - Cache tag to revalidate
+ * @param profile - cacheLife profile name (e.g. 'max', 'hours') or inline { expire: number }
+ */
+export async function revalidateTag(
+  tag: string,
+  profile?: string | { expire?: number },
+): Promise<void> {
+  // Resolve the profile to durations for the handler
+  let durations: { expire?: number } | undefined;
+  if (typeof profile === "string") {
+    const resolved = cacheLifeProfiles[profile];
+    if (resolved) {
+      durations = { expire: resolved.expire };
+    }
+  } else if (profile && typeof profile === "object") {
+    durations = profile;
+  }
+  await activeHandler.revalidateTag(tag, durations);
 }
 
 /**
@@ -289,6 +312,42 @@ export async function revalidatePath(
   // Next.js internally converts paths to tags with a prefix
   const pathTag = `_N_T_${path}`;
   await activeHandler.revalidateTag([path, pathTag]);
+}
+
+/**
+ * Expire and immediately refresh cached data for a tag (Next.js 16).
+ *
+ * Server Actions-only API that provides read-your-writes semantics:
+ * the cache entry is expired and fresh data is read within the same request,
+ * so the user immediately sees their changes.
+ *
+ * Use this for interactive features (forms, user settings) where users
+ * expect to see their updates instantly.
+ *
+ * @param tag - Cache tag to expire and refresh
+ */
+export async function updateTag(tag: string): Promise<void> {
+  // Expire the tag immediately (same as revalidateTag without SWR)
+  await activeHandler.revalidateTag(tag);
+}
+
+/**
+ * Refresh uncached data on the page (Next.js 16).
+ *
+ * Server Actions-only API that signals the client to re-fetch dynamic
+ * (uncached) data without touching the cache. Complementary to the
+ * client-side router.refresh().
+ *
+ * Use this when you need to refresh data like notification counts,
+ * live metrics, or status indicators after performing a server action.
+ */
+export function refresh(): void {
+  // In our implementation, this is a signal that the client should
+  // refresh dynamic data. The actual refresh happens on the client side
+  // via the RSC protocol — the server action response triggers a
+  // client-side navigation refresh.
+  // For now, this is a no-op on the server; the Server Action response
+  // mechanism already handles re-rendering the affected RSC tree.
 }
 
 /**
