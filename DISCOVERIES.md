@@ -578,3 +578,41 @@ mdx({ remarkPlugins: [[remarkCodeHike, codeHikeConfig]], recmaPlugins: [[recmaCo
 ### Route Status After Fix
 
 All 19 tested routes return HTTP 200 and render correctly on Cloudflare Workers, matching the Vercel reference demo at https://app-router.vercel.app/.
+
+---
+
+## Discovery: Dynamic Usage Detection Bugs (Fixed)
+
+### Bug: `cookies()` and `headers()` Not Calling `markDynamicUsage()`
+
+**Date**: 2026-02-16
+**Files**: `packages/vinext/src/shims/headers.ts`, `packages/vinext/src/shims/cache.ts`
+
+The JSDoc on `markDynamicUsage()` claimed it was "called by `connection()`, `cookies()`, `headers()`, and `noStore()`" but only `connection()` actually called it. This meant pages using `cookies()` or `headers()` could be incorrectly ISR-cached instead of treated as dynamic.
+
+**Fix**: Added `markDynamicUsage()` calls to:
+- `headers()` (headers.ts:93)
+- `cookies()` (headers.ts:108)
+- `unstable_noStore()` / `noStore()` (cache.ts:302) — was a complete no-op before
+
+### Bug: Server Conditional Logic Let `dynamicUsedDuringRender` Override `force-static`
+
+**Files**: `packages/vinext/src/server/app-dev-server.ts`
+
+The post-render caching logic checked `isForceDynamic || dynamicUsedDuringRender` BEFORE the `isForceStatic` check. Once `headers()`/`cookies()` correctly marked dynamic usage, `force-static` pages got `no-store` instead of `s-maxage=31536000`.
+
+**Fix**: Restructured conditionals in priority order:
+1. `force-dynamic` → always no-store
+2. `force-static` / `dynamic='error'` → always static (ignores dynamic signal)
+3. `dynamicUsedDuringRender` (auto mode) → no-store
+4. ISR with `revalidate` → s-maxage
+
+### Discovery: Proxy on `searchParams` Doesn't Work Due to React RSC Debug Serializer
+
+**Files**: `packages/vinext/src/server/app-dev-server.ts`
+
+Attempted to wrap `searchParams` in a Proxy to detect property access and signal dynamic usage (matching Next.js behavior). Failed because React's RSC debug serializer calls `isClientReference()` on ALL prop values, which accesses `$$typeof` through the Proxy, triggering `markDynamicUsage()` for every page render — even pages that don't use searchParams.
+
+Also discovered that wrapping a native Promise in a Proxy breaks `.then()` because Promise methods need the internal `[[PromiseState]]` slot, which lives on the original Promise object, not the Proxy.
+
+**Workaround**: Instead of a Proxy, mark dynamic if the URL has non-empty query parameters. This is a safe approximation — slightly over-conservative (marks dynamic even if the component doesn't read searchParams) but avoids false positives from React internals.

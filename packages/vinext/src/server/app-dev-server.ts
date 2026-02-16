@@ -175,7 +175,7 @@ import {
 } from "@vitejs/plugin-rsc/rsc";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage } from "next/headers";
 import { ErrorBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -393,7 +393,17 @@ async function buildPageElement(route, params, opts, searchParams) {
   const pageProps = { params: asyncParams };
   if (searchParams) {
     const spObj = {};
-    if (searchParams.forEach) searchParams.forEach(function(v, k) { spObj[k] = v; });
+    let hasSearchParams = false;
+    if (searchParams.forEach) searchParams.forEach(function(v, k) { spObj[k] = v; hasSearchParams = true; });
+    // If the URL has query parameters, mark the page as dynamic.
+    // In Next.js, only accessing the searchParams prop signals dynamic usage,
+    // but a Proxy-based approach doesn't work here because React's RSC debug
+    // serializer accesses properties on all props (e.g. $$typeof check in
+    // isClientReference), triggering the Proxy even when user code doesn't
+    // read searchParams. Checking for non-empty query params is a safe
+    // approximation: pages with query params in the URL are almost always
+    // dynamic, and this avoids false positives from React internals.
+    if (hasSearchParams) markDynamicUsage();
     pageProps.searchParams = Object.assign(Promise.resolve(spObj), spObj);
   }
   let element = createElement(PageComponent, pageProps);
@@ -1329,8 +1339,8 @@ async function _handleRequest(request) {
     _cacheLifeRouteMap.set(_isrCacheKey, revalidateSeconds);
   }
 
-  // force-dynamic or dynamic API usage: return response with no-store header
-  if (isForceDynamic || dynamicUsedDuringRender) {
+  // force-dynamic: always return no-store (highest priority)
+  if (isForceDynamic) {
     return attachDraftCookie(new Response(htmlStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
@@ -1339,7 +1349,11 @@ async function _handleRequest(request) {
     }));
   }
 
-  // force-static / error without revalidate: treat as fully static (cache indefinitely)
+  // force-static / error: treat as static regardless of dynamic usage.
+  // force-static intentionally provides empty headers/cookies context so
+  // dynamic APIs return safe defaults; we ignore the dynamic usage signal.
+  // dynamic='error' should have already thrown (via throwing Proxy) if user
+  // code accessed dynamic APIs, so reaching here means rendering succeeded.
   if ((isForceStatic || isDynamicError) && (revalidateSeconds === null || revalidateSeconds === 0)) {
     return attachDraftCookie(new Response(htmlStream, {
       headers: {
@@ -1350,8 +1364,19 @@ async function _handleRequest(request) {
     }));
   }
 
+  // auto mode: dynamic API usage (headers(), cookies(), connection(), noStore(),
+  // searchParams access) opts the page into dynamic rendering with no-store.
+  if (dynamicUsedDuringRender) {
+    return attachDraftCookie(new Response(htmlStream, {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "no-store, must-revalidate",
+      },
+    }));
+  }
+
   // If ISR is enabled (via export const revalidate OR cacheLife()), cache the rendered HTML
-  if (!isForceDynamic && !dynamicUsedDuringRender && revalidateSeconds !== null && revalidateSeconds > 0) {
+  if (revalidateSeconds !== null && revalidateSeconds > 0) {
     // We need to tee the stream: one for caching, one for the response
     const [cacheStream, responseStream] = htmlStream.tee();
     // Cache in background

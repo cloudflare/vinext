@@ -17,6 +17,8 @@
  *   setCacheHandler(new MyCacheHandler());
  */
 
+import { markDynamicUsage as _markDynamic } from "./headers.js";
+
 // ---------------------------------------------------------------------------
 // Lazy accessor for cache context — avoids circular imports with cache-runtime.
 // The cache-runtime module sets this on load.
@@ -298,7 +300,8 @@ export async function revalidatePath(
  * It's provided for API compatibility so apps importing it don't break.
  */
 export function unstable_noStore(): void {
-  // No-op — all our renders are dynamic by default unless ISR is configured
+  // Signal dynamic usage so ISR-configured routes bypass the cache
+  _markDynamic();
 }
 
 // Also export as `noStore` (Next.js 15+ naming)

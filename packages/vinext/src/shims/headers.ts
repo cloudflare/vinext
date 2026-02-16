@@ -90,6 +90,7 @@ export async function headers(): Promise<Headers> {
         "or Server Action. Make sure you're not calling it from a Client Component.",
     );
   }
+  markDynamicUsage();
   return _headersContext.headers;
 }
 
@@ -104,6 +105,7 @@ export async function cookies(): Promise<RequestCookies> {
         "or Server Action.",
     );
   }
+  markDynamicUsage();
   return new RequestCookies(_headersContext.cookies);
 }
 
