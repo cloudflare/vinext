@@ -616,3 +616,15 @@ Attempted to wrap `searchParams` in a Proxy to detect property access and signal
 Also discovered that wrapping a native Promise in a Proxy breaks `.then()` because Promise methods need the internal `[[PromiseState]]` slot, which lives on the original Promise object, not the Proxy.
 
 **Workaround**: Instead of a Proxy, mark dynamic if the URL has non-empty query parameters. This is a safe approximation — slightly over-conservative (marks dynamic even if the component doesn't read searchParams) but avoids false positives from React internals.
+
+### Discovery: Link `onNavigate` Was Not Creating a Proper NavigateEvent (Issue #38)
+
+**Files**: `packages/vinext/src/shims/link.tsx`
+
+The `onNavigate` callback for View Transitions support was being called with a plain object `{ url: navUrl }` that lacked `preventDefault()` and `defaultPrevented`. The `TransitionLink` pattern (from Next.js 16 / React canary View Transitions) relies on calling `event.preventDefault()` to take over navigation — e.g. wrapping `router.push()` in `startTransition(() => { addTransitionType(type); router.push(href); })`.
+
+**Two bugs**:
+1. The `NavigateEvent` object passed to `onNavigate` was missing `preventDefault()`/`defaultPrevented`, so the callback would throw when calling `event.preventDefault()`.
+2. After calling `onNavigate`, the Link always continued with its own navigation (push/replaceState + RSC fetch), even if the callback had called `preventDefault()` to do its own navigation. This caused a double navigation.
+
+**Fix**: Construct a proper `NavigateEvent` with a `prevented` flag, a `preventDefault()` method that sets it, and a `defaultPrevented` getter. After calling `onNavigate`, check `navEvent.defaultPrevented` — if true, return early and let the callback's custom navigation take effect.
