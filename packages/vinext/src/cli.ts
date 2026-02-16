@@ -20,6 +20,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { execSync } from "node:child_process";
 import { deploy as runDeploy } from "./deploy.js";
+import { runCheck, formatReport } from "./check.js";
 
 const VERSION = "0.0.1";
 
@@ -284,6 +285,18 @@ async function deployCommand() {
   });
 }
 
+async function check() {
+  const parsed = parseArgs(rawArgs);
+  if (parsed.help) return printHelp("check");
+
+  const root = process.cwd();
+  console.log(`\n  vinext check\n`);
+  console.log("  Scanning project...\n");
+
+  const result = runCheck(root);
+  console.log(formatReport(result));
+}
+
 // ─── Help ─────────────────────────────────────────────────────────────────────
 
 function printHelp(cmd?: string) {
@@ -363,6 +376,22 @@ function printHelp(cmd?: string) {
     return;
   }
 
+  if (cmd === "check") {
+    console.log(`
+  vinext check - Scan Next.js app for compatibility
+
+  Usage: vinext check [options]
+
+  Scans your Next.js project and produces a compatibility report showing
+  which imports, config options, libraries, and conventions are supported,
+  partially supported, or unsupported by vinext.
+
+  Options:
+    -h, --help    Show this help
+`);
+    return;
+  }
+
   if (cmd === "lint") {
     console.log(`
   vinext lint - Run linter
@@ -388,6 +417,7 @@ function printHelp(cmd?: string) {
     build    Build for production
     start    Start production server
     deploy   Deploy to Cloudflare Workers
+    check    Scan Next.js app for compatibility
     lint     Run linter
 
   Options:
@@ -400,6 +430,7 @@ function printHelp(cmd?: string) {
     vinext build                Build for production
     vinext start                Start production server
     vinext deploy               Deploy to Cloudflare Workers
+    vinext check                Check compatibility
     vinext lint                 Run linter
 
   vinext is a drop-in replacement for the \`next\` CLI.
@@ -444,6 +475,13 @@ switch (command) {
 
   case "deploy":
     deployCommand().catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+    break;
+
+  case "check":
+    check().catch((e) => {
       console.error(e);
       process.exit(1);
     });
