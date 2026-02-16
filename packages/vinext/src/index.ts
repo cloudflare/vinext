@@ -29,6 +29,74 @@ import fs from "node:fs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /**
+ * Fetch Google Fonts CSS, download .woff2 files, cache locally, and return
+ * @font-face CSS with local file references.
+ *
+ * Cache dir structure: .vinext/fonts/<family-hash>/
+ *   - style.css (the rewritten @font-face CSS)
+ *   - *.woff2 (downloaded font files)
+ */
+async function fetchAndCacheFont(
+  cssUrl: string,
+  family: string,
+  cacheDir: string,
+): Promise<string> {
+  // Use a hash of the URL for the cache key
+  const { createHash } = await import("node:crypto");
+  const urlHash = createHash("md5").update(cssUrl).digest("hex").slice(0, 12);
+  const fontDir = path.join(cacheDir, `${family.toLowerCase().replace(/\s+/g, "-")}-${urlHash}`);
+
+  // Check if already cached
+  const cachedCSSPath = path.join(fontDir, "style.css");
+  if (fs.existsSync(cachedCSSPath)) {
+    return fs.readFileSync(cachedCSSPath, "utf-8");
+  }
+
+  // Fetch CSS from Google Fonts (woff2 user-agent gives woff2 URLs)
+  const cssResponse = await fetch(cssUrl, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    },
+  });
+  if (!cssResponse.ok) {
+    throw new Error(`Failed to fetch Google Fonts CSS: ${cssResponse.status}`);
+  }
+  let css = await cssResponse.text();
+
+  // Extract all font file URLs
+  const urlRe = /url\((https:\/\/fonts\.gstatic\.com\/[^)]+)\)/g;
+  const urls = new Map<string, string>(); // original URL -> local filename
+  let urlMatch;
+  while ((urlMatch = urlRe.exec(css)) !== null) {
+    const fontUrl = urlMatch[1];
+    if (!urls.has(fontUrl)) {
+      const ext = fontUrl.includes(".woff2") ? ".woff2" : fontUrl.includes(".woff") ? ".woff" : ".ttf";
+      const fileHash = createHash("md5").update(fontUrl).digest("hex").slice(0, 8);
+      urls.set(fontUrl, `${family.toLowerCase().replace(/\s+/g, "-")}-${fileHash}${ext}`);
+    }
+  }
+
+  // Download font files
+  fs.mkdirSync(fontDir, { recursive: true });
+  for (const [fontUrl, filename] of urls) {
+    const filePath = path.join(fontDir, filename);
+    if (!fs.existsSync(filePath)) {
+      const fontResponse = await fetch(fontUrl);
+      if (fontResponse.ok) {
+        const buffer = Buffer.from(await fontResponse.arrayBuffer());
+        fs.writeFileSync(filePath, buffer);
+      }
+    }
+    // Rewrite CSS to use relative path (Vite will resolve /@fs/ for dev, or asset for build)
+    css = css.split(fontUrl).join(filePath);
+  }
+
+  // Cache the rewritten CSS
+  fs.writeFileSync(cachedCSSPath, css);
+  return css;
+}
+
+/**
  * Detect Vite major version at runtime by resolving from cwd.
  * The plugin may be installed in a workspace root with Vite 7 but used
  * by a project that has Vite 8 — so we resolve from cwd, not from
@@ -1489,6 +1557,131 @@ hydrate();
         };
       },
     } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },
+    // Google Fonts self-hosting:
+    // During production builds, fetches Google Fonts CSS + .woff2 files,
+    // caches them locally in .vinext/fonts/, and rewrites font constructor
+    // calls to pass _selfHostedCSS with @font-face rules pointing at local assets.
+    // In dev mode, this plugin is a no-op (CDN loading is used instead).
+    {
+      name: "vinext:google-fonts",
+      enforce: "pre",
+
+      _isBuild: false,
+      _fontCache: new Map<string, string>(), // url -> local @font-face CSS
+      _cacheDir: "",
+
+      configResolved(config) {
+        (this as any)._isBuild = config.command === "build";
+        (this as any)._cacheDir = path.join(config.root, ".vinext", "fonts");
+      },
+
+      async transform(code, id) {
+        if (!(this as any)._isBuild) return null;
+        if (id.includes("node_modules")) return null;
+        if (id.startsWith("\0")) return null;
+        if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
+
+        // Detect: import { Inter, Roboto } from 'next/font/google'
+        // or: import { Inter } from 'next/font/google'
+        if (!code.includes("next/font/google")) return null;
+
+        // Match font constructor calls: Inter({ weight: ..., subsets: ... })
+        // We look for PascalCase or Name_Name identifiers followed by ({...})
+        // This regex captures the font name and the options object literal
+        const fontCallRe = /\b([A-Z][A-Za-z]*(?:_[A-Z][A-Za-z]*)*)\s*\(\s*(\{[^}]*\})\s*\)/g;
+
+        // Also need to verify these names came from next/font/google import
+        const importRe = /import\s*\{([^}]+)\}\s*from\s*['"]next\/font\/google['"]/;
+        const importMatch = code.match(importRe);
+        if (!importMatch) return null;
+
+        const importedNames = new Set(
+          importMatch[1].split(",").map((s) => s.trim()).filter(Boolean),
+        );
+
+        const { default: MagicString } = await import("magic-string");
+        const s = new MagicString(code);
+        let hasChanges = false;
+
+        const cacheDir = (this as any)._cacheDir as string;
+        const fontCache = (this as any)._fontCache as Map<string, string>;
+
+        let match;
+        while ((match = fontCallRe.exec(code)) !== null) {
+          const [fullMatch, fontName, optionsStr] = match;
+          if (!importedNames.has(fontName)) continue;
+
+          // Convert PascalCase/Underscore to font family
+          const family = fontName.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
+
+          // Parse options safely with Function (not eval) — these are object literals from source
+          let options: Record<string, any> = {};
+          try {
+            // eslint-disable-next-line no-new-func
+            options = new Function(`return (${optionsStr})`)();
+          } catch {
+            continue; // Can't parse options statically, skip
+          }
+
+          // Build the Google Fonts CSS URL
+          const weights = options.weight
+            ? Array.isArray(options.weight) ? options.weight : [options.weight]
+            : [];
+          const styles = options.style
+            ? Array.isArray(options.style) ? options.style : [options.style]
+            : [];
+          const display = options.display ?? "swap";
+
+          let spec = family.replace(/\s+/g, "+");
+          if (weights.length > 0) {
+            const hasItalic = styles.includes("italic");
+            if (hasItalic) {
+              const pairs: string[] = [];
+              for (const w of weights) { pairs.push(`0,${w}`); pairs.push(`1,${w}`); }
+              spec += `:ital,wght@${pairs.join(";")}`;
+            } else {
+              spec += `:wght@${weights.join(";")}`;
+            }
+          }
+          const params = new URLSearchParams();
+          params.set("family", spec);
+          params.set("display", display);
+          const cssUrl = `https://fonts.googleapis.com/css2?${params.toString()}`;
+
+          // Check cache
+          let localCSS = fontCache.get(cssUrl);
+          if (!localCSS) {
+            try {
+              localCSS = await fetchAndCacheFont(cssUrl, family, cacheDir);
+              fontCache.set(cssUrl, localCSS);
+            } catch {
+              // Fetch failed (offline?) — fall back to CDN mode
+              continue;
+            }
+          }
+
+          // Inject _selfHostedCSS into the options object
+          const matchStart = match.index;
+          const matchEnd = matchStart + fullMatch.length;
+          const escapedCSS = JSON.stringify(localCSS);
+          const closingBrace = optionsStr.lastIndexOf("}");
+          const optionsWithCSS = optionsStr.slice(0, closingBrace) +
+            (optionsStr.slice(0, closingBrace).trim().endsWith("{") ? "" : ", ") +
+            `_selfHostedCSS: ${escapedCSS}` +
+            optionsStr.slice(closingBrace);
+
+          const replacement = `${fontName}(${optionsWithCSS})`;
+          s.overwrite(matchStart, matchEnd, replacement);
+          hasChanges = true;
+        }
+
+        if (!hasChanges) return null;
+        return {
+          code: s.toString(),
+          map: s.generateMap({ hires: "boundary" }),
+        };
+      },
+    } as Plugin & { _isBuild: boolean; _fontCache: Map<string, string>; _cacheDir: string },
     // "use cache" directive transform:
     // Detects "use cache" at file-level or function-level and wraps the
     // exports/functions with registerCachedFunction() from vinext/cache-runtime.

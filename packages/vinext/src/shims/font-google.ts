@@ -1,9 +1,13 @@
 /**
  * next/font/google shim
  *
- * Provides a runtime-compatible shim for Next.js Google Fonts.
- * Instead of downloading fonts at build time (like Next.js does),
- * this generates CSS that loads fonts from the Google Fonts CDN.
+ * Provides a compatible shim for Next.js Google Fonts.
+ *
+ * Two modes:
+ * 1. **Dev / CDN mode** (default): Loads fonts from Google Fonts CDN via <link> tags.
+ * 2. **Self-hosted mode** (production build): The vinext:google-fonts Vite plugin
+ *    fetches font CSS + .woff2 files at build time, caches them locally, and injects
+ *    @font-face CSS pointing at local assets. No requests to Google at runtime.
  *
  * Usage:
  *   import { Inter } from 'next/font/google';
@@ -165,28 +169,57 @@ export function getSSRFontLinks(): string[] {
   return urls;
 }
 
+/** Track injected self-hosted @font-face blocks (deduplicate) */
+const injectedSelfHosted = new Set<string>();
+
+/**
+ * Inject self-hosted @font-face CSS (from the build plugin).
+ * This replaces the CDN <link> tag with inline CSS.
+ */
+function injectSelfHostedCSS(css: string): void {
+  if (injectedSelfHosted.has(css)) return;
+  injectedSelfHosted.add(css);
+
+  if (typeof document === "undefined") {
+    // SSR: add to collected styles
+    ssrFontStyles.push(css);
+    return;
+  }
+
+  // Client: inject <style> tag
+  const style = document.createElement("style");
+  style.textContent = css;
+  style.setAttribute("data-vinext-font-selfhosted", "true");
+  document.head.appendChild(style);
+}
+
 function createFontLoader(family: string) {
-  return function fontLoader(options: FontOptions = {}): FontResult {
+  return function fontLoader(options: FontOptions & { _selfHostedCSS?: string } = {}): FontResult {
     const id = classCounter++;
     const className = `__font_${family.toLowerCase().replace(/\s+/g, "_")}_${id}`;
     const fallback = options.fallback ?? ["sans-serif"];
     const fontFamily = `'${family}', ${fallback.join(", ")}`;
     const variable = options.variable ?? toVarName(family);
 
-    // Build and inject the Google Fonts stylesheet
-    const url = buildGoogleFontsUrl(family, options);
-    injectFontStylesheet(url);
+    if (options._selfHostedCSS) {
+      // Self-hosted mode: inject local @font-face CSS instead of CDN link
+      injectSelfHostedCSS(options._selfHostedCSS);
+    } else {
+      // CDN mode: inject <link> to Google Fonts
+      const url = buildGoogleFontsUrl(family, options);
+      injectFontStylesheet(url);
+
+      // On SSR, collect the URL for head injection
+      if (typeof document === "undefined") {
+        if (!ssrFontUrls.includes(url)) {
+          ssrFontUrls.push(url);
+        }
+      }
+    }
 
     // Inject a CSS rule that maps className to font-family.
     // This is what makes `<div className={inter.className}>` work.
     injectClassNameRule(className, fontFamily, variable);
-
-    // On SSR, collect the URL for head injection
-    if (typeof document === "undefined") {
-      if (!ssrFontUrls.includes(url)) {
-        ssrFontUrls.push(url);
-      }
-    }
 
     return {
       className,
@@ -195,6 +228,9 @@ function createFontLoader(family: string) {
     };
   };
 }
+
+// Re-export for plugin use
+export { buildGoogleFontsUrl };
 
 // Export a Proxy that creates font loaders for any Google Font family.
 // Usage: import { Inter } from 'next/font/google'
