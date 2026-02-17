@@ -1448,6 +1448,22 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { setNavigationContext } from "next/navigation";
 
 /**
+ * Collect all chunks from a ReadableStream into an array.
+ * Used to capture the RSC payload for embedding in HTML.
+ */
+async function collectStreamChunks(stream) {
+  const reader = stream.getReader();
+  const chunks = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    // Convert Uint8Array to regular array for JSON serialization
+    chunks.push(Array.from(value));
+  }
+  return chunks;
+}
+
+/**
  * Render the RSC stream to HTML.
  *
  * @param rscStream - The RSC payload stream from the RSC environment
@@ -1468,8 +1484,16 @@ export async function handleSsr(rscStream, navContext) {
   clearServerInsertedHTML();
 
   try {
+    // Tee the RSC stream - one for SSR rendering, one for embedding in HTML.
+    // This ensures the browser uses the SAME RSC payload for hydration that
+    // was used to generate the HTML, avoiding hydration mismatches (React #418).
+    const [ssrStream, embedStream] = rscStream.tee();
+
+    // Collect RSC chunks for embedding (runs in parallel with SSR)
+    const rscChunksPromise = collectStreamChunks(embedStream);
+
     // Deserialize RSC stream back to React VDOM
-    const root = await createFromReadableStream(rscStream);
+    const root = await createFromReadableStream(ssrStream);
 
     // Get the bootstrap script content for the browser entry
     const bootstrapScriptContent =
@@ -1481,11 +1505,20 @@ export async function handleSsr(rscStream, navContext) {
       bootstrapScriptContent,
     });
 
+    // Wait for RSC chunks to be collected
+    const rscChunks = await rscChunksPromise;
+
+    // Create the script that embeds the RSC payload and route params for hydration.
+    // The browser entry will read this instead of fetching a new RSC stream.
+    // We also embed the route params so useParams() works on hydration.
+    const embedData = {
+      rsc: rscChunks,
+      params: navContext?.params || {},
+    };
+    const rscEmbedScript = '<script>self.__VINEXT_RSC__=' + JSON.stringify(embedData) + '</script>';
+
     // Flush useServerInsertedHTML callbacks (CSS-in-JS style injection)
     const insertedElements = flushServerInsertedHTML();
-    if (insertedElements.length === 0) {
-      return htmlStream;
-    }
 
     // Render the inserted elements to HTML strings
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -1499,9 +1532,8 @@ export async function handleSsr(rscStream, navContext) {
       }
     }
 
-    if (!insertedHTML) {
-      return htmlStream;
-    }
+    // Combine RSC embed script and server-inserted HTML
+    const injectHTML = rscEmbedScript + insertedHTML;
 
     // Inject the collected HTML before </head> using a TransformStream
     const decoder = new TextDecoder();
@@ -1520,7 +1552,7 @@ export async function handleSsr(rscStream, navContext) {
           // Inject before </head>
           const before = text.slice(0, headEnd);
           const after = text.slice(headEnd);
-          controller.enqueue(encoder.encode(before + insertedHTML + after));
+          controller.enqueue(encoder.encode(before + injectHTML + after));
           injected = true;
         } else {
           controller.enqueue(chunk);
@@ -1528,8 +1560,8 @@ export async function handleSsr(rscStream, navContext) {
       },
       flush(controller) {
         // If </head> was never found, append at the end
-        if (!injected && insertedHTML) {
-          controller.enqueue(encoder.encode(insertedHTML));
+        if (!injected && injectHTML) {
+          controller.enqueue(encoder.encode(injectHTML));
         }
       },
     });
@@ -1564,6 +1596,21 @@ import { hydrateRoot } from "react-dom/client";
 import { setClientParams } from "next/navigation";
 
 let reactRoot;
+
+/**
+ * Convert the embedded RSC chunks back to a ReadableStream.
+ * Each chunk is an array of numbers (from Uint8Array).
+ */
+function chunksToReadableStream(chunks) {
+  return new ReadableStream({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(new Uint8Array(chunk));
+      }
+      controller.close();
+    }
+  });
+}
 
 // Register the server action callback — React calls this internally
 // when a "use server" function is invoked from client code.
@@ -1614,16 +1661,35 @@ setServerCallback(async (id, args) => {
 });
 
 async function main() {
-  // Initial hydration: fetch the RSC stream for the current page
-  const rscResponse = await fetch(window.location.pathname + ".rsc" + window.location.search);
+  let rscStream;
 
-  // Hydrate useParams() with route params from the server before React hydration
-  const paramsHeader = rscResponse.headers.get("X-Vinext-Params");
-  if (paramsHeader) {
-    try { setClientParams(JSON.parse(paramsHeader)); } catch (_e) { /* ignore */ }
+  // Use embedded RSC data for initial hydration if available.
+  // This ensures we use the SAME RSC payload that generated the HTML,
+  // avoiding hydration mismatches (React error #418).
+  if (self.__VINEXT_RSC__) {
+    const embedData = self.__VINEXT_RSC__;
+    delete self.__VINEXT_RSC__; // Clean up to free memory
+
+    // Hydrate useParams() with route params from the embedded data
+    if (embedData.params) {
+      setClientParams(embedData.params);
+    }
+
+    rscStream = chunksToReadableStream(embedData.rsc);
+  } else {
+    // Fallback: fetch fresh RSC (shouldn't happen on initial page load)
+    const rscResponse = await fetch(window.location.pathname + ".rsc" + window.location.search);
+
+    // Hydrate useParams() with route params from the server before React hydration
+    const paramsHeader = rscResponse.headers.get("X-Vinext-Params");
+    if (paramsHeader) {
+      try { setClientParams(JSON.parse(paramsHeader)); } catch (_e) { /* ignore */ }
+    }
+
+    rscStream = rscResponse.body;
   }
 
-  const root = await createFromReadableStream(rscResponse.body);
+  const root = await createFromReadableStream(rscStream);
 
   // Hydrate the document
   reactRoot = hydrateRoot(document, root);

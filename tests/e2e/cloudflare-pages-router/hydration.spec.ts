@@ -3,6 +3,10 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4177";
 
 test.describe("Pages Router client hydration on Cloudflare Workers", () => {
+  // Note: Pages Router has a known hydration issue with timestamps on the index page.
+  // This is separate from the App Router RSC hydration fix (issue #61).
+  // We don't use the strict console error fixture here until that's fixed.
+
   test("client JS bundle is loaded", async ({ page }) => {
     const response = await page.goto(BASE + "/");
     const html = await response!.text();

@@ -1,10 +1,14 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures";
 
 const BASE = "http://localhost:4176";
 
 test.describe("Cloudflare Workers Hydration", () => {
+  // The consoleErrors fixture automatically fails tests if any console errors occur.
+  // This catches React hydration mismatches (error #418), runtime errors, etc.
+
   test("client component hydrates and becomes interactive", async ({
     page,
+    consoleErrors,
   }) => {
     await page.goto(`${BASE}/`);
 
@@ -17,33 +21,34 @@ test.describe("Cloudflare Workers Hydration", () => {
 
     await page.click('[data-testid="increment"]');
     await expect(page.locator('[data-testid="count"]')).toHaveText("Count: 2");
+
+    void consoleErrors;
   });
 
-  test("no hydration mismatch errors in console", async ({ page }) => {
-    const errors: string[] = [];
-    page.on("console", (msg) => {
-      if (msg.type() === "error") {
-        errors.push(msg.text());
-      }
-    });
-
+  test("page with timestamp hydrates without mismatch", async ({
+    page,
+    consoleErrors,
+  }) => {
+    // This test specifically verifies the fix for GitHub issue #61.
+    // The home page has a timestamp that would cause hydration mismatch
+    // if the browser fetched a new RSC payload instead of using embedded data.
     await page.goto(`${BASE}/`);
+
     // Wait for the client JS bundle to load and hydrate
     await page.waitForFunction(
       () => document.querySelector('[data-testid="increment"]') !== null,
     );
-    // Give hydration a moment to complete
-    await page.waitForTimeout(500);
+
+    // Verify hydration completes and component becomes interactive
     await page.click('[data-testid="increment"]');
     await expect(page.locator('[data-testid="count"]')).toHaveText("Count: 1");
 
-    // Filter for hydration-specific errors
-    const hydrationErrors = errors.filter(
-      (e) =>
-        e.includes("Hydration") ||
-        e.includes("hydrat") ||
-        e.includes("did not match"),
+    // The timestamp element should exist and have content
+    await expect(page.locator('[data-testid="timestamp"]')).toContainText(
+      "Rendered at:",
     );
-    expect(hydrationErrors).toHaveLength(0);
+
+    // consoleErrors fixture will fail this test if any hydration errors occurred
+    void consoleErrors;
   });
 });

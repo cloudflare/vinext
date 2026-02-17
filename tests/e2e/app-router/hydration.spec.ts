@@ -1,10 +1,14 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures";
 
 const BASE = "http://localhost:4174";
 
 test.describe("App Router Hydration", () => {
+  // The consoleErrors fixture automatically fails tests if any console errors occur.
+  // This catches React hydration mismatches (error #418), runtime errors, etc.
+
   test("use client Counter component hydrates and becomes interactive", async ({
     page,
+    consoleErrors,
   }) => {
     await page.goto(`${BASE}/interactive`);
 
@@ -13,9 +17,9 @@ test.describe("App Router Hydration", () => {
       "Count:",
     );
 
-    // Wait for hydration to complete — the browser entry fetches the RSC
-    // stream before hydrating, which takes a moment. We wait for the
-    // Increment button to be attached and then retry clicks.
+    // Wait for hydration to complete — the browser entry now uses embedded RSC
+    // data, so hydration should be fast. We wait for the Increment button to
+    // be attached and then retry clicks.
     const incrementBtn = page.locator("button", { hasText: "Increment" });
     await incrementBtn.waitFor({ state: "attached" });
 
@@ -50,10 +54,14 @@ test.describe("App Router Hydration", () => {
     await expect(page.locator('[data-testid="count"]')).toHaveText(
       `Count: ${currentCount + 1}`,
     );
+
+    // consoleErrors fixture will fail the test if any errors occurred
+    void consoleErrors;
   });
 
   test("server component content coexists with client component", async ({
     page,
+    consoleErrors,
   }) => {
     await page.goto(`${BASE}/interactive`);
 
@@ -71,5 +79,7 @@ test.describe("App Router Hydration", () => {
       const text = await page.locator('[data-testid="count"]').textContent();
       expect(text).not.toBe("Count: 0");
     }).toPass({ timeout: 10_000 });
+
+    void consoleErrors;
   });
 });
