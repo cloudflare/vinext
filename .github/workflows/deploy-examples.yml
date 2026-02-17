@@ -23,11 +23,9 @@ jobs:
           - name: cloudflare-pages
             project: cloudflare-pages
             dist_name: cloudflare_pages
-          # app-router-playground: next/og uses @resvg/resvg-js which fails RSC parse
-          # Error: Parse error @:1:1469 in @resvg/resvg-js/index.js
-          # - name: app-router-playground
-          #   project: app-router-playground
-          #   dist_name: ecosystem_app_router_playground
+          - name: app-router-playground
+            project: app-router-playground
+            dist_name: app_router_playground
           - name: realworld-api-rest
             project: realworld-api-rest
             dist_name: realworld_api_rest
@@ -84,6 +82,7 @@ jobs:
             const examples = [
               { name: 'cloudflare-app', project: 'cloudflare-app' },
               { name: 'cloudflare-pages', project: 'cloudflare-pages' },
+              { name: 'app-router-playground', project: 'app-router-playground' },
               { name: 'realworld-api-rest', project: 'realworld-api-rest' },
             ];
             
