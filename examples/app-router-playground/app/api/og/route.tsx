@@ -1,11 +1,12 @@
 import type { NextRequest } from 'next/server';
-import { ImageResponse } from 'next/og';
 import type { ReactElement } from 'react';
-import { join } from 'path';
-import { readFile } from 'fs/promises';
 
-export async function GET(req: NextRequest): Promise<Response | ImageResponse> {
+export async function GET(req: NextRequest): Promise<Response> {
   try {
+    // Dynamic import to avoid @vercel/og's eager font loading at module init
+    // which breaks in Cloudflare Workers due to import.meta.url issues
+    const { ImageResponse } = await import('next/og');
+    
     const { searchParams } = new URL(req.url);
     const isLight = req.headers.get('Sec-CH-Prefers-Color-Scheme') === 'light';
 
@@ -13,8 +14,8 @@ export async function GET(req: NextRequest): Promise<Response | ImageResponse> {
       ? searchParams.get('title')
       : 'App Router Playground';
 
-    const file = await readFile(join(process.cwd(), './Inter-SemiBold.ttf'));
-    const font = Uint8Array.from(file).buffer;
+    // Note: Custom fonts require fetching from a URL in Workers environment
+    // since fs/path APIs are not available. Using default font for now.
 
     return new ImageResponse(
       (
@@ -52,7 +53,8 @@ export async function GET(req: NextRequest): Promise<Response | ImageResponse> {
       {
         width: 843,
         height: 441,
-        fonts: [{ name: 'Inter', data: font, style: 'normal', weight: 400 }],
+        // Using default font - custom fonts would require fetching from URL
+        // fonts: [{ name: 'Inter', data: font, style: 'normal', weight: 400 }],
       },
     );
   } catch (e) {
