@@ -376,8 +376,8 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | **Total** | **37** | **30** | **7** | **0** | |
 
 ### Combined Key Metrics
-- **152 tests passing** (122 Vitest + 30 Playwright) across 20 test files
-- **12 tests skipped** (5 Vitest + 7 Playwright) with detailed root-cause analysis and fix locations
+- **155 tests passing** (122 Vitest + 33 Playwright) across 20 test files
+- **9 tests skipped** (5 Vitest + 4 Playwright) with detailed root-cause analysis and fix locations
 - **0 failures** — all non-skipped tests pass
 - **188+ N/A** — build-only, or already covered by existing tests
 
@@ -388,7 +388,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 4. ~~**React `use()` hook warning**~~ — **FIXED**. Not duplicate React — the pre-render check (`app-dev-server.ts:1268`) calls `PageComponent()` directly outside React's render cycle, triggering "Invalid hook call" for components using `use()`. Fix: suppress the expected warning during the pre-render test.
 5. **Keywords separator formatting** — Minor: `", "` vs `","` (cosmetic)
 6. **Client-side notFound() crashes React tree** — `notFound()` from "use client" component throws NEXT_NOT_FOUND error that isn't caught by any boundary. Fix: `packages/vinext/src/shims/navigation.ts` — need client-side NotFoundBoundary wrapping page content
-7. **useParams() returns empty on client after hydration** — SSR correctly renders params but client-side `useParams()` returns `{}` for all dynamic routes (single `[id]`, nested `[id]/[subid]`, catch-all `[...slug]`). Fix: `packages/vinext/src/shims/navigation.ts` — `setClientParams()` must be called during hydration with route params extracted from URL
+7. ~~**useParams() returns empty on client after hydration**~~ — **FIXED**. Root cause: `setClientParams()` was never called in the browser. Fix: server now sends `X-Vinext-Params` header in RSC responses (`app-dev-server.ts:1295`), browser entry reads it during hydration and client-side navigation (`app-dev-server.ts:1594-1597, 1612-1617`). All 3 Playwright useParams tests now pass.
 8. **Client-side error.tsx boundary doesn't activate during navigation** — When navigating client-side to a page whose "use client" component throws, the error.tsx boundary doesn't catch it. Vite dev overlay appears instead. Fix: `packages/vinext/src/shims/error-boundary.tsx` or RSC navigation handler needs to catch render errors and activate nearest error.tsx
 
 ---
@@ -403,14 +403,14 @@ test coverage. Ordered by impact on real-world app confidence.
 
 **Next.js sources**: `hooks`, `use-params`, `use-selected-layout-segment-s`, `params-hooks-compat`
 **Local**: `tests/nextjs-compat/hooks.test.ts`, `tests/e2e/app-router/nextjs-compat/hooks.spec.ts`
-**Result**: Vitest 7/7 pass | Playwright 5/8 pass, 3 skip
+**Result**: Vitest 7/7 pass | Playwright 8/8 pass
 
 Vitest SSR tests all pass — useParams correctly renders in HTML for single, nested, and
 catch-all routes. useSearchParams and usePathname work. useRouter page renders.
 
-Playwright: useSearchParams reactive updates work, useRouter.push/replace/back all work.
-**3 skipped**: useParams returns empty `{}` on client after hydration for ALL route types
-(single, nested, catch-all). SSR is correct but client-side params context not populated.
+Playwright: All hooks work in the browser. useParams returns correct values after hydration
+for single, nested, and catch-all dynamic routes. useSearchParams reactive updates work.
+useRouter.push/replace/back all work.
 
 ### Chunk 12: forbidden / unauthorized — SKIPPED (already well-covered)
 

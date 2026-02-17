@@ -18,23 +18,7 @@ async function waitForHydration(page: import("@playwright/test").Page) {
 
 test.describe("Next.js compat: hooks (browser)", () => {
   // useParams – single dynamic param
-  //
-  // SKIP: useParams() returns empty object ({}) on the client after hydration,
-  // even for a single [id] route. The SSR HTML correctly shows the param
-  // value (verified by Vitest), but hydration doesn't transfer params to the
-  // client-side hook.
-  //
-  // ROOT CAUSE: The client-side params context is not populated from the
-  // SSR-rendered route params during hydration. The RSC payload does not
-  // include route params for the client-side useParams() hook to read.
-  //
-  // TO FIX: `packages/vinext/src/shims/navigation.ts` — `setClientParams()`
-  // must be called during hydration with the route params extracted from
-  // the current URL (matching the route pattern). Or the RSC payload needs
-  // to include params data that the client can consume.
-  //
-  // VERIFY: After fix, #param-id should show "test-value" in the browser.
-  test.skip("useParams returns correct value for single dynamic param", async ({
+  test("useParams returns correct value for single dynamic param", async ({
     page,
   }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-params/test-value`);
@@ -44,22 +28,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
   });
 
   // useParams – nested dynamic params
-  //
-  // SKIP: After hydration, useParams() returns empty values for nested dynamic
-  // routes like /[id]/[subid]. The SSR HTML correctly contains the params
-  // (verified by Vitest), but the client-side useParams() hook returns {}.
-  //
-  // ROOT CAUSE: The client-side params context (`setClientParams`) is not
-  // populated with the full param map for nested dynamic segments during
-  // hydration. The RSC payload likely only sends params for the leaf segment.
-  //
-  // TO FIX: `packages/vinext/src/shims/navigation.ts` — the client-side
-  // params initialization needs to merge params from all dynamic segments
-  // in the route tree, matching Next.js behavior.
-  //
-  // VERIFY: After fix, #param-id should show "parent" and #param-subid
-  // should show "child" in the browser.
-  test.skip("useParams returns correct values for nested dynamic params", async ({
+  test("useParams returns correct values for nested dynamic params", async ({
     page,
   }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-params/parent/child`);
@@ -70,15 +39,7 @@ test.describe("Next.js compat: hooks (browser)", () => {
   });
 
   // useParams – catch-all params
-  //
-  // SKIP: Same root cause as nested params above. useParams() returns {}
-  // on the client for catch-all routes. SSR HTML is correct.
-  //
-  // TO FIX: Same as nested params — client-side params context must include
-  // catch-all segments.
-  //
-  // VERIFY: #params-slug should show ["x","y","z"] in the browser.
-  test.skip("useParams returns correct catch-all params", async ({ page }) => {
+  test("useParams returns correct catch-all params", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/hooks-params/catchall/x/y/z`);
     await waitForHydration(page);
 

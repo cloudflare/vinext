@@ -1299,6 +1299,10 @@ async function _handleRequest(request) {
     setHeadersContext(null);
     setNavigationContext(null);
     const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8" };
+    // Include matched route params so the client can hydrate useParams()
+    if (params && Object.keys(params).length > 0) {
+      responseHeaders["X-Vinext-Params"] = JSON.stringify(params);
+    }
     if (isForceDynamic) {
       responseHeaders["Cache-Control"] = "no-store, must-revalidate";
     } else if ((isForceStatic || isDynamicError) && !revalidateSeconds) {
@@ -1542,6 +1546,7 @@ import {
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/browser";
 import { hydrateRoot } from "react-dom/client";
+import { setClientParams } from "next/navigation";
 
 let reactRoot;
 
@@ -1596,6 +1601,13 @@ setServerCallback(async (id, args) => {
 async function main() {
   // Initial hydration: fetch the RSC stream for the current page
   const rscResponse = await fetch(window.location.pathname + ".rsc" + window.location.search);
+
+  // Hydrate useParams() with route params from the server before React hydration
+  const paramsHeader = rscResponse.headers.get("X-Vinext-Params");
+  if (paramsHeader) {
+    try { setClientParams(JSON.parse(paramsHeader)); } catch (_e) { /* ignore */ }
+  }
+
   const root = await createFromReadableStream(rscResponse.body);
 
   // Hydrate the document
@@ -1608,11 +1620,19 @@ async function main() {
   window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(href) {
     try {
       const url = new URL(href, window.location.origin);
-      const rscPayload = await createFromFetch(
-        fetch(url.pathname + ".rsc" + url.search, {
-          headers: { Accept: "text/x-component" },
-        })
-      );
+      const navResponse = await fetch(url.pathname + ".rsc" + url.search, {
+        headers: { Accept: "text/x-component" },
+      });
+
+      // Update useParams() with route params from the server before re-rendering
+      const navParamsHeader = navResponse.headers.get("X-Vinext-Params");
+      if (navParamsHeader) {
+        try { setClientParams(JSON.parse(navParamsHeader)); } catch (_e) { /* ignore */ }
+      } else {
+        setClientParams({});
+      }
+
+      const rscPayload = await createFromFetch(Promise.resolve(navResponse));
       reactRoot.render(rscPayload);
     } catch (err) {
       console.error("[vinext] RSC navigation error:", err);
