@@ -8,6 +8,8 @@
  * We support both the sync (legacy) and async patterns.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 // ---------------------------------------------------------------------------
 // Request context
 // ---------------------------------------------------------------------------
@@ -17,21 +19,68 @@ interface HeadersContext {
   cookies: Map<string, string>;
 }
 
-let _headersContext: HeadersContext | null = null;
+type VinextHeadersShimState = {
+  headersContext: HeadersContext | null;
+  dynamicUsageDetected: boolean;
+  pendingSetCookies: string[];
+  draftModeCookieHeader: string | null;
+};
+
+// NOTE:
+// - This shim can be loaded under multiple module specifiers in Vite's
+//   multi-environment setup (RSC/SSR). Store the AsyncLocalStorage on
+//   globalThis so `connection()` (next/server) and `consumeDynamicUsage()`
+//   (next/headers) always share it.
+// - We use AsyncLocalStorage so concurrent requests don't stomp each other's
+//   headers/cookies/dynamic-usage state.
+const _ALS_KEY = Symbol.for("vinext.nextHeadersShim.als");
+const _FALLBACK_KEY = Symbol.for("vinext.nextHeadersShim.fallback");
+const _g = globalThis as unknown as Record<PropertyKey, unknown>;
+const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<VinextHeadersShimState>()) as AsyncLocalStorage<VinextHeadersShimState>;
+
+const _fallbackState = (_g[_FALLBACK_KEY] ??= {
+  headersContext: null,
+  dynamicUsageDetected: false,
+  pendingSetCookies: [],
+  draftModeCookieHeader: null,
+} satisfies VinextHeadersShimState) as VinextHeadersShimState;
+
+function _enterWith(state: VinextHeadersShimState): void {
+  // Some non-Node runtimes/polyfills provide AsyncLocalStorage but not enterWith().
+  const enterWith = (_als as any).enterWith;
+  if (typeof enterWith === "function") {
+    try {
+      enterWith.call(_als, state);
+      return;
+    } catch {
+      // Fall through to best-effort fallback.
+    }
+  }
+  // Best-effort fallback: global state (not concurrency-safe).
+  _fallbackState.headersContext = state.headersContext;
+  _fallbackState.dynamicUsageDetected = state.dynamicUsageDetected;
+  _fallbackState.pendingSetCookies = state.pendingSetCookies;
+  _fallbackState.draftModeCookieHeader = state.draftModeCookieHeader;
+}
+
+function _getState(): VinextHeadersShimState {
+  const state = _als.getStore();
+  return state ?? _fallbackState;
+}
 
 /**
  * Dynamic usage flag — set when a component calls connection(), cookies(),
  * headers(), or noStore() during rendering. When true, ISR caching is
  * bypassed and the response gets Cache-Control: no-store.
  */
-let _dynamicUsageDetected = false;
+// (stored on _state)
 
 /**
  * Mark the current render as requiring dynamic (uncached) rendering.
  * Called by connection(), cookies(), headers(), and noStore().
  */
 export function markDynamicUsage(): void {
-  _dynamicUsageDetected = true;
+  _getState().dynamicUsageDetected = true;
 }
 
 /**
@@ -39,8 +88,9 @@ export function markDynamicUsage(): void {
  * Called by the server after rendering to decide on caching.
  */
 export function consumeDynamicUsage(): boolean {
-  const used = _dynamicUsageDetected;
-  _dynamicUsageDetected = false;
+  const state = _getState();
+  const used = state.dynamicUsageDetected;
+  state.dynamicUsageDetected = false;
   return used;
 }
 
@@ -49,10 +99,24 @@ export function consumeDynamicUsage(): boolean {
  * Called by the framework's RSC entry before rendering each request.
  */
 export function setHeadersContext(ctx: HeadersContext | null): void {
-  _headersContext = ctx;
-  // Reset dynamic usage flag at the start of each request
+  // Start of request: enter a fresh per-request store.
   if (ctx !== null) {
-    _dynamicUsageDetected = false;
+    _enterWith({
+      headersContext: ctx,
+      dynamicUsageDetected: false,
+      pendingSetCookies: [],
+      draftModeCookieHeader: null,
+    });
+    return;
+  }
+
+  // End of request cleanup: keep the store (so consumeDynamicUsage and
+  // cookie flushing can still run), but clear the request headers/cookies.
+  const state = _als.getStore();
+  if (state) {
+    state.headersContext = null;
+  } else {
+    _fallbackState.headersContext = null;
   }
 }
 
@@ -84,14 +148,15 @@ export function headersContextFromRequest(request: Request): HeadersContext {
  * the context is already available).
  */
 export async function headers(): Promise<Headers> {
-  if (!_headersContext) {
+  const state = _getState();
+  if (!state.headersContext) {
     throw new Error(
       "headers() can only be called from a Server Component, Route Handler, " +
         "or Server Action. Make sure you're not calling it from a Client Component.",
     );
   }
   markDynamicUsage();
-  return _headersContext.headers;
+  return state.headersContext.headers;
 }
 
 /**
@@ -99,14 +164,15 @@ export async function headers(): Promise<Headers> {
  * Returns a ReadonlyRequestCookies-like object.
  */
 export async function cookies(): Promise<RequestCookies> {
-  if (!_headersContext) {
+  const state = _getState();
+  if (!state.headersContext) {
     throw new Error(
       "cookies() can only be called from a Server Component, Route Handler, " +
         "or Server Action.",
     );
   }
   markDynamicUsage();
-  return new RequestCookies(_headersContext.cookies);
+  return new RequestCookies(state.headersContext.cookies);
 }
 
 // ---------------------------------------------------------------------------
@@ -114,15 +180,16 @@ export async function cookies(): Promise<RequestCookies> {
 // ---------------------------------------------------------------------------
 
 /** Accumulated Set-Cookie headers from cookies().set() / .delete() calls */
-let _pendingSetCookies: string[] = [];
+// (stored on _state)
 
 /**
  * Get and clear all pending Set-Cookie headers generated by cookies().set()/delete().
  * Called by the framework after rendering to attach headers to the response.
  */
 export function getAndClearPendingCookies(): string[] {
-  const cookies = _pendingSetCookies;
-  _pendingSetCookies = [];
+  const state = _getState();
+  const cookies = state.pendingSetCookies;
+  state.pendingSetCookies = [];
   return cookies;
 }
 
@@ -130,15 +197,16 @@ export function getAndClearPendingCookies(): string[] {
 const DRAFT_MODE_COOKIE = "__prerender_bypass";
 
 // Store for Set-Cookie headers generated by draftMode().enable()/disable()
-let _draftModeCookieHeader: string | null = null;
+// (stored on _state)
 
 /**
  * Get any Set-Cookie header generated by draftMode().enable()/disable().
  * Called by the framework after rendering to attach the header to the response.
  */
 export function getDraftModeCookieHeader(): string | null {
-  const header = _draftModeCookieHeader;
-  _draftModeCookieHeader = null;
+  const state = _getState();
+  const header = state.draftModeCookieHeader;
+  state.draftModeCookieHeader = null;
   return header;
 }
 
@@ -156,24 +224,25 @@ interface DraftModeResult {
  * - `disable()`: clears the bypass cookie
  */
 export async function draftMode(): Promise<DraftModeResult> {
-  const isEnabled = _headersContext
-    ? _headersContext.cookies.has(DRAFT_MODE_COOKIE)
+  const state = _getState();
+  const isEnabled = state.headersContext
+    ? state.headersContext.cookies.has(DRAFT_MODE_COOKIE)
     : false;
 
   return {
     isEnabled,
     enable(): void {
-      if (_headersContext) {
-        _headersContext.cookies.set(DRAFT_MODE_COOKIE, "1");
+      if (state.headersContext) {
+        state.headersContext.cookies.set(DRAFT_MODE_COOKIE, "1");
       }
-      _draftModeCookieHeader =
+      state.draftModeCookieHeader =
         `${DRAFT_MODE_COOKIE}=1; Path=/; HttpOnly; SameSite=Lax`;
     },
     disable(): void {
-      if (_headersContext) {
-        _headersContext.cookies.delete(DRAFT_MODE_COOKIE);
+      if (state.headersContext) {
+        state.headersContext.cookies.delete(DRAFT_MODE_COOKIE);
       }
-      _draftModeCookieHeader =
+      state.draftModeCookieHeader =
         `${DRAFT_MODE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
     },
   };
@@ -244,7 +313,7 @@ class RequestCookies {
     if (opts?.secure) parts.push("Secure");
     if (opts?.sameSite) parts.push(`SameSite=${opts.sameSite}`);
 
-    _pendingSetCookies.push(parts.join("; "));
+    _getState().pendingSetCookies.push(parts.join("; "));
     return this;
   }
 
@@ -253,7 +322,7 @@ class RequestCookies {
    */
   delete(name: string): this {
     this._cookies.delete(name);
-    _pendingSetCookies.push(`${name}=; Path=/; Max-Age=0`);
+    _getState().pendingSetCookies.push(`${name}=; Path=/; Max-Age=0`);
     return this;
   }
 

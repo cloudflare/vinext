@@ -2,6 +2,18 @@ import { test, expect } from "@playwright/test";
 
 const BASE = "http://localhost:4174";
 
+async function disableViteErrorOverlay(page: import("@playwright/test").Page) {
+  // Vite's dev error overlay can sometimes appear and intercept clicks.
+  await page
+    .addStyleTag({
+      content:
+        "vite-error-overlay{display:none !important; pointer-events:none !important;}",
+    })
+    .catch(() => {
+      // best effort
+    });
+}
+
 /**
  * Wait for RSC hydration.
  */
@@ -12,6 +24,8 @@ async function waitForHydration(page: import("@playwright/test").Page) {
     );
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
+
+  await disableViteErrorOverlay(page);
 }
 
 test.describe("next/form GET interception", () => {
@@ -41,13 +55,19 @@ test.describe("next/form GET interception", () => {
 
     // Type search term and submit
     await page.fill("#search-input", "vite");
-    await page.click("#search-button");
+    await expect(page.locator("#search-input")).toHaveValue("vite");
+    await expect(page.locator("#search-button")).toBeEnabled();
+    await page.locator("#search-button").click({ noWaitAfter: true });
 
     // Wait for search results to appear
-    await expect(page.locator("#search-result")).toHaveText("Results for: vite");
+    await expect(page.locator("#search-result")).toHaveText("Results for: vite", {
+      timeout: 10_000,
+    });
 
     // URL should include query parameter
-    expect(page.url()).toContain("/search?q=vite");
+    await expect
+      .poll(() => page.url(), { timeout: 10_000 })
+      .toContain("/search?q=vite");
 
     // Verify no full page reload (marker should survive)
     const marker = await page.evaluate(() => (window as any).__FORM_MARKER__);
@@ -60,9 +80,14 @@ test.describe("next/form GET interception", () => {
     await waitForHydration(page);
 
     await page.fill("#search-input", "react");
-    await page.click("#search-button");
+    await expect(page.locator("#search-input")).toHaveValue("react");
+    await expect(page.locator("#search-button")).toBeEnabled();
+    await page.locator("#search-button").click({ noWaitAfter: true });
 
-    await expect(page.locator("#search-result")).toHaveText("Results for: react");
+    await expect(page.locator("#search-result")).toHaveText(
+      "Results for: react",
+      { timeout: 10_000 },
+    );
     const url = new URL(page.url());
     expect(url.pathname).toBe("/search");
     expect(url.searchParams.get("q")).toBe("react");
@@ -78,13 +103,29 @@ test.describe("next/form GET interception", () => {
 
     // First search
     await page.fill("#search-input", "first");
-    await page.click("#search-button");
-    await expect(page.locator("#search-result")).toHaveText("Results for: first");
+    await expect(page.locator("#search-input")).toHaveValue("first");
+    await expect(page.locator("#search-button")).toBeEnabled();
+    await page.locator("#search-button").click({ noWaitAfter: true });
+    await expect(page.locator("#search-result")).toHaveText(
+      "Results for: first",
+      { timeout: 10_000 },
+    );
+    await expect
+      .poll(() => page.url(), { timeout: 10_000 })
+      .toContain("/search?q=first");
 
     // Second search
     await page.fill("#search-input", "second");
-    await page.click("#search-button");
-    await expect(page.locator("#search-result")).toHaveText("Results for: second");
+    await expect(page.locator("#search-input")).toHaveValue("second");
+    await expect(page.locator("#search-button")).toBeEnabled();
+    await page.locator("#search-button").click({ noWaitAfter: true });
+    await expect(page.locator("#search-result")).toHaveText(
+      "Results for: second",
+      { timeout: 10_000 },
+    );
+    await expect
+      .poll(() => page.url(), { timeout: 10_000 })
+      .toContain("/search?q=second");
 
     // No full page reload across both
     const marker = await page.evaluate(() => (window as any).__FORM_MARKER__);

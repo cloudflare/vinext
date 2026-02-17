@@ -2,6 +2,7 @@
   "name": "vinext",
   "version": "0.0.5",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -26,8 +27,12 @@
       "types": "./dist/cloudflare/index.d.ts"
     }
   },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
+    "prepack": "npm run build",
     "dev": "tsc --watch"
   },
   "peerDependencies": {

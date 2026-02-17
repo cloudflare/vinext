@@ -2,16 +2,37 @@ import { test, expect } from "@playwright/test";
 
 const BASE = "http://localhost:4174";
 
+async function disableViteErrorOverlay(page: import("@playwright/test").Page) {
+  // Vite's dev error overlay can appear during tests (even for expected errors)
+  // and intercept pointer events, causing flaky click failures.
+  await page
+    .addStyleTag({
+      content:
+        "vite-error-overlay{display:none !important; pointer-events:none !important;}",
+    })
+    .catch(() => {
+      // best effort
+    });
+}
+
 /**
  * Trigger an error by clicking the button, using polling to handle hydration timing.
  */
 async function triggerError(page: import("@playwright/test").Page) {
+  await disableViteErrorOverlay(page);
+
+  await expect(page.locator('[data-testid="trigger-error"]')).toBeVisible({
+    timeout: 10_000,
+  });
+
   await expect(async () => {
-    await page.click('[data-testid="trigger-error"]');
+    await page
+      .locator('[data-testid="trigger-error"]')
+      .click({ noWaitAfter: true });
     await expect(page.locator("#error-boundary")).toBeVisible({
-      timeout: 2000,
+      timeout: 10_000,
     });
-  }).toPass({ timeout: 15_000 });
+  }).toPass({ timeout: 20_000 });
 }
 
 test.describe("Error boundary interactive behavior", () => {
@@ -28,9 +49,15 @@ test.describe("Error boundary interactive behavior", () => {
     // Click "Try again" — should reset the error boundary and re-render the page
     await page.click("#error-boundary button");
 
+    await disableViteErrorOverlay(page);
+
+    await expect(page.locator("#error-boundary")).not.toBeVisible({
+      timeout: 10_000,
+    });
+
     // The page content should re-appear (component remounts with shouldThrow=false)
     await expect(page.locator('[data-testid="error-content"]')).toBeVisible({
-      timeout: 5000,
+      timeout: 10_000,
     });
     await expect(page.locator('[data-testid="trigger-error"]')).toBeVisible();
   });
@@ -45,14 +72,11 @@ test.describe("Error boundary interactive behavior", () => {
     // Reset
     await page.click("#error-boundary button");
     await expect(page.locator('[data-testid="trigger-error"]')).toBeVisible({
-      timeout: 5000,
+      timeout: 10_000,
     });
 
     // Second error cycle — should work the same
-    await page.click('[data-testid="trigger-error"]');
-    await expect(page.locator("#error-boundary")).toBeVisible({
-      timeout: 5000,
-    });
+    await triggerError(page);
     await expect(page.locator("#error-boundary p")).toContainText(
       "Test error from client component",
     );

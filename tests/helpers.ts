@@ -57,6 +57,13 @@ export async function startFixtureServer(
     root: fixtureDir,
     configFile: false,
     plugins,
+    // Vite may discover additional deps after the first request (especially
+    // with @vitejs/plugin-rsc environments) and trigger a re-optimization.
+    // In non-browser test clients, we can't "reload" and would otherwise
+    // see Vite's "outdated pre-bundle" error responses.
+    optimizeDeps: {
+      holdUntilCrawlEnd: true,
+    },
     server: { port: 0, cors: false },
     logLevel: "silent",
   });
