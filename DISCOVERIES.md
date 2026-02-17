@@ -20,6 +20,17 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **JSX comments** (`{/* ... */}`) render as nothing in `renderToString` — they do NOT produce HTML comments. This caused the `NextScript` placeholder approach to silently fail. Fixed by using `dangerouslySetInnerHTML`.
 - **`React.lazy` crashes in `renderToString`** (sync). Solution for `next/dynamic`: server-side `dynamic()` eagerly starts loading and registers in a `preloadQueue`. The SSR handler calls `flushPreloads()` (awaits all pending loads) before `renderToString`.
 
+## Hydration
+
+- **App Router (RSC) hydration mismatch fix**: Non-deterministic content (timestamps, random values) in Server Components caused React error #418 because the browser fetched a NEW RSC payload during hydration instead of using the one that generated the HTML. Fixed by embedding the RSC payload directly in the HTML as `<script>self.__VINEXT_RSC__={...}</script>` and having the browser entry read from it for initial hydration. See PR #62.
+
+- **Pages Router hydration follows Next.js conventions**: Unlike App Router's RSC streaming, Pages Router uses `__NEXT_DATA__` serialization. Timestamps and random values in component render bodies WILL cause hydration mismatches — this matches Next.js behavior. The correct pattern is:
+  1. Generate timestamps in `getServerSideProps`/`getStaticProps` and pass as props
+  2. Use `useEffect` to render client-only timestamps
+  3. Use `suppressHydrationWarning` on specific elements as a last resort
+  
+  This is NOT a bug — it's the expected React/Next.js behavior. The `__NEXT_DATA__` mechanism ensures props from data fetching methods are reused during hydration, but content generated directly in render bodies runs again on the client.
+
 ## Client-side Navigation
 
 - **Browser back/forward requires a module-level `popstate` listener** — the `useRouter` hook's `useEffect` listener only exists while a component using `useRouter()` is mounted. We added a module-level `window.addEventListener("popstate", ...)` in the router shim.
