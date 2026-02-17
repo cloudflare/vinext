@@ -62,27 +62,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
 
   // Next.js: 'should trigger not-found client-side'
   // Source: navigation.test.ts#L155-L165
-  //
-  // SKIP: Client-side notFound() from a "use client" component does not render
-  // the not-found boundary. Instead the page body shows raw Vite RSC entry
-  // import text: `import("/@id/__x00__virtual:vite-rsc/entry-browser")`.
-  //
-  // ROOT CAUSE: The `notFound()` function from `packages/vinext/src/shims/navigation.ts`
-  // throws a special error that is supposed to be caught by the nearest not-found
-  // boundary during rendering. In the client-side re-render (after state change via
-  // useState), this thrown error is not caught by any error boundary and instead
-  // crashes the React tree, leaving a blank/broken page.
-  //
-  // TO FIX: The client-side `notFound()` implementation in
-  // `packages/vinext/src/shims/navigation.ts` needs to integrate with React's
-  // error boundary mechanism on the client. In Next.js, the `notFound()` throw
-  // is caught by the `NotFoundBoundary` component that wraps page content.
-  // Vinext needs an equivalent client-side boundary that catches the
-  // `NEXT_NOT_FOUND` error and renders the not-found.tsx component.
-  //
-  // VERIFY: After fix, this test should pass — click the button, see "404" text
-  // from the nearest not-found.tsx boundary rendered in the browser.
-  test.skip("client-side notFound() trigger renders not-found component", async ({
+  test("client-side notFound() trigger renders not-found component", async ({
     page,
   }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-client-notfound`);

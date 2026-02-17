@@ -176,7 +176,7 @@ import {
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage } from "next/headers";
-import { ErrorBoundary } from "vinext/error-boundary";
+import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
@@ -431,6 +431,21 @@ async function buildPageElement(route, params, opts, searchParams) {
       fallback: route.error.default,
       children: element,
     });
+  }
+
+  // Wrap with NotFoundBoundary so client-side notFound() renders not-found.tsx
+  // instead of crashing the React tree. Must be above ErrorBoundary since
+  // ErrorBoundary re-throws notFound errors.
+  // Pre-render the not-found component as a React element since it may be a
+  // server component (not a client reference) and can't be passed as a function prop.
+  {
+    const NotFoundComponent = route.notFound?.default ?? ${rootNotFoundVar ? `${rootNotFoundVar}?.default` : "null"};
+    if (NotFoundComponent) {
+      element = createElement(NotFoundBoundary, {
+        fallback: createElement(NotFoundComponent),
+        children: element,
+      });
+    }
   }
 
   // Wrap with templates (innermost first, then outer)
