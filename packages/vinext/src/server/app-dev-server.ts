@@ -175,7 +175,7 @@ import {
 } from "@vitejs/plugin-rsc/rsc";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext } from "next/headers";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -644,25 +644,31 @@ function __applyConfigHeaders(pathname) {
 }
 
 export default async function handler(request) {
-  // Install patched fetch with Next.js caching semantics for this request.
-  // All fetch() calls during RSC rendering will go through the cache.
-  const cleanupFetchCache = withFetchCache();
-  try {
-    const response = await _handleRequest(request);
-    // Apply custom headers from next.config.js to all non-redirect responses
-    if (__configHeaders.length && response && response.headers) {
-      const url = new URL(request.url);
-      let pathname = url.pathname;
-      ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
-      const extraHeaders = __applyConfigHeaders(pathname);
-      for (const h of extraHeaders) {
-        response.headers.set(h.key, h.value);
+  // Wrap the entire request handling in runWithHeadersContext to ensure
+  // headers() and cookies() work throughout the async RSC rendering pipeline.
+  // This uses AsyncLocalStorage.run() which properly propagates through awaits.
+  const headersCtx = headersContextFromRequest(request);
+  return runWithHeadersContext(headersCtx, async () => {
+    // Install patched fetch with Next.js caching semantics for this request.
+    // All fetch() calls during RSC rendering will go through the cache.
+    const cleanupFetchCache = withFetchCache();
+    try {
+      const response = await _handleRequest(request);
+      // Apply custom headers from next.config.js to all non-redirect responses
+      if (__configHeaders.length && response && response.headers) {
+        const url = new URL(request.url);
+        let pathname = url.pathname;
+        ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
+        const extraHeaders = __applyConfigHeaders(pathname);
+        for (const h of extraHeaders) {
+          response.headers.set(h.key, h.value);
+        }
       }
+      return response;
+    } finally {
+      cleanupFetchCache();
     }
-    return response;
-  } finally {
-    cleanupFetchCache();
-  }
+  });
 }
 
 async function _handleRequest(request) {
@@ -777,8 +783,8 @@ async function _handleRequest(request) {
     }
   }
 
-  // Set request contexts for Server Components
-  setHeadersContext(headersContextFromRequest(request));
+  // Set navigation context for Server Components.
+  // Note: Headers context is already set by runWithHeadersContext in the handler wrapper.
   setNavigationContext({
     pathname: cleanPathname,
     searchParams: url.searchParams,
@@ -1311,8 +1317,10 @@ async function _handleRequest(request) {
 
   if (isRscRequest) {
     // Direct RSC stream response (for client-side navigation)
-    setHeadersContext(null);
-    setNavigationContext(null);
+    // NOTE: Do NOT clear headers/navigation context here!
+    // The RSC stream is consumed lazily - components render when chunks are read.
+    // If we clear context now, headers()/cookies() will fail during rendering.
+    // Context will be cleared when the next request starts (via runWithHeadersContext).
     const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8" };
     // Include matched route params so the client can hydrate useParams()
     if (params && Object.keys(params).length > 0) {

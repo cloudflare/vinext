@@ -31,6 +31,8 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
   
   This is NOT a bug — it's the expected React/Next.js behavior. The `__NEXT_DATA__` mechanism ensures props from data fetching methods are reused during hydration, but content generated directly in render bodies runs again on the client.
 
+- **RSC streaming and AsyncLocalStorage context**: `headers()` and `cookies()` were failing on `.rsc` client navigation requests because context was cleared before the stream was consumed. Key insight: `renderToReadableStream()` returns immediately, but component rendering happens lazily when stream chunks are read. Solution: Don't clear headers context for RSC responses; use `enterWith()` + fallback state pattern to persist context through streaming. See PR #64.
+
 ## Client-side Navigation
 
 - **Browser back/forward requires a module-level `popstate` listener** — the `useRouter` hook's `useEffect` listener only exists while a component using `useRouter()` is mounted. We added a module-level `window.addEventListener("popstate", ...)` in the router shim.
@@ -640,3 +642,29 @@ The `onNavigate` callback for View Transitions support was being called with a p
 2. After calling `onNavigate`, the Link always continued with its own navigation (push/replaceState + RSC fetch), even if the callback had called `preventDefault()` to do its own navigation. This caused a double navigation.
 
 **Fix**: Construct a proper `NavigateEvent` with a `prevented` flag, a `preventDefault()` method that sets it, and a `defaultPrevented` getter. After calling `onNavigate`, check `navEvent.defaultPrevented` — if true, return early and let the callback's custom navigation take effect.
+
+
+## Development Best Practices
+
+### Research Approach
+
+- **When in doubt, look at how Next.js does it.** Vinext aims to replicate Next.js behavior, so their implementation is the authoritative reference. Use Context7 MCP to quickly look up Next.js source code and patterns.
+
+- **Context7 MCP is valuable for framework research.** It provides fast access to up-to-date documentation and source code for libraries like Next.js, Vite, React, etc. Useful queries:
+  - How Next.js implements `headers()` and `cookies()` internally
+  - AsyncLocalStorage patterns for request-scoped context
+  - RSC streaming and rendering lifecycle
+  - Route matching and middleware patterns
+
+- **Key Context7 library IDs for this project:**
+  - `/vercel/next.js` — Next.js source code and docs
+  - `/llmstxt/nextjs_llms_txt` — Extended Next.js documentation
+  - `/vitejs/vite-plugin-react` — Vite RSC plugin docs
+
+### Debugging Patterns
+
+- **RSC streaming is async**: `renderToReadableStream()` returns immediately, but component rendering happens when stream chunks are consumed. Context set before rendering may be cleared before components execute.
+
+- **Vite multi-environment architecture**: RSC, SSR, and Client environments may have separate module instances. Use `Symbol.for()` on `globalThis` to share state across environments.
+
+- **Add test pages to fixtures, not examples**: Test fixtures (`tests/fixtures/`) are for automated testing. Examples (`examples/`) are for user-facing demos and should remain clean.

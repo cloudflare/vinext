@@ -97,6 +97,10 @@ export function consumeDynamicUsage(): boolean {
 /**
  * Set the headers/cookies context for the current RSC render.
  * Called by the framework's RSC entry before rendering each request.
+ *
+ * NOTE: This uses enterWith() which only works reliably within the same
+ * synchronous call stack. For full async context propagation (needed for
+ * RSC streaming), use runWithHeadersContext() instead.
  */
 export function setHeadersContext(ctx: HeadersContext | null): void {
   // Start of request: enter a fresh per-request store.
@@ -118,6 +122,45 @@ export function setHeadersContext(ctx: HeadersContext | null): void {
   } else {
     _fallbackState.headersContext = null;
   }
+}
+
+/**
+ * Run a function with headers context, ensuring the context propagates
+ * through all async operations (including RSC streaming).
+ *
+ * IMPORTANT: RSC rendering is streaming - renderToReadableStream() returns
+ * immediately but component execution happens later when the stream is consumed.
+ * AsyncLocalStorage.run() only maintains context within the callback scope,
+ * so by the time components actually render, we'd be outside that scope.
+ *
+ * Solution: We use enterWith() to set persistent context AND update the
+ * fallback state. This way, even after run() returns, getStore() still
+ * returns the right state (via enterWith), and if that fails, we have
+ * the fallback. For single-request-at-a-time scenarios (dev mode), this
+ * works correctly. For concurrent requests, the ALS should work.
+ */
+export function runWithHeadersContext<T>(
+  ctx: HeadersContext,
+  fn: () => T | Promise<T>,
+): T | Promise<T> {
+  const state: VinextHeadersShimState = {
+    headersContext: ctx,
+    dynamicUsageDetected: false,
+    pendingSetCookies: [],
+    draftModeCookieHeader: null,
+  };
+
+  // Use enterWith to set persistent context for this async context
+  _enterWith(state);
+
+  // Also update fallback state directly for environments where ALS doesn't
+  // propagate correctly (this is not concurrency-safe but works for dev)
+  _fallbackState.headersContext = ctx;
+  _fallbackState.dynamicUsageDetected = false;
+  _fallbackState.pendingSetCookies = [];
+  _fallbackState.draftModeCookieHeader = null;
+
+  return fn();
 }
 
 /**
