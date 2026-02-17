@@ -709,11 +709,13 @@ It also makes contribution dead simple - find a red test, make it green.
    (`rsc`, `ssr`, `client`), handles `'use server'`/`'use client'` directive
    boundaries, RSC stream serialization/deserialization, CSS code-splitting
    across server/client, and HMR for server components. We build on top of
-   this rather than rolling our own. **Note:** plugin-rsc does NOT support
-   `"use cache"` — it only handles `"use client"` and `"use server"`. We
-   implemented our own `vinext:use-cache` Vite plugin using plugin-rsc's
-   reusable transform utilities (`transformWrapExport`,
-   `transformHoistInlineDirective` from `@vitejs/plugin-rsc/transforms`).
+   this rather than rolling our own. **Note:** plugin-rsc supports `"use cache"`
+   as a framework building block — it exports `transformWrapExport` and
+   `transformHoistInlineDirective` from `@vitejs/plugin-rsc/transforms` that
+   accept arbitrary directives including `"use cache"`. Their example shows a
+   complete cache plugin + runtime using RSC stream serialization. We use these
+   transforms and build the Next.js-specific runtime on top (`cacheLife`,
+   `cacheTag`, cache variants, ISR integration, Cloudflare KV backend).
 
 2. ~~**Scope of Pages Router support**~~ **RESOLVED: Pages Router first.**
    It's simpler (no RSC, no server/client component boundaries), it's what

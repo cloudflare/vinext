@@ -11,6 +11,10 @@ import React, { forwardRef, useRef, useEffect, useCallback, useContext, createCo
 
 interface NavigateEvent {
   url: URL;
+  /** Call to prevent the Link's default navigation (e.g. for View Transitions). */
+  preventDefault(): void;
+  /** Whether preventDefault() has been called. */
+  defaultPrevented: boolean;
 }
 
 interface LinkProps extends Omit<AnchorHTMLAttributes<HTMLAnchorElement>, "href"> {
@@ -338,7 +342,18 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     if (onNavigate) {
       try {
         const navUrl = new URL(resolvedHref, window.location.origin);
-        onNavigate({ url: navUrl });
+        let prevented = false;
+        const navEvent: NavigateEvent = {
+          url: navUrl,
+          preventDefault() { prevented = true; },
+          get defaultPrevented() { return prevented; },
+        };
+        onNavigate(navEvent);
+        // If the callback called preventDefault(), skip Link's default navigation.
+        // The callback is responsible for its own navigation (e.g. via View Transitions API).
+        if (navEvent.defaultPrevented) {
+          return;
+        }
       } catch {
         // Ignore URL parsing errors for relative/hash hrefs
       }

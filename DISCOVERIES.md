@@ -509,9 +509,10 @@ Comprehensive audit of the test suite inspired by Next.js's `test/e2e/app-dir/` 
 
 ### "use cache" Implementation — Architecture Decisions
 
-- **@vitejs/plugin-rsc does NOT handle "use cache"** despite the plan saying it does. It only handles "use server" and "use client". However, it exports reusable transform utilities (`transformWrapExport`, `transformHoistInlineDirective`) that accept arbitrary directives.
+- **@vitejs/plugin-rsc supports "use cache" as a framework building block** — it doesn't auto-handle it like `"use client"` / `"use server"`, but it exports `transformHoistInlineDirective` and `transformWrapExport` from `@vitejs/plugin-rsc/transforms` that accept `"use cache"` (or any directive via string/regex). Their example in `packages/plugin-rsc/examples/basic/` shows a complete `vitePluginUseCache()` (~15 lines) + `use-cache-runtime.tsx` (~100 lines) using RSC serialization (`renderToReadableStream`/`createFromReadableStream`/`encodeReply`) for cache values and keys. We use these transforms and build the Next.js-specific runtime on top (`cacheLife`, `cacheTag`, cache variants, ISR integration, Cloudflare KV backend).
+- **IMPROVEMENT OPPORTUNITY: our cache runtime uses JSON.stringify instead of RSC serialization** — plugin-rsc's example runtime uses `renderToReadableStream` to serialize cached values, which naturally handles React elements, Promises, and all RSC-serializable types. We used `JSON.stringify`, which is why we hit the "React elements can't be cached" problem and had to special-case page/layout/template default exports. Adopting RSC-stream serialization would eliminate these workarounds.
 - **Vite's `parseAst` can't parse JSX/TSX** — it's a plain JS parser (Rollup's acorn). The `vinext:use-cache` plugin must NOT use `enforce: "pre"` — it needs to run after the JSX transform (esbuild/oxc) converts TSX to plain JS.
-- **File-level "use cache" on page components can't wrap the default export** — React elements (JSX) are not JSON-serializable, so `registerCachedFunction(PageComponent)` would try to cache the React element tree, which fails on the second request ("Objects are not valid as a React child"). Instead, file-level "use cache" on pages is handled through ISR: `cacheLife()` sets the revalidation period via request-scoped state, which the server reads after rendering.
+- **File-level "use cache" on page components can't wrap the default export (with our JSON.stringify approach)** — React elements (JSX) are not JSON-serializable, so `registerCachedFunction(PageComponent)` would try to cache the React element tree, which fails on the second request ("Objects are not valid as a React child"). Instead, file-level "use cache" on pages is handled through ISR: `cacheLife()` sets the revalidation period via request-scoped state, which the server reads after rendering. NOTE: plugin-rsc's example avoids this problem entirely by using RSC stream serialization for cache values.
 - **cacheLife() has dual behavior** — inside a `"use cache"` function context (AsyncLocalStorage), it pushes to `ctx.lifeConfigs`. Outside (e.g., page component), it sets `_requestScopedCacheLife` which the server consumes after render to enable ISR.
 - **Request-scoped cacheLife needs a persistent route map** — On the first render of a "use cache" page, `cacheLife()` sets the revalidation and the ISR store fires. On subsequent requests, `revalidateSeconds` is null (no export const revalidate), so the ISR cache check would be skipped. A `_cacheLifeRouteMap` persists the effective revalidation period across requests so the ISR cache hit works.
 - **"use cache: private" uses per-request Map** — not the pluggable CacheHandler. Cleared at the start of each request via `clearPrivateCache()`.
@@ -616,3 +617,15 @@ Attempted to wrap `searchParams` in a Proxy to detect property access and signal
 Also discovered that wrapping a native Promise in a Proxy breaks `.then()` because Promise methods need the internal `[[PromiseState]]` slot, which lives on the original Promise object, not the Proxy.
 
 **Workaround**: Instead of a Proxy, mark dynamic if the URL has non-empty query parameters. This is a safe approximation — slightly over-conservative (marks dynamic even if the component doesn't read searchParams) but avoids false positives from React internals.
+
+### Discovery: Link `onNavigate` Was Not Creating a Proper NavigateEvent (Issue #38)
+
+**Files**: `packages/vinext/src/shims/link.tsx`
+
+The `onNavigate` callback for View Transitions support was being called with a plain object `{ url: navUrl }` that lacked `preventDefault()` and `defaultPrevented`. The `TransitionLink` pattern (from Next.js 16 / React canary View Transitions) relies on calling `event.preventDefault()` to take over navigation — e.g. wrapping `router.push()` in `startTransition(() => { addTransitionType(type); router.push(href); })`.
+
+**Two bugs**:
+1. The `NavigateEvent` object passed to `onNavigate` was missing `preventDefault()`/`defaultPrevented`, so the callback would throw when calling `event.preventDefault()`.
+2. After calling `onNavigate`, the Link always continued with its own navigation (push/replaceState + RSC fetch), even if the callback had called `preventDefault()` to do its own navigation. This caused a double navigation.
+
+**Fix**: Construct a proper `NavigateEvent` with a `prevented` flag, a `preventDefault()` method that sets it, and a `defaultPrevented` getter. After calling `onNavigate`, check `navEvent.defaultPrevented` — if true, return early and let the callback's custom navigation take effect.

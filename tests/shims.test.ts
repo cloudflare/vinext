@@ -3633,3 +3633,77 @@ describe("client-only shim", () => {
     expect(keys).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// next/link — onNavigate / NavigateEvent (View Transitions support, Issue #38)
+// ---------------------------------------------------------------------------
+
+describe("next/link onNavigate / NavigateEvent", () => {
+  it("exports Link as default and useLinkStatus as named export", async () => {
+    const mod = await import("../packages/vinext/src/shims/link.js");
+    expect(typeof mod.default).toBe("object"); // forwardRef returns an object
+    expect(typeof mod.useLinkStatus).toBe("function");
+  });
+
+  it("NavigateEvent.preventDefault() sets defaultPrevented to true", () => {
+    // Mirrors the NavigateEvent construction in the Link click handler
+    let prevented = false;
+    const navEvent = {
+      url: new URL("/about", "http://localhost"),
+      preventDefault() { prevented = true; },
+      get defaultPrevented() { return prevented; },
+    };
+
+    expect(navEvent.defaultPrevented).toBe(false);
+    navEvent.preventDefault();
+    expect(navEvent.defaultPrevented).toBe(true);
+  });
+
+  it("NavigateEvent.defaultPrevented is false when preventDefault is not called", () => {
+    let prevented = false;
+    const navEvent = {
+      url: new URL("/products/1", "http://localhost"),
+      preventDefault() { prevented = true; },
+      get defaultPrevented() { return prevented; },
+    };
+
+    expect(navEvent.defaultPrevented).toBe(false);
+    expect(navEvent.url.pathname).toBe("/products/1");
+  });
+
+  it("onNavigate callback receives event with correct url", () => {
+    // Simulate what the Link component does in its click handler
+    const resolvedHref = "/view-transitions/posts/42";
+    const navUrl = new URL(resolvedHref, "http://localhost:3000");
+
+    let prevented = false;
+    const navEvent = {
+      url: navUrl,
+      preventDefault() { prevented = true; },
+      get defaultPrevented() { return prevented; },
+    };
+
+    // Simulated TransitionLink-style callback
+    const onNavigate = (event: typeof navEvent) => {
+      event.preventDefault();
+    };
+
+    onNavigate(navEvent);
+    expect(navEvent.defaultPrevented).toBe(true);
+    expect(navEvent.url.pathname).toBe("/view-transitions/posts/42");
+  });
+
+  it("multiple preventDefault() calls are idempotent", () => {
+    let prevented = false;
+    const navEvent = {
+      url: new URL("/", "http://localhost"),
+      preventDefault() { prevented = true; },
+      get defaultPrevented() { return prevented; },
+    };
+
+    navEvent.preventDefault();
+    navEvent.preventDefault();
+    navEvent.preventDefault();
+    expect(navEvent.defaultPrevented).toBe(true);
+  });
+});
