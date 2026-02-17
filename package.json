@@ -3,8 +3,9 @@
   "private": true,
   "workspaces": [
     "packages/*",
-    "fixtures/*",
-    "fixtures/ecosystem/*"
+    "examples/*",
+    "tests/fixtures/*",
+    "tests/fixtures/ecosystem/*"
   ],
   "scripts": {
     "build": "npm run build --workspace=packages/vinext",

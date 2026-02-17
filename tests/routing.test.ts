@@ -5,7 +5,7 @@ import { appRouter, matchAppRoute, invalidateAppRouteCache } from "../packages/v
 
 const FIXTURE_DIR = path.resolve(
   import.meta.dirname,
-  "../fixtures/pages-basic/pages",
+  "./fixtures/pages-basic/pages",
 );
 
 describe("pagesRouter - route discovery", () => {
@@ -146,7 +146,7 @@ describe("matchRoute - URL matching", () => {
 
 const APP_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
-  "../fixtures/app-basic/app",
+  "./fixtures/app-basic/app",
 );
 
 describe("appRouter - route discovery", () => {

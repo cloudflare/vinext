@@ -1710,20 +1710,18 @@ hydrate();
         );
 
         if (cacheDirective) {
-          // File-level "use cache" — wrap non-component exports with caching.
-          // Page components (default export) are NOT wrapped because React
-          // elements can't be JSON-serialized. For pages, file-level "use cache"
-          // is treated as ISR — the cacheLife() call inside the component sets
-          // the revalidation period, handled by the existing ISR cache layer.
+          // File-level "use cache" — wrap function exports with caching.
+          // For data functions (generateMetadata, etc.), RSC stream serialization
+          // handles all RSC-serializable types including React elements.
+          // For page/layout/template default exports, we still skip wrapping
+          // because page component caching requires tighter integration with the
+          // RSC rendering pipeline (in-memory stream caching with temporary
+          // references for dynamic children). For pages, file-level "use cache"
+          // is treated as ISR — cacheLife() sets the revalidation period via
+          // request-scoped state, which the server reads after rendering.
           const directiveValue: string = cacheDirective.expression.value;
           const variant = directiveValue === "use cache" ? "" : directiveValue.replace("use cache:", "").replace("use cache: ", "").trim();
 
-          // Detect if this is a React component convention file whose default
-          // export returns JSX.  These can't be cached with JSON.stringify
-          // because React elements contain Symbols and function references.
-          // For pages, file-level "use cache" is treated as ISR instead.
-          // For layouts/templates/etc., we still wrap non-default exports
-          // like generateMetadata (which returns serializable data).
           const isComponentFile = /\/(page|layout|template|loading|error|not-found|default)\.(tsx?|jsx?|mjs)$/.test(id);
 
           const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
@@ -1734,10 +1732,10 @@ hydrate();
             filter: (name, meta) => {
               // Skip non-functions (constants, types, etc.)
               if (meta.isFunction === false) return false;
-              // Skip the default export on component convention files — these
-              // are React components whose return value (JSX elements) can't
-              // be JSON-serialized.  Covers page, layout, template, loading,
-              // error, not-found, and default convention files.
+              // Skip the default export on component convention files — page
+              // component caching requires in-memory RSC stream caching with
+              // temporary references, which is a separate feature. These are
+              // handled through ISR instead.
               if (isComponentFile && name === "default") return false;
               return true;
             },

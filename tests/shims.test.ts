@@ -1100,7 +1100,7 @@ describe('"use cache" runtime', () => {
     expect(getCacheContext()).toBeNull();
   });
 
-  it("stableStringify produces consistent keys for same objects", async () => {
+  it("consistent cache keys for same objects regardless of key order", async () => {
     const { registerCachedFunction } = await import(
       "../packages/vinext/src/shims/cache-runtime.js"
     );
@@ -1146,6 +1146,138 @@ describe('"use cache" runtime', () => {
     expect(r1).toEqual({ hello: "world" });
     expect(r2).toEqual({ hello: "world" });
     expect(callCount).toBe(1);
+  });
+
+  it("falls back to JSON when RSC module is unavailable (test environment)", async () => {
+    // In vitest, @vitejs/plugin-rsc/react/rsc is not available (no Vite RSC
+    // environment). The runtime should gracefully fall back to JSON.stringify
+    // for cache values and stableStringify for cache keys.
+    const { registerCachedFunction } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+
+    const fn = async (x: number) => ({ doubled: x * 2 });
+    const cached = registerCachedFunction(fn, "test:json-fallback");
+
+    const r1 = await cached(3);
+    expect(r1).toEqual({ doubled: 6 });
+
+    // Verify the stored value is JSON (no x-vinext-rsc header)
+    // stableStringify wraps args as an array: [3]
+    const entry = await handler.get("use-cache:test:json-fallback:[3]");
+    expect(entry).not.toBeNull();
+    if (entry?.value && entry.value.kind === "FETCH") {
+      expect(entry.value.data.headers["x-vinext-rsc"]).toBeUndefined();
+      expect(JSON.parse(entry.value.data.body)).toEqual({ doubled: 6 });
+    }
+  });
+
+  it("skips caching for non-serializable args (functions)", async () => {
+    const { registerCachedFunction } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const fn = async (_cb: () => void) => {
+      callCount++;
+      return { called: true };
+    };
+
+    const cached = registerCachedFunction(fn, "test:fn-arg");
+
+    // Functions can't be serialized — should execute every time (no caching)
+    await cached(() => {});
+    await cached(() => {});
+    expect(callCount).toBe(2);
+  });
+});
+
+describe("replyToCacheKey deterministic hashing", () => {
+  it("returns string replies as-is", async () => {
+    const { replyToCacheKey } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    expect(await replyToCacheKey("hello")).toBe("hello");
+    expect(await replyToCacheKey("")).toBe("");
+  });
+
+  it("produces stable hash for FormData with string entries", async () => {
+    const { replyToCacheKey } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+
+    const fd1 = new FormData();
+    fd1.append("a", "1");
+    fd1.append("b", "2");
+
+    const fd2 = new FormData();
+    fd2.append("a", "1");
+    fd2.append("b", "2");
+
+    const key1 = await replyToCacheKey(fd1);
+    const key2 = await replyToCacheKey(fd2);
+    expect(key1).toBe(key2);
+  });
+
+  it("produces stable hash regardless of entry insertion order", async () => {
+    const { replyToCacheKey } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+
+    const fd1 = new FormData();
+    fd1.append("b", "2");
+    fd1.append("a", "1");
+
+    const fd2 = new FormData();
+    fd2.append("a", "1");
+    fd2.append("b", "2");
+
+    const key1 = await replyToCacheKey(fd1);
+    const key2 = await replyToCacheKey(fd2);
+    expect(key1).toBe(key2);
+  });
+
+  it("produces stable hash for FormData with Blob entries", async () => {
+    const { replyToCacheKey } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: "application/octet-stream" });
+
+    const fd1 = new FormData();
+    fd1.append("data", blob);
+
+    const fd2 = new FormData();
+    fd2.append("data", blob);
+
+    const key1 = await replyToCacheKey(fd1);
+    const key2 = await replyToCacheKey(fd2);
+    expect(key1).toBe(key2);
+  });
+
+  it("produces different hashes for different FormData content", async () => {
+    const { replyToCacheKey } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+
+    const fd1 = new FormData();
+    fd1.append("a", "1");
+
+    const fd2 = new FormData();
+    fd2.append("a", "2");
+
+    const key1 = await replyToCacheKey(fd1);
+    const key2 = await replyToCacheKey(fd2);
+    expect(key1).not.toBe(key2);
   });
 });
 
@@ -2202,7 +2334,7 @@ describe("metadata route serializers", () => {
     const { scanMetadataFiles } = await import(
       "../packages/vinext/src/server/metadata-routes.js"
     );
-    const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
 
     // Should find our test fixture files

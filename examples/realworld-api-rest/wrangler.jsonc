@@ -1,9 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "vinext-cloudflare-app",
+  "name": "realworld-api-rest",
   "compatibility_date": "2026-02-12",
   "compatibility_flags": ["nodejs_compat"],
   "main": "./worker/index.ts",
+  "preview_urls": true,
   "assets": {
     "not_found_handling": "none"
   }

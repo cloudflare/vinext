@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import vinext from "vinext";
 import rsc from "@vitejs/plugin-rsc";
+import { cloudflare } from "@cloudflare/vite-plugin";
 import mdx from "@mdx-js/rollup";
 import path from "node:path";
 
@@ -94,6 +95,13 @@ export default defineConfig({
         rsc: "virtual:vinext-rsc-entry",
         ssr: "virtual:vinext-app-ssr-entry",
         client: "virtual:vinext-app-browser-entry",
+      },
+    }),
+
+    // Cloudflare Workers plugin — builds for workerd runtime
+    cloudflare({
+      viteEnvironment: {
+        childEnvironments: ["rsc", "ssr"],
       },
     }),
   ],

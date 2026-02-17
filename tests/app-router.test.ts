@@ -1331,7 +1331,7 @@ describe("metadata routes integration (App Router)", () => {
     const { scanMetadataFiles } = await import(
       "../packages/vinext/src/server/metadata-routes.js"
     );
-    const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
 
     const iconRoute = routes.find((r: { type: string }) => r.type === "icon");
@@ -1346,7 +1346,7 @@ describe("metadata routes integration (App Router)", () => {
     const { scanMetadataFiles } = await import(
       "../packages/vinext/src/server/metadata-routes.js"
     );
-    const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
 
     const appleIcon = routes.find((r: { type: string }) => r.type === "apple-icon");
@@ -1360,7 +1360,7 @@ describe("metadata routes integration (App Router)", () => {
     const { scanMetadataFiles } = await import(
       "../packages/vinext/src/server/metadata-routes.js"
     );
-    const appDir = path.resolve(import.meta.dirname, "../fixtures/app-basic/app");
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
 
     const ogImage = routes.find(

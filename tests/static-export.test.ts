@@ -14,8 +14,8 @@ import { createServer, type Server } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 
-const PAGES_FIXTURE = path.resolve(import.meta.dirname, "../fixtures/pages-basic");
-const APP_FIXTURE = path.resolve(import.meta.dirname, "../fixtures/app-basic");
+const PAGES_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
+const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 

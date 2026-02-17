@@ -4,7 +4,7 @@ import vinext from "../packages/vinext/src/index.js";
 import type { Plugin } from "vite";
 
 // ── Helpers ───────────────────────────────────────────────────
-const IMAGES_DIR = path.resolve(import.meta.dirname, "../fixtures/images");
+const IMAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/images");
 const PNG_PATH = path.join(IMAGES_DIR, "test-4x3.png");
 const JPG_PATH = path.join(IMAGES_DIR, "test-8x6.jpg");
 

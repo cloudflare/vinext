@@ -657,7 +657,7 @@ describe("formatReport", () => {
 // ── Integration: running against fixtures ──────────────────────────────────
 
 describe("integration: pages-basic fixture", () => {
-  const fixtureDir = path.resolve(import.meta.dirname, "../fixtures/pages-basic");
+  const fixtureDir = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 
   it("detects Pages Router conventions", () => {
     const items = checkConventions(fixtureDir);
@@ -681,7 +681,7 @@ describe("integration: pages-basic fixture", () => {
 });
 
 describe("integration: app-basic fixture", () => {
-  const fixtureDir = path.resolve(import.meta.dirname, "../fixtures/app-basic");
+  const fixtureDir = path.resolve(import.meta.dirname, "./fixtures/app-basic");
 
   it("detects App Router conventions", () => {
     const items = checkConventions(fixtureDir);

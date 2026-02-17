@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import path from "node:path";
 
-const FIXTURES_DIR = path.resolve(__dirname, "..", "fixtures", "ecosystem");
+const FIXTURES_DIR = path.resolve(__dirname, "fixtures", "ecosystem");
 
 /**
  * Start a Vite dev server as a child process and wait for it to be ready.

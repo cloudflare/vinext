@@ -14,11 +14,11 @@ import path from "node:path";
 // ── Fixture paths ─────────────────────────────────────────────
 export const PAGES_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
-  "../fixtures/pages-basic",
+  "./fixtures/pages-basic",
 );
 export const APP_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
-  "../fixtures/app-basic",
+  "./fixtures/app-basic",
 );
 
 // ── Shared RSC virtual module entries (used by @vitejs/plugin-rsc) ──

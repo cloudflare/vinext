@@ -8,5 +8,11 @@ export default defineConfig({
     // Running test files in parallel can race on Vite's deps optimizer cache
     // (node_modules/.vite/*) and produce "outdated pre-bundle" 500s.
     fileParallelism: false,
+    // GitHub Actions reporter adds inline failure annotations in PR diffs.
+    // It's auto-enabled with the default reporter, but being explicit ensures
+    // it survives any future reporter config changes.
+    reporters: process.env.CI
+      ? ["default", "github-actions"]
+      : ["default"],
   },
 });
