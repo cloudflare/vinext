@@ -1,0 +1,18 @@
+node_modules/
+
+# Source-only files (publish dist only)
+src/
+tsconfig.json
+*.tsbuildinfo
+
+# Tooling artifacts
+*.log
+coverage/
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Packed tarballs
+*.tgz
