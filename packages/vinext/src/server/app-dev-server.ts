@@ -1268,6 +1268,14 @@ async function _handleRequest(request) {
   // Pre-render the page component to catch redirect()/notFound() thrown synchronously.
   // Server Components are just functions — we can call PageComponent directly to detect
   // these special throws before starting the RSC stream.
+  //
+  // Because this calls the component outside React's render cycle, hooks like use()
+  // trigger "Invalid hook call" console.error in dev. Suppress that expected warning.
+  const _origConsoleError = console.error;
+  console.error = (...args) => {
+    if (typeof args[0] === "string" && args[0].includes("Invalid hook call")) return;
+    _origConsoleError.apply(console, args);
+  };
   try {
     const testResult = PageComponent({ params });
     // If it's a promise (async component), await it to catch async redirect/notFound
@@ -1279,6 +1287,8 @@ async function _handleRequest(request) {
     if (specialResponse) return specialResponse;
     // Not a special error — let it propagate through normal RSC rendering
     // (React error boundaries, etc.)
+  } finally {
+    console.error = _origConsoleError;
   }
 
   // Render to RSC stream

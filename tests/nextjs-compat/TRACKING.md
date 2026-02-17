@@ -385,7 +385,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 1. **RSC module caching across requests** — `Date.now()` cached in dev. Fix: `packages/vinext/src/server/app-dev-server.ts`
 2. **Server component errors return 500 instead of rendering error.tsx** — Fix: RSC/SSR pipeline error boundary rendering
 3. **generateMetadata() errors bypass error.tsx** — Fix: `packages/vinext/src/shims/metadata.tsx`
-4. **React `use()` hook warning** — Duplicate React instance in RSC environment
+4. ~~**React `use()` hook warning**~~ — **FIXED**. Not duplicate React — the pre-render check (`app-dev-server.ts:1268`) calls `PageComponent()` directly outside React's render cycle, triggering "Invalid hook call" for components using `use()`. Fix: suppress the expected warning during the pre-render test.
 5. **Keywords separator formatting** — Minor: `", "` vs `","` (cosmetic)
 6. **Client-side notFound() crashes React tree** — `notFound()` from "use client" component throws NEXT_NOT_FOUND error that isn't caught by any boundary. Fix: `packages/vinext/src/shims/navigation.ts` — need client-side NotFoundBoundary wrapping page content
 7. **useParams() returns empty on client after hydration** — SSR correctly renders params but client-side `useParams()` returns `{}` for all dynamic routes (single `[id]`, nested `[id]/[subid]`, catch-all `[...slug]`). Fix: `packages/vinext/src/shims/navigation.ts` — `setClientParams()` must be called during hydration with route params extracted from URL
