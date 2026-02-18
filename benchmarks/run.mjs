@@ -143,17 +143,22 @@ async function startAndMeasure(cmd, args, cwd, url) {
 
 function kill(proc) {
   if (!proc || proc.killed) return;
-  // Kill the entire process group/tree to handle frameworks that spawn children
+  const pid = proc.pid;
+  // First, try to kill child processes (Next.js/Turbopack spawns workers)
   try {
-    // Kill the process tree (works on Linux/macOS)
-    execSync(`kill -9 -- -${proc.pid} 2>/dev/null || true`, { stdio: "ignore" });
+    // Find and kill all child processes on Linux
+    const children = execSync(`pgrep -P ${pid} 2>/dev/null || true`, { encoding: "utf-8" }).trim();
+    if (children) {
+      for (const cpid of children.split("\n").filter(Boolean)) {
+        try { execSync(`kill -9 ${cpid} 2>/dev/null || true`, { stdio: "ignore" }); } catch {}
+      }
+    }
   } catch {}
+  // Kill the main process
+  try { proc.kill("SIGKILL"); } catch {}
+  // Fallback: kill anything still listening on our benchmark ports
   try {
-    proc.kill("SIGKILL");
-  } catch {}
-  // Also kill anything still listening on the ports we use
-  try {
-    execSync(`lsof -ti:4100,4101,4102 | xargs kill -9 2>/dev/null || true`, { stdio: "ignore" });
+    execSync(`lsof -ti:4100,4101,4102 2>/dev/null | xargs kill -9 2>/dev/null || true`, { stdio: "ignore" });
   } catch {}
 }
 
