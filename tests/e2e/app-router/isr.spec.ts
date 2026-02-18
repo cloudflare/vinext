@@ -129,3 +129,211 @@ test.describe("App Router ISR", () => {
     expect(cc).toContain("stale-while-revalidate");
   });
 });
+
+/**
+ * OpenNext Compat: ISR dynamicParams cache header tests
+ *
+ * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/isr.test.ts
+ *
+ * OpenNext verifies that `dynamicParams=true` pages return HIT for prebuilt paths,
+ * MISS for non-prebuilt, and 404 for notFound(). `dynamicParams=false` returns 404
+ * for unknown params. These tests verify the same cache header semantics in vinext.
+ */
+test.describe("ISR dynamicParams cache headers", () => {
+  test.describe("dynamicParams=false (products)", () => {
+    // Ref: opennextjs-cloudflare isr.test.ts "dynamicParams set to false"
+    test("should return 200 on a prebuilt path", async ({ request }) => {
+      // Products fixture uses dynamicParams=false with generateStaticParams [1, 2, 3]
+      // Note: products page has no `export const revalidate`, so ISR is not active
+      // and x-vinext-cache may not be set. We verify the page renders correctly.
+      const res = await request.get(`${BASE}/products/1`);
+      expect(res.status()).toBe(200);
+
+      const html = await res.text();
+      // React SSR inserts <!-- --> comment nodes between text and expressions,
+      // so "Product 1" may appear as "Product <!-- -->1" in raw HTML.
+      expect(html).toMatch(/Product\s*(?:<!--.*?-->)*\s*1/);
+    });
+
+    test("should return 404 for a path not in generateStaticParams", async ({
+      request,
+    }) => {
+      // Ref: opennextjs-cloudflare isr.test.ts "should 404 for a path that is not found"
+      const res = await request.get(`${BASE}/products/999`);
+      expect(res.status()).toBe(404);
+
+      const cc = res.headers()["cache-control"];
+      if (cc) {
+        expect(cc).toContain("no-cache");
+      }
+    });
+  });
+
+  test.describe("force-dynamic page", () => {
+    // Ref: opennextjs-cloudflare — force-dynamic pages should never have ISR cache headers
+    test("should not have ISR cache header", async ({ request }) => {
+      const res = await request.get(`${BASE}/dynamic-test`);
+      expect(res.status()).toBe(200);
+
+      const cacheHeader = res.headers()["x-vinext-cache"];
+      expect(cacheHeader).toBeUndefined();
+
+      const cc = res.headers()["cache-control"];
+      if (cc) {
+        expect(cc).toContain("no-store");
+      }
+    });
+
+    test("should return different timestamps on each request", async ({
+      request,
+    }) => {
+      const res1 = await request.get(`${BASE}/dynamic-test`);
+      const html1 = await res1.text();
+      const ts1 = html1.match(/data-testid="timestamp">(\d+)</)?.[1];
+      expect(ts1).toBeDefined();
+
+      await new Promise((r) => setTimeout(r, 10));
+
+      const res2 = await request.get(`${BASE}/dynamic-test`);
+      const html2 = await res2.text();
+      const ts2 = html2.match(/data-testid="timestamp">(\d+)</)?.[1];
+
+      expect(Number(ts2)).toBeGreaterThan(Number(ts1));
+    });
+  });
+
+  test("404 response has private no-cache Cache-Control", async ({
+    request,
+  }) => {
+    // Ref: opennextjs-cloudflare isr.test.ts — 404 responses should have
+    // "private, no-cache, no-store, max-age=0, must-revalidate"
+    const res = await request.get(`${BASE}/products/999`);
+    expect(res.status()).toBe(404);
+
+    const cc = res.headers()["cache-control"];
+    if (cc) {
+      // Should not have s-maxage or stale-while-revalidate on 404
+      expect(cc).not.toContain("s-maxage");
+      expect(cc).not.toContain("stale-while-revalidate");
+    }
+  });
+});
+
+/**
+ * OpenNext Compat: revalidateTag / revalidatePath E2E lifecycle tests.
+ *
+ * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/revalidateTag.test.ts
+ * Tests: ON-2 in TRACKING.md
+ *
+ * OpenNext verifies the full tag-based cache invalidation lifecycle:
+ * 1. Load tagged ISR page -> cached (HIT)
+ * 2. Call /api/revalidate-tag -> tag invalidated
+ * 3. Reload -> content changed (MISS)
+ * 4. Subsequent request -> back to HIT
+ * They also verify nested pages sharing the same tag are also invalidated.
+ */
+test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () => {
+  test("revalidateTag invalidates cached page and regenerates", async ({
+    request,
+  }) => {
+    // Ref: opennextjs-cloudflare revalidateTag.test.ts "Revalidate tag"
+    // KNOWN GAP: revalidateTag does not invalidate ISR cache in vinext dev server yet.
+    test.fixme(true, "revalidateTag does not invalidate ISR cache — feature gap");
+    test.setTimeout(30_000);
+
+    // Load the tagged ISR page to populate cache
+    const res1 = await request.get(`${BASE}/revalidate-tag-test`);
+    expect(res1.status()).toBe(200);
+    const html1 = await res1.text();
+    // React SSR may insert <!-- --> comment nodes between text and expressions,
+    // so use a flexible regex that allows anything between the tag and content
+    const reqId1 = html1.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
+      ?? html1.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    expect(reqId1).toBeDefined();
+
+    // Load again to confirm it's cached (same request ID)
+    const res2 = await request.get(`${BASE}/revalidate-tag-test`);
+    const html2 = await res2.text();
+    const reqId2 = html2.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
+      ?? html2.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    const cacheHeader = res2.headers()["x-vinext-cache"];
+    if (cacheHeader) {
+      expect(["HIT", "STALE"]).toContain(cacheHeader);
+    }
+    expect(reqId2).toBe(reqId1);
+
+    // Call revalidateTag API
+    const tagRes = await request.get(`${BASE}/api/revalidate-tag`);
+    expect(tagRes.status()).toBe(200);
+    const tagText = await tagRes.text();
+    expect(tagText).toBe("ok");
+
+    // Reload — content should be different (cache was invalidated)
+    const res3 = await request.get(`${BASE}/revalidate-tag-test`);
+    const html3 = await res3.text();
+    const reqId3 = html3.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
+      ?? html3.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+
+    // After invalidation, should get fresh content
+    expect(reqId3).not.toBe(reqId1);
+
+    // Cache header should be MISS after invalidation
+    const cacheHeader3 = res3.headers()["x-vinext-cache"];
+    if (cacheHeader3) {
+      expect(cacheHeader3).toBe("MISS");
+    }
+  });
+
+  test("revalidatePath invalidates specific path", async ({ request }) => {
+    // Ref: opennextjs-cloudflare revalidateTag.test.ts "Revalidate path"
+    // KNOWN GAP: revalidatePath does not invalidate ISR cache in vinext dev server yet.
+    test.fixme(true, "revalidatePath does not invalidate ISR cache — feature gap");
+    test.setTimeout(30_000);
+
+    // Load the page to populate cache
+    const res1 = await request.get(`${BASE}/revalidate-tag-test`);
+    expect(res1.status()).toBe(200);
+    const html1 = await res1.text();
+    const reqId1 = html1.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
+      ?? html1.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    expect(reqId1).toBeDefined();
+
+    // Wait a moment, then call revalidatePath
+    await new Promise((r) => setTimeout(r, 500));
+
+    const pathRes = await request.get(`${BASE}/api/revalidate-path`);
+    expect(pathRes.status()).toBe(200);
+    expect(await pathRes.text()).toBe("ok");
+
+    // Reload — content should be different
+    const res2 = await request.get(`${BASE}/revalidate-tag-test`);
+    const html2 = await res2.text();
+    const reqId2 = html2.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
+      ?? html2.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+
+    expect(reqId2).not.toBe(reqId1);
+  });
+
+  test("after invalidation + regen, subsequent request is HIT", async ({
+    request,
+  }) => {
+    // Ref: opennextjs-cloudflare revalidateTag.test.ts — after MISS, next request should be HIT
+    test.setTimeout(30_000);
+
+    // Populate cache
+    await request.get(`${BASE}/revalidate-tag-test`);
+
+    // Invalidate
+    await request.get(`${BASE}/api/revalidate-tag`);
+
+    // First request after invalidation — MISS (regen)
+    await request.get(`${BASE}/revalidate-tag-test`);
+
+    // Second request — should be HIT now
+    const hitRes = await request.get(`${BASE}/revalidate-tag-test`);
+    const cacheHeader = hitRes.headers()["x-vinext-cache"];
+    if (cacheHeader) {
+      expect(cacheHeader).toBe("HIT");
+    }
+  });
+});

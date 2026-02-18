@@ -19,4 +19,39 @@ test.describe("Loading boundaries (loading.tsx)", () => {
     expect(response?.status()).toBe(200);
     expect(response?.headers()["content-type"]).toContain("text/html");
   });
+
+  /**
+   * OpenNext Compat: loading.tsx Suspense visibility timing
+   *
+   * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/ssr.test.ts
+   *
+   * OpenNext verifies that loading.tsx boundary is visible BEFORE the page content
+   * resolves. This confirms Suspense streaming works correctly — the loading state
+   * is sent immediately in the initial HTML shell, then replaced by the resolved content.
+   *
+   * The slow page has a 2s async delay. The loading.tsx fallback should appear in
+   * the initial streamed HTML shell before the page component resolves.
+   *
+   * KNOWN GAP: vinext Suspense streaming in dev mode may not show the loading
+   * boundary before the page resolves — this depends on how the RSC streaming
+   * pipeline handles async server components.
+   */
+  test("loading boundary is visible before content resolves", async ({
+    page,
+  }) => {
+    // Ref: opennextjs-cloudflare ssr.test.ts "Server Side Render and loading.tsx"
+    test.fixme(true, "vinext Suspense streaming does not show loading.tsx fallback in dev mode — feature gap");
+
+    // Navigate to slow page — loading.tsx should show first due to 2s server delay
+    void page.goto(`${BASE}/slow`);
+
+    // loading.tsx fallback should appear quickly in the streamed shell
+    const loading = page.locator("#loading-fallback");
+    await expect(loading).toBeVisible({ timeout: 5_000 });
+
+    // Then the actual page content should resolve
+    await expect(page.locator("h1")).toHaveText("Slow Page", {
+      timeout: 10_000,
+    });
+  });
 });

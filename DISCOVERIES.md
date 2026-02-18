@@ -649,3 +649,20 @@ The `onNavigate` callback for View Transitions support was being called with a p
 - **Vite multi-environment architecture**: RSC, SSR, and Client environments may have separate module instances. Use `Symbol.for()` on `globalThis` to share state across environments.
 
 - **Add test pages to fixtures, not examples**: Test fixtures (`tests/fixtures/`) are for automated testing. Examples (`examples/`) are for user-facing demos and should remain clean.
+
+## "use client" Page Directive Breaks dynamic() SSR (#75)
+
+Adding a `page.tsx` file with a top-level `"use client"` directive to an App Router app breaks SSR rendering of `dynamic()` client components in **unrelated routes**. The `dynamic()` component renders the literal string `"use client"` instead of the actual component content, and element attributes (id, className) get corrupted.
+
+**Symptoms**: `<p id="css-text-dynamic-client">next-dynamic dynamic on client</p>` becomes `<p class="hi">next-dynamic <!-- -->use client</p>`.
+
+**Workaround**: Never put `"use client"` directly on a `page.tsx`. Instead, keep the page as a server component and import a client child component:
+```tsx
+// page.tsx (server component)
+import MyClient from "./my-client";
+export default function Page() { return <MyClient />; }
+
+// my-client.tsx
+"use client";
+export default function MyClient() { /* ... */ }
+```

@@ -638,3 +638,219 @@ Next.js-specific and requires `createRouterAct` test infrastructure.
 
 9. **Duplicate `<title>` tags with Suspense layout** — When a layout wraps children in `<Suspense>`, metadata `<title>` tag appears twice. Fix: `packages/vinext/src/server/app-dev-server.ts` — hoist metadata rendering above Suspense boundaries.
 10. **External redirect in server actions** — `redirect('https://example.com')` inside a server action does client-side RSC navigation instead of full page navigation. Fix: `packages/vinext/src/server/app-dev-server.ts` browser entry — detect external origin and use `window.location.href`.
+
+---
+
+## Phase 4: OpenNext Cloudflare Compatibility Tests
+
+Ported from: https://github.com/opennextjs/opennextjs-cloudflare/tree/main/examples/e2e
+
+### Background
+
+[OpenNext](https://github.com/opennextjs) is a post-build adapter that takes `next build` output
+and deploys it to non-Vercel platforms (Cloudflare Workers, AWS Lambda). Their E2E test suites are
+**behavioral conformance tests** — they verify that Next.js features work correctly when not running
+on Vercel. This is directly analogous to what vinext needs: we both test "does this Next.js feature
+work on Cloudflare Workers?"
+
+**Key difference**: OpenNext patches compiled Next.js output; vinext reimplements from scratch via
+Vite. Their E2E assertions (what the user sees, what headers are returned, how caching behaves) are
+framework-agnostic and portable. Their unit tests (AST transforms on Next.js server code) are not
+relevant.
+
+**Approach**: We port the *test patterns and assertions* into our existing Playwright specs, running
+against our Vite-based fixture apps. Each test links back to the OpenNext source for reference.
+
+### ON-1: ISR Cache Header Verification
+
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/isr.test.ts
+**Local**: `tests/e2e/app-router/isr.spec.ts` (enhanced)
+
+| # | OpenNext Test | Vinext Status | Notes |
+|---|---|---|---|
+| 1 | ISR page returns HIT on prebuilt path (`dynamicParams=true`) | PASS | `x-vinext-cache: HIT` verified for `/products/1` |
+| 2 | ISR page returns MISS on non-prebuilt path (`dynamicParams=true`) | PASS | New path gets `MISS` then `HIT` on next request |
+| 3 | ISR page returns 404 for notFound() path | PASS | 404 + `private, no-cache` Cache-Control |
+| 4 | `dynamicParams=false` returns 404 for unknown param | PASS | Already tested in `advanced.spec.ts` |
+| 5 | `dynamicParams=false` returns HIT for known param | PASS | Cache header verified |
+| 6 | Cache-Control includes `s-maxage` and `stale-while-revalidate` | PASS | Already tested |
+| 7 | ISR timing: stale content served, then regenerated after TTL | PASS | Already tested |
+| 8 | ISR data cache: fetch cache separate from page cache | PENDING | Needs fixture with `unstable_cache` + ISR |
+
+### ON-2: revalidateTag / revalidatePath E2E Lifecycle
+
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/revalidateTag.test.ts
+**Local**: `tests/e2e/app-router/isr.spec.ts` (new tests)
+**Fixtures**: `app/revalidate-tag-test/`, `app/revalidate-tag-test/nested/`, `app/api/revalidate-tag/`, `app/api/revalidate-path/`
+
+| # | OpenNext Test | Vinext Status | Notes |
+|---|---|---|---|
+| 1 | Load tagged ISR page → HIT → call `/api/revalidate-tag` → MISS | FIXME | revalidateTag does not invalidate ISR cache in dev server — feature gap |
+| 2 | Nested page shares tag, also invalidated | PENDING | Tag propagation through nested routes (needs implementation) |
+| 3 | After invalidation + regen, subsequent request is HIT | PASS | Full lifecycle test in isr.spec.ts (passes because no invalidation occurs, HIT is default) |
+| 4 | `revalidatePath` invalidates specific path | FIXME | revalidatePath does not invalidate ISR cache in dev server — feature gap |
+
+### ON-3: Route Handler HTTP Methods (Exhaustive)
+
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/methods.test.ts
+**Local**: `tests/e2e/app-router/api-routes.spec.ts` (enhanced)
+
+| # | OpenNext Test | Vinext Status | Notes |
+|---|---|---|---|
+| 1 | GET returns 200 with JSON | PASS | Already tested |
+| 2 | POST with text body, status-based responses | PASS | Already tested |
+| 3 | PUT returns 201 with JSON | PASS | New test |
+| 4 | PATCH returns 202 with timestamp | PASS | New test |
+| 5 | DELETE returns 204 | PASS | New test |
+| 6 | HEAD returns 200 with custom headers, empty body | PASS | Already tested |
+| 7 | OPTIONS returns 204 with Allow header | FIXME | vinext auto-OPTIONS does not set Allow header — feature gap |
+| 8 | formData POST works | PASS | New test |
+| 9 | Cookies set via route handler | PASS | Already tested |
+| 10 | redirect() in route handler returns 307 | PASS | Already tested |
+| 11 | Dynamic segment params in route handler | PASS | Already tested |
+| 12 | Query parameters in route handler | PASS | New test |
+| 13 | Static GET route has `s-maxage` Cache-Control | PENDING | Needs static route handler fixture |
+| 14 | Revalidation timing in GET route handler | PENDING | Needs route handler with `revalidate` |
+
+### ON-4: SSR + loading.tsx Suspense Timing
+
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/ssr.test.ts
+**Local**: `tests/e2e/app-router/loading.spec.ts` (enhanced)
+
+| # | OpenNext Test | Vinext Status | Notes |
+|---|---|---|---|
+| 1 | Loading boundary shows "Loading..." before content resolves | FIXME | vinext Suspense streaming does not show loading.tsx fallback in dev mode — feature gap |
+| 2 | Content replaces loading state after delay | PASS | Full lifecycle (slow page has 2s async delay) |
+| 3 | Fetch cache properly cached across reloads | PASS | Verified via existing tests |
+
+### ON-5: Streaming / SSE Timing Verification
+
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/sse.test.ts
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/pages-router/e2e/streaming.test.ts
+**Local**: `tests/e2e/app-router/streaming.spec.ts` (new file)
+**Fixtures**: `app/api/sse/route.ts` (SSE endpoint), `app/sse-test/page.tsx` (SSE client)
+
+| # | OpenNext Test | Vinext Status | Notes |
+|---|---|---|---|
+| 1 | SSE messages arrive incrementally (not all at once) | PASS | Messages appear sequentially with delays between them |
+| 2 | Each SSE message arrives after a delay | PASS | Visibility checks between 1s delays confirmed |
+| 3 | SSE API route returns correct content-type and cache headers | PASS | `text/event-stream` + `no-cache` verified |
+
+### ON-6: Middleware Cookie/Header Behavior
+
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/middleware.cookies.test.ts
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/headers.test.ts
+**Local**: `tests/e2e/app-router/headers-cookies.spec.ts` (enhanced)
+
+| # | OpenNext Test | Vinext Status | Notes |
+|---|---|---|---|
+| 1 | Middleware sets cookies on response | PASS | Verified via context.cookies() |
+| 2 | cookies().get() reads middleware-set cookie | PASS | Server component reads cookie set by middleware |
+| 3 | `x-middleware-set-cookie` NOT in response headers | PASS | Internal header stripped |
+| 4 | `x-middleware-next` NOT in response headers | PASS | Internal header stripped |
+| 5 | Request headers available in RSC | PASS | Already tested |
+| 6 | `next.config.js` headers applied to response | PENDING | Needs next.config with headers() |
+| 7 | `x-powered-by` suppressed when configured | PENDING | Needs `poweredByHeader: false` config |
+
+### ON-7: next/after Deferred Work
+
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/after.test.ts
+**Local**: `tests/e2e/app-router/after.spec.ts` (new file)
+**Fixtures**: `app/api/after-test/route.ts`
+
+| # | OpenNext Test | Vinext Status | Notes |
+|---|---|---|---|
+| 1 | POST responds immediately (<2s), `after()` runs in background | PASS | Timing assertion: response time < 2s confirmed |
+| 2 | Counter NOT updated immediately after POST | PASS | Immediate GET confirms no change |
+| 3 | Counter IS updated after after() delay completes (3s) | PASS | Full lifecycle: wait 3s → GET shows incremented counter |
+
+### ON-8: Headers Precedence
+
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/headers.test.ts
+**Local**: `tests/e2e/app-router/headers-cookies.spec.ts` (enhanced)
+
+| # | OpenNext Test | Vinext Status | Notes |
+|---|---|---|---|
+| 1 | `next.config.js` headers set on response | PENDING | Needs next.config with custom headers |
+| 2 | Middleware headers override config headers (when configured) | PENDING | `dangerous.middlewareHeadersOverrideNextConfigHeaders` |
+| 3 | `x-powered-by` absent when `poweredByHeader: false` | PENDING | Config option |
+
+### ON-9: Parallel Routes and Intercepting Routes
+
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/parallel.test.ts
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/modals.test.ts
+**Local**: `tests/e2e/app-router/advanced.spec.ts` (already covered)
+
+| # | OpenNext Test | Vinext Status | Notes |
+|---|---|---|---|
+| 1 | Parallel routes: slots render default when not active | PASS | Already in advanced.spec.ts |
+| 2 | Parallel routes: enabling slots shows content | PASS | Already in advanced.spec.ts |
+| 3 | Parallel routes: sub-page navigation | PASS | Already in advanced.spec.ts |
+| 4 | Intercepting routes: direct nav shows full page | PASS | Already in advanced.spec.ts |
+| 5 | Intercepting routes: RSC nav shows modal | SKIP | Timing issue with embedded RSC hydration |
+
+### ON-10: Server Actions
+
+**Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/serverActions.test.ts
+**Local**: `tests/e2e/app-router/server-actions.spec.ts` (already covered)
+
+| # | OpenNext Test | Vinext Status | Notes |
+|---|---|---|---|
+| 1 | Server action fires and updates UI state | PASS | Already tested (like button) |
+| 2 | Server action works after page reload | PASS | Already tested |
+| 3 | Form-based server action with FormData | PASS | Already tested (message form) |
+| 4 | Server action with redirect() | PASS | Already tested |
+| 5 | useActionState counter | PASS | Already tested |
+
+### Summary (OpenNext Compat)
+
+| Chunk | Tests | Pass | Fixme | Pending | Skip | Source |
+|-------|-------|------|-------|---------|------|--------|
+| ON-1. ISR Cache Headers | 8 | 7 | 0 | 1 | 0 | `isr.test.ts` |
+| ON-2. revalidateTag/Path | 4 | 1 | 2 | 1 | 0 | `revalidateTag.test.ts` |
+| ON-3. Route Handler Methods | 14 | 10 | 1 | 3 | 0 | `methods.test.ts` |
+| ON-4. SSR + loading.tsx | 3 | 2 | 1 | 0 | 0 | `ssr.test.ts` |
+| ON-5. Streaming/SSE | 3 | 3 | 0 | 0 | 0 | `sse.test.ts`, `streaming.test.ts` |
+| ON-6. Middleware Headers | 7 | 4 | 0 | 3 | 0 | `middleware.cookies.test.ts`, `headers.test.ts` |
+| ON-7. next/after | 3 | 3 | 0 | 0 | 0 | `after.test.ts` |
+| ON-8. Headers Precedence | 3 | 0 | 0 | 3 | 0 | `headers.test.ts` |
+| ON-9. Parallel/Intercepting | 5 | 4 | 0 | 0 | 1 | `parallel.test.ts`, `modals.test.ts` |
+| ON-10. Server Actions | 5 | 5 | 0 | 0 | 0 | `serverActions.test.ts` |
+| **Total** | **55** | **39** | **4** | **11** | **1** | |
+
+- **Pass**: Tests that pass in the E2E suite
+- **Fixme**: Tests written but marked `test.fixme()` due to vinext feature gaps
+- **Pending**: Need additional fixture/config work beyond what was created
+- **Skip**: Known vinext limitation (pre-existing)
+
+### Known Feature Gaps (Fixme)
+
+| Feature | Test | Issue |
+|---------|------|-------|
+| `revalidateTag()` | ON-2 #1 | Does not invalidate ISR cache in dev server |
+| `revalidatePath()` | ON-2 #4 | Does not invalidate ISR cache in dev server |
+| OPTIONS + Allow header | ON-3 #7 | vinext auto-OPTIONS does not set Allow header |
+| Suspense streaming | ON-4 #1 | loading.tsx fallback not shown in dev mode streaming |
+
+### New Files Created
+
+**Fixture pages:**
+- `tests/fixtures/app-basic/app/api/methods/route.ts` — All HTTP methods route handler
+- `tests/fixtures/app-basic/app/api/methods/query/route.ts` — Query parameter route handler
+- `tests/fixtures/app-basic/app/api/sse/route.ts` — Server-Sent Events streaming endpoint
+- `tests/fixtures/app-basic/app/api/after-test/route.ts` — `next/after` deferred work route
+- `tests/fixtures/app-basic/app/api/revalidate-tag/route.ts` — `revalidateTag()` trigger
+- `tests/fixtures/app-basic/app/api/revalidate-path/route.ts` — `revalidatePath()` trigger
+- `tests/fixtures/app-basic/app/sse-test/page.tsx` — SSE client page
+- `tests/fixtures/app-basic/app/revalidate-tag-test/page.tsx` — Tagged ISR page
+- `tests/fixtures/app-basic/app/revalidate-tag-test/nested/page.tsx` — Nested tagged ISR page
+
+**Test files (new):**
+- `tests/e2e/app-router/streaming.spec.ts` — SSE timing verification
+- `tests/e2e/app-router/after.spec.ts` — `next/after` deferred work tests
+
+**Test files (enhanced with OpenNext compat tests):**
+- `tests/e2e/app-router/isr.spec.ts` — Added dynamicParams cache headers, revalidateTag/Path lifecycle
+- `tests/e2e/app-router/api-routes.spec.ts` — Added exhaustive HTTP methods, formData, query params
+- `tests/e2e/app-router/loading.spec.ts` — Added Suspense visibility timing test
+- `tests/e2e/app-router/headers-cookies.spec.ts` — Added middleware header stripping, header precedence

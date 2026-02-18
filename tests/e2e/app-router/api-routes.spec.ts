@@ -131,3 +131,134 @@ test.describe("App Router API Route Handlers", () => {
     });
   });
 });
+
+/**
+ * OpenNext Compat: Exhaustive HTTP method tests for route handlers.
+ *
+ * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/methods.test.ts
+ * Tests: ON-3 in TRACKING.md
+ *
+ * OpenNext tests every HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS)
+ * plus formData, cookies, redirects, dynamic segments, and query params. These
+ * tests verify the same behavior in vinext's route handler implementation.
+ */
+test.describe("Route Handler HTTP Methods (OpenNext compat)", () => {
+  // Ref: opennextjs-cloudflare methods.test.ts "all supported methods should work in route handlers"
+  test("GET returns 200 with JSON", async ({ request }) => {
+    const res = await request.get(`${BASE}/api/methods`);
+    expect(res.status()).toBe(200);
+    const data = await res.json();
+    expect(data.message).toBe("vinext route handler");
+  });
+
+  test("POST with text body returns status-based response", async ({
+    request,
+  }) => {
+    // Ref: opennextjs-cloudflare methods.test.ts "POST"
+    const res = await request.post(`${BASE}/api/methods`, {
+      headers: { "Content-Type": "text/plain" },
+      data: "vinext is awesome!",
+    });
+    expect(res.status()).toBe(202);
+    const data = await res.json();
+    expect(data.message).toBe("ok");
+
+    // Error case: forbidden content
+    const errorRes = await request.post(`${BASE}/api/methods`, {
+      headers: { "Content-Type": "text/plain" },
+      data: "vinext is not awesome!",
+    });
+    expect(errorRes.status()).toBe(403);
+    const errorData = await errorRes.json();
+    expect(errorData.message).toBe("forbidden");
+  });
+
+  test("PUT returns 201 with JSON body merged", async ({ request }) => {
+    // Ref: opennextjs-cloudflare methods.test.ts "PUT"
+    const res = await request.put(`${BASE}/api/methods`, {
+      data: { message: "vinext PUT" },
+    });
+    expect(res.status()).toBe(201);
+    const data = await res.json();
+    // Route handler spreads body into response: { message: "ok", ...body }
+    // Since body has message: "vinext PUT", it overrides to "vinext PUT"
+    expect(data.message).toBe("vinext PUT");
+  });
+
+  test("PATCH returns 202 with timestamp", async ({ request }) => {
+    // Ref: opennextjs-cloudflare methods.test.ts "PATCH"
+    const timestampBefore = new Date();
+    const res = await request.patch(`${BASE}/api/methods`, {
+      data: { message: "vinext PATCH" },
+    });
+    expect(res.status()).toBe(202);
+    const data = await res.json();
+    expect(data.message).toBe("ok");
+    expect(data.modified).toBe(true);
+    expect(Date.parse(data.timestamp)).toBeGreaterThan(timestampBefore.getTime());
+  });
+
+  test("DELETE returns 204 with no body", async ({ request }) => {
+    // Ref: opennextjs-cloudflare methods.test.ts "DELETE"
+    const res = await request.delete(`${BASE}/api/methods`);
+    expect(res.status()).toBe(204);
+  });
+
+  test("HEAD returns 200 with custom headers and empty body", async ({
+    request,
+  }) => {
+    // Ref: opennextjs-cloudflare methods.test.ts "HEAD"
+    const res = await request.head(`${BASE}/api/methods`);
+    expect(res.status()).toBe(200);
+    const headers = res.headers();
+    expect(headers["content-type"]).toBe("text/html; charset=utf-8");
+    expect(headers["special-header"]).toBe("vinext is great");
+  });
+
+  test("OPTIONS returns 204 with Allow header", async ({ request }) => {
+    // Ref: opennextjs-cloudflare methods.test.ts "OPTIONS"
+    // Note: vinext auto-generates OPTIONS responses based on exported methods,
+    // so our explicit OPTIONS handler may or may not be called depending on
+    // whether vinext intercepts before reaching the handler.
+    // KNOWN GAP: vinext's auto-OPTIONS does not set the Allow header yet.
+    test.fixme(true, "vinext auto-OPTIONS does not set Allow header — feature gap");
+    const res = await request.fetch(`${BASE}/api/methods`, {
+      method: "OPTIONS",
+    });
+    expect(res.status()).toBe(204);
+    // Vinext's auto-OPTIONS sets Allow based on detected exports
+    const headers = res.headers();
+    const allow = headers["allow"];
+    expect(allow).toBeDefined();
+    // Should list at minimum the methods we export
+    expect(allow).toContain("GET");
+    expect(allow).toContain("POST");
+    expect(allow).toContain("PUT");
+    expect(allow).toContain("DELETE");
+  });
+
+  test("formData should work in POST route handler", async ({ request }) => {
+    // Ref: opennextjs-cloudflare methods.test.ts "formData should work in POST route handler"
+    const res = await request.post(`${BASE}/api/methods`, {
+      form: {
+        name: "vinext [] () %&#!%$#",
+        email: "vinext@vinext.dev",
+      },
+    });
+    expect(res.status()).toBe(202);
+    const data = await res.json();
+    expect(data.message).toBe("ok");
+    expect(data.name).toBe("vinext [] () %&#!%$#");
+    expect(data.email).toBe("vinext@vinext.dev");
+  });
+
+  test("query parameters should work in route handlers", async ({
+    request,
+  }) => {
+    // Ref: opennextjs-cloudflare methods.test.ts "query parameters should work in route handlers"
+    const res = await request.get(`${BASE}/api/methods/query?query=vinext+is+awesome`);
+    expect(res.status()).toBe(200);
+    const data = await res.json();
+    expect(data.query).toBe("vinext is awesome");
+  });
+});
