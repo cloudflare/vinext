@@ -102,6 +102,7 @@ async function startAndMeasure(cmd, args, cwd, url) {
   const proc = spawn(cmd, args, {
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
+    detached: true, // Own process group so we can kill the tree safely
     env: { ...process.env, NODE_ENV: "production", PORT: new URL(url).port },
   });
 
@@ -143,22 +144,11 @@ async function startAndMeasure(cmd, args, cwd, url) {
 
 function kill(proc) {
   if (!proc || proc.killed) return;
-  const pid = proc.pid;
-  // First, try to kill child processes (Next.js/Turbopack spawns workers)
+  // The process was spawned with detached:true so it has its own process group.
+  // Kill the entire group with -PID (negative) which is safe because it won't
+  // include our own script.
   try {
-    // Find and kill all child processes on Linux
-    const children = execSync(`pgrep -P ${pid} 2>/dev/null || true`, { encoding: "utf-8" }).trim();
-    if (children) {
-      for (const cpid of children.split("\n").filter(Boolean)) {
-        try { execSync(`kill -9 ${cpid} 2>/dev/null || true`, { stdio: "ignore" }); } catch {}
-      }
-    }
-  } catch {}
-  // Kill the main process
-  try { proc.kill("SIGKILL"); } catch {}
-  // Fallback: kill anything still listening on our benchmark ports
-  try {
-    execSync(`lsof -ti:4100,4101,4102 2>/dev/null | xargs kill -9 2>/dev/null || true`, { stdio: "ignore" });
+    process.kill(-proc.pid, "SIGKILL");
   } catch {}
 }
 
