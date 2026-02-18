@@ -176,6 +176,7 @@ import {
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext } from "next/headers";
+import { NextRequest } from "next/server";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -714,16 +715,29 @@ async function _handleRequest(request) {
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
   let cleanPathname = pathname.replace(/\\.rsc$/, "");
 
+  // Middleware response headers to merge into the final response
+  let _middlewareResponseHeaders = null;
+
   ${middlewarePath ? `
    // Run proxy/middleware if present and path matches
   const middlewareFn = middlewareModule.default || middlewareModule.proxy || middlewareModule.middleware;
   const middlewareMatcher = middlewareModule.config?.matcher;
   if (typeof middlewareFn === "function" && matchMiddlewarePath(cleanPathname, middlewareMatcher)) {
     try {
-      const mwResponse = await middlewareFn(request);
+      // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
+      const nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+      const mwResponse = await middlewareFn(nextRequest);
       if (mwResponse) {
         // Check for x-middleware-next (continue)
-        if (mwResponse.headers.get("x-middleware-next") !== "1") {
+        if (mwResponse.headers.get("x-middleware-next") === "1") {
+          // Middleware wants to continue - save headers to merge into final response
+          _middlewareResponseHeaders = new Headers();
+          for (const [key, value] of mwResponse.headers) {
+            if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
+              _middlewareResponseHeaders.set(key, value);
+            }
+          }
+        } else {
           // Check for redirect
           if (mwResponse.status >= 300 && mwResponse.status < 400) {
             return mwResponse;
@@ -733,6 +747,13 @@ async function _handleRequest(request) {
           if (rewriteUrl) {
             const rewriteParsed = new URL(rewriteUrl, request.url);
             cleanPathname = rewriteParsed.pathname;
+            // Also save any other headers from the rewrite response
+            _middlewareResponseHeaders = new Headers();
+            for (const [key, value] of mwResponse.headers) {
+              if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
+                _middlewareResponseHeaders.set(key, value);
+              }
+            }
           } else {
             // Middleware returned a custom response
             return mwResponse;
@@ -1335,6 +1356,12 @@ async function _handleRequest(request) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
       responseHeaders["X-Vinext-Cache"] = "MISS";
     }
+    // Merge middleware response headers into the RSC response
+    if (_middlewareResponseHeaders) {
+      for (const [key, value] of _middlewareResponseHeaders) {
+        responseHeaders[key] = value;
+      }
+    }
     return new Response(rscStream, { headers: responseHeaders });
   }
 
@@ -1355,10 +1382,16 @@ async function _handleRequest(request) {
   setHeadersContext(null);
   setNavigationContext(null);
 
-  // Helper to attach draftMode cookie to a response if present
+  // Helper to attach draftMode cookie and middleware headers to a response
   function attachDraftCookie(response) {
     if (draftCookie) {
       response.headers.append("Set-Cookie", draftCookie);
+    }
+    // Merge middleware response headers into the final response
+    if (_middlewareResponseHeaders) {
+      for (const [key, value] of _middlewareResponseHeaders) {
+        response.headers.set(key, value);
+      }
     }
     return response;
   }

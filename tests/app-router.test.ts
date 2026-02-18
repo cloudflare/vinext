@@ -1681,3 +1681,58 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("__redir.destination.startsWith(__basePath)");
   });
 });
+
+describe("App Router middleware with NextRequest", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  it("middleware receives NextRequest and can use .nextUrl", async () => {
+    // The middleware sets x-middleware-pathname from request.nextUrl.pathname
+    // If the middleware received a plain Request, this would throw TypeError
+    const res = await fetch(`${baseUrl}/about`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-middleware-ran")).toBe("true");
+    expect(res.headers.get("x-middleware-pathname")).toBe("/about");
+  });
+
+  it("middleware receives NextRequest and can use .cookies", async () => {
+    // The middleware checks request.cookies.get() which requires NextRequest
+    const res = await fetch(`${baseUrl}/about`, {
+      headers: {
+        Cookie: "session=test-token",
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-middleware-ran")).toBe("true");
+    expect(res.headers.get("x-middleware-has-session")).toBe("true");
+  });
+
+  it("middleware can redirect using NextRequest", async () => {
+    const res = await fetch(`${baseUrl}/middleware-redirect`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("middleware can rewrite using NextRequest", async () => {
+    const res = await fetch(`${baseUrl}/middleware-rewrite`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // Should render the / page content (the rewrite destination)
+    expect(html).toContain("Welcome to App Router");
+  });
+
+  it("middleware can return custom response", async () => {
+    const res = await fetch(`${baseUrl}/middleware-blocked`);
+    expect(res.status).toBe(403);
+    const text = await res.text();
+    expect(text).toBe("Blocked by middleware");
+  });
+});

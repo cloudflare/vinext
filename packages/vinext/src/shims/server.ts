@@ -18,7 +18,21 @@ export class NextRequest extends Request {
   private _cookies: RequestCookies;
 
   constructor(input: URL | RequestInfo, init?: RequestInit) {
-    super(input, init);
+    // Handle the case where input is a Request object - we need to extract URL and init
+    // to avoid Node.js undici issues with passing Request objects directly to super()
+    if (input instanceof Request) {
+      const req = input;
+      super(req.url, {
+        method: req.method,
+        headers: req.headers,
+        body: req.body,
+        // @ts-expect-error - duplex is not in RequestInit type but needed for streams
+        duplex: req.body ? "half" : undefined,
+        ...init,
+      });
+    } else {
+      super(input, init);
+    }
     const url = typeof input === "string"
       ? new URL(input, "http://localhost")
       : input instanceof URL
