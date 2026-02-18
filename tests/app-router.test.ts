@@ -480,6 +480,36 @@ describe("App Router integration", () => {
     expect(location).toContain("/about");
   });
 
+  it("redirect() inside Suspense boundary preserves digest in RSC payload", async () => {
+    // When redirect() is called inside a Suspense boundary, the error occurs
+    // during RSC streaming. The onError callback preserves the NEXT_REDIRECT
+    // digest in the RSC stream so the client can detect it and navigate.
+    // Since there's no error boundary that catches redirect errors specifically,
+    // React doesn't emit a $RX replacement — instead the redirect digest is
+    // embedded in the RSC payload for client-side handling.
+    const res = await fetch(`${baseUrl}/suspense-redirect-test`);
+    const html = await res.text();
+    expect(res.status).toBe(200);
+    // The RSC payload embedded in the HTML should contain the redirect digest
+    // This allows the client-side router to detect and perform the redirect
+    expect(html).toContain("NEXT_REDIRECT");
+    expect(html).toContain("/about");
+  });
+
+  it("notFound() inside Suspense boundary preserves digest for not-found UI", async () => {
+    // When notFound() is called inside a Suspense boundary, the error digest
+    // must be preserved so the NotFoundBoundary can catch it and render the
+    // not-found UI. Without an onError callback, the digest is empty ("") and
+    // the NotFoundBoundary can't identify it as a not-found error.
+    const res = await fetch(`${baseUrl}/suspense-notfound-test`);
+    const html = await res.text();
+    // The response status is 200 because headers were sent before notFound()
+    expect(res.status).toBe(200);
+    // The $RX call should include the NEXT_HTTP_ERROR_FALLBACK digest so the
+    // NotFoundBoundary can catch it and render not-found.tsx
+    expect(html).toMatch(/\$RX\("[^"]*","NEXT_HTTP_ERROR_FALLBACK/);
+  });
+
   it("renders error boundary wrapper for routes with error.tsx", async () => {
     const res = await fetch(`${baseUrl}/error-test`);
     expect(res.status).toBe(200);

@@ -219,6 +219,18 @@ function isrTriggerRegen(key, renderFn) {
   isrPendingRegens.set(key, promise);
 }
 
+// onError callback for renderToReadableStream — preserves the digest for
+// Next.js navigation errors (redirect, notFound, forbidden, unauthorized)
+// thrown during RSC streaming (e.g. inside Suspense boundaries).
+// Without this, React's default onError returns undefined, the digest is lost,
+// and client-side error boundaries can't identify the error type.
+function rscOnError(error) {
+  if (error && typeof error === "object" && "digest" in error) {
+    return String(error.digest);
+  }
+  return undefined;
+}
+
 ${imports.join("\n")}
 
 const routes = [
@@ -263,7 +275,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
       element = createElement(LayoutComponent, { children: element });
     }
   }
-  const rscStream = renderToReadableStream(element);
+  const rscStream = renderToReadableStream(element, { onError: rscOnError });
   if (isRscRequest) {
     setHeadersContext(null);
     setNavigationContext(null);
@@ -893,7 +905,7 @@ async function _handleRequest(request) {
 
       const rscStream = renderToReadableStream(
         { root: element, returnValue },
-        { temporaryReferences },
+        { temporaryReferences, onError: rscOnError },
       );
 
       // Collect cookies set during the action
@@ -1188,7 +1200,7 @@ async function _handleRequest(request) {
         // Trigger background regeneration
         isrTriggerRegen(_isrCacheKey, async function() {
           const freshElement = await buildPageElement(route, params, undefined, url.searchParams);
-          const freshRscStream = renderToReadableStream(freshElement);
+          const freshRscStream = renderToReadableStream(freshElement, { onError: rscOnError });
           const ssrEntryFresh = await import.meta.viteRsc.loadModule("ssr", "index");
           const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream, _currentNavContext);
           // Consume the stream to get HTML string
@@ -1235,7 +1247,7 @@ async function _handleRequest(request) {
           interceptPage: intercept.page,
           interceptParams: intercept.matchedParams,
         }, url.searchParams);
-        const interceptStream = renderToReadableStream(interceptElement);
+        const interceptStream = renderToReadableStream(interceptElement, { onError: rscOnError });
         setHeadersContext(null);
         setNavigationContext(null);
         return new Response(interceptStream, {
@@ -1334,7 +1346,7 @@ async function _handleRequest(request) {
   }
 
   // Render to RSC stream
-  const rscStream = renderToReadableStream(element);
+  const rscStream = renderToReadableStream(element, { onError: rscOnError });
 
   if (isRscRequest) {
     // Direct RSC stream response (for client-side navigation)
@@ -1541,9 +1553,20 @@ export async function handleSsr(rscStream, navContext) {
       await import.meta.viteRsc.loadBootstrapScriptContent("index");
 
     // Render HTML (traditional SSR)
-    // useServerInsertedHTML callbacks are registered during this render
+    // useServerInsertedHTML callbacks are registered during this render.
+    // The onError callback preserves the digest for Next.js navigation errors
+    // (redirect, notFound, forbidden, unauthorized) thrown inside Suspense
+    // boundaries during RSC streaming. Without this, React's default onError
+    // returns undefined and the digest is lost in the $RX() call, preventing
+    // client-side error boundaries from identifying the error type.
     const htmlStream = await renderToReadableStream(root, {
       bootstrapScriptContent,
+      onError(error) {
+        if (error && typeof error === "object" && "digest" in error) {
+          return String(error.digest);
+        }
+        return undefined;
+      },
     });
 
     // Wait for RSC chunks to be collected
