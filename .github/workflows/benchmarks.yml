@@ -37,6 +37,10 @@ jobs:
       - name: Build vinext plugin
         run: pnpm run build
 
+      # Generate the shared benchmark app (copies app/ into each project dir)
+      - name: Generate benchmark app
+        run: node benchmarks/generate-app.mjs
+
       # Install benchmark-specific deps (outside pnpm workspace)
       - name: Install benchmark dependencies
         run: |
