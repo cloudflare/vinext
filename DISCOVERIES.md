@@ -643,25 +643,7 @@ The `onNavigate` callback for View Transitions support was being called with a p
 
 **Fix**: Construct a proper `NavigateEvent` with a `prevented` flag, a `preventDefault()` method that sets it, and a `defaultPrevented` getter. After calling `onNavigate`, check `navEvent.defaultPrevented` — if true, return early and let the callback's custom navigation take effect.
 
-
-## Development Best Practices
-
-### Research Approach
-
-- **When in doubt, look at how Next.js does it.** Vinext aims to replicate Next.js behavior, so their implementation is the authoritative reference. Use Context7 MCP to quickly look up Next.js source code and patterns.
-
-- **Context7 MCP is valuable for framework research.** It provides fast access to up-to-date documentation and source code for libraries like Next.js, Vite, React, etc. Useful queries:
-  - How Next.js implements `headers()` and `cookies()` internally
-  - AsyncLocalStorage patterns for request-scoped context
-  - RSC streaming and rendering lifecycle
-  - Route matching and middleware patterns
-
-- **Key Context7 library IDs for this project:**
-  - `/vercel/next.js` — Next.js source code and docs
-  - `/llmstxt/nextjs_llms_txt` — Extended Next.js documentation
-  - `/vitejs/vite-plugin-react` — Vite RSC plugin docs
-
-### Debugging Patterns
+## Debugging Patterns
 
 - **RSC streaming is async**: `renderToReadableStream()` returns immediately, but component rendering happens when stream chunks are consumed. Context set before rendering may be cleared before components execute.
 
