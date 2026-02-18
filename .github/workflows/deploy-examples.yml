@@ -29,6 +29,9 @@ jobs:
           - name: realworld-api-rest
             project: realworld-api-rest
             dist_name: realworld_api_rest
+          - name: benchmarks
+            project: benchmarks
+            dist_name: benchmarks
     steps:
       - uses: actions/checkout@v4
 
@@ -47,6 +50,15 @@ jobs:
       - name: Build example
         run: pnpm exec vite build
         working-directory: examples/${{ matrix.example.name }}
+
+      - name: Apply D1 migrations (benchmarks only)
+        if: matrix.example.name == 'benchmarks' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: examples/benchmarks
+          command: d1 migrations apply vinext-benchmarks --remote
 
       - name: Deploy to Cloudflare Workers (Production)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -86,6 +98,7 @@ jobs:
               { name: 'cloudflare-pages', project: 'cloudflare-pages' },
               { name: 'app-router-playground', project: 'app-router-playground' },
               { name: 'realworld-api-rest', project: 'realworld-api-rest' },
+              { name: 'benchmarks', project: 'benchmarks' },
             ];
             
             const { data: comments } = await github.rest.issues.listComments({

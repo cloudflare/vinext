@@ -1,0 +1,351 @@
+"use client";
+
+import { useState, useEffect } from "react";
+import { Tabs } from "@cloudflare/kumo/components/tabs";
+import { Badge } from "@cloudflare/kumo/components/badge";
+import { Table } from "@cloudflare/kumo/components/table";
+import { TrendChart } from "./chart";
+
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface RunnerMetrics {
+  buildTimeMean: number | null;
+  buildTimeStddev: number | null;
+  bundleSizeRaw: number | null;
+  bundleSizeGzip: number | null;
+  bundleFileCount: number | null;
+  devColdStartMs: number | null;
+  devPeakRssKb: number | null;
+}
+
+interface BenchmarkCommit {
+  commitSha: string;
+  commitShort: string;
+  commitMessage: string;
+  commitDate: string;
+  runDate: string;
+  runners: Record<string, RunnerMetrics>;
+}
+
+type MetricTab = "build_time" | "bundle_size" | "cold_start";
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function formatMs(ms: number | null): string {
+  if (ms === null) return "-";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  return `${(ms / 1000).toFixed(2)} s`;
+}
+
+function formatBytes(b: number | null): string {
+  if (b === null) return "-";
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function speedup(baseline: number | null, value: number | null): string | null {
+  if (baseline === null || value === null || value === 0) return null;
+  const ratio = baseline / value;
+  if (ratio > 1) return `${ratio.toFixed(1)}x faster`;
+  if (ratio < 1) return `${(1 / ratio).toFixed(1)}x slower`;
+  return "same";
+}
+
+function sizeReduction(baseline: number | null, value: number | null): string | null {
+  if (baseline === null || value === null || baseline === 0) return null;
+  const pct = ((1 - value / baseline) * 100).toFixed(0);
+  const num = parseInt(pct, 10);
+  if (num > 0) return `${pct}% smaller`;
+  if (num < 0) return `${Math.abs(num)}% larger`;
+  return "same";
+}
+
+const RUNNER_LABELS: Record<string, string> = {
+  nextjs: "Next.js 16",
+  vinext: "vinext (Rollup)",
+  vinext_rolldown: "vinext (Rolldown)",
+};
+
+const RUNNER_COLORS: Record<string, string> = {
+  nextjs: "var(--color-chart-nextjs, #f97316)",
+  vinext: "var(--color-chart-vinext, #3b82f6)",
+  vinext_rolldown: "var(--color-chart-rolldown, #8b5cf6)",
+};
+
+// ─── Dashboard Component ─────────────────────────────────────────────────────
+
+export function Dashboard() {
+  const [data, setData] = useState<BenchmarkCommit[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<MetricTab>("build_time");
+
+  useEffect(() => {
+    fetch("/api/results?limit=50")
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((d) => {
+        setData(d);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(err.message);
+        setLoading(false);
+      });
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20 text-gray-400">
+        Loading benchmark data...
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        Failed to load benchmarks: {error}
+      </div>
+    );
+  }
+
+  if (data.length === 0) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white px-6 py-12 text-center text-gray-400">
+        No benchmark data yet. Results will appear after the first merge to main.
+      </div>
+    );
+  }
+
+  const latest = data[0];
+  // Reverse for chronological order in charts
+  const chronological = [...data].reverse();
+
+  return (
+    <div className="space-y-8">
+      {/* Latest results comparison table */}
+      <section>
+        <div className="mb-3 flex items-center gap-3">
+          <h2 className="text-lg font-semibold">Latest Results</h2>
+          <Badge variant="secondary">{latest.commitShort}</Badge>
+          <span className="text-xs text-gray-400">
+            {new Date(latest.commitDate).toLocaleDateString()}
+          </span>
+        </div>
+        <LatestResultsTable commit={latest} />
+      </section>
+
+      {/* Trend charts */}
+      <section>
+        <h2 className="mb-3 text-lg font-semibold">Trends</h2>
+        <Tabs
+          variant="segmented"
+          tabs={[
+            { value: "build_time", label: "Build Time" },
+            { value: "bundle_size", label: "Bundle Size" },
+            { value: "cold_start", label: "Cold Start" },
+          ]}
+          value={activeTab}
+          onValueChange={(v) => setActiveTab(v as MetricTab)}
+        />
+        <div className="mt-4">
+          <MetricChart data={chronological} metric={activeTab} />
+        </div>
+      </section>
+
+      {/* Recent commits list */}
+      <section>
+        <h2 className="mb-3 text-lg font-semibold">Recent Commits</h2>
+        <CommitList commits={data} />
+      </section>
+    </div>
+  );
+}
+
+// ─── Latest Results Table ────────────────────────────────────────────────────
+
+function LatestResultsTable({ commit }: { commit: BenchmarkCommit }) {
+  const nextjs = commit.runners.nextjs;
+  const runners = Object.entries(commit.runners);
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+      <Table>
+        <Table.Header>
+          <Table.Row>
+            <Table.Head>Framework</Table.Head>
+            <Table.Head>Build Time</Table.Head>
+            <Table.Head>Bundle (gzip)</Table.Head>
+            <Table.Head>Dev Cold Start</Table.Head>
+            <Table.Head>Peak RSS</Table.Head>
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
+          {runners.map(([key, metrics]) => (
+            <Table.Row key={key}>
+              <Table.Cell>
+                <div className="flex items-center gap-2">
+                  <span
+                    className="inline-block h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: RUNNER_COLORS[key] }}
+                  />
+                  <span className="font-medium">{RUNNER_LABELS[key] || key}</span>
+                </div>
+              </Table.Cell>
+              <Table.Cell>
+                <div className="flex items-center gap-2">
+                  <span>{formatMs(metrics.buildTimeMean)}</span>
+                  {key !== "nextjs" && nextjs && (
+                    <ComparisonBadge
+                      label={speedup(nextjs.buildTimeMean, metrics.buildTimeMean)}
+                      positive
+                    />
+                  )}
+                </div>
+              </Table.Cell>
+              <Table.Cell>
+                <div className="flex items-center gap-2">
+                  <span>{formatBytes(metrics.bundleSizeGzip)}</span>
+                  {key !== "nextjs" && nextjs && (
+                    <ComparisonBadge
+                      label={sizeReduction(nextjs.bundleSizeGzip, metrics.bundleSizeGzip)}
+                      positive
+                    />
+                  )}
+                </div>
+              </Table.Cell>
+              <Table.Cell>
+                <div className="flex items-center gap-2">
+                  <span>{formatMs(metrics.devColdStartMs)}</span>
+                  {key !== "nextjs" && nextjs && (
+                    <ComparisonBadge
+                      label={speedup(nextjs.devColdStartMs, metrics.devColdStartMs)}
+                      positive
+                    />
+                  )}
+                </div>
+              </Table.Cell>
+              <Table.Cell>
+                {metrics.devPeakRssKb
+                  ? `${Math.round(metrics.devPeakRssKb / 1024)} MB`
+                  : "-"}
+              </Table.Cell>
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table>
+    </div>
+  );
+}
+
+function ComparisonBadge({
+  label,
+  positive,
+}: {
+  label: string | null;
+  positive?: boolean;
+}) {
+  if (!label) return null;
+  const isFaster = label.includes("faster") || label.includes("smaller");
+  return (
+    <Badge variant={isFaster ? "primary" : "destructive"}>
+      {label}
+    </Badge>
+  );
+}
+
+// ─── Metric Chart ────────────────────────────────────────────────────────────
+
+function MetricChart({
+  data,
+  metric,
+}: {
+  data: BenchmarkCommit[];
+  metric: MetricTab;
+}) {
+  const runners = ["nextjs", "vinext", "vinext_rolldown"];
+
+  const series = runners.map((runner) => ({
+    name: RUNNER_LABELS[runner] || runner,
+    color: RUNNER_COLORS[runner],
+    points: data
+      .map((commit) => {
+        const m = commit.runners[runner];
+        if (!m) return null;
+        let value: number | null = null;
+        if (metric === "build_time") value = m.buildTimeMean;
+        else if (metric === "bundle_size") value = m.bundleSizeGzip;
+        else if (metric === "cold_start") value = m.devColdStartMs;
+        return value !== null
+          ? { label: commit.commitShort, value }
+          : null;
+      })
+      .filter(Boolean) as { label: string; value: number }[],
+  }));
+
+  const yLabel =
+    metric === "build_time"
+      ? "ms"
+      : metric === "bundle_size"
+        ? "bytes"
+        : "ms";
+
+  const formatY =
+    metric === "bundle_size"
+      ? (v: number) => formatBytes(v)
+      : (v: number) => formatMs(v);
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white p-4">
+      <TrendChart series={series} yLabel={yLabel} formatY={formatY} height={300} />
+    </div>
+  );
+}
+
+// ─── Commit List ─────────────────────────────────────────────────────────────
+
+function CommitList({ commits }: { commits: BenchmarkCommit[] }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+      <Table>
+        <Table.Header>
+          <Table.Row>
+            <Table.Head>Commit</Table.Head>
+            <Table.Head>Date</Table.Head>
+            <Table.Head>Build (vinext Rolldown)</Table.Head>
+            <Table.Head>Bundle (vinext Rolldown)</Table.Head>
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
+          {commits.map((c) => {
+            const rd = c.runners.vinext_rolldown;
+            return (
+              <Table.Row key={c.commitSha}>
+                <Table.Cell>
+                  <a
+                    href={`/commit/${c.commitShort}`}
+                    className="font-mono text-sm text-blue-600 hover:underline"
+                  >
+                    {c.commitShort}
+                  </a>
+                  <span className="ml-2 text-xs text-gray-400 truncate max-w-xs inline-block align-middle">
+                    {c.commitMessage?.slice(0, 60)}
+                  </span>
+                </Table.Cell>
+                <Table.Cell className="text-sm text-gray-500">
+                  {new Date(c.commitDate).toLocaleDateString()}
+                </Table.Cell>
+                <Table.Cell>{rd ? formatMs(rd.buildTimeMean) : "-"}</Table.Cell>
+                <Table.Cell>{rd ? formatBytes(rd.bundleSizeGzip) : "-"}</Table.Cell>
+              </Table.Row>
+            );
+          })}
+        </Table.Body>
+      </Table>
+    </div>
+  );
+}

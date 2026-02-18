@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "benchmarks",
+  "compatibility_date": "2026-02-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "main": "./worker/index.ts",
+  "preview_urls": true,
+  "assets": {
+    "not_found_handling": "none"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "vinext-benchmarks",
+      "database_id": "b5997bf3-56f8-4dde-8bd8-d07604ffcb3e"
+    }
+  ]
+}

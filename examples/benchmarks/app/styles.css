@@ -1,0 +1,21 @@
+@source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+@import "@cloudflare/kumo/styles/tailwind";
+@import "tailwindcss";
+
+@theme {
+  --color-chart-nextjs: #f97316;
+  --color-chart-vinext: #3b82f6;
+  --color-chart-rolldown: #8b5cf6;
+
+  --color-faster: #22c55e;
+  --color-slower: #ef4444;
+  --color-neutral-metric: #6b7280;
+}
+
+@layer base {
+  body {
+    font-family: system-ui, -apple-system, sans-serif;
+    background: var(--color-gray-50, #f9fafb);
+    color: var(--color-gray-900, #111827);
+  }
+}
