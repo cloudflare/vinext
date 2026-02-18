@@ -673,8 +673,10 @@ export default async function handler(request) {
     const cleanupFetchCache = withFetchCache();
     try {
       const response = await _handleRequest(request);
-      // Apply custom headers from next.config.js to all non-redirect responses
-      if (__configHeaders.length && response && response.headers) {
+      // Apply custom headers from next.config.js to non-redirect responses.
+      // Skip redirects (3xx) because Response.redirect() creates immutable headers,
+      // and Next.js doesn't apply custom headers to redirects anyway.
+      if (__configHeaders.length && response && response.headers && !(response.status >= 300 && response.status < 400)) {
         const url = new URL(request.url);
         let pathname = url.pathname;
         ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}

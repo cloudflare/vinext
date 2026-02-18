@@ -1430,52 +1430,16 @@ describe("metadata routes integration (App Router)", () => {
 describe("App Router next.config.js features (dev server integration)", () => {
   let server: ViteDevServer;
   let baseUrl: string;
-  const configPath = path.join(APP_FIXTURE_DIR, "next.config.mjs");
 
   beforeAll(async () => {
-    // Write a temporary next.config.mjs with redirects, rewrites, and headers
-    fs.writeFileSync(configPath, `
-export default {
-  redirects() {
-    return [
-      { source: "/old-about", destination: "/about", permanent: true },
-      { source: "/old-blog/:slug", destination: "/blog/:slug", permanent: false },
-    ];
-  },
-  rewrites() {
-    return {
-      beforeFiles: [
-        { source: "/rewrite-about", destination: "/about" },
-      ],
-      afterFiles: [
-        { source: "/after-rewrite-about", destination: "/about" },
-      ],
-      fallback: [],
-    };
-  },
-  headers() {
-    return [
-      {
-        source: "/api/(.*)",
-        headers: [{ key: "X-Custom-Header", value: "vinext-app" }],
-      },
-      {
-        source: "/about",
-        headers: [{ key: "X-Page-Header", value: "about-page" }],
-      },
-    ];
-  },
-};
-`);
+    // Uses the permanent next.config.ts in the app-basic fixture.
+    // That config includes redirects, rewrites, and headers needed by
+    // both these Vitest tests and the Playwright E2E tests.
     ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
   }, 30000);
 
   afterAll(async () => {
     await server?.close();
-    // Clean up the temporary next.config.mjs
-    if (fs.existsSync(configPath)) {
-      fs.unlinkSync(configPath);
-    }
   });
 
   it("applies redirects from next.config.js (permanent)", async () => {
