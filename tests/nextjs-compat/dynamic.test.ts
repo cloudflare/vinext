@@ -62,6 +62,17 @@ describe("Next.js compat: next/dynamic", () => {
   it("SSR: should contain dynamic() client component content", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic");
     expect(html).toContain("next-dynamic dynamic on client");
+    expect(html).toContain('id="css-text-dynamic-client"');
+  });
+
+  // Regression test for issue #75: dynamic() client components must render
+  // their own imported component, not another client component's content.
+  it("SSR: dynamic() client should not render LazyClientComponent content (#75)", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic");
+    // class="hi" appears exactly once (from LazyClientComponent), not duplicated
+    // by NextDynamicClientComponent rendering the wrong module
+    const hiMatches = (html.match(/class="hi"/g) || []).length;
+    expect(hiMatches).toBe(1);
   });
 
   it("SSR: should contain dynamic() server-imported client content", async () => {

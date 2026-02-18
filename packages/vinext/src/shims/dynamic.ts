@@ -1,9 +1,9 @@
 /**
  * next/dynamic shim
  *
- * SSR-safe dynamic imports. On the server, the module is eagerly loaded
- * and the promise is stored for the SSR handler to await before rendering.
- * On the client, uses React.lazy for code splitting.
+ * SSR-safe dynamic imports. On the server, uses React.lazy + Suspense so that
+ * renderToReadableStream suspends until the dynamically-imported component is
+ * available. On the client, also uses React.lazy for code splitting.
  *
  * Supports:
  * - dynamic(() => import('./Component'))
@@ -19,24 +19,60 @@ interface DynamicOptions {
 
 type Loader<P> = () => Promise<{ default: ComponentType<P> } | ComponentType<P>>;
 
+/**
+ * Lightweight error boundary that renders the loading component with the error
+ * when a dynamic() loader rejects. Without this, loader failures would propagate
+ * uncaught through React's rendering — this preserves the Next.js behavior where
+ * the `loading` component can display errors.
+ *
+ * Lazily created because React.Component is not available in the RSC environment
+ * (server components use a slimmed-down React that doesn't include class components).
+ */
+let DynamicErrorBoundary: any;
+function getDynamicErrorBoundary() {
+  if (DynamicErrorBoundary) return DynamicErrorBoundary;
+  if (!React.Component) return null;
+  DynamicErrorBoundary = class extends React.Component<
+    { fallback: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>; children: React.ReactNode },
+    { error: Error | null }
+  > {
+    constructor(props: any) {
+      super(props);
+      this.state = { error: null };
+    }
+    static getDerivedStateFromError(error: unknown) {
+      return { error: error instanceof Error ? error : new Error(String(error)) };
+    }
+    render() {
+      if (this.state.error) {
+        return React.createElement(this.props.fallback, {
+          isLoading: false,
+          pastDelay: true,
+          error: this.state.error,
+        });
+      }
+      return this.props.children;
+    }
+  };
+  return DynamicErrorBoundary;
+}
+
 // Detect server vs client
 const isServer = typeof window === "undefined";
 
-// Registry of all pending dynamic preloads — the SSR handler
-// calls flushPreloads() to await them all before rendering.
+// Legacy preload queue — kept for backward compatibility with Pages Router
+// which calls flushPreloads() before rendering. The App Router uses React.lazy
+// + Suspense instead, so this queue is no longer populated.
 const preloadQueue: Promise<void>[] = [];
 
 /**
  * Wait for all pending dynamic() preloads to resolve, then clear the queue.
- * Called by the SSR handler before renderToString.
+ * Called by the Pages Router SSR handler before rendering.
+ * No-op for the App Router path which uses React.lazy + Suspense.
  */
 export function flushPreloads(): Promise<void[]> {
   const pending = preloadQueue.splice(0);
   return Promise.all(pending);
-}
-
-function resolveComponent<P>(mod: { default: ComponentType<P> } | ComponentType<P>): ComponentType<P> {
-  return ("default" in mod ? mod.default : mod) as ComponentType<P>;
 }
 
 function dynamic<P extends object = object>(
@@ -91,36 +127,29 @@ function dynamic<P extends object = object>(
 
   // SSR-enabled path
   if (isServer) {
-    // Eagerly load the module and store the resolved component
-    let Loaded: ComponentType<P> | null = null;
-    let loadError: Error | null = null;
-    const loadPromise = loader()
-      .then((mod) => {
-        Loaded = resolveComponent(mod);
-      })
-      .catch((err) => {
-        // Capture error so flushPreloads() doesn't reject.
-        // The component will render the loading fallback with the error.
-        loadError = err instanceof Error ? err : new Error(String(err));
-      });
-
-    // Register in the preload queue so SSR handler can await it
-    preloadQueue.push(loadPromise);
+    // Use React.lazy so that renderToReadableStream can suspend until the
+    // dynamically-imported component is available. The previous eager-load
+    // pattern relied on flushPreloads() being called before rendering, which
+    // works for the Pages Router but not the App Router where client modules
+    // are loaded lazily during RSC stream deserialization (issue #75).
+    const LazyServer = lazy(async () => {
+      const mod = await loader();
+      if ("default" in mod) return mod as { default: ComponentType<P> };
+      return { default: mod as ComponentType<P> };
+    });
 
     const ServerDynamic = (props: P) => {
-      if (loadError) {
-        // Loader failed — render loading component with error or nothing
-        return LoadingComponent
-          ? React.createElement(LoadingComponent, { isLoading: false, pastDelay: true, error: loadError })
-          : null;
-      }
-      if (Loaded) {
-        return React.createElement(Loaded, props);
-      }
-      // Fallback: if somehow not loaded yet, show loading
-      return LoadingComponent
+      const fallback = LoadingComponent
         ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
         : null;
+      const lazyElement = React.createElement(LazyServer, props);
+      // Wrap with error boundary so loader rejections render the loading
+      // component with the error instead of propagating uncaught.
+      const ErrorBoundary = LoadingComponent ? getDynamicErrorBoundary() : null;
+      const content = ErrorBoundary
+        ? React.createElement(ErrorBoundary, { fallback: LoadingComponent }, lazyElement)
+        : lazyElement;
+      return React.createElement(Suspense, { fallback }, content);
     };
 
     ServerDynamic.displayName = "DynamicServer";
