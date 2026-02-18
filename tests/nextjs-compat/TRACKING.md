@@ -360,7 +360,10 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | 16. set-cookies | 6 | 6 | 0 | 0 | 0 | Done |
 | 17. app-css | 4 | 4 | 0 | 0 | 0 | Done |
 | 18. draft-mode | 4 | 4 | 0 | 0 | 0 | Done |
-| **Total** | **315+** | **122** | **5** | **188+** | **0** | |
+| 20. revalidation | 4 | 4 | 0 | 0 | 0 | Done |
+| 21. prefetch | 4 | 4 | 0 | 0 | 0 | Done |
+| 22. metadata-suspense | 3 | 2 | 1 | 0 | 0 | Done |
+| **Total** | **325+** | **132** | **6** | **188+** | **0** | |
 
 ### Playwright Browser Tests
 
@@ -373,13 +376,19 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | 13. rsc-basic | 5 | 5 | 0 | 0 | Done |
 | 14. error-nav | 4 | 1 | 3 | 0 | Done |
 | 15. streaming | 2 | 2 | 0 | 0 | Done |
-| **Total** | **37** | **30** | **7** | **0** | |
+| 19. actions-nav | 1 | 1 | 0 | 0 | Done |
+| 20. actions-revalidate | 2 | 2 | 0 | 0 | Done |
+| 21. prefetch | 3 | 3 | 0 | 0 | Done |
+| 24. external-redirect | 1 | 0 | 1 | 0 | Done |
+| 25. search-params-key | 2 | 2 | 0 | 0 | Done |
+| **Total** | **46** | **38** | **8** | **0** | |
 
 ### Combined Key Metrics
-- **155 tests passing** (122 Vitest + 33 Playwright) across 20 test files
-- **9 tests skipped** (5 Vitest + 4 Playwright) with detailed root-cause analysis and fix locations
+- **170 tests passing** (132 Vitest + 38 Playwright) across 24 test files
+- **11 tests skipped** (6 Vitest + 5 Playwright) with detailed root-cause analysis and fix locations
 - **0 failures** — all non-skipped tests pass
 - **188+ N/A** — build-only, or already covered by existing tests
+- **2 new issues found** in Phase 3: duplicate title with Suspense layout, external redirect in server actions
 
 ### Issues Found (Fix Backlog)
 1. **RSC module caching across requests** — `Date.now()` cached in dev. Fix: `packages/vinext/src/server/app-dev-server.ts`
@@ -515,3 +524,117 @@ Conducted a full audit of vinext's feature surface against 25 Next.js capabiliti
 | Shallow routing / pushState | YES | E2E (9+ tests) | — |
 | next/head | YES | E2E | — |
 | useSelectedLayoutSegment(s) | YES | Unit + integration | 11 |
+
+---
+
+## Phase 3: Server Actions, Revalidation, Prefetch, and More
+
+Targeted the top 10 gaps from the coverage analysis — features vinext implements
+but had no Next.js-compat test coverage for.
+
+### Chunk 19: actions-navigation — Server action after client navigation ✅
+
+**Next.js source**: `actions-navigation`
+**Local**: `tests/e2e/app-router/nextjs-compat/actions-nav.spec.ts`
+**Result**: Playwright 1/1 pass
+
+Tests that server actions work correctly after navigating to a page via client-side
+Link click. The action (with a 500ms delay) executes, returns a result, and the
+client renders it. Verifies the server action binding isn't broken by client nav.
+
+### Chunk 20: actions-revalidate + router.refresh() ✅
+
+**Next.js sources**: `actions-revalidate-remount`, `revalidatetag-rsc`
+**Local**: `tests/nextjs-compat/revalidate.test.ts`, `tests/e2e/app-router/nextjs-compat/actions-revalidate.spec.ts`
+**Result**: Vitest 4/4 pass | Playwright 2/2 pass
+
+Vitest: revalidatePath and revalidateTag via route handler API endpoints both
+return `{ revalidated: true }`. Page renders correctly with timestamp and form.
+After revalidatePath, page re-renders with fresh data.
+
+Playwright: revalidatePath via server action (form button) updates the page
+timestamp. router.refresh() also re-renders the page with a new timestamp.
+
+### Chunk 21: app-prefetch — RSC prefetch and Link navigation ✅
+
+**Next.js source**: `app-prefetch`
+**Local**: `tests/nextjs-compat/prefetch.test.ts`, `tests/e2e/app-router/nextjs-compat/prefetch.spec.ts`
+**Result**: Vitest 4/4 pass | Playwright 3/3 pass
+
+Vitest: RSC `.rsc` endpoint returns `text/x-component` content. Prefetch pages
+render with correct links. Both prefetch=true and prefetch=false target pages
+are accessible.
+
+Playwright: Link with `prefetch={false}` still allows navigation. Prefetched
+link navigates correctly. Navigation via prefetched link does not cause a full
+page reload (window marker preserved).
+
+### Chunk 22: metadata-suspense — Metadata in Suspense-wrapped layout ✅
+
+**Next.js source**: `metadata-suspense`
+**Local**: `tests/nextjs-compat/metadata-suspense.test.ts`
+**Result**: Vitest 2/3 pass, 1 skip
+
+Metadata renders correctly in `<head>` when the layout wraps children in
+`<Suspense>`: title, description, and application-name are all present and correct.
+
+**1 skipped**: Duplicate `<title>` tags. Vinext emits the metadata twice — once in
+the shell and again when the Suspense boundary resolves. Fix: metadata should be
+hoisted above Suspense boundaries in `app-dev-server.ts:buildPageElement()`.
+
+### Chunk 23: revalidate-dynamic — revalidatePath/Tag via route handlers ✅
+
+**Next.js source**: `revalidate-dynamic`
+**Local**: `tests/nextjs-compat/revalidate.test.ts` (shared with Chunk 20)
+**Result**: Covered by Chunk 20 Vitest tests
+
+Route handlers calling `revalidatePath('/')` and `revalidateTag('test-data')`
+both work correctly — return `{ revalidated: true }` with 200 status.
+
+### Chunk 24: external-redirect — Server action redirect to external URL ✅
+
+**Next.js source**: `external-redirect`
+**Local**: `tests/e2e/app-router/nextjs-compat/external-redirect.spec.ts`
+**Result**: Playwright 0/1 pass, 1 skip
+
+**Skipped**: Vinext handles server action redirects via `x-action-redirect` headers
+and `window.history.replaceState` + RSC navigate. For external URLs, this tries to
+do a client-side RSC navigation instead of `window.location.href = url`. Fix: in
+the browser entry's server action callback, detect external redirects (different
+origin) and use `window.location.href` instead.
+
+### Chunk 25: search-params-react-key — Component stability across param changes ✅
+
+**Next.js source**: `search-params-react-key`
+**Local**: `tests/e2e/app-router/nextjs-compat/search-params-key.spec.ts`
+**Result**: Playwright 2/2 pass
+
+Component state (counter) persists across `router.push('?foo=bar')` and
+`router.replace('?foo=baz')` — the component tree is NOT remounted when search
+params change. URL updates correctly in both cases.
+
+### Chunk 26: concurrent-navigations — SKIPPED (N/A)
+
+**Next.js source**: `concurrent-navigations`
+**Not ported**: Only 1 test, production-only, requires middleware rewrite mismatch
+recovery (prefetch returns route A but navigation rewrites to route B). Too
+Next.js-specific and requires `createRouterAct` test infrastructure.
+
+### Phase 3 Summary
+
+| Chunk | Tests | Pass | Skip | N/A |
+|-------|-------|------|------|-----|
+| 19. actions-navigation | 1 | 1 | 0 | 0 |
+| 20. actions-revalidate | 6 | 6 | 0 | 0 |
+| 21. app-prefetch | 7 | 7 | 0 | 0 |
+| 22. metadata-suspense | 3 | 2 | 1 | 0 |
+| 23. revalidate-dynamic | — | — | — | — (covered by 20) |
+| 24. external-redirect | 1 | 0 | 1 | 0 |
+| 25. search-params-key | 2 | 2 | 0 | 0 |
+| 26. concurrent-nav | — | — | — | N/A |
+| **Total** | **20** | **18** | **2** | **0** |
+
+### New Issues Found
+
+9. **Duplicate `<title>` tags with Suspense layout** — When a layout wraps children in `<Suspense>`, metadata `<title>` tag appears twice. Fix: `packages/vinext/src/server/app-dev-server.ts` — hoist metadata rendering above Suspense boundaries.
+10. **External redirect in server actions** — `redirect('https://example.com')` inside a server action does client-side RSC navigation instead of full page navigation. Fix: `packages/vinext/src/server/app-dev-server.ts` browser entry — detect external origin and use `window.location.href`.
