@@ -461,6 +461,24 @@ describe("Virtual server entry generation", () => {
   });
 });
 
+describe("Plugin config", () => {
+  it("adds resolve.dedupe for React packages to prevent dual instance errors", async () => {
+    const plugins = vinext() as any[];
+    const configPlugin = plugins.find((p) => p.name === "vinext:config");
+    expect(configPlugin).toBeDefined();
+
+    // Call the config hook with a minimal config
+    const result = await configPlugin.config({ root: FIXTURE_DIR, plugins: [] });
+
+    expect(result.resolve).toBeDefined();
+    expect(result.resolve.dedupe).toBeDefined();
+    expect(result.resolve.dedupe).toContain("react");
+    expect(result.resolve.dedupe).toContain("react-dom");
+    expect(result.resolve.dedupe).toContain("react/jsx-runtime");
+    expect(result.resolve.dedupe).toContain("react/jsx-dev-runtime");
+  });
+});
+
 describe("Production build", () => {
   const outDir = path.resolve(FIXTURE_DIR, "dist");
 

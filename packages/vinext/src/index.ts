@@ -1082,6 +1082,17 @@ hydrate();
           }),
           resolve: {
             alias: nextShimMap,
+            // Dedupe React packages to prevent dual-instance errors.
+            // When vinext is linked (npm link / bun link) or any dependency
+            // brings its own React copy, multiple React instances can load,
+            // causing cryptic "Invalid hook call" errors. This is a no-op
+            // when only one copy exists.
+            dedupe: [
+              "react",
+              "react-dom",
+              "react/jsx-runtime",
+              "react/jsx-dev-runtime",
+            ],
           },
           // Enable JSX in .tsx/.jsx files
           // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`
