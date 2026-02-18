@@ -1,0 +1,80 @@
+name: Ecosystem
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/vinext/**"
+      - ".github/workflows/ecosystem.yml"
+      - ".github/repos.json"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ecosystem-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  load-repos:
+    runs-on: ubuntu-latest
+    outputs:
+      repos: ${{ steps.read.outputs.repos }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: read
+        run: echo "repos=$(jq -c . .github/repos.json)" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: "${{ matrix.repo.name }} (next@${{ matrix.nextjs-version }})"
+    needs: load-repos
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        nextjs-version: ["16.0", "16.1"]
+        repo: ${{ fromJson(needs.load-repos.outputs.repos) }}
+
+    steps:
+      - name: Checkout vinext
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Build vinext
+        run: |
+          npm ci --legacy-peer-deps
+          npm run build
+
+      - name: Clone target repo
+        run: git clone --depth 1 ${{ matrix.repo.url }} target-repo
+
+      - name: Install dependencies
+        working-directory: target-repo
+        run: npm install --legacy-peer-deps
+
+      - name: Pin Next.js version
+        working-directory: target-repo
+        run: npm install --legacy-peer-deps next@${{ matrix.nextjs-version }}
+
+      - name: Install vinext
+        working-directory: target-repo
+        run: npm install "${{ github.workspace }}/packages/vinext"
+
+      - name: Build
+        working-directory: target-repo
+        run: npm run build
+
+      - name: Test
+        working-directory: target-repo
+        run: npm run test --if-present
+
+      - name: E2E
+        working-directory: target-repo
+        run: npm run test:e2e --if-present

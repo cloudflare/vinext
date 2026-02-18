@@ -1,0 +1,12 @@
+[
+  { "name": "ai-chatbot", "url": "https://github.com/vercel/ai-chatbot.git" },
+  { "name": "nextjs-boilerplate", "url": "https://github.com/vercel/nextjs-boilerplate.git" },
+  { "name": "image-gallery-starter", "url": "https://github.com/vercel/next.js-image-gallery.git" },
+  { "name": "nextra-docs-template", "url": "https://github.com/shuding/nextra-docs-template.git" },
+  { "name": "nextjs-commerce", "url": "https://github.com/vercel/commerce.git" },
+  { "name": "lead-processing-agent", "url": "https://github.com/vercel/lead-processing-agent.git" },
+  { "name": "app-directory", "url": "https://github.com/vercel/next-app-router-playground.git" },
+  { "name": "platforms-starter-kit", "url": "https://github.com/vercel/platforms.git" },
+  { "name": "isr-blog-nextjs-wordpress", "url": "https://github.com/vercel/next.js-cms-wordpress.git" },
+  { "name": "virtual-event-starter-kit", "url": "https://github.com/vercel/virtual-event-starter-kit.git" }
+]
