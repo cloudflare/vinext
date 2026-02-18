@@ -30,6 +30,16 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Go to About");
   });
 
+  it("resolves tsconfig path aliases (@/ imports)", async () => {
+    const res = await fetch(`${baseUrl}/alias-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Pages Alias Test");
+    // Component imported via @/components/heavy
+    expect(html).toContain("Loaded via alias");
+  });
+
   it("renders the about page", async () => {
     const res = await fetch(`${baseUrl}/about`);
     expect(res.status).toBe(200);

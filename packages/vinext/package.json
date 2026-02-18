@@ -43,11 +43,12 @@
   "dependencies": {
     "@unpic/react": "^1.0.2",
     "@vercel/og": "^0.8.6",
-    "magic-string": "^0.30.21",
     "@vitejs/plugin-rsc": "^0.5.19",
     "glob": "^11.0.0",
+    "magic-string": "^0.30.21",
     "react-server-dom-webpack": "^19.2.4",
-    "rsc-html-stream": "^0.0.7"
+    "rsc-html-stream": "^0.0.7",
+    "vite-tsconfig-paths": "^6.1.1"
   },
   "devDependencies": {
     "@types/node": "^25.2.3",

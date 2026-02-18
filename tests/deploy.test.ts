@@ -603,37 +603,6 @@ describe("detectProject — new detection features", () => {
     expect(info.hasTypeModule).toBe(false);
   });
 
-  it("detects tsconfig paths as aliases", () => {
-    mkdir(tmpDir, "app");
-    writeFile(
-      tmpDir,
-      "tsconfig.json",
-      JSON.stringify({
-        compilerOptions: {
-          baseUrl: ".",
-          paths: { "#/*": ["./*"], "@/*": ["./src/*"] },
-        },
-      }),
-    );
-    const info = detectProject(tmpDir);
-    expect(info.tsconfigAliases).toBeDefined();
-    expect(info.tsconfigAliases!["#"]).toBe(tmpDir);
-    expect(info.tsconfigAliases!["@"]).toBe(path.join(tmpDir, "src"));
-  });
-
-  it("tsconfigAliases is null when no tsconfig.json", () => {
-    mkdir(tmpDir, "app");
-    const info = detectProject(tmpDir);
-    expect(info.tsconfigAliases).toBeNull();
-  });
-
-  it("tsconfigAliases is null when no paths in tsconfig", () => {
-    mkdir(tmpDir, "app");
-    writeFile(tmpDir, "tsconfig.json", JSON.stringify({ compilerOptions: { strict: true } }));
-    const info = detectProject(tmpDir);
-    expect(info.tsconfigAliases).toBeNull();
-  });
-
   it("detects MDX via .mdx files in app/", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "app/about/page.mdx", "# About\nHello world");
@@ -712,7 +681,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
     expect(config).toContain("codehike/mdx");
   });
 
-  it("includes resolve.alias for tsconfig paths", () => {
+  it("does not include tsconfig aliases in generated config (handled by plugin at runtime)", () => {
     mkdir(tmpDir, "app");
     writeFile(
       tmpDir,
@@ -723,9 +692,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
     );
     const info = detectProject(tmpDir);
     const config = generateAppRouterViteConfig(info);
-    expect(config).toContain("resolve:");
-    expect(config).toContain("alias:");
-    expect(config).toContain('"#"');
+    expect(config).not.toContain('"#"');
   });
 
   it("includes native module stubs in resolve.alias", () => {
@@ -752,7 +719,7 @@ describe("generateAppRouterViteConfig — with project info", () => {
 });
 
 describe("generatePagesRouterViteConfig — with project info", () => {
-  it("includes resolve.alias for tsconfig paths", () => {
+  it("does not include tsconfig aliases in generated config (handled by plugin at runtime)", () => {
     mkdir(tmpDir, "pages");
     writeFile(
       tmpDir,
@@ -763,8 +730,7 @@ describe("generatePagesRouterViteConfig — with project info", () => {
     );
     const info = detectProject(tmpDir);
     const config = generatePagesRouterViteConfig(info);
-    expect(config).toContain("resolve:");
-    expect(config).toContain('"@"');
+    expect(config).not.toContain('"@"');
   });
 
   it("still works without info (backward compatible)", () => {

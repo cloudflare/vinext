@@ -36,6 +36,23 @@ describe("App Router integration", () => {
     expect(html).toContain("This is the about page.");
   });
 
+  it("resolves tsconfig path aliases (@/ imports)", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/alias-test");
+    expect(res.status).toBe(200);
+    expect(html).toContain("Alias Test");
+    // Server component imported via @/app/components/counter
+    expect(html).toContain("Count:");
+    // Client component ("use client") imported via @/app/components/client-only-widget
+    expect(html).toContain("Client Only Widget");
+  });
+
+  it("resolves tsconfig path aliases for non-app imports (@/lib)", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/baseurl-test");
+    expect(res.status).toBe(200);
+    expect(html).toContain("BaseUrl Test");
+    expect(html).toContain("Hello, baseUrl!");
+  });
+
   it("renders dynamic routes with params", async () => {
     const res = await fetch(`${baseUrl}/blog/hello-world`);
     expect(res.status).toBe(200);

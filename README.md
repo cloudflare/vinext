@@ -114,7 +114,7 @@ vinext deploy
 
 The deploy command also auto-detects and fixes common migration issues:
 - Adds `"type": "module"` to package.json if missing
-- Detects tsconfig.json path aliases and maps them to Vite `resolve.alias`
+- Resolves tsconfig.json path aliases automatically (via `vite-tsconfig-paths`)
 - Detects MDX usage and configures `@mdx-js/rollup`
 - Renames CJS config files (postcss.config.js, etc.) to `.cjs` when needed
 - Detects native Node.js modules (sharp, resvg, satori) and stubs them for Workers

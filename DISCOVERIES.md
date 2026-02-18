@@ -333,7 +333,7 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 
 - **Vercel's official Next.js App Router demo** (github.com/vercel/next-app-router-playground) cloned as `fixtures/ecosystem/app-router-playground/`.
 - **Uses `'use cache'` extensively**: File-level and function-level caching directives. We strip these with a custom Vite plugin (not yet supported).
-- **Uses `#/*` path aliases**: tsconfig `paths` maps `#/*` to project root. Handled via Vite `resolve.alias`.
+- **Uses `#/*` path aliases**: tsconfig `paths` maps `#/*` to project root. Handled automatically by `vite-tsconfig-paths` (bundled in vinext).
 - **`server-only` package** needs an empty shim module — it's a build-time guard that throws if imported in client bundles.
 - **MDX support** via `@next/mdx` + CodeHike — replaced with `@mdx-js/rollup` Vite plugin. Simple MDX (markdown without codehike annotations) renders fine. CodeHike-specific syntax would need `codehike` dep.
 - **`connection()` from `next/server`** already shimmed as a no-op (forces dynamic rendering).
@@ -350,7 +350,7 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **All dynamic sub-routes work**: `/layouts/electronics`, `/layouts/electronics/phones`, `/loading/electronics`, `/error/electronics`, `/not-found/electronics` — all 200.
 - **`/view-transitions` fails** because it imports `ViewTransition` from `react`, which is only in React 19 canary builds, not the stable release.
 - **`workspace:*` protocol** is pnpm-specific and doesn't work with npm. Changed to `"*"` and added `fixtures/ecosystem/*` to root workspaces.
-- **bare `app/` imports** from tsconfig `baseUrl: "."` need a Vite `resolve.alias` mapping (`"app": path.resolve(__dirname, "app")`).
+- **bare `app/` imports** from tsconfig `baseUrl: "."` are resolved automatically by `vite-tsconfig-paths` (bundled in vinext).
 - **`codehike` dependency** was too heavy for a demo fixture. Replaced `ui/codehike.tsx` with a simplified shim that provides the same exports (`Grid`, `Mdx`) without `codehike/blocks`, `codehike/code`, `zod`, or `mdx/types` dependencies.
 
 ## Benchmarks (Phase 5)

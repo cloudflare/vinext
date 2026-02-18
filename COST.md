@@ -23,7 +23,7 @@ _Note: OpenCode's cost tracking format changed between versions. The $350+ figur
 - `connection()` dynamic rendering
 - Production server with compression + streaming SSR
 - Static export with HTTP-served E2E verification
-- Smart deploy (`vinext deploy`) with auto-detection of ESM, tsconfig aliases, MDX, CJS configs, native modules
+- Smart deploy (`vinext deploy`) with auto-detection of ESM, MDX, CJS configs, native modules
 - Compatibility scanner (`vinext check`)
 - 844 vitest tests + 278 Playwright E2E tests
 - 3 ecosystem library integrations (next-themes, next-view-transitions, nuqs)

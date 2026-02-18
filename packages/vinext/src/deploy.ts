@@ -49,8 +49,6 @@ interface ProjectInfo {
   hasISR: boolean;
   /** package.json has "type": "module" */
   hasTypeModule: boolean;
-  /** tsconfig.json paths/baseUrl for Vite alias generation */
-  tsconfigAliases: Record<string, string> | null;
   /** .mdx files detected in app/ or pages/ */
   hasMDX: boolean;
   /** CodeHike is a dependency */
@@ -127,9 +125,6 @@ export function detectProject(root: string): ProjectInfo {
     }
   }
 
-  // Detect tsconfig paths/baseUrl for Vite alias generation
-  const tsconfigAliases = detectTsconfigAliases(root);
-
   // Detect MDX usage
   const hasMDX = detectMDX(root, isAppRouter, hasPages);
 
@@ -161,7 +156,6 @@ export function detectProject(root: string): ProjectInfo {
     projectName,
     hasISR,
     hasTypeModule,
-    tsconfigAliases,
     hasMDX,
     hasCodeHike,
     nativeModulesToStub,
@@ -196,44 +190,6 @@ function scanDirForPattern(dir: string, pattern: RegExp): boolean {
     }
   }
   return false;
-}
-
-/**
- * Parse tsconfig.json paths/baseUrl and return a map of alias → directory
- * that can be used for Vite `resolve.alias`.
- */
-function detectTsconfigAliases(root: string): Record<string, string> | null {
-  const tsconfigPath = path.join(root, "tsconfig.json");
-  if (!fs.existsSync(tsconfigPath)) return null;
-
-  try {
-    // Strip JSON comments (// and /* */) for jsonc support
-    const raw = fs.readFileSync(tsconfigPath, "utf-8");
-    const stripped = raw
-      .replace(/\/\/[^\n]*/g, "")
-      .replace(/\/\*[\s\S]*?\*\//g, "");
-    const tsconfig = JSON.parse(stripped);
-    const { baseUrl, paths } = tsconfig.compilerOptions ?? {};
-    if (!paths || typeof paths !== "object") return null;
-
-    const aliases: Record<string, string> = {};
-    const base = baseUrl ? path.resolve(root, baseUrl) : root;
-
-    for (const [pattern, targets] of Object.entries(paths)) {
-      if (!Array.isArray(targets) || targets.length === 0) continue;
-      const target = targets[0] as string;
-      // Convert TS path pattern to Vite alias:
-      //   "#/*" → ["./"] becomes { "#": "<root>" }
-      //   "@/*" → ["./src/*"] becomes { "@": "<root>/src" }
-      const aliasKey = pattern.replace(/\/\*$/, "");
-      const aliasTarget = path.resolve(base, target.replace(/\/\*$/, ""));
-      aliases[aliasKey] = aliasTarget;
-    }
-
-    return Object.keys(aliases).length > 0 ? aliases : null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -521,15 +477,10 @@ export function generateAppRouterViteConfig(info?: ProjectInfo): string {
       },
     }),`);
 
-  // Build resolve.alias from tsconfig aliases + native module stubs
+  // Build resolve.alias for native module stubs (tsconfig paths are handled
+  // automatically by vite-tsconfig-paths inside the vinext plugin)
   let resolveBlock = "";
   const aliases: string[] = [];
-
-  if (info?.tsconfigAliases) {
-    for (const [key, target] of Object.entries(info.tsconfigAliases)) {
-      aliases.push(`      "${key}": "${target}",`);
-    }
-  }
 
   if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
     for (const mod of info.nativeModulesToStub) {
@@ -563,15 +514,10 @@ export function generatePagesRouterViteConfig(info?: ProjectInfo): string {
     imports.push(`import path from "node:path";`);
   }
 
-  // Build resolve.alias from tsconfig aliases + native module stubs
+  // Build resolve.alias for native module stubs (tsconfig paths are handled
+  // automatically by vite-tsconfig-paths inside the vinext plugin)
   let resolveBlock = "";
   const aliases: string[] = [];
-
-  if (info?.tsconfigAliases) {
-    for (const [key, target] of Object.entries(info.tsconfigAliases)) {
-      aliases.push(`      "${key}": "${target}",`);
-    }
-  }
 
   if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
     for (const mod of info.nativeModulesToStub) {

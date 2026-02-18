@@ -21,6 +21,7 @@ import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
+import tsconfigPaths from "vite-tsconfig-paths";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -969,6 +970,9 @@ hydrate();
   }
 
   return [
+    // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
+    // that use @/*, #/*, or baseUrl imports work out of the box.
+    tsconfigPaths(),
     {
       name: "vinext:config",
       enforce: "pre",
