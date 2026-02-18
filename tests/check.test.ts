@@ -449,6 +449,33 @@ describe("checkConventions", () => {
     expect(items.find((i) => i.name.includes("middleware.ts"))).toBeUndefined();
   });
 
+  it("detects src/app directory when app/ is not at root", () => {
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "App Router (src/app/)")).toBeDefined();
+    expect(items.find((i) => i.name.includes("1 page"))?.status).toBe("supported");
+    expect(items.find((i) => i.name.includes("1 layout"))?.status).toBe("supported");
+  });
+
+  it("detects src/pages directory when pages/ is not at root", () => {
+    writeFile("src/pages/index.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "Pages Router (src/pages/)")).toBeDefined();
+    expect(items.find((i) => i.name.includes("1 page"))?.status).toBe("supported");
+  });
+
+  it("prefers root-level app/ over src/app/", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("src/app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    expect(items.find((i) => i.name === "App Router (app/)")).toBeDefined();
+    // src/app/ should also be detected (both exist)
+  });
+
   it("reports unsupported when no pages/ or app/ directory", () => {
     writeFile("src/index.ts", `console.log("hi");`);
 
@@ -570,6 +597,16 @@ describe("runCheck", () => {
     // Should have 1 unsupported item (no pages/app directory)
     expect(result.summary.unsupported).toBe(1);
     expect(result.summary.score).toBeLessThan(100);
+  });
+
+  it("calculates score correctly for src/app project", () => {
+    writeFile("src/app/page.tsx", `import Link from "next/link";`);
+    writeFile("src/app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
+    writeFile("package.json", JSON.stringify({ dependencies: { tailwindcss: "^3.0.0" } }));
+
+    const result = runCheck(tmpDir);
+    expect(result.summary.unsupported).toBe(0);
+    expect(result.summary.score).toBe(100);
   });
 });
 

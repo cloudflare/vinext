@@ -128,7 +128,13 @@ const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
 
 export interface VinextOptions {
-  /** Root directory of the Next.js app (default: Vite root) */
+  /**
+   * Base directory containing the app/ and pages/ directories.
+   * Can be an absolute path or a path relative to the Vite root.
+   *
+   * By default, vinext auto-detects: checks for app/ and pages/ at the
+   * project root first, then falls back to src/app/ and src/pages/.
+   */
   appDir?: string;
 }
 
@@ -979,16 +985,40 @@ hydrate();
 
       async config(config) {
         root = config.root ?? process.cwd();
-        const baseDir = options.appDir ?? root;
+
+        // Resolve the base directory for app/pages detection.
+        // If appDir is provided, resolve it (supports both relative and absolute paths).
+        // If not provided, auto-detect: check root first, then src/ subdirectory.
+        let baseDir: string;
+        if (options.appDir) {
+          baseDir = path.isAbsolute(options.appDir)
+            ? options.appDir
+            : path.resolve(root, options.appDir);
+        } else {
+          // Auto-detect: prefer root-level app/ and pages/, fall back to src/
+          const hasRootApp = fs.existsSync(path.join(root, "app"));
+          const hasRootPages = fs.existsSync(path.join(root, "pages"));
+          const hasSrcApp = fs.existsSync(path.join(root, "src", "app"));
+          const hasSrcPages = fs.existsSync(path.join(root, "src", "pages"));
+
+          if (hasRootApp || hasRootPages) {
+            baseDir = root;
+          } else if (hasSrcApp || hasSrcPages) {
+            baseDir = path.join(root, "src");
+          } else {
+            baseDir = root;
+          }
+        }
+
         pagesDir = path.join(baseDir, "pages");
         appDir = path.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = fs.existsSync(appDir);
-        middlewarePath = findMiddlewareFile(baseDir);
-        instrumentationPath = findInstrumentationFile(baseDir);
+        middlewarePath = findMiddlewareFile(root);
+        instrumentationPath = findInstrumentationFile(root);
 
-        // Load next.config.js if present
-        const rawConfig = await loadNextConfig(baseDir);
+        // Load next.config.js if present (always from project root, not src/)
+        const rawConfig = await loadNextConfig(root);
         nextConfig = await resolveNextConfig(rawConfig);
 
         // Merge env from next.config.js with NEXT_PUBLIC_* env vars

@@ -293,16 +293,30 @@ export function checkLibraries(root: string): CheckItem[] {
  */
 export function checkConventions(root: string): CheckItem[] {
   const items: CheckItem[] = [];
-  const hasPages = fs.existsSync(path.join(root, "pages"));
-  const hasApp = fs.existsSync(path.join(root, "app"));
+
+  // Check for pages/ and app/ at root level, then fall back to src/
+  const pagesDir = fs.existsSync(path.join(root, "pages"))
+    ? path.join(root, "pages")
+    : fs.existsSync(path.join(root, "src", "pages"))
+      ? path.join(root, "src", "pages")
+      : null;
+  const appDirPath = fs.existsSync(path.join(root, "app"))
+    ? path.join(root, "app")
+    : fs.existsSync(path.join(root, "src", "app"))
+      ? path.join(root, "src", "app")
+      : null;
+
+  const hasPages = pagesDir !== null;
+  const hasApp = appDirPath !== null;
   const hasProxy = fs.existsSync(path.join(root, "proxy.ts")) || fs.existsSync(path.join(root, "proxy.js"));
   const hasMiddleware = fs.existsSync(path.join(root, "middleware.ts")) || fs.existsSync(path.join(root, "middleware.js"));
 
   if (hasPages) {
-    items.push({ name: "Pages Router (pages/)", status: "supported" });
+    const isSrc = pagesDir!.includes(path.join("src", "pages"));
+    items.push({ name: isSrc ? "Pages Router (src/pages/)" : "Pages Router (pages/)", status: "supported" });
 
     // Count pages
-    const pageFiles = findSourceFiles(path.join(root, "pages"));
+    const pageFiles = findSourceFiles(pagesDir!);
     const pages = pageFiles.filter(f => !f.includes("/api/") && !f.includes("_app") && !f.includes("_document") && !f.includes("_error"));
     const apiRoutes = pageFiles.filter(f => f.includes("/api/"));
     items.push({ name: `${pages.length} page(s)`, status: "supported" });
@@ -320,9 +334,10 @@ export function checkConventions(root: string): CheckItem[] {
   }
 
   if (hasApp) {
-    items.push({ name: "App Router (app/)", status: "supported" });
+    const isSrc = appDirPath!.includes(path.join("src", "app"));
+    items.push({ name: isSrc ? "App Router (src/app/)" : "App Router (app/)", status: "supported" });
 
-    const appFiles = findSourceFiles(path.join(root, "app"));
+    const appFiles = findSourceFiles(appDirPath!);
     const pages = appFiles.filter(f => f.endsWith("page.tsx") || f.endsWith("page.jsx") || f.endsWith("page.ts") || f.endsWith("page.js"));
     const layouts = appFiles.filter(f => f.endsWith("layout.tsx") || f.endsWith("layout.jsx") || f.endsWith("layout.ts") || f.endsWith("layout.js"));
     const routes = appFiles.filter(f => f.endsWith("route.tsx") || f.endsWith("route.ts") || f.endsWith("route.js"));

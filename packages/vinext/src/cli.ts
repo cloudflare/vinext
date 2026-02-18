@@ -68,7 +68,10 @@ function parseArgs(args: string[]): ParsedArgs {
  * If there's no vite.config, this provides everything needed.
  */
 function hasAppDir(): boolean {
-  return fs.existsSync(path.join(process.cwd(), "app"));
+  return (
+    fs.existsSync(path.join(process.cwd(), "app")) ||
+    fs.existsSync(path.join(process.cwd(), "src", "app"))
+  );
 }
 
 function hasViteConfig(): boolean {
