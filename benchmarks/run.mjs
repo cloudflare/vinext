@@ -142,13 +142,19 @@ async function startAndMeasure(cmd, args, cwd, url) {
 }
 
 function kill(proc) {
-  if (proc && !proc.killed) {
-    proc.kill("SIGTERM");
-    // Wait a moment for cleanup
-    try {
-      execSync(`kill -0 ${proc.pid} 2>/dev/null && kill -9 ${proc.pid}`, { stdio: "ignore" });
-    } catch {}
-  }
+  if (!proc || proc.killed) return;
+  // Kill the entire process group/tree to handle frameworks that spawn children
+  try {
+    // Kill the process tree (works on Linux/macOS)
+    execSync(`kill -9 -- -${proc.pid} 2>/dev/null || true`, { stdio: "ignore" });
+  } catch {}
+  try {
+    proc.kill("SIGKILL");
+  } catch {}
+  // Also kill anything still listening on the ports we use
+  try {
+    execSync(`lsof -ti:4100,4101,4102 | xargs kill -9 2>/dev/null || true`, { stdio: "ignore" });
+  } catch {}
 }
 
 function formatBytes(b) {
