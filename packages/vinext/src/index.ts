@@ -910,6 +910,10 @@ ${middlewareExportCode}
     return `
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
+// Eagerly import the router shim so its module-level popstate listener is
+// registered.  Without this, browser back/forward buttons do nothing because
+// navigateClient() is never invoked on history changes.
+import "next/router";
 
 const pageLoaders = {
 ${loaderEntries.join(",\n")}

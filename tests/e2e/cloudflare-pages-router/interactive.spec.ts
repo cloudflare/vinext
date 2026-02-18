@@ -59,10 +59,44 @@ test.describe("Pages Router interactive behavior on Cloudflare Workers", () => {
     await expect(page.locator("p")).toContainText("Generated at:");
   });
 
-  // NOTE: browser back button (goBack) does not work on CF Workers Pages Router
-  // because the client-side router popstate handler isn't fully wired up.
-  // Link clicks navigate via full page loads, but history.back() doesn't trigger
-  // proper re-rendering. This is a known gap — tracked for Phase 9 (DX Polish).
+  test("browser back button works after navigating to SSR page", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/`);
+    await expect(page.locator("h1")).toContainText("Pages Router on Workers");
+
+    // Navigate to SSR page via link
+    await page.click('a[href="/ssr"]');
+    await expect(page.locator("h1")).toHaveText(
+      "Server-Side Rendered on Workers",
+    );
+
+    // Press back — should return to home
+    await page.goBack();
+    await expect(page.locator("h1")).toContainText("Pages Router on Workers");
+    expect(page.url()).toBe(`${BASE}/`);
+  });
+
+  test("browser back and forward buttons work across pages", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/`);
+    await expect(page.locator("h1")).toContainText("Pages Router on Workers");
+
+    // Home -> About
+    await page.click('a[href="/about"]');
+    await expect(page.locator("h1")).toHaveText("About");
+
+    // Back to Home
+    await page.goBack();
+    await expect(page.locator("h1")).toContainText("Pages Router on Workers");
+    expect(page.url()).toBe(`${BASE}/`);
+
+    // Forward to About
+    await page.goForward();
+    await expect(page.locator("h1")).toHaveText("About");
+    expect(page.url()).toBe(`${BASE}/about`);
+  });
 
   test("SSR page renders different timestamps on each request", async ({
     page,

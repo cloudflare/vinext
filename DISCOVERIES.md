@@ -498,11 +498,10 @@ Comprehensive audit of the test suite inspired by Next.js's `test/e2e/app-dir/` 
 - **Impact**: The Node.js production server is effectively SSR-only (read-only HTML). Client hydration currently only works in dev mode (Vite HMR) and on Cloudflare Workers (via `vinext:cloudflare-build`).
 - **Mitigation**: The Node.js production server is deprioritized — Cloudflare Workers IS the production target. But this should be fixed in Phase 9 (DX Polish) for local testing parity.
 
-### Pages Router on Workers — Browser Back Button
-- **Discovery**: `page.goBack()` does not work correctly after Link-based navigation on Cloudflare Workers Pages Router. After clicking `<Link href="/about">` and pressing browser back, the page stays on `/about` instead of returning to the previous page.
-- **Root cause**: The client-side router's `popstate` event handler may not be fully wired up in the Workers build. Link clicks navigate correctly (full page load or client-side), but history popstate events don't trigger re-rendering.
-- **Impact**: Browser back/forward navigation is broken for the Pages Router on Workers. The App Router on Workers handles this correctly (RSC client router manages history).
-- **Tracked for**: Phase 9 DX Polish.
+### Pages Router on Workers — Browser Back Button (FIXED)
+- **Discovery**: `page.goBack()` did not work after Link-based navigation on Cloudflare Workers Pages Router.
+- **Root cause**: The production client entry did not import `next/router`, so the module-level `popstate` listener in `router.ts` was never registered. Without that listener, `navigateClient()` was never called on back/forward, so the page never re-rendered.
+- **Fix**: Eagerly import `next/router` in both the generated production client entry (`index.ts`) and the standalone client entry (`client/entry.ts`) so the popstate listener registers at hydration time. Also ensured `client/entry.ts` sets `window.__VINEXT_ROOT__` which `navigateClient()` needs to call `root.render()`.
 
 ### Suspense/React.lazy Works in Pages Router SSR
 - **Confirmed**: `React.lazy` + `Suspense` components are correctly resolved during SSR using `renderToPipeableStream`. The lazy component's content appears in the SSR HTML (verified with JavaScript disabled). This is because `renderToPipeableStream` (unlike `renderToString`) waits for lazy components to resolve.

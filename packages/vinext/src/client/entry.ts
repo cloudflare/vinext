@@ -10,6 +10,10 @@
  */
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
+// Eagerly import the router shim so its module-level popstate listener is
+// registered.  Without this, browser back/forward buttons do nothing because
+// navigateClient() is never invoked on history changes.
+import "next/router";
 
 // Read the SSR data injected by the server
 const nextData = (window as any).__NEXT_DATA__;
@@ -57,7 +61,8 @@ async function hydrate() {
     return;
   }
 
-  hydrateRoot(container, element);
+  const root = hydrateRoot(container, element);
+  (window as any).__VINEXT_ROOT__ = root;
 }
 
 hydrate();
