@@ -54,9 +54,10 @@ function toVarName(family: string): string {
  */
 function buildGoogleFontsUrl(family: string, options: FontOptions): string {
   const params = new URLSearchParams();
-  const familyParam = family.replace(/\s+/g, "+");
-
-  let spec = familyParam;
+  // Don't pre-replace spaces with "+". URLSearchParams handles encoding:
+  // spaces become "+" in application/x-www-form-urlencoded format.
+  // Pre-replacing would cause double-encoding: "+" -> "%2B" (400 error).
+  let spec = family;
 
   // Build weight/style specs
   const weights = options.weight
@@ -145,28 +146,75 @@ function injectClassNameRule(
   document.head.appendChild(style);
 }
 
+/** Track which variable class CSS rules have been injected. */
+const injectedVariableRules = new Set<string>();
+
+/** Track which :root CSS variable rules have been injected. */
+const injectedRootVariables = new Set<string>();
+
+/**
+ * Inject a CSS rule that sets a CSS variable on an element.
+ * This is what makes `<html className={inter.variable}>` set the CSS variable
+ * that can be referenced by other styles (e.g., Tailwind's font-sans).
+ *
+ * Note: Tailwind v4's @theme inline uses build-time --theme() functions that
+ * don't resolve runtime CSS variables. So we also apply font-family directly
+ * to ensure fonts work even when the app relies on @theme inline variables.
+ */
+function injectVariableClassRule(
+  variableClassName: string,
+  cssVarName: string,
+  fontFamily: string,
+): void {
+  if (injectedVariableRules.has(variableClassName)) return;
+  injectedVariableRules.add(variableClassName);
+
+  // Set the CSS variable AND apply font-family directly.
+  // The font-family ensures fonts work with Tailwind v4's @theme inline which
+  // uses build-time resolution and can't see runtime-defined CSS variables.
+  let css = `.${variableClassName} { ${cssVarName}: ${fontFamily}; font-family: ${fontFamily}; }\n`;
+  
+  // Also inject at :root so CSS variable inheritance works throughout the page.
+  if (!injectedRootVariables.has(cssVarName)) {
+    injectedRootVariables.add(cssVarName);
+    css += `:root { ${cssVarName}: ${fontFamily}; }\n`;
+  }
+
+  // On server, store the CSS for SSR injection
+  if (typeof document === "undefined") {
+    ssrFontStyles.push(css);
+    return;
+  }
+
+  // On client, inject a <style> tag
+  const style = document.createElement("style");
+  style.textContent = css;
+  style.setAttribute("data-vinext-font-variable", variableClassName);
+  document.head.appendChild(style);
+}
+
 // SSR: collect font class CSS for injection in <head>
 const ssrFontStyles: string[] = [];
 
 /**
- * Get and clear collected SSR font class styles (used by the renderer).
+ * Get collected SSR font class styles (used by the renderer).
+ * Note: We don't clear the arrays because fonts are loaded at module import
+ * time and need to persist across all requests in the Workers environment.
  */
 export function getSSRFontStyles(): string[] {
-  const styles = [...ssrFontStyles];
-  ssrFontStyles.length = 0;
-  return styles;
+  return [...ssrFontStyles];
 }
 
 // SSR: collect font URLs to inject in <head>
 const ssrFontUrls: string[] = [];
 
 /**
- * Get and clear collected SSR font URLs (used by the renderer).
+ * Get collected SSR font URLs (used by the renderer).
+ * Note: We don't clear the arrays because fonts are loaded at module import
+ * time and need to persist across all requests in the Workers environment.
  */
 export function getSSRFontLinks(): string[] {
-  const urls = [...ssrFontUrls];
-  ssrFontUrls.length = 0;
-  return urls;
+  return [...ssrFontUrls];
 }
 
 /** Track injected self-hosted @font-face blocks (deduplicate) */
@@ -199,7 +247,10 @@ function createFontLoader(family: string) {
     const className = `__font_${family.toLowerCase().replace(/\s+/g, "_")}_${id}`;
     const fallback = options.fallback ?? ["sans-serif"];
     const fontFamily = `'${family}', ${fallback.join(", ")}`;
-    const variable = options.variable ?? toVarName(family);
+    const cssVarName = options.variable ?? toVarName(family);
+    // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
+    // Users apply this class to set the CSS variable on that element.
+    const variableClassName = `__variable_${family.toLowerCase().replace(/\s+/g, "_")}_${id}`;
 
     if (options._selfHostedCSS) {
       // Self-hosted mode: inject local @font-face CSS instead of CDN link
@@ -219,12 +270,16 @@ function createFontLoader(family: string) {
 
     // Inject a CSS rule that maps className to font-family.
     // This is what makes `<div className={inter.className}>` work.
-    injectClassNameRule(className, fontFamily, variable);
+    injectClassNameRule(className, fontFamily, cssVarName);
+    
+    // Inject a CSS rule for the variable class name.
+    // This is what makes `<html className={inter.variable}>` set the CSS variable.
+    injectVariableClassRule(variableClassName, cssVarName, fontFamily);
 
     return {
       className,
       style: { fontFamily },
-      variable,
+      variable: variableClassName,
     };
   };
 }

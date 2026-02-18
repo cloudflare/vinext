@@ -2045,7 +2045,9 @@ describe("next/font/google shim", () => {
 
     expect(result.className).toMatch(/^__font_inter_/);
     expect(result.style.fontFamily).toContain("Inter");
-    expect(result.variable).toBe("--font-inter");
+    // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
+    // Users apply this class to set the CSS variable on that element.
+    expect(result.variable).toMatch(/^__variable_inter_/);
   });
 
   it("Proxy returns font loaders for any family", async () => {
@@ -2069,7 +2071,8 @@ describe("next/font/google shim", () => {
     const result = googleFonts.RobotoMono({ weight: "400" });
 
     expect(result.style.fontFamily).toContain("Roboto Mono");
-    expect(result.variable).toBe("--font-roboto-mono");
+    // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
+    expect(result.variable).toMatch(/^__variable_roboto_mono_/);
   });
 
   it("uses custom variable name when provided", async () => {
@@ -2077,7 +2080,9 @@ describe("next/font/google shim", () => {
       "../packages/vinext/src/shims/font-google.js"
     );
     const result = Inter({ variable: "--custom-font" });
-    expect(result.variable).toBe("--custom-font");
+    // When custom variable is provided, the generated class still sets that variable
+    // The returned value is still a class name, not the CSS variable name itself
+    expect(result.variable).toMatch(/^__variable_inter_/);
   });
 
   it("uses custom fallback fonts", async () => {

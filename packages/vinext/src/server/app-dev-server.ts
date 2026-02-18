@@ -185,6 +185,7 @@ ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifes
 import { getCacheHandler, _consumeRequestScopedCacheLife } from "next/cache";
 import { withFetchCache } from "vinext/fetch-cache";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
+import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStyles } from "next/font/google";
 
 // Track current navigation context so we can pass it to the SSR environment.
 // "use client" components rendered during SSR need the pathname/searchParams/params
@@ -284,8 +285,13 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
       headers: { "Content-Type": "text/x-component; charset=utf-8" },
     });
   }
+  // Collect font data from RSC environment
+  const fontData = {
+    links: _getSSRFontLinks(),
+    styles: _getSSRFontStyles(),
+  };
   const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-  const htmlStream = await ssrEntry.handleSsr(rscStream, _currentNavContext);
+  const htmlStream = await ssrEntry.handleSsr(rscStream, _currentNavContext, fontData);
   setHeadersContext(null);
   setNavigationContext(null);
   return new Response(htmlStream, {
@@ -1201,8 +1207,13 @@ async function _handleRequest(request) {
         isrTriggerRegen(_isrCacheKey, async function() {
           const freshElement = await buildPageElement(route, params, undefined, url.searchParams);
           const freshRscStream = renderToReadableStream(freshElement, { onError: rscOnError });
+          // Collect font data from RSC environment
+          const freshFontData = {
+            links: _getSSRFontLinks(),
+            styles: _getSSRFontStyles(),
+          };
           const ssrEntryFresh = await import.meta.viteRsc.loadModule("ssr", "index");
-          const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream, _currentNavContext);
+          const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream, _currentNavContext, freshFontData);
           // Consume the stream to get HTML string
           const freshHtml = await new Response(freshHtmlStream).text();
           await isrSet(_isrCacheKey, { kind: "APP_PAGE", html: freshHtml, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, effectiveRevalidate);
@@ -1377,11 +1388,18 @@ async function _handleRequest(request) {
     return new Response(rscStream, { headers: responseHeaders });
   }
 
+  // Collect font data from RSC environment before passing to SSR
+  // (Fonts are loaded during RSC rendering when layout.tsx calls Geist() etc.)
+  const fontData = {
+    links: _getSSRFontLinks(),
+    styles: _getSSRFontStyles(),
+  };
+
   // Delegate to SSR environment for HTML rendering
   let htmlStream;
   try {
     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    htmlStream = await ssrEntry.handleSsr(rscStream, _currentNavContext);
+    htmlStream = await ssrEntry.handleSsr(rscStream, _currentNavContext, fontData);
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
@@ -1524,8 +1542,11 @@ async function collectStreamChunks(stream) {
  *   "use client" components like those using usePathname() need the current
  *   request URL during SSR, and they run in this SSR environment (separate
  *   from the RSC environment where the context was originally set).
+ * @param fontData - Font links and styles collected from the RSC environment.
+ *   Fonts are loaded during RSC rendering (when layout calls Geist() etc.),
+ *   and the data needs to be passed to SSR since they're separate module instances.
  */
-export async function handleSsr(rscStream, navContext) {
+export async function handleSsr(rscStream, navContext, fontData) {
   // Set navigation context so hooks like usePathname() work during SSR
   // of "use client" components
   if (navContext) {
@@ -1596,8 +1617,22 @@ export async function handleSsr(rscStream, navContext) {
       }
     }
 
-    // Combine RSC embed script and server-inserted HTML
-    const injectHTML = rscEmbedScript + insertedHTML;
+    // Build font HTML from data passed from RSC environment
+    // (Fonts are loaded during RSC rendering, and RSC/SSR are separate module instances)
+    let fontHTML = "";
+    if (fontData) {
+      if (fontData.links && fontData.links.length > 0) {
+        for (const url of fontData.links) {
+          fontHTML += '<link rel="stylesheet" href="' + url + '" />\\n';
+        }
+      }
+      if (fontData.styles && fontData.styles.length > 0) {
+        fontHTML += '<style data-vinext-fonts>' + fontData.styles.join("\\n") + '</style>\\n';
+      }
+    }
+
+    // Combine RSC embed script, server-inserted HTML, and font HTML
+    const injectHTML = rscEmbedScript + insertedHTML + fontHTML;
 
     // Inject the collected HTML before </head> using a TransformStream
     const decoder = new TextDecoder();

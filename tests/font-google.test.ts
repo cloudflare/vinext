@@ -32,13 +32,15 @@ describe("next/font/google shim", () => {
     const result = Inter({ weight: ["400", "700"], subsets: ["latin"] });
     expect(result.className).toMatch(/^__font_inter_\d+$/);
     expect(result.style.fontFamily).toContain("Inter");
-    expect(result.variable).toBe("--font-inter");
+    // variable returns a class name that sets the CSS variable, not the variable name itself
+    expect(result.variable).toMatch(/^__variable_inter_\d+$/);
   });
 
   it("supports custom variable name", async () => {
     const { Inter } = await import("../packages/vinext/src/shims/font-google.js");
     const result = Inter({ weight: ["400"], variable: "--my-font" });
-    expect(result.variable).toBe("--my-font");
+    // variable returns a class name that sets the CSS variable, not the variable name itself
+    expect(result.variable).toMatch(/^__variable_inter_\d+$/);
   });
 
   it("supports custom fallback fonts", async () => {
@@ -113,7 +115,7 @@ describe("next/font/google shim", () => {
     expect(url).toMatch(/Roboto[+%].*Mono/);
   });
 
-  it("getSSRFontLinks returns and clears collected URLs", async () => {
+  it("getSSRFontLinks returns collected URLs without clearing", async () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
     // Force a CDN-mode font load (SSR context: document is undefined)
     const fonts = mod.default as any;
@@ -121,18 +123,21 @@ describe("next/font/google shim", () => {
     const links = mod.getSSRFontLinks();
     // Should have collected at least one URL
     expect(links.length).toBeGreaterThanOrEqual(0); // May be 0 if deduped
-    // Second call should be empty (cleared)
+    // In Workers, fonts persist across requests, so arrays are NOT cleared
+    // Second call returns same data (not empty)
     const links2 = mod.getSSRFontLinks();
-    expect(links2.length).toBe(0);
+    expect(links2.length).toBe(links.length);
   });
 
-  it("getSSRFontStyles returns and clears collected CSS", async () => {
+  it("getSSRFontStyles returns collected CSS without clearing", async () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
     const styles = mod.getSSRFontStyles();
     // Returns array (may be empty if already cleared)
     expect(Array.isArray(styles)).toBe(true);
+    // In Workers, fonts persist across requests, so arrays are NOT cleared
+    // Second call returns same data (not empty)
     const styles2 = mod.getSSRFontStyles();
-    expect(styles2.length).toBe(0);
+    expect(styles2.length).toBe(styles.length);
   });
 
   it("exports common font families as named exports", async () => {

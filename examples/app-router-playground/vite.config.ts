@@ -117,9 +117,6 @@ export default defineConfig({
     },
   },
 
-  css: {
-    postcss: {
-      plugins: [],
-    },
-  },
+  // Use postcss.config.js for Tailwind CSS processing
+  // (Do NOT override with empty plugins array)
 });
