@@ -41,16 +41,19 @@ jobs:
       - name: Checkout vinext
         uses: actions/checkout@v4
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
 
       - name: Build vinext
         run: |
-          npm ci --legacy-peer-deps
-          npm run build
+          pnpm install --frozen-lockfile
+          pnpm run build
 
       - name: Clone target repo
         run: git clone --depth 1 ${{ matrix.repo.url }} target-repo
