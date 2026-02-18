@@ -7,7 +7,7 @@
     "react-dom": "^19.2.4",
     "better-auth": "^1.4.0",
     "better-sqlite3": "^12.0.0",
-    "vinext": "*",
+    "vinext": "workspace:*",
     "@vitejs/plugin-rsc": "^0.5.19",
     "react-server-dom-webpack": "^19.2.4"
   },

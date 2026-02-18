@@ -5,7 +5,7 @@
   "dependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "vinext": "*"
+    "vinext": "workspace:*"
   },
   "devDependencies": {
     "vite": "^7.0.0"

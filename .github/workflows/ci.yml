@@ -12,53 +12,57 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci --legacy-peer-deps
-      - run: npm run lint
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm run lint
 
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci --legacy-peer-deps
-      - run: npm run typecheck
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm run typecheck
 
   test:
     name: Vitest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci --legacy-peer-deps
+          cache: pnpm
+      - run: pnpm install
       - name: Build plugin (needed by ecosystem fixtures)
-        run: npx tsc -p packages/vinext/tsconfig.json
-      - run: npm test
+        run: pnpm run build
+      - run: pnpm test
 
   e2e:
     name: Playwright E2E
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
-      - run: npm ci --legacy-peer-deps
+          cache: pnpm
+      - run: pnpm install
       - name: Build plugin
-        run: npx tsc -p packages/vinext/tsconfig.json
-      - run: npx playwright install chromium
-      - run: npx playwright test
+        run: pnpm run build
+      - run: pnpm exec playwright install chromium
+      - run: pnpm exec playwright test
         env:
           CI: true
       - uses: actions/upload-artifact@v4

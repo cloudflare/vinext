@@ -1797,6 +1797,58 @@ hydrate();
         return null;
       },
     },
+    // Copy @vercel/og assets (font, WASM) to the RSC output directory.
+    // @vercel/og uses readFileSync(new URL("./font.ttf", import.meta.url)) which
+    // breaks when the module is bundled because Vite doesn't process
+    // new URL(..., import.meta.url) for server-side (SSR/RSC) builds.
+    // This plugin copies the required assets so they exist alongside the bundle.
+    {
+      name: "vinext:og-assets",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        async handler(options) {
+          const envName = (this as any).environment?.name as string | undefined;
+          if (envName !== "rsc") return;
+
+          const outDir = options.dir;
+          if (!outDir) return;
+
+          // Check if the bundle references @vercel/og assets
+          const indexPath = path.join(outDir, "index.js");
+          if (!fs.existsSync(indexPath)) return;
+
+          const content = fs.readFileSync(indexPath, "utf-8");
+          const ogAssets = [
+            "noto-sans-v27-latin-regular.ttf",
+            "resvg.wasm",
+          ];
+
+          // Only copy if the bundle actually references these files
+          const referencedAssets = ogAssets.filter(asset => content.includes(asset));
+          if (referencedAssets.length === 0) return;
+
+          // Find @vercel/og in node_modules
+          try {
+            const require = createRequire(import.meta.url);
+            const ogPkgPath = require.resolve("@vercel/og/package.json");
+            const ogDistDir = path.join(path.dirname(ogPkgPath), "dist");
+
+            for (const asset of referencedAssets) {
+              const src = path.join(ogDistDir, asset);
+              const dest = path.join(outDir, asset);
+              if (fs.existsSync(src) && !fs.existsSync(dest)) {
+                fs.copyFileSync(src, dest);
+              }
+            }
+          } catch {
+            // @vercel/og not installed — nothing to copy
+          }
+        },
+      },
+    },
     // Cloudflare Workers production build integration:
     // After all environments are built, copy RSC/SSR outputs into the Worker
     // directory, rewrite cross-environment imports so workerd can resolve them,

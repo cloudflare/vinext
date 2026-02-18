@@ -17,11 +17,11 @@ Instructions for AI agents working on this codebase.
 ### Commands
 
 ```bash
-npm test              # Vitest unit + integration tests
-npm run test:e2e      # Playwright E2E tests (5 projects)
-npm run typecheck     # TypeScript via tsgo (fast)
-npm run lint          # oxlint
-npm run build         # Build the vinext package
+pnpm test             # Vitest unit + integration tests
+pnpm run test:e2e     # Playwright E2E tests (5 projects)
+pnpm run typecheck    # TypeScript via tsgo (fast)
+pnpm run lint         # oxlint
+pnpm run build        # Build the vinext package
 ```
 
 ### Project Structure

@@ -6,7 +6,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "vite": "^7.3.1",
-    "vinext": "*",
+    "vinext": "workspace:*",
     "@cloudflare/vite-plugin": "^1.25.0",
     "wrangler": "^4.65.0"
   }

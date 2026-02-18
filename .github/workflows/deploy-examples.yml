@@ -32,18 +32,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-          cache: npm
+          cache: pnpm
 
-      - run: npm ci --legacy-peer-deps
+      - run: pnpm install
 
       - name: Build vinext plugin
-        run: npx tsc -p packages/vinext/tsconfig.json
+        run: pnpm run build
 
       - name: Build example
-        run: npx vite build
+        run: pnpm exec vite build
         working-directory: examples/${{ matrix.example.name }}
 
       - name: Deploy to Cloudflare Workers (Production)
