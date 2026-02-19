@@ -207,6 +207,35 @@ describe("App Router integration", () => {
     expect(html).not.toContain("Page views: 1,234");
   });
 
+  it("renders parallel slot layout wrapping slot content", async () => {
+    const res = await fetch(`${baseUrl}/dashboard`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // @team has a layout.tsx — the slot layout should wrap the slot page
+    expect(html).toContain('data-testid="team-slot-layout"');
+    expect(html).toContain('data-testid="team-slot-nav"');
+    expect(html).toContain("Team Nav");
+    // The slot page content should still be present inside the layout
+    expect(html).toContain('data-testid="team-slot"');
+    expect(html).toContain("Team Members");
+  });
+
+  it("renders slot layout around default.tsx on child routes", async () => {
+    // On /dashboard/settings, inherited @team slot uses default.tsx but
+    // should still be wrapped by the slot layout
+    const res = await fetch(`${baseUrl}/dashboard/settings`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // @team slot layout should still wrap the default.tsx content
+    expect(html).toContain('data-testid="team-slot-layout"');
+    expect(html).toContain('data-testid="team-slot-nav"');
+    expect(html).toContain("Team Nav");
+    // Default content should be present
+    expect(html).toContain('data-testid="team-default"');
+  });
+
   it("parallel slots do not affect URL routing", async () => {
     // @team and @analytics should NOT be accessible as direct routes
     const teamRes = await fetch(`${baseUrl}/dashboard/team`);

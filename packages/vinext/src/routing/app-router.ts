@@ -35,6 +35,8 @@ export interface ParallelSlot {
   pagePath: string | null;
   /** Absolute path to the slot's default.tsx fallback */
   defaultPath: string | null;
+  /** Absolute path to the slot's layout component (wraps slot content) */
+  layoutPath: string | null;
   /** Absolute path to the slot's loading component */
   loadingPath: string | null;
   /** Absolute path to the slot's error component */
@@ -442,6 +444,7 @@ function discoverParallelSlots(dir: string, appDir: string): ParallelSlot[] {
       name: slotName,
       pagePath,
       defaultPath,
+      layoutPath: findFile(slotDir, "layout"),
       loadingPath: findFile(slotDir, "loading"),
       errorPath: findFile(slotDir, "error"),
       interceptingRoutes,

@@ -76,6 +76,7 @@ export function generateRscEntry(
     for (const slot of route.parallelSlots) {
       if (slot.pagePath) getImportVar(slot.pagePath);
       if (slot.defaultPath) getImportVar(slot.defaultPath);
+      if (slot.layoutPath) getImportVar(slot.layoutPath);
       if (slot.loadingPath) getImportVar(slot.loadingPath);
       if (slot.errorPath) getImportVar(slot.errorPath);
       // Register intercepting route page modules
@@ -101,6 +102,7 @@ export function generateRscEntry(
       return `      ${JSON.stringify(slot.name)}: {
         page: ${slot.pagePath ? getImportVar(slot.pagePath) : "null"},
         default: ${slot.defaultPath ? getImportVar(slot.defaultPath) : "null"},
+        layout: ${slot.layoutPath ? getImportVar(slot.layoutPath) : "null"},
         loading: ${slot.loadingPath ? getImportVar(slot.loadingPath) : "null"},
         error: ${slot.errorPath ? getImportVar(slot.errorPath) : "null"},
         layoutIndex: ${slot.layoutIndex},
@@ -547,6 +549,16 @@ async function buildPageElement(route, params, opts, searchParams) {
 
           if (SlotPage) {
             let slotElement = createElement(SlotPage, { params: Object.assign(Promise.resolve(slotParams), slotParams) });
+            // Wrap with slot-specific layout if present.
+            // In Next.js, @slot/layout.tsx wraps the slot's page content
+            // before it is passed as a prop to the parent layout.
+            const SlotLayout = slotMod.layout?.default;
+            if (SlotLayout) {
+              slotElement = createElement(SlotLayout, {
+                children: slotElement,
+                params: Object.assign(Promise.resolve(slotParams), slotParams),
+              });
+            }
             // Wrap with slot-specific loading if present
             if (slotMod.loading?.default) {
               slotElement = createElement(Suspense,

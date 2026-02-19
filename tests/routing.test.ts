@@ -363,6 +363,38 @@ describe("matchAppRoute - URL matching", () => {
     expect(analyticsSlot!.defaultPath).not.toBeNull();
   });
 
+  it("discovers layout.tsx inside parallel slot directories", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const dashboardRoute = routes.find((r) => r.pattern === "/dashboard");
+    expect(dashboardRoute).toBeDefined();
+
+    // @team has a layout.tsx
+    const teamSlot = dashboardRoute!.parallelSlots.find((s) => s.name === "team");
+    expect(teamSlot).toBeDefined();
+    expect(teamSlot!.layoutPath).not.toBeNull();
+    expect(teamSlot!.layoutPath).toContain("@team");
+    expect(teamSlot!.layoutPath).toContain("layout.tsx");
+
+    // @analytics does NOT have a layout.tsx
+    const analyticsSlot = dashboardRoute!.parallelSlots.find((s) => s.name === "analytics");
+    expect(analyticsSlot).toBeDefined();
+    expect(analyticsSlot!.layoutPath).toBeNull();
+  });
+
+  it("inherited parallel slots preserve layoutPath from parent", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const settingsRoute = routes.find((r) => r.pattern === "/dashboard/settings");
+    expect(settingsRoute).toBeDefined();
+
+    // @team slot inherited from dashboard should still have layoutPath
+    const teamSlot = settingsRoute!.parallelSlots.find((s) => s.name === "team");
+    expect(teamSlot).toBeDefined();
+    expect(teamSlot!.layoutPath).not.toBeNull();
+    expect(teamSlot!.layoutPath).toContain("@team");
+  });
+
   it("routes without @slot dirs have empty parallelSlots", async () => {
     invalidateAppRouteCache();
     const routes = await appRouter(APP_FIXTURE_DIR);
