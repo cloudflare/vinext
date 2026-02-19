@@ -54,6 +54,17 @@ describe("scanImports", () => {
     expect(items[0].status).toBe("partial");
   });
 
+  it("reports accurate next/font/local detail", () => {
+    writeFile("app/page.tsx", `import localFont from "next/font/local";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/font/local");
+    expect(items[0].status).toBe("partial");
+    expect(items[0].detail).toContain("font.className works");
+    expect(items[0].detail).toContain("font.variable mode broken");
+  });
+
   it("detects unsupported imports", () => {
     writeFile("pages/amp.tsx", `import { useAmp } from "next/amp";`);
 
@@ -523,6 +534,64 @@ describe("checkConventions", () => {
     const items = checkConventions(tmpDir);
     expect(items.find((i) => i.name.includes("1 route handler"))).toBeDefined();
   });
+
+  it("flags missing type:module in package.json", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("package.json", JSON.stringify({ dependencies: { react: "^19.0.0" } }));
+
+    const items = checkConventions(tmpDir);
+    const typeModule = items.find((i) => i.name.includes('"type": "module"'));
+    expect(typeModule).toBeDefined();
+    expect(typeModule?.status).toBe("unsupported");
+    expect(typeModule?.detail).toContain("vinext init");
+  });
+
+  it("does not flag type:module when present", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { react: "^19.0.0" } }));
+
+    const items = checkConventions(tmpDir);
+    const typeModule = items.find((i) => i.name.includes('"type": "module"'));
+    expect(typeModule).toBeUndefined();
+  });
+
+  it("detects ViewTransition import from react", () => {
+    writeFile("app/page.tsx", `import { ViewTransition } from "react";\nexport default function Home() { return <ViewTransition><div/></ViewTransition>; }`);
+
+    const items = checkConventions(tmpDir);
+    const vt = items.find((i) => i.name.includes("ViewTransition"));
+    expect(vt).toBeDefined();
+    expect(vt?.status).toBe("partial");
+    expect(vt?.detail).toContain("passthrough fallback");
+    expect(vt?.files).toHaveLength(1);
+  });
+
+  it("does not flag ViewTransition when not imported", () => {
+    writeFile("app/page.tsx", `import React from "react";\nexport default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const vt = items.find((i) => i.name.includes("ViewTransition"));
+    expect(vt).toBeUndefined();
+  });
+
+  it("detects PostCSS string-form plugins", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("postcss.config.mjs", `export default {\n  plugins: ["@tailwindcss/postcss"]\n};`);
+
+    const items = checkConventions(tmpDir);
+    const postcss = items.find((i) => i.name.includes("PostCSS"));
+    expect(postcss).toBeDefined();
+    expect(postcss?.status).toBe("partial");
+    expect(postcss?.detail).toContain("string-form");
+  });
+
+  it("does not flag PostCSS when no config exists", () => {
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const postcss = items.find((i) => i.name.includes("PostCSS"));
+    expect(postcss).toBeUndefined();
+  });
 });
 
 // ── runCheck ───────────────────────────────────────────────────────────────
@@ -531,7 +600,7 @@ describe("runCheck", () => {
   it("returns a complete result with all sections", () => {
     writeFile("app/page.tsx", `import Link from "next/link";`);
     writeFile("app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
-    writeFile("package.json", JSON.stringify({ dependencies: { tailwindcss: "^3.0.0" } }));
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
 
     const result = runCheck(tmpDir);
     expect(result.imports).toBeDefined();
@@ -544,7 +613,7 @@ describe("runCheck", () => {
   it("calculates score correctly — 100% for all supported", () => {
     writeFile("app/page.tsx", `import Link from "next/link";`);
     writeFile("app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
-    writeFile("package.json", JSON.stringify({ dependencies: { tailwindcss: "^3.0.0" } }));
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
 
     const result = runCheck(tmpDir);
     // All items should be supported: next/link, no config file, tailwindcss, App Router, 1 page, 1 layout
@@ -573,7 +642,7 @@ describe("runCheck", () => {
       "next.config.mjs",
       `export default { webpack: (config) => config };`,
     );
-    writeFile("package.json", JSON.stringify({ dependencies: { "next-auth": "^4.0.0" } }));
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { "next-auth": "^4.0.0" } }));
 
     const result = runCheck(tmpDir);
     expect(result.summary.unsupported).toBeGreaterThan(0);
@@ -582,7 +651,7 @@ describe("runCheck", () => {
 
   it("reports correct totals", () => {
     writeFile("app/page.tsx", `import Link from "next/link";`);
-    writeFile("package.json", JSON.stringify({ dependencies: { tailwindcss: "^3.0.0" } }));
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
 
     const result = runCheck(tmpDir);
     const total = result.summary.supported + result.summary.partial + result.summary.unsupported;
@@ -602,7 +671,7 @@ describe("runCheck", () => {
   it("calculates score correctly for src/app project", () => {
     writeFile("src/app/page.tsx", `import Link from "next/link";`);
     writeFile("src/app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
-    writeFile("package.json", JSON.stringify({ dependencies: { tailwindcss: "^3.0.0" } }));
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
 
     const result = runCheck(tmpDir);
     expect(result.summary.unsupported).toBe(0);
@@ -618,7 +687,7 @@ describe("formatReport", () => {
       import Link from "next/link";
       import { GoogleFont } from "next/font/google";
     `);
-    writeFile("package.json", JSON.stringify({ dependencies: { tailwindcss: "^3.0.0" } }));
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
 
     const result = runCheck(tmpDir);
     const report = formatReport(result);
@@ -633,7 +702,7 @@ describe("formatReport", () => {
 
   it("shows issues section when there are unsupported items", () => {
     writeFile("app/page.tsx", `import { useAmp } from "next/amp";`);
-    writeFile("package.json", JSON.stringify({ dependencies: {} }));
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
 
     const result = runCheck(tmpDir);
     const report = formatReport(result);
@@ -644,7 +713,7 @@ describe("formatReport", () => {
 
   it("shows partial support section when there are partial items", () => {
     writeFile("app/page.tsx", `import { GoogleFont } from "next/font/google";`);
-    writeFile("package.json", JSON.stringify({ dependencies: {} }));
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
 
     const result = runCheck(tmpDir);
     const report = formatReport(result);
@@ -656,7 +725,7 @@ describe("formatReport", () => {
   it("does not show issues section when everything is supported", () => {
     writeFile("app/page.tsx", `import Link from "next/link";`);
     writeFile("app/layout.tsx", `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`);
-    writeFile("package.json", JSON.stringify({ dependencies: { tailwindcss: "^3.0.0" } }));
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { tailwindcss: "^3.0.0" } }));
 
     const result = runCheck(tmpDir);
     const report = formatReport(result);
@@ -668,7 +737,7 @@ describe("formatReport", () => {
   it("includes file count for imports", () => {
     writeFile("app/page.tsx", `import Link from "next/link";`);
     writeFile("app/about/page.tsx", `import Link from "next/link";`);
-    writeFile("package.json", JSON.stringify({ dependencies: {} }));
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
 
     const result = runCheck(tmpDir);
     const report = formatReport(result);
@@ -688,6 +757,21 @@ describe("formatReport", () => {
     const report = formatReport(emptyResult);
     expect(report).toContain("vinext compatibility report");
     expect(report).toContain("100% compatible");
+  });
+
+  it("includes actionable next steps", () => {
+    writeFile("app/page.tsx", `import Link from "next/link";`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    const result = runCheck(tmpDir);
+    const report = formatReport(result);
+
+    expect(report).toContain("Recommended next steps");
+    expect(report).toContain("vinext init");
+    expect(report).toContain("Or manually");
+    expect(report).toContain('"type": "module"');
+    expect(report).toContain("vite.config.ts");
+    expect(report).toContain("npx vite dev");
   });
 });
 

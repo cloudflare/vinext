@@ -48,7 +48,7 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/head": { status: "supported" },
   "next/script": { status: "supported" },
   "next/font/google": { status: "partial", detail: "fonts loaded from CDN, not self-hosted at build time" },
-  "next/font/local": { status: "partial", detail: "basic support, no automatic font subsetting" },
+  "next/font/local": { status: "partial", detail: "font.className works but font.variable mode broken (CSS variable not set) — fonts fall back to system sans-serif" },
   "next/og": { status: "supported", detail: "ImageResponse via @vercel/og" },
   "next/config": { status: "supported" },
   "next/amp": { status: "unsupported", detail: "AMP is not supported" },
@@ -363,6 +363,63 @@ export function checkConventions(root: string): CheckItem[] {
     items.push({ name: "No pages/ or app/ directory found", status: "unsupported", detail: "vinext requires a pages/ or app/ directory" });
   }
 
+  // Check for "type": "module" in package.json
+  const pkgPath = path.join(root, "package.json");
+  if (fs.existsSync(pkgPath)) {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+    if (pkg.type !== "module") {
+      items.push({
+        name: 'Missing "type": "module" in package.json',
+        status: "unsupported",
+        detail: "required for Vite — run `vinext init` to add it automatically",
+      });
+    }
+  }
+
+  // Scan for ViewTransition import from react
+  const allSourceFiles = findSourceFiles(root);
+  const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
+  const viewTransitionFiles: string[] = [];
+  for (const file of allSourceFiles) {
+    const content = fs.readFileSync(file, "utf-8");
+    if (viewTransitionRegex.test(content)) {
+      viewTransitionFiles.push(path.relative(root, file));
+    }
+  }
+  if (viewTransitionFiles.length > 0) {
+    items.push({
+      name: "ViewTransition (React canary API)",
+      status: "partial",
+      detail: "vinext auto-shims with a passthrough fallback, view transitions won't animate",
+      files: viewTransitionFiles,
+    });
+  }
+
+  // Check PostCSS config for string-form plugins
+  const postcssConfigs = ["postcss.config.mjs", "postcss.config.js", "postcss.config.cjs"];
+  for (const configFile of postcssConfigs) {
+    const configPath = path.join(root, configFile);
+    if (fs.existsSync(configPath)) {
+      const content = fs.readFileSync(configPath, "utf-8");
+      // Detect string-form plugins: plugins: ["..."] or plugins: ['...']
+      const stringPluginRegex = /plugins\s*:\s*\[[\s\S]*?(['"][^'"]+['"])[\s\S]*?\]/;
+      const match = stringPluginRegex.exec(content);
+      if (match) {
+        // Check it's not require() or import() form — just bare string literals in the array
+        const pluginsBlock = match[0];
+        // If plugins array contains string literals not wrapped in require()
+        if (/plugins\s*:\s*\[[\s\n]*['"]/.test(pluginsBlock)) {
+          items.push({
+            name: `PostCSS string-form plugins (${configFile})`,
+            status: "partial",
+            detail: "string-form PostCSS plugins need resolution — vinext handles this automatically",
+          });
+        }
+      }
+      break; // Only check the first config file found
+    }
+  }
+
   return items;
 }
 
@@ -468,13 +525,24 @@ export function formatReport(result: CheckResult): string {
   if (result.summary.partial > 0) {
     lines.push("");
     lines.push("  \x1b[1mPartial support (may need attention):\x1b[0m");
-    const allItems = [...result.imports, ...result.config, ...result.libraries];
+    const allItems = [...result.imports, ...result.config, ...result.libraries, ...result.conventions];
     for (const item of allItems) {
       if (item.status === "partial") {
         lines.push(`    \x1b[33m~\x1b[0m  ${item.name}${item.detail ? ` — ${item.detail}` : ""}`);
       }
     }
   }
+
+  // Actionable next steps
+  lines.push("");
+  lines.push("  \x1b[1mRecommended next steps:\x1b[0m");
+  lines.push(`    Run \x1b[36mvinext init\x1b[0m to set up your project automatically`);
+  lines.push("");
+  lines.push("  Or manually:");
+  lines.push(`    1. Add \x1b[36m"type": "module"\x1b[0m to package.json`);
+  lines.push(`    2. Install: \x1b[36mnpm install -D vite @vitejs/plugin-rsc\x1b[0m`);
+  lines.push(`    3. Create vite.config.ts (see docs)`);
+  lines.push(`    4. Run: \x1b[36mnpx vite dev\x1b[0m`);
 
   lines.push("");
   return lines.join("\n");
