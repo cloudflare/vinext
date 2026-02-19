@@ -31,7 +31,7 @@ const projectServers = {
     testDir: "./tests/e2e/cloudflare-pages-router",
     server: {
       command: "npx vite build && npx wrangler dev --port 4177",
-      cwd: "./examples/cloudflare-pages",
+      cwd: "./examples/pages-router-cloudflare",
       port: 4177,
       reuseExistingServer: !process.env.CI,
       timeout: 30_000,
@@ -53,10 +53,10 @@ const projectServers = {
   "cloudflare-workers": {
     testDir: "./tests/e2e/cloudflare-workers",
     server: {
-      // Build cloudflare-app with Vite, then serve with wrangler dev (miniflare)
+      // Build app-router-cloudflare with Vite, then serve with wrangler dev (miniflare)
       command:
-        "npx vite build && npx wrangler dev --config dist/cloudflare_app/wrangler.json --port 4176",
-      cwd: "./examples/cloudflare-app",
+        "npx vite build && npx wrangler dev --config dist/app_router_cloudflare/wrangler.json --port 4176",
+      cwd: "./examples/app-router-cloudflare",
       port: 4176,
       reuseExistingServer: !process.env.CI,
       timeout: 60_000,

@@ -88,9 +88,9 @@ When fixing a bug in any of these files, check whether the same bug exists in th
 ### Test Fixtures
 
 - `tests/fixtures/pages-basic/` — Pages Router test app
-- `tests/fixtures/app-basic/` — App Router test app  
-- `tests/fixtures/cloudflare-app/` — App Router on Workers
-- `tests/fixtures/cloudflare-pages/` — Pages Router on Workers
+- `tests/fixtures/app-basic/` — App Router test app
+- `examples/app-router-cloudflare/` — App Router on Workers
+- `examples/pages-router-cloudflare/` — Pages Router on Workers
 
 Add new test pages to fixtures, not to examples. Examples are for user-facing demos.
 

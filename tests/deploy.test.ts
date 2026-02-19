@@ -761,8 +761,8 @@ describe("getMissingDeps — MDX", () => {
 describe("detectProject on real fixtures", () => {
   const fixturesDir = path.resolve(import.meta.dirname, "../fixtures");
 
-  it("detects cloudflare-app fixture correctly", () => {
-    const cfApp = path.join(fixturesDir, "cloudflare-app");
+  it("detects app-router-cloudflare fixture correctly", () => {
+    const cfApp = path.join(fixturesDir, "app-router-cloudflare");
     if (!fs.existsSync(cfApp)) return; // skip if not available
 
     const info = detectProject(cfApp);
@@ -772,8 +772,8 @@ describe("detectProject on real fixtures", () => {
     expect(info.hasWorkerEntry).toBe(true);
   });
 
-  it("detects cloudflare-pages fixture correctly", () => {
-    const cfPages = path.join(fixturesDir, "cloudflare-pages");
+  it("detects pages-router-cloudflare fixture correctly", () => {
+    const cfPages = path.join(fixturesDir, "pages-router-cloudflare");
     if (!fs.existsSync(cfPages)) return; // skip if not available
 
     const info = detectProject(cfPages);
@@ -783,8 +783,8 @@ describe("detectProject on real fixtures", () => {
     expect(info.hasWorkerEntry).toBe(true);
   });
 
-  it("generates zero files for fully-configured cloudflare-app", () => {
-    const cfApp = path.join(fixturesDir, "cloudflare-app");
+  it("generates zero files for fully-configured app-router-cloudflare", () => {
+    const cfApp = path.join(fixturesDir, "app-router-cloudflare");
     if (!fs.existsSync(cfApp)) return;
 
     const info = detectProject(cfApp);
@@ -792,8 +792,8 @@ describe("detectProject on real fixtures", () => {
     expect(files).toHaveLength(0);
   });
 
-  it("generates zero files for fully-configured cloudflare-pages", () => {
-    const cfPages = path.join(fixturesDir, "cloudflare-pages");
+  it("generates zero files for fully-configured pages-router-cloudflare", () => {
+    const cfPages = path.join(fixturesDir, "pages-router-cloudflare");
     if (!fs.existsSync(cfPages)) return;
 
     const info = detectProject(cfPages);

@@ -195,8 +195,8 @@ These are deployed to Cloudflare Workers and updated on every push to `main`:
 | Example | Description | URL |
 |---------|-------------|-----|
 | App Router Playground | [Vercel's Next.js App Router Playground](https://github.com/vercel/next-app-router-playground) running on vinext | [app-router-playground.vinext.workers.dev](https://app-router-playground.vinext.workers.dev) |
-| App Router (minimal) | Minimal App Router on Workers | [cloudflare-app.vinext.workers.dev](https://cloudflare-app.vinext.workers.dev) |
-| Pages Router (minimal) | Minimal Pages Router on Workers | [cloudflare-pages.vinext.workers.dev](https://cloudflare-pages.vinext.workers.dev) |
+| App Router (minimal) | Minimal App Router on Workers | [app-router-cloudflare.vinext.workers.dev](https://app-router-cloudflare.vinext.workers.dev) |
+| Pages Router (minimal) | Minimal Pages Router on Workers | [pages-router-cloudflare.vinext.workers.dev](https://pages-router-cloudflare.vinext.workers.dev) |
 | RealWorld API | REST API routes example | [realworld-api-rest.vinext.workers.dev](https://realworld-api-rest.vinext.workers.dev) |
 | Benchmarks Dashboard | Build performance tracking over time (D1-backed) | [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev) |
 

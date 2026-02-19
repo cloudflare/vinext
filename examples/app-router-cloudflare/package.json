@@ -1,5 +1,5 @@
 {
-  "name": "vinext-cloudflare-app",
+  "name": "vinext-app-router-cloudflare",
   "type": "module",
   "private": true,
   "dependencies": {

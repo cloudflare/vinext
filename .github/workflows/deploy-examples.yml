@@ -17,12 +17,12 @@ jobs:
       fail-fast: false
       matrix:
         example:
-          - name: cloudflare-app
-            project: cloudflare-app
-            dist_name: cloudflare_app
-          - name: cloudflare-pages
-            project: cloudflare-pages
-            dist_name: cloudflare_pages
+          - name: app-router-cloudflare
+            project: app-router-cloudflare
+            dist_name: app_router_cloudflare
+          - name: pages-router-cloudflare
+            project: pages-router-cloudflare
+            dist_name: pages_router_cloudflare
           - name: app-router-playground
             project: app-router-playground
             dist_name: app_router_playground
@@ -94,8 +94,8 @@ jobs:
             const alias = `pr-${prNumber}`;
             
             const examples = [
-              { name: 'cloudflare-app', project: 'cloudflare-app' },
-              { name: 'cloudflare-pages', project: 'cloudflare-pages' },
+              { name: 'app-router-cloudflare', project: 'app-router-cloudflare' },
+              { name: 'pages-router-cloudflare', project: 'pages-router-cloudflare' },
               { name: 'app-router-playground', project: 'app-router-playground' },
               { name: 'realworld-api-rest', project: 'realworld-api-rest' },
               { name: 'benchmarks', project: 'benchmarks' },
