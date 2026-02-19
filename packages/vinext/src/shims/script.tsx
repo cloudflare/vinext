@@ -1,3 +1,5 @@
+"use client";
+
 /**
  * next/script shim
  *
