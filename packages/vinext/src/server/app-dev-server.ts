@@ -1949,9 +1949,25 @@ async function collectStreamChunks(stream) {
  */
 function createRscEmbedTransform(embedStream) {
   const reader = embedStream.getReader();
+  const _decoder = new TextDecoder();
+  const _encoder = new TextEncoder();
   let done = false;
   let pendingChunks = [];
   let reading = false;
+
+  // Fix invalid preload "as" values in RSC Flight hint lines before
+  // they reach the client. React Flight emits HL hints with
+  // as="stylesheet" for CSS, but the HTML spec requires as="style"
+  // for <link rel="preload">. The fixPreloadAs() below only fixes the
+  // server-rendered HTML stream; this fixes the raw Flight data that
+  // gets embedded as __VINEXT_RSC_CHUNKS__ and processed client-side.
+  function fixFlightHints(bytes) {
+    const text = _decoder.decode(bytes, { stream: true });
+    // Flight hint format: <id>:HL["url","stylesheet"] or with options
+    const fixed = text.replace(/(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g, '$1,"style"$2');
+    if (fixed === text) return bytes;
+    return _encoder.encode(fixed);
+  }
 
   // Start reading RSC chunks in the background, accumulating them
   async function pumpReader() {
@@ -1964,7 +1980,7 @@ function createRscEmbedTransform(embedStream) {
           done = true;
           break;
         }
-        pendingChunks.push(Array.from(result.value));
+        pendingChunks.push(Array.from(fixFlightHints(result.value)));
       }
     } catch (err) {
       if (process.env.NODE_ENV !== "production") {
@@ -2115,9 +2131,12 @@ export async function handleSsr(rscStream, navContext, fontData) {
     const encoder = new TextEncoder();
     let injected = false;
 
-    // Fix invalid preload "as" values emitted by React's Flight protocol.
-    // React Flight's server emits HL hints with as="stylesheet" for CSS,
-    // but the HTML spec requires as="style" for <link rel="preload"> of CSS.
+    // Fix invalid preload "as" values in server-rendered HTML.
+    // React Fizz emits <link rel="preload" as="stylesheet"> for CSS,
+    // but the HTML spec requires as="style" for <link rel="preload">.
+    // Note: fixFlightHints() in createRscEmbedTransform handles the
+    // complementary case — fixing the raw Flight stream data before
+    // it's embedded as __VINEXT_RSC_CHUNKS__ for client-side processing.
     // See: https://html.spec.whatwg.org/multipage/links.html#link-type-preload
     function fixPreloadAs(html) {
       // Match <link ...rel="preload"... as="stylesheet"...> in any attribute order

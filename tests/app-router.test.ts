@@ -1830,6 +1830,15 @@ describe("SSR entry CSS preload fix", () => {
     expect(code).toContain('as="style"');
   });
 
+  it("generateSsrEntry includes fixFlightHints in RSC embed transform", async () => {
+    const { generateSsrEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const code = generateSsrEntry();
+    // The RSC embed stream should fix HL hint "stylesheet" → "style" before
+    // chunks are embedded as __VINEXT_RSC_CHUNKS__ for client-side processing
+    expect(code).toContain("fixFlightHints");
+    expect(code).toContain('"style"');
+  });
+
   it("fixPreloadAs regex correctly replaces as=\"stylesheet\" with as=\"style\"", () => {
     // Replicate the fixPreloadAs function from the generated SSR entry
     function fixPreloadAs(html: string): string {
@@ -1867,6 +1876,51 @@ describe("SSR entry CSS preload fix", () => {
     // Test: no change needed
     expect(fixPreloadAs('<link rel="preload" href="/a.css" as="style"/>')).toBe(
       '<link rel="preload" href="/a.css" as="style"/>'
+    );
+  });
+
+  it("fixFlightHints regex correctly replaces \"stylesheet\" with \"style\" in RSC Flight HL hints", () => {
+    // Replicate the fixFlightHints regex from the generated SSR entry.
+    // This runs on the raw Flight protocol text embedded in __VINEXT_RSC_CHUNKS__
+    // so that client-side React creates valid <link rel="preload" as="style"> instead
+    // of invalid <link rel="preload" as="stylesheet">.
+    function fixFlightHints(text: string): string {
+      return text.replace(/(\d+:HL\[.*?),"stylesheet"(\]|,)/g, '$1,"style"$2');
+    }
+
+    // Test: basic HL hint for CSS
+    expect(fixFlightHints('2:HL["/assets/index.css","stylesheet"]')).toBe(
+      '2:HL["/assets/index.css","style"]'
+    );
+
+    // Test: HL hint with options (3-element array)
+    expect(fixFlightHints('2:HL["/assets/index.css","stylesheet",{"crossOrigin":""}]')).toBe(
+      '2:HL["/assets/index.css","style",{"crossOrigin":""}]'
+    );
+
+    // Test: should NOT modify non-HL lines containing "stylesheet"
+    expect(fixFlightHints('0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]')).toBe(
+      '0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]'
+    );
+
+    // Test: multiple HL hints in one chunk
+    expect(fixFlightHints('2:HL["/a.css","stylesheet"]\n3:HL["/b.css","stylesheet"]')).toBe(
+      '2:HL["/a.css","style"]\n3:HL["/b.css","style"]'
+    );
+
+    // Test: should NOT modify HL hints with other as values
+    expect(fixFlightHints('2:HL["/font.woff2","font"]')).toBe(
+      '2:HL["/font.woff2","font"]'
+    );
+
+    // Test: no change needed when already "style"
+    expect(fixFlightHints('2:HL["/assets/index.css","style"]')).toBe(
+      '2:HL["/assets/index.css","style"]'
+    );
+
+    // Test: mixed content — only HL hints should be modified
+    expect(fixFlightHints('0:D{"name":"page"}\n2:HL["/app.css","stylesheet"]\n3:["$","div",null,{}]')).toBe(
+      '0:D{"name":"page"}\n2:HL["/app.css","style"]\n3:["$","div",null,{}]'
     );
   });
 });
