@@ -118,16 +118,17 @@ describe("Next.js compat: app-rendering", () => {
     });
 
     // This tests that subsequent requests get fresh timestamps (revalidation works).
-    // In dev mode, vinext always re-renders (no caching), so timestamps should differ.
+    // In dev mode, vinext always re-renders (no ISR caching), so timestamps should differ.
     // SKIP: The use(getData()) pattern with Date.now() in the ISR layout produces identical
     // timestamps across requests. The async function getData() returns a cached promise at
     // module scope in the RSC environment, so Date.now() is evaluated once.
     //
     // ROOT CAUSE: vinext's RSC module instances persist across requests in dev mode.
     // Next.js re-executes server components fresh per request by invalidating the module cache.
+    // Note: The ISR cache has been removed from dev mode (issue #228), but this test still
+    // fails because the underlying module caching issue is separate from ISR.
     //
-    // TO FIX: In packages/vinext/src/server/app-dev-server.ts (or wherever the RSC handler
-    // lives), the RSC environment needs to invalidate/re-import server component modules on
+    // TO FIX: The RSC environment needs to invalidate/re-import server component modules on
     // each request so that top-level expressions like Date.now() get re-evaluated. This may
     // involve calling server.moduleGraph.invalidateModule() for RSC modules before each render,
     // or using Vite's ssrLoadModule with a cache-bust query param.

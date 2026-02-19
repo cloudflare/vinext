@@ -3,10 +3,12 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4174";
 
 test.describe("App Router ISR", () => {
-  // ISR fixture at /isr-test uses `export const revalidate = 1` (1 second TTL).
-  // The full lifecycle: MISS -> HIT -> (wait for TTL) -> STALE -> HIT (regenerated)
+  // ISR cache lifecycle tests (MISS → HIT → STALE → regen) are skipped in the
+  // dev server project because ISR caching is disabled in dev mode to match
+  // Next.js behavior (every request re-renders fresh). These tests should run
+  // against a production server E2E project instead.
 
-  test("first request returns ISR page with cache header", async ({
+  test("first request returns ISR page", async ({
     request,
   }) => {
     const res = await request.get(`${BASE}/isr-test`);
@@ -16,22 +18,18 @@ test.describe("App Router ISR", () => {
     const html = await res.text();
     expect(html).toContain("App Router ISR Test");
     expect(html).toContain("Hello from ISR");
-
-    const cacheHeader = res.headers()["x-vinext-cache"];
-    expect(cacheHeader).toBeDefined();
-    expect(["MISS", "HIT", "STALE"]).toContain(cacheHeader);
   });
 
-  test("second request within TTL is a cache HIT with same timestamp", async ({
+  test.skip("second request within TTL is a cache HIT with same timestamp", async ({
     request,
   }) => {
-    // First request: populate cache
+    // SKIP: ISR cache is disabled in dev mode — no HIT/MISS/STALE semantics.
+    // This test should run against a production server.
     const res1 = await request.get(`${BASE}/isr-test`);
     const html1 = await res1.text();
     const ts1 = html1.match(/data-testid="timestamp">(\d+)</)?.[1];
     expect(ts1).toBeDefined();
 
-    // Second request immediately: should be cached
     const res2 = await request.get(`${BASE}/isr-test`);
     const html2 = await res2.text();
     const ts2 = html2.match(/data-testid="timestamp">(\d+)</)?.[1];
@@ -41,19 +39,17 @@ test.describe("App Router ISR", () => {
     expect(ts2).toBe(ts1);
   });
 
-  test("request after TTL expires returns STALE with same cached content", async ({
+  test.skip("request after TTL expires returns STALE with same cached content", async ({
     request,
   }) => {
-    // Populate cache
+    // SKIP: ISR cache is disabled in dev mode.
     const res1 = await request.get(`${BASE}/isr-test`);
     const html1 = await res1.text();
     const ts1 = html1.match(/data-testid="timestamp">(\d+)</)?.[1];
     expect(ts1).toBeDefined();
 
-    // Wait for TTL to expire
     await new Promise((r) => setTimeout(r, 1500));
 
-    // Should get STALE content (same timestamp as cached version)
     const res2 = await request.get(`${BASE}/isr-test`);
     const html2 = await res2.text();
     const ts2 = html2.match(/data-testid="timestamp">(\d+)</)?.[1];
@@ -63,23 +59,19 @@ test.describe("App Router ISR", () => {
     expect(ts2).toBe(ts1);
   });
 
-  test("after STALE triggers regen, subsequent request is HIT", async ({
+  test.skip("after STALE triggers regen, subsequent request is HIT", async ({
     request,
   }) => {
-    // Populate cache
+    // SKIP: ISR cache is disabled in dev mode.
     await request.get(`${BASE}/isr-test`);
 
-    // Wait for TTL to expire
     await new Promise((r) => setTimeout(r, 1500));
 
-    // Trigger STALE (starts background regen)
     const staleRes = await request.get(`${BASE}/isr-test`);
     expect(staleRes.headers()["x-vinext-cache"]).toBe("STALE");
 
-    // Wait for background regen to complete
     await new Promise((r) => setTimeout(r, 500));
 
-    // Next request should be HIT
     const hitRes = await request.get(`${BASE}/isr-test`);
     expect(hitRes.headers()["x-vinext-cache"]).toBe("HIT");
   });
@@ -233,7 +225,9 @@ test.describe("ISR dynamicParams cache headers", () => {
  * They also verify nested pages sharing the same tag are also invalidated.
  */
 test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () => {
-  test("revalidateTag invalidates cached page and regenerates", async ({
+  // SKIP: These tests depend on ISR caching (MISS/HIT/STALE semantics) which is
+  // disabled in dev mode. They should run against a production server E2E project.
+  test.skip("revalidateTag invalidates cached page and regenerates", async ({
     request,
   }) => {
     // Ref: opennextjs-cloudflare revalidateTag.test.ts "Revalidate tag"
@@ -282,7 +276,7 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     }
   });
 
-  test("revalidatePath invalidates specific path", async ({ request }) => {
+  test.skip("revalidatePath invalidates specific path", async ({ request }) => {
     // Ref: opennextjs-cloudflare revalidateTag.test.ts "Revalidate path"
     test.setTimeout(30_000);
 
@@ -310,7 +304,7 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     expect(reqId2).not.toBe(reqId1);
   });
 
-  test("after invalidation + regen, subsequent request is HIT", async ({
+  test.skip("after invalidation + regen, subsequent request is HIT", async ({
     request,
   }) => {
     // Ref: opennextjs-cloudflare revalidateTag.test.ts — after MISS, next request should be HIT

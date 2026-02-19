@@ -214,8 +214,8 @@ import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
-import { getCacheHandler, _consumeRequestScopedCacheLife, _initRequestScopedCacheState } from "next/cache";
-import { runWithFetchCache, getCollectedFetchTags } from "vinext/fetch-cache";
+import { _consumeRequestScopedCacheLife, _initRequestScopedCacheState } from "next/cache";
+import { runWithFetchCache } from "vinext/fetch-cache";
 import { clearPrivateCache as _clearPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
@@ -233,29 +233,10 @@ function setNavigationContext(ctx) {
   _setNavigationContextOrig(ctx);
 }
 
-// ISR cache helpers
-async function isrGet(key) {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
-  if (!result || !result.value) return null;
-  return { value: result, isStale: result.cacheState === "stale" };
-}
-async function isrSet(key, data, revalidateSeconds, tags) {
-  const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: tags || [] });
-}
-const isrPendingRegens = new Map();
-// Track routes that have "use cache" with cacheLife() — maps ISR cache key to revalidate seconds.
-// Populated on the first render when cacheLife() is called, used on subsequent requests to
-// check the ISR cache even when the page doesn't have export const revalidate.
-const _cacheLifeRouteMap = new Map();
-function isrTriggerRegen(key, renderFn) {
-  if (isrPendingRegens.has(key)) return;
-  const promise = renderFn()
-    .catch((err) => console.error("[vinext] ISR regen failed for " + key + ":", err))
-    .finally(() => isrPendingRegens.delete(key));
-  isrPendingRegens.set(key, promise);
-}
+// ISR cache is disabled in dev mode — every request re-renders fresh,
+// matching Next.js dev behavior. Cache-Control headers are still emitted
+// based on export const revalidate for testing purposes.
+// Production ISR is handled by prod-server.ts and the Cloudflare worker entry.
 
 // onError callback for renderToReadableStream — preserves the digest for
 // Next.js navigation errors (redirect, notFound, forbidden, unauthorized)
@@ -1571,71 +1552,8 @@ async function _handleRequest(request) {
     }
   }
 
-  // force-dynamic: skip ISR cache, set no-store Cache-Control
+  // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
-
-  // ISR cache check for App Router pages with revalidate or "use cache" (skip if force-dynamic).
-  const _isrCacheKey = "app:" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
-  // Check cacheLifeRouteMap for pages that used cacheLife() on a previous render
-  const _cacheLifeRevalidate = _cacheLifeRouteMap.get(_isrCacheKey);
-  if (revalidateSeconds === null && typeof _cacheLifeRevalidate === "number") {
-    revalidateSeconds = _cacheLifeRevalidate;
-  }
-  if (!isForceDynamic && revalidateSeconds !== null && revalidateSeconds > 0) {
-    const cached = await isrGet(_isrCacheKey);
-
-    if (cached && cached.value.value && cached.value.value.kind === "APP_PAGE") {
-      const cachedPage = cached.value.value;
-      // Use revalidateSeconds from export, or fall back to the duration stored
-      // in the ISR cache (set by cacheLife() on the first render), or default 900.
-      const effectiveRevalidate = revalidateSeconds ?? 900;
-      const cacheHeaders = {
-        "X-Vinext-Cache": cached.isStale ? "STALE" : "HIT",
-        "Cache-Control": cached.isStale
-          ? "s-maxage=0, stale-while-revalidate"
-          : "s-maxage=" + effectiveRevalidate + ", stale-while-revalidate",
-      };
-
-      if (cached.isStale) {
-        // Trigger background regeneration
-        isrTriggerRegen(_isrCacheKey, async function() {
-          await runWithFetchCache(async () => {
-            const freshElement = await buildPageElement(route, params, undefined, url.searchParams);
-            const freshRscStream = renderToReadableStream(freshElement, { onError: rscOnError });
-            // Collect font data from RSC environment
-            const freshFontData = {
-              links: _getSSRFontLinks(),
-              styles: _getSSRFontStyles(),
-            };
-            const ssrEntryFresh = await import.meta.viteRsc.loadModule("ssr", "index");
-            const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream, _getNavigationContext(), freshFontData);
-            // Consume the stream to get HTML string
-            const freshHtml = await new Response(freshHtmlStream).text();
-            // Collect tags from fetch calls during rendering + add path tag for revalidatePath
-            const regenTags = getCollectedFetchTags();
-            const pathTag = "_N_T_" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
-            if (!regenTags.includes(pathTag)) regenTags.push(pathTag);
-            if (!regenTags.includes(cleanPathname)) regenTags.push(cleanPathname);
-            await isrSet(_isrCacheKey, { kind: "APP_PAGE", html: freshHtml, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, effectiveRevalidate, regenTags);
-          });
-        });
-      }
-
-      if (isRscRequest && cachedPage.rscData) {
-        setHeadersContext(null);
-        setNavigationContext(null);
-        return new Response(cachedPage.rscData, {
-          headers: { "Content-Type": "text/x-component; charset=utf-8", ...cacheHeaders },
-        });
-      }
-
-      setHeadersContext(null);
-      setNavigationContext(null);
-      return new Response(cachedPage.html, {
-        headers: { "Content-Type": "text/html; charset=utf-8", ...cacheHeaders },
-      });
-    }
-  }
 
   // Check for intercepting routes on RSC requests (client-side navigation).
   // If the target URL matches an intercepting route in a parallel slot,
@@ -1855,7 +1773,6 @@ async function _handleRequest(request) {
       responseHeaders["X-Vinext-Cache"] = "STATIC";
     } else if (revalidateSeconds) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "MISS";
     }
     // Merge middleware response headers into the RSC response
     if (_middlewareResponseHeaders) {
@@ -1919,12 +1836,10 @@ async function _handleRequest(request) {
   const dynamicUsedDuringRender = consumeDynamicUsage();
 
   // Check if cacheLife() was called during rendering (e.g., page with file-level "use cache").
-  // If so, it dynamically sets the ISR revalidation period and records it in the route map
-  // so subsequent requests can look up the ISR cache without re-rendering.
+  // If so, use its revalidation period for the Cache-Control header.
   const requestCacheLife = _consumeRequestScopedCacheLife();
   if (requestCacheLife && requestCacheLife.revalidate !== undefined && revalidateSeconds === null) {
     revalidateSeconds = requestCacheLife.revalidate;
-    _cacheLifeRouteMap.set(_isrCacheKey, revalidateSeconds);
   }
 
   // force-dynamic: always return no-store (highest priority)
@@ -1963,27 +1878,13 @@ async function _handleRequest(request) {
     }));
   }
 
-  // If ISR is enabled (via export const revalidate OR cacheLife()), cache the rendered HTML
+  // Emit Cache-Control for ISR pages so tests can verify revalidate values,
+  // but skip actual caching in dev — every request renders fresh.
   if (revalidateSeconds !== null && revalidateSeconds > 0) {
-    // Collect tags from fetch calls during rendering + add path tag for revalidatePath
-    const _isrTags = getCollectedFetchTags();
-    const _pathTag = "_N_T_" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
-    if (!_isrTags.includes(_pathTag)) _isrTags.push(_pathTag);
-    if (!_isrTags.includes(cleanPathname)) _isrTags.push(cleanPathname);
-    // We need to tee the stream: one for caching, one for the response
-    const [cacheStream, responseStream] = htmlStream.tee();
-    // Cache in background
-    new Response(cacheStream).text().then(function(html) {
-      return isrSet(_isrCacheKey, { kind: "APP_PAGE", html: html, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, revalidateSeconds, _isrTags);
-    }).catch(function(err) {
-      console.error("[vinext] ISR cache store failed:", err);
-    });
-
-    return attachMiddlewareContext(new Response(responseStream, {
+    return attachMiddlewareContext(new Response(htmlStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-        "X-Vinext-Cache": "MISS",
       },
     }));
   }
