@@ -535,7 +535,13 @@ function parseQuery(url) {
   if (!qs) return {};
   const p = new URLSearchParams(qs);
   const q = {};
-  for (const [k, v] of p) q[k] = v;
+  for (const [k, v] of p) {
+    if (k in q) {
+      q[k] = Array.isArray(q[k]) ? q[k].concat(v) : [q[k], v];
+    } else {
+      q[k] = v;
+    }
+  }
   return q;
 }
 
@@ -984,7 +990,16 @@ export async function handleApiRoute(request, url) {
 
   const query = { ...params };
   const qs = url.split("?")[1];
-  if (qs) { for (const [k, v] of new URLSearchParams(qs)) query[k] = v; }
+  if (qs) {
+    for (const [k, v] of new URLSearchParams(qs)) {
+      if (k in query) {
+        // Multi-value: promote to array (Next.js returns string[] for duplicate keys)
+        query[k] = Array.isArray(query[k]) ? query[k].concat(v) : [query[k], v];
+      } else {
+        query[k] = v;
+      }
+    }
+  }
 
   // Parse request body
   let body;

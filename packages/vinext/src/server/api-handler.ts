@@ -10,6 +10,7 @@
 import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { type Route, matchRoute } from "../routing/pages-router.js";
+import { addQueryParam } from "../utils/query.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -162,7 +163,7 @@ export async function handleApiRoute(
     if (queryString) {
       const searchParams = new URLSearchParams(queryString);
       for (const [key, value] of searchParams) {
-        query[key] = value;
+        addQueryParam(query, key, value);
       }
     }
 

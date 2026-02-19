@@ -94,29 +94,20 @@ test.describe("Search Params in RSC (OpenNext compat)", () => {
     const propsEl = page.getByTestId("props-params");
     await expect(propsEl).toContainText("Search Params via Props: e2etest");
 
-    // vinext passes multi-value query params as last-value-wins string, not array.
-    // In Next.js, ?multi=one&multi=two would give searchParams.multi = ['one', 'two'].
-    // In vinext, it gives searchParams.multi = 'two' (last value).
     const multiEl = page.getByTestId("multi-count");
     await expect(multiEl).toContainText(
-      "Multi-value Params (key: multi): 1",
+      "Multi-value Params (key: multi): 2",
     );
   });
 
-  // Ref: opennextjs-cloudflare query.test.ts — "SearchQuery" (multi-value)
-  // vinext uses URLSearchParams.forEach() to build searchParams object,
-  // which overwrites duplicate keys. Multi-value params need getAll() handling.
-  test.fixme(
-    "multi-value searchParams are returned as arrays",
-    async ({ page }) => {
-      await page.goto(`${BASE}/search-query?multi=one&multi=two`);
+  test("multi-value searchParams are returned as arrays", async ({ page }) => {
+    await page.goto(`${BASE}/search-query?multi=one&multi=two`);
 
-      const multiEl = page.getByTestId("multi-count");
-      await expect(multiEl).toContainText(
-        "Multi-value Params (key: multi): 2",
-      );
-    },
-  );
+    const multiEl = page.getByTestId("multi-count");
+    await expect(multiEl).toContainText(
+      "Multi-value Params (key: multi): 2",
+    );
+  });
 
   // Ref: opennextjs-cloudflare query.test.ts — middleware forwards search params
   test(

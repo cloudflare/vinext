@@ -461,7 +461,15 @@ async function buildPageElement(route, params, opts, searchParams) {
   if (searchParams) {
     const spObj = {};
     let hasSearchParams = false;
-    if (searchParams.forEach) searchParams.forEach(function(v, k) { spObj[k] = v; hasSearchParams = true; });
+    if (searchParams.forEach) searchParams.forEach(function(v, k) {
+      hasSearchParams = true;
+      if (k in spObj) {
+        // Multi-value: promote to array (Next.js returns string[] for duplicate keys)
+        spObj[k] = Array.isArray(spObj[k]) ? spObj[k].concat(v) : [spObj[k], v];
+      } else {
+        spObj[k] = v;
+      }
+    });
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug

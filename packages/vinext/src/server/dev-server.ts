@@ -15,6 +15,7 @@ import {
 import type { CachedPagesValue } from "../shims/cache.js";
 import { withFetchCache } from "../shims/fetch-cache.js";
 import { reportRequestError } from "./instrumentation.js";
+import { parseQueryString as parseQuery } from "../utils/query.js";
 import path from "node:path";
 import fs from "node:fs";
 import React from "react";
@@ -800,13 +801,4 @@ async function renderErrorPage(
   res.end(`${statusCode} - ${statusCode === 404 ? "Page not found" : "Internal Server Error"}`);
 }
 
-function parseQuery(url: string): Record<string, string> {
-  const queryString = url.split("?")[1];
-  if (!queryString) return {};
-  const params = new URLSearchParams(queryString);
-  const query: Record<string, string> = {};
-  for (const [key, value] of params) {
-    query[key] = value;
-  }
-  return query;
-}
+
