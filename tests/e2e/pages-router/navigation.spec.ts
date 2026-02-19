@@ -42,7 +42,7 @@ test.describe("Client-side navigation", () => {
     expect(page.url()).toBe(`${BASE}/`);
   });
 
-  test.fixme("router.push navigates to a new page", async ({ page }) => {
+  test("router.push navigates to a new page", async ({ page }) => {
     await page.goto(`${BASE}/nav-test`);
     await expect(page.locator("h1")).toHaveText("Navigation Test");
 
