@@ -21,22 +21,43 @@ const codeHikeConfig: CodeHikeConfig = {
  */
 export default defineConfig({
   plugins: [
-    // Strip 'use cache' directives (not yet supported, treat as no-op)
+    // Shim React canary APIs (ViewTransition, addTransitionType) that don't
+    // exist in stable React 19. Provides no-op replacements so the
+    // view-transitions page degrades gracefully instead of crashing.
     {
-      name: "strip-use-cache",
+      name: "shim-react-canary",
+      resolveId(id) {
+        if (id === "virtual:react-with-canary") return "\0virtual:react-with-canary";
+      },
+      load(id) {
+        if (id === "\0virtual:react-with-canary") {
+          return `
+            export * from "react";
+            export { default } from "react";
+            import React from "react";
+            export const ViewTransition = React.ViewTransition || (({ children }) => children);
+            export const addTransitionType = React.addTransitionType || (() => {});
+          `;
+        }
+      },
       transform(code, id) {
+        // Rewrite imports from 'react' that reference canary APIs
         if (
           !id.includes("node_modules") &&
           (id.endsWith(".tsx") || id.endsWith(".ts") || id.endsWith(".jsx") || id.endsWith(".js")) &&
-          code.includes("'use cache")
+          (code.includes("ViewTransition") || code.includes("addTransitionType")) &&
+          /from\s+['"]react['"]/.test(code)
         ) {
-          // Remove 'use cache', 'use cache: remote', 'use cache: private' directives
-          const stripped = code.replace(
-            /^[ \t]*['"]use cache(?::\s*\w+)?['"];?\s*$/gm,
-            "// [vinext] 'use cache' stripped (not yet supported)",
-          );
-          if (stripped !== code) {
-            return { code: stripped, map: null };
+          // Only rewrite if the import actually destructures ViewTransition or addTransitionType
+          const importRegex = /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/;
+          if (importRegex.test(code)) {
+            const result = code.replace(
+              /from\s*['"]react['"]/g,
+              'from "virtual:react-with-canary"',
+            );
+            if (result !== code) {
+              return { code: result, map: null };
+            }
           }
         }
         return null;

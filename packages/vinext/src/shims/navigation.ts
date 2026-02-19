@@ -415,9 +415,15 @@ export function useRouter() {
       const fullHref = withBasePath(href);
       const beforeHash = fullHref.split("#")[0];
       const qIdx = beforeHash.indexOf("?");
-      const rscUrl = qIdx === -1 ? beforeHash + ".rsc" : beforeHash.slice(0, qIdx) + ".rsc" + beforeHash.slice(qIdx);
+      const rscPath = qIdx === -1 ? beforeHash + ".rsc" : beforeHash.slice(0, qIdx) + ".rsc" + beforeHash.slice(qIdx);
+      // Use URL object and include next-router-prefetch header for
+      // runtime prefetch compatibility (Next.js convention).
+      const rscUrl = new URL(rscPath, window.location.origin);
       fetch(rscUrl, {
         priority: "low" as RequestInit["priority"],
+        headers: {
+          "next-router-prefetch": "2",
+        },
       }).catch(() => {
         // Silently ignore prefetch failures
       });

@@ -34,7 +34,9 @@ npx vite dev
 
 ## Known Limitations
 
-- `'use cache'` directives are stripped (not yet supported)
+- `'use cache'` directives work for function-level caching but page-level caching is ISR-based
+- MDX files (.mdx) are not yet supported — pages that import readme.mdx will error
+- CodeHike syntax highlighting not available without MDX
 - `styled-components` SSR not configured (not actively used in the playground)
 - View Transitions API depends on React 19 canary features
 

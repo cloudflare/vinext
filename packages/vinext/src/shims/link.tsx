@@ -162,11 +162,18 @@ function prefetchUrl(href: string): void {
       // Use low priority fetch (no credentials needed for RSC prefetch)
       const [beforeHash] = fullHref.split("#");
       const qIdx = beforeHash.indexOf("?");
-      const rscUrl = qIdx === -1 ? beforeHash + ".rsc" : beforeHash.slice(0, qIdx) + ".rsc" + beforeHash.slice(qIdx);
+      const rscPath = qIdx === -1 ? beforeHash + ".rsc" : beforeHash.slice(0, qIdx) + ".rsc" + beforeHash.slice(qIdx);
+      // Use URL object and include next-router-prefetch header for
+      // runtime prefetch compatibility (Next.js convention).
+      // Value "2" signals runtime prefetch (includes private cached data).
+      const rscUrl = new URL(rscPath, window.location.origin);
       fetch(rscUrl, {
         priority: "low" as any,
         // @ts-expect-error — purpose is a valid fetch option in some browsers
         purpose: "prefetch",
+        headers: {
+          "next-router-prefetch": "2",
+        },
       }).catch(() => {
         // Silently ignore prefetch failures (network errors, 404s, etc.)
       });
