@@ -8,7 +8,7 @@ test.describe("Parallel Routes", () => {
 
     // Dashboard layout
     await expect(page.locator("#dashboard-layout")).toBeVisible();
-    await expect(page.locator("#dashboard-layout nav span")).toHaveText(
+    await expect(page.locator("#dashboard-layout > nav span")).toHaveText(
       "Dashboard Nav",
     );
 

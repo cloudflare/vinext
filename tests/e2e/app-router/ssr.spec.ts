@@ -47,7 +47,7 @@ test.describe("App Router SSR", () => {
 
     // Dashboard layout should be present
     await expect(page.locator("#dashboard-layout")).toBeVisible();
-    await expect(page.locator("#dashboard-layout nav span")).toHaveText(
+    await expect(page.locator("#dashboard-layout > nav span")).toHaveText(
       "Dashboard Nav",
     );
     await expect(page.locator("h1")).toHaveText("Dashboard");
@@ -58,7 +58,7 @@ test.describe("App Router SSR", () => {
 
     // Same dashboard layout should wrap settings page
     await expect(page.locator("#dashboard-layout")).toBeVisible();
-    await expect(page.locator("#dashboard-layout nav span")).toHaveText(
+    await expect(page.locator("#dashboard-layout > nav span")).toHaveText(
       "Dashboard Nav",
     );
     await expect(page.locator("h1")).toHaveText("Settings");
