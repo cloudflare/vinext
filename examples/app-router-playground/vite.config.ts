@@ -1,6 +1,5 @@
 import { defineConfig } from "vite";
 import vinext from "vinext";
-import rsc from "@vitejs/plugin-rsc";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import mdx from "@mdx-js/rollup";
 import path from "node:path";
@@ -42,18 +41,9 @@ export default defineConfig({
     // MDX support — transforms .mdx files into React components
     mdx(),
 
-    // vinext plugin (provides all next/* shims, routing, SSR, RSC)
+    // vinext plugin (provides all next/* shims, routing, SSR, RSC).
+    // @vitejs/plugin-rsc is auto-registered when app/ is detected.
     ...vinext(),
-
-    // RSC plugin — handles "use client" / "use server" directives,
-    // multi-environment builds, RSC stream serialization
-    rsc({
-      entries: {
-        rsc: "virtual:vinext-rsc-entry",
-        ssr: "virtual:vinext-app-ssr-entry",
-        client: "virtual:vinext-app-browser-entry",
-      },
-    }),
 
     // Cloudflare Workers plugin — builds for workerd runtime
     cloudflare({

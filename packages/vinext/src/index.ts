@@ -249,7 +249,17 @@ export interface VinextOptions {
    * project root first, then falls back to src/app/ and src/pages/.
    */
   appDir?: string;
+  /**
+   * Auto-register @vitejs/plugin-rsc when an app/ directory is detected.
+   * Set to `false` to disable auto-registration (e.g. if you configure
+   * @vitejs/plugin-rsc manually with custom options).
+   * @default true
+   */
+  rsc?: boolean;
 }
+
+// Marker to identify auto-injected RSC plugins from vinext
+const VINEXT_AUTO_RSC = "__vinext_auto_rsc";
 
 export default function vinext(options: VinextOptions = {}): Plugin[] {
   let root: string;
@@ -1088,7 +1098,45 @@ hydrate();
 `;
   }
 
-  return [
+  // Auto-register @vitejs/plugin-rsc when App Router is detected.
+  // Check eagerly at call time using the same heuristic as the CLI.
+  const autoRsc = options.rsc !== false;
+  const earlyBaseDir = options.appDir ?? process.cwd();
+  const earlyAppDirExists = fs.existsSync(path.join(earlyBaseDir, "app"));
+
+  // If app/ exists and auto-RSC is enabled, create a lazy Promise that
+  // resolves to the configured RSC plugin array. Vite's asyncFlatten
+  // will resolve this before processing the plugin list.
+  let rscPluginPromise: Promise<Plugin[]> | null = null;
+  if (earlyAppDirExists && autoRsc) {
+    rscPluginPromise = import("@vitejs/plugin-rsc")
+      .then((mod) => {
+        const rsc = mod.default;
+        const plugins = rsc({
+          entries: {
+            rsc: VIRTUAL_RSC_ENTRY,
+            ssr: VIRTUAL_APP_SSR_ENTRY,
+            client: VIRTUAL_APP_BROWSER_ENTRY,
+          },
+        });
+        // Mark auto-injected plugins so we can detect duplicates
+        const pluginArray = Array.isArray(plugins) ? plugins : [plugins];
+        for (const p of pluginArray) {
+          if (p && typeof p === "object") {
+            (p as any)[VINEXT_AUTO_RSC] = true;
+          }
+        }
+        return pluginArray;
+      })
+      .catch(() => {
+        throw new Error(
+          "vinext: App Router detected but @vitejs/plugin-rsc is not installed.\n" +
+          "Run: npm install -D @vitejs/plugin-rsc",
+        );
+      });
+  }
+
+  const plugins: (Plugin | Promise<Plugin[]>)[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     tsconfigPaths(),
@@ -1321,6 +1369,24 @@ hydrate();
         }
 
         return viteConfig;
+      },
+
+      configResolved(config) {
+        // Warn if both auto-injected and user-provided RSC plugins are present
+        if (rscPluginPromise) {
+          const rscPlugins = config.plugins.filter(
+            (p: any) => p && p.name && typeof p.name === "string" && p.name.includes("rsc"),
+          );
+          const autoCount = rscPlugins.filter((p: any) => p[VINEXT_AUTO_RSC]).length;
+          const userCount = rscPlugins.length - autoCount;
+          if (autoCount > 0 && userCount > 0) {
+            console.warn(
+              "[vinext] @vitejs/plugin-rsc is already configured in your plugins.\n" +
+              "         vinext auto-registers it when app/ is detected.\n" +
+              "         Remove the explicit rsc() call, or pass rsc: false to vinext().",
+            );
+          }
+        }
       },
 
       resolveId: {
@@ -2258,6 +2324,13 @@ hydrate();
       },
     },
   ];
+
+  // Append auto-injected RSC plugins if applicable
+  if (rscPluginPromise) {
+    plugins.push(rscPluginPromise);
+  }
+
+  return plugins as Plugin[];
 }
 
 /**

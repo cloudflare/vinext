@@ -1824,3 +1824,82 @@ describe("SSR entry CSS preload fix", () => {
     );
   });
 });
+
+// ── Auto-registration of @vitejs/plugin-rsc ─────────────────────────────────
+
+describe("RSC plugin auto-registration", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    // Create a server with ONLY vinext() — no explicit @vitejs/plugin-rsc.
+    // The plugin should auto-detect the app/ directory and inject RSC.
+    // Note: appDir is passed because process.cwd() differs from root in tests.
+    // In real projects, cwd === root so appDir is not needed.
+    const { createServer } = await import("vite");
+    server = await createServer({
+      root: APP_FIXTURE_DIR,
+      configFile: false,
+      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
+      optimizeDeps: { holdUntilCrawlEnd: true },
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    await server.listen();
+    const addr = server.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      baseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  it("renders the home page without explicit RSC plugin", async () => {
+    const { html, res } = await fetchHtml(baseUrl, "/");
+    expect(res.status).toBe(200);
+    expect(html).toContain("Welcome to App Router");
+  });
+
+  it("renders dynamic routes without explicit RSC plugin", async () => {
+    const res = await fetch(`${baseUrl}/blog/auto-rsc-test`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Blog Post");
+    expect(html).toContain("auto-rsc-test");
+  });
+
+  it("does not double-register when RSC plugin is already present", async () => {
+    const { createServer } = await import("vite");
+    const rsc = (await import("@vitejs/plugin-rsc")).default;
+
+    // Create a server with BOTH vinext({ rsc: false }) and explicit rsc().
+    // Should work without errors (no duplicate registration).
+    const serverWithExplicitRsc = await createServer({
+      root: APP_FIXTURE_DIR,
+      configFile: false,
+      plugins: [
+        vinext({ appDir: APP_FIXTURE_DIR, rsc: false }),
+        rsc({ entries: RSC_ENTRIES }),
+      ],
+      optimizeDeps: { holdUntilCrawlEnd: true },
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    await serverWithExplicitRsc.listen();
+
+    try {
+      const addr = serverWithExplicitRsc.httpServer?.address();
+      const url = addr && typeof addr === "object"
+        ? `http://localhost:${addr.port}`
+        : "";
+      const res = await fetch(`${url}/`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("Welcome to App Router");
+    } finally {
+      await serverWithExplicitRsc.close();
+    }
+  }, 30000);
+});
