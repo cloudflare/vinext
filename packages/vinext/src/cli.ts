@@ -13,14 +13,64 @@
  * needed for most Next.js apps.
  */
 
-import { createServer, build, createBuilder, version as viteVersion } from "vite";
 import vinext from "./index.js";
 import rsc from "@vitejs/plugin-rsc";
 import path from "node:path";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
 import { deploy as runDeploy } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
+
+// ─── Resolve Vite from the project root ────────────────────────────────────────
+//
+// When vinext is installed via `bun link` or `npm link`, Node follows the
+// symlink back to the monorepo and resolves `vite` from the monorepo's
+// node_modules — not the project's. This causes dual Vite instances, dual
+// React copies, and plugin resolution failures.
+//
+// To fix this, we resolve Vite dynamically from `process.cwd()` at runtime
+// using `createRequire`. This ensures we always use the project's Vite.
+
+interface ViteModule {
+  createServer: typeof import("vite").createServer;
+  build: typeof import("vite").build;
+  createBuilder: typeof import("vite").createBuilder;
+  version: string;
+}
+
+let _viteModule: ViteModule | null = null;
+
+/**
+ * Dynamically load Vite from the project root. Falls back to the bundled
+ * copy if the project doesn't have its own Vite installation.
+ */
+async function loadVite(): Promise<ViteModule> {
+  if (_viteModule) return _viteModule;
+
+  const projectRoot = process.cwd();
+  let vitePath: string;
+
+  try {
+    // Resolve "vite" from the project root, not from vinext's location
+    const require = createRequire(path.join(projectRoot, "package.json"));
+    vitePath = require.resolve("vite");
+  } catch {
+    // Fallback: use the Vite that ships with vinext (works for non-linked installs)
+    vitePath = "vite";
+  }
+
+  const vite = (await import(/* @vite-ignore */ vitePath)) as ViteModule;
+  _viteModule = vite;
+  return vite;
+}
+
+/**
+ * Get the Vite version string. Returns "unknown" before loadVite() is called.
+ */
+function getViteVersion(): string {
+  return _viteModule?.version ?? "unknown";
+}
 
 const VERSION = "0.0.1";
 
@@ -113,6 +163,17 @@ function buildViteConfig(overrides: Record<string, unknown> = {}) {
           ...vinext(),
         ]
       : [vinext()],
+    // Deduplicate React packages to prevent "Invalid hook call" errors
+    // when vinext is symlinked (bun link / npm link) and both vinext's
+    // and the project's node_modules contain React.
+    resolve: {
+      dedupe: [
+        "react",
+        "react-dom",
+        "react/jsx-runtime",
+        "react/jsx-dev-runtime",
+      ],
+    },
     ...overrides,
   };
 
@@ -125,16 +186,18 @@ async function dev() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("dev");
 
+  const vite = await loadVite();
+
   const port = parsed.port ?? 3000;
   const host = parsed.hostname ?? "localhost";
 
-  console.log(`\n  vinext dev  (Vite ${viteVersion})\n`);
+  console.log(`\n  vinext dev  (Vite ${getViteVersion()})\n`);
 
   const config = buildViteConfig({
     server: { port, host },
   });
 
-  const server = await createServer(config);
+  const server = await vite.createServer(config);
   await server.listen();
   server.printUrls();
 }
@@ -143,21 +206,23 @@ async function buildApp() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("build");
 
-  console.log(`\n  vinext build  (Vite ${viteVersion})\n`);
+  const vite = await loadVite();
+
+  console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
   const isApp = hasAppDir();
 
   if (isApp) {
     // App Router: use createBuilder for multi-environment RSC builds
     const config = buildViteConfig();
-    const builder = await createBuilder(config);
+    const builder = await vite.createBuilder(config);
     await builder.buildApp();
   } else {
     // Pages Router: client + SSR builds
     const appRoot = process.cwd();
 
     console.log("  Building client...");
-    await build({
+    await vite.build({
       root: appRoot,
       plugins: [vinext()],
       build: {
@@ -170,7 +235,7 @@ async function buildApp() {
     });
 
     console.log("  Building server...");
-    await build({
+    await vite.build({
       root: appRoot,
       plugins: [vinext()],
       build: {
@@ -262,7 +327,8 @@ async function deployCommand() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("deploy");
 
-  console.log(`\n  vinext deploy  (Vite ${viteVersion})\n`);
+  await loadVite();
+  console.log(`\n  vinext deploy  (Vite ${getViteVersion()})\n`);
 
   // Parse deploy-specific flags
   const preview = rawArgs.includes("--preview");
@@ -444,7 +510,7 @@ function printHelp(cmd?: string) {
 // ─── Entry ────────────────────────────────────────────────────────────────────
 
 if (command === "--version" || command === "-v") {
-  console.log(`vinext v${VERSION} (vite ${viteVersion})`);
+  console.log(`vinext v${VERSION}`);
   process.exit(0);
 }
 
