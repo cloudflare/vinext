@@ -122,9 +122,8 @@ describe("Next.js compat: metadata", () => {
       baseUrl,
       "/nextjs-compat/metadata-basic",
     );
-    // Vinext joins keywords with ", " (space after comma); Next.js uses ","
-    // Both are valid — the HTML content attribute just lists keywords
-    expect(html).toMatch(/meta\s+name="keywords"\s+content="next\.js,\s*react,\s*javascript"/);
+    // Next.js joins keywords with "," (no space) — match that exactly
+    expect(html).toMatch(/meta\s+name="keywords"\s+content="next\.js,react,javascript"/);
   });
 
   it("should render author meta tags", async () => {

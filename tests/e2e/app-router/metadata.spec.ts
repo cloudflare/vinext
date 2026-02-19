@@ -25,7 +25,7 @@ test.describe("Static Metadata", () => {
     await page.goto(`${BASE}/metadata-test`);
 
     const keywords = page.locator('meta[name="keywords"]');
-    await expect(keywords).toHaveAttribute("content", "test, metadata, vinext");
+    await expect(keywords).toHaveAttribute("content", "test,metadata,vinext");
   });
 
   test("metadata export renders OpenGraph tags", async ({ page }) => {

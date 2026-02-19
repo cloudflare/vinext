@@ -647,7 +647,7 @@ describe("App Router integration", () => {
     // Description meta tag
     expect(html).toMatch(/name="description".*content="A page to test the metadata API"/);
     // Keywords meta tag
-    expect(html).toMatch(/name="keywords".*content="test, metadata, vinext"/);
+    expect(html).toMatch(/name="keywords".*content="test,metadata,vinext"/);
     // Open Graph tags
     expect(html).toMatch(/property="og:title".*content="OG Title"/);
     expect(html).toMatch(/property="og:type".*content="website"/);

@@ -335,7 +335,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
   // Keywords
   if (metadata.keywords) {
     const kw = Array.isArray(metadata.keywords)
-      ? metadata.keywords.join(", ")
+      ? metadata.keywords.join(",")
       : metadata.keywords;
     elements.push(<meta key={key++} name="keywords" content={kw} />);
   }
