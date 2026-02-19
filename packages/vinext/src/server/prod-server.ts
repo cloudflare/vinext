@@ -257,7 +257,8 @@ const trustedHosts: Set<string> = new Set(
  * Convert a Node.js IncomingMessage to a Web Request object.
  */
 function nodeToWebRequest(req: IncomingMessage): Request {
-  const proto = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim() || "http";
+  const rawProto = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim();
+  const proto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
   const host = resolveHost(req, "localhost");
   const origin = `${proto}://${host}`;
   const url = new URL(req.url ?? "/", origin);
@@ -570,7 +571,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
 
       // Convert Node.js req to Web Request for the server entry
-      const protocol = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim() || "http";
+      const rawProtocol = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim();
+      const protocol = rawProtocol === "https" || rawProtocol === "http" ? rawProtocol : "http";
       const hostHeader = resolveHost(req, `${host}:${port}`);
       const reqHeaders = Object.entries(req.headers).reduce((h, [k, v]) => {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);

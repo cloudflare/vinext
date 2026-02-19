@@ -466,7 +466,7 @@ export async function runMiddleware(request) {
   try { response = await middlewareFn(nextRequest); }
   catch (e) {
     console.error("[vinext] Middleware error:", e);
-    return { continue: false, response: new Response("Middleware Error: " + (e && e.message ? e.message : String(e)), { status: 500 }) };
+    return { continue: false, response: new Response("Internal Server Error", { status: 500 }) };
   }
 
   if (!response) return { continue: true };
@@ -792,6 +792,31 @@ function createReqRes(request, url, query, body) {
   return { req, res, responsePromise };
 }
 
+/**
+ * Read request body as text with a size limit.
+ * Throws if the body exceeds maxBytes. This prevents DoS via chunked
+ * transfer encoding where Content-Length is absent or spoofed.
+ */
+async function readBodyWithLimit(request, maxBytes) {
+  if (!request.body) return "";
+  var reader = request.body.getReader();
+  var decoder = new TextDecoder();
+  var chunks = [];
+  var totalSize = 0;
+  for (;;) {
+    var result = await reader.read();
+    if (result.done) break;
+    totalSize += result.value.byteLength;
+    if (totalSize > maxBytes) {
+      reader.cancel();
+      throw new Error("Request body too large");
+    }
+    chunks.push(decoder.decode(result.value, { stream: true }));
+  }
+  chunks.push(decoder.decode());
+  return chunks.join("");
+}
+
 export async function renderPage(request, url, manifest) {
   const localeInfo = extractLocale(url);
   const locale = localeInfo.locale;
@@ -1039,7 +1064,7 @@ export async function renderPage(request, url, manifest) {
     return new Response(compositeStream, { status: 200, headers: responseHeaders });
   } catch (e) {
     console.error("[vinext] SSR error:", e);
-    return new Response("Internal Server Error: " + (e && e.message ? e.message : String(e)), { status: 500 });
+    return new Response("Internal Server Error", { status: 500 });
   } finally {
     cleanupFetchCache();
   }
@@ -1070,10 +1095,19 @@ export async function handleApiRoute(request, url) {
     }
   }
 
-  // Parse request body
+  // Parse request body (enforce 1MB limit to prevent memory exhaustion,
+  // matching Next.js default bodyParser sizeLimit).
+  // Check Content-Length first as a fast path, then enforce on the actual
+  // stream to prevent bypasses via chunked transfer encoding.
+  const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
+  if (contentLength > 1 * 1024 * 1024) {
+    return new Response("Request body too large", { status: 413 });
+  }
   let body;
   const ct = request.headers.get("content-type") || "";
-  const rawBody = await request.text();
+  let rawBody;
+  try { rawBody = await readBodyWithLimit(request, 1 * 1024 * 1024); }
+  catch { return new Response("Request body too large", { status: 413 }); }
   if (!rawBody) {
     body = undefined;
   } else if (ct.includes("application/json")) {
@@ -1092,7 +1126,7 @@ export async function handleApiRoute(request, url) {
     return await responsePromise;
   } catch (e) {
     console.error("[vinext] API error:", e);
-    return new Response("API Error: " + (e && e.message ? e.message : String(e)), { status: 500 });
+    return new Response("Internal Server Error", { status: 500 });
   }
 }
 
@@ -1848,7 +1882,9 @@ hydrate();
 
               // Run middleware.ts if present
               if (middlewarePath) {
-                const origin = `${req.headers["x-forwarded-proto"] || "http"}://${req.headers.host || "localhost"}`;
+                const rawProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+                const mwProto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
+                const origin = `${mwProto}://${req.headers.host || "localhost"}`;
                 const middlewareRequest = new Request(new URL(url, origin), {
                   method: req.method,
                   headers: Object.fromEntries(

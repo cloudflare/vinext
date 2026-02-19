@@ -32,13 +32,40 @@ interface NextApiResponse extends ServerResponse {
 }
 
 /**
+ * Maximum request body size (1 MB). Matches Next.js default bodyParser sizeLimit.
+ * @see https://nextjs.org/docs/pages/building-your-application/routing/api-routes#custom-config
+ * Prevents denial-of-service via unbounded request body buffering.
+ */
+const MAX_BODY_SIZE = 1 * 1024 * 1024;
+
+/**
  * Parse the request body based on content-type.
+ * Enforces a size limit to prevent memory exhaustion attacks.
  */
 async function parseBody(req: IncomingMessage): Promise<unknown> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let totalSize = 0;
+    let settled = false;
+    req.on("data", (chunk: Buffer) => {
+      totalSize += chunk.length;
+      if (totalSize > MAX_BODY_SIZE) {
+        settled = true;
+        req.destroy();
+        reject(new Error("Request body too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("error", (err) => {
+      if (!settled) {
+        settled = true;
+        reject(err);
+      }
+    });
     req.on("end", () => {
+      if (settled) return;
+      settled = true;
       const raw = Buffer.concat(chunks).toString("utf-8");
       if (!raw) {
         resolve(undefined);
@@ -179,8 +206,13 @@ export async function handleApiRoute(
   } catch (e) {
     server.ssrFixStacktrace(e as Error);
     console.error(e);
-    res.statusCode = 500;
-    res.end(`API Error: ${(e as Error).message}`);
+    if ((e as Error).message === "Request body too large") {
+      res.statusCode = 413;
+      res.end("Request body too large");
+    } else {
+      res.statusCode = 500;
+      res.end("Internal Server Error");
+    }
     return true;
   }
 }
