@@ -1188,27 +1188,41 @@ hydrate();
   const earlyBaseDir = options.appDir ?? process.cwd();
   const earlyAppDirExists = fs.existsSync(path.join(earlyBaseDir, "app"));
 
+  // IMPORTANT: Resolve @vitejs/plugin-rsc subpath imports from the user's
+  // project root, not from vinext's own package location. When vinext is
+  // installed via symlink (npm file: deps, pnpm workspace:*), a bare
+  // import() resolves from vinext's realpath, which can find a different
+  // copy of the RSC plugin (and transitively a different copy of vite).
+  // This causes instanceof RunnableDevEnvironment checks to fail at
+  // runtime because the Vite server and the RSC plugin end up with
+  // different class identities. Resolving from the project root ensures a
+  // single shared vite instance.
+  //
+  // Pre-resolve both the main plugin and the /transforms subpath eagerly
+  // so all import() calls in this module use consistent resolution.
+  const earlyRequire = createRequire(path.join(earlyBaseDir, "package.json"));
+  let resolvedRscPath: string | null = null;
+  let resolvedRscTransformsPath: string | null = null;
+  try {
+    resolvedRscPath = earlyRequire.resolve("@vitejs/plugin-rsc");
+    resolvedRscTransformsPath = earlyRequire.resolve("@vitejs/plugin-rsc/transforms");
+  } catch {
+    // @vitejs/plugin-rsc not installed — that's fine for Pages Router
+    // projects. If App Router is detected, the error is thrown below.
+  }
+
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
   // will resolve this before processing the plugin list.
-  //
-  // IMPORTANT: Resolve @vitejs/plugin-rsc from the user's project root,
-  // not from vinext's own package location. When vinext is installed via
-  // symlink (npm file: deps, pnpm workspace:*), a bare import() resolves
-  // from vinext's realpath, which can find a different copy of the RSC
-  // plugin (and transitively a different copy of vite). This causes
-  // instanceof RunnableDevEnvironment checks to fail at runtime because
-  // the Vite server and the RSC plugin end up with different class
-  // identities. Resolving from the project root ensures a single shared
-  // vite instance.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
   if (earlyAppDirExists && autoRsc) {
-    const rscImport = (async () => {
-      const require = createRequire(path.join(earlyBaseDir, "package.json"));
-      const rscPath = require.resolve("@vitejs/plugin-rsc");
-      const mod = await import(rscPath);
-      return mod;
-    })();
+    if (!resolvedRscPath) {
+      throw new Error(
+        "vinext: App Router detected but @vitejs/plugin-rsc is not installed.\n" +
+        "Run: npm install -D @vitejs/plugin-rsc",
+      );
+    }
+    const rscImport = import(resolvedRscPath);
     rscPluginPromise = rscImport
       .then((mod) => {
         const rsc = mod.default;
@@ -1219,12 +1233,6 @@ hydrate();
             client: VIRTUAL_APP_BROWSER_ENTRY,
           },
         });
-      })
-      .catch(() => {
-        throw new Error(
-          "vinext: App Router detected but @vitejs/plugin-rsc is not installed.\n" +
-          "Run: npm install -D @vitejs/plugin-rsc",
-        );
       });
   }
 
@@ -2231,7 +2239,13 @@ hydrate();
           if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
           if (!code.includes("use cache")) return null;
 
-          const { transformWrapExport, transformHoistInlineDirective } = await import("@vitejs/plugin-rsc/transforms");
+          if (!resolvedRscTransformsPath) {
+            throw new Error(
+              "vinext: 'use cache' requires @vitejs/plugin-rsc to be installed.\n" +
+              "Run: npm install -D @vitejs/plugin-rsc",
+            );
+          }
+          const { transformWrapExport, transformHoistInlineDirective } = await import(resolvedRscTransformsPath);
           const ast = parseAst(code);
 
           // Check for file-level "use cache" directive
@@ -2260,10 +2274,10 @@ hydrate();
 
             const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
             const result = transformWrapExport(code, ast as any, {
-              runtime: (value, name) =>
+              runtime: (value: any, name: any) =>
                 `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
               rejectNonAsyncFunction: false,
-              filter: (name, meta) => {
+              filter: (name: any, meta: any) => {
                 // Skip non-functions (constants, types, etc.)
                 if (meta.isFunction === false) return false;
                 // Skip the default export on component convention files — page
@@ -2304,7 +2318,7 @@ hydrate();
             try {
               const result = transformHoistInlineDirective(code, ast as any, {
                 directive: /^use cache(:\s*\w+)?$/,
-                runtime: (value, name, meta) => {
+                runtime: (value: any, name: any, meta: any) => {
                   const directiveMatch = meta.directiveMatch[0];
                   const variant = directiveMatch === "use cache" ? "" : directiveMatch.replace("use cache:", "").replace("use cache: ", "").trim();
                   return `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
