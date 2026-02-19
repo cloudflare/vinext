@@ -399,31 +399,16 @@ export function generateAppRouterViteConfig(info?: ProjectInfo): string {
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
   ];
 
-  if (info?.hasMDX) {
-    imports.push(`import mdx from "@mdx-js/rollup";`);
-    if (info.hasCodeHike) {
-      imports.push(`import { remarkCodeHike, recmaCodeHike } from "codehike/mdx";`);
-    }
-  }
-
   if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
     imports.push(`import path from "node:path";`);
   }
 
-  const plugins: string[] = [
-    `    vinext(),`,
-  ];
+  const plugins: string[] = [];
 
   if (info?.hasMDX) {
-    if (info.hasCodeHike) {
-      plugins.push(`    mdx({
-      remarkPlugins: [[remarkCodeHike, { components: { code: "Code" } }]],
-      recmaPlugins: [[recmaCodeHike, { components: { code: "Code" } }]],
-    }),`);
-    } else {
-      plugins.push(`    mdx(),`);
-    }
+    plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
   }
+  plugins.push(`    vinext(),`);
 
   plugins.push(`    rsc({
       entries: {

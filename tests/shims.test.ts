@@ -3235,6 +3235,222 @@ describe("cacheComponents config (Next.js 16)", () => {
     const config = await resolveNextConfig(null);
     expect(config.cacheComponents).toBe(false);
   });
+
+  it("resolveNextConfig defaults mdx to null", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({});
+    expect(config.mdx).toBeNull();
+  });
+
+  it("resolveNextConfig returns null mdx for null input", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig(null);
+    expect(config.mdx).toBeNull();
+  });
+});
+
+describe("extractMdxOptions", () => {
+  it("returns null when no webpack function", async () => {
+    const { extractMdxOptions } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    expect(extractMdxOptions({})).toBeNull();
+    expect(extractMdxOptions({ webpack: "not a function" })).toBeNull();
+  });
+
+  it("extracts remarkPlugins from webpack rule", async () => {
+    const { extractMdxOptions } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const fakeRemarkPlugin = () => {};
+    const config = {
+      webpack: (webpackConfig: any) => {
+        webpackConfig.module.rules.push({
+          test: /\.mdx$/,
+          use: [
+            {
+              loader: "@next/mdx/mdx-js-loader",
+              options: {
+                remarkPlugins: [[fakeRemarkPlugin, { option: true }]],
+                rehypePlugins: [],
+              },
+            },
+          ],
+        });
+        return webpackConfig;
+      },
+    };
+    const result = extractMdxOptions(config);
+    expect(result).not.toBeNull();
+    expect(result!.remarkPlugins).toHaveLength(1);
+    expect(result!.remarkPlugins![0]).toEqual([fakeRemarkPlugin, { option: true }]);
+    expect(result!.rehypePlugins).toBeUndefined();
+  });
+
+  it("extracts rehypePlugins from webpack rule", async () => {
+    const { extractMdxOptions } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const fakeRehypePlugin = () => {};
+    const config = {
+      webpack: (webpackConfig: any) => {
+        webpackConfig.module.rules.push({
+          test: /\.mdx$/,
+          use: [
+            {
+              loader: "@next/mdx/mdx-js-loader",
+              options: {
+                remarkPlugins: [],
+                rehypePlugins: [fakeRehypePlugin],
+              },
+            },
+          ],
+        });
+        return webpackConfig;
+      },
+    };
+    const result = extractMdxOptions(config);
+    expect(result).not.toBeNull();
+    expect(result!.rehypePlugins).toHaveLength(1);
+    expect(result!.remarkPlugins).toBeUndefined();
+  });
+
+  it("extracts recmaPlugins from webpack rule", async () => {
+    const { extractMdxOptions } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const fakeRecmaPlugin = () => {};
+    const config = {
+      webpack: (webpackConfig: any) => {
+        webpackConfig.module.rules.push({
+          test: /\.mdx$/,
+          use: [
+            {
+              loader: "@next/mdx/mdx-js-loader",
+              options: {
+                recmaPlugins: [fakeRecmaPlugin],
+              },
+            },
+          ],
+        });
+        return webpackConfig;
+      },
+    };
+    const result = extractMdxOptions(config);
+    expect(result).not.toBeNull();
+    expect(result!.recmaPlugins).toHaveLength(1);
+  });
+
+  it("handles oneOf nested rules", async () => {
+    const { extractMdxOptions } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const fakeRemarkPlugin = () => {};
+    const config = {
+      webpack: (webpackConfig: any) => {
+        webpackConfig.module.rules.push({
+          oneOf: [
+            {
+              test: /\.mdx$/,
+              use: [
+                {
+                  loader: "@next/mdx/mdx-js-loader",
+                  options: {
+                    remarkPlugins: [fakeRemarkPlugin],
+                  },
+                },
+              ],
+            },
+          ],
+        });
+        return webpackConfig;
+      },
+    };
+    const result = extractMdxOptions(config);
+    expect(result).not.toBeNull();
+    expect(result!.remarkPlugins).toHaveLength(1);
+  });
+
+  it("returns null when webpack throws", async () => {
+    const { extractMdxOptions } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = {
+      webpack: () => {
+        throw new Error("some webpack error");
+      },
+    };
+    expect(extractMdxOptions(config)).toBeNull();
+  });
+
+  it("returns null when webpack has no MDX loader", async () => {
+    const { extractMdxOptions } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = {
+      webpack: (webpackConfig: any) => {
+        webpackConfig.module.rules.push({
+          test: /\.css$/,
+          use: [{ loader: "css-loader" }],
+        });
+        return webpackConfig;
+      },
+    };
+    expect(extractMdxOptions(config)).toBeNull();
+  });
+
+  it("returns null when MDX loader has empty plugin arrays", async () => {
+    const { extractMdxOptions } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = {
+      webpack: (webpackConfig: any) => {
+        webpackConfig.module.rules.push({
+          test: /\.mdx$/,
+          use: [
+            {
+              loader: "@next/mdx/mdx-js-loader",
+              options: {
+                remarkPlugins: [],
+                rehypePlugins: [],
+              },
+            },
+          ],
+        });
+        return webpackConfig;
+      },
+    };
+    expect(extractMdxOptions(config)).toBeNull();
+  });
+
+  it("resolveNextConfig extracts mdx from webpack closure", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const fakeRemarkPlugin = () => {};
+    const config = await resolveNextConfig({
+      webpack: (webpackConfig: any) => {
+        webpackConfig.module.rules.push({
+          test: /\.mdx$/,
+          use: [
+            {
+              loader: "@next/mdx/mdx-js-loader",
+              options: {
+                remarkPlugins: [fakeRemarkPlugin],
+              },
+            },
+          ],
+        });
+        return webpackConfig;
+      },
+    });
+    expect(config.mdx).not.toBeNull();
+    expect(config.mdx!.remarkPlugins).toHaveLength(1);
+  });
 });
 
 describe("next/web-vitals shim", () => {

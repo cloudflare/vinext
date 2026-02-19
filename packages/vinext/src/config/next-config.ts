@@ -55,6 +55,17 @@ export interface NextI18nConfig {
   }>;
 }
 
+/**
+ * MDX compilation options extracted from @next/mdx config.
+ * These are passed through to @mdx-js/rollup so that custom
+ * remark/rehype/recma plugins configured in next.config work with Vite.
+ */
+export interface MdxOptions {
+  remarkPlugins?: unknown[];
+  rehypePlugins?: unknown[];
+  recmaPlugins?: unknown[];
+}
+
 export interface NextConfig {
   /** Additional env variables */
   env?: Record<string, string>;
@@ -118,6 +129,8 @@ export interface ResolvedNextConfig {
   headers: NextHeader[];
   images: NextConfig["images"];
   i18n: NextI18nConfig | null;
+  /** MDX remark/rehype/recma plugins extracted from @next/mdx config */
+  mdx: MdxOptions | null;
 }
 
 const CONFIG_FILES = [
@@ -181,6 +194,7 @@ export async function resolveNextConfig(
       headers: [],
       images: undefined,
       i18n: null,
+      mdx: null,
     };
   }
 
@@ -212,8 +226,11 @@ export async function resolveNextConfig(
     headers = await config.headers();
   }
 
-  // Warn about unsupported options
-  const unsupported = ["webpack", "experimental"];
+  // Extract MDX remark/rehype plugins from @next/mdx's webpack wrapper
+  const mdx = extractMdxOptions(config);
+
+  // Warn about unsupported options (skip webpack if we extracted MDX from it)
+  const unsupported = mdx ? ["experimental"] : ["webpack", "experimental"];
   for (const key of unsupported) {
     if (config[key] !== undefined) {
       console.warn(
@@ -249,5 +266,116 @@ export async function resolveNextConfig(
     headers,
     images: config.images,
     i18n,
+    mdx,
   };
+}
+
+/**
+ * Extract MDX compilation options (remark/rehype/recma plugins) from
+ * a Next.js config that uses @next/mdx.
+ *
+ * @next/mdx wraps the config with a webpack function that injects an MDX
+ * loader rule. The remark/rehype plugins are captured in that closure.
+ * We probe the webpack function with a mock config to extract them.
+ */
+export function extractMdxOptions(config: NextConfig): MdxOptions | null {
+  if (typeof config.webpack !== "function") return null;
+
+  // Build a mock webpack config object that @next/mdx's wrapper will mutate
+  const mockModuleRules: any[] = [];
+  const mockConfig = {
+    resolve: { alias: {} as Record<string, string> },
+    module: { rules: mockModuleRules },
+    plugins: [] as any[],
+  };
+  const mockOptions = {
+    defaultLoaders: { babel: { loader: "next-babel-loader" } },
+    isServer: false,
+    dev: false,
+    dir: "/mock",
+  };
+
+  try {
+    const result = (config.webpack as Function)(mockConfig, mockOptions);
+    // @next/mdx may return the config or mutate in place
+    const finalConfig = result ?? mockConfig;
+    const rules: any[] = finalConfig.module?.rules ?? mockModuleRules;
+
+    // Search through webpack rules for the MDX loader injected by @next/mdx
+    for (const rule of rules) {
+      const loaders = extractMdxLoaders(rule);
+      if (loaders) return loaders;
+    }
+  } catch {
+    // If the webpack function throws (e.g. expects real webpack internals),
+    // silently skip — we'll fall back to bare mdx() with no plugins.
+  }
+
+  return null;
+}
+
+/**
+ * Recursively search a webpack rule (which may have nested `oneOf` arrays)
+ * for an MDX loader and extract its remark/rehype/recma plugin options.
+ */
+function extractMdxLoaders(rule: any): MdxOptions | null {
+  if (!rule) return null;
+
+  // Check `oneOf` arrays (Next.js uses these extensively)
+  if (Array.isArray(rule.oneOf)) {
+    for (const child of rule.oneOf) {
+      const result = extractMdxLoaders(child);
+      if (result) return result;
+    }
+  }
+
+  // Check `use` array (loader chain)
+  const use = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
+  for (const loader of use) {
+    const loaderPath = typeof loader === "string" ? loader : loader?.loader;
+    if (typeof loaderPath === "string" && isMdxLoader(loaderPath)) {
+      const opts = typeof loader === "object" ? loader.options : {};
+      return extractPluginsFromOptions(opts);
+    }
+  }
+
+  // Check direct `loader` field
+  if (typeof rule.loader === "string" && isMdxLoader(rule.loader)) {
+    return extractPluginsFromOptions(rule.options);
+  }
+
+  return null;
+}
+
+function isMdxLoader(loaderPath: string): boolean {
+  return (
+    loaderPath.includes("mdx") &&
+    (loaderPath.includes("@next") ||
+     loaderPath.includes("@mdx-js") ||
+     loaderPath.includes("mdx-js-loader") ||
+     loaderPath.includes("next-mdx"))
+  );
+}
+
+function extractPluginsFromOptions(opts: any): MdxOptions | null {
+  if (!opts || typeof opts !== "object") return null;
+
+  const remarkPlugins = Array.isArray(opts.remarkPlugins) ? opts.remarkPlugins : undefined;
+  const rehypePlugins = Array.isArray(opts.rehypePlugins) ? opts.rehypePlugins : undefined;
+  const recmaPlugins = Array.isArray(opts.recmaPlugins) ? opts.recmaPlugins : undefined;
+
+  // Only return if at least one plugin array is non-empty
+  if (
+    (remarkPlugins && remarkPlugins.length > 0) ||
+    (rehypePlugins && rehypePlugins.length > 0) ||
+    (recmaPlugins && recmaPlugins.length > 0)
+  ) {
+    return {
+      ...(remarkPlugins && remarkPlugins.length > 0 ? { remarkPlugins } : {}),
+      ...(rehypePlugins && rehypePlugins.length > 0 ? { rehypePlugins } : {}),
+      ...(recmaPlugins && recmaPlugins.length > 0 ? { recmaPlugins } : {}),
+    };
+  }
+
+  return null;
 }

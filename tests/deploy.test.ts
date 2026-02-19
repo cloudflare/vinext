@@ -661,24 +661,28 @@ describe("detectProject — new detection features", () => {
 // ─── Generated Vite config with new features ────────────────────────────────
 
 describe("generateAppRouterViteConfig — with project info", () => {
-  it("includes MDX plugin when hasMDX is true", () => {
+  it("delegates MDX to vinext plugin auto-injection (no separate mdx() call)", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "app/about/page.mdx", "# About");
     const info = detectProject(tmpDir);
     const config = generateAppRouterViteConfig(info);
-    expect(config).toContain('@mdx-js/rollup');
-    expect(config).toContain("mdx()");
+    // MDX is now handled by the vinext plugin's auto-injection at runtime,
+    // not by a separate mdx() call in the generated config.
+    expect(config).toContain("vinext()");
+    expect(config).toContain("auto-injects @mdx-js/rollup");
+    expect(config).not.toContain('import mdx from "@mdx-js/rollup"');
   });
 
-  it("includes CodeHike plugins when hasCodeHike is true", () => {
+  it("does not include CodeHike plugins in generated config (handled by vinext plugin)", () => {
     mkdir(tmpDir, "app");
     writeFile(tmpDir, "app/about/page.mdx", "# About");
     writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { codehike: "^1.0.0" } }));
     const info = detectProject(tmpDir);
     const config = generateAppRouterViteConfig(info);
-    expect(config).toContain("remarkCodeHike");
-    expect(config).toContain("recmaCodeHike");
-    expect(config).toContain("codehike/mdx");
+    // CodeHike plugins are extracted from next.config at runtime by the vinext plugin
+    expect(config).not.toContain("remarkCodeHike");
+    expect(config).not.toContain("recmaCodeHike");
+    expect(config).toContain("vinext()");
   });
 
   it("does not include tsconfig aliases in generated config (handled by plugin at runtime)", () => {
@@ -713,7 +717,8 @@ describe("generateAppRouterViteConfig — with project info", () => {
     expect(config).toContain("vinext()");
     expect(config).toContain("rsc(");
     expect(config).toContain("cloudflare(");
-    expect(config).not.toContain("mdx");
+    // Generated config no longer includes a separate mdx() import/call
+    expect(config).not.toContain('import mdx from "@mdx-js/rollup"');
     expect(config).not.toContain("resolve:");
   });
 });

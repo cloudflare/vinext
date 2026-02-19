@@ -1368,6 +1368,38 @@ hydrate();
           postcssOverride = await resolvePostcssStringPlugins(root);
         }
 
+        // Auto-inject @mdx-js/rollup when MDX files exist and no MDX plugin is
+        // already configured. Applies remark/rehype plugins from next.config.
+        const hasMdxPlugin = pluginsFlat.some(
+          (p: any) => p && typeof p === "object" && typeof p.name === "string" &&
+            (p.name === "@mdx-js/rollup" || p.name === "mdx"),
+        );
+        const mdxPlugins: any[] = [];
+        if (!hasMdxPlugin && hasMdxFiles(root, hasAppDir ? appDir : null, hasPagesDir ? pagesDir : null)) {
+          try {
+            const mdxRollup = await import("@mdx-js/rollup");
+            const mdxPlugin = mdxRollup.default ?? mdxRollup;
+            const mdxOpts: Record<string, unknown> = {};
+            if (nextConfig.mdx) {
+              if (nextConfig.mdx.remarkPlugins) mdxOpts.remarkPlugins = nextConfig.mdx.remarkPlugins;
+              if (nextConfig.mdx.rehypePlugins) mdxOpts.rehypePlugins = nextConfig.mdx.rehypePlugins;
+              if (nextConfig.mdx.recmaPlugins) mdxOpts.recmaPlugins = nextConfig.mdx.recmaPlugins;
+            }
+            mdxPlugins.push(mdxPlugin(mdxOpts));
+            if (nextConfig.mdx) {
+              console.log("[vinext] Auto-injected @mdx-js/rollup with remark/rehype plugins from next.config");
+            } else {
+              console.log("[vinext] Auto-injected @mdx-js/rollup for MDX support");
+            }
+          } catch {
+            // @mdx-js/rollup not installed — warn but don't fail
+            console.warn(
+              "[vinext] MDX files detected but @mdx-js/rollup is not installed. " +
+              "Install it with: npm install -D @mdx-js/rollup"
+            );
+          }
+        }
+
         const viteConfig: Record<string, any> = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
@@ -1511,6 +1543,11 @@ hydrate();
               },
             },
           };
+        }
+
+        // Add auto-injected MDX plugin if needed
+        if (mdxPlugins.length > 0) {
+          viteConfig.plugins = mdxPlugins;
         }
 
         return viteConfig;
@@ -1680,7 +1717,7 @@ hydrate();
 
       configureServer(server: ViteDevServer) {
         // Watch pages directory for file additions/removals to invalidate route cache.
-        const pageExtensions = /\.(tsx?|jsx?)$/;
+        const pageExtensions = /\.(tsx?|jsx?|mdx)$/;
         server.watcher.on("add", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
@@ -2693,6 +2730,35 @@ function findFileWithExts(dir: string, name: string): string | null {
     if (fs.existsSync(filePath)) return filePath;
   }
   return null;
+}
+
+/**
+ * Check if the project has .mdx files in app/ or pages/ directories.
+ */
+function hasMdxFiles(root: string, appDir: string | null, pagesDir: string | null): boolean {
+  const dirs = [appDir, pagesDir].filter(Boolean) as string[];
+  for (const dir of dirs) {
+    if (fs.existsSync(dir) && scanDirForMdx(dir)) return true;
+  }
+  return false;
+}
+
+function scanDirForMdx(dir: string): boolean {
+  try {
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (scanDirForMdx(full)) return true;
+      } else if (entry.isFile() && entry.name.endsWith(".mdx")) {
+        return true;
+      }
+    }
+  } catch {
+    // ignore unreadable dirs
+  }
+  return false;
 }
 
 // Public exports for static export
