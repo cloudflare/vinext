@@ -1722,6 +1722,87 @@ describe("ResponseCookies API", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cookie name/value injection prevention (RFC 6265)
+
+describe("cookie name validation", () => {
+  it("RequestCookies.set() rejects names with = (injection)", async () => {
+    const headersModule = await import("../packages/vinext/src/shims/headers.js");
+    headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
+    const jar = await headersModule.cookies();
+    expect(() => jar.set("foo=bar; Path=/; Domain=evil.com", "val")).toThrow("Invalid cookie name");
+  });
+
+  it("RequestCookies.set() rejects names with semicolons", async () => {
+    const headersModule = await import("../packages/vinext/src/shims/headers.js");
+    headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
+    const jar = await headersModule.cookies();
+    expect(() => jar.set("foo; HttpOnly", "val")).toThrow("Invalid cookie name");
+  });
+
+  it("RequestCookies.set() rejects names with newlines", async () => {
+    const headersModule = await import("../packages/vinext/src/shims/headers.js");
+    headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
+    const jar = await headersModule.cookies();
+    expect(() => jar.set("foo\r\nSet-Cookie: evil=1", "val")).toThrow("Invalid cookie name");
+  });
+
+  it("RequestCookies.set() rejects empty names", async () => {
+    const headersModule = await import("../packages/vinext/src/shims/headers.js");
+    headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
+    const jar = await headersModule.cookies();
+    expect(() => jar.set("", "val")).toThrow("Invalid cookie name");
+  });
+
+  it("RequestCookies.set() accepts valid cookie names", async () => {
+    const headersModule = await import("../packages/vinext/src/shims/headers.js");
+    headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
+    const jar = await headersModule.cookies();
+    // These should not throw
+    jar.set("valid-name", "value");
+    jar.set("__Host-token", "value");
+    jar.set("session_id", "value");
+    jar.set("CSRF.Token", "value");
+  });
+
+  it("RequestCookies.delete() rejects invalid names", async () => {
+    const headersModule = await import("../packages/vinext/src/shims/headers.js");
+    headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
+    const jar = await headersModule.cookies();
+    expect(() => jar.delete("foo=bar")).toThrow("Invalid cookie name");
+  });
+
+  it("RequestCookies.set() rejects path with semicolons", async () => {
+    const headersModule = await import("../packages/vinext/src/shims/headers.js");
+    headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
+    const jar = await headersModule.cookies();
+    expect(() => jar.set("name", "val", { path: "/; Domain=evil.com" })).toThrow("Invalid cookie Path");
+  });
+
+  it("ResponseCookies.set() rejects names with = (injection)", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+    expect(() => cookies.set("foo=bar; Path=/", "val")).toThrow("Invalid cookie name");
+  });
+
+  it("ResponseCookies.set() rejects domain with control chars", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+    expect(() => cookies.set("name", "val", { domain: "evil.com\r\nSet-Cookie: hack=1" })).toThrow("Invalid cookie Domain");
+  });
+
+  it("ResponseCookies.set() accepts valid cookie names and options", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+    // These should not throw
+    cookies.set("valid-name", "value", { path: "/", domain: ".example.com" });
+    cookies.set("__Secure-token", "abc", { secure: true, httpOnly: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // NextRequest API tests
 
 describe("NextRequest API", () => {

@@ -230,6 +230,27 @@ export class RequestCookies {
   }
 }
 
+/**
+ * RFC 6265 §4.1.1: cookie-name is a token (RFC 2616 §2.2).
+ * Allowed: any visible ASCII (0x21-0x7E) except separators: ()<>@,;:\"/[]?={}
+ */
+const VALID_COOKIE_NAME_RE = /^[\x21\x23-\x27\x2A\x2B\x2D\x2E\x30-\x39\x41-\x5A\x5E-\x7A\x7C\x7E]+$/;
+
+function validateCookieName(name: string): void {
+  if (!name || !VALID_COOKIE_NAME_RE.test(name)) {
+    throw new Error(`Invalid cookie name: ${JSON.stringify(name)}`);
+  }
+}
+
+function validateCookieAttributeValue(value: string, attributeName: string): void {
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1F || code === 0x7F || value[i] === ";") {
+      throw new Error(`Invalid cookie ${attributeName} value: ${JSON.stringify(value)}`);
+    }
+  }
+}
+
 export class ResponseCookies {
   private _headers: Headers;
 
@@ -238,9 +259,16 @@ export class ResponseCookies {
   }
 
   set(name: string, value: string, options?: CookieOptions): this {
+    validateCookieName(name);
     const parts = [`${name}=${encodeURIComponent(value)}`];
-    if (options?.path) parts.push(`Path=${options.path}`);
-    if (options?.domain) parts.push(`Domain=${options.domain}`);
+    if (options?.path) {
+      validateCookieAttributeValue(options.path, "Path");
+      parts.push(`Path=${options.path}`);
+    }
+    if (options?.domain) {
+      validateCookieAttributeValue(options.domain, "Domain");
+      parts.push(`Domain=${options.domain}`);
+    }
     if (options?.maxAge !== undefined) parts.push(`Max-Age=${options.maxAge}`);
     if (options?.expires) parts.push(`Expires=${options.expires.toUTCString()}`);
     if (options?.httpOnly) parts.push("HttpOnly");
