@@ -3853,3 +3853,141 @@ describe("next/link onNavigate / NavigateEvent", () => {
     expect(navEvent.defaultPrevented).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// vinext:react-canary — ViewTransition & addTransitionType polyfills (Issue #42)
+// ---------------------------------------------------------------------------
+
+describe("vinext:react-canary transform logic", () => {
+  // These tests verify the regex patterns used by the vinext:react-canary plugin
+  // to detect and rewrite imports of React canary APIs.
+
+  const canaryImportRegex = /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/;
+
+  it("detects ViewTransition import from react", () => {
+    const code = `import { ViewTransition } from "react";`;
+    expect(canaryImportRegex.test(code)).toBe(true);
+  });
+
+  it("detects addTransitionType import from react", () => {
+    const code = `import { addTransitionType } from "react";`;
+    expect(canaryImportRegex.test(code)).toBe(true);
+  });
+
+  it("detects ViewTransition alongside other React imports", () => {
+    const code = `import { useState, ViewTransition, useEffect } from "react";`;
+    expect(canaryImportRegex.test(code)).toBe(true);
+  });
+
+  it("detects addTransitionType alongside other React imports", () => {
+    const code = `import { useRef, addTransitionType } from 'react';`;
+    expect(canaryImportRegex.test(code)).toBe(true);
+  });
+
+  it("detects both canary APIs in a single import", () => {
+    const code = `import { ViewTransition, addTransitionType } from "react";`;
+    expect(canaryImportRegex.test(code)).toBe(true);
+  });
+
+  it("does NOT match imports from other modules", () => {
+    const code = `import { ViewTransition } from "some-other-lib";`;
+    expect(canaryImportRegex.test(code)).toBe(false);
+  });
+
+  it("does NOT match non-canary React imports", () => {
+    const code = `import { useState, useEffect } from "react";`;
+    expect(canaryImportRegex.test(code)).toBe(false);
+  });
+
+  it("does NOT match default React import", () => {
+    const code = `import React from "react";`;
+    expect(canaryImportRegex.test(code)).toBe(false);
+  });
+
+  it("does NOT match namespace React import", () => {
+    const code = `import * as React from "react";`;
+    expect(canaryImportRegex.test(code)).toBe(false);
+  });
+
+  it("rewrites all 'from react' occurrences in a file with canary imports", () => {
+    const code = [
+      `import { useState } from "react";`,
+      `import { ViewTransition } from "react";`,
+      ``,
+      `export default function Template({ children }) {`,
+      `  return <ViewTransition>{children}</ViewTransition>;`,
+      `}`,
+    ].join("\n");
+
+    // The transform replaces all `from "react"` in the file
+    const result = code.replace(
+      /from\s*['"]react['"]/g,
+      'from "virtual:vinext-react-canary"',
+    );
+
+    expect(result).toContain('from "virtual:vinext-react-canary"');
+    expect(result).not.toContain("from \"react\"");
+    // Both import lines should be rewritten
+    expect(result.match(/virtual:vinext-react-canary/g)?.length).toBe(2);
+  });
+
+  it("handles single-quoted imports", () => {
+    const code = `import { ViewTransition } from 'react';`;
+    expect(canaryImportRegex.test(code)).toBe(true);
+
+    const result = code.replace(
+      /from\s*['"]react['"]/g,
+      'from "virtual:vinext-react-canary"',
+    );
+    expect(result).toBe(`import { ViewTransition } from "virtual:vinext-react-canary";`);
+  });
+
+  it("handles multiline imports", () => {
+    const code = `import {\n  ViewTransition,\n  useState,\n} from "react";`;
+    expect(canaryImportRegex.test(code)).toBe(true);
+  });
+});
+
+describe("ViewTransition polyfill behavior", () => {
+  it("provides a passthrough component when React lacks ViewTransition", () => {
+    // Simulate the polyfill logic from the virtual module
+    const React = { ViewTransition: undefined };
+    const ViewTransition = React.ViewTransition || function ViewTransition({ children }: { children: any }) { return children; };
+
+    // ViewTransition should be a function
+    expect(typeof ViewTransition).toBe("function");
+
+    // It should pass through children unchanged
+    const children = { type: "div", props: {} };
+    const result = ViewTransition({ children });
+    expect(result).toBe(children);
+  });
+
+  it("uses native ViewTransition when React exports it", () => {
+    // Simulate React canary that HAS ViewTransition
+    const nativeViewTransition = function NativeViewTransition({ children }: { children: any }) {
+      return { wrapped: children };
+    };
+    const React = { ViewTransition: nativeViewTransition };
+    const ViewTransition = React.ViewTransition || function ViewTransition({ children }: { children: any }) { return children; };
+
+    expect(ViewTransition).toBe(nativeViewTransition);
+  });
+
+  it("provides a no-op addTransitionType when React lacks it", () => {
+    const React = { addTransitionType: undefined };
+    const addTransitionType = React.addTransitionType || function addTransitionType() {};
+
+    expect(typeof addTransitionType).toBe("function");
+    // Should not throw when called
+    expect(() => addTransitionType()).not.toThrow();
+  });
+
+  it("uses native addTransitionType when React exports it", () => {
+    const nativeAddTransitionType = function nativeAddTransitionType(type: string) { return type; };
+    const React = { addTransitionType: nativeAddTransitionType };
+    const addTransitionType = React.addTransitionType || function addTransitionType() {};
+
+    expect(addTransitionType).toBe(nativeAddTransitionType);
+  });
+});

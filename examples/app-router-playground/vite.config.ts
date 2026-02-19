@@ -39,49 +39,6 @@ export default defineConfig({
       },
     },
 
-    // Shim React canary APIs (ViewTransition, addTransitionType) that don't
-    // exist in stable React 19. Provides no-op replacements so the
-    // view-transitions page degrades gracefully instead of crashing.
-    {
-      name: "shim-react-canary",
-      resolveId(id) {
-        if (id === "virtual:react-with-canary") return "\0virtual:react-with-canary";
-      },
-      load(id) {
-        if (id === "\0virtual:react-with-canary") {
-          return `
-            export * from "react";
-            export { default } from "react";
-            import React from "react";
-            export const ViewTransition = React.ViewTransition || (({ children }) => children);
-            export const addTransitionType = React.addTransitionType || (() => {});
-          `;
-        }
-      },
-      transform(code, id) {
-        // Rewrite imports from 'react' that reference canary APIs
-        if (
-          !id.includes("node_modules") &&
-          (id.endsWith(".tsx") || id.endsWith(".ts") || id.endsWith(".jsx") || id.endsWith(".js")) &&
-          (code.includes("ViewTransition") || code.includes("addTransitionType")) &&
-          /from\s+['"]react['"]/.test(code)
-        ) {
-          // Only rewrite if the import actually destructures ViewTransition or addTransitionType
-          const importRegex = /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/;
-          if (importRegex.test(code)) {
-            const result = code.replace(
-              /from\s*['"]react['"]/g,
-              'from "virtual:react-with-canary"',
-            );
-            if (result !== code) {
-              return { code: result, map: null };
-            }
-          }
-        }
-        return null;
-      },
-    },
-
     // MDX support — transforms .mdx files into React components
     mdx(),
 

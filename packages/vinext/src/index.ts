@@ -1281,6 +1281,61 @@ hydrate();
         }
       },
     },
+    // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
+    // that exist in Next.js's bundled React canary but not in stable React 19.
+    // Provides graceful no-op fallbacks so projects using these APIs degrade
+    // instead of crashing with "does not provide an export named 'ViewTransition'".
+    {
+      name: "vinext:react-canary",
+      enforce: "pre",
+
+      resolveId(id) {
+        if (id === "virtual:vinext-react-canary") return "\0virtual:vinext-react-canary";
+      },
+
+      load(id) {
+        if (id === "\0virtual:vinext-react-canary") {
+          return [
+            `export * from "react";`,
+            `export { default } from "react";`,
+            `import * as _React from "react";`,
+            `export const ViewTransition = _React.ViewTransition || function ViewTransition({ children }) { return children; };`,
+            `export const addTransitionType = _React.addTransitionType || function addTransitionType() {};`,
+          ].join("\n");
+        }
+      },
+
+      transform(code, id) {
+        // Only transform user source files, not node_modules or virtual modules
+        if (id.includes("node_modules")) return null;
+        if (id.startsWith("\0")) return null;
+        if (!/\.(tsx?|jsx?|mjs)$/.test(id)) return null;
+
+        // Quick check: does this file reference canary APIs and import from "react"?
+        if (
+          !(code.includes("ViewTransition") || code.includes("addTransitionType")) ||
+          !/from\s+['"]react['"]/.test(code)
+        ) {
+          return null;
+        }
+
+        // Only rewrite if the import actually destructures a canary API
+        const canaryImportRegex = /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/;
+        if (!canaryImportRegex.test(code)) return null;
+
+        // Rewrite all `from "react"` / `from 'react'` to use the canary shim.
+        // This is safe because the virtual module re-exports everything from
+        // react, so non-canary imports continue to work.
+        const result = code.replace(
+          /from\s*['"]react['"]/g,
+          'from "virtual:vinext-react-canary"',
+        );
+        if (result !== code) {
+          return { code: result, map: null };
+        }
+        return null;
+      },
+    },
     {
       name: "vinext:pages-router",
 
