@@ -1,6 +1,7 @@
+import type { MDXComponents } from 'mdx/types';
 import Link from 'next/link';
 
-export function useMDXComponents(components: Record<string, any>): Record<string, any> {
+export function useMDXComponents(components: MDXComponents): MDXComponents {
   return {
     ...components,
     a: (props: any) => {

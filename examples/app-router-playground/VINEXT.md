@@ -26,6 +26,7 @@ npx vite dev
 - Server Components with data fetching
 - Client Components (`'use client'`)
 - Server Actions (`'use server'`)
+- MDX pages with CodeHike syntax highlighting and `!!col` directives
 - `next/link` with `useLinkStatus`
 - `next/image`, `next/font/google`, `next/navigation`, `next/headers`
 - Tailwind CSS v4
@@ -34,8 +35,6 @@ npx vite dev
 ## Known Limitations
 
 - `'use cache'` directives are stripped (not yet supported)
-- MDX files (.mdx) are not yet supported — pages that import readme.mdx will error
-- CodeHike syntax highlighting not available without MDX
 - `styled-components` SSR not configured (not actively used in the playground)
 - View Transitions API depends on React 19 canary features
 

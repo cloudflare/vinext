@@ -2,7 +2,12 @@ import { defineConfig } from "vite";
 import vinext from "vinext";
 import { cloudflare } from "@cloudflare/vite-plugin";
 import mdx from "@mdx-js/rollup";
+import { remarkCodeHike, recmaCodeHike, type CodeHikeConfig } from "codehike/mdx";
 import path from "node:path";
+
+const codeHikeConfig: CodeHikeConfig = {
+  components: { code: "MyCode", inlineCode: "MyInlineCode" },
+};
 
 /**
  * Vite config for the Next.js App Router Playground running on vinext.
@@ -38,8 +43,12 @@ export default defineConfig({
       },
     },
 
-    // MDX support — transforms .mdx files into React components
-    mdx(),
+    // MDX support with CodeHike remark/recma plugins — transforms .mdx files
+    // into React components and processes !!col directives, code annotations, etc.
+    mdx({
+      remarkPlugins: [[remarkCodeHike, codeHikeConfig]],
+      recmaPlugins: [[recmaCodeHike, codeHikeConfig]],
+    }),
 
     // vinext plugin (provides all next/* shims, routing, SSR, RSC).
     // @vitejs/plugin-rsc is auto-registered when app/ is detected.
