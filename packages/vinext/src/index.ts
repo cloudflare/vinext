@@ -1120,9 +1120,25 @@ hydrate();
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
   // will resolve this before processing the plugin list.
+  //
+  // IMPORTANT: Resolve @vitejs/plugin-rsc from the user's project root,
+  // not from vinext's own package location. When vinext is installed via
+  // symlink (npm file: deps, pnpm workspace:*), a bare import() resolves
+  // from vinext's realpath, which can find a different copy of the RSC
+  // plugin (and transitively a different copy of vite). This causes
+  // instanceof RunnableDevEnvironment checks to fail at runtime because
+  // the Vite server and the RSC plugin end up with different class
+  // identities. Resolving from the project root ensures a single shared
+  // vite instance.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
   if (earlyAppDirExists && autoRsc) {
-    rscPluginPromise = import("@vitejs/plugin-rsc")
+    const rscImport = (async () => {
+      const require = createRequire(path.join(earlyBaseDir, "package.json"));
+      const rscPath = require.resolve("@vitejs/plugin-rsc");
+      const mod = await import(rscPath);
+      return mod;
+    })();
+    rscPluginPromise = rscImport
       .then((mod) => {
         const rsc = mod.default;
         return rsc({
