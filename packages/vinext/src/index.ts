@@ -1275,6 +1275,11 @@ hydrate();
         const viteConfig: Record<string, any> = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
+          // Let OPTIONS requests pass through Vite's CORS middleware to our
+          // route handlers so they can set the Allow header and run user-defined
+          // OPTIONS handlers. Without this, Vite's CORS middleware responds to
+          // OPTIONS with a 204 before the request reaches vinext's handler.
+          server: { cors: { preflightContinue: true } },
           // Externalize React packages from SSR transform — they are CJS and
           // must be loaded natively by Node, not through Vite's ESM evaluator.
           // Skip when targeting Cloudflare Workers (they bundle everything).

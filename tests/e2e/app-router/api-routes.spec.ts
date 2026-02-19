@@ -217,11 +217,6 @@ test.describe("Route Handler HTTP Methods (OpenNext compat)", () => {
 
   test("OPTIONS returns 204 with Allow header", async ({ request }) => {
     // Ref: opennextjs-cloudflare methods.test.ts "OPTIONS"
-    // Note: vinext auto-generates OPTIONS responses based on exported methods,
-    // so our explicit OPTIONS handler may or may not be called depending on
-    // whether vinext intercepts before reaching the handler.
-    // KNOWN GAP: vinext's auto-OPTIONS does not set the Allow header yet.
-    test.fixme(true, "vinext auto-OPTIONS does not set Allow header — feature gap");
     const res = await request.fetch(`${BASE}/api/methods`, {
       method: "OPTIONS",
     });
