@@ -6,6 +6,7 @@
  * route matching and renders the component tree, then delegates to
  * the SSR entry for HTML generation.
  */
+import fs from "node:fs";
 import type { AppRoute } from "../routing/app-router.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { NextRedirect, NextRewrite, NextHeader } from "../config/next-config.js";
@@ -156,13 +157,33 @@ ${slotEntries.join(",\n")}
   }
 
   // Build metadata route table
+  // For static metadata files, read the file content at code-generation time
+  // and embed it as base64. This ensures static metadata files work on runtimes
+  // without filesystem access (e.g., Cloudflare Workers).
   const metaRouteEntries = effectiveMetaRoutes.map((mr) => {
-    return `  {
+    if (mr.isDynamic) {
+      return `  {
     type: ${JSON.stringify(mr.type)},
-    isDynamic: ${mr.isDynamic},
+    isDynamic: true,
     servedUrl: ${JSON.stringify(mr.servedUrl)},
     contentType: ${JSON.stringify(mr.contentType)},
-    ${mr.isDynamic ? `module: ${getImportVar(mr.filePath)},` : `filePath: ${JSON.stringify(mr.filePath.replace(/\\/g, "/"))},`}
+    module: ${getImportVar(mr.filePath)},
+  }`;
+    }
+    // Static: read file and embed as base64
+    let fileDataBase64 = "";
+    try {
+      const buf = fs.readFileSync(mr.filePath);
+      fileDataBase64 = buf.toString("base64");
+    } catch {
+      // File unreadable — will serve empty response at runtime
+    }
+    return `  {
+    type: ${JSON.stringify(mr.type)},
+    isDynamic: false,
+    servedUrl: ${JSON.stringify(mr.servedUrl)},
+    contentType: ${JSON.stringify(mr.contentType)},
+    fileDataBase64: ${JSON.stringify(fileDataBase64)},
   }`;
   });
 
@@ -825,11 +846,12 @@ async function _handleRequest(request) {
           });
         }
       } else {
-        // Static metadata file — read and serve
-        const fs = await import("node:fs");
+        // Static metadata file — decode from embedded base64 data
         try {
-          const data = fs.readFileSync(metaRoute.filePath);
-          return new Response(data, {
+          const binary = atob(metaRoute.fileDataBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+          return new Response(bytes, {
             headers: {
               "Content-Type": metaRoute.contentType,
               "Cache-Control": "public, max-age=0, must-revalidate",

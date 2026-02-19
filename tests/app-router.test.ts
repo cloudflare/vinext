@@ -1442,6 +1442,34 @@ describe("metadata routes integration (App Router)", () => {
     expect(magic[0]).toBe(0x89);
     expect(magic[1]).toBe(0x50);
   });
+
+  it("scanMetadataFiles discovers static favicon.ico at root", async () => {
+    const { scanMetadataFiles } = await import(
+      "../packages/vinext/src/server/metadata-routes.js"
+    );
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
+    const routes = scanMetadataFiles(appDir);
+
+    const favicon = routes.find((r: { type: string }) => r.type === "favicon");
+    expect(favicon).toBeDefined();
+    expect(favicon!.isDynamic).toBe(false);
+    expect(favicon!.servedUrl).toBe("/favicon.ico");
+    expect(favicon!.contentType).toBe("image/x-icon");
+  });
+
+  it("serves static /favicon.ico with correct content type", async () => {
+    const res = await fetch(`${baseUrl}/favicon.ico`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/x-icon");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
+    const buf = await res.arrayBuffer();
+    // Verify it's a valid ICO file (starts with ICO magic bytes: 00 00 01 00)
+    const magic = new Uint8Array(buf.slice(0, 4));
+    expect(magic[0]).toBe(0x00);
+    expect(magic[1]).toBe(0x00);
+    expect(magic[2]).toBe(0x01);
+    expect(magic[3]).toBe(0x00);
+  });
 });
 
 describe("App Router next.config.js features (dev server integration)", () => {

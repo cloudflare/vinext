@@ -2347,6 +2347,7 @@ describe("metadata route serializers", () => {
     expect(types).toContain("sitemap");
     expect(types).toContain("robots");
     expect(types).toContain("manifest");
+    expect(types).toContain("favicon");
 
     // Sitemap should be dynamic (.ts)
     const sitemap = routes.find((r: { type: string }) => r.type === "sitemap");
@@ -2354,6 +2355,13 @@ describe("metadata route serializers", () => {
     expect(sitemap!.isDynamic).toBe(true);
     expect(sitemap!.servedUrl).toBe("/sitemap.xml");
     expect(sitemap!.contentType).toBe("application/xml");
+
+    // Favicon should be static (.ico)
+    const favicon = routes.find((r: { type: string }) => r.type === "favicon");
+    expect(favicon).toBeDefined();
+    expect(favicon!.isDynamic).toBe(false);
+    expect(favicon!.servedUrl).toBe("/favicon.ico");
+    expect(favicon!.contentType).toBe("image/x-icon");
   });
 });
 
