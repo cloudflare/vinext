@@ -955,15 +955,10 @@ describe("App Router Production build", () => {
   });
 
   it("produces RSC/SSR/client bundles via vite build", async () => {
-    const rsc = (await import("@vitejs/plugin-rsc")).default;
-
     const builder = await createBuilder({
       root: APP_FIXTURE_DIR,
       configFile: false,
-      plugins: [
-        vinext(),
-        rsc({ entries: RSC_ENTRIES }),
-      ],
+      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
       logLevel: "silent",
     });
     await builder.buildApp();
@@ -996,15 +991,11 @@ describe("App Router Production build", () => {
 
   it("serves production build via preview server", async () => {
     const { preview } = await import("vite");
-    const rsc = (await import("@vitejs/plugin-rsc")).default;
 
     const previewServer = await preview({
       root: APP_FIXTURE_DIR,
       configFile: false,
-      plugins: [
-        vinext(),
-        rsc({ entries: RSC_ENTRIES }),
-      ],
+      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
       preview: { port: 0 },
       logLevel: "silent",
     });
@@ -1061,11 +1052,10 @@ describe("App Router Production server (startProdServer)", () => {
 
   beforeAll(async () => {
     // Build the app-basic fixture to the default dist/ directory
-    const rsc = (await import("@vitejs/plugin-rsc")).default;
     const builder = await createBuilder({
       root: APP_FIXTURE_DIR,
       configFile: false,
-      plugins: [vinext(), rsc({ entries: RSC_ENTRIES })],
+      plugins: [vinext({ appDir: APP_FIXTURE_DIR })],
       logLevel: "silent",
     });
     await builder.buildApp();
@@ -1932,5 +1922,25 @@ describe("RSC plugin auto-registration", () => {
     } finally {
       await serverWithExplicitRsc.close();
     }
+  }, 30000);
+
+  it("throws an error when user double-registers rsc() alongside auto-registration", async () => {
+    const { createBuilder } = await import("vite");
+    const rsc = (await import("@vitejs/plugin-rsc")).default;
+
+    // vinext() auto-registers @vitejs/plugin-rsc when app/ is detected.
+    // Manually adding rsc() on top should throw a clear error telling
+    // the user to fix their config — not silently double the build time.
+    await expect(
+      createBuilder({
+        root: APP_FIXTURE_DIR,
+        configFile: false,
+        plugins: [
+          vinext({ appDir: APP_FIXTURE_DIR }),
+          rsc({ entries: RSC_ENTRIES }),
+        ],
+        logLevel: "silent",
+      }),
+    ).rejects.toThrow("Duplicate @vitejs/plugin-rsc detected");
   }, 30000);
 });

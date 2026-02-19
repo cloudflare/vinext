@@ -46,12 +46,10 @@ export async function startFixtureServer(
   fixtureDir: string,
   opts?: { appRouter?: boolean; listen?: boolean },
 ): Promise<TestServerResult> {
-  const plugins: any[] = [vinext()];
-
-  if (opts?.appRouter) {
-    const rsc = (await import("@vitejs/plugin-rsc")).default;
-    plugins.push(rsc({ entries: RSC_ENTRIES }));
-  }
+  // vinext() auto-registers @vitejs/plugin-rsc when app/ is detected.
+  // Pass appDir explicitly since tests run with configFile: false and
+  // cwd may not be the fixture directory.
+  const plugins: any[] = [vinext({ appDir: fixtureDir })];
 
   const server = await createServer({
     root: fixtureDir,

@@ -258,9 +258,6 @@ export interface VinextOptions {
   rsc?: boolean;
 }
 
-// Marker to identify auto-injected RSC plugins from vinext
-const VINEXT_AUTO_RSC = "__vinext_auto_rsc";
-
 export default function vinext(options: VinextOptions = {}): Plugin[] {
   let root: string;
   let pagesDir: string;
@@ -1128,21 +1125,13 @@ hydrate();
     rscPluginPromise = import("@vitejs/plugin-rsc")
       .then((mod) => {
         const rsc = mod.default;
-        const plugins = rsc({
+        return rsc({
           entries: {
             rsc: VIRTUAL_RSC_ENTRY,
             ssr: VIRTUAL_APP_SSR_ENTRY,
             client: VIRTUAL_APP_BROWSER_ENTRY,
           },
         });
-        // Mark auto-injected plugins so we can detect duplicates
-        const pluginArray = Array.isArray(plugins) ? plugins : [plugins];
-        for (const p of pluginArray) {
-          if (p && typeof p === "object") {
-            (p as any)[VINEXT_AUTO_RSC] = true;
-          }
-        }
-        return pluginArray;
       })
       .catch(() => {
         throw new Error(
@@ -1397,18 +1386,24 @@ hydrate();
       },
 
       configResolved(config) {
-        // Warn if both auto-injected and user-provided RSC plugins are present
+        // Detect double RSC plugin registration. When vinext auto-injects
+        // @vitejs/plugin-rsc AND the user also registers it manually, the
+        // RSC transform pipeline runs twice — doubling build time.
+        // Rather than trying to magically fix this at runtime, fail fast
+        // with a clear error telling the user how to fix their config.
         if (rscPluginPromise) {
-          const rscPlugins = config.plugins.filter(
-            (p: any) => p && p.name && typeof p.name === "string" && p.name.includes("rsc"),
+          // Count top-level RSC plugins (name === "rsc") — each call to
+          // the rsc() factory produces exactly one plugin with this name.
+          const rscRootPlugins = config.plugins.filter(
+            (p: any) => p && p.name === "rsc",
           );
-          const autoCount = rscPlugins.filter((p: any) => p[VINEXT_AUTO_RSC]).length;
-          const userCount = rscPlugins.length - autoCount;
-          if (autoCount > 0 && userCount > 0) {
-            console.warn(
-              "[vinext] @vitejs/plugin-rsc is already configured in your plugins.\n" +
-              "         vinext auto-registers it when app/ is detected.\n" +
-              "         Remove the explicit rsc() call, or pass rsc: false to vinext().",
+          if (rscRootPlugins.length > 1) {
+            throw new Error(
+              "[vinext] Duplicate @vitejs/plugin-rsc detected.\n" +
+              "         vinext auto-registers @vitejs/plugin-rsc when app/ is detected.\n" +
+              "         Your config also registers it manually, which doubles build time.\n\n" +
+              "         Fix: remove the explicit rsc() call from your plugins array.\n" +
+              "         Or: pass rsc: false to vinext() if you want to configure rsc() yourself.",
             );
           }
         }
