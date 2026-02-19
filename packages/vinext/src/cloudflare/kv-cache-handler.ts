@@ -82,18 +82,31 @@ export class KVCacheHandler implements CacheHandler {
     const raw = await this.kv.get(ENTRY_PREFIX + key);
     if (!raw) return null;
 
-    let entry: KVCacheEntry;
+    let parsed: unknown;
     try {
-      entry = JSON.parse(raw);
+      parsed = JSON.parse(raw);
     } catch {
-      // Corrupted entry — delete and treat as miss
+      // Corrupted JSON — delete and treat as miss
+      await this.kv.delete(ENTRY_PREFIX + key);
+      return null;
+    }
+
+    // Validate deserialized shape before using
+    const entry = validateCacheEntry(parsed);
+    if (!entry) {
+      console.error("[vinext] Invalid cache entry shape for key:", key);
       await this.kv.delete(ENTRY_PREFIX + key);
       return null;
     }
 
     // Restore ArrayBuffer fields that were base64-encoded for JSON storage
     if (entry.value) {
-      restoreArrayBuffers(entry.value);
+      const ok = restoreArrayBuffers(entry.value);
+      if (!ok) {
+        // base64 decode failed — corrupted entry, treat as miss
+        await this.kv.delete(ENTRY_PREFIX + key);
+        return null;
+      }
     }
 
     // Check tag-based invalidation (parallel for lower latency)
@@ -209,6 +222,48 @@ export class KVCacheHandler implements CacheHandler {
 }
 
 // ---------------------------------------------------------------------------
+// Validation helpers
+// ---------------------------------------------------------------------------
+
+const VALID_KINDS = new Set([
+  "FETCH",
+  "APP_PAGE",
+  "PAGES",
+  "APP_ROUTE",
+  "REDIRECT",
+  "IMAGE",
+]);
+
+/**
+ * Validate that a parsed JSON value has the expected KVCacheEntry shape.
+ * Returns the validated entry or null if the shape is invalid.
+ */
+function validateCacheEntry(raw: unknown): KVCacheEntry | null {
+  if (!raw || typeof raw !== "object") return null;
+
+  const obj = raw as Record<string, unknown>;
+
+  // Required fields
+  if (typeof obj.lastModified !== "number") return null;
+  if (!Array.isArray(obj.tags)) return null;
+  if (
+    obj.revalidateAt !== null &&
+    typeof obj.revalidateAt !== "number"
+  )
+    return null;
+
+  // value must be null or a valid cache value object with a known kind
+  if (obj.value !== null) {
+    if (!obj.value || typeof obj.value !== "object") return null;
+    const value = obj.value as Record<string, unknown>;
+    if (typeof value.kind !== "string" || !VALID_KINDS.has(value.kind))
+      return null;
+  }
+
+  return raw as KVCacheEntry;
+}
+
+// ---------------------------------------------------------------------------
 // ArrayBuffer serialization helpers
 // ---------------------------------------------------------------------------
 
@@ -242,17 +297,25 @@ function serializeForJSON(value: IncrementalCacheValue): IncrementalCacheValue {
 
 /**
  * Restore base64 strings back to ArrayBuffers after JSON.parse.
+ * Returns false if any base64 decode fails (corrupted entry).
  */
-function restoreArrayBuffers(value: IncrementalCacheValue): void {
+function restoreArrayBuffers(value: IncrementalCacheValue): boolean {
   if (value.kind === "APP_PAGE" && typeof value.rscData === "string") {
-    (value as any).rscData = base64ToArrayBuffer(value.rscData as any);
+    const decoded = safeBase64ToArrayBuffer(value.rscData as any);
+    if (!decoded) return false;
+    (value as any).rscData = decoded;
   }
   if (value.kind === "APP_ROUTE" && typeof value.body === "string") {
-    (value as any).body = base64ToArrayBuffer(value.body as any);
+    const decoded = safeBase64ToArrayBuffer(value.body as any);
+    if (!decoded) return false;
+    (value as any).body = decoded;
   }
   if (value.kind === "IMAGE" && typeof value.buffer === "string") {
-    (value as any).buffer = base64ToArrayBuffer(value.buffer as any);
+    const decoded = safeBase64ToArrayBuffer(value.buffer as any);
+    if (!decoded) return false;
+    (value as any).buffer = decoded;
   }
+  return true;
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
@@ -271,4 +334,17 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes.buffer;
+}
+
+/**
+ * Safely decode base64 to ArrayBuffer. Returns null on invalid input
+ * instead of throwing a DOMException.
+ */
+function safeBase64ToArrayBuffer(base64: string): ArrayBuffer | null {
+  try {
+    return base64ToArrayBuffer(base64);
+  } catch {
+    console.error("[vinext] Invalid base64 in cache entry");
+    return null;
+  }
 }
