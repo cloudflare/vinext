@@ -119,10 +119,7 @@ test.describe("Search Params in RSC (OpenNext compat)", () => {
   );
 
   // Ref: opennextjs-cloudflare query.test.ts — middleware forwards search params
-  // vinext does not unpack x-middleware-request-* headers back into the request
-  // context visible to page components via headers(). The modified request headers
-  // are encoded correctly on NextResponse but never applied to the headers() context.
-  test.fixme(
+  test(
     "middleware forwards search params as header",
     async ({ page }) => {
       await page.goto(`${BASE}/search-query?searchParams=mwtest`);

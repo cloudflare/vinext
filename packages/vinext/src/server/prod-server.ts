@@ -569,6 +569,18 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
       }
 
+      // Unpack x-middleware-request-* headers into the actual request so that
+      // renderPage / handleApiRoute see the middleware-modified headers.
+      // Also remove them from middlewareHeaders to prevent leaking as response headers.
+      const mwReqPrefix = "x-middleware-request-";
+      for (const key of Object.keys(middlewareHeaders)) {
+        if (key.startsWith(mwReqPrefix)) {
+          const realName = key.slice(mwReqPrefix.length);
+          webRequest.headers.set(realName, middlewareHeaders[key]);
+          delete middlewareHeaders[key];
+        }
+      }
+
       let resolvedPathname = resolvedUrl.split("?")[0];
 
       // ── 5. Apply custom headers from next.config.js ───────────────

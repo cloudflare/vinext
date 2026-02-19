@@ -66,6 +66,19 @@ examples/               # User-facing demo apps
 4. **Add fixture pages if needed** — `tests/fixtures/` has test apps for integration testing
 5. **Run the full test suite** before committing
 
+### Fixing Bugs
+
+**Always check dev and prod server parity.** Request handling logic exists in multiple places that must stay in sync:
+
+- `server/app-dev-server.ts` — App Router dev (generates the RSC entry)
+- `server/dev-server.ts` — Pages Router dev
+- `server/prod-server.ts` — Pages Router production (handles middleware, routing, SSR directly)
+- `cloudflare/worker-entry.ts` — Cloudflare Workers entry
+
+The App Router production server delegates to the built RSC entry, so it inherits fixes from `app-dev-server.ts`. But the Pages Router production server has its own middleware/routing/SSR logic that must be updated separately.
+
+When fixing a bug in any of these files, check whether the same bug exists in the others. Do not leave known bugs as "follow-ups" — fix them in the same PR.
+
 ### Debugging
 
 - **Dev server logs**: Run `npx vite dev` in a fixture directory

@@ -201,7 +201,7 @@ import {
 } from "@vitejs/plugin-rsc/rsc";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext, applyMiddlewareRequestHeaders } from "next/headers";
 import { NextRequest } from "next/server";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
@@ -855,6 +855,19 @@ async function _handleRequest(request) {
       }
     } catch (err) {
       console.error("[vinext] Middleware error:", err);
+    }
+  }
+
+  // Unpack x-middleware-request-* headers into the request context so that
+  // headers() returns the middleware-modified headers instead of the original
+  // request headers. Also strip those internal headers from the set that will
+  // be merged into the outgoing HTTP response.
+  if (_middlewareResponseHeaders) {
+    applyMiddlewareRequestHeaders(_middlewareResponseHeaders);
+    for (const key of [..._middlewareResponseHeaders.keys()]) {
+      if (key.startsWith("x-middleware-request-")) {
+        _middlewareResponseHeaders.delete(key);
+      }
     }
   }
   ` : ""}

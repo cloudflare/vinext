@@ -164,6 +164,44 @@ export function runWithHeadersContext<T>(
 }
 
 /**
+ * Apply middleware-forwarded request headers to the current headers context.
+ *
+ * When Next.js middleware calls `NextResponse.next({ request: { headers } })`,
+ * the modified headers are encoded as `x-middleware-request-<name>` on the
+ * middleware response.  This function unpacks those prefixed headers and
+ * replaces the corresponding entries on the live `HeadersContext` so that
+ * subsequent calls to `headers()` / `cookies()` see the middleware changes.
+ */
+export function applyMiddlewareRequestHeaders(
+  middlewareResponseHeaders: Headers,
+): void {
+  const state = _getState();
+  if (!state.headersContext) return;
+
+  const ctx = state.headersContext;
+  const PREFIX = "x-middleware-request-";
+
+  for (const [key, value] of middlewareResponseHeaders) {
+    if (key.startsWith(PREFIX)) {
+      const realName = key.slice(PREFIX.length);
+      ctx.headers.set(realName, value);
+    }
+  }
+
+  // If middleware modified the cookie header, rebuild the cookies map.
+  const newCookieHeader = ctx.headers.get("cookie");
+  if (newCookieHeader !== null) {
+    ctx.cookies.clear();
+    for (const part of newCookieHeader.split(";")) {
+      const [k, ...rest] = part.split("=");
+      if (k) {
+        ctx.cookies.set(k.trim(), rest.join("=").trim());
+      }
+    }
+  }
+}
+
+/**
  * Create a HeadersContext from a standard Request object.
  */
 export function headersContextFromRequest(request: Request): HeadersContext {
