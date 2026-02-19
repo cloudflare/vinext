@@ -18,6 +18,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { execSync, type ExecSyncOptions } from "node:child_process";
 import { createBuilder, build } from "vite";
+import {
+  ensureESModule as _ensureESModule,
+  renameCJSConfigs as _renameCJSConfigs,
+  detectPackageManager as _detectPackageManager,
+} from "./utils/project.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -262,69 +267,15 @@ function detectNativeModules(root: string): string[] {
 }
 
 // ─── Project Preparation (pre-build transforms) ─────────────────────────────
+//
+// These are delegated to shared utilities in ./utils/project.ts so they can
+// be reused by both `vinext deploy` and `vinext init`.
 
-/** Common CJS config files that may need renaming when adding "type": "module" */
-const CJS_CONFIG_FILES = [
-  "postcss.config.js",
-  "tailwind.config.js",
-  ".eslintrc.js",
-  "prettier.config.js",
-  "stylelint.config.js",
-  "commitlint.config.js",
-  "jest.config.js",
-  "babel.config.js",
-  ".babelrc.js",
-];
+/** @see {@link _ensureESModule} */
+export const ensureESModule = _ensureESModule;
 
-/**
- * Ensure package.json has "type": "module".
- * Returns true if it was added (i.e. it wasn't already there).
- */
-export function ensureESModule(root: string): boolean {
-  const pkgPath = path.join(root, "package.json");
-  if (!fs.existsSync(pkgPath)) return false;
-
-  try {
-    const raw = fs.readFileSync(pkgPath, "utf-8");
-    const pkg = JSON.parse(raw);
-    if (pkg.type === "module") return false;
-
-    pkg.type = "module";
-    fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n", "utf-8");
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Rename CJS config files (that use `module.exports`) to .cjs
- * to avoid breakage when "type": "module" is added.
- * Returns array of [oldName, newName] pairs that were renamed.
- */
-export function renameCJSConfigs(root: string): Array<[string, string]> {
-  const renamed: Array<[string, string]> = [];
-
-  for (const fileName of CJS_CONFIG_FILES) {
-    const filePath = path.join(root, fileName);
-    if (!fs.existsSync(filePath)) continue;
-
-    try {
-      const content = fs.readFileSync(filePath, "utf-8");
-      // Only rename if it actually uses CJS patterns
-      if (/\bmodule\.exports\b/.test(content) || /\brequire\s*\(/.test(content)) {
-        const newName = fileName.replace(/\.js$/, ".cjs");
-        const newPath = path.join(root, newName);
-        fs.renameSync(filePath, newPath);
-        renamed.push([fileName, newName]);
-      }
-    } catch {
-      // skip unreadable files
-    }
-  }
-
-  return renamed;
-}
+/** @see {@link _renameCJSConfigs} */
+export const renameCJSConfigs = _renameCJSConfigs;
 
 // ─── File Generation ─────────────────────────────────────────────────────────
 
@@ -585,12 +536,7 @@ function installDeps(root: string, deps: MissingDep[]): void {
   });
 }
 
-function detectPackageManager(root: string): string {
-  if (fs.existsSync(path.join(root, "pnpm-lock.yaml"))) return "pnpm add -D";
-  if (fs.existsSync(path.join(root, "yarn.lock"))) return "yarn add -D";
-  if (fs.existsSync(path.join(root, "bun.lockb"))) return "bun add -D";
-  return "npm install -D";
-}
+const detectPackageManager = _detectPackageManager;
 
 // ─── File Writing ────────────────────────────────────────────────────────────
 

@@ -30,7 +30,7 @@ vinext deploy       # Build and deploy to Cloudflare Workers
 
 vinext auto-detects your `app/` or `pages/` directory, loads `next.config.js`, and configures Vite automatically. No `vite.config.ts` required for basic usage.
 
-Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work as-is. Run `vinext check` first to scan for known compatibility issues.
+Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work as-is. Run `vinext check` first to scan for known compatibility issues, or use `vinext init` to [automate the full migration](#migrating-an-existing-nextjs-project).
 
 ### CLI reference
 
@@ -40,12 +40,41 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 | `vinext build` | Production build (multi-environment for App Router: RSC + SSR + client) |
 | `vinext start` | Start local production server for testing |
 | `vinext deploy` | Build and deploy to Cloudflare Workers |
+| `vinext init` | Migrate a Next.js project to run under vinext |
 | `vinext check` | Scan your Next.js app for compatibility issues before migrating |
 | `vinext lint` | Delegate to eslint or oxlint |
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
 `vinext deploy` options: `--preview`, `--name <name>`, `--skip-build`, `--dry-run`.
+
+`vinext init` options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
+
+### Migrating an existing Next.js project
+
+`vinext init` automates the migration in one command:
+
+```bash
+npx vinext init
+```
+
+This will:
+
+1. Run `vinext check` to scan for compatibility issues
+2. Install `vite` (and `@vitejs/plugin-rsc` for App Router projects) as devDependencies
+3. Rename CJS config files (e.g. `postcss.config.js` -> `.cjs`) to avoid ESM conflicts
+4. Add `"type": "module"` to `package.json`
+5. Add `dev:vinext` and `build:vinext` scripts to `package.json`
+6. Generate a minimal `vite.config.ts`
+
+The migration is non-destructive -- your existing Next.js setup continues to work alongside vinext. It does not modify `next.config`, `tsconfig.json`, or any source files, and it does not remove Next.js dependencies.
+
+```bash
+npm run dev:vinext    # Start the vinext dev server (port 3001)
+npm run dev           # Still runs Next.js as before
+```
+
+Use `--force` to overwrite an existing `vite.config.ts`, or `--skip-check` to skip the compatibility report.
 
 ## Why
 
@@ -350,9 +379,10 @@ Request → RSC entry (Vite rsc environment) → Route match → Build layout/pa
 packages/vinext/
   src/
     index.ts              # Main plugin — resolve aliases, config, virtual modules
-    cli.ts                # vinext CLI (dev/build/start/deploy/check/lint)
+    cli.ts                # vinext CLI (dev/build/start/deploy/init/check/lint)
     check.ts              # Compatibility scanner
     deploy.ts             # Cloudflare Workers deployment
+    init.ts               # vinext init — one-command migration for Next.js apps
     client/
       entry.ts            # Client-side hydration entry
     routing/
@@ -372,6 +402,8 @@ packages/vinext/
     shims/                # One file per next/* module (30 shims + 6 internal)
     build/
       static-export.ts    # output: 'export' support
+    utils/
+      project.ts          # Shared project utilities (ESM, CJS, package manager detection)
     config/
       next-config.ts      # next.config.js loader
       config-matchers.ts  # Config matching utilities

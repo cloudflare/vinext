@@ -21,6 +21,7 @@ import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
 import { deploy as runDeploy } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
+import { init as runInit } from "./init.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -366,6 +367,25 @@ async function check() {
   console.log(formatReport(result));
 }
 
+async function initCommand() {
+  const parsed = parseArgs(rawArgs);
+  if (parsed.help) return printHelp("init");
+
+  console.log(`\n  vinext init\n`);
+
+  // Parse init-specific flags
+  const port = parsed.port ?? 3001;
+  const skipCheck = rawArgs.includes("--skip-check");
+  const force = rawArgs.includes("--force");
+
+  await runInit({
+    root: process.cwd(),
+    port,
+    skipCheck,
+    force,
+  });
+}
+
 // ─── Help ─────────────────────────────────────────────────────────────────────
 
 function printHelp(cmd?: string) {
@@ -461,6 +481,31 @@ function printHelp(cmd?: string) {
     return;
   }
 
+  if (cmd === "init") {
+    console.log(`
+  vinext init - Migrate a Next.js project to run under vinext
+
+  Usage: vinext init [options]
+
+  One-command migration: installs dependencies, configures ESM,
+  generates vite.config.ts, and adds npm scripts. Your Next.js
+  setup continues to work alongside vinext.
+
+  Options:
+    -p, --port <port>    Dev server port for the vinext script (default: 3001)
+    --skip-check         Skip the compatibility check step
+    --force              Overwrite existing vite.config.ts
+    -h, --help           Show this help
+
+  Examples:
+    vinext init                   Migrate with defaults
+    vinext init -p 4000           Use port 4000 for dev:vinext
+    vinext init --force           Overwrite existing vite.config.ts
+    vinext init --skip-check      Skip the compatibility report
+`);
+    return;
+  }
+
   if (cmd === "lint") {
     console.log(`
   vinext lint - Run linter
@@ -486,6 +531,7 @@ function printHelp(cmd?: string) {
     build    Build for production
     start    Start production server
     deploy   Deploy to Cloudflare Workers
+    init     Migrate a Next.js project to vinext
     check    Scan Next.js app for compatibility
     lint     Run linter
 
@@ -499,6 +545,7 @@ function printHelp(cmd?: string) {
     vinext build                Build for production
     vinext start                Start production server
     vinext deploy               Deploy to Cloudflare Workers
+    vinext init                 Migrate a Next.js project
     vinext check                Check compatibility
     vinext lint                 Run linter
 
@@ -544,6 +591,13 @@ switch (command) {
 
   case "deploy":
     deployCommand().catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+    break;
+
+  case "init":
+    initCommand().catch((e) => {
       console.error(e);
       process.exit(1);
     });
