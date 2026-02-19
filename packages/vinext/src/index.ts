@@ -1440,6 +1440,17 @@ hydrate();
 
         // If app/ directory exists, configure RSC environments
         if (hasAppDir) {
+          // Compute optimizeDeps.entries so Vite discovers server-side
+          // dependencies at startup instead of on first request. Without
+          // this, deps imported in rsc/ssr environments are found lazily,
+          // causing re-optimisation cascades and runtime errors (e.g.
+          // "Invalid hook call" from duplicate React instances).
+          // The entries must be relative to the project root.
+          const relAppDir = path.relative(root, appDir);
+          const appEntries = [
+            `${relAppDir}/**/*.{tsx,ts,jsx,js}`,
+          ];
+
           viteConfig.environments = {
             rsc: {
               ...(hasCloudflarePlugin ? {} : {
@@ -1457,6 +1468,9 @@ hydrate();
                   ],
                 },
               }),
+              optimizeDeps: {
+                entries: appEntries,
+              },
               build: {
                 rollupOptions: {
                   input: { index: VIRTUAL_RSC_ENTRY },
@@ -1464,6 +1478,9 @@ hydrate();
               },
             },
             ssr: {
+              optimizeDeps: {
+                entries: appEntries,
+              },
               build: {
                 rollupOptions: {
                   input: { index: VIRTUAL_APP_SSR_ENTRY },
