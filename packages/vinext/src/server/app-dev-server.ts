@@ -1681,22 +1681,34 @@ export async function handleSsr(rscStream, navContext, fontData) {
     const encoder = new TextEncoder();
     let injected = false;
 
+    // Fix invalid preload "as" values emitted by React's Flight protocol.
+    // React Flight's server emits HL hints with as="stylesheet" for CSS,
+    // but the HTML spec requires as="style" for <link rel="preload"> of CSS.
+    // See: https://html.spec.whatwg.org/multipage/links.html#link-type-preload
+    function fixPreloadAs(html) {
+      // Match <link ...rel="preload"... as="stylesheet"...> in any attribute order
+      return html.replace(/<link(?=[^>]*\\srel="preload")[^>]*>/g, function(tag) {
+        return tag.replace(' as="stylesheet"', ' as="style"');
+      });
+    }
+
     const transform = new TransformStream({
       transform(chunk, controller) {
+        const text = decoder.decode(chunk, { stream: true });
+        const fixed = fixPreloadAs(text);
         if (injected) {
-          controller.enqueue(chunk);
+          controller.enqueue(encoder.encode(fixed));
           return;
         }
-        const text = decoder.decode(chunk, { stream: true });
-        const headEnd = text.indexOf("</head>");
+        const headEnd = fixed.indexOf("</head>");
         if (headEnd !== -1) {
           // Inject before </head>
-          const before = text.slice(0, headEnd);
-          const after = text.slice(headEnd);
+          const before = fixed.slice(0, headEnd);
+          const after = fixed.slice(headEnd);
           controller.enqueue(encoder.encode(before + injectHTML + after));
           injected = true;
         } else {
-          controller.enqueue(chunk);
+          controller.enqueue(encoder.encode(fixed));
         }
       },
       flush(controller) {

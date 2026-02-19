@@ -1775,3 +1775,52 @@ describe("App Router middleware with NextRequest", () => {
     expect(text).toBe("Blocked by middleware");
   });
 });
+
+describe("SSR entry CSS preload fix", () => {
+  it("generateSsrEntry includes fixPreloadAs function", async () => {
+    const { generateSsrEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const code = generateSsrEntry();
+    expect(code).toContain("fixPreloadAs");
+    expect(code).toContain('as="style"');
+  });
+
+  it("fixPreloadAs regex correctly replaces as=\"stylesheet\" with as=\"style\"", () => {
+    // Replicate the fixPreloadAs function from the generated SSR entry
+    function fixPreloadAs(html: string): string {
+      return html.replace(/<link(?=[^>]*\srel="preload")[^>]*>/g, function(tag) {
+        return tag.replace(' as="stylesheet"', ' as="style"');
+      });
+    }
+
+    // Test: basic case from the issue
+    expect(fixPreloadAs('<link rel="preload" href="/assets/index-hG1v95Xi.css" as="stylesheet"/>')).toBe(
+      '<link rel="preload" href="/assets/index-hG1v95Xi.css" as="style"/>'
+    );
+
+    // Test: as attribute before rel
+    expect(fixPreloadAs('<link as="stylesheet" rel="preload" href="/file.css"/>')).toBe(
+      '<link as="style" rel="preload" href="/file.css"/>'
+    );
+
+    // Test: should NOT modify <link rel="stylesheet"> (no preload)
+    expect(fixPreloadAs('<link rel="stylesheet" href="/file.css" as="stylesheet"/>')).toBe(
+      '<link rel="stylesheet" href="/file.css" as="stylesheet"/>'
+    );
+
+    // Test: should NOT modify other preload types
+    expect(fixPreloadAs('<link rel="preload" href="/font.woff2" as="font"/>')).toBe(
+      '<link rel="preload" href="/font.woff2" as="font"/>'
+    );
+
+    // Test: multiple link tags in one chunk
+    const multi = '<link rel="preload" href="/a.css" as="stylesheet"/><link rel="preload" href="/b.css" as="stylesheet"/>';
+    expect(fixPreloadAs(multi)).toBe(
+      '<link rel="preload" href="/a.css" as="style"/><link rel="preload" href="/b.css" as="style"/>'
+    );
+
+    // Test: no change needed
+    expect(fixPreloadAs('<link rel="preload" href="/a.css" as="style"/>')).toBe(
+      '<link rel="preload" href="/a.css" as="style"/>'
+    );
+  });
+});
