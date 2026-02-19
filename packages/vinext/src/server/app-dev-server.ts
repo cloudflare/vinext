@@ -353,6 +353,57 @@ async function renderNotFoundPage(route, isRscRequest, request) {
   return renderHTTPAccessFallbackPage(route, 404, isRscRequest, request);
 }
 
+/**
+ * Render an error.tsx boundary page when a server component or generateMetadata() throws.
+ * Returns null if no error boundary component is available for this route.
+ *
+ * Next.js returns HTTP 200 when error.tsx catches an error (the error is "handled"
+ * by the boundary). This matches that behavior intentionally.
+ */
+async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
+  // Resolve the error boundary component: route-level error.tsx first, then global-error.tsx
+  const ErrorComponent = route?.error?.default${globalErrorVar ? ` ?? ${globalErrorVar}?.default` : ""};
+  if (!ErrorComponent) return null;
+
+  const errorObj = error instanceof Error ? error : new Error(String(error));
+  // Only pass error — reset is a client-side concern (re-renders the segment) and
+  // can't be serialized through RSC. The error.tsx component will receive reset=undefined
+  // during SSR, which is fine — onClick={undefined} is harmless, and the real reset
+  // function is only meaningful after hydration.
+  let element = createElement(ErrorComponent, {
+    error: errorObj,
+  });
+  const layouts = route?.layouts ?? rootLayouts;
+  for (let i = layouts.length - 1; i >= 0; i--) {
+    const LayoutComponent = layouts[i]?.default;
+    if (LayoutComponent) {
+      element = createElement(LayoutComponent, { children: element });
+    }
+  }
+  const rscStream = renderToReadableStream(element, { onError: rscOnError });
+  if (isRscRequest) {
+    setHeadersContext(null);
+    setNavigationContext(null);
+    return new Response(rscStream, {
+      status: 200,
+      headers: { "Content-Type": "text/x-component; charset=utf-8" },
+    });
+  }
+  // Collect font data from RSC environment so error pages include font styles
+  const fontData = {
+    links: _getSSRFontLinks(),
+    styles: _getSSRFontStyles(),
+  };
+  const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+  const htmlStream = await ssrEntry.handleSsr(rscStream, _currentNavContext, fontData);
+  setHeadersContext(null);
+  setNavigationContext(null);
+  return new Response(htmlStream, {
+    status: 200,
+    headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   const normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
@@ -1466,6 +1517,9 @@ async function _handleRequest(request) {
         return new Response(statusText, { status: statusCode });
       }
     }
+    // Non-special error (e.g. generateMetadata() threw) — render error.tsx if available
+    const errorBoundaryResp = await renderErrorBoundaryPage(route, buildErr, isRscRequest, request);
+    if (errorBoundaryResp) return errorBoundaryResp;
     throw buildErr;
   }
 
@@ -1517,8 +1571,10 @@ async function _handleRequest(request) {
   } catch (preRenderErr) {
     const specialResponse = await handleRenderError(preRenderErr);
     if (specialResponse) return specialResponse;
-    // Not a special error — let it propagate through normal RSC rendering
-    // (React error boundaries, etc.)
+    // Non-special errors from the pre-render test are expected (e.g. use() hook
+    // fails outside React's render cycle, client references can't execute on server).
+    // Only redirect/notFound/forbidden/unauthorized are actionable here — other
+    // errors will be properly caught during actual RSC/SSR rendering below.
   } finally {
     console.error = _origConsoleError;
   }
@@ -1628,6 +1684,9 @@ async function _handleRequest(request) {
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
+    // Non-special error during SSR — render error.tsx if available
+    const errorBoundaryResp = await renderErrorBoundaryPage(route, ssrErr, isRscRequest, request);
+    if (errorBoundaryResp) return errorBoundaryResp;
     throw ssrErr;
   }
 

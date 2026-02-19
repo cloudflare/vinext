@@ -392,8 +392,8 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 
 ### Issues Found (Fix Backlog)
 1. **RSC module caching across requests** — `Date.now()` cached in dev. Fix: `packages/vinext/src/server/app-dev-server.ts`
-2. **Server component errors return 500 instead of rendering error.tsx** — Fix: RSC/SSR pipeline error boundary rendering
-3. **generateMetadata() errors bypass error.tsx** — Fix: `packages/vinext/src/shims/metadata.tsx`
+2. ~~**Server component errors return 500 instead of rendering error.tsx**~~ — **FIXED**. Added `renderErrorBoundaryPage()` in `app-dev-server.ts` that renders the nearest error.tsx wrapped in layouts when a server component throws. Catches errors in `buildPageElement` catch (metadata errors) and SSR catch (render errors). Returns 200 with error boundary HTML.
+3. ~~**generateMetadata() errors bypass error.tsx**~~ — **FIXED**. Same fix as #2 — the `buildPageElement` catch now calls `renderErrorBoundaryPage()` for non-special errors from `generateMetadata()`.
 4. ~~**React `use()` hook warning**~~ — **FIXED**. Not duplicate React — the pre-render check (`app-dev-server.ts:1268`) calls `PageComponent()` directly outside React's render cycle, triggering "Invalid hook call" for components using `use()`. Fix: suppress the expected warning during the pre-render test.
 5. ~~**Keywords separator formatting**~~ — **FIXED**. Changed `metadata.keywords.join(", ")` to `.join(",")` in `metadata.tsx:338` to match Next.js behavior.
 6. ~~**Client-side notFound() crashes React tree**~~ — **FIXED**. Added `NotFoundBoundary` class component to `error-boundary.tsx` that catches `NEXT_NOT_FOUND`/`NEXT_HTTP_ERROR_FALLBACK;404` errors. Wrapped in `buildPageElement()` above `ErrorBoundary`, with pre-rendered not-found.tsx element as fallback. Playwright test now passes.

@@ -46,33 +46,13 @@ describe("Next.js compat: global-error", () => {
   // These validate that vinext's existing error handling works,
   // providing a baseline before we test Next.js-specific patterns.
 
-  // SKIP: Server component throw returns 500 instead of rendering error.tsx
-  //
-  // ROOT CAUSE: When a server component throws during RSC rendering, vinext returns
-  // HTTP 500 instead of catching the error in the error.tsx boundary and rendering
-  // the boundary's HTML with a 200 status. Next.js renders the error boundary SSR
-  // and returns 200 — the error is "handled" from the HTTP perspective.
-  //
-  // TO FIX: In the RSC/SSR pipeline (likely packages/vinext/src/server/app-dev-server.ts),
-  // when a server component throws, the error should be caught and the nearest error.tsx
-  // boundary should be rendered as a fallback. The RSC stream already encodes the error —
-  // the SSR layer needs to handle the error chunk by rendering the error boundary component
-  // instead of propagating the error to the HTTP response handler.
-  //
-  // RELATED: This likely involves the React flight stream error handling in the SSR
-  // consumer. When the RSC stream contains an error row, the SSR renderToPipeableStream
-  // should trigger the ErrorBoundary wrapping that segment.
-  //
-  // VERIFY: Once fixed, error-server-test should return 200 with "Server Error Caught"
-  // in the HTML, and error-nested-test/child should return 200 with "inner-error-boundary".
-  it.skip("error-server-test: server component throw is caught by error.tsx", async () => {
+  it("error-server-test: server component throw is caught by error.tsx", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-server-test");
     expect(res.status).toBe(200);
     expect(html).toContain("Server Error Caught");
   });
 
-  // SKIP: Same root cause as above — server component throw returns 500
-  it.skip("error-nested-test: nested error caught by inner error.tsx", async () => {
+  it("error-nested-test: nested error caught by inner error.tsx", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-nested-test/child");
     expect(res.status).toBe(200);
     expect(html).toContain("inner-error-boundary");
@@ -117,25 +97,7 @@ describe("Next.js compat: global-error", () => {
   //
   // generateMetadata() throws, but a local error.tsx exists to catch it.
 
-  // SKIP: generateMetadata() error returns Vite error overlay, not error.tsx boundary
-  //
-  // ROOT CAUSE: When generateMetadata() throws, vinext's metadata resolution
-  // (packages/vinext/src/shims/metadata.tsx around line 135, resolveModuleMetadata)
-  // lets the error propagate to the top-level RSC handler, which triggers Vite's
-  // dev error overlay (an HTML page with the error message and stack trace) rather
-  // than catching it at the segment level and rendering the co-located error.tsx.
-  //
-  // TO FIX: In the RSC entry's buildPageElement or the metadata resolution code,
-  // wrap the generateMetadata() call in a try/catch. If it throws and a sibling
-  // error.tsx exists for that route segment, render the error boundary with the
-  // caught error. If no local error.tsx exists, let it propagate to global-error.tsx.
-  //
-  // LOCATION: packages/vinext/src/shims/metadata.tsx (resolveModuleMetadata)
-  // and/or the virtual RSC entry (virtual:vinext-rsc-entry, buildPageElement fn).
-  //
-  // VERIFY: Once fixed, this route should return HTML containing "Local error boundary"
-  // (the error.tsx content) instead of Vite's error overlay.
-  it.skip("generateMetadata() error caught by local error.tsx boundary", async () => {
+  it("generateMetadata() error caught by local error.tsx boundary", async () => {
     const { res, html } = await fetchHtml(
       baseUrl,
       "/nextjs-compat/metadata-error-with-boundary",

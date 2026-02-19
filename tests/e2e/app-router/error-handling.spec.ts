@@ -46,20 +46,24 @@ test.describe("Error Boundaries", () => {
     await expect(resetButton).toHaveText("Try again");
   });
 
-  // NOTE: Server component errors currently return 500 because RSC rendering
-  // errors propagate past "use client" error boundaries (they only run in SSR/client).
-  // This is a known gap — Next.js handles this with custom RSC error injection.
-  // TODO: Implement RSC-level error catching so error.tsx works for server errors.
-  test("server component error returns 500", async ({ page }) => {
+  test("server component error renders error.tsx boundary with 200", async ({ page }) => {
     const response = await page.goto(`${BASE}/error-server-test`);
-    // Currently returns 500 — when RSC error boundaries are implemented,
-    // this should be 200 with the error boundary rendered.
-    expect(response?.status()).toBe(500);
+    // Next.js returns 200 when error.tsx catches an error (it's "handled")
+    expect(response?.status()).toBe(200);
+    await expect(page.locator('[data-testid="server-error-boundary"]')).toBeVisible();
+    await expect(page.locator('[data-testid="server-error-message"]')).toContainText(
+      "Server component error",
+    );
   });
 
-  test("nested server component error returns 500", async ({ page }) => {
+  test("nested server component error renders child error.tsx boundary", async ({ page }) => {
     const response = await page.goto(`${BASE}/error-nested-test/child`);
-    expect(response?.status()).toBe(500);
+    expect(response?.status()).toBe(200);
+    // Should render the child's error.tsx, not the parent's
+    await expect(page.locator('[data-testid="inner-error-boundary"]')).toBeVisible();
+    await expect(page.locator('[data-testid="inner-error-message"]')).toContainText(
+      "Nested child error",
+    );
   });
 
   test("parent route without error renders normally", async ({ page }) => {
