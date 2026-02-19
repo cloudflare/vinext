@@ -10,7 +10,7 @@
  *   5. Memory usage (peak RSS during build and dev)
  *
  * Prerequisites: hyperfine, autocannon (npm i -g autocannon)
- * Usage: node benchmarks/run.mjs [--runs N] [--skip-build] [--skip-dev] [--skip-ssr]
+ * Usage: node benchmarks/run.mjs [--runs N] [--skip-build] [--skip-dev] [--skip-ssr] [--skip-rolldown]
  */
 
 import { execSync, spawn } from "node:child_process";
@@ -29,6 +29,7 @@ const RUNS = parseInt(args.find((a) => a.startsWith("--runs="))?.split("=")[1] ?
 const SKIP_BUILD = args.includes("--skip-build");
 const SKIP_DEV = args.includes("--skip-dev");
 const SKIP_SSR = args.includes("--skip-ssr");
+const SKIP_ROLLDOWN = args.includes("--skip-rolldown");
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 function exec(cmd, opts = {}) {
@@ -183,7 +184,7 @@ async function main() {
   const nextjsDir = join(__dirname, "nextjs");
   const vinextDir = join(__dirname, "vinext");
   const vinextRolldownDir = join(__dirname, "vinext-rolldown");
-  const hasRolldown = existsSync(join(vinextRolldownDir, "package.json"));
+  const hasRolldown = !SKIP_ROLLDOWN && existsSync(join(vinextRolldownDir, "package.json"));
 
   // ─── 1. Production Build Time ──────────────────────────────────────────────
   if (!SKIP_BUILD) {

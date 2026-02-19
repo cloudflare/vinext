@@ -49,8 +49,10 @@ jobs:
           cd ../vinext-rolldown && npm install
 
       # Run the benchmarks
+      # --skip-rolldown: Rolldown dev server crashes due to @vitejs/plugin-rsc
+      # incompatibility with Rolldown's PluginContext. See #175.
       - name: Run benchmarks
-        run: node benchmarks/run.mjs --runs 3
+        run: node benchmarks/run.mjs --runs 3 --skip-rolldown
 
       # Find the latest results JSON
       - name: Locate results
