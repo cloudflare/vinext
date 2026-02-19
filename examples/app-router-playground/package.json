@@ -26,7 +26,7 @@
     "@tailwindcss/postcss": "4.1.4",
     "@tailwindcss/typography": "0.5.16",
     "@types/ms": "2.1.0",
-    "@types/node": "22.13.1",
+    "@types/node": "^25.2.3",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-rsc": "^0.5.0",
