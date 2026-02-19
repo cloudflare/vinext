@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { createServer, type ViteDevServer } from "vite";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
@@ -2623,6 +2623,64 @@ describe("host header poisoning prevention", () => {
     } finally {
       trustedHosts.delete("cdn.example.com");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// X-Forwarded-Proto trust proxy gating
+// ---------------------------------------------------------------------------
+
+describe("X-Forwarded-Proto trust proxy gating", () => {
+  it("nodeToWebRequest ignores X-Forwarded-Proto by default (trustProxy=false)", async () => {
+    const mod = await import("../packages/vinext/src/server/prod-server.js");
+    // Ensure trustProxy is false by default (no env vars set)
+    // Note: trustProxy is computed at module load time from env vars.
+    // In test env, VINEXT_TRUST_PROXY and VINEXT_TRUSTED_HOSTS are not set.
+    const req = {
+      headers: {
+        "x-forwarded-proto": "https",
+        host: "localhost:3000",
+      },
+      url: "/test",
+      method: "GET",
+    };
+    const webReq = mod.nodeToWebRequest(req as any);
+    // Without trust proxy, should default to http://
+    expect(webReq.url).toMatch(/^http:\/\//);
+  });
+
+  it("trustProxy is false when no env vars are set", async () => {
+    const mod = await import("../packages/vinext/src/server/prod-server.js");
+    expect(mod.trustProxy).toBe(false);
+  });
+
+  it("trustProxy is true when VINEXT_TRUSTED_HOSTS is non-empty", async () => {
+    vi.stubEnv("VINEXT_TRUSTED_HOSTS", "example.com");
+    vi.resetModules();
+    const mod = await import("../packages/vinext/src/server/prod-server.js");
+    expect(mod.trustProxy).toBe(true);
+    expect(mod.trustedHosts.has("example.com")).toBe(true);
+    vi.unstubAllEnvs();
+  });
+
+  it("trustProxy is false when VINEXT_TRUSTED_HOSTS is empty string", async () => {
+    vi.stubEnv("VINEXT_TRUSTED_HOSTS", "");
+    vi.resetModules();
+    const mod = await import("../packages/vinext/src/server/prod-server.js");
+    expect(mod.trustProxy).toBe(false);
+    expect(mod.trustedHosts.size).toBe(0);
+    vi.unstubAllEnvs();
+  });
+
+  it("nodeToWebRequest uses http:// when X-Forwarded-Proto is missing", async () => {
+    const mod = await import("../packages/vinext/src/server/prod-server.js");
+    const req = {
+      headers: { host: "localhost:3000" },
+      url: "/test",
+      method: "GET",
+    };
+    const webReq = mod.nodeToWebRequest(req as any);
+    expect(webReq.url).toMatch(/^http:\/\/localhost:3000\/test$/);
   });
 });
 

@@ -254,10 +254,19 @@ const trustedHosts: Set<string> = new Set(
 );
 
 /**
+ * Whether to trust X-Forwarded-Proto from upstream proxies.
+ * Enabled when VINEXT_TRUST_PROXY=1 or when VINEXT_TRUSTED_HOSTS is set
+ * (having trusted hosts implies a trusted proxy).
+ */
+const trustProxy = process.env.VINEXT_TRUST_PROXY === "1" || trustedHosts.size > 0;
+
+/**
  * Convert a Node.js IncomingMessage to a Web Request object.
  */
 function nodeToWebRequest(req: IncomingMessage): Request {
-  const rawProto = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim();
+  const rawProto = trustProxy
+    ? (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim()
+    : undefined;
   const proto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
   const host = resolveHost(req, "localhost");
   const origin = `${proto}://${host}`;
@@ -571,7 +580,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
 
       // Convert Node.js req to Web Request for the server entry
-      const rawProtocol = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim();
+      const rawProtocol = trustProxy
+        ? (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim()
+        : undefined;
       const protocol = rawProtocol === "https" || rawProtocol === "http" ? rawProtocol : "http";
       const hostHeader = resolveHost(req, `${host}:${port}`);
       const reqHeaders = Object.entries(req.headers).reduce((h, [k, v]) => {
@@ -753,4 +764,4 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 }
 
 // Export helpers for testing
-export { sendCompressed, negotiateEncoding, COMPRESSIBLE_TYPES, COMPRESS_THRESHOLD, resolveHost, trustedHosts };
+export { sendCompressed, negotiateEncoding, COMPRESSIBLE_TYPES, COMPRESS_THRESHOLD, resolveHost, trustedHosts, trustProxy, nodeToWebRequest };

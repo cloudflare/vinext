@@ -1977,7 +1977,11 @@ hydrate();
 
               // Run middleware.ts if present
               if (middlewarePath) {
-                const rawProto = String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+                // Only trust X-Forwarded-Proto when behind a trusted proxy
+                const devTrustProxy = process.env.VINEXT_TRUST_PROXY === "1" || (process.env.VINEXT_TRUSTED_HOSTS ?? "").split(",").some(h => h.trim());
+                const rawProto = devTrustProxy
+                  ? String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim()
+                  : "";
                 const mwProto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
                 const origin = `${mwProto}://${req.headers.host || "localhost"}`;
                 const middlewareRequest = new Request(new URL(url, origin), {
