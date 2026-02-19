@@ -17,26 +17,7 @@ async function waitForHydration(page: import("@playwright/test").Page) {
 }
 
 test.describe("Next.js compat: error-boundary-navigation (browser)", () => {
-  // Navigate away from error page
-  //
-  // SKIP: When navigating client-side to a page with a "use client"
-  // component that throws, the error.tsx boundary does not catch the
-  // error. Instead, the Vite dev error overlay appears or the page
-  // breaks. The #error-boundary element never renders.
-  //
-  // ROOT CAUSE: Client-side errors during RSC navigation are not
-  // caught by the co-located error.tsx boundary. The error propagates
-  // past the boundary to the Vite dev overlay handler.
-  //
-  // TO FIX: The client-side RSC navigation handler in
-  // `packages/vinext/src/shims/navigation.ts` or the error boundary
-  // wrapper in `packages/vinext/src/shims/error-boundary.tsx` needs
-  // to catch render errors during client-side navigation and activate
-  // the nearest error.tsx boundary.
-  //
-  // VERIFY: After fix, clicking link-to-error should show #error-boundary
-  // with #error-message text, and link-to-result should navigate away.
-  test.skip("can navigate away from error page", async ({ page }) => {
+  test("can navigate away from error page", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/error-nav`);
     await waitForHydration(page);
 
@@ -51,17 +32,7 @@ test.describe("Next.js compat: error-boundary-navigation (browser)", () => {
     });
   });
 
-  // Error boundary reset button
-  //
-  // SKIP: Same root cause as above — error.tsx boundary doesn't activate
-  // during client-side rendering when a "use client" component throws.
-  // The #error-boundary element never appears, so the reset button
-  // can't be tested.
-  //
-  // TO FIX: Same as above.
-  // VERIFY: After fix, error boundary should render on initial page load
-  // of trigger-error, and reset button should re-render the page.
-  test.skip("error boundary reset button works", async ({ page }) => {
+  test("error boundary reset button works", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/error-nav/trigger-error`);
 
     await expect(page.locator("#error-boundary")).toBeVisible({
@@ -88,13 +59,7 @@ test.describe("Next.js compat: error-boundary-navigation (browser)", () => {
     }).toPass({ timeout: 10_000 });
   });
 
-  // Navigation to error page then back
-  //
-  // SKIP: Same root cause as "can navigate away from error page" —
-  // error.tsx boundary doesn't activate during client-side nav.
-  // VERIFY: After the error boundary fix, clicking link-to-error
-  // should show the boundary, then link-back-home should navigate home.
-  test.skip("navigation to error page then back works", async ({ page }) => {
+  test("navigation to error page then back works", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/error-nav`);
     await waitForHydration(page);
 

@@ -2336,7 +2336,14 @@ async function main() {
   const root = await createFromReadableStream(rscStream);
 
   // Hydrate the document
-  reactRoot = hydrateRoot(document, root);
+  // In development, suppress Vite's error overlay for errors caught by React error
+  // boundaries. Without this, React re-throws caught errors to the global handler,
+  // which triggers Vite's overlay even though the error was handled by an error.tsx.
+  // In production, preserve React's default onCaughtError (console.error) so
+  // boundary-caught errors remain visible to error monitoring.
+  reactRoot = hydrateRoot(document, root, import.meta.env.DEV ? {
+    onCaughtError: function() {},
+  } : undefined);
 
   // Store for client-side navigation
   window.__VINEXT_RSC_ROOT__ = reactRoot;

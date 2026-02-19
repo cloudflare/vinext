@@ -374,7 +374,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | 7. navigation | 6 | 5 | 1 | 0 | Done |
 | 11. hooks | 8 | 5 | 3 | 0 | Done |
 | 13. rsc-basic | 5 | 5 | 0 | 0 | Done |
-| 14. error-nav | 4 | 1 | 3 | 0 | Done |
+| 14. error-nav | 4 | 4 | 0 | 0 | Done |
 | 15. streaming | 2 | 2 | 0 | 0 | Done |
 | 19. actions-nav | 1 | 1 | 0 | 0 | Done |
 | 20. actions-revalidate | 2 | 2 | 0 | 0 | Done |
@@ -398,7 +398,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 5. ~~**Keywords separator formatting**~~ — **FIXED**. Changed `metadata.keywords.join(", ")` to `.join(",")` in `metadata.tsx:338` to match Next.js behavior.
 6. ~~**Client-side notFound() crashes React tree**~~ — **FIXED**. Added `NotFoundBoundary` class component to `error-boundary.tsx` that catches `NEXT_NOT_FOUND`/`NEXT_HTTP_ERROR_FALLBACK;404` errors. Wrapped in `buildPageElement()` above `ErrorBoundary`, with pre-rendered not-found.tsx element as fallback. Playwright test now passes.
 7. ~~**useParams() returns empty on client after hydration**~~ — **FIXED**. Root cause: `setClientParams()` was never called in the browser. Fix: server now sends `X-Vinext-Params` header in RSC responses (`app-dev-server.ts:1295`), browser entry reads it during hydration and client-side navigation (`app-dev-server.ts:1594-1597, 1612-1617`). All 3 Playwright useParams tests now pass.
-8. **Client-side error.tsx boundary doesn't activate during navigation** — When navigating client-side to a page whose "use client" component throws, the error.tsx boundary doesn't catch it. Vite dev overlay appears instead. Fix: `packages/vinext/src/shims/error-boundary.tsx` or RSC navigation handler needs to catch render errors and activate nearest error.tsx
+8. ~~**Client-side error.tsx boundary doesn't activate during navigation**~~ — **FIXED**. Added `onCaughtError: function() {}` to `hydrateRoot()` call in `generateBrowserEntry()` to suppress Vite dev overlay for errors caught by React error boundaries. Combined with PR #51's `renderErrorBoundaryPage()` for SSR-side error rendering.
 
 ---
 
@@ -442,13 +442,13 @@ client components hydrate and are interactive (counter increments), state persis
 
 **Next.js sources**: `error-boundary-navigation`, `errors`
 **Local**: `tests/e2e/app-router/nextjs-compat/error-nav.spec.ts`
-**Result**: Playwright 1/4 pass, 3 skip
+**Result**: Playwright 4/4 pass, 0 skip
 
-Not-found page navigation works. **3 skipped**: Client-side error.tsx boundary doesn't
-activate when navigating to a page whose "use client" component throws. Vite dev overlay
-appears instead of the error boundary. This blocks: navigate away from error, reset
-button, and back-navigation from error. Existing `error-interactive.spec.ts` covers the
-button-triggered error case which does work.
+All error boundary navigation tests pass: navigate to error page shows error.tsx boundary,
+reset button re-renders error boundary, navigate away from error page works, navigate to
+error page and back works. **Previously 3 skipped** — fixed by combining PR #51
+(`renderErrorBoundaryPage` for SSR catch) with `onCaughtError` on `hydrateRoot()` to
+suppress Vite dev overlay for React-caught errors.
 
 ### Chunk 15: streaming / loading.tsx — Suspense boundaries during SSR ✅
 
