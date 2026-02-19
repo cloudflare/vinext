@@ -22,6 +22,7 @@ import { findInstrumentationFile, runInstrumentation } from "./server/instrument
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
 import tsconfigPaths from "vite-tsconfig-paths";
+import MagicString from "magic-string";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -126,6 +127,10 @@ const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = "\0" + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
+
+/** Image file extensions handled by the vinext:image-imports plugin.
+ *  Shared between the Rolldown hook filter and the transform handler regex. */
+const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
 
 export interface VinextOptions {
   /**
@@ -1196,48 +1201,56 @@ hydrate();
         return viteConfig;
       },
 
-      resolveId(id) {
-        // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
-        // browser entry imports our virtual module using the already-resolved
-        // ID (with \0 prefix). We need to re-resolve it so the client
-        // environment's import-analysis can find it.
-        const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+      resolveId: {
+        // Hook filter: only invoke JS for next/* imports and virtual:vinext-* modules.
+        // Matches "next/navigation", "next/router.js", "virtual:vinext-rsc-entry",
+        // and \0-prefixed re-imports from @vitejs/plugin-rsc.
+        filter: {
+          id: /(?:next\/|virtual:vinext-)/,
+        },
+        handler(id) {
+          // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
+          // browser entry imports our virtual module using the already-resolved
+          // ID (with \0 prefix). We need to re-resolve it so the client
+          // environment's import-analysis can find it.
+          const cleanId = id.startsWith("\0") ? id.slice(1) : id;
 
-        // Handle next/* imports with .js extension (e.g. "next/navigation.js")
-        // Libraries like nuqs import "next/navigation.js" which doesn't match
-        // our resolve.alias for "next/navigation". Strip the .js and resolve
-        // through our shim map, appending .js to the resolved path.
-        if (cleanId.startsWith("next/") && cleanId.endsWith(".js")) {
-          const withoutExt = cleanId.slice(0, -3);
-          if (nextShimMap[withoutExt]) {
-            const shimPath = nextShimMap[withoutExt];
-            // Alias values don't include .js — append it for resolveId
-            return shimPath.endsWith(".js") ? shimPath : shimPath + ".js";
+          // Handle next/* imports with .js extension (e.g. "next/navigation.js")
+          // Libraries like nuqs import "next/navigation.js" which doesn't match
+          // our resolve.alias for "next/navigation". Strip the .js and resolve
+          // through our shim map, appending .js to the resolved path.
+          if (cleanId.startsWith("next/") && cleanId.endsWith(".js")) {
+            const withoutExt = cleanId.slice(0, -3);
+            if (nextShimMap[withoutExt]) {
+              const shimPath = nextShimMap[withoutExt];
+              // Alias values don't include .js — append it for resolveId
+              return shimPath.endsWith(".js") ? shimPath : shimPath + ".js";
+            }
           }
-        }
 
-        // Pages Router virtual modules
-        if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
-        if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
-        if (cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_SERVER_ENTRY)) {
-          return RESOLVED_SERVER_ENTRY;
-        }
-        if (cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)) {
-          return RESOLVED_CLIENT_ENTRY;
-        }
-        // App Router virtual modules
-        if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
-        if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
-        if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
-        if (cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_RSC_ENTRY)) {
-          return RESOLVED_RSC_ENTRY;
-        }
-        if (cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_APP_SSR_ENTRY)) {
-          return RESOLVED_APP_SSR_ENTRY;
-        }
-        if (cleanId.endsWith("/" + VIRTUAL_APP_BROWSER_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)) {
-          return RESOLVED_APP_BROWSER_ENTRY;
-        }
+          // Pages Router virtual modules
+          if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
+          if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
+          if (cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_SERVER_ENTRY)) {
+            return RESOLVED_SERVER_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)) {
+            return RESOLVED_CLIENT_ENTRY;
+          }
+          // App Router virtual modules
+          if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
+          if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
+          if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
+          if (cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_RSC_ENTRY)) {
+            return RESOLVED_RSC_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_APP_SSR_ENTRY)) {
+            return RESOLVED_APP_SSR_ENTRY;
+          }
+          if (cleanId.endsWith("/" + VIRTUAL_APP_BROWSER_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)) {
+            return RESOLVED_APP_BROWSER_ENTRY;
+          }
+        },
       },
 
       async load(id) {
@@ -1525,11 +1538,14 @@ hydrate();
       // Cache of image dimensions to avoid re-reading files
       _dimCache: new Map<string, { width: number; height: number }>(),
 
-      resolveId(source, _importer) {
-        if (!source.endsWith("?vinext-meta")) return null;
-        // Resolve the real image path from the importer
-        const realPath = source.replace("?vinext-meta", "");
-        return `\0vinext-image-meta:${realPath}`;
+      resolveId: {
+        filter: { id: /\?vinext-meta$/ },
+        handler(source, _importer) {
+          if (!source.endsWith("?vinext-meta")) return null;
+          // Resolve the real image path from the importer
+          const realPath = source.replace("?vinext-meta", "");
+          return `\0vinext-image-meta:${realPath}`;
+        },
       },
 
       async load(id) {
@@ -1554,56 +1570,64 @@ hydrate();
         return `export default ${JSON.stringify(dims)};`;
       },
 
-      async transform(code, id) {
-        // Only transform source files that import images
-        if (id.includes("node_modules")) return null;
-        if (id.startsWith("\0")) return null;
-        if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
+      transform: {
+        // Hook filter: Rolldown evaluates these on the Rust side, skipping
+        // the JS handler entirely for files that don't match.
+        filter: {
+          id: {
+            include: /\.(tsx?|jsx?|mjs)$/,
+            exclude: /node_modules/,
+          },
+          code: new RegExp(`import\\s+\\w+\\s+from\\s+['"][^'"]+\\.(${IMAGE_EXTS})['"]`),
+        },
+        async handler(code, id) {
+          // Defensive guard — duplicates filter logic
+          if (id.includes("node_modules")) return null;
+          if (id.startsWith("\0")) return null;
+          if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
 
-        // Quick check: does this file import an image?
-        const imageImportRe = /import\s+(\w+)\s+from\s+['"]([^'"]+\.(png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?))['"];?/g;
-        if (!imageImportRe.test(code)) return null;
+          const imageImportRe = new RegExp(`import\\s+(\\w+)\\s+from\\s+['"]([^'"]+\\.(${IMAGE_EXTS}))['"];?`, "g");
+          if (!imageImportRe.test(code)) return null;
 
-        // Reset regex lastIndex
-        imageImportRe.lastIndex = 0;
+          imageImportRe.lastIndex = 0;
 
-        const { default: MagicString } = await import("magic-string");
-        const s = new MagicString(code);
-        let hasChanges = false;
+          const s = new MagicString(code);
+          let hasChanges = false;
 
-        let match;
-        while ((match = imageImportRe.exec(code)) !== null) {
-          const [fullMatch, varName, importPath] = match;
-          const matchStart = match.index;
-          const matchEnd = matchStart + fullMatch.length;
+          let match;
+          while ((match = imageImportRe.exec(code)) !== null) {
+            const [fullMatch, varName, importPath] = match;
+            const matchStart = match.index;
+            const matchEnd = matchStart + fullMatch.length;
 
-          // Resolve the absolute path of the image
-          const dir = path.dirname(id);
-          const absImagePath = path.resolve(dir, importPath);
+            // Resolve the absolute path of the image
+            const dir = path.dirname(id);
+            const absImagePath = path.resolve(dir, importPath);
 
-          if (!fs.existsSync(absImagePath)) continue;
+            if (!fs.existsSync(absImagePath)) continue;
 
-          // Replace the single import with two:
-          // 1. Original import (Vite gives us the URL string)
-          // 2. Meta import (we provide { width, height })
-          // Combined into a StaticImageData object
-          const urlVar = `__vinext_img_url_${varName}`;
-          const metaVar = `__vinext_img_meta_${varName}`;
-          const replacement =
-            `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
-            `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
-            `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
+            // Replace the single import with two:
+            // 1. Original import (Vite gives us the URL string)
+            // 2. Meta import (we provide { width, height })
+            // Combined into a StaticImageData object
+            const urlVar = `__vinext_img_url_${varName}`;
+            const metaVar = `__vinext_img_meta_${varName}`;
+            const replacement =
+              `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
+              `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
+              `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
 
-          s.overwrite(matchStart, matchEnd, replacement);
-          hasChanges = true;
-        }
+            s.overwrite(matchStart, matchEnd, replacement);
+            hasChanges = true;
+          }
 
-        if (!hasChanges) return null;
+          if (!hasChanges) return null;
 
-        return {
-          code: s.toString(),
-          map: s.generateMap({ hires: "boundary" }),
-        };
+          return {
+            code: s.toString(),
+            map: s.generateMap({ hires: "boundary" }),
+          };
+        },
       },
     } as Plugin & { _dimCache: Map<string, { width: number; height: number }> },
     // Google Fonts self-hosting:
@@ -1624,111 +1648,121 @@ hydrate();
         (this as any)._cacheDir = path.join(config.root, ".vinext", "fonts");
       },
 
-      async transform(code, id) {
-        if (!(this as any)._isBuild) return null;
-        if (id.includes("node_modules")) return null;
-        if (id.startsWith("\0")) return null;
-        if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
+      transform: {
+        // Hook filter: only invoke JS when code contains 'next/font/google'.
+        // The _isBuild runtime check can't be expressed as a filter, but this
+        // still eliminates nearly all Rust-to-JS calls since very few files
+        // import from next/font/google.
+        filter: {
+          id: {
+            include: /\.(tsx?|jsx?|mjs)$/,
+            exclude: /node_modules/,
+          },
+          code: "next/font/google",
+        },
+        async handler(code, id) {
+          if (!(this as any)._isBuild) return null;
+          // Defensive guard — duplicates filter logic
+          if (id.includes("node_modules")) return null;
+          if (id.startsWith("\0")) return null;
+          if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
+          if (!code.includes("next/font/google")) return null;
 
-        // Detect: import { Inter, Roboto } from 'next/font/google'
-        // or: import { Inter } from 'next/font/google'
-        if (!code.includes("next/font/google")) return null;
+          // Match font constructor calls: Inter({ weight: ..., subsets: ... })
+          // We look for PascalCase or Name_Name identifiers followed by ({...})
+          // This regex captures the font name and the options object literal
+          const fontCallRe = /\b([A-Z][A-Za-z]*(?:_[A-Z][A-Za-z]*)*)\s*\(\s*(\{[^}]*\})\s*\)/g;
 
-        // Match font constructor calls: Inter({ weight: ..., subsets: ... })
-        // We look for PascalCase or Name_Name identifiers followed by ({...})
-        // This regex captures the font name and the options object literal
-        const fontCallRe = /\b([A-Z][A-Za-z]*(?:_[A-Z][A-Za-z]*)*)\s*\(\s*(\{[^}]*\})\s*\)/g;
+          // Also need to verify these names came from next/font/google import
+          const importRe = /import\s*\{([^}]+)\}\s*from\s*['"]next\/font\/google['"]/;
+          const importMatch = code.match(importRe);
+          if (!importMatch) return null;
 
-        // Also need to verify these names came from next/font/google import
-        const importRe = /import\s*\{([^}]+)\}\s*from\s*['"]next\/font\/google['"]/;
-        const importMatch = code.match(importRe);
-        if (!importMatch) return null;
+          const importedNames = new Set(
+            importMatch[1].split(",").map((s) => s.trim()).filter(Boolean),
+          );
 
-        const importedNames = new Set(
-          importMatch[1].split(",").map((s) => s.trim()).filter(Boolean),
-        );
+          const s = new MagicString(code);
+          let hasChanges = false;
 
-        const { default: MagicString } = await import("magic-string");
-        const s = new MagicString(code);
-        let hasChanges = false;
+          const cacheDir = (this as any)._cacheDir as string;
+          const fontCache = (this as any)._fontCache as Map<string, string>;
 
-        const cacheDir = (this as any)._cacheDir as string;
-        const fontCache = (this as any)._fontCache as Map<string, string>;
+          let match;
+          while ((match = fontCallRe.exec(code)) !== null) {
+            const [fullMatch, fontName, optionsStr] = match;
+            if (!importedNames.has(fontName)) continue;
 
-        let match;
-        while ((match = fontCallRe.exec(code)) !== null) {
-          const [fullMatch, fontName, optionsStr] = match;
-          if (!importedNames.has(fontName)) continue;
+            // Convert PascalCase/Underscore to font family
+            const family = fontName.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
 
-          // Convert PascalCase/Underscore to font family
-          const family = fontName.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
-
-          // Parse options safely with Function (not eval) — these are object literals from source
-          let options: Record<string, any> = {};
-          try {
-            // eslint-disable-next-line no-new-func
-            options = new Function(`return (${optionsStr})`)();
-          } catch {
-            continue; // Can't parse options statically, skip
-          }
-
-          // Build the Google Fonts CSS URL
-          const weights = options.weight
-            ? Array.isArray(options.weight) ? options.weight : [options.weight]
-            : [];
-          const styles = options.style
-            ? Array.isArray(options.style) ? options.style : [options.style]
-            : [];
-          const display = options.display ?? "swap";
-
-          let spec = family.replace(/\s+/g, "+");
-          if (weights.length > 0) {
-            const hasItalic = styles.includes("italic");
-            if (hasItalic) {
-              const pairs: string[] = [];
-              for (const w of weights) { pairs.push(`0,${w}`); pairs.push(`1,${w}`); }
-              spec += `:ital,wght@${pairs.join(";")}`;
-            } else {
-              spec += `:wght@${weights.join(";")}`;
-            }
-          }
-          const params = new URLSearchParams();
-          params.set("family", spec);
-          params.set("display", display);
-          const cssUrl = `https://fonts.googleapis.com/css2?${params.toString()}`;
-
-          // Check cache
-          let localCSS = fontCache.get(cssUrl);
-          if (!localCSS) {
+            // Parse options safely with Function (not eval) — these are object literals from source
+            let options: Record<string, any> = {};
             try {
-              localCSS = await fetchAndCacheFont(cssUrl, family, cacheDir);
-              fontCache.set(cssUrl, localCSS);
+              // eslint-disable-next-line no-new-func
+              options = new Function(`return (${optionsStr})`)();
             } catch {
-              // Fetch failed (offline?) — fall back to CDN mode
-              continue;
+              continue; // Can't parse options statically, skip
             }
+
+            // Build the Google Fonts CSS URL
+            const weights = options.weight
+              ? Array.isArray(options.weight) ? options.weight : [options.weight]
+              : [];
+            const styles = options.style
+              ? Array.isArray(options.style) ? options.style : [options.style]
+              : [];
+            const display = options.display ?? "swap";
+
+            let spec = family.replace(/\s+/g, "+");
+            if (weights.length > 0) {
+              const hasItalic = styles.includes("italic");
+              if (hasItalic) {
+                const pairs: string[] = [];
+                for (const w of weights) { pairs.push(`0,${w}`); pairs.push(`1,${w}`); }
+                spec += `:ital,wght@${pairs.join(";")}`;
+              } else {
+                spec += `:wght@${weights.join(";")}`;
+              }
+            }
+            const params = new URLSearchParams();
+            params.set("family", spec);
+            params.set("display", display);
+            const cssUrl = `https://fonts.googleapis.com/css2?${params.toString()}`;
+
+            // Check cache
+            let localCSS = fontCache.get(cssUrl);
+            if (!localCSS) {
+              try {
+                localCSS = await fetchAndCacheFont(cssUrl, family, cacheDir);
+                fontCache.set(cssUrl, localCSS);
+              } catch {
+                // Fetch failed (offline?) — fall back to CDN mode
+                continue;
+              }
+            }
+
+            // Inject _selfHostedCSS into the options object
+            const matchStart = match.index;
+            const matchEnd = matchStart + fullMatch.length;
+            const escapedCSS = JSON.stringify(localCSS);
+            const closingBrace = optionsStr.lastIndexOf("}");
+            const optionsWithCSS = optionsStr.slice(0, closingBrace) +
+              (optionsStr.slice(0, closingBrace).trim().endsWith("{") ? "" : ", ") +
+              `_selfHostedCSS: ${escapedCSS}` +
+              optionsStr.slice(closingBrace);
+
+            const replacement = `${fontName}(${optionsWithCSS})`;
+            s.overwrite(matchStart, matchEnd, replacement);
+            hasChanges = true;
           }
 
-          // Inject _selfHostedCSS into the options object
-          const matchStart = match.index;
-          const matchEnd = matchStart + fullMatch.length;
-          const escapedCSS = JSON.stringify(localCSS);
-          const closingBrace = optionsStr.lastIndexOf("}");
-          const optionsWithCSS = optionsStr.slice(0, closingBrace) +
-            (optionsStr.slice(0, closingBrace).trim().endsWith("{") ? "" : ", ") +
-            `_selfHostedCSS: ${escapedCSS}` +
-            optionsStr.slice(closingBrace);
-
-          const replacement = `${fontName}(${optionsWithCSS})`;
-          s.overwrite(matchStart, matchEnd, replacement);
-          hasChanges = true;
-        }
-
-        if (!hasChanges) return null;
-        return {
-          code: s.toString(),
-          map: s.generateMap({ hires: "boundary" }),
-        };
+          if (!hasChanges) return null;
+          return {
+            code: s.toString(),
+            map: s.generateMap({ hires: "boundary" }),
+          };
+        },
       },
     } as Plugin & { _isBuild: boolean; _fontCache: Map<string, string>; _cacheDir: string },
     // "use cache" directive transform:
@@ -1738,108 +1772,117 @@ hydrate();
     {
       name: "vinext:use-cache",
 
-      async transform(code, id) {
-        // Only process app source files, not node_modules or virtual modules
-        if (id.includes("node_modules")) return null;
-        if (id.startsWith("\0")) return null;
-        if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
-        if (!code.includes("use cache")) return null;
+      transform: {
+        // Hook filter: only invoke JS when code contains 'use cache'.
+        // The vast majority of files don't use this directive.
+        filter: {
+          id: {
+            include: /\.(tsx?|jsx?|mjs)$/,
+            exclude: /node_modules/,
+          },
+          code: "use cache",
+        },
+        async handler(code, id) {
+          // Defensive guard — duplicates filter logic
+          if (id.includes("node_modules")) return null;
+          if (id.startsWith("\0")) return null;
+          if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
+          if (!code.includes("use cache")) return null;
 
-        // Lazy-load the transforms to avoid startup cost
-        const { transformWrapExport, transformHoistInlineDirective } = await import("@vitejs/plugin-rsc/transforms");
-        const ast = parseAst(code);
+          const { transformWrapExport, transformHoistInlineDirective } = await import("@vitejs/plugin-rsc/transforms");
+          const ast = parseAst(code);
 
-        // Check for file-level "use cache" directive
-        const cacheDirective = (ast.body as any[]).find(
-          (node: any) =>
-            node.type === "ExpressionStatement" &&
-            node.expression?.type === "Literal" &&
-            typeof node.expression.value === "string" &&
-            node.expression.value.startsWith("use cache"),
-        );
+          // Check for file-level "use cache" directive
+          const cacheDirective = (ast.body as any[]).find(
+            (node: any) =>
+              node.type === "ExpressionStatement" &&
+              node.expression?.type === "Literal" &&
+              typeof node.expression.value === "string" &&
+              node.expression.value.startsWith("use cache"),
+          );
 
-        if (cacheDirective) {
-          // File-level "use cache" — wrap function exports with caching.
-          // For data functions (generateMetadata, etc.), RSC stream serialization
-          // handles all RSC-serializable types including React elements.
-          // For page/layout/template default exports, we still skip wrapping
-          // because page component caching requires tighter integration with the
-          // RSC rendering pipeline (in-memory stream caching with temporary
-          // references for dynamic children). For pages, file-level "use cache"
-          // is treated as ISR — cacheLife() sets the revalidation period via
-          // request-scoped state, which the server reads after rendering.
-          const directiveValue: string = cacheDirective.expression.value;
-          const variant = directiveValue === "use cache" ? "" : directiveValue.replace("use cache:", "").replace("use cache: ", "").trim();
+          if (cacheDirective) {
+            // File-level "use cache" — wrap function exports with caching.
+            // For data functions (generateMetadata, etc.), RSC stream serialization
+            // handles all RSC-serializable types including React elements.
+            // For page/layout/template default exports, we still skip wrapping
+            // because page component caching requires tighter integration with the
+            // RSC rendering pipeline (in-memory stream caching with temporary
+            // references for dynamic children). For pages, file-level "use cache"
+            // is treated as ISR — cacheLife() sets the revalidation period via
+            // request-scoped state, which the server reads after rendering.
+            const directiveValue: string = cacheDirective.expression.value;
+            const variant = directiveValue === "use cache" ? "" : directiveValue.replace("use cache:", "").replace("use cache: ", "").trim();
 
-          const isComponentFile = /\/(page|layout|template|loading|error|not-found|default)\.(tsx?|jsx?|mjs)$/.test(id);
+            const isComponentFile = /\/(page|layout|template|loading|error|not-found|default)\.(tsx?|jsx?|mjs)$/.test(id);
 
-          const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
-          const result = transformWrapExport(code, ast as any, {
-            runtime: (value, name) =>
-              `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
-            rejectNonAsyncFunction: false,
-            filter: (name, meta) => {
-              // Skip non-functions (constants, types, etc.)
-              if (meta.isFunction === false) return false;
-              // Skip the default export on component convention files — page
-              // component caching requires in-memory RSC stream caching with
-              // temporary references, which is a separate feature. These are
-              // handled through ISR instead.
-              if (isComponentFile && name === "default") return false;
-              return true;
-            },
-          });
+            const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
+            const result = transformWrapExport(code, ast as any, {
+              runtime: (value, name) =>
+                `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
+              rejectNonAsyncFunction: false,
+              filter: (name, meta) => {
+                // Skip non-functions (constants, types, etc.)
+                if (meta.isFunction === false) return false;
+                // Skip the default export on component convention files — page
+                // component caching requires in-memory RSC stream caching with
+                // temporary references, which is a separate feature. These are
+                // handled through ISR instead.
+                if (isComponentFile && name === "default") return false;
+                return true;
+              },
+            });
 
-          if (result.exportNames.length > 0) {
-            // Remove the directive itself so it doesn't cause runtime errors
-            const output = result.output;
-            output.overwrite(cacheDirective.start, cacheDirective.end, `/* "use cache" — wrapped by vinext */`);
+            if (result.exportNames.length > 0) {
+              // Remove the directive itself so it doesn't cause runtime errors
+              const output = result.output;
+              output.overwrite(cacheDirective.start, cacheDirective.end, `/* "use cache" — wrapped by vinext */`);
+              return {
+                code: output.toString(),
+                map: output.generateMap({ hires: "boundary" }),
+              };
+            }
+
+            // Even if no exports were wrapped, still strip the directive
+            // (e.g., page-only file with just a default export)
+            const output = new MagicString(code);
+            output.overwrite(cacheDirective.start, cacheDirective.end, `/* "use cache" — handled by vinext */`);
             return {
               code: output.toString(),
               map: output.generateMap({ hires: "boundary" }),
             };
           }
 
-          // Even if no exports were wrapped, still strip the directive
-          // (e.g., page-only file with just a default export)
-          const { default: MagicString } = await import("magic-string");
-          const output = new MagicString(code);
-          output.overwrite(cacheDirective.start, cacheDirective.end, `/* "use cache" — handled by vinext */`);
-          return {
-            code: output.toString(),
-            map: output.generateMap({ hires: "boundary" }),
-          };
-        }
+          // Check for function-level "use cache" directives
+          // (e.g., async function getData() { "use cache"; ... })
+          const hasInlineCache = code.includes("use cache") && !cacheDirective;
+          if (hasInlineCache) {
+            const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
 
-        // Check for function-level "use cache" directives
-        // (e.g., async function getData() { "use cache"; ... })
-        const hasInlineCache = code.includes("use cache") && !cacheDirective;
-        if (hasInlineCache) {
-          const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
+            try {
+              const result = transformHoistInlineDirective(code, ast as any, {
+                directive: /^use cache(:\s*\w+)?$/,
+                runtime: (value, name, meta) => {
+                  const directiveMatch = meta.directiveMatch[0];
+                  const variant = directiveMatch === "use cache" ? "" : directiveMatch.replace("use cache:", "").replace("use cache: ", "").trim();
+                  return `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
+                },
+                rejectNonAsyncFunction: false,
+              });
 
-          try {
-            const result = transformHoistInlineDirective(code, ast as any, {
-              directive: /^use cache(:\s*\w+)?$/,
-              runtime: (value, name, meta) => {
-                const directiveMatch = meta.directiveMatch[0];
-                const variant = directiveMatch === "use cache" ? "" : directiveMatch.replace("use cache:", "").replace("use cache: ", "").trim();
-                return `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
-              },
-              rejectNonAsyncFunction: false,
-            });
-
-            if (result.names.length > 0) {
-              return {
-                code: result.output.toString(),
-                map: result.output.generateMap({ hires: "boundary" }),
-              };
+              if (result.names.length > 0) {
+                return {
+                  code: result.output.toString(),
+                  map: result.output.generateMap({ hires: "boundary" }),
+                };
+              }
+            } catch {
+              // If hoisting fails (e.g., complex closure), fall through
             }
-          } catch {
-            // If hoisting fails (e.g., complex closure), fall through
           }
-        }
 
-        return null;
+          return null;
+        },
       },
     },
     // Copy @vercel/og assets (font, WASM) to the RSC output directory.

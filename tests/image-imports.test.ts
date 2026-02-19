@@ -8,6 +8,11 @@ const IMAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/images");
 const PNG_PATH = path.join(IMAGES_DIR, "test-4x3.png");
 const JPG_PATH = path.join(IMAGES_DIR, "test-8x6.jpg");
 
+/** Unwrap a Vite plugin hook that may use the object-with-filter format */
+function unwrapHook(hook: any): Function {
+  return typeof hook === "function" ? hook : hook?.handler;
+}
+
 /** Extract the vinext:image-imports plugin from the plugin array */
 function getImagePlugin(): Plugin & { _dimCache: Map<string, { width: number; height: number }> } {
   const plugins = vinext() as Plugin[];
@@ -20,14 +25,14 @@ function getImagePlugin(): Plugin & { _dimCache: Map<string, { width: number; he
 describe("vinext:image-imports — resolveId", () => {
   it("resolves ?vinext-meta suffix to virtual module ID", () => {
     const plugin = getImagePlugin();
-    const resolve = plugin.resolveId as Function;
+    const resolve = unwrapHook(plugin.resolveId);
     const result = resolve.call(plugin, "/abs/path/hero.jpg?vinext-meta", "/some/file.tsx");
     expect(result).toBe("\0vinext-image-meta:/abs/path/hero.jpg");
   });
 
   it("returns null for non-meta imports", () => {
     const plugin = getImagePlugin();
-    const resolve = plugin.resolveId as Function;
+    const resolve = unwrapHook(plugin.resolveId);
     expect(resolve.call(plugin, "./hero.jpg", "/some/file.tsx")).toBeNull();
     expect(resolve.call(plugin, "react", "/some/file.tsx")).toBeNull();
     expect(resolve.call(plugin, "next/image", "/some/file.tsx")).toBeNull();
@@ -93,7 +98,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("transforms a PNG import into StaticImageData", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import hero from './test-4x3.png';\nconsole.log(hero);`;
     const result = await transform.call(plugin, code, fakeId);
     expect(result).not.toBeNull();
@@ -107,7 +112,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("transforms a JPEG import", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import photo from './test-8x6.jpg';`;
     const result = await transform.call(plugin, code, fakeId);
     expect(result).not.toBeNull();
@@ -117,7 +122,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("transforms multiple image imports in one file", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = [
       `import hero from './test-4x3.png';`,
       `import photo from './test-8x6.jpg';`,
@@ -133,7 +138,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("handles various image extensions", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     // These files don't exist so transform should skip them (fs.existsSync check),
     // but the regex should still match — we verify by testing with a real file
     const code = `import icon from './test-4x3.png';`;
@@ -144,7 +149,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("returns null for files with no image imports", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import React from 'react';\nconst x = 1;`;
     const result = await transform.call(plugin, code, fakeId);
     expect(result).toBeNull();
@@ -152,7 +157,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("returns null for node_modules files", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import hero from './hero.png';`;
     const result = await transform.call(plugin, code, path.join("node_modules", "pkg", "index.ts"));
     expect(result).toBeNull();
@@ -160,7 +165,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("returns null for virtual modules (\\0 prefix)", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import hero from './hero.png';`;
     const result = await transform.call(plugin, code, "\0virtual:something");
     expect(result).toBeNull();
@@ -168,7 +173,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("returns null for non-script files", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import hero from './hero.png';`;
     const result = await transform.call(plugin, code, "/app/styles.css");
     expect(result).toBeNull();
@@ -176,7 +181,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("skips imports where the image file does not exist", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import ghost from './nonexistent.png';`;
     const result = await transform.call(plugin, code, fakeId);
     // Regex matches but fs.existsSync fails — no changes made
@@ -185,7 +190,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("preserves non-image imports alongside image imports", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = [
       `import React from 'react';`,
       `import hero from './test-4x3.png';`,
@@ -202,7 +207,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("handles single-quoted imports", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import hero from './test-4x3.png';`;
     const result = await transform.call(plugin, code, fakeId);
     expect(result).not.toBeNull();
@@ -211,7 +216,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("handles double-quoted imports", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import hero from "./test-4x3.png";`;
     const result = await transform.call(plugin, code, fakeId);
     expect(result).not.toBeNull();
@@ -220,7 +225,7 @@ describe("vinext:image-imports — transform", () => {
 
   it("uses absolute path in meta import", async () => {
     const plugin = getImagePlugin();
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import hero from './test-4x3.png';`;
     const result = await transform.call(plugin, code, fakeId);
     expect(result).not.toBeNull();

@@ -6,6 +6,11 @@ import type { Plugin } from "vite";
 
 // ── Helpers ───────────────────────────────────────────────────
 
+/** Unwrap a Vite plugin hook that may use the object-with-filter format */
+function unwrapHook(hook: any): Function {
+  return typeof hook === "function" ? hook : hook?.handler;
+}
+
 /** Extract the vinext:google-fonts plugin from the plugin array */
 function getGoogleFontsPlugin(): Plugin & {
   _isBuild: boolean;
@@ -165,7 +170,7 @@ describe("vinext:google-fonts plugin", () => {
   it("is a no-op in dev mode (isBuild = false)", async () => {
     const plugin = getGoogleFontsPlugin();
     plugin._isBuild = false;
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import { Inter } from 'next/font/google';\nconst inter = Inter({ weight: ['400'] });`;
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).toBeNull();
@@ -175,7 +180,7 @@ describe("vinext:google-fonts plugin", () => {
     const plugin = getGoogleFontsPlugin();
     plugin._isBuild = true;
     plugin._cacheDir = path.join(import.meta.dirname, ".test-font-cache");
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import React from 'react';\nconst x = 1;`;
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).toBeNull();
@@ -184,7 +189,7 @@ describe("vinext:google-fonts plugin", () => {
   it("returns null for node_modules files", async () => {
     const plugin = getGoogleFontsPlugin();
     plugin._isBuild = true;
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import { Inter } from 'next/font/google';`;
     const result = await transform.call(plugin, code, "node_modules/some-pkg/index.ts");
     expect(result).toBeNull();
@@ -193,7 +198,7 @@ describe("vinext:google-fonts plugin", () => {
   it("returns null for virtual modules", async () => {
     const plugin = getGoogleFontsPlugin();
     plugin._isBuild = true;
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import { Inter } from 'next/font/google';`;
     const result = await transform.call(plugin, code, "\0virtual:something");
     expect(result).toBeNull();
@@ -202,7 +207,7 @@ describe("vinext:google-fonts plugin", () => {
   it("returns null for non-script files", async () => {
     const plugin = getGoogleFontsPlugin();
     plugin._isBuild = true;
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import { Inter } from 'next/font/google';`;
     const result = await transform.call(plugin, code, "/app/styles.css");
     expect(result).toBeNull();
@@ -212,7 +217,7 @@ describe("vinext:google-fonts plugin", () => {
     const plugin = getGoogleFontsPlugin();
     plugin._isBuild = true;
     plugin._cacheDir = path.join(import.meta.dirname, ".test-font-cache");
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = `import { Inter } from 'next/font/google';\n// no call`;
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).toBeNull();
@@ -225,7 +230,7 @@ describe("vinext:google-fonts plugin", () => {
     plugin._cacheDir = cacheDir;
     plugin._fontCache.clear();
 
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = [
       `import { Inter } from 'next/font/google';`,
       `const inter = Inter({ weight: ['400', '700'], subsets: ['latin'] });`,
@@ -265,7 +270,7 @@ describe("vinext:google-fonts plugin", () => {
       fakeCSS,
     );
 
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = [
       `import { Inter } from 'next/font/google';`,
       `const inter = Inter({ weight: '400' });`,
@@ -296,7 +301,7 @@ describe("vinext:google-fonts plugin", () => {
       "@font-face { font-family: 'Roboto'; src: url(/roboto.woff2); }",
     );
 
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = [
       `import { Inter, Roboto } from 'next/font/google';`,
       `const inter = Inter({ weight: '400' });`,
@@ -318,7 +323,7 @@ describe("vinext:google-fonts plugin", () => {
     plugin._cacheDir = path.join(import.meta.dirname, ".test-font-cache-4");
     plugin._fontCache.clear();
 
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = [
       `import { Inter } from 'next/font/google';`,
       `const inter = Inter({ weight: '400' });`,
@@ -358,7 +363,7 @@ describe("fetchAndCacheFont", () => {
     plugin._cacheDir = cacheDir;
     plugin._fontCache.clear();
 
-    const transform = plugin.transform as Function;
+    const transform = unwrapHook(plugin.transform);
     const code = [
       `import { Inter } from 'next/font/google';`,
       `const inter = Inter({ weight: ['400'], subsets: ['latin'] });`,
