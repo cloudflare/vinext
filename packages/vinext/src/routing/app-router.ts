@@ -66,8 +66,16 @@ export interface AppRoute {
   parallelSlots: ParallelSlot[];
   /** Loading component path */
   loadingPath: string | null;
-  /** Error component path */
+  /** Error component path (leaf directory only) */
   errorPath: string | null;
+  /**
+   * Per-layout error boundary paths, aligned with the layouts array.
+   * Each entry is the error.tsx at the same directory level as the
+   * corresponding layout (or null if that level has no error.tsx).
+   * Used to interleave ErrorBoundary components with layouts so that
+   * ancestor error boundaries catch errors from descendant segments.
+   */
+  layoutErrorPaths: (string | null)[];
   /** Not-found component path (nearest, walking up from page dir) */
   notFoundPath: string | null;
   /**
@@ -215,6 +223,11 @@ function fileToAppRoute(
   // (i.e., are not route groups or parallel slots).
   const layoutSegmentDepths = computeLayoutSegmentDepths(segments, appDir, layouts);
 
+  // Discover per-layout error boundaries (aligned with layouts array).
+  // In Next.js, each segment independently wraps its children with an ErrorBoundary.
+  // This array enables interleaving error boundaries with layouts in the rendering.
+  const layoutErrorPaths = discoverLayoutAlignedErrors(segments, appDir);
+
   // Discover loading, error in the route's directory
   const routeDir = dir === "." ? appDir : path.join(appDir, dir);
   const loadingPath = findFile(routeDir, "loading");
@@ -244,6 +257,7 @@ function fileToAppRoute(
     parallelSlots,
     loadingPath,
     errorPath,
+    layoutErrorPaths,
     notFoundPath,
     notFoundPaths,
     forbiddenPath,
@@ -337,6 +351,39 @@ function discoverTemplates(segments: string[], appDir: string): string[] {
   }
 
   return templates;
+}
+
+/**
+ * Discover error.tsx files aligned with the layouts array.
+ * Walks the same directory levels as discoverLayouts and, for each level
+ * that contributes a layout entry, checks whether error.tsx also exists.
+ * Returns an array of the same length as discoverLayouts() would return,
+ * with the error path (or null) at each corresponding layout level.
+ *
+ * This enables interleaving ErrorBoundary components with layouts in the
+ * rendering tree, matching Next.js behavior where each segment independently
+ * wraps its children with an error boundary.
+ */
+function discoverLayoutAlignedErrors(segments: string[], appDir: string): (string | null)[] {
+  const errors: (string | null)[] = [];
+
+  // Root level (only if root has a layout — matching discoverLayouts logic)
+  const rootLayout = findFile(appDir, "layout");
+  if (rootLayout) {
+    errors.push(findFile(appDir, "error"));
+  }
+
+  // Check each directory level
+  let currentDir = appDir;
+  for (const segment of segments) {
+    currentDir = path.join(currentDir, segment);
+    const layout = findFile(currentDir, "layout");
+    if (layout) {
+      errors.push(findFile(currentDir, "error"));
+    }
+  }
+
+  return errors;
 }
 
 /**

@@ -69,6 +69,7 @@ export function generateRscEntry(
     for (const tmpl of route.templates) getImportVar(tmpl);
     if (route.loadingPath) getImportVar(route.loadingPath);
     if (route.errorPath) getImportVar(route.errorPath);
+    if (route.layoutErrorPaths) for (const ep of route.layoutErrorPaths) { if (ep) getImportVar(ep); }
     if (route.notFoundPath) getImportVar(route.notFoundPath);
     for (const nfp of route.notFoundPaths || []) { if (nfp) getImportVar(nfp); }
     if (route.forbiddenPath) getImportVar(route.forbiddenPath);
@@ -113,6 +114,7 @@ ${interceptEntries.join(",\n")}
         ],
       }`;
     });
+    const layoutErrorVars = (route.layoutErrorPaths || []).map((ep) => ep ? getImportVar(ep) : "null");
     return `  {
     pattern: ${JSON.stringify(route.pattern)},
     isDynamic: ${route.isDynamic},
@@ -122,6 +124,7 @@ ${interceptEntries.join(",\n")}
     layouts: [${layoutVars.join(", ")}],
     layoutSegmentDepths: ${JSON.stringify(route.layoutSegmentDepths)},
     templates: [${templateVars.join(", ")}],
+    errors: [${layoutErrorVars.join(", ")}],
     slots: {
 ${slotEntries.join(",\n")}
     },
@@ -366,8 +369,18 @@ async function renderNotFoundPage(route, isRscRequest, request) {
  * by the boundary). This matches that behavior intentionally.
  */
 async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
-  // Resolve the error boundary component: route-level error.tsx first, then global-error.tsx
-  const ErrorComponent = route?.error?.default${globalErrorVar ? ` ?? ${globalErrorVar}?.default` : ""};
+  // Resolve the error boundary component: leaf error.tsx first, then walk per-layout
+  // errors from innermost to outermost (matching ancestor inheritance), then global-error.tsx.
+  let ErrorComponent = route?.error?.default ?? null;
+  if (!ErrorComponent && route?.errors) {
+    for (let i = route.errors.length - 1; i >= 0; i--) {
+      if (route.errors[i]?.default) {
+        ErrorComponent = route.errors[i].default;
+        break;
+      }
+    }
+  }
+  ErrorComponent = ErrorComponent${globalErrorVar ? ` ?? ${globalErrorVar}?.default` : ""};
   if (!ErrorComponent) return null;
 
   const errorObj = error instanceof Error ? error : new Error(String(error));
@@ -556,12 +569,17 @@ async function buildPageElement(route, params, opts, searchParams) {
     );
   }
 
-  // Wrap with error.tsx ErrorBoundary if present
-  if (route.error?.default) {
-    element = createElement(ErrorBoundary, {
-      fallback: route.error.default,
-      children: element,
-    });
+  // Wrap with the leaf's error.tsx ErrorBoundary if it's not already covered
+  // by a per-layout error boundary (i.e., the leaf has error.tsx but no layout).
+  // Per-layout error boundaries are interleaved with layouts below.
+  {
+    const lastLayoutError = route.errors ? route.errors[route.errors.length - 1] : null;
+    if (route.error?.default && route.error !== lastLayoutError) {
+      element = createElement(ErrorBoundary, {
+        fallback: route.error.default,
+        children: element,
+      });
+    }
   }
 
   // Wrap with NotFoundBoundary so client-side notFound() renders not-found.tsx
@@ -591,10 +609,23 @@ async function buildPageElement(route, params, opts, searchParams) {
     }
   }
 
-  // Wrap with layouts (innermost first, then outer)
+  // Wrap with layouts (innermost first, then outer).
+  // At each layout level, first wrap with that level's error boundary (if any)
+  // so the boundary is inside the layout and catches errors from children.
+  // This matches Next.js behavior: Layout > ErrorBoundary > children.
   // Parallel slots are passed as named props to the innermost layout
   // (the layout at the same directory level as the page/slots)
   for (let i = route.layouts.length - 1; i >= 0; i--) {
+    // Wrap with per-layout error boundary before wrapping with layout.
+    // This places the ErrorBoundary inside the layout, catching errors
+    // from child segments (matching Next.js per-segment error handling).
+    if (route.errors && route.errors[i]?.default) {
+      element = createElement(ErrorBoundary, {
+        fallback: route.errors[i].default,
+        children: element,
+      });
+    }
+
     const LayoutComponent = route.layouts[i]?.default;
     if (LayoutComponent) {
       // Per-layout NotFoundBoundary: wraps this layout's children so that
