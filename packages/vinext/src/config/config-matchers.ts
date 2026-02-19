@@ -8,6 +8,142 @@
 import type { NextRedirect, NextRewrite, NextHeader, HasCondition } from "./next-config.js";
 
 /**
+ * Detect regex patterns vulnerable to catastrophic backtracking (ReDoS).
+ *
+ * Uses a lightweight heuristic: scans the pattern string for nested quantifiers
+ * (a quantifier applied to a group that itself contains a quantifier). This
+ * catches the most common pathological patterns like `(a+)+`, `(.*)*`,
+ * `([^/]+)+`, `(a|a+)+` without needing a full regex parser.
+ *
+ * Returns true if the pattern appears safe, false if it's potentially dangerous.
+ */
+export function isSafeRegex(pattern: string): boolean {
+  // Track parenthesis nesting depth and whether we've seen a quantifier
+  // at each depth level.
+  const quantifierAtDepth: boolean[] = [];
+  let depth = 0;
+  let i = 0;
+
+  while (i < pattern.length) {
+    const ch = pattern[i];
+
+    // Skip escaped characters
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+
+    // Skip character classes [...] — quantifiers inside them are literal
+    if (ch === "[") {
+      i++;
+      while (i < pattern.length && pattern[i] !== "]") {
+        if (pattern[i] === "\\") i++; // skip escaped char in class
+        i++;
+      }
+      i++; // skip closing ]
+      continue;
+    }
+
+    if (ch === "(") {
+      depth++;
+      // Initialize: no quantifier seen yet at this new depth
+      if (quantifierAtDepth.length <= depth) {
+        quantifierAtDepth.push(false);
+      } else {
+        quantifierAtDepth[depth] = false;
+      }
+      i++;
+      continue;
+    }
+
+    if (ch === ")") {
+      const hadQuantifier = depth > 0 && quantifierAtDepth[depth];
+      if (depth > 0) depth--;
+
+      // Look ahead for a quantifier on this group: +, *, {n,m}
+      // Note: '?' after ')' means "zero or one" which does NOT cause catastrophic
+      // backtracking — it only allows 2 paths (match/skip), not exponential.
+      // Only unbounded repetition (+, *, {n,}) on a group with inner quantifiers is dangerous.
+      const next = pattern[i + 1];
+      if (next === "+" || next === "*" || next === "{") {
+        if (hadQuantifier) {
+          // Nested quantifier detected: quantifier on a group that contains a quantifier
+          return false;
+        }
+        // Mark the enclosing depth as having a quantifier
+        if (depth >= 0 && depth < quantifierAtDepth.length) {
+          quantifierAtDepth[depth] = true;
+        }
+      }
+      i++;
+      continue;
+    }
+
+    // Detect quantifiers: +, *, ?, {n,m}
+    // '?' is a quantifier (optional) unless it follows another quantifier (+, *, ?, })
+    // in which case it's a non-greedy modifier.
+    if (ch === "+" || ch === "*") {
+      if (depth > 0) {
+        quantifierAtDepth[depth] = true;
+      }
+      i++;
+      continue;
+    }
+
+    if (ch === "?") {
+      // '?' after +, *, ?, or } is a non-greedy modifier, not a quantifier
+      const prev = i > 0 ? pattern[i - 1] : "";
+      if (prev !== "+" && prev !== "*" && prev !== "?" && prev !== "}") {
+        if (depth > 0) {
+          quantifierAtDepth[depth] = true;
+        }
+      }
+      i++;
+      continue;
+    }
+
+    if (ch === "{") {
+      // Check if this is a quantifier {n}, {n,}, {n,m}
+      let j = i + 1;
+      while (j < pattern.length && /[\d,]/.test(pattern[j])) j++;
+      if (j < pattern.length && pattern[j] === "}" && j > i + 1) {
+        if (depth > 0) {
+          quantifierAtDepth[depth] = true;
+        }
+        i = j + 1;
+        continue;
+      }
+    }
+
+    i++;
+  }
+
+  return true;
+}
+
+/**
+ * Compile a regex pattern safely. Returns the compiled RegExp or null if the
+ * pattern is invalid or vulnerable to ReDoS.
+ *
+ * Logs a warning when a pattern is rejected so developers can fix their config.
+ */
+export function safeRegExp(pattern: string, flags?: string): RegExp | null {
+  if (!isSafeRegex(pattern)) {
+    console.warn(
+      `[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
+      `  Patterns with nested quantifiers (e.g. (a+)+) can cause catastrophic backtracking.\n` +
+      `  Simplify the pattern to avoid nested repetition.`,
+    );
+    return null;
+  }
+  try {
+    return new RegExp(pattern, flags);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Request context needed for evaluating has/missing conditions.
  * Callers extract the relevant parts from the incoming Request.
  */
@@ -57,12 +193,9 @@ function checkSingleCondition(condition: HasCondition, ctx: RequestContext): boo
       const headerValue = ctx.headers.get(condition.key);
       if (headerValue === null) return false;
       if (condition.value !== undefined) {
-        // If value is a regex pattern, test it; otherwise exact match
-        try {
-          return new RegExp(condition.value).test(headerValue);
-        } catch {
-          return headerValue === condition.value;
-        }
+        const re = safeRegExp(condition.value);
+        if (re) return re.test(headerValue);
+        return headerValue === condition.value;
       }
       return true; // Key exists, no value constraint
     }
@@ -70,11 +203,9 @@ function checkSingleCondition(condition: HasCondition, ctx: RequestContext): boo
       const cookieValue = ctx.cookies[condition.key];
       if (cookieValue === undefined) return false;
       if (condition.value !== undefined) {
-        try {
-          return new RegExp(condition.value).test(cookieValue);
-        } catch {
-          return cookieValue === condition.value;
-        }
+        const re = safeRegExp(condition.value);
+        if (re) return re.test(cookieValue);
+        return cookieValue === condition.value;
       }
       return true;
     }
@@ -82,21 +213,17 @@ function checkSingleCondition(condition: HasCondition, ctx: RequestContext): boo
       const queryValue = ctx.query.get(condition.key);
       if (queryValue === null) return false;
       if (condition.value !== undefined) {
-        try {
-          return new RegExp(condition.value).test(queryValue);
-        } catch {
-          return queryValue === condition.value;
-        }
+        const re = safeRegExp(condition.value);
+        if (re) return re.test(queryValue);
+        return queryValue === condition.value;
       }
       return true;
     }
     case "host": {
       if (condition.value !== undefined) {
-        try {
-          return new RegExp(condition.value).test(ctx.host);
-        } catch {
-          return ctx.host === condition.value;
-        }
+        const re = safeRegExp(condition.value);
+        if (re) return re.test(ctx.host);
+        return ctx.host === condition.value;
       }
       return ctx.host === condition.key;
     }
@@ -171,7 +298,8 @@ export function matchConfigPattern(
           paramNames.push(name);
           return "([^/]+)";
         });
-      const re = new RegExp("^" + regexStr + "$");
+      const re = safeRegExp("^" + regexStr + "$");
+      if (!re) return null;
       const match = re.exec(pathname);
       if (!match) return null;
       const params: Record<string, string> = {};
@@ -300,8 +428,8 @@ export function matchHeaders(
       .replace(/\*/g, ".*")
       .replace(/:\w+/g, "[^/]+")
       .replace(/___GROUP_(\d+)___/g, (_m, idx) => `(${groups[Number(idx)]})`);
-    const sourceRegex = new RegExp("^" + escaped + "$");
-    if (sourceRegex.test(pathname)) {
+    const sourceRegex = safeRegExp("^" + escaped + "$");
+    if (sourceRegex && sourceRegex.test(pathname)) {
       result.push(...rule.headers);
     }
   }

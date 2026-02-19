@@ -22,6 +22,7 @@ import type { ViteDevServer } from "vite";
 import fs from "node:fs";
 import path from "node:path";
 import { NextRequest } from "../shims/server.js";
+import { safeRegExp } from "../config/config-matchers.js";
 
 /**
  * Possible proxy/middleware file names.
@@ -127,12 +128,9 @@ export function matchesMiddleware(
 export function matchPattern(pathname: string, pattern: string): boolean {
   // Handle regex patterns (starts with /)
   if (pattern.includes("(") || pattern.includes("\\")) {
-    try {
-      const re = new RegExp("^" + pattern + "$");
-      return re.test(pathname);
-    } catch {
-      // Fall through to simple matching
-    }
+    const re = safeRegExp("^" + pattern + "$");
+    if (re) return re.test(pathname);
+    // Fall through to simple matching
   }
 
   // Convert Next.js path patterns to regex.
@@ -148,12 +146,9 @@ export function matchPattern(pathname: string, pattern: string): boolean {
     // :param -> match one segment
     .replace(/:(\w+)/g, "([^/]+)");
 
-  try {
-    const re = new RegExp("^" + regexStr + "$");
-    return re.test(pathname);
-  } catch {
-    return pathname === pattern;
-  }
+  const re = safeRegExp("^" + regexStr + "$");
+  if (re) return re.test(pathname);
+  return pathname === pattern;
 }
 
 /** Result of running middleware. */

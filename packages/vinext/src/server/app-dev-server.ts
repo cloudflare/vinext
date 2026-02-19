@@ -698,12 +698,13 @@ function matchMiddlewarePath(pathname, matcher) {
     : Array.isArray(matcher) ? matcher.map(m => typeof m === "string" ? m : m.source)
     : [];
   return patterns.some(pattern => {
-    const re = new RegExp("^" + pattern
+    const reStr = "^" + pattern
       .replace(/:(\\w+)\\*/g, "(?:.*)")
       .replace(/:(\\w+)\\+/g, "(?:.+)")
       .replace(/:(\\w+)/g, "([^/]+)")
-      .replace(/\\./g, "\\\\.") + "$");
-    return re.test(pathname);
+      .replace(/\\./g, "\\\\.") + "$";
+    const re = __safeRegExp(reStr);
+    return re ? re.test(pathname) : false;
   });
 }
 ` : ""}
@@ -713,6 +714,75 @@ const __trailingSlash = ${JSON.stringify(ts)};
 const __configRedirects = ${JSON.stringify(redirects)};
 const __configRewrites = ${JSON.stringify(rewrites)};
 const __configHeaders = ${JSON.stringify(headers)};
+
+// ── ReDoS-safe regex compilation ────────────────────────────────────────
+function __isSafeRegex(pattern) {
+  const quantifierAtDepth = [];
+  let depth = 0;
+  let i = 0;
+  while (i < pattern.length) {
+    const ch = pattern[i];
+    if (ch === "\\\\") { i += 2; continue; }
+    if (ch === "[") {
+      i++;
+      while (i < pattern.length && pattern[i] !== "]") {
+        if (pattern[i] === "\\\\") i++;
+        i++;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "(") {
+      depth++;
+      if (quantifierAtDepth.length <= depth) quantifierAtDepth.push(false);
+      else quantifierAtDepth[depth] = false;
+      i++;
+      continue;
+    }
+    if (ch === ")") {
+      const hadQ = depth > 0 && quantifierAtDepth[depth];
+      if (depth > 0) depth--;
+      const next = pattern[i + 1];
+      if (next === "+" || next === "*" || next === "{") {
+        if (hadQ) return false;
+        if (depth >= 0 && depth < quantifierAtDepth.length) quantifierAtDepth[depth] = true;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "+" || ch === "*") {
+      if (depth > 0) quantifierAtDepth[depth] = true;
+      i++;
+      continue;
+    }
+    if (ch === "?") {
+      const prev = i > 0 ? pattern[i - 1] : "";
+      if (prev !== "+" && prev !== "*" && prev !== "?" && prev !== "}") {
+        if (depth > 0) quantifierAtDepth[depth] = true;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "{") {
+      let j = i + 1;
+      while (j < pattern.length && /[\\d,]/.test(pattern[j])) j++;
+      if (j < pattern.length && pattern[j] === "}" && j > i + 1) {
+        if (depth > 0) quantifierAtDepth[depth] = true;
+        i = j + 1;
+        continue;
+      }
+    }
+    i++;
+  }
+  return true;
+}
+function __safeRegExp(pattern, flags) {
+  if (!__isSafeRegex(pattern)) {
+    console.warn("[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): " + pattern);
+    return null;
+  }
+  try { return new RegExp(pattern, flags); } catch { return null; }
+}
 
 // ── Config pattern matching (redirects, rewrites, headers) ──────────────
 function __matchConfigPattern(pathname, pattern) {
@@ -725,7 +795,8 @@ function __matchConfigPattern(pathname, pattern) {
         .replace(/:([a-zA-Z_]\\w*)\\+(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.+)"; })
         .replace(/:([a-zA-Z_]\\w*)\\(([^)]+)\\)/g, (_, name, c) => { paramNames.push(name); return "(" + c + ")"; })
         .replace(/:([a-zA-Z_]\\w*)/g, (_, name) => { paramNames.push(name); return "([^/]+)"; });
-      const re = new RegExp("^" + regexStr + "$");
+      const re = __safeRegExp("^" + regexStr + "$");
+      if (!re) return null;
       const match = re.exec(pathname);
       if (!match) return null;
       const params = {};
@@ -772,23 +843,23 @@ function __checkSingleCondition(condition, ctx) {
     case "header": {
       const v = ctx.headers.get(condition.key);
       if (v === null) return false;
-      if (condition.value !== undefined) { try { return new RegExp(condition.value).test(v); } catch { return v === condition.value; } }
+      if (condition.value !== undefined) { const re = __safeRegExp(condition.value); return re ? re.test(v) : v === condition.value; }
       return true;
     }
     case "cookie": {
       const v = ctx.cookies[condition.key];
       if (v === undefined) return false;
-      if (condition.value !== undefined) { try { return new RegExp(condition.value).test(v); } catch { return v === condition.value; } }
+      if (condition.value !== undefined) { const re = __safeRegExp(condition.value); return re ? re.test(v) : v === condition.value; }
       return true;
     }
     case "query": {
       const v = ctx.query.get(condition.key);
       if (v === null) return false;
-      if (condition.value !== undefined) { try { return new RegExp(condition.value).test(v); } catch { return v === condition.value; } }
+      if (condition.value !== undefined) { const re = __safeRegExp(condition.value); return re ? re.test(v) : v === condition.value; }
       return true;
     }
     case "host": {
-      if (condition.value !== undefined) { try { return new RegExp(condition.value).test(ctx.host); } catch { return ctx.host === condition.value; } }
+      if (condition.value !== undefined) { const re = __safeRegExp(condition.value); return re ? re.test(ctx.host) : ctx.host === condition.value; }
       return ctx.host === condition.key;
     }
     default: return false;
@@ -852,8 +923,8 @@ function __applyConfigHeaders(pathname) {
       .replace(/\\*/g, ".*")
       .replace(/:[a-zA-Z_]\\w*/g, "[^/]+")
       .replace(/___GROUP_(\\d+)___/g, (_, idx) => "(" + groups[Number(idx)] + ")");
-    const sourceRegex = new RegExp("^" + escaped + "$");
-    if (sourceRegex.test(pathname)) result.push(...rule.headers);
+    const sourceRegex = __safeRegExp("^" + escaped + "$");
+    if (sourceRegex && sourceRegex.test(pathname)) result.push(...rule.headers);
   }
   return result;
 }

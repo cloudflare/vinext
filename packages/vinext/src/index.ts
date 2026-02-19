@@ -19,6 +19,7 @@ import {
 
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
+import { safeRegExp } from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -368,16 +369,86 @@ function matchesMiddleware(pathname, matcher) {
   return patterns.some(function(p) { return matchMiddlewarePattern(pathname, p); });
 }
 
+function __isSafeRegex(pattern) {
+  var quantifierAtDepth = [];
+  var depth = 0;
+  var i = 0;
+  while (i < pattern.length) {
+    var ch = pattern[i];
+    if (ch === "\\\\") { i += 2; continue; }
+    if (ch === "[") {
+      i++;
+      while (i < pattern.length && pattern[i] !== "]") {
+        if (pattern[i] === "\\\\") i++;
+        i++;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "(") {
+      depth++;
+      if (quantifierAtDepth.length <= depth) quantifierAtDepth.push(false);
+      else quantifierAtDepth[depth] = false;
+      i++;
+      continue;
+    }
+    if (ch === ")") {
+      var hadQ = depth > 0 && quantifierAtDepth[depth];
+      if (depth > 0) depth--;
+      var next = pattern[i + 1];
+      if (next === "+" || next === "*" || next === "{") {
+        if (hadQ) return false;
+        if (depth >= 0 && depth < quantifierAtDepth.length) quantifierAtDepth[depth] = true;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "+" || ch === "*") {
+      if (depth > 0) quantifierAtDepth[depth] = true;
+      i++;
+      continue;
+    }
+    if (ch === "?") {
+      var prev = i > 0 ? pattern[i - 1] : "";
+      if (prev !== "+" && prev !== "*" && prev !== "?" && prev !== "}") {
+        if (depth > 0) quantifierAtDepth[depth] = true;
+      }
+      i++;
+      continue;
+    }
+    if (ch === "{") {
+      var j = i + 1;
+      while (j < pattern.length && /[\\d,]/.test(pattern[j])) j++;
+      if (j < pattern.length && pattern[j] === "}" && j > i + 1) {
+        if (depth > 0) quantifierAtDepth[depth] = true;
+        i = j + 1;
+        continue;
+      }
+    }
+    i++;
+  }
+  return true;
+}
+function __safeRegExp(pattern, flags) {
+  if (!__isSafeRegex(pattern)) {
+    console.warn("[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): " + pattern);
+    return null;
+  }
+  try { return new RegExp(pattern, flags); } catch { return null; }
+}
+
 function matchMiddlewarePattern(pathname, pattern) {
   if (pattern.includes("(") || pattern.includes("\\\\")) {
-    try { return new RegExp("^" + pattern + "$").test(pathname); } catch {}
+    var re = __safeRegExp("^" + pattern + "$");
+    if (re) return re.test(pathname);
   }
   var regexStr = pattern
     .replace(/\\./g, "\\\\.")
     .replace(/\\/:([\\w]+)\\*/g, "(?:/.*)?")
     .replace(/\\/:([\\w]+)\\+/g, "(?:/.+)")
     .replace(/:([\\w]+)/g, "([^/]+)");
-  try { return new RegExp("^" + regexStr + "$").test(pathname); } catch { return pathname === pattern; }
+  var re2 = __safeRegExp("^" + regexStr + "$");
+  return re2 ? re2.test(pathname) : pathname === pattern;
 }
 
 export async function runMiddleware(request) {
@@ -2466,7 +2537,8 @@ export function matchConfigPattern(
           paramNames.push(name);
           return "([^/]+)";
         });
-      const re = new RegExp("^" + regexStr + "$");
+      const re = safeRegExp("^" + regexStr + "$");
+      if (!re) return null;
       const match = re.exec(pathname);
       if (!match) return null;
       const params: Record<string, string> = {};
@@ -2584,8 +2656,8 @@ function applyHeaders(
       .replace(/:\w+/g, "[^/]+")
       // Restore regex groups (contents are untouched)
       .replace(/___GROUP_(\d+)___/g, (_m, idx) => `(${groups[Number(idx)]})`);
-    const sourceRegex = new RegExp("^" + escaped + "$");
-    if (sourceRegex.test(pathname)) {
+    const sourceRegex = safeRegExp("^" + escaped + "$");
+    if (sourceRegex && sourceRegex.test(pathname)) {
       for (const header of rule.headers) {
         res.setHeader(header.key, header.value);
       }

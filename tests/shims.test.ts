@@ -1462,6 +1462,15 @@ describe("middleware matcher patterns", () => {
     expect(matchesMiddleware("/api", matcher)).toBe(false);
     expect(matchesMiddleware("/other", matcher)).toBe(false);
   });
+
+  it("matchPattern: rejects pathological ReDoS patterns", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    // Pathological pattern: (a+)+ causes catastrophic backtracking
+    // matchPattern should return false (no match) instead of hanging
+    expect(matchPattern("/aaaaaaaaaaaaaaaaaaaac", "(a+)+b")).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1951,6 +1960,186 @@ describe("matchConfigPattern", () => {
     expect(matchConfigPattern("/feed.xml", "/feed.xml")).toEqual({});
     // Dot should not match any character
     expect(matchConfigPattern("/feedXxml", "/feed.xml")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isSafeRegex / safeRegExp unit tests (ReDoS prevention)
+
+describe("isSafeRegex", () => {
+  it("accepts simple patterns", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isSafeRegex("^/about$")).toBe(true);
+    expect(isSafeRegex("^/blog/[^/]+$")).toBe(true);
+    expect(isSafeRegex("^/docs/(.*)$")).toBe(true);
+    expect(isSafeRegex("^/api/(.+)$")).toBe(true);
+    expect(isSafeRegex("\\d+")).toBe(true);
+    expect(isSafeRegex("^/feed\\.xml$")).toBe(true);
+  });
+
+  it("accepts non-nested quantifiers inside groups", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    // A single quantifier inside a group without a quantifier on the group itself
+    expect(isSafeRegex("(a+)")).toBe(true);
+    expect(isSafeRegex("([^/]+)")).toBe(true);
+    expect(isSafeRegex("(\\d{2,4})")).toBe(true);
+  });
+
+  it("rejects nested quantifiers: (a+)+", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isSafeRegex("(a+)+")).toBe(false);
+  });
+
+  it("rejects nested quantifiers: (a+)*", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isSafeRegex("(a+)*")).toBe(false);
+  });
+
+  it("rejects nested quantifiers: (.*)*", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isSafeRegex("(.*)*")).toBe(false);
+  });
+
+  it("rejects nested quantifiers: (a*)+", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isSafeRegex("(a*)+")).toBe(false);
+  });
+
+  it("rejects nested quantifiers: ([^/]+)+", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isSafeRegex("([^/]+)+")).toBe(false);
+  });
+
+  it("rejects nested quantifiers with braces: (a+){2,}", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isSafeRegex("(a+){2,}")).toBe(false);
+  });
+
+  it("accepts quantifier on group without inner quantifier", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    // (ab)+ is fine — no inner quantifier
+    expect(isSafeRegex("(ab)+")).toBe(true);
+    expect(isSafeRegex("(foo|bar)*")).toBe(true);
+  });
+
+  it("treats escaped characters as safe", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    // \\+ is a literal +, not a quantifier
+    expect(isSafeRegex("(a\\+)+")).toBe(true);
+  });
+
+  it("treats quantifiers inside character classes as safe", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    // [+*] is a character class, not a quantifier
+    expect(isSafeRegex("([+*])+")).toBe(true);
+  });
+
+  it("rejects nested optional quantifiers: (a?)+", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    // '?' inside group + quantifier on group = catastrophic backtracking
+    expect(isSafeRegex("(a?)+")).toBe(false);
+    expect(isSafeRegex("(a?)+b")).toBe(false);
+  });
+
+  it("rejects nested optional quantifiers: (.?)+", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isSafeRegex("(.?)+")).toBe(false);
+  });
+
+  it("rejects nested optional quantifiers: (a?)*", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isSafeRegex("(a?)*")).toBe(false);
+  });
+
+  it("accepts outer '?' on group (zero-or-one is not unbounded repetition)", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    // '?' means zero or one — only 2 paths, not exponential backtracking
+    // This is safe even with inner quantifiers (e.g. URL patterns like (?:/.*)?  )
+    expect(isSafeRegex("(a+)?")).toBe(true);
+    expect(isSafeRegex("(?:/.*)?")).toBe(true);
+  });
+
+  it("treats non-greedy modifier as safe, not as quantifier", async () => {
+    const { isSafeRegex } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    // a+? is non-greedy '+', not a nested quantifier
+    expect(isSafeRegex("(a+?)")).toBe(true);
+    // (a*?) is non-greedy '*', still just one quantifier
+    expect(isSafeRegex("(a*?)")).toBe(true);
+  });
+});
+
+describe("safeRegExp", () => {
+  it("returns RegExp for safe patterns", async () => {
+    const { safeRegExp } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const re = safeRegExp("^/about$");
+    expect(re).toBeInstanceOf(RegExp);
+    expect(re!.test("/about")).toBe(true);
+  });
+
+  it("returns null for pathological patterns", async () => {
+    const { safeRegExp } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const re = safeRegExp("(a+)+b");
+    expect(re).toBeNull();
+  });
+
+  it("returns null for invalid regex syntax", async () => {
+    const { safeRegExp } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const re = safeRegExp("(?P<name>");
+    expect(re).toBeNull();
+  });
+});
+
+describe("matchConfigPattern rejects ReDoS patterns", () => {
+  it("returns null for pathological source patterns", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    // This pattern has nested quantifiers: the compiled regex would be (a+)+b
+    // which causes catastrophic backtracking. matchConfigPattern should return
+    // null (no match) rather than hanging.
+    const result = matchConfigPattern(
+      "/aaaaaaaaaaaaaaaaaaaac",
+      "/:id((a+)+b)",
+    );
+    expect(result).toBeNull();
   });
 });
 
