@@ -134,13 +134,16 @@ If you're trying to understand how something works under the hood — route matc
 
 - **Branch protection is enabled on main.** Required checks: Lint, Typecheck, Vitest, Playwright E2E. Pushing directly to main bypasses these protections and can introduce regressions.
 
+- **NEVER use `gh pr merge --admin`.** The `--admin` flag bypasses branch protection checks entirely. If merge is blocked, investigate why — don't force it through. A blocked merge usually means a required check failed or is still running.
+
 - **PR workflow:**
   1. Create a branch: `git checkout -b fix/descriptive-name`
   2. Make changes and commit
   3. Push branch: `git push -u origin fix/descriptive-name`
   4. Open PR via `gh pr create`
-  5. Wait for CI to pass
+  5. Wait for CI to pass — all required checks (Lint, Typecheck, Vitest, Playwright E2E) must be green
   6. Merge via `gh pr merge --squash --delete-branch`
+  7. If merge is blocked, check which status check failed and fix it — do not bypass with `--admin`
 
 ---
 

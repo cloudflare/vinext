@@ -2380,6 +2380,9 @@ hydrate();
           if (id.startsWith("\0")) return null;
           if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
           if (!code.includes("next/font/local")) return null;
+          // Skip vinext's own font-local shim — it contains example paths
+          // in comments that would be incorrectly rewritten.
+          if (id.includes("font-local")) return null;
 
           // Verify there's actually an import from next/font/local
           const importRe = /import\s+\w+\s+from\s*['"]next\/font\/local['"]/;
