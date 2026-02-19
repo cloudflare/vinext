@@ -2352,6 +2352,73 @@ hydrate();
         },
       },
     } as Plugin & { _isBuild: boolean; _fontCache: Map<string, string>; _cacheDir: string },
+    // Local font path resolution:
+    // When a source file calls localFont({ src: "./font.woff2" }) or
+    // localFont({ src: [{ path: "./font.woff2" }] }), the relative paths
+    // won't resolve in the browser because the CSS is injected at runtime.
+    // This plugin rewrites those path strings into Vite asset import
+    // references so that both dev (/@fs/...) and prod (/assets/font-xxx.woff2)
+    // URLs are correct.
+    {
+      name: "vinext:local-fonts",
+      enforce: "pre",
+
+      transform: {
+        filter: {
+          id: {
+            include: /\.(tsx?|jsx?|mjs)$/,
+            exclude: /node_modules/,
+          },
+          code: "next/font/local",
+        },
+        handler(code, id) {
+          // Defensive guards — duplicate filter logic
+          if (id.includes("node_modules")) return null;
+          if (id.startsWith("\0")) return null;
+          if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
+          if (!code.includes("next/font/local")) return null;
+
+          // Verify there's actually an import from next/font/local
+          const importRe = /import\s+\w+\s+from\s*['"]next\/font\/local['"]/;
+          if (!importRe.test(code)) return null;
+
+          const s = new MagicString(code);
+          let hasChanges = false;
+          let fontImportCounter = 0;
+          const imports: string[] = [];
+
+          // Match font file paths in `path: "..."` or `src: "..."` properties.
+          // Captures: (1) property+colon prefix, (2) quote char, (3) the path.
+          const fontPathRe = /((?:path|src)\s*:\s*)(['"])([^'"]+\.(?:woff2?|ttf|otf|eot))\2/g;
+
+          let match;
+          while ((match = fontPathRe.exec(code)) !== null) {
+            const [fullMatch, prefix, _quote, fontPath] = match;
+            const varName = `__vinext_local_font_${fontImportCounter++}`;
+
+            // Add an import for this font file — Vite resolves it as a static
+            // asset and returns the correct URL for both dev and prod.
+            imports.push(`import ${varName} from ${JSON.stringify(fontPath)};`);
+
+            // Replace: path: "./font.woff2" -> path: __vinext_local_font_0
+            const matchStart = match.index;
+            const matchEnd = matchStart + fullMatch.length;
+            s.overwrite(matchStart, matchEnd, `${prefix}${varName}`);
+            hasChanges = true;
+          }
+
+          if (!hasChanges) return null;
+
+          // Prepend the asset imports at the top of the file
+          s.prepend(imports.join("\n") + "\n");
+
+          return {
+            code: s.toString(),
+            map: s.generateMap({ hires: "boundary" }),
+          };
+        },
+      },
+    } as Plugin,
     // "use cache" directive transform:
     // Detects "use cache" at file-level or function-level and wraps the
     // exports/functions with registerCachedFunction() from vinext/cache-runtime.
