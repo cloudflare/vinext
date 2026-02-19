@@ -443,6 +443,7 @@ import { flushPreloads } from "next/dynamic";
 import { setSSRContext } from "next/router";
 import { getCacheHandler } from "next/cache";
 import { withFetchCache } from "vinext/fetch-cache";
+import { safeJsonStringify } from "vinext/html";
 ${middlewareImportCode}
 
 // i18n config (embedded at build time)
@@ -891,11 +892,11 @@ export async function renderPage(request, url, manifest) {
       nextDataPayload.defaultLocale = i18nConfig.defaultLocale;
     }
     const localeGlobals = i18nConfig
-      ? ";window.__VINEXT_LOCALE__=" + JSON.stringify(locale) +
-        ";window.__VINEXT_LOCALES__=" + JSON.stringify(i18nConfig.locales) +
-        ";window.__VINEXT_DEFAULT_LOCALE__=" + JSON.stringify(i18nConfig.defaultLocale)
+      ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
+        ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
+        ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(i18nConfig.defaultLocale)
       : "";
-    const nextDataScript = "<script>window.__NEXT_DATA__ = " + JSON.stringify(nextDataPayload) + localeGlobals + "</script>";
+    const nextDataScript = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(nextDataPayload) + localeGlobals + "</script>";
 
     // Build the document shell with a placeholder for the streamed body
     var BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
@@ -1257,6 +1258,7 @@ hydrate();
           "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
           "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
           "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
+          "vinext/html": path.resolve(__dirname, "server", "html"),
         };
 
         // Detect if Cloudflare's vite plugin is present — if so, skip

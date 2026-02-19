@@ -1806,6 +1806,7 @@ export function generateSsrEntry(): string {
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { setNavigationContext } from "next/navigation";
+import { safeJsonStringify } from "vinext/html";
 
 /**
  * Collect all chunks from a ReadableStream into an array.
@@ -1889,7 +1890,7 @@ export async function handleSsr(rscStream, navContext, fontData) {
       rsc: rscChunks,
       params: navContext?.params || {},
     };
-    const rscEmbedScript = '<script>self.__VINEXT_RSC__=' + JSON.stringify(embedData) + '</script>';
+    const rscEmbedScript = '<script>self.__VINEXT_RSC__=' + safeJsonStringify(embedData) + '</script>';
 
     // Flush useServerInsertedHTML callbacks (CSS-in-JS style injection)
     const insertedElements = flushServerInsertedHTML();

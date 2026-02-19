@@ -15,6 +15,7 @@ import {
 import type { CachedPagesValue } from "../shims/cache.js";
 import { withFetchCache } from "../shims/fetch-cache.js";
 import { reportRequestError } from "./instrumentation.js";
+import { safeJsonStringify } from "./html.js";
 import { parseQueryString as parseQuery } from "../utils/query.js";
 import path from "node:path";
 import fs from "node:fs";
@@ -588,7 +589,7 @@ async function hydrate() {
 hydrate();
 </script>`;
 
-      const nextDataScript = `<script>window.__NEXT_DATA__ = ${JSON.stringify({
+      const nextDataScript = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
         props: { pageProps },
         page: patternToNextFormat(route.pattern),
         query: params,
@@ -601,7 +602,7 @@ hydrate();
           pageModuleUrl,
           appModuleUrl,
         },
-      })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${JSON.stringify(locale ?? i18nConfig.defaultLocale)};window.__VINEXT_LOCALES__=${JSON.stringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${JSON.stringify(i18nConfig.defaultLocale)}` : ""}</script>`;
+      })}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? i18nConfig.defaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(i18nConfig.defaultLocale)}` : ""}</script>`;
 
       // Try to load custom _document.tsx
       const docPath = path.join(pagesDir, "_document");

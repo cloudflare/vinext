@@ -21,6 +21,7 @@ import type { ViteDevServer } from "vite";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
+import { safeJsonStringify } from "../server/html.js";
 import path from "node:path";
 import fs from "node:fs";
 import React from "react";
@@ -338,7 +339,7 @@ async function renderStaticPage(options: RenderStaticPageOptions): Promise<strin
       : "";
 
   // __NEXT_DATA__ for client hydration
-  const nextDataScript = `<script>window.__NEXT_DATA__ = ${JSON.stringify({
+  const nextDataScript = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
     props: { pageProps },
     page: route.pattern,
     query: params,
