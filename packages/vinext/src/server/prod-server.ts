@@ -23,7 +23,8 @@ import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
-import { matchRedirect, matchRewrite, matchHeaders } from "../config/config-matchers.js";
+import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest } from "../config/config-matchers.js";
+import type { RequestContext } from "../config/config-matchers.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -533,6 +534,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         duplex: hasBody ? "half" : undefined,
       });
 
+      // Build request context for has/missing condition matching
+      const reqCtx: RequestContext = requestContextFromRequest(webRequest);
+
       // ── 4. Run middleware ─────────────────────────────────────────
       let resolvedUrl = url;
       const middlewareHeaders: Record<string, string> = {};
@@ -593,7 +597,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // ── 6. Apply redirects from next.config.js ────────────────────
       if (configRedirects.length) {
-        const redirect = matchRedirect(resolvedPathname, configRedirects);
+        const redirect = matchRedirect(resolvedPathname, configRedirects, reqCtx);
         if (redirect) {
           // Guard against double-prefixing: only add basePath if destination
           // doesn't already start with it.
@@ -608,7 +612,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // ── 7. Apply beforeFiles rewrites from next.config.js ─────────
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles);
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, reqCtx);
         if (rewritten) {
           resolvedUrl = rewritten;
           resolvedPathname = rewritten.split("?")[0];
@@ -636,7 +640,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // ── 9. Apply afterFiles rewrites from next.config.js ──────────
       if (configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles);
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, reqCtx);
         if (rewritten) {
           resolvedUrl = rewritten;
           resolvedPathname = rewritten.split("?")[0];
@@ -650,7 +654,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
         // ── 11. Fallback rewrites (if SSR returned 404) ─────────────
         if (response && response.status === 404 && configRewrites.fallback?.length) {
-          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback);
+          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, reqCtx);
           if (fallbackRewrite) {
             response = await renderPage(webRequest, fallbackRewrite, ssrManifest);
           }

@@ -8,25 +8,25 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 
+export interface HasCondition {
+  type: "header" | "cookie" | "query" | "host";
+  key: string;
+  value?: string;
+}
+
 export interface NextRedirect {
   source: string;
   destination: string;
   permanent: boolean;
-  has?: Array<{
-    type: "header" | "cookie" | "query" | "host";
-    key: string;
-    value?: string;
-  }>;
+  has?: HasCondition[];
+  missing?: HasCondition[];
 }
 
 export interface NextRewrite {
   source: string;
   destination: string;
-  has?: Array<{
-    type: "header" | "cookie" | "query" | "host";
-    key: string;
-    value?: string;
-  }>;
+  has?: HasCondition[];
+  missing?: HasCondition[];
 }
 
 export interface NextHeader {

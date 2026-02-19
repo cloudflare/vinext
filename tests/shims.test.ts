@@ -1954,6 +1954,242 @@ describe("matchConfigPattern", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// has/missing condition matching unit tests (next.config.js redirects/rewrites)
+
+describe("parseCookies", () => {
+  it("parses standard cookie header", async () => {
+    const { parseCookies } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(parseCookies("a=1; b=2; c=three")).toEqual({ a: "1", b: "2", c: "three" });
+  });
+
+  it("returns empty object for null", async () => {
+    const { parseCookies } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(parseCookies(null)).toEqual({});
+  });
+
+  it("returns empty object for empty string", async () => {
+    const { parseCookies } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(parseCookies("")).toEqual({});
+  });
+
+  it("handles cookies with = in value", async () => {
+    const { parseCookies } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(parseCookies("token=abc=def")).toEqual({ token: "abc=def" });
+  });
+
+  it("trims whitespace around keys and values", async () => {
+    const { parseCookies } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(parseCookies("  a = 1 ;  b = 2 ")).toEqual({ a: "1", b: "2" });
+  });
+});
+
+describe("checkHasConditions", () => {
+  function makeCtx(overrides: Partial<{
+    headers: Record<string, string>;
+    cookies: Record<string, string>;
+    query: Record<string, string>;
+    host: string;
+  }> = {}) {
+    const headers = new Headers(overrides.headers ?? {});
+    if (overrides.cookies) {
+      headers.set("cookie", Object.entries(overrides.cookies).map(([k, v]) => `${k}=${v}`).join("; "));
+    }
+    const query = new URLSearchParams(overrides.query ?? {});
+    return {
+      headers,
+      cookies: overrides.cookies ?? {},
+      query,
+      host: overrides.host ?? "localhost",
+    };
+  }
+
+  it("returns true when no conditions", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(checkHasConditions(undefined, undefined, makeCtx())).toBe(true);
+  });
+
+  // -- header conditions --
+  it("has header: passes when header present", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ headers: { "x-custom": "yes" } });
+    expect(checkHasConditions([{ type: "header", key: "x-custom" }], undefined, ctx)).toBe(true);
+  });
+
+  it("has header: fails when header absent", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({});
+    expect(checkHasConditions([{ type: "header", key: "x-custom" }], undefined, ctx)).toBe(false);
+  });
+
+  it("has header with value: matches regex", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ headers: { "x-auth": "yes" } });
+    expect(checkHasConditions([{ type: "header", key: "x-auth", value: "(?:yes|true)" }], undefined, ctx)).toBe(true);
+    expect(checkHasConditions([{ type: "header", key: "x-auth", value: "(?:no|false)" }], undefined, ctx)).toBe(false);
+  });
+
+  // -- cookie conditions --
+  it("has cookie: passes when cookie present", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ cookies: { "session": "abc" } });
+    expect(checkHasConditions([{ type: "cookie", key: "session" }], undefined, ctx)).toBe(true);
+  });
+
+  it("has cookie: fails when cookie absent", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ cookies: {} });
+    expect(checkHasConditions([{ type: "cookie", key: "session" }], undefined, ctx)).toBe(false);
+  });
+
+  it("has cookie with exact value", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ cookies: { "authorized": "true" } });
+    expect(checkHasConditions([{ type: "cookie", key: "authorized", value: "true" }], undefined, ctx)).toBe(true);
+    expect(checkHasConditions([{ type: "cookie", key: "authorized", value: "false" }], undefined, ctx)).toBe(false);
+  });
+
+  // -- query conditions --
+  it("has query: passes when query param present", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ query: { page: "home" } });
+    expect(checkHasConditions([{ type: "query", key: "page" }], undefined, ctx)).toBe(true);
+  });
+
+  it("has query: fails when query param absent", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ query: {} });
+    expect(checkHasConditions([{ type: "query", key: "page" }], undefined, ctx)).toBe(false);
+  });
+
+  it("has query with regex value", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ query: { page: "home" } });
+    expect(checkHasConditions([{ type: "query", key: "page", value: "home|about" }], undefined, ctx)).toBe(true);
+    expect(checkHasConditions([{ type: "query", key: "page", value: "^settings$" }], undefined, ctx)).toBe(false);
+  });
+
+  // -- host conditions --
+  it("has host: matches exact value", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ host: "example.com" });
+    expect(checkHasConditions([{ type: "host", key: "", value: "example.com" }], undefined, ctx)).toBe(true);
+    expect(checkHasConditions([{ type: "host", key: "", value: "other.com" }], undefined, ctx)).toBe(false);
+  });
+
+  it("has host: matches regex value", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ host: "staging.example.com" });
+    expect(checkHasConditions([{ type: "host", key: "", value: ".*\\.example\\.com" }], undefined, ctx)).toBe(true);
+  });
+
+  // -- missing conditions --
+  it("missing header: passes when header absent", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({});
+    expect(checkHasConditions(undefined, [{ type: "header", key: "x-block" }], ctx)).toBe(true);
+  });
+
+  it("missing header: fails when header present", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ headers: { "x-block": "1" } });
+    expect(checkHasConditions(undefined, [{ type: "header", key: "x-block" }], ctx)).toBe(false);
+  });
+
+  it("missing cookie: passes when cookie absent", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ cookies: {} });
+    expect(checkHasConditions(undefined, [{ type: "cookie", key: "stay-here" }], ctx)).toBe(true);
+  });
+
+  it("missing cookie: fails when cookie present", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ cookies: { "stay-here": "1" } });
+    expect(checkHasConditions(undefined, [{ type: "cookie", key: "stay-here" }], ctx)).toBe(false);
+  });
+
+  // -- combined has + missing --
+  it("both has and missing must pass", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ cookies: { "auth": "yes" } });
+    // has: cookie auth present (passes), missing: cookie block absent (passes)
+    expect(checkHasConditions(
+      [{ type: "cookie", key: "auth" }],
+      [{ type: "cookie", key: "block" }],
+      ctx,
+    )).toBe(true);
+    // has: cookie auth present (passes), missing: cookie auth absent (fails — it's present)
+    expect(checkHasConditions(
+      [{ type: "cookie", key: "auth" }],
+      [{ type: "cookie", key: "auth" }],
+      ctx,
+    )).toBe(false);
+  });
+
+  it("all has conditions must match (conjunction)", async () => {
+    const { checkHasConditions } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const ctx = makeCtx({ cookies: { "a": "1" }, query: { "page": "home" } });
+    // Both match
+    expect(checkHasConditions(
+      [{ type: "cookie", key: "a" }, { type: "query", key: "page" }],
+      undefined,
+      ctx,
+    )).toBe(true);
+    // One doesn't match
+    expect(checkHasConditions(
+      [{ type: "cookie", key: "a" }, { type: "query", key: "missing" }],
+      undefined,
+      ctx,
+    )).toBe(false);
+  });
+});
+
 describe("next/form shim", () => {
   it("exports default Form component", async () => {
     const mod = await import("../packages/vinext/src/shims/form.js");

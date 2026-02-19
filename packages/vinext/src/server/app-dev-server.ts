@@ -690,10 +690,68 @@ function __matchConfigPattern(pathname, pattern) {
   return params;
 }
 
-function __applyConfigRedirects(pathname) {
+function __parseCookies(cookieHeader) {
+  if (!cookieHeader) return {};
+  const cookies = {};
+  for (const part of cookieHeader.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq === -1) continue;
+    const key = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (key) cookies[key] = value;
+  }
+  return cookies;
+}
+
+function __checkSingleCondition(condition, ctx) {
+  switch (condition.type) {
+    case "header": {
+      const v = ctx.headers.get(condition.key);
+      if (v === null) return false;
+      if (condition.value !== undefined) { try { return new RegExp(condition.value).test(v); } catch { return v === condition.value; } }
+      return true;
+    }
+    case "cookie": {
+      const v = ctx.cookies[condition.key];
+      if (v === undefined) return false;
+      if (condition.value !== undefined) { try { return new RegExp(condition.value).test(v); } catch { return v === condition.value; } }
+      return true;
+    }
+    case "query": {
+      const v = ctx.query.get(condition.key);
+      if (v === null) return false;
+      if (condition.value !== undefined) { try { return new RegExp(condition.value).test(v); } catch { return v === condition.value; } }
+      return true;
+    }
+    case "host": {
+      if (condition.value !== undefined) { try { return new RegExp(condition.value).test(ctx.host); } catch { return ctx.host === condition.value; } }
+      return ctx.host === condition.key;
+    }
+    default: return false;
+  }
+}
+
+function __checkHasConditions(has, missing, ctx) {
+  if (has) { for (const c of has) { if (!__checkSingleCondition(c, ctx)) return false; } }
+  if (missing) { for (const c of missing) { if (__checkSingleCondition(c, ctx)) return false; } }
+  return true;
+}
+
+function __buildRequestContext(request) {
+  const url = new URL(request.url);
+  return {
+    headers: request.headers,
+    cookies: __parseCookies(request.headers.get("cookie")),
+    query: url.searchParams,
+    host: request.headers.get("host") || url.host,
+  };
+}
+
+function __applyConfigRedirects(pathname, ctx) {
   for (const rule of __configRedirects) {
     const params = __matchConfigPattern(pathname, rule.source);
     if (params) {
+      if (ctx && (rule.has || rule.missing)) { if (!__checkHasConditions(rule.has, rule.missing, ctx)) continue; }
       let dest = rule.destination;
       for (const [key, value] of Object.entries(params)) dest = dest.replace(":" + key, value);
       return { destination: dest, permanent: rule.permanent };
@@ -702,10 +760,11 @@ function __applyConfigRedirects(pathname) {
   return null;
 }
 
-function __applyConfigRewrites(pathname, rules) {
+function __applyConfigRewrites(pathname, rules, ctx) {
   for (const rule of rules) {
     const params = __matchConfigPattern(pathname, rule.source);
     if (params) {
+      if (ctx && (rule.has || rule.missing)) { if (!__checkHasConditions(rule.has, rule.missing, ctx)) continue; }
       let dest = rule.destination;
       for (const [key, value] of Object.entries(params)) dest = dest.replace(":" + key, value);
       return dest;
@@ -786,8 +845,9 @@ async function _handleRequest(request) {
   }
 
   // ── Apply redirects from next.config.js ───────────────────────────────
+  const __reqCtx = __buildRequestContext(request);
   if (__configRedirects.length) {
-    const __redir = __applyConfigRedirects(pathname);
+    const __redir = __applyConfigRedirects(pathname, __reqCtx);
     if (__redir) {
       const __redirDest = __basePath && !__redir.destination.startsWith(__basePath)
         ? __basePath + __redir.destination
@@ -801,7 +861,7 @@ async function _handleRequest(request) {
 
   // ── Apply beforeFiles rewrites from next.config.js ────────────────────
   if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
-    const __rewritten = __applyConfigRewrites(pathname, __configRewrites.beforeFiles);
+    const __rewritten = __applyConfigRewrites(pathname, __configRewrites.beforeFiles, __reqCtx);
     if (__rewritten) pathname = __rewritten;
   }
 
@@ -1034,7 +1094,7 @@ async function _handleRequest(request) {
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
-    const __afterRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.afterFiles);
+    const __afterRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.afterFiles, __reqCtx);
     if (__afterRewritten) cleanPathname = __afterRewritten;
   }
 
@@ -1042,7 +1102,7 @@ async function _handleRequest(request) {
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
-    const __fallbackRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.fallback);
+    const __fallbackRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.fallback, __reqCtx);
     if (__fallbackRewritten) {
       cleanPathname = __fallbackRewritten;
       match = matchRoute(cleanPathname, routes);

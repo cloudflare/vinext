@@ -51,15 +51,40 @@ test.describe("Config Redirects (OpenNext compat)", () => {
   });
 
   // Ref: opennextjs-cloudflare config.redirect.test.ts — cookie conditions
-  // NOTE: vinext does not yet implement has/missing conditions on redirects.
-  // See: matchRedirect() in config-matchers.ts — only checks source pattern.
-  test.fixme(
-    "redirect with has/missing cookie conditions",
-    async () => {
-      // Would test: redirect only when cookie is present/missing
-      // Needs has/missing support in matchRedirect()
-    },
-  );
+  test("redirect with has cookie condition only fires when cookie present", async ({ request }) => {
+    // Without the cookie — should NOT redirect (200 or 404, not 3xx)
+    const noRedirect = await request.get(`${BASE}/has-cookie-redirect`, {
+      maxRedirects: 0,
+    });
+    // Should NOT be a redirect (no cookie present)
+    expect(noRedirect.status()).not.toBe(307);
+    expect(noRedirect.status()).not.toBe(308);
+
+    // With the cookie — should redirect
+    const withRedirect = await request.get(`${BASE}/has-cookie-redirect`, {
+      maxRedirects: 0,
+      headers: { Cookie: "redirect-me=1" },
+    });
+    expect(withRedirect.status()).toBe(307);
+    expect(withRedirect.headers()["location"]).toMatch(/\/about$/);
+  });
+
+  test("redirect with missing cookie condition only fires when cookie absent", async ({ request }) => {
+    // Without the cookie — should redirect (cookie is missing → condition met)
+    const shouldRedirect = await request.get(`${BASE}/missing-cookie-redirect`, {
+      maxRedirects: 0,
+    });
+    expect(shouldRedirect.status()).toBe(307);
+    expect(shouldRedirect.headers()["location"]).toMatch(/\/about$/);
+
+    // With the cookie — should NOT redirect (cookie is present → missing condition fails)
+    const noRedirect = await request.get(`${BASE}/missing-cookie-redirect`, {
+      maxRedirects: 0,
+      headers: { Cookie: "stay-here=1" },
+    });
+    expect(noRedirect.status()).not.toBe(307);
+    expect(noRedirect.status()).not.toBe(308);
+  });
 });
 
 test.describe("Config Rewrites (OpenNext compat)", () => {
