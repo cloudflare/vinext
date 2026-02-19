@@ -399,6 +399,14 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     const url = req.url ?? "/";
     const pathname = url.split("?")[0];
 
+    // Guard against protocol-relative URL open redirect attacks.
+    // See comment in app-dev-server.ts _handleRequest for full explanation.
+    if (pathname.startsWith("//")) {
+      res.writeHead(404);
+      res.end("404 Not Found");
+      return;
+    }
+
     // Serve static assets from client build
     if (pathname !== "/" && tryServeStatic(req, res, clientDir, pathname, compress)) {
       return;
@@ -476,6 +484,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     const rawUrl = req.url ?? "/";
     let url = rawUrl;
     let pathname = url.split("?")[0];
+
+    // Guard against protocol-relative URL open redirect attacks.
+    // See comment in app-dev-server.ts _handleRequest for full explanation.
+    if (pathname.startsWith("//")) {
+      res.writeHead(404);
+      res.end("404 Not Found");
+      return;
+    }
 
     // ── 1. Static assets ──────────────────────────────────────────
     // Serve static files from client build. When basePath is configured,

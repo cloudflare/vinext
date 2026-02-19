@@ -1619,6 +1619,17 @@ hydrate();
                 return next();
               }
 
+              // Guard against protocol-relative URL open redirect attacks.
+              // Paths like //example.com/ would be redirected to //example.com
+              // by the trailing-slash normalizer, which browsers interpret as
+              // http://example.com — an open redirect. Next.js returns 404 for
+              // double-slash paths.
+              if (pathname.startsWith("//")) {
+                res.writeHead(404);
+                res.end("404 Not Found");
+                return;
+              }
+
               // Strip basePath prefix from URL for route matching.
               // All internal routing uses basePath-free paths.
               //

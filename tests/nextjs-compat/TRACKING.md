@@ -895,7 +895,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 |---|---|---|---|
 | 1 | Trailing slash stripped via 308 redirect | PASS | `/about/` → `/about` |
 | 2 | Trailing slash redirect preserves search params | PASS | `/about/?foo=bar` → `/about?foo=bar` |
-| 3 | Double-slash path returns 404 (open redirect protection) | FIXME | vinext does not guard against `//example.com/` open redirect |
+| 3 | Double-slash path returns 404 (open redirect protection) | PASS | **FIXED** — `//` guard added to all entry points: dev servers, prod servers, and generated Worker entries |
 
 ### ON-14: Catch-all, Host URL, Search Params
 
@@ -944,10 +944,10 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | ON-10. Server Actions | 5 | 5 | 0 | 0 | 0 | `serverActions.test.ts` |
 | ON-11. Middleware Redirect/Rewrite | 6 | 5 | 1 | 0 | 0 | `middleware.redirect.test.ts` |
 | ON-12. Config Redirects/Rewrites | 8 | 7 | 1 | 0 | 0 | `config.redirect.test.ts` |
-| ON-13. Trailing Slash | 3 | 2 | 1 | 0 | 0 | `trailing.test.ts` |
+| ON-13. Trailing Slash | 3 | 3 | 0 | 0 | 0 | `trailing.test.ts` |
 | ON-14. Catch-all/Host/Query | 6 | 4 | 2 | 0 | 0 | `catch-all.test.ts`, `host.test.ts`, `query.test.ts` |
 | ON-15. Config Headers | 6 | 5 | 0 | 1 | 0 | `headers.test.ts` |
-| **Total** | **84** | **64** | **7** | **12** | **1** | |
+| **Total** | **84** | **65** | **6** | **12** | **1** | |
 
 ### New Feature Gaps Found (ON-11 through ON-15)
 
@@ -955,7 +955,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 |---------|------|-------|
 | `NextResponse.rewrite()` status propagation | ON-11 #5 | Status code from `NextResponse.rewrite(url, { status: 403 })` is silently dropped |
 | `has`/`missing` conditions on config redirects | ON-12 #5 | `matchRedirect()` in `config-matchers.ts` only checks source pattern |
-| Double-slash open redirect protection | ON-13 #3 | `//example.com/` not guarded — trailing slash redirect creates protocol-relative URL |
+| ~~Double-slash open redirect protection~~ | ~~ON-13 #3~~ | **FIXED** — `//` guard added to all entry points (PR #151) |
 | Multi-value searchParams as arrays | ON-14 #5 | `URLSearchParams.forEach()` overwrites duplicate keys; need `getAll()` |
 | Middleware request header forwarding | ON-14 #6 | `x-middleware-request-*` headers not unpacked into `headers()` context |
 

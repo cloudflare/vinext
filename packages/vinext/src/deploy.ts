@@ -316,6 +316,12 @@ export function generateAppRouterWorkerEntry(): string {
 export default {
   async fetch(request: Request): Promise<Response> {
     try {
+      // Block protocol-relative URL open redirect attacks (//evil.com/).
+      const { pathname } = new URL(request.url);
+      if (pathname.startsWith("//")) {
+        return new Response("404 Not Found", { status: 404 });
+      }
+
       // Load the RSC handler from the RSC environment.
       // @ts-expect-error — import.meta.viteRsc is injected by @vitejs/plugin-rsc
       const rscModule = await import.meta.viteRsc.loadModule("rsc", "index");
@@ -359,6 +365,11 @@ export default {
       const url = new URL(request.url);
       const pathname = url.pathname;
       const urlWithQuery = pathname + url.search;
+
+      // Block protocol-relative URL open redirect attacks (//evil.com/).
+      if (pathname.startsWith("//")) {
+        return new Response("404 Not Found", { status: 404 });
+      }
 
       // API routes
       if (pathname.startsWith("/api/") || pathname === "/api") {

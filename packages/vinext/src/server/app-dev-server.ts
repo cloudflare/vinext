@@ -892,6 +892,16 @@ export default async function handler(request) {
 async function _handleRequest(request) {
   const url = new URL(request.url);
   let pathname = url.pathname;
+
+  // Guard against protocol-relative URL open redirect attacks.
+  // Paths like //example.com/ would be redirected to //example.com by the
+  // trailing-slash normalizer, which browsers interpret as http://example.com.
+  // Next.js returns 404 for these paths. Check the raw pathname before any
+  // basePath stripping so the guard cannot be bypassed with a basePath prefix.
+  if (pathname.startsWith("//")) {
+    return new Response("404 Not Found", { status: 404 });
+  }
+
   ${bp ? `
   // Strip basePath prefix
   if (__basePath && pathname.startsWith(__basePath)) {

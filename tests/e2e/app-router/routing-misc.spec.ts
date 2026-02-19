@@ -34,15 +34,13 @@ test.describe("Trailing Slash (OpenNext compat)", () => {
   });
 
   // Ref: opennextjs-cloudflare trailing.test.ts — "trailingSlash redirect to external domain"
-  // vinext does not guard against double-slash open redirect attacks.
   // Next.js returns 404 for //example.com/ to prevent protocol-relative redirects.
-  test.fixme(
-    "double-slash path returns 404, not external redirect",
-    async ({ page }) => {
-      const response = await page.goto(`${BASE}//example.com/`);
-      expect(response?.status()).toBe(404);
-    },
-  );
+  test("double-slash path returns 404, not external redirect", async ({
+    page,
+  }) => {
+    const response = await page.goto(`${BASE}//example.com/`);
+    expect(response?.status()).toBe(404);
+  });
 });
 
 test.describe("Catch-all API Route with Hyphen (OpenNext compat)", () => {
