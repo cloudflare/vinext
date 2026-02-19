@@ -1961,6 +1961,61 @@ describe("matchConfigPattern", () => {
     // Dot should not match any character
     expect(matchConfigPattern("/feedXxml", "/feed.xml")).toBeNull();
   });
+
+  it("matches :path* with literal suffix (e.g. /:path*.md)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    // Should match URLs ending in .md
+    expect(matchConfigPattern("/article.md", "/:path*.md")).toEqual({ path: "article" });
+    expect(matchConfigPattern("/news/my-article.md", "/:path*.md")).toEqual({ path: "news/my-article" });
+    expect(matchConfigPattern("/docs/guide/intro.md", "/:path*.md")).toEqual({ path: "docs/guide/intro" });
+    // Should NOT match URLs without .md suffix
+    expect(matchConfigPattern("/", "/:path*.md")).toBeNull();
+    expect(matchConfigPattern("/about", "/:path*.md")).toBeNull();
+    expect(matchConfigPattern("/news", "/:path*.md")).toBeNull();
+    expect(matchConfigPattern("/article.txt", "/:path*.md")).toBeNull();
+  });
+
+  it("matches :path+ with literal suffix (e.g. /:path+.json)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    // Should match URLs ending in .json with at least one path segment
+    expect(matchConfigPattern("/data.json", "/:path+.json")).toEqual({ path: "data" });
+    expect(matchConfigPattern("/api/users.json", "/:path+.json")).toEqual({ path: "api/users" });
+    // Should NOT match bare .json (zero segments before suffix)
+    expect(matchConfigPattern("/.json", "/:path+.json")).toBeNull();
+    // Should NOT match URLs without .json suffix
+    expect(matchConfigPattern("/data", "/:path+.json")).toBeNull();
+    expect(matchConfigPattern("/", "/:path+.json")).toBeNull();
+  });
+
+  it("matches :path* with prefix and suffix (e.g. /docs/:path*.md)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    expect(matchConfigPattern("/docs/intro.md", "/docs/:path*.md")).toEqual({ path: "intro" });
+    expect(matchConfigPattern("/docs/guide/getting-started.md", "/docs/:path*.md")).toEqual({
+      path: "guide/getting-started",
+    });
+    // Should NOT match without .md
+    expect(matchConfigPattern("/docs/intro", "/docs/:path*.md")).toBeNull();
+    // Should NOT match different prefix
+    expect(matchConfigPattern("/blog/intro.md", "/docs/:path*.md")).toBeNull();
+  });
+
+  it("still matches plain :path* catch-all (no suffix) correctly", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    // Ensure the fix doesn't regress existing catch-all behavior
+    expect(matchConfigPattern("/docs", "/docs/:path*")).toEqual({ path: "" });
+    expect(matchConfigPattern("/docs/intro", "/docs/:path*")).toEqual({ path: "intro" });
+    expect(matchConfigPattern("/docs/guide/getting-started", "/docs/:path*")).toEqual({
+      path: "guide/getting-started",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2140,6 +2195,43 @@ describe("matchConfigPattern rejects ReDoS patterns", () => {
       "/:id((a+)+b)",
     );
     expect(result).toBeNull();
+  });
+});
+
+describe("matchConfigPattern handles parameterized suffix patterns", () => {
+  it("matches :path* with literal suffix (e.g. /:path*.md)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    // Should match URLs ending in .md
+    expect(matchConfigPattern("/article.md", "/:path*.md")).toEqual({ path: "article" });
+    expect(matchConfigPattern("/news/my-article.md", "/:path*.md")).toEqual({ path: "news/my-article" });
+    // Should NOT match URLs without .md suffix
+    expect(matchConfigPattern("/", "/:path*.md")).toBeNull();
+    expect(matchConfigPattern("/about", "/:path*.md")).toBeNull();
+    expect(matchConfigPattern("/news", "/:path*.md")).toBeNull();
+  });
+
+  it("matches :path+ with literal suffix (e.g. /:path+.json)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(matchConfigPattern("/data.json", "/:path+.json")).toEqual({ path: "data" });
+    expect(matchConfigPattern("/api/users.json", "/:path+.json")).toEqual({ path: "api/users" });
+    // Zero segments before suffix — should NOT match for :path+
+    expect(matchConfigPattern("/.json", "/:path+.json")).toBeNull();
+    expect(matchConfigPattern("/", "/:path+.json")).toBeNull();
+  });
+
+  it("does not regress plain :path* catch-all (no suffix)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(matchConfigPattern("/docs", "/docs/:path*")).toEqual({ path: "" });
+    expect(matchConfigPattern("/docs/intro", "/docs/:path*")).toEqual({ path: "intro" });
+    expect(matchConfigPattern("/docs/guide/getting-started", "/docs/:path*")).toEqual({
+      path: "guide/getting-started",
+    });
   });
 });
 

@@ -272,8 +272,16 @@ export function matchConfigPattern(
   pathname: string,
   pattern: string,
 ): Record<string, string> | null {
-  // If the pattern contains regex groups like (\d+) or (.*), use regex matching
-  if (pattern.includes("(") || pattern.includes("\\")) {
+  // If the pattern contains regex groups like (\d+) or (.*), use regex matching.
+  // Also enter this branch when a catch-all parameter (:param* or :param+) is
+  // followed by a literal suffix (e.g. "/:path*.md"). Without this, the suffix
+  // pattern falls through to the simple segment matcher which incorrectly treats
+  // the whole segment (":path*.md") as a named parameter and matches everything.
+  if (
+    pattern.includes("(") ||
+    pattern.includes("\\") ||
+    /:\w+[*+][^/]/.test(pattern)
+  ) {
     try {
       const paramNames: string[] = [];
       const regexStr = pattern
