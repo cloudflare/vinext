@@ -540,6 +540,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // ── 4. Run middleware ─────────────────────────────────────────
       let resolvedUrl = url;
       const middlewareHeaders: Record<string, string> = {};
+      let middlewareRewriteStatus: number | undefined;
       if (typeof runMiddleware === "function") {
         const result = await runMiddleware(webRequest);
 
@@ -571,6 +572,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         if (result.rewriteUrl) {
           resolvedUrl = result.rewriteUrl;
         }
+
+        // Apply custom status code from middleware rewrite
+        // (e.g. NextResponse.rewrite(url, { status: 403 }))
+        middlewareRewriteStatus = result.rewriteStatus;
       }
 
       // Unpack x-middleware-request-* headers into the actual request so that
@@ -634,7 +639,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         const responseHeaders: Record<string, string> = { ...middlewareHeaders };
         response.headers.forEach((v, k) => { responseHeaders[k] = v; });
 
-        sendCompressed(req, res, responseBody, ct, response.status, responseHeaders, compress);
+        sendCompressed(req, res, responseBody, ct, middlewareRewriteStatus ?? response.status, responseHeaders, compress);
         return;
       }
 
@@ -673,7 +678,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const responseHeaders: Record<string, string> = { ...middlewareHeaders };
       response.headers.forEach((v, k) => { responseHeaders[k] = v; });
 
-      sendCompressed(req, res, responseBody, ct, response.status, responseHeaders, compress);
+      sendCompressed(req, res, responseBody, ct, middlewareRewriteStatus ?? response.status, responseHeaders, compress);
     } catch (e) {
       console.error("[vinext] Server error:", e);
       res.writeHead(500);

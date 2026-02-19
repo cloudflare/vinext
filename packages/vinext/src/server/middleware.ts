@@ -166,6 +166,8 @@ export interface MiddlewareResult {
   redirectStatus?: number;
   /** If set, rewrite to this URL (internal). */
   rewriteUrl?: string;
+  /** HTTP status for rewrite (e.g. 403 from NextResponse.rewrite(url, { status: 403 })). */
+  rewriteStatus?: number;
   /** Headers to set on the response. */
   responseHeaders?: Headers;
   /** If the middleware returned a full Response, use it directly. */
@@ -274,6 +276,7 @@ export async function runMiddleware(
     return {
       continue: true,
       rewriteUrl: rewritePath,
+      rewriteStatus: response.status !== 200 ? response.status : undefined,
       responseHeaders,
     };
   }

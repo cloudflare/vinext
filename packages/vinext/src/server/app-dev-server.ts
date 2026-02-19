@@ -935,6 +935,8 @@ async function _handleRequest(request) {
 
   // Middleware response headers to merge into the final response
   let _middlewareResponseHeaders = null;
+  // Custom status code from middleware rewrite (e.g. NextResponse.rewrite(url, { status: 403 }))
+  let _middlewareRewriteStatus = null;
 
   ${middlewarePath ? `
    // Run proxy/middleware if present and path matches
@@ -965,6 +967,10 @@ async function _handleRequest(request) {
           if (rewriteUrl) {
             const rewriteParsed = new URL(rewriteUrl, request.url);
             cleanPathname = rewriteParsed.pathname;
+            // Capture custom status code from rewrite (e.g. NextResponse.rewrite(url, { status: 403 }))
+            if (mwResponse.status !== 200) {
+              _middlewareRewriteStatus = mwResponse.status;
+            }
             // Also save any other headers from the rewrite response
             _middlewareResponseHeaders = new Headers();
             for (const [key, value] of mwResponse.headers) {
@@ -1669,7 +1675,7 @@ async function _handleRequest(request) {
         responseHeaders[key] = value;
       }
     }
-    return new Response(rscStream, { headers: responseHeaders });
+    return new Response(rscStream, { status: _middlewareRewriteStatus || 200, headers: responseHeaders });
   }
 
   // Collect font data from RSC environment before passing to SSR
@@ -1699,8 +1705,8 @@ async function _handleRequest(request) {
   setHeadersContext(null);
   setNavigationContext(null);
 
-  // Helper to attach draftMode cookie and middleware headers to a response
-  function attachDraftCookie(response) {
+  // Helper to attach draftMode cookie, middleware headers, and rewrite status to a response
+  function attachMiddlewareContext(response) {
     if (draftCookie) {
       response.headers.append("Set-Cookie", draftCookie);
     }
@@ -1709,6 +1715,13 @@ async function _handleRequest(request) {
       for (const [key, value] of _middlewareResponseHeaders) {
         response.headers.set(key, value);
       }
+    }
+    // Apply custom status code from middleware rewrite
+    if (_middlewareRewriteStatus) {
+      return new Response(response.body, {
+        status: _middlewareRewriteStatus,
+        headers: response.headers,
+      });
     }
     return response;
   }
@@ -1728,7 +1741,7 @@ async function _handleRequest(request) {
 
   // force-dynamic: always return no-store (highest priority)
   if (isForceDynamic) {
-    return attachDraftCookie(new Response(htmlStream, {
+    return attachMiddlewareContext(new Response(htmlStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store, must-revalidate",
@@ -1742,7 +1755,7 @@ async function _handleRequest(request) {
   // dynamic='error' should have already thrown (via throwing Proxy) if user
   // code accessed dynamic APIs, so reaching here means rendering succeeded.
   if ((isForceStatic || isDynamicError) && (revalidateSeconds === null || revalidateSeconds === 0)) {
-    return attachDraftCookie(new Response(htmlStream, {
+    return attachMiddlewareContext(new Response(htmlStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
@@ -1754,7 +1767,7 @@ async function _handleRequest(request) {
   // auto mode: dynamic API usage (headers(), cookies(), connection(), noStore(),
   // searchParams access) opts the page into dynamic rendering with no-store.
   if (dynamicUsedDuringRender) {
-    return attachDraftCookie(new Response(htmlStream, {
+    return attachMiddlewareContext(new Response(htmlStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store, must-revalidate",
@@ -1778,7 +1791,7 @@ async function _handleRequest(request) {
       console.error("[vinext] ISR cache store failed:", err);
     });
 
-    return attachDraftCookie(new Response(responseStream, {
+    return attachMiddlewareContext(new Response(responseStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
@@ -1787,7 +1800,7 @@ async function _handleRequest(request) {
     }));
   }
 
-  return attachDraftCookie(new Response(htmlStream, {
+  return attachMiddlewareContext(new Response(htmlStream, {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   }));
 }

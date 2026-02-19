@@ -423,7 +423,7 @@ export async function runMiddleware(request) {
     var rewritePath;
     try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
     catch { rewritePath = rewriteUrl; }
-    return { continue: true, rewriteUrl: rewritePath, responseHeaders: rwHeaders };
+    return { continue: true, rewriteUrl: rewritePath, rewriteStatus: response.status !== 200 ? response.status : undefined, responseHeaders: rwHeaders };
   }
 
   return { continue: false, response: response };

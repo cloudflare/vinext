@@ -63,9 +63,7 @@ test.describe("Middleware Rewrite (OpenNext compat)", () => {
   });
 
   // Ref: opennextjs-cloudflare middleware.rewrite.test.ts — "Middleware Rewrite Status Code"
-  // vinext does not propagate status from NextResponse.rewrite(url, { status }).
-  // The rewrite handler only reads x-middleware-rewrite header, not the response status.
-  test.fixme(
+  test(
     "rewrite with custom status code returns 403",
     async ({ page }) => {
       const statusPromise = new Promise<number>((resolve) => {
