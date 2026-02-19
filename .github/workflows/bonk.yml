@@ -49,3 +49,4 @@ jobs:
           mentions: "/bonk,@ask-bonk"
           permissions: write
           opencode_dev: true
+          agent: viguy
