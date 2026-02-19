@@ -541,6 +541,7 @@ export function createSSRHandler(
 
       // Collect SSR font links (Google Fonts <link> tags) and font class styles
       let fontHeadHTML = "";
+      const allFontStyles: string[] = [];
       try {
         const fontGoogle = await server.ssrLoadModule("next/font/google");
         if (typeof fontGoogle.getSSRFontLinks === "function") {
@@ -550,13 +551,21 @@ export function createSSRHandler(
           }
         }
         if (typeof fontGoogle.getSSRFontStyles === "function") {
-          const fontStyles = fontGoogle.getSSRFontStyles();
-          if (fontStyles.length > 0) {
-            fontHeadHTML += `<style data-vinext-fonts>${fontStyles.join("\n")}</style>\n  `;
-          }
+          allFontStyles.push(...fontGoogle.getSSRFontStyles());
         }
       } catch {
         // next/font/google not used — skip
+      }
+      try {
+        const fontLocal = await server.ssrLoadModule("next/font/local");
+        if (typeof fontLocal.getSSRFontStyles === "function") {
+          allFontStyles.push(...fontLocal.getSSRFontStyles());
+        }
+      } catch {
+        // next/font/local not used — skip
+      }
+      if (allFontStyles.length > 0) {
+        fontHeadHTML += `<style data-vinext-fonts>${allFontStyles.join("\n")}</style>\n  `;
       }
 
       // Convert absolute file paths to Vite-servable URLs (relative to root)

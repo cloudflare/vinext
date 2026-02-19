@@ -5,12 +5,15 @@
  * Generates @font-face CSS declarations and returns an object
  * with className, style, and variable properties.
  *
+ * Supports both client-side injection and SSR collection,
+ * matching the patterns used by the Google font shim.
+ *
  * Usage:
  *   import localFont from 'next/font/local';
  *   const myFont = localFont({ src: './my-font.woff2' });
  *   // myFont.className -> unique CSS class
- *   // myFont.style -> { fontFamily: "'my-font'" }
- *   // myFont.variable -> CSS variable name
+ *   // myFont.style -> { fontFamily: "'__local_font_0', sans-serif" }
+ *   // myFont.variable -> generated class name (e.g. "__variable_local_0")
  */
 
 let classCounter = 0;
@@ -85,16 +88,32 @@ function generateFontFaceCSS(
   return rules.join("\n");
 }
 
+// SSR: collect font styles for injection in <head>
+const ssrFontStyles: string[] = [];
+
+/**
+ * Get collected SSR font styles (used by the renderer).
+ * Note: We don't clear the arrays because fonts are loaded at module import
+ * time and need to persist across all requests in the Workers environment.
+ */
+export function getSSRFontStyles(): string[] {
+  return [...ssrFontStyles];
+}
+
 function injectFontFaceCSS(css: string, id: string): void {
   if (injectedFonts.has(id)) return;
   injectedFonts.add(id);
 
-  if (typeof document !== "undefined") {
-    const style = document.createElement("style");
-    style.textContent = css;
-    style.setAttribute("data-vinext-font", id);
-    document.head.appendChild(style);
+  // On server, store the CSS for SSR injection
+  if (typeof document === "undefined") {
+    ssrFontStyles.push(css);
+    return;
   }
+
+  const style = document.createElement("style");
+  style.textContent = css;
+  style.setAttribute("data-vinext-font", id);
+  document.head.appendChild(style);
 }
 
 /** Track which className CSS rules have been injected. */
@@ -119,12 +138,62 @@ function injectClassNameRule(
     css += `.${className} { ${variable}: ${fontFamily}; }\n`;
   }
 
-  if (typeof document !== "undefined") {
-    const style = document.createElement("style");
-    style.textContent = css;
-    style.setAttribute("data-vinext-font-class", className);
-    document.head.appendChild(style);
+  // On server, store the CSS for SSR injection
+  if (typeof document === "undefined") {
+    ssrFontStyles.push(css);
+    return;
   }
+
+  // On client, inject a <style> tag
+  const style = document.createElement("style");
+  style.textContent = css;
+  style.setAttribute("data-vinext-font-class", className);
+  document.head.appendChild(style);
+}
+
+/** Track which variable class CSS rules have been injected. */
+const injectedVariableRules = new Set<string>();
+
+/** Track which :root CSS variable rules have been injected. */
+const injectedRootVariables = new Set<string>();
+
+/**
+ * Inject a CSS rule that sets a CSS variable on an element.
+ * This is what makes `<html className={font.variable}>` set the CSS variable
+ * that can be referenced by other styles (e.g., Tailwind's font-sans).
+ *
+ * Note: Tailwind v4's @theme inline uses build-time --theme() functions that
+ * don't resolve runtime CSS variables. So we also apply font-family directly
+ * to ensure fonts work even when the app relies on @theme inline variables.
+ */
+function injectVariableClassRule(
+  variableClassName: string,
+  cssVarName: string,
+  fontFamily: string,
+): void {
+  if (injectedVariableRules.has(variableClassName)) return;
+  injectedVariableRules.add(variableClassName);
+
+  // Set the CSS variable AND apply font-family directly.
+  let css = `.${variableClassName} { ${cssVarName}: ${fontFamily}; font-family: ${fontFamily}; }\n`;
+
+  // Also inject at :root so CSS variable inheritance works throughout the page.
+  if (!injectedRootVariables.has(cssVarName)) {
+    injectedRootVariables.add(cssVarName);
+    css += `:root { ${cssVarName}: ${fontFamily}; }\n`;
+  }
+
+  // On server, store the CSS for SSR injection
+  if (typeof document === "undefined") {
+    ssrFontStyles.push(css);
+    return;
+  }
+
+  // On client, inject a <style> tag
+  const style = document.createElement("style");
+  style.textContent = css;
+  style.setAttribute("data-vinext-font-variable", variableClassName);
+  document.head.appendChild(style);
 }
 
 export default function localFont(options: LocalFontOptions): FontResult {
@@ -133,18 +202,27 @@ export default function localFont(options: LocalFontOptions): FontResult {
   const className = `__font_local_${id}`;
   const fallback = options.fallback ?? ["sans-serif"];
   const fontFamily = `'${family}', ${fallback.join(", ")}`;
-  const variable = options.variable;
+  const cssVarName = options.variable;
+  // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
+  // Users apply this class to set the CSS variable on that element.
+  const variableClassName = `__variable_local_${id}`;
 
   // Inject @font-face declarations
   const css = generateFontFaceCSS(family, options);
   injectFontFaceCSS(css, family);
 
   // Inject the className -> font-family CSS rule (+ optional CSS variable)
-  injectClassNameRule(className, fontFamily, variable);
+  injectClassNameRule(className, fontFamily, cssVarName);
+
+  // Inject a CSS rule for the variable class name if variable is specified.
+  // This is what makes `<html className={font.variable}>` set the CSS variable.
+  if (cssVarName) {
+    injectVariableClassRule(variableClassName, cssVarName, fontFamily);
+  }
 
   return {
     className,
     style: { fontFamily },
-    ...(variable ? { variable } : {}),
+    ...(cssVarName ? { variable: variableClassName } : {}),
   };
 }

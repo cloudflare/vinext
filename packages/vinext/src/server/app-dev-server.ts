@@ -214,7 +214,9 @@ import { clearPrivateCache as _clearPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
-import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStyles } from "next/font/google";
+import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle } from "next/font/google";
+import { getSSRFontStyles as _getSSRFontStylesLocal } from "next/font/local";
+function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 
 // Set navigation context in the ALS-backed store. "use client" components
 // rendered during SSR need the pathname/searchParams/params but the SSR

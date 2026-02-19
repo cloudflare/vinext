@@ -2371,7 +2371,7 @@ describe("next/font/local shim", () => {
     expect(result.style.fontFamily).toMatch(/__local_font_/);
   });
 
-  it("includes variable when specified", async () => {
+  it("includes variable as generated class name when specified", async () => {
     const { default: localFont } = await import(
       "../packages/vinext/src/shims/font-local.js"
     );
@@ -2379,7 +2379,9 @@ describe("next/font/local shim", () => {
       src: "./my-font.woff2",
       variable: "--font-custom",
     });
-    expect(result.variable).toBe("--font-custom");
+    // variable should be a generated class name, not the raw CSS variable
+    expect(result.variable).toMatch(/^__variable_local_/);
+    expect(result.variable).not.toBe("--font-custom");
   });
 
   it("accepts array of font sources", async () => {
@@ -2395,6 +2397,56 @@ describe("next/font/local shim", () => {
 
     expect(result.className).toMatch(/^__font_local_/);
     expect(result.style.fontFamily).toBeTruthy();
+  });
+
+  it("does not include variable when not specified", async () => {
+    const { default: localFont } = await import(
+      "../packages/vinext/src/shims/font-local.js"
+    );
+    const result = localFont({ src: "./no-var.woff2" });
+    expect(result.variable).toBeUndefined();
+  });
+
+  it("generates SSR font styles for className rules", async () => {
+    const fontLocal = await import(
+      "../packages/vinext/src/shims/font-local.js"
+    );
+    const localFont = fontLocal.default;
+    // In test (Node), typeof document === "undefined", so SSR path is used
+    const result = localFont({
+      src: "./ssr-test.woff2",
+      variable: "--font-ssr-test",
+    });
+
+    const ssrStyles = fontLocal.getSSRFontStyles();
+    expect(ssrStyles.length).toBeGreaterThan(0);
+
+    // Should contain @font-face rule
+    const allCSS = ssrStyles.join("\n");
+    expect(allCSS).toContain("@font-face");
+    expect(allCSS).toContain("ssr-test.woff2");
+
+    // Should contain className rule
+    expect(allCSS).toContain(`.${result.className}`);
+    expect(allCSS).toContain("font-family:");
+
+    // Should contain variable class rule with :root fallback
+    expect(allCSS).toContain(`.${result.variable}`);
+    expect(allCSS).toContain("--font-ssr-test");
+    expect(allCSS).toContain(":root");
+  });
+
+  it("generates unique classNames and variableClassNames", async () => {
+    const { default: localFont } = await import(
+      "../packages/vinext/src/shims/font-local.js"
+    );
+    const a = localFont({ src: "./a.woff2", variable: "--font-a" });
+    const b = localFont({ src: "./b.woff2", variable: "--font-b" });
+
+    expect(a.className).not.toBe(b.className);
+    expect(a.variable).not.toBe(b.variable);
+    expect(a.variable).toMatch(/^__variable_local_/);
+    expect(b.variable).toMatch(/^__variable_local_/);
   });
 });
 
