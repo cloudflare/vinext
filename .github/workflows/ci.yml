@@ -56,8 +56,17 @@ jobs:
       - run: pnpm test
 
   e2e:
-    name: Playwright E2E
+    name: E2E (${{ matrix.project }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - pages-router
+          - app-router
+          - cloudflare-pages-router
+          - pages-router-prod
+          - cloudflare-workers
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -72,9 +81,10 @@ jobs:
       - run: pnpm exec playwright test
         env:
           CI: true
+          PLAYWRIGHT_PROJECT: ${{ matrix.project }}
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.project }}
           path: playwright-report/
           retention-days: 7
