@@ -52,7 +52,7 @@ export default defineConfig({
 
     // vinext plugin (provides all next/* shims, routing, SSR, RSC).
     // @vitejs/plugin-rsc is auto-registered when app/ is detected.
-    ...vinext(),
+    vinext(),
 
     // Cloudflare Workers plugin — builds for workerd runtime
     cloudflare({

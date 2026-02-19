@@ -160,7 +160,7 @@ function buildViteConfig(overrides: Record<string, unknown> = {}) {
               client: "virtual:vinext-app-browser-entry",
             },
           }),
-          ...vinext(),
+          vinext(),
         ]
       : [vinext()],
     // Deduplicate React packages to prevent "Invalid hook call" errors
