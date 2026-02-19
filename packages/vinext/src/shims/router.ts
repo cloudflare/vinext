@@ -190,10 +190,31 @@ interface SSRContext {
   defaultLocale?: string;
 }
 
-let ssrContext: SSRContext | null = null;
+// ---------------------------------------------------------------------------
+// Server-side SSR state uses a registration pattern so this module can be
+// bundled for the browser. The ALS-backed implementation lives in
+// router-state.ts (server-only) and registers itself on import.
+// ---------------------------------------------------------------------------
+
+let _ssrContext: SSRContext | null = null;
+
+let _getSSRContext = (): SSRContext | null => _ssrContext;
+let _setSSRContextImpl = (ctx: SSRContext | null): void => { _ssrContext = ctx; };
+
+/**
+ * Register ALS-backed state accessors. Called by router-state.ts on import.
+ * @internal
+ */
+export function _registerRouterStateAccessors(accessors: {
+  getSSRContext: () => SSRContext | null;
+  setSSRContext: (ctx: SSRContext | null) => void;
+}): void {
+  _getSSRContext = accessors.getSSRContext;
+  _setSSRContextImpl = accessors.setSSRContext;
+}
 
 export function setSSRContext(ctx: SSRContext | null): void {
-  ssrContext = ctx;
+  _setSSRContextImpl(ctx);
 }
 
 /**
@@ -224,12 +245,13 @@ function getPathnameAndQuery(): {
   asPath: string;
 } {
   if (typeof window === "undefined") {
-    if (ssrContext) {
+    const _ssrCtx = _getSSRContext();
+    if (_ssrCtx) {
       const query: Record<string, string> = {};
-      for (const [key, value] of Object.entries(ssrContext.query)) {
+      for (const [key, value] of Object.entries(_ssrCtx.query)) {
         query[key] = Array.isArray(value) ? value.join(",") : value;
       }
-      return { pathname: ssrContext.pathname, query, asPath: ssrContext.asPath };
+      return { pathname: _ssrCtx.pathname, query, asPath: _ssrCtx.asPath };
     }
     return { pathname: "/", query: {}, asPath: "/" };
   }
@@ -495,14 +517,15 @@ export function useRouter(): NextRouter {
   }, []);
 
   // Get i18n info from SSR context or window
+  const _ssrState = _getSSRContext();
   const locale = typeof window === "undefined"
-    ? ssrContext?.locale
+    ? _ssrState?.locale
     : (window as any).__VINEXT_LOCALE__;
   const locales = typeof window === "undefined"
-    ? ssrContext?.locales
+    ? _ssrState?.locales
     : (window as any).__VINEXT_LOCALES__;
   const defaultLocale = typeof window === "undefined"
-    ? ssrContext?.defaultLocale
+    ? _ssrState?.defaultLocale
     : (window as any).__VINEXT_DEFAULT_LOCALE__;
 
   // route is the route pattern (e.g., "/posts/[id]"), not the actual path

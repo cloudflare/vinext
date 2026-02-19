@@ -211,15 +211,45 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
 
 // ---------------------------------------------------------------------------
 // Private per-request cache for "use cache: private"
+// Uses AsyncLocalStorage for request isolation so concurrent requests
+// on Workers don't share private cache entries.
 // ---------------------------------------------------------------------------
+interface PrivateCacheState {
+  cache: Map<string, unknown>;
+}
 
-const privateRequestCache = new Map<string, unknown>();
+const _PRIVATE_ALS_KEY = Symbol.for("vinext.cacheRuntime.privateAls");
+const _PRIVATE_FALLBACK_KEY = Symbol.for("vinext.cacheRuntime.privateFallback");
+const _g = globalThis as unknown as Record<PropertyKey, unknown>;
+const _privateAls = (_g[_PRIVATE_ALS_KEY] ??= new AsyncLocalStorage<PrivateCacheState>()) as AsyncLocalStorage<PrivateCacheState>;
+
+const _privateFallbackState = (_g[_PRIVATE_FALLBACK_KEY] ??= {
+  cache: new Map<string, unknown>(),
+} satisfies PrivateCacheState) as PrivateCacheState;
+
+function _privateEnterWith(state: PrivateCacheState): void {
+  const enterWith = (_privateAls as any).enterWith;
+  if (typeof enterWith === "function") {
+    try {
+      enterWith.call(_privateAls, state);
+      return;
+    } catch {
+      // Fall through to best-effort fallback.
+    }
+  }
+  _privateFallbackState.cache = state.cache;
+}
+
+function _getPrivateState(): PrivateCacheState {
+  return _privateAls.getStore() ?? _privateFallbackState;
+}
 
 /**
  * Clear the private per-request cache. Should be called at the start of each request.
  */
 export function clearPrivateCache(): void {
-  privateRequestCache.clear();
+  _privateEnterWith({ cache: new Map() });
+  _privateFallbackState.cache = new Map();
 }
 
 // ---------------------------------------------------------------------------
@@ -270,13 +300,14 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 
     // "use cache: private" uses per-request in-memory cache
     if (cacheVariant === "private") {
-      const privateHit = privateRequestCache.get(cacheKey);
+      const privateCache = _getPrivateState().cache;
+      const privateHit = privateCache.get(cacheKey);
       if (privateHit !== undefined) {
         return privateHit;
       }
 
       const result = await executeWithContext(fn, args, cacheVariant);
-      privateRequestCache.set(cacheKey, result);
+      privateCache.set(cacheKey, result);
       return result;
     }
 

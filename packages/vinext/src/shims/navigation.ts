@@ -53,20 +53,61 @@ function useLayoutSegmentDepth(): number {
 // Server-side request context (set by the RSC entry before rendering)
 // ---------------------------------------------------------------------------
 
-interface NavigationContext {
+export interface NavigationContext {
   pathname: string;
   searchParams: URLSearchParams;
   params: Record<string, string | string[]>;
 }
 
+// ---------------------------------------------------------------------------
+// Server-side navigation state lives in a separate server-only module
+// (navigation-state.ts) that uses AsyncLocalStorage for request isolation.
+// This module is bundled for the browser, so it can't import node:async_hooks.
+//
+// On the server: state functions are set by navigation-state.ts at import time.
+// On the client: _serverContext falls back to null (hooks use window instead).
+// ---------------------------------------------------------------------------
+
 let _serverContext: NavigationContext | null = null;
+let _serverInsertedHTMLCallbacks: Array<() => unknown> = [];
+
+// These are overridden by navigation-state.ts on the server to use ALS.
+let _getServerContext = (): NavigationContext | null => _serverContext;
+let _setServerContext = (ctx: NavigationContext | null): void => { _serverContext = ctx; };
+let _getInsertedHTMLCallbacks = (): Array<() => unknown> => _serverInsertedHTMLCallbacks;
+let _clearInsertedHTMLCallbacks = (): void => { _serverInsertedHTMLCallbacks = []; };
+
+/**
+ * Register ALS-backed state accessors. Called by navigation-state.ts on import.
+ * @internal
+ */
+export function _registerStateAccessors(accessors: {
+  getServerContext: () => NavigationContext | null;
+  setServerContext: (ctx: NavigationContext | null) => void;
+  getInsertedHTMLCallbacks: () => Array<() => unknown>;
+  clearInsertedHTMLCallbacks: () => void;
+}): void {
+  _getServerContext = accessors.getServerContext;
+  _setServerContext = accessors.setServerContext;
+  _getInsertedHTMLCallbacks = accessors.getInsertedHTMLCallbacks;
+  _clearInsertedHTMLCallbacks = accessors.clearInsertedHTMLCallbacks;
+}
+
+/**
+ * Get the navigation context for the current SSR/RSC render.
+ * Reads from AsyncLocalStorage when available (concurrent-safe),
+ * otherwise falls back to module-level state.
+ */
+export function getNavigationContext(): NavigationContext | null {
+  return _getServerContext();
+}
 
 /**
  * Set the navigation context for the current SSR/RSC render.
  * Called by the framework entry before rendering each request.
  */
 export function setNavigationContext(ctx: NavigationContext | null): void {
-  _serverContext = ctx;
+  _setServerContext(ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,15 +195,15 @@ export function getClientParams(): Record<string, string | string[]> {
  */
 export function usePathname(): string {
   if (isServer) {
-    // During SSR of "use client" components, _serverContext may not be set.
+    // During SSR of "use client" components, the navigation context may not be set.
     // Return a safe fallback — the client will hydrate with the real value.
-    return _serverContext?.pathname ?? "/";
+    return _getServerContext()?.pathname ?? "/";
   }
   // Client-side: use the hook system for reactivity
    return React.useSyncExternalStore(
     (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
     getPathnameSnapshot,
-    () => _serverContext?.pathname ?? "/",
+    () => _getServerContext()?.pathname ?? "/",
   );
 }
 
@@ -171,14 +212,14 @@ export function usePathname(): string {
  */
 export function useSearchParams(): URLSearchParams {
   if (isServer) {
-    // During SSR of "use client" components, _serverContext may not be set.
+    // During SSR of "use client" components, the navigation context may not be set.
     // Return a safe fallback — the client will hydrate with the real value.
-    return _serverContext?.searchParams ?? new URLSearchParams();
+    return _getServerContext()?.searchParams ?? new URLSearchParams();
   }
    return React.useSyncExternalStore(
     (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
     getSearchParamsSnapshot,
-    () => _serverContext?.searchParams ?? new URLSearchParams(),
+    () => _getServerContext()?.searchParams ?? new URLSearchParams(),
   );
 }
 
@@ -189,8 +230,8 @@ export function useParams<
   T extends Record<string, string | string[]> = Record<string, string | string[]>,
 >(): T {
   if (isServer) {
-    // During SSR of "use client" components, _serverContext may not be set.
-    return (_serverContext?.params ?? {}) as T;
+    // During SSR of "use client" components, the navigation context may not be set.
+    return (_getServerContext()?.params ?? {}) as T;
   }
   return _clientParams as T;
 }
@@ -446,15 +487,12 @@ export type ReadonlyURLSearchParams = URLSearchParams;
  *   });
  */
 
-// Collected callbacks for the current SSR render pass
-const _serverInsertedHTMLCallbacks: Array<() => unknown> = [];
-
 export function useServerInsertedHTML(callback: () => unknown): void {
   if (typeof document !== "undefined") {
     // Client-side: no-op (styles are already in the DOM)
     return;
   }
-  _serverInsertedHTMLCallbacks.push(callback);
+  _getInsertedHTMLCallbacks().push(callback);
 }
 
 /**
@@ -465,8 +503,9 @@ export function useServerInsertedHTML(callback: () => unknown): void {
  * Called by the SSR entry after renderToReadableStream completes.
  */
 export function flushServerInsertedHTML(): unknown[] {
+  const callbacks = _getInsertedHTMLCallbacks();
   const results: unknown[] = [];
-  for (const cb of _serverInsertedHTMLCallbacks) {
+  for (const cb of callbacks) {
     try {
       const result = cb();
       if (result != null) results.push(result);
@@ -474,7 +513,7 @@ export function flushServerInsertedHTML(): unknown[] {
       // Ignore errors from individual callbacks
     }
   }
-  _serverInsertedHTMLCallbacks.length = 0;
+  callbacks.length = 0;
   return results;
 }
 
@@ -483,7 +522,7 @@ export function flushServerInsertedHTML(): unknown[] {
  * Used for cleanup between requests.
  */
 export function clearServerInsertedHTML(): void {
-  _serverInsertedHTMLCallbacks.length = 0;
+  _clearInsertedHTMLCallbacks();
 }
 
 // ---------------------------------------------------------------------------

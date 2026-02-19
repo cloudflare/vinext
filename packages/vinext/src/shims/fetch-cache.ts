@@ -23,6 +23,7 @@ import {
   getCacheHandler,
   type CachedFetchValue,
 } from "./cache.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 // ---------------------------------------------------------------------------
 // Cache key generation
@@ -80,10 +81,41 @@ declare global {
 // Patching
 // ---------------------------------------------------------------------------
 
-const originalFetch = globalThis.fetch;
+// Capture the real (unpatched) fetch once, shared across Vite's
+// multi-environment module instances via Symbol.for().
+const _ORIG_FETCH_KEY = Symbol.for("vinext.fetchCache.originalFetch");
+const _gFetch = globalThis as unknown as Record<PropertyKey, unknown>;
+const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??= globalThis.fetch) as typeof globalThis.fetch;
 
-/** Per-request collection of tags gathered during rendering. */
-let currentRequestTags: string[] | null = null;
+// ---------------------------------------------------------------------------
+// AsyncLocalStorage for request-scoped fetch cache state.
+// Uses Symbol.for() on globalThis so the storage is shared across Vite's
+// multi-environment module instances.
+// ---------------------------------------------------------------------------
+interface FetchCacheState {
+  currentRequestTags: string[];
+}
+
+const _ALS_KEY = Symbol.for("vinext.fetchCache.als");
+const _FALLBACK_KEY = Symbol.for("vinext.fetchCache.fallback");
+const _g = globalThis as unknown as Record<PropertyKey, unknown>;
+const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<FetchCacheState>()) as AsyncLocalStorage<FetchCacheState>;
+
+const _fallbackState = (_g[_FALLBACK_KEY] ??= {
+  currentRequestTags: [],
+} satisfies FetchCacheState) as FetchCacheState;
+
+function _getState(): FetchCacheState {
+  return _als.getStore() ?? _fallbackState;
+}
+
+/**
+ * Reset the fallback state for a new request.  Used by `withFetchCache()`
+ * in single-threaded contexts where ALS.run() isn't used.
+ */
+function _resetFallbackState(): void {
+  _fallbackState.currentRequestTags = [];
+}
 
 /**
  * Get tags collected during the current render pass.
@@ -91,7 +123,7 @@ let currentRequestTags: string[] | null = null;
  * fetch tags used during rendering.
  */
 export function getCollectedFetchTags(): string[] {
-  return currentRequestTags ? [...currentRequestTags] : [];
+  return [..._getState().currentRequestTags];
 }
 
 /**
@@ -159,10 +191,11 @@ function createPatchedFetch(): typeof globalThis.fetch {
     const handler = getCacheHandler();
 
     // Collect tags for this render pass
-    if (currentRequestTags !== null && tags.length > 0) {
+    const reqTags = _getState().currentRequestTags;
+    if (tags.length > 0) {
       for (const tag of tags) {
-        if (!currentRequestTags.includes(tag)) {
-          currentRequestTags.push(tag);
+        if (!reqTags.includes(tag)) {
+          reqTags.push(tag);
         }
       }
     }
@@ -277,37 +310,50 @@ function stripNextFromInit(init?: RequestInit): RequestInit | undefined {
 // Public API
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Fetch patching — install once, not per-request.
+// The patched fetch uses _getState() internally, which reads from ALS
+// (concurrent) or _fallbackState (single-threaded), so per-request
+// isolation is handled at the state level, not by swapping globalThis.fetch.
+// ---------------------------------------------------------------------------
+
+const _PATCH_KEY = Symbol.for("vinext.fetchCache.patchInstalled");
+
+function _ensurePatchInstalled(): void {
+  if (_g[_PATCH_KEY]) return;
+  _g[_PATCH_KEY] = true;
+  globalThis.fetch = createPatchedFetch();
+}
+
 /**
- * Install the patched fetch for the current rendering context.
- * Returns a cleanup function that restores the original fetch.
+ * Install the patched fetch and reset per-request tag state.
+ * Returns a cleanup function that clears tags.
+ *
+ * In single-threaded contexts (dev server, tests) this is safe because
+ * requests are sequential.  For concurrent environments, prefer
+ * `runWithFetchCache()` which uses `AsyncLocalStorage.run()`.
  *
  * Usage:
  *   const cleanup = withFetchCache();
  *   try { await render(); } finally { cleanup(); }
  */
 export function withFetchCache(): () => void {
-  const previousFetch = globalThis.fetch;
-  const previousTags = currentRequestTags;
-  currentRequestTags = [];
-  globalThis.fetch = createPatchedFetch();
+  _ensurePatchInstalled();
+  _resetFallbackState();
 
   return () => {
-    globalThis.fetch = previousFetch;
-    currentRequestTags = previousTags;
+    _resetFallbackState();
   };
 }
 
 /**
  * Run an async function with patched fetch caching enabled.
- * Automatically cleans up when done.
+ * Uses `AsyncLocalStorage.run()` for proper per-request isolation
+ * of collected fetch tags in concurrent server environments.
  */
 export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
-  const cleanup = withFetchCache();
-  try {
-    return await fn();
-  } finally {
-    cleanup();
-  }
+  _ensurePatchInstalled();
+  return _als.run({ currentRequestTags: [] }, fn);
 }
 
 /**

@@ -13,18 +13,34 @@ interface HeadProps {
 }
 
 // --- SSR head collection ---
+// State uses a registration pattern so this module can be bundled for the
+// browser. The ALS-backed implementation lives in head-state.ts (server-only).
 
-/** Collected head elements during SSR (reset before each render). */
-let ssrHeadElements: string[] = [];
+let _ssrHeadElements: string[] = [];
+
+let _getSSRHeadElements = (): string[] => _ssrHeadElements;
+let _resetSSRHeadImpl = (): void => { _ssrHeadElements = []; };
+
+/**
+ * Register ALS-backed state accessors. Called by head-state.ts on import.
+ * @internal
+ */
+export function _registerHeadStateAccessors(accessors: {
+  getSSRHeadElements: () => string[];
+  resetSSRHead: () => void;
+}): void {
+  _getSSRHeadElements = accessors.getSSRHeadElements;
+  _resetSSRHeadImpl = accessors.resetSSRHead;
+}
 
 /** Reset the SSR head collector. Call before render. */
 export function resetSSRHead(): void {
-  ssrHeadElements = [];
+  _resetSSRHeadImpl();
 }
 
 /** Get collected head HTML. Call after render. */
 export function getSSRHeadHTML(): string {
-  return ssrHeadElements.join("\n  ");
+  return _getSSRHeadElements().join("\n  ");
 }
 
 /**
@@ -76,7 +92,7 @@ function Head({ children }: HeadProps): null {
     Children.forEach(children, (child) => {
       if (!isValidElement(child)) return;
       if (typeof child.type !== "string") return;
-      ssrHeadElements.push(reactElementToHTML(child));
+      _getSSRHeadElements().push(reactElementToHTML(child));
     });
     return null;
   }

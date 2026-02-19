@@ -200,7 +200,7 @@ import {
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { createElement, Suspense, Fragment } from "react";
-import { setNavigationContext as _setNavigationContextOrig } from "next/navigation";
+import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext, applyMiddlewareRequestHeaders } from "next/headers";
 import { NextRequest } from "next/server";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
@@ -208,17 +208,20 @@ import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
-import { getCacheHandler, _consumeRequestScopedCacheLife } from "next/cache";
-import { withFetchCache, getCollectedFetchTags } from "vinext/fetch-cache";
+import { getCacheHandler, _consumeRequestScopedCacheLife, _initRequestScopedCacheState } from "next/cache";
+import { runWithFetchCache, getCollectedFetchTags } from "vinext/fetch-cache";
+import { clearPrivateCache as _clearPrivateCache } from "vinext/cache-runtime";
+// Import server-only state module to register ALS-backed accessors.
+import "vinext/navigation-state";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStyles } from "next/font/google";
 
-// Track current navigation context so we can pass it to the SSR environment.
-// "use client" components rendered during SSR need the pathname/searchParams/params
-// but the SSR environment has a separate module instance of next/navigation.
-let _currentNavContext = null;
+// Set navigation context in the ALS-backed store. "use client" components
+// rendered during SSR need the pathname/searchParams/params but the SSR
+// environment has a separate module instance of next/navigation.
+// Use _getNavigationContext() to read the current context — never cache
+// it in a module-level variable (that would leak between concurrent requests).
 function setNavigationContext(ctx) {
-  _currentNavContext = ctx;
   _setNavigationContextOrig(ctx);
 }
 
@@ -339,7 +342,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     styles: _getSSRFontStyles(),
   };
   const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-  const htmlStream = await ssrEntry.handleSsr(rscStream, _currentNavContext, fontData);
+  const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
   setHeadersContext(null);
   setNavigationContext(null);
   return new Response(htmlStream, {
@@ -395,7 +398,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
     styles: _getSSRFontStyles(),
   };
   const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-  const htmlStream = await ssrEntry.handleSsr(rscStream, _currentNavContext, fontData);
+  const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
   setHeadersContext(null);
   setNavigationContext(null);
   return new Response(htmlStream, {
@@ -858,11 +861,14 @@ export default async function handler(request) {
   // headers() and cookies() work throughout the async RSC rendering pipeline.
   // This uses AsyncLocalStorage.run() which properly propagates through awaits.
   const headersCtx = headersContextFromRequest(request);
-  return runWithHeadersContext(headersCtx, async () => {
+   return runWithHeadersContext(headersCtx, async () => {
+    // Initialize per-request state for cache and private cache isolation.
+    _initRequestScopedCacheState();
+    _clearPrivateCache();
     // Install patched fetch with Next.js caching semantics for this request.
-    // All fetch() calls during RSC rendering will go through the cache.
-    const cleanupFetchCache = withFetchCache();
-    try {
+    // runWithFetchCache uses AsyncLocalStorage.run() for proper per-request
+    // isolation of collected fetch tags in concurrent environments.
+    return runWithFetchCache(async () => {
       const response = await _handleRequest(request);
       // Apply custom headers from next.config.js to non-redirect responses.
       // Skip redirects (3xx) because Response.redirect() creates immutable headers,
@@ -877,9 +883,7 @@ export default async function handler(request) {
         }
       }
       return response;
-    } finally {
-      cleanupFetchCache();
-    }
+    });
   });
 }
 
@@ -1413,8 +1417,7 @@ async function _handleRequest(request) {
       if (cached.isStale) {
         // Trigger background regeneration
         isrTriggerRegen(_isrCacheKey, async function() {
-          const regenCleanup = withFetchCache();
-          try {
+          await runWithFetchCache(async () => {
             const freshElement = await buildPageElement(route, params, undefined, url.searchParams);
             const freshRscStream = renderToReadableStream(freshElement, { onError: rscOnError });
             // Collect font data from RSC environment
@@ -1423,7 +1426,7 @@ async function _handleRequest(request) {
               styles: _getSSRFontStyles(),
             };
             const ssrEntryFresh = await import.meta.viteRsc.loadModule("ssr", "index");
-            const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream, _currentNavContext, freshFontData);
+            const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream, _getNavigationContext(), freshFontData);
             // Consume the stream to get HTML string
             const freshHtml = await new Response(freshHtmlStream).text();
             // Collect tags from fetch calls during rendering + add path tag for revalidatePath
@@ -1432,9 +1435,7 @@ async function _handleRequest(request) {
             if (!regenTags.includes(pathTag)) regenTags.push(pathTag);
             if (!regenTags.includes(cleanPathname)) regenTags.push(cleanPathname);
             await isrSet(_isrCacheKey, { kind: "APP_PAGE", html: freshHtml, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, effectiveRevalidate, regenTags);
-          } finally {
-            regenCleanup();
-          }
+          });
         });
       }
 
@@ -1680,7 +1681,7 @@ async function _handleRequest(request) {
   let htmlStream;
   try {
     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    htmlStream = await ssrEntry.handleSsr(rscStream, _currentNavContext, fontData);
+    htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;

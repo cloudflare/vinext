@@ -2137,20 +2137,24 @@ describe("fetch cache (extended fetch with next options)", () => {
     }
   });
 
-  it("cleanup restores original fetch", async () => {
-    const { withFetchCache } = await import(
+  it("cleanup clears per-request tag state", async () => {
+    const { withFetchCache, getCollectedFetchTags } = await import(
       "../packages/vinext/src/shims/fetch-cache.js"
     );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
 
-    const originalFetch = globalThis.fetch;
+    setCacheHandler(new MemoryCacheHandler());
     const cleanup = withFetchCache();
-    expect(globalThis.fetch).not.toBe(originalFetch); // Patched
+    await fetch(`${mockServerUrl}/cleanup-tag-test`, { next: { tags: ["cleanup-t"] } });
+    expect(getCollectedFetchTags()).toContain("cleanup-t");
     cleanup();
-    expect(globalThis.fetch).toBe(originalFetch); // Restored
+    expect(getCollectedFetchTags()).toHaveLength(0);
   });
 
-  it("runWithFetchCache auto-cleans up", async () => {
-    const { runWithFetchCache } = await import(
+  it("runWithFetchCache isolates tags and returns result", async () => {
+    const { runWithFetchCache, getCollectedFetchTags } = await import(
       "../packages/vinext/src/shims/fetch-cache.js"
     );
     const { setCacheHandler, MemoryCacheHandler } = await import(
@@ -2159,16 +2163,15 @@ describe("fetch cache (extended fetch with next options)", () => {
 
     setCacheHandler(new MemoryCacheHandler());
     fetchCallCount = 0;
-    const originalFetch = globalThis.fetch;
 
     const result = await runWithFetchCache(async () => {
-      expect(globalThis.fetch).not.toBe(originalFetch); // Patched inside
       const resp = await fetch(`${mockServerUrl}/auto`, { next: { revalidate: 60 } });
       return resp.json();
     });
 
     expect(result.count).toBe(fetchCallCount);
-    expect(globalThis.fetch).toBe(originalFetch); // Restored after
+    // Tags should be empty outside the runWithFetchCache scope
+    expect(getCollectedFetchTags()).toHaveLength(0);
 
     setCacheHandler(new MemoryCacheHandler());
   });

@@ -28,7 +28,7 @@ const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestIni
 vi.stubGlobal("fetch", fetchMock);
 
 // Now import — these will capture fetchMock as "originalFetch"
-const { withFetchCache, getCollectedFetchTags, getOriginalFetch } = await import("../packages/vinext/src/shims/fetch-cache.js");
+const { withFetchCache, runWithFetchCache, getCollectedFetchTags, getOriginalFetch } = await import("../packages/vinext/src/shims/fetch-cache.js");
 const { getCacheHandler, revalidateTag, MemoryCacheHandler, setCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
 
 describe("fetch cache shim", () => {
@@ -421,16 +421,19 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  // ── Cleanup restores original fetch ─────────────────────────────────
+  // ── Cleanup clears per-request state ─────────────────────────────────
 
-  it("cleanup function restores previous fetch", () => {
-    const patchedFetch = globalThis.fetch;
+  it("cleanup function clears collected tags", async () => {
+    // Collect some tags
+    await fetch("https://api.example.com/cleanup-test", {
+      next: { tags: ["cleanup-tag"] },
+    });
+    expect(getCollectedFetchTags()).toContain("cleanup-tag");
+
+    // Cleanup should reset tag state
     cleanup!();
     cleanup = null;
-
-    // After cleanup, fetch should be fetchMock (the "previous" from withFetchCache)
-    expect(globalThis.fetch).toBe(fetchMock);
-    expect(globalThis.fetch).not.toBe(patchedFetch);
+    expect(getCollectedFetchTags()).toHaveLength(0);
 
     // Re-install for afterEach cleanup
     cleanup = withFetchCache();
@@ -456,5 +459,35 @@ describe("fetch cache shim", () => {
     const data2 = await res2.json();
     expect(data2.count).toBe(2); // Not cached
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // ── Concurrent request isolation via ALS ─────────────────────────────
+
+  it("concurrent runWithFetchCache calls have isolated tags", async () => {
+    // Clean up the withFetchCache() from beforeEach — runWithFetchCache
+    // manages its own ALS scope.
+    cleanup?.();
+    cleanup = null;
+
+    const [tags1, tags2] = await Promise.all([
+      runWithFetchCache(async () => {
+        await fetch("https://api.example.com/concurrent-a", {
+          next: { tags: ["request-1"] },
+        });
+        return getCollectedFetchTags();
+      }),
+      runWithFetchCache(async () => {
+        await fetch("https://api.example.com/concurrent-b", {
+          next: { tags: ["request-2"] },
+        });
+        return getCollectedFetchTags();
+      }),
+    ]);
+
+    expect(tags1).toEqual(["request-1"]);
+    expect(tags2).toEqual(["request-2"]);
+
+    // Re-install for afterEach
+    cleanup = withFetchCache();
   });
 });

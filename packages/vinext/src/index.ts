@@ -1257,6 +1257,9 @@ hydrate();
           "vinext/metadata": path.join(shimsDir, "metadata"),
           "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
           "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
+          "vinext/navigation-state": path.join(shimsDir, "navigation-state"),
+          "vinext/router-state": path.join(shimsDir, "router-state"),
+          "vinext/head-state": path.join(shimsDir, "head-state"),
           "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
           "vinext/html": path.resolve(__dirname, "server", "html"),
         };

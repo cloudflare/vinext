@@ -18,6 +18,7 @@
  */
 
 import { markDynamicUsage as _markDynamic } from "./headers.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 // ---------------------------------------------------------------------------
 // Lazy accessor for cache context — avoids circular imports with cache-runtime.
@@ -371,9 +372,47 @@ export { unstable_noStore as noStore };
 // When cacheLife() is called outside a "use cache" function context (e.g.,
 // in a page component with file-level "use cache"), the resolved config is
 // stored here so the server can read it after rendering and apply ISR caching.
+//
+// Uses AsyncLocalStorage for request isolation on concurrent workers.
 // ---------------------------------------------------------------------------
+interface CacheState {
+  requestScopedCacheLife: CacheLifeConfig | null;
+}
 
-let _requestScopedCacheLife: CacheLifeConfig | null = null;
+const _ALS_KEY = Symbol.for("vinext.cache.als");
+const _FALLBACK_KEY = Symbol.for("vinext.cache.fallback");
+const _g = globalThis as unknown as Record<PropertyKey, unknown>;
+const _cacheAls = (_g[_ALS_KEY] ??= new AsyncLocalStorage<CacheState>()) as AsyncLocalStorage<CacheState>;
+
+const _cacheFallbackState = (_g[_FALLBACK_KEY] ??= {
+  requestScopedCacheLife: null,
+} satisfies CacheState) as CacheState;
+
+function _cacheEnterWith(state: CacheState): void {
+  const enterWith = (_cacheAls as any).enterWith;
+  if (typeof enterWith === "function") {
+    try {
+      enterWith.call(_cacheAls, state);
+      return;
+    } catch {
+      // Fall through to best-effort fallback.
+    }
+  }
+  _cacheFallbackState.requestScopedCacheLife = state.requestScopedCacheLife;
+}
+
+function _getCacheState(): CacheState {
+  return _cacheAls.getStore() ?? _cacheFallbackState;
+}
+
+/**
+ * Initialize cache ALS for a new request. Call at request entry.
+ * @internal
+ */
+export function _initRequestScopedCacheState(): void {
+  _cacheEnterWith({ requestScopedCacheLife: null });
+  _cacheFallbackState.requestScopedCacheLife = null;
+}
 
 /**
  * Set a request-scoped cache life config. Called by cacheLife() when outside
@@ -381,23 +420,24 @@ let _requestScopedCacheLife: CacheLifeConfig | null = null;
  * @internal
  */
 export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
-  if (_requestScopedCacheLife === null) {
-    _requestScopedCacheLife = { ...config };
+  const state = _getCacheState();
+  if (state.requestScopedCacheLife === null) {
+    state.requestScopedCacheLife = { ...config };
   } else {
     // Minimum-wins rule
     if (config.stale !== undefined) {
-      _requestScopedCacheLife.stale = _requestScopedCacheLife.stale !== undefined
-        ? Math.min(_requestScopedCacheLife.stale, config.stale)
+      state.requestScopedCacheLife.stale = state.requestScopedCacheLife.stale !== undefined
+        ? Math.min(state.requestScopedCacheLife.stale, config.stale)
         : config.stale;
     }
     if (config.revalidate !== undefined) {
-      _requestScopedCacheLife.revalidate = _requestScopedCacheLife.revalidate !== undefined
-        ? Math.min(_requestScopedCacheLife.revalidate, config.revalidate)
+      state.requestScopedCacheLife.revalidate = state.requestScopedCacheLife.revalidate !== undefined
+        ? Math.min(state.requestScopedCacheLife.revalidate, config.revalidate)
         : config.revalidate;
     }
     if (config.expire !== undefined) {
-      _requestScopedCacheLife.expire = _requestScopedCacheLife.expire !== undefined
-        ? Math.min(_requestScopedCacheLife.expire, config.expire)
+      state.requestScopedCacheLife.expire = state.requestScopedCacheLife.expire !== undefined
+        ? Math.min(state.requestScopedCacheLife.expire, config.expire)
         : config.expire;
     }
   }
@@ -408,8 +448,9 @@ export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
  * @internal
  */
 export function _consumeRequestScopedCacheLife(): CacheLifeConfig | null {
-  const config = _requestScopedCacheLife;
-  _requestScopedCacheLife = null;
+  const state = _getCacheState();
+  const config = state.requestScopedCacheLife;
+  state.requestScopedCacheLife = null;
   return config;
 }
 
