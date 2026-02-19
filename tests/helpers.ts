@@ -38,8 +38,10 @@ export interface TestServerResult {
 /**
  * Start a Vite dev server against a fixture directory.
  *
+ * vinext() auto-registers @vitejs/plugin-rsc when an app/ directory is
+ * detected, so callers do NOT need to inject rsc() manually.
+ *
  * @param fixtureDir - Path to the fixture directory
- * @param opts.appRouter - If true, loads @vitejs/plugin-rsc with standard entries
  * @param opts.listen - If false, creates server without listening (default: true)
  */
 export async function startFixtureServer(
@@ -49,6 +51,7 @@ export async function startFixtureServer(
   // vinext() auto-registers @vitejs/plugin-rsc when app/ is detected.
   // Pass appDir explicitly since tests run with configFile: false and
   // cwd may not be the fixture directory.
+  // Note: opts.appRouter is accepted but unused — vinext auto-detects.
   const plugins: any[] = [vinext({ appDir: fixtureDir })];
 
   const server = await createServer({

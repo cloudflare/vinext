@@ -1308,10 +1308,13 @@ hydrate();
   }
 
   // Auto-register @vitejs/plugin-rsc when App Router is detected.
-  // Check eagerly at call time using the same heuristic as the CLI.
+  // Check eagerly at call time using the same heuristic as config().
+  // Must mirror the full detection logic: check {base}/app then {base}/src/app.
   const autoRsc = options.rsc !== false;
   const earlyBaseDir = options.appDir ?? process.cwd();
-  const earlyAppDirExists = fs.existsSync(path.join(earlyBaseDir, "app"));
+  const earlyAppDirExists =
+    fs.existsSync(path.join(earlyBaseDir, "app")) ||
+    fs.existsSync(path.join(earlyBaseDir, "src", "app"));
 
   // IMPORTANT: Resolve @vitejs/plugin-rsc subpath imports from the user's
   // project root, not from vinext's own package location. When vinext is

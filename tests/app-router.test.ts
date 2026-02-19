@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createBuilder, type ViteDevServer } from "vite";
 import path from "node:path";
 import fs from "node:fs";
+import os from "node:os";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES, startFixtureServer, fetchHtml } from "./helpers.js";
 import { generateRscEntry } from "../packages/vinext/src/server/app-dev-server.js";
@@ -2160,4 +2161,51 @@ describe("RSC plugin auto-registration", () => {
       }),
     ).rejects.toThrow("Duplicate @vitejs/plugin-rsc detected");
   }, 30000);
+
+  it("auto-injects RSC plugin when src/app exists but root-level app/ does not", () => {
+    // Regression test: the early detection path (before config()) must check
+    // both {base}/app and {base}/src/app to match the full config() logic.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-src-app-"));
+    try {
+      // Create only src/app/ — no root-level app/ directory.
+      fs.mkdirSync(path.join(tmpDir, "src", "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "src", "app", "page.tsx"),
+        "export default function Home() { return <h1>Home</h1>; }",
+      );
+      // Symlink node_modules so createRequire can find @vitejs/plugin-rsc
+      // from the temp directory (resolution is relative to appDir).
+      fs.symlinkSync(
+        path.resolve(__dirname, "..", "node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+
+      const plugins = vinext({ appDir: tmpDir });
+
+      // When auto-RSC fires, the returned array includes a Promise<Plugin[]>
+      // for the lazily-loaded @vitejs/plugin-rsc. Verify it's present.
+      const hasRscPromise = plugins.some(
+        (p) => p && typeof (p as any).then === "function",
+      );
+      expect(hasRscPromise).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does NOT auto-inject RSC plugin when neither app/ nor src/app/ exists", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-app-"));
+    try {
+      // Empty directory — no app/ or src/app/.
+      const plugins = vinext({ appDir: tmpDir });
+
+      const hasRscPromise = plugins.some(
+        (p) => p && typeof (p as any).then === "function",
+      );
+      expect(hasRscPromise).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
