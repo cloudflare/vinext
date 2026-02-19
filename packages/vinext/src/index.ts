@@ -1300,6 +1300,33 @@ hydrate();
         const viteConfig: Record<string, any> = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
+          build: {
+            rollupOptions: {
+              // Suppress "Module level directives cause errors when bundled"
+              // warnings for "use client" / "use server" directives. Our shims
+              // and third-party libraries legitimately use these directives;
+              // they are handled by the RSC plugin and are harmless in the
+              // final bundle. We preserve any user-supplied onwarn so custom
+              // warning handling is not lost.
+              onwarn: (() => {
+                const userOnwarn = config.build?.rollupOptions?.onwarn;
+                return (warning: any, defaultHandler: any) => {
+                  if (
+                    warning.code === "MODULE_LEVEL_DIRECTIVE" &&
+                    (warning.message?.includes('"use client"') ||
+                      warning.message?.includes('"use server"'))
+                  ) {
+                    return;
+                  }
+                  if (userOnwarn) {
+                    userOnwarn(warning, defaultHandler);
+                  } else {
+                    defaultHandler(warning);
+                  }
+                };
+              })(),
+            },
+          },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
           // route handlers so they can set the Allow header and run user-defined
           // OPTIONS handlers. Without this, Vite's CORS middleware responds to

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { createServer, build, type ViteDevServer } from "vite";
 import path from "node:path";
 import fs from "node:fs";
@@ -476,6 +476,77 @@ describe("Plugin config", () => {
     expect(result.resolve.dedupe).toContain("react-dom");
     expect(result.resolve.dedupe).toContain("react/jsx-runtime");
     expect(result.resolve.dedupe).toContain("react/jsx-dev-runtime");
+  });
+
+  it("suppresses MODULE_LEVEL_DIRECTIVE warnings from Rollup", async () => {
+    const plugins = vinext() as any[];
+    const configPlugin = plugins.find((p) => p.name === "vinext:config");
+    expect(configPlugin).toBeDefined();
+
+    const result = await configPlugin.config({ root: FIXTURE_DIR, plugins: [] });
+
+    expect(result.build).toBeDefined();
+    expect(result.build.rollupOptions).toBeDefined();
+    expect(result.build.rollupOptions.onwarn).toBeDefined();
+
+    const defaultHandler = vi.fn();
+
+    // "use client" MODULE_LEVEL_DIRECTIVE warnings should be silenced
+    result.build.rollupOptions.onwarn(
+      { code: "MODULE_LEVEL_DIRECTIVE", message: '"use client" was ignored' },
+      defaultHandler,
+    );
+    expect(defaultHandler).not.toHaveBeenCalled();
+
+    // "use server" MODULE_LEVEL_DIRECTIVE warnings should be silenced
+    result.build.rollupOptions.onwarn(
+      { code: "MODULE_LEVEL_DIRECTIVE", message: '"use server" was ignored' },
+      defaultHandler,
+    );
+    expect(defaultHandler).not.toHaveBeenCalled();
+
+    // MODULE_LEVEL_DIRECTIVE warnings for other directives should pass through
+    const otherDirectiveWarning = {
+      code: "MODULE_LEVEL_DIRECTIVE",
+      message: '"use strict" was ignored',
+    };
+    result.build.rollupOptions.onwarn(otherDirectiveWarning, defaultHandler);
+    expect(defaultHandler).toHaveBeenCalledWith(otherDirectiveWarning);
+
+    // Other warning codes should pass through to the default handler
+    defaultHandler.mockClear();
+    const otherWarning = { code: "CIRCULAR_DEPENDENCY", message: "circular" };
+    result.build.rollupOptions.onwarn(otherWarning, defaultHandler);
+    expect(defaultHandler).toHaveBeenCalledWith(otherWarning);
+  });
+
+  it("preserves user-supplied build.rollupOptions.onwarn", async () => {
+    const plugins = vinext() as any[];
+    const configPlugin = plugins.find((p) => p.name === "vinext:config");
+    expect(configPlugin).toBeDefined();
+
+    const userOnwarn = vi.fn();
+    const result = await configPlugin.config({
+      root: FIXTURE_DIR,
+      plugins: [],
+      build: { rollupOptions: { onwarn: userOnwarn } },
+    });
+
+    const defaultHandler = vi.fn();
+
+    // "use client" should still be suppressed (user handler NOT called)
+    result.build.rollupOptions.onwarn(
+      { code: "MODULE_LEVEL_DIRECTIVE", message: '"use client" was ignored' },
+      defaultHandler,
+    );
+    expect(userOnwarn).not.toHaveBeenCalled();
+    expect(defaultHandler).not.toHaveBeenCalled();
+
+    // Other warnings should be forwarded to the user's handler
+    const otherWarning = { code: "CIRCULAR_DEPENDENCY", message: "circular" };
+    result.build.rollupOptions.onwarn(otherWarning, defaultHandler);
+    expect(userOnwarn).toHaveBeenCalledWith(otherWarning, defaultHandler);
+    expect(defaultHandler).not.toHaveBeenCalled();
   });
 });
 
