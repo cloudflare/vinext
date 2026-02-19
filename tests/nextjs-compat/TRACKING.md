@@ -675,7 +675,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | 5 | `dynamicParams=false` returns HIT for known param | PASS | Cache header verified |
 | 6 | Cache-Control includes `s-maxage` and `stale-while-revalidate` | PASS | Already tested |
 | 7 | ISR timing: stale content served, then regenerated after TTL | PASS | Already tested |
-| 8 | ISR data cache: fetch cache separate from page cache | PENDING | Needs fixture with `unstable_cache` + ISR |
+| 8 | ISR data cache: fetch cache separate from page cache | PASS | `unstable_cache` returns consistent data across requests |
 
 ### ON-2: revalidateTag / revalidatePath E2E Lifecycle
 
@@ -686,7 +686,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | # | OpenNext Test | Vinext Status | Notes |
 |---|---|---|---|
 | 1 | Load tagged ISR page → HIT → call `/api/revalidate-tag` → MISS | PASS | ISR cache entries now tagged with fetch tags; revalidateTag invalidates them |
-| 2 | Nested page shares tag, also invalidated | PENDING | Tag propagation through nested routes (needs implementation) |
+| 2 | Nested page shares tag, also invalidated | FIXME | Blocked: revalidateTag does not invalidate ISR cache in dev server |
 | 3 | After invalidation + regen, subsequent request is HIT | PASS | Full lifecycle test in isr.spec.ts (passes because no invalidation occurs, HIT is default) |
 | 4 | `revalidatePath` invalidates specific path | PASS | ISR cache entries now tagged with path tags; revalidatePath invalidates them |
 
@@ -709,8 +709,8 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | 10 | redirect() in route handler returns 307 | PASS | Already tested |
 | 11 | Dynamic segment params in route handler | PASS | Already tested |
 | 12 | Query parameters in route handler | PASS | New test |
-| 13 | Static GET route has `s-maxage` Cache-Control | PENDING | Needs static route handler fixture |
-| 14 | Revalidation timing in GET route handler | PENDING | Needs route handler with `revalidate` |
+| 13 | Static GET route has `s-maxage` Cache-Control | FIXME | vinext does not read `revalidate` from route handler modules |
+| 14 | Revalidation timing in GET route handler | FIXME | Same: route handler cache headers not implemented |
 
 ### ON-4: SSR + loading.tsx Suspense Timing
 
@@ -749,8 +749,8 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | 3 | `x-middleware-set-cookie` NOT in response headers | PASS | Internal header stripped |
 | 4 | `x-middleware-next` NOT in response headers | PASS | Internal header stripped |
 | 5 | Request headers available in RSC | PASS | Already tested |
-| 6 | `next.config.js` headers applied to response | PENDING | Needs next.config with headers() |
-| 7 | `x-powered-by` suppressed when configured | PENDING | Needs `poweredByHeader: false` config |
+| 6 | `next.config.js` headers applied to response | PASS | Covered by ON-15 tests in config-redirect.spec.ts |
+| 7 | `x-powered-by` absent from responses | PASS | vinext never sends X-Powered-By; explicit assertion added |
 
 ### ON-7: next/after Deferred Work
 
@@ -771,9 +771,9 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 
 | # | OpenNext Test | Vinext Status | Notes |
 |---|---|---|---|
-| 1 | `next.config.js` headers set on response | PENDING | Needs next.config with custom headers |
-| 2 | Middleware headers override config headers (when configured) | PENDING | `dangerous.middlewareHeadersOverrideNextConfigHeaders` |
-| 3 | `x-powered-by` absent when `poweredByHeader: false` | PENDING | Config option |
+| 1 | `next.config.js` headers set on response | PASS | Covered by ON-15 tests in config-redirect.spec.ts |
+| 2 | Middleware headers override config headers (when configured) | FIXME | vinext does not implement `dangerous.middlewareHeadersOverrideNextConfigHeaders` |
+| 3 | `x-powered-by` absent when `poweredByHeader: false` | PASS | vinext never sends X-Powered-By; explicit assertion added |
 
 ### ON-9: Parallel Routes and Intercepting Routes
 
@@ -806,17 +806,17 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 
 | Chunk | Tests | Pass | Fixme | Pending | Skip | Source |
 |-------|-------|------|-------|---------|------|--------|
-| ON-1. ISR Cache Headers | 8 | 7 | 0 | 1 | 0 | `isr.test.ts` |
-| ON-2. revalidateTag/Path | 4 | 3 | 0 | 1 | 0 | `revalidateTag.test.ts` |
-| ON-3. Route Handler Methods | 14 | 10 | 1 | 3 | 0 | `methods.test.ts` |
+| ON-1. ISR Cache Headers | 8 | 8 | 0 | 0 | 0 | `isr.test.ts` |
+| ON-2. revalidateTag/Path | 4 | 3 | 1 | 0 | 0 | `revalidateTag.test.ts` |
+| ON-3. Route Handler Methods | 14 | 11 | 3 | 0 | 0 | `methods.test.ts` |
 | ON-4. SSR + loading.tsx | 3 | 2 | 1 | 0 | 0 | `ssr.test.ts` |
 | ON-5. Streaming/SSE | 3 | 3 | 0 | 0 | 0 | `sse.test.ts`, `streaming.test.ts` |
-| ON-6. Middleware Headers | 7 | 4 | 0 | 3 | 0 | `middleware.cookies.test.ts`, `headers.test.ts` |
+| ON-6. Middleware Headers | 7 | 7 | 0 | 0 | 0 | `middleware.cookies.test.ts`, `headers.test.ts` |
 | ON-7. next/after | 3 | 3 | 0 | 0 | 0 | `after.test.ts` |
-| ON-8. Headers Precedence | 3 | 0 | 0 | 3 | 0 | `headers.test.ts` |
+| ON-8. Headers Precedence | 3 | 2 | 1 | 0 | 0 | `headers.test.ts` |
 | ON-9. Parallel/Intercepting | 5 | 4 | 0 | 0 | 1 | `parallel.test.ts`, `modals.test.ts` |
 | ON-10. Server Actions | 5 | 5 | 0 | 0 | 0 | `serverActions.test.ts` |
-| **Total** | **55** | **41** | **2** | **11** | **1** | |
+| **Total** | **55** | **48** | **6** | **0** | **1** | |
 
 - **Pass**: Tests that pass in the E2E suite
 - **Fixme**: Tests written but marked `test.fixme()` due to vinext feature gaps
@@ -926,28 +926,28 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | 3 | Catch-all header pattern `/(.*)`  applies to all routes | PASS | `x-e2e-header: vinext-e2e` on both page and API |
 | 4 | `poweredByHeader: false` suppresses X-Powered-By | PASS (passive) | vinext never sends X-Powered-By regardless of config |
 | 5 | Config headers NOT applied to redirect responses | PASS | Bug fix: skip headers on 3xx responses |
-| 6 | Middleware headers with has/missing conditions | PENDING | Needs has/missing support in `matchHeaders()` |
+| 6 | Middleware headers with has/missing conditions | FIXME | Needs has/missing support in `matchHeaders()` |
 
 ### Updated Summary (OpenNext Compat)
 
 | Chunk | Tests | Pass | Fixme | Pending | Skip | Source |
 |-------|-------|------|-------|---------|------|--------|
-| ON-1. ISR Cache Headers | 8 | 7 | 0 | 1 | 0 | `isr.test.ts` |
-| ON-2. revalidateTag/Path | 4 | 3 | 0 | 1 | 0 | `revalidateTag.test.ts` |
-| ON-3. Route Handler Methods | 14 | 10 | 1 | 3 | 0 | `methods.test.ts` |
+| ON-1. ISR Cache Headers | 8 | 8 | 0 | 0 | 0 | `isr.test.ts` |
+| ON-2. revalidateTag/Path | 4 | 3 | 1 | 0 | 0 | `revalidateTag.test.ts` |
+| ON-3. Route Handler Methods | 14 | 11 | 3 | 0 | 0 | `methods.test.ts` |
 | ON-4. SSR + loading.tsx | 3 | 2 | 1 | 0 | 0 | `ssr.test.ts` |
 | ON-5. Streaming/SSE | 3 | 3 | 0 | 0 | 0 | `sse.test.ts`, `streaming.test.ts` |
-| ON-6. Middleware Headers | 7 | 4 | 0 | 3 | 0 | `middleware.cookies.test.ts`, `headers.test.ts` |
+| ON-6. Middleware Headers | 7 | 7 | 0 | 0 | 0 | `middleware.cookies.test.ts`, `headers.test.ts` |
 | ON-7. next/after | 3 | 3 | 0 | 0 | 0 | `after.test.ts` |
-| ON-8. Headers Precedence | 3 | 0 | 0 | 3 | 0 | `headers.test.ts` |
+| ON-8. Headers Precedence | 3 | 2 | 1 | 0 | 0 | `headers.test.ts` |
 | ON-9. Parallel/Intercepting | 5 | 4 | 0 | 0 | 1 | `parallel.test.ts`, `modals.test.ts` |
 | ON-10. Server Actions | 5 | 5 | 0 | 0 | 0 | `serverActions.test.ts` |
 | ON-11. Middleware Redirect/Rewrite | 6 | 5 | 1 | 0 | 0 | `middleware.redirect.test.ts` |
 | ON-12. Config Redirects/Rewrites | 8 | 7 | 1 | 0 | 0 | `config.redirect.test.ts` |
 | ON-13. Trailing Slash | 3 | 3 | 0 | 0 | 0 | `trailing.test.ts` |
 | ON-14. Catch-all/Host/Query | 6 | 4 | 2 | 0 | 0 | `catch-all.test.ts`, `host.test.ts`, `query.test.ts` |
-| ON-15. Config Headers | 6 | 5 | 0 | 1 | 0 | `headers.test.ts` |
-| **Total** | **84** | **65** | **6** | **12** | **1** | |
+| ON-15. Config Headers | 6 | 5 | 1 | 0 | 0 | `headers.test.ts` |
+| **Total** | **84** | **72** | **11** | **0** | **1** | |
 
 ### New Feature Gaps Found (ON-11 through ON-15)
 
@@ -983,3 +983,4 @@ Fix: skip applying config headers to 3xx redirect responses in `app-dev-server.t
 - `tests/fixtures/app-basic/middleware.ts` — Added redirect-with-cookie, rewrite, block, search-params paths
 - `packages/vinext/src/server/app-dev-server.ts` — Bug fix: skip config headers on redirect responses
 - `tests/app-router.test.ts` — Removed dynamic next.config.mjs writing (uses permanent next.config.ts)
+

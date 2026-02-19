@@ -124,4 +124,40 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
     // The /(.*) catch-all header
     expect(res.headers()["x-e2e-header"]).toBe("vinext-e2e");
   });
+
+  // Ref: opennextjs-cloudflare headers.test.ts — "x-powered-by should be absent"
+  // vinext never sends X-Powered-By (matching Next.js poweredByHeader: false behavior).
+  // Tests: ON-6 #7, ON-8 #3 in TRACKING.md
+  test("x-powered-by header is absent from responses", async ({ request }) => {
+    const pageRes = await request.get(`${BASE}/about`);
+    expect(pageRes.headers()["x-powered-by"]).toBeUndefined();
+
+    const apiRes = await request.get(`${BASE}/api/hello`);
+    expect(apiRes.headers()["x-powered-by"]).toBeUndefined();
+  });
+
+  // Ref: opennextjs-cloudflare headers.test.ts — "Middleware headers override next.config.js headers"
+  // In Next.js, `dangerous.middlewareHeadersOverrideNextConfigHeaders` lets middleware
+  // overwrite config headers for the same key. vinext does not implement this config flag.
+  // Tests: ON-8 #2 in TRACKING.md
+  test.fixme(
+    "middleware headers override config headers for same key",
+    async () => {
+      // Would test: middleware sets e2e-headers=middleware, config sets e2e-headers=next.config.js
+      // With dangerous.middlewareHeadersOverrideNextConfigHeaders enabled, middleware wins.
+      // Needs: config flag support + fixture with conflicting header keys
+    },
+  );
+
+  // Ref: opennextjs-cloudflare headers.test.ts — has/missing conditions
+  // vinext matchHeaders() in config-matchers.ts only checks source pattern.
+  // Tests: ON-15 #6 in TRACKING.md
+  test.fixme(
+    "config headers with has/missing conditions",
+    async () => {
+      // Would test: header rule with has: [{ type: "cookie", key: "logged-in" }]
+      // only applies when the cookie is present in the request.
+      // Needs: has/missing support in matchHeaders(), matchRedirect(), matchRewrite()
+    },
+  );
 });

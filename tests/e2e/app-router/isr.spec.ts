@@ -332,4 +332,65 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
       expect(cacheHeader).toBe("HIT");
     }
   });
+
+  // Ref: opennextjs-cloudflare revalidateTag.test.ts — "nested page shares tag"
+  // Tests: ON-2 #2 in TRACKING.md
+  // Same blocker as parent: revalidateTag does not invalidate ISR cache in dev server.
+  test.fixme(
+    "nested page sharing same tag is also invalidated",
+    async ({ request }) => {
+      test.setTimeout(30_000);
+
+      // Load nested page to populate cache
+      const res1 = await request.get(`${BASE}/revalidate-tag-test/nested`);
+      expect(res1.status()).toBe(200);
+      const html1 = await res1.text();
+      const ts1 = html1.match(/Fetched time:\s*(\d+)/)?.[1];
+      expect(ts1).toBeDefined();
+
+      // Invalidate "test-data" tag (shared between parent and nested pages)
+      const tagRes = await request.get(`${BASE}/api/revalidate-tag`);
+      expect(tagRes.status()).toBe(200);
+
+      // Reload nested page — should get fresh content
+      const res2 = await request.get(`${BASE}/revalidate-tag-test/nested`);
+      const html2 = await res2.text();
+      const ts2 = html2.match(/Fetched time:\s*(\d+)/)?.[1];
+
+      expect(ts2).not.toBe(ts1);
+    },
+  );
+});
+
+/**
+ * OpenNext Compat: ISR data cache (unstable_cache) separation from page cache.
+ *
+ * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/isr.test.ts
+ * Tests: ON-1 #8 in TRACKING.md
+ *
+ * Verifies that unstable_cache (data cache) works alongside ISR page caching.
+ */
+test.describe("unstable_cache data cache (OpenNext compat)", () => {
+  test("unstable_cache returns consistent data across requests", async ({
+    request,
+  }) => {
+    // Ref: opennextjs-cloudflare isr.test.ts — data cache separate from page cache
+    const res1 = await request.get(`${BASE}/unstable-cache-test`);
+    expect(res1.status()).toBe(200);
+    const html1 = await res1.text();
+    // React SSR inserts <!-- --> comment nodes between text and expressions
+    const value1 = html1.match(
+      /CachedValue:\s*(?:<!--[^>]*-->)*\s*([a-z0-9]{4,})/,
+    )?.[1];
+    expect(value1).toBeDefined();
+
+    // Second request should return the same cached value
+    const res2 = await request.get(`${BASE}/unstable-cache-test`);
+    const html2 = await res2.text();
+    const value2 = html2.match(
+      /CachedValue:\s*(?:<!--[^>]*-->)*\s*([a-z0-9]{4,})/,
+    )?.[1];
+
+    expect(value2).toBe(value1);
+  });
 });
