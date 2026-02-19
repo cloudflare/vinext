@@ -195,6 +195,35 @@ describe("Next.js compat: not-found", () => {
     expect(html).toContain("<title>Metadata Not Found Layout Title</title>");
   });
 
+  // ── notFound() from layout components ───────────────────────
+  // Tests that notFound() thrown from a layout component is caught by the
+  // parent layout's NotFoundBoundary (per-layout boundary matching Next.js).
+
+  it("valid slug renders page through layout", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-layout/hello");
+    expect(res.status).toBe(200);
+    expect(html).toContain("not-found-layout-page");
+    expect(html).toContain("not-found-layout-wrapper");
+  });
+
+  it("notFound() from layout is caught by parent boundary", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-layout/invalid");
+    expect(res.status).toBe(404);
+    // Should render the PARENT not-found.tsx (not-found-layout/not-found.tsx)
+    // because the layout at [slug] level threw, and the boundary at that level
+    // only wraps the layout's children, not the layout itself.
+    expect(html).toContain("Not Found (parent boundary)");
+    // Should NOT render the slug-level not-found (that's for page errors)
+    expect(html).not.toContain("Not Found (slug boundary)");
+    // Should NOT show the layout wrapper (layout threw before rendering)
+    expect(html).not.toContain("not-found-layout-wrapper");
+  });
+
+  it("notFound() from layout returns 404 status", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/not-found-layout/does-not-exist`);
+    expect(res.status).toBe(404);
+  });
+
   // ── Browser-only tests (need Playwright, documented here) ──
   // These tests require clicking a button client-side which triggers notFound()
   // in a client component. Cannot be tested via HTTP fetch alone.

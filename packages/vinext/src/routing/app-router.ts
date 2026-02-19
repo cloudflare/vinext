@@ -68,8 +68,15 @@ export interface AppRoute {
   loadingPath: string | null;
   /** Error component path */
   errorPath: string | null;
-  /** Not-found component path */
+  /** Not-found component path (nearest, walking up from page dir) */
   notFoundPath: string | null;
+  /**
+   * Not-found component paths per layout level (aligned with layouts array).
+   * Each entry is the not-found.tsx at that layout's directory, or null.
+   * Used to create per-layout NotFoundBoundary so that notFound() thrown from
+   * a layout is caught by the parent layout's boundary (matching Next.js behavior).
+   */
+  notFoundPaths: (string | null)[];
   /** Forbidden component path (403) */
   forbiddenPath: string | null;
   /** Unauthorized component path (401) */
@@ -218,6 +225,11 @@ function fileToAppRoute(
   const forbiddenPath = discoverBoundaryFile(segments, appDir, "forbidden");
   const unauthorizedPath = discoverBoundaryFile(segments, appDir, "unauthorized");
 
+  // Discover per-layout not-found files (one per layout directory).
+  // These are used for per-layout NotFoundBoundary to match Next.js behavior where
+  // notFound() thrown from a layout is caught by the parent layout's boundary.
+  const notFoundPaths = discoverBoundaryFilePerLayout(layouts, "not-found");
+
   // Discover parallel slots (@team, @analytics, etc.).
   // Slots at the route's own directory use page.tsx; slots at ancestor directories
   // (inherited from parent layouts) use default.tsx as fallback.
@@ -233,6 +245,7 @@ function fileToAppRoute(
     loadingPath,
     errorPath,
     notFoundPath,
+    notFoundPaths,
     forbiddenPath,
     unauthorizedPath,
     layoutSegmentDepths,
@@ -351,6 +364,25 @@ function discoverBoundaryFile(
     if (f) return f;
   }
   return null;
+}
+
+/**
+ * Discover boundary files (not-found, forbidden, unauthorized) at each layout directory.
+ * Returns an array aligned with the layouts array, where each entry is the boundary
+ * file at that layout's directory, or null if none exists there.
+ *
+ * This is used for per-layout error boundaries. In Next.js, each layout level
+ * has its own boundary that wraps the layout's children. When notFound() is thrown
+ * from a layout, it propagates up to the parent layout's boundary.
+ */
+function discoverBoundaryFilePerLayout(
+  layouts: string[],
+  fileName: string,
+): (string | null)[] {
+  return layouts.map((layoutPath) => {
+    const layoutDir = path.dirname(layoutPath);
+    return findFile(layoutDir, fileName);
+  });
 }
 
 /**

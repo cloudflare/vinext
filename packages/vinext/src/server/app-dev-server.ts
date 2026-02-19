@@ -70,6 +70,7 @@ export function generateRscEntry(
     if (route.loadingPath) getImportVar(route.loadingPath);
     if (route.errorPath) getImportVar(route.errorPath);
     if (route.notFoundPath) getImportVar(route.notFoundPath);
+    for (const nfp of route.notFoundPaths || []) { if (nfp) getImportVar(nfp); }
     if (route.forbiddenPath) getImportVar(route.forbiddenPath);
     if (route.unauthorizedPath) getImportVar(route.unauthorizedPath);
     // Register parallel slot modules
@@ -90,6 +91,7 @@ export function generateRscEntry(
   const routeEntries = routes.map((route) => {
     const layoutVars = route.layouts.map((l) => getImportVar(l));
     const templateVars = route.templates.map((t) => getImportVar(t));
+    const notFoundVars = (route.notFoundPaths || []).map((nf) => nf ? getImportVar(nf) : "null");
     const slotEntries = route.parallelSlots.map((slot) => {
       const interceptEntries = slot.interceptingRoutes.map((ir) => {
         return `        {
@@ -126,6 +128,7 @@ ${slotEntries.join(",\n")}
     loading: ${route.loadingPath ? getImportVar(route.loadingPath) : "null"},
     error: ${route.errorPath ? getImportVar(route.errorPath) : "null"},
     notFound: ${route.notFoundPath ? getImportVar(route.notFoundPath) : "null"},
+    notFounds: [${notFoundVars.join(", ")}],
     forbidden: ${route.forbiddenPath ? getImportVar(route.forbiddenPath) : "null"},
     unauthorized: ${route.unauthorizedPath ? getImportVar(route.unauthorizedPath) : "null"},
   }`;
@@ -273,21 +276,25 @@ const rootLayouts = [${rootLayoutVars.join(", ")}];
 /**
  * Render an HTTP access fallback page (not-found/forbidden/unauthorized) with layouts and noindex meta.
  * Returns null if no matching component is available.
+ *
+ * @param opts.boundaryComponent - Override the boundary component (for layout-level notFound)
+ * @param opts.layouts - Override the layouts to wrap with (for layout-level notFound, excludes the throwing layout)
  */
-async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request) {
+async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, opts) {
   // Determine which boundary component to use based on status code
-  let boundaryModule;
-  if (statusCode === 403) {
-    boundaryModule = route?.forbidden ?? rootForbiddenModule;
-  } else if (statusCode === 401) {
-    boundaryModule = route?.unauthorized ?? rootUnauthorizedModule;
-  } else {
-    boundaryModule = route?.notFound ?? rootNotFoundModule;
+  let BoundaryComponent = opts?.boundaryComponent ?? null;
+  if (!BoundaryComponent) {
+    let boundaryModule;
+    if (statusCode === 403) {
+      boundaryModule = route?.forbidden ?? rootForbiddenModule;
+    } else if (statusCode === 401) {
+      boundaryModule = route?.unauthorized ?? rootUnauthorizedModule;
+    } else {
+      boundaryModule = route?.notFound ?? rootNotFoundModule;
+    }
+    BoundaryComponent = boundaryModule?.default ?? null;
   }
-  const layouts = route?.layouts ?? rootLayouts;
-  if (!boundaryModule) return null;
-
-  const BoundaryComponent = boundaryModule.default;
+  const layouts = opts?.layouts ?? route?.layouts ?? rootLayouts;
   if (!BoundaryComponent) return null;
 
   // Resolve metadata and viewport from parent layouts so that not-found/error
@@ -526,6 +533,21 @@ async function buildPageElement(route, params, opts, searchParams) {
   for (let i = route.layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = route.layouts[i]?.default;
     if (LayoutComponent) {
+      // Per-layout NotFoundBoundary: wraps this layout's children so that
+      // notFound() thrown from a child layout is caught here.
+      // Matches Next.js behavior where each segment has its own boundary.
+      // The boundary at level N catches errors from Layout[N+1] and below,
+      // but NOT from Layout[N] itself (which propagates to level N-1).
+      {
+        const LayoutNotFound = route.notFounds?.[i]?.default;
+        if (LayoutNotFound) {
+          element = createElement(NotFoundBoundary, {
+            fallback: createElement(LayoutNotFound),
+            children: element,
+          });
+        }
+      }
+
       const layoutProps = { children: element, params: Object.assign(Promise.resolve(params), params) };
 
       // Add parallel slot elements to the layout that defines them.
@@ -1418,6 +1440,64 @@ async function _handleRequest(request) {
     // (React error boundaries, etc.)
   } finally {
     console.error = _origConsoleError;
+  }
+
+  // Pre-render layout components to catch notFound()/redirect() thrown from layouts.
+  // In Next.js, each layout level has its own NotFoundBoundary. When a layout throws
+  // notFound(), the parent layout's boundary catches it and renders the parent's
+  // not-found.tsx. Since React Flight doesn't activate client error boundaries during
+  // RSC rendering, we catch layout-level throws here and render the appropriate
+  // fallback page with only the layouts above the throwing one.
+  if (route.layouts && route.layouts.length > 0) {
+    const asyncParams = Object.assign(Promise.resolve(params), params);
+    for (let li = route.layouts.length - 1; li >= 0; li--) {
+      const LayoutComp = route.layouts[li]?.default;
+      if (!LayoutComp) continue;
+      try {
+        const lr = LayoutComp({ params: asyncParams, children: null });
+        if (lr && typeof lr === "object" && typeof lr.then === "function") await lr;
+      } catch (layoutErr) {
+        if (layoutErr && typeof layoutErr === "object" && "digest" in layoutErr) {
+          const digest = String(layoutErr.digest);
+          if (digest.startsWith("NEXT_REDIRECT;")) {
+            const parts = digest.split(";");
+            const redirectUrl = parts[2];
+            const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
+            setHeadersContext(null);
+            setNavigationContext(null);
+            return Response.redirect(new URL(redirectUrl, request.url), statusCode);
+          }
+          if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+            const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
+            // Find the not-found component from the parent level (the boundary that
+            // would catch this in Next.js). Walk up from the throwing layout to find
+            // the nearest not-found at a parent layout's directory.
+            let parentNotFound = null;
+            if (route.notFounds) {
+              for (let pi = li - 1; pi >= 0; pi--) {
+                if (route.notFounds[pi]?.default) {
+                  parentNotFound = route.notFounds[pi].default;
+                  break;
+                }
+              }
+            }
+            if (!parentNotFound) parentNotFound = ${rootNotFoundVar ? `${rootNotFoundVar}?.default` : "null"};
+            // Wrap in only the layouts above the throwing one
+            const parentLayouts = route.layouts.slice(0, li);
+            const fallbackResp = await renderHTTPAccessFallbackPage(
+              route, statusCode, isRscRequest, request,
+              { boundaryComponent: parentNotFound, layouts: parentLayouts }
+            );
+            if (fallbackResp) return fallbackResp;
+            setHeadersContext(null);
+            setNavigationContext(null);
+            const statusText = statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
+            return new Response(statusText, { status: statusCode });
+          }
+        }
+        // Not a special error — let it propagate through normal RSC rendering
+      }
+    }
   }
 
   // Render to RSC stream
