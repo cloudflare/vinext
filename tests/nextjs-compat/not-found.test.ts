@@ -158,6 +158,43 @@ describe("Next.js compat: not-found", () => {
     expect(html).not.toContain("There was an error");
   });
 
+  // ── Metadata cascade into not-found pages ───────────────────
+  // Next.js cascades metadata from parent layouts into not-found/error pages.
+  // See: https://github.com/user/vinext/issues/XXX
+
+  it("not-found page should inherit metadata title from parent layout", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-not-found/missing",
+    );
+    expect(res.status).toBe(404);
+    // Should render the not-found content
+    expect(html).toContain("Not Found (metadata test)");
+    // Should inherit the title from the parent layout's metadata export
+    expect(html).toContain("<title>Metadata Not Found Layout Title</title>");
+  });
+
+  it("not-found page should inherit metadata description from parent layout", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-not-found/missing",
+    );
+    expect(html).toContain(
+      '<meta name="description" content="Layout description for not-found test"',
+    );
+  });
+
+  it("not-found page should still include noindex meta tag alongside layout metadata", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-not-found/missing",
+    );
+    // noindex should still be present
+    expect(html).toContain("noindex");
+    // Layout metadata should also be present
+    expect(html).toContain("<title>Metadata Not Found Layout Title</title>");
+  });
+
   // ── Browser-only tests (need Playwright, documented here) ──
   // These tests require clicking a button client-side which triggers notFound()
   // in a client component. Cannot be tested via HTTP fetch alone.

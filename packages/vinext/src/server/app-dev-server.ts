@@ -267,9 +267,27 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   const BoundaryComponent = boundaryModule.default;
   if (!BoundaryComponent) return null;
 
-  // Build element: noindex meta + boundary component wrapped in layouts
+  // Resolve metadata and viewport from parent layouts so that not-found/error
+  // pages inherit title, description, OG tags etc. — matching Next.js behavior.
+  const metadataList = [];
+  const viewportList = [];
+  for (const layoutMod of layouts) {
+    if (layoutMod) {
+      const meta = await resolveModuleMetadata(layoutMod);
+      if (meta) metadataList.push(meta);
+      const vp = await resolveModuleViewport(layoutMod);
+      if (vp) viewportList.push(vp);
+    }
+  }
+  const resolvedMetadata = metadataList.length > 0 ? mergeMetadata(metadataList) : null;
+  const resolvedViewport = viewportList.length > 0 ? mergeViewport(viewportList) : null;
+
+  // Build element: metadata head + noindex meta + boundary component wrapped in layouts
   const noindexMeta = createElement("meta", { name: "robots", content: "noindex" });
-  let element = createElement(Fragment, null, noindexMeta, createElement(BoundaryComponent));
+  const headElements = [noindexMeta];
+  if (resolvedMetadata) headElements.push(createElement(MetadataHead, { metadata: resolvedMetadata }));
+  if (resolvedViewport) headElements.push(createElement(ViewportHead, { viewport: resolvedViewport }));
+  let element = createElement(Fragment, null, ...headElements, createElement(BoundaryComponent));
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
     if (LayoutComponent) {
