@@ -80,7 +80,7 @@ function reactElementToHTML(child: React.ReactElement): string {
   return `<${tag}${attrStr} data-vinext-head="true">${innerHTML}</${tag}>`;
 }
 
-function escapeAttr(s: string): string {
+export function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 

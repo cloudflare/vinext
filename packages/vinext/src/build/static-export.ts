@@ -22,6 +22,7 @@ import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { safeJsonStringify } from "../server/html.js";
+import { escapeAttr } from "../shims/head.js";
 import path from "node:path";
 import fs from "node:fs";
 import React from "react";
@@ -301,7 +302,7 @@ async function renderStaticPage(options: RenderStaticPageOptions): Promise<strin
     if (result && "redirect" in result) {
       // Static export can't handle redirects — write a meta redirect
       const redirect = result.redirect as { destination: string };
-      return `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${redirect.destination}" /></head><body></body></html>`;
+      return `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${escapeAttr(redirect.destination)}" /></head><body></body></html>`;
     }
     if (result && "notFound" in result && result.notFound) {
       throw new Error(`Page ${urlPath} returned notFound: true`);

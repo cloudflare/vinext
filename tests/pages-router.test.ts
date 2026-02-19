@@ -1088,6 +1088,16 @@ describe("Static export (Pages Router)", () => {
     expect(html404).toContain("404");
   });
 
+  it("escapes meta refresh URL to prevent HTML injection", async () => {
+    expect(fs.existsSync(path.join(exportDir, "redirect-xss.html"))).toBe(true);
+    const html = fs.readFileSync(
+      path.join(exportDir, "redirect-xss.html"),
+      "utf-8",
+    );
+    expect(html).toContain('content="0;url=foo&quot; /&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;meta x=&quot;"');
+    expect(html).not.toContain('<script>alert(1)</script>');
+  });
+
   it("reports errors for pages using getServerSideProps", async () => {
     // The result from the first test should have errors for SSR-only pages
     const { staticExportPages } = await import(
