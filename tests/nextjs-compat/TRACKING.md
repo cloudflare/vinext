@@ -685,10 +685,10 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 
 | # | OpenNext Test | Vinext Status | Notes |
 |---|---|---|---|
-| 1 | Load tagged ISR page → HIT → call `/api/revalidate-tag` → MISS | FIXME | revalidateTag does not invalidate ISR cache in dev server — feature gap |
+| 1 | Load tagged ISR page → HIT → call `/api/revalidate-tag` → MISS | PASS | ISR cache entries now tagged with fetch tags; revalidateTag invalidates them |
 | 2 | Nested page shares tag, also invalidated | PENDING | Tag propagation through nested routes (needs implementation) |
 | 3 | After invalidation + regen, subsequent request is HIT | PASS | Full lifecycle test in isr.spec.ts (passes because no invalidation occurs, HIT is default) |
-| 4 | `revalidatePath` invalidates specific path | FIXME | revalidatePath does not invalidate ISR cache in dev server — feature gap |
+| 4 | `revalidatePath` invalidates specific path | PASS | ISR cache entries now tagged with path tags; revalidatePath invalidates them |
 
 ### ON-3: Route Handler HTTP Methods (Exhaustive)
 
@@ -807,7 +807,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | Chunk | Tests | Pass | Fixme | Pending | Skip | Source |
 |-------|-------|------|-------|---------|------|--------|
 | ON-1. ISR Cache Headers | 8 | 7 | 0 | 1 | 0 | `isr.test.ts` |
-| ON-2. revalidateTag/Path | 4 | 1 | 2 | 1 | 0 | `revalidateTag.test.ts` |
+| ON-2. revalidateTag/Path | 4 | 3 | 0 | 1 | 0 | `revalidateTag.test.ts` |
 | ON-3. Route Handler Methods | 14 | 10 | 1 | 3 | 0 | `methods.test.ts` |
 | ON-4. SSR + loading.tsx | 3 | 2 | 1 | 0 | 0 | `ssr.test.ts` |
 | ON-5. Streaming/SSE | 3 | 3 | 0 | 0 | 0 | `sse.test.ts`, `streaming.test.ts` |
@@ -816,7 +816,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | ON-8. Headers Precedence | 3 | 0 | 0 | 3 | 0 | `headers.test.ts` |
 | ON-9. Parallel/Intercepting | 5 | 4 | 0 | 0 | 1 | `parallel.test.ts`, `modals.test.ts` |
 | ON-10. Server Actions | 5 | 5 | 0 | 0 | 0 | `serverActions.test.ts` |
-| **Total** | **55** | **39** | **4** | **11** | **1** | |
+| **Total** | **55** | **41** | **2** | **11** | **1** | |
 
 - **Pass**: Tests that pass in the E2E suite
 - **Fixme**: Tests written but marked `test.fixme()` due to vinext feature gaps
@@ -827,8 +827,6 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 
 | Feature | Test | Issue |
 |---------|------|-------|
-| `revalidateTag()` | ON-2 #1 | Does not invalidate ISR cache in dev server |
-| `revalidatePath()` | ON-2 #4 | Does not invalidate ISR cache in dev server |
 | OPTIONS + Allow header | ON-3 #7 | vinext auto-OPTIONS does not set Allow header |
 | Suspense streaming | ON-4 #1 | loading.tsx fallback not shown in dev mode streaming |
 
@@ -935,7 +933,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | Chunk | Tests | Pass | Fixme | Pending | Skip | Source |
 |-------|-------|------|-------|---------|------|--------|
 | ON-1. ISR Cache Headers | 8 | 7 | 0 | 1 | 0 | `isr.test.ts` |
-| ON-2. revalidateTag/Path | 4 | 1 | 2 | 1 | 0 | `revalidateTag.test.ts` |
+| ON-2. revalidateTag/Path | 4 | 3 | 0 | 1 | 0 | `revalidateTag.test.ts` |
 | ON-3. Route Handler Methods | 14 | 10 | 1 | 3 | 0 | `methods.test.ts` |
 | ON-4. SSR + loading.tsx | 3 | 2 | 1 | 0 | 0 | `ssr.test.ts` |
 | ON-5. Streaming/SSE | 3 | 3 | 0 | 0 | 0 | `sse.test.ts`, `streaming.test.ts` |
@@ -949,7 +947,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | ON-13. Trailing Slash | 3 | 2 | 1 | 0 | 0 | `trailing.test.ts` |
 | ON-14. Catch-all/Host/Query | 6 | 4 | 2 | 0 | 0 | `catch-all.test.ts`, `host.test.ts`, `query.test.ts` |
 | ON-15. Config Headers | 6 | 5 | 0 | 1 | 0 | `headers.test.ts` |
-| **Total** | **84** | **62** | **9** | **12** | **1** | |
+| **Total** | **84** | **64** | **7** | **12** | **1** | |
 
 ### New Feature Gaps Found (ON-11 through ON-15)
 

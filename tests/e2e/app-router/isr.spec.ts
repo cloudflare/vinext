@@ -237,8 +237,6 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     request,
   }) => {
     // Ref: opennextjs-cloudflare revalidateTag.test.ts "Revalidate tag"
-    // KNOWN GAP: revalidateTag does not invalidate ISR cache in vinext dev server yet.
-    test.fixme(true, "revalidateTag does not invalidate ISR cache — feature gap");
     test.setTimeout(30_000);
 
     // Load the tagged ISR page to populate cache
@@ -286,8 +284,6 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
 
   test("revalidatePath invalidates specific path", async ({ request }) => {
     // Ref: opennextjs-cloudflare revalidateTag.test.ts "Revalidate path"
-    // KNOWN GAP: revalidatePath does not invalidate ISR cache in vinext dev server yet.
-    test.fixme(true, "revalidatePath does not invalidate ISR cache — feature gap");
     test.setTimeout(30_000);
 
     // Load the page to populate cache

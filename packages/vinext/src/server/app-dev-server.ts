@@ -204,7 +204,7 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
 import { getCacheHandler, _consumeRequestScopedCacheLife } from "next/cache";
-import { withFetchCache } from "vinext/fetch-cache";
+import { withFetchCache, getCollectedFetchTags } from "vinext/fetch-cache";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStyles } from "next/font/google";
 
@@ -224,9 +224,9 @@ async function isrGet(key) {
   if (!result || !result.value) return null;
   return { value: result, isStale: result.cacheState === "stale" };
 }
-async function isrSet(key, data, revalidateSeconds) {
+async function isrSet(key, data, revalidateSeconds, tags) {
   const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds });
+  await handler.set(key, data, { revalidate: revalidateSeconds, tags: tags || [] });
 }
 const isrPendingRegens = new Map();
 // Track routes that have "use cache" with cacheLife() — maps ISR cache key to revalidate seconds.
@@ -1247,18 +1247,28 @@ async function _handleRequest(request) {
       if (cached.isStale) {
         // Trigger background regeneration
         isrTriggerRegen(_isrCacheKey, async function() {
-          const freshElement = await buildPageElement(route, params, undefined, url.searchParams);
-          const freshRscStream = renderToReadableStream(freshElement, { onError: rscOnError });
-          // Collect font data from RSC environment
-          const freshFontData = {
-            links: _getSSRFontLinks(),
-            styles: _getSSRFontStyles(),
-          };
-          const ssrEntryFresh = await import.meta.viteRsc.loadModule("ssr", "index");
-          const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream, _currentNavContext, freshFontData);
-          // Consume the stream to get HTML string
-          const freshHtml = await new Response(freshHtmlStream).text();
-          await isrSet(_isrCacheKey, { kind: "APP_PAGE", html: freshHtml, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, effectiveRevalidate);
+          const regenCleanup = withFetchCache();
+          try {
+            const freshElement = await buildPageElement(route, params, undefined, url.searchParams);
+            const freshRscStream = renderToReadableStream(freshElement, { onError: rscOnError });
+            // Collect font data from RSC environment
+            const freshFontData = {
+              links: _getSSRFontLinks(),
+              styles: _getSSRFontStyles(),
+            };
+            const ssrEntryFresh = await import.meta.viteRsc.loadModule("ssr", "index");
+            const freshHtmlStream = await ssrEntryFresh.handleSsr(freshRscStream, _currentNavContext, freshFontData);
+            // Consume the stream to get HTML string
+            const freshHtml = await new Response(freshHtmlStream).text();
+            // Collect tags from fetch calls during rendering + add path tag for revalidatePath
+            const regenTags = getCollectedFetchTags();
+            const pathTag = "_N_T_" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
+            if (!regenTags.includes(pathTag)) regenTags.push(pathTag);
+            if (!regenTags.includes(cleanPathname)) regenTags.push(cleanPathname);
+            await isrSet(_isrCacheKey, { kind: "APP_PAGE", html: freshHtml, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, effectiveRevalidate, regenTags);
+          } finally {
+            regenCleanup();
+          }
         });
       }
 
@@ -1519,11 +1529,16 @@ async function _handleRequest(request) {
 
   // If ISR is enabled (via export const revalidate OR cacheLife()), cache the rendered HTML
   if (revalidateSeconds !== null && revalidateSeconds > 0) {
+    // Collect tags from fetch calls during rendering + add path tag for revalidatePath
+    const _isrTags = getCollectedFetchTags();
+    const _pathTag = "_N_T_" + (cleanPathname === "/" ? "/" : cleanPathname.replace(/\\/$/, ""));
+    if (!_isrTags.includes(_pathTag)) _isrTags.push(_pathTag);
+    if (!_isrTags.includes(cleanPathname)) _isrTags.push(cleanPathname);
     // We need to tee the stream: one for caching, one for the response
     const [cacheStream, responseStream] = htmlStream.tee();
     // Cache in background
     new Response(cacheStream).text().then(function(html) {
-      return isrSet(_isrCacheKey, { kind: "APP_PAGE", html: html, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, revalidateSeconds);
+      return isrSet(_isrCacheKey, { kind: "APP_PAGE", html: html, rscData: undefined, headers: undefined, postponed: undefined, status: undefined }, revalidateSeconds, _isrTags);
     }).catch(function(err) {
       console.error("[vinext] ISR cache store failed:", err);
     });
