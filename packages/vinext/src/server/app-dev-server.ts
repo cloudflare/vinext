@@ -23,6 +23,8 @@ export interface AppRouterConfig {
     fallback: NextRewrite[];
   };
   headers?: NextHeader[];
+  /** Extra origins allowed for server action CSRF checks (from experimental.serverActions.allowedOrigins). */
+  allowedOrigins?: string[];
 }
 
 /**
@@ -47,6 +49,7 @@ export function generateRscEntry(
   const redirects = config?.redirects ?? [];
   const rewrites = config?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
   const headers = config?.headers ?? [];
+  const allowedOrigins = config?.allowedOrigins ?? [];
   // Build import map for all page and layout files
   const imports: string[] = [];
   const importMap: Map<string, string> = new Map();
@@ -745,6 +748,59 @@ const __trailingSlash = ${JSON.stringify(ts)};
 const __configRedirects = ${JSON.stringify(redirects)};
 const __configRewrites = ${JSON.stringify(rewrites)};
 const __configHeaders = ${JSON.stringify(headers)};
+const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
+
+// ── CSRF origin validation for server actions ───────────────────────────
+// Matches Next.js behavior: compare the Origin header against the Host header.
+// If they don't match, the request is rejected with 403 unless the origin is
+// in the allowedOrigins list (from experimental.serverActions.allowedOrigins).
+function __isOriginAllowed(origin, allowed) {
+  for (const pattern of allowed) {
+    if (pattern.startsWith("*.")) {
+      // Wildcard: *.example.com matches sub.example.com, a.b.example.com
+      const suffix = pattern.slice(1); // ".example.com"
+      if (origin === pattern.slice(2) || origin.endsWith(suffix)) return true;
+    } else if (origin === pattern) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function __validateCsrfOrigin(request) {
+  const originHeader = request.headers.get("origin");
+  // If there's no Origin header, allow the request — same-origin requests
+  // from non-fetch navigations (e.g. SSR) may lack an Origin header.
+  // The x-rsc-action custom header already provides protection against simple
+  // form-based CSRF since custom headers can't be set by cross-origin forms.
+  if (!originHeader || originHeader === "null") return null;
+
+  let originHost;
+  try {
+    originHost = new URL(originHeader).host.toLowerCase();
+  } catch {
+    return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+  }
+
+  const hostHeader = (
+    request.headers.get("x-forwarded-host") ||
+    request.headers.get("host") ||
+    ""
+  ).split(",")[0].trim().toLowerCase();
+
+  if (!hostHeader) return null;
+
+  // Same origin — allow
+  if (originHost === hostHeader) return null;
+
+  // Check allowedOrigins from next.config.js
+  if (__allowedOrigins.length > 0 && __isOriginAllowed(originHost, __allowedOrigins)) return null;
+
+  console.warn(
+    \`[vinext] CSRF origin mismatch: origin "\${originHost}" does not match host "\${hostHeader}". Blocking server action request.\`
+  );
+  return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+}
 
 // ── ReDoS-safe regex compilation ────────────────────────────────────────
 function __isSafeRegex(pattern) {
@@ -1166,6 +1222,11 @@ async function _handleRequest(request) {
   // Handle server action POST requests
   const actionId = request.headers.get("x-rsc-action");
   if (request.method === "POST" && actionId) {
+    // ── CSRF protection ─────────────────────────────────────────────────
+    // Verify that the Origin header matches the Host header to prevent
+    // cross-site request forgery, matching Next.js server action behavior.
+    const csrfResponse = __validateCsrfOrigin(request);
+    if (csrfResponse) return csrfResponse;
     try {
       const contentType = request.headers.get("content-type") || "";
       const body = contentType.startsWith("multipart/form-data")

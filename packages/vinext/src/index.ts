@@ -1787,6 +1787,7 @@ hydrate();
             redirects: nextConfig?.redirects,
             rewrites: nextConfig?.rewrites,
             headers: nextConfig?.headers,
+            allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
           });
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {

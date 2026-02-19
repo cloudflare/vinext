@@ -965,6 +965,80 @@ describe("App Router integration", () => {
     expect(rscGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
     expect(ssrGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
   });
+
+  // ── CSRF protection for server actions ───────────────────────────────
+  it("rejects server action POST with mismatched Origin header (CSRF protection)", async () => {
+    const res = await fetch(`${baseUrl}/actions.rsc`, {
+      method: "POST",
+      headers: {
+        "x-rsc-action": "fake-action-id",
+        "Origin": "https://evil.com",
+        "Host": new URL(baseUrl).host,
+      },
+    });
+    expect(res.status).toBe(403);
+    const text = await res.text();
+    expect(text).toBe("Forbidden");
+  });
+
+  it("rejects server action POST with invalid Origin header (CSRF protection)", async () => {
+    const res = await fetch(`${baseUrl}/actions.rsc`, {
+      method: "POST",
+      headers: {
+        "x-rsc-action": "fake-action-id",
+        "Origin": "not-a-url",
+        "Host": new URL(baseUrl).host,
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("allows server action POST with matching Origin header", async () => {
+    // This will fail with 500 (action not found) rather than 403,
+    // proving the CSRF check passed and execution reached the action handler.
+    const res = await fetch(`${baseUrl}/actions.rsc`, {
+      method: "POST",
+      headers: {
+        "x-rsc-action": "nonexistent-action",
+        "Origin": baseUrl,
+        "Host": new URL(baseUrl).host,
+        "Content-Type": "text/plain",
+      },
+      body: "[]",
+    });
+    // Should NOT be 403 — the CSRF check passes for same-origin.
+    // It may be 500 because the action ID doesn't exist, which is fine.
+    expect(res.status).not.toBe(403);
+  });
+
+  it("allows server action POST without Origin header (non-fetch navigation)", async () => {
+    // Requests without an Origin header should be allowed through.
+    const res = await fetch(`${baseUrl}/actions.rsc`, {
+      method: "POST",
+      headers: {
+        "x-rsc-action": "nonexistent-action",
+        "Content-Type": "text/plain",
+      },
+      body: "[]",
+    });
+    // Should NOT be 403 — missing Origin is allowed.
+    expect(res.status).not.toBe(403);
+  });
+
+  it("allows server action POST with Origin 'null' (privacy-sensitive context)", async () => {
+    const res = await fetch(`${baseUrl}/actions.rsc`, {
+      method: "POST",
+      headers: {
+        "x-rsc-action": "nonexistent-action",
+        "Origin": "null",
+        "Content-Type": "text/plain",
+      },
+      body: "[]",
+    });
+    // Origin "null" is sent by browsers in privacy-sensitive contexts,
+    // should be treated as missing and allowed through.
+    expect(res.status).not.toBe(403);
+  });
 });
 
 describe("App Router Production build", () => {
@@ -1764,6 +1838,33 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     // Generated code should prepend basePath to redirect destination
     expect(code).toContain("__basePath");
     expect(code).toContain("__redir.destination.startsWith(__basePath)");
+  });
+
+  it("generates CSRF origin validation code for server actions", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    // Should include the CSRF validation function
+    expect(code).toContain("__validateCsrfOrigin");
+    expect(code).toContain("__isOriginAllowed");
+    // Should call CSRF validation before processing server actions
+    const csrfIdx = code.indexOf("__validateCsrfOrigin(request)");
+    const actionIdx = code.indexOf("loadServerAction(actionId)");
+    expect(csrfIdx).toBeGreaterThan(-1);
+    expect(actionIdx).toBeGreaterThan(-1);
+    expect(csrfIdx).toBeLessThan(actionIdx);
+  });
+
+  it("embeds allowedOrigins when provided", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      allowedOrigins: ["my-proxy.com", "*.my-domain.com"],
+    });
+    expect(code).toContain("__allowedOrigins");
+    expect(code).toContain("my-proxy.com");
+    expect(code).toContain("*.my-domain.com");
+  });
+
+  it("embeds empty allowedOrigins when none provided", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    expect(code).toContain("__allowedOrigins = []");
   });
 });
 

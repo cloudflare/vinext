@@ -3251,6 +3251,36 @@ describe("cacheComponents config (Next.js 16)", () => {
     const config = await resolveNextConfig(null);
     expect(config.mdx).toBeNull();
   });
+
+  it("resolveNextConfig resolves serverActionsAllowedOrigins from experimental.serverActions", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({
+      experimental: {
+        serverActions: {
+          allowedOrigins: ["my-proxy.com", "*.my-domain.com"],
+        },
+      },
+    });
+    expect(config.serverActionsAllowedOrigins).toEqual(["my-proxy.com", "*.my-domain.com"]);
+  });
+
+  it("resolveNextConfig defaults serverActionsAllowedOrigins to empty array", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({});
+    expect(config.serverActionsAllowedOrigins).toEqual([]);
+  });
+
+  it("resolveNextConfig handles null input with empty serverActionsAllowedOrigins", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig(null);
+    expect(config.serverActionsAllowedOrigins).toEqual([]);
+  });
 });
 
 describe("extractMdxOptions", () => {

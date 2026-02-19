@@ -132,6 +132,8 @@ export interface ResolvedNextConfig {
   i18n: NextI18nConfig | null;
   /** MDX remark/rehype/recma plugins extracted from @next/mdx config */
   mdx: MdxOptions | null;
+  /** Extra allowed origins for server action CSRF validation (from experimental.serverActions.allowedOrigins). */
+  serverActionsAllowedOrigins: string[];
 }
 
 const CONFIG_FILES = [
@@ -196,6 +198,7 @@ export async function resolveNextConfig(
       images: undefined,
       i18n: null,
       mdx: null,
+      serverActionsAllowedOrigins: [],
     };
   }
 
@@ -230,8 +233,15 @@ export async function resolveNextConfig(
   // Extract MDX remark/rehype plugins from @next/mdx's webpack wrapper
   const mdx = extractMdxOptions(config);
 
+  // Resolve serverActions.allowedOrigins from experimental config
+  const experimental = config.experimental as Record<string, unknown> | undefined;
+  const serverActionsConfig = experimental?.serverActions as Record<string, unknown> | undefined;
+  const serverActionsAllowedOrigins = Array.isArray(serverActionsConfig?.allowedOrigins)
+    ? (serverActionsConfig.allowedOrigins as string[])
+    : [];
+
   // Warn about unsupported options (skip webpack if we extracted MDX from it)
-  const unsupported = mdx ? ["experimental"] : ["webpack", "experimental"];
+  const unsupported = mdx ? [] : ["webpack"];
   for (const key of unsupported) {
     if (config[key] !== undefined) {
       console.warn(
@@ -268,6 +278,7 @@ export async function resolveNextConfig(
     images: config.images,
     i18n,
     mdx,
+    serverActionsAllowedOrigins,
   };
 }
 
