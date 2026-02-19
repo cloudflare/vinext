@@ -2130,18 +2130,20 @@ export async function handleSsr(rscStream, navContext, fontData) {
         const text = decoder.decode(chunk, { stream: true });
         const fixed = fixPreloadAs(text);
         if (injected) {
-          // Append any accumulated RSC chunks as script tags after each HTML chunk
-          const rscScripts = rscEmbed.flush();
-          controller.enqueue(encoder.encode(fixed + rscScripts));
+          // Pass HTML through without interleaving RSC scripts.
+          // React's renderToReadableStream splits chunks at arbitrary byte
+          // boundaries (e.g. mid-SVG-element like "<linearGradi" + "ent>"),
+          // so injecting <script> tags between chunks corrupts the DOM.
+          // All RSC data is emitted after the HTML stream completes in flush().
+          controller.enqueue(encoder.encode(fixed));
           return;
         }
         const headEnd = fixed.indexOf("</head>");
         if (headEnd !== -1) {
-          // Inject before </head>
+          // Inject params, fonts, and server-inserted HTML before </head>
           const before = fixed.slice(0, headEnd);
           const after = fixed.slice(headEnd);
-          const rscScripts = rscEmbed.flush();
-          controller.enqueue(encoder.encode(before + injectHTML + after + rscScripts));
+          controller.enqueue(encoder.encode(before + injectHTML + after));
           injected = true;
         } else {
           controller.enqueue(encoder.encode(fixed));
@@ -2152,7 +2154,10 @@ export async function handleSsr(rscStream, navContext, fontData) {
         if (!injected && injectHTML) {
           controller.enqueue(encoder.encode(injectHTML));
         }
-        // Finalize: wait for remaining RSC chunks and emit closing signal
+        // Emit all RSC chunks after the HTML stream is complete.
+        // This ensures script tags don't corrupt the DOM by appearing
+        // mid-element. The browser entry module loads asynchronously via
+        // import(), so RSC data is always available before hydration starts.
         const finalScripts = await rscEmbed.finalize();
         if (finalScripts) {
           controller.enqueue(encoder.encode(finalScripts));
