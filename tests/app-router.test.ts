@@ -1815,6 +1815,11 @@ describe("App Router middleware with NextRequest", () => {
     const text = await res.text();
     expect(text).toBe("Blocked by middleware");
   });
+
+  it("middleware that throws returns 500 instead of bypassing", async () => {
+    const res = await fetch(`${baseUrl}/middleware-throw`);
+    expect(res.status).toBe(500);
+  });
 });
 
 describe("SSR entry CSS preload fix", () => {

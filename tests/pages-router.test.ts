@@ -786,6 +786,16 @@ describe("Production build", () => {
     expect(result.responseHeaders).toBeDefined();
     expect(result.responseHeaders.get("x-middleware-test")).toBe("active");
   });
+
+  it("runMiddleware returns 500 when middleware throws", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(serverEntryPath);
+    const request = new Request("http://localhost/middleware-throw");
+    const result = await serverEntry.runMiddleware(request);
+    expect(result.continue).toBe(false);
+    expect(result.response).toBeInstanceOf(Response);
+    expect(result.response.status).toBe(500);
+  });
 });
 
 describe("Production server middleware (Pages Router)", () => {
@@ -860,6 +870,11 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.status).toBe(403);
     const text = await res.text();
     expect(text).toContain("Access Denied");
+  });
+
+  it("returns 500 when middleware throws", async () => {
+    const res = await fetch(`${prodUrl}/middleware-throw`);
+    expect(res.status).toBe(500);
   });
 
   it("sets x-middleware-test header on matched requests", async () => {

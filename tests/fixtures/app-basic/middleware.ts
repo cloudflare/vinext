@@ -55,6 +55,11 @@ export function middleware(request: NextRequest) {
     return new Response("Blocked by middleware", { status: 403 });
   }
 
+  // Throw an error to test that middleware errors return 500, not bypass auth
+  if (pathname === "/middleware-throw") {
+    throw new Error("middleware crash");
+  }
+
   // Forward search params as a header for RSC testing
   // Ref: opennextjs-cloudflare middleware.ts — search-params header
   const requestHeaders = new Headers(request.headers);
@@ -80,6 +85,7 @@ export const config = {
     "/middleware-rewrite",
     "/middleware-rewrite-status",
     "/middleware-blocked",
+    "/middleware-throw",
     "/search-query",
     "/",
   ],

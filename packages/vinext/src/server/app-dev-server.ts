@@ -1067,6 +1067,7 @@ async function _handleRequest(request) {
       }
     } catch (err) {
       console.error("[vinext] Middleware error:", err);
+      return new Response("Internal Server Error", { status: 500 });
     }
   }
 

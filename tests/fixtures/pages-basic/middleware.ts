@@ -23,6 +23,11 @@ export function middleware(request: NextRequest) {
     return new Response("Access Denied", { status: 403 });
   }
 
+  // Throw an error to test that middleware errors return 500, not bypass auth
+  if (url.pathname === "/middleware-throw") {
+    throw new Error("middleware crash");
+  }
+
   return response;
 }
 
