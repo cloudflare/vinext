@@ -2520,6 +2520,112 @@ describe("production server compression", () => {
   });
 });
 
+describe("host header poisoning prevention", () => {
+  it("resolveHost ignores X-Forwarded-Host by default", async () => {
+    const { resolveHost } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    const req = {
+      headers: {
+        "x-forwarded-host": "evil.com",
+        host: "legit.com",
+      },
+    };
+    expect(resolveHost(req as any, "localhost")).toBe("legit.com");
+  });
+
+  it("resolveHost uses Host header when X-Forwarded-Host is absent", async () => {
+    const { resolveHost } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    const req = { headers: { host: "myapp.com:3000" } };
+    expect(resolveHost(req as any, "localhost")).toBe("myapp.com:3000");
+  });
+
+  it("resolveHost returns fallback when no host headers are present", async () => {
+    const { resolveHost } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    const req = { headers: {} };
+    expect(resolveHost(req as any, "fallback.local")).toBe("fallback.local");
+  });
+
+  it("resolveHost trusts X-Forwarded-Host when it is in the trusted hosts set", async () => {
+    const { resolveHost, trustedHosts } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    // Temporarily add a host to the trusted set
+    trustedHosts.add("cdn.example.com");
+    try {
+      const req = {
+        headers: {
+          "x-forwarded-host": "cdn.example.com",
+          host: "internal.local",
+        },
+      };
+      expect(resolveHost(req as any, "localhost")).toBe("cdn.example.com");
+    } finally {
+      trustedHosts.delete("cdn.example.com");
+    }
+  });
+
+  it("resolveHost still rejects untrusted X-Forwarded-Host when trusted set is non-empty", async () => {
+    const { resolveHost, trustedHosts } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    trustedHosts.add("trusted.example.com");
+    try {
+      const req = {
+        headers: {
+          "x-forwarded-host": "evil.com",
+          host: "legit.com",
+        },
+      };
+      expect(resolveHost(req as any, "localhost")).toBe("legit.com");
+    } finally {
+      trustedHosts.delete("trusted.example.com");
+    }
+  });
+
+  it("resolveHost handles case-insensitive host matching", async () => {
+    const { resolveHost, trustedHosts } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    trustedHosts.add("cdn.example.com");
+    try {
+      const req = {
+        headers: {
+          "x-forwarded-host": "CDN.Example.COM",
+          host: "internal.local",
+        },
+      };
+      // DNS hostnames are case-insensitive, should match
+      expect(resolveHost(req as any, "localhost")).toBe("cdn.example.com");
+    } finally {
+      trustedHosts.delete("cdn.example.com");
+    }
+  });
+
+  it("resolveHost extracts first value from comma-separated X-Forwarded-Host", async () => {
+    const { resolveHost, trustedHosts } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    trustedHosts.add("cdn.example.com");
+    try {
+      const req = {
+        headers: {
+          "x-forwarded-host": "cdn.example.com, proxy2.internal",
+          host: "internal.local",
+        },
+      };
+      // Multiple proxies produce comma-separated values; first is client-facing
+      expect(resolveHost(req as any, "localhost")).toBe("cdn.example.com");
+    } finally {
+      trustedHosts.delete("cdn.example.com");
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Edge cases from Next.js test suite
 // ---------------------------------------------------------------------------

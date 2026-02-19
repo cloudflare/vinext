@@ -218,11 +218,47 @@ function tryServeStatic(
 }
 
 /**
+ * Resolve the host for a request, ignoring X-Forwarded-Host to prevent
+ * host header poisoning attacks (open redirects, cache poisoning).
+ *
+ * X-Forwarded-Host is only trusted when the VINEXT_TRUSTED_HOSTS env var
+ * lists the forwarded host value. Without this, an attacker can send
+ * X-Forwarded-Host: evil.com and poison any redirect that resolves
+ * against request.url.
+ *
+ * On Cloudflare Workers, X-Forwarded-Host is always set by Cloudflare
+ * itself, so this is only a concern for the Node.js prod-server.
+ */
+function resolveHost(req: IncomingMessage, fallback: string): string {
+  const rawForwarded = req.headers["x-forwarded-host"] as string | undefined;
+  const hostHeader = req.headers.host;
+
+  if (rawForwarded) {
+    // X-Forwarded-Host can be comma-separated when passing through
+    // multiple proxies — take only the first (client-facing) value.
+    const forwardedHost = rawForwarded.split(",")[0].trim().toLowerCase();
+    if (forwardedHost && trustedHosts.has(forwardedHost)) {
+      return forwardedHost;
+    }
+  }
+
+  return hostHeader || fallback;
+}
+
+/** Hosts that are allowed as X-Forwarded-Host values (stored lowercase). */
+const trustedHosts: Set<string> = new Set(
+  (process.env.VINEXT_TRUSTED_HOSTS ?? "")
+    .split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean),
+);
+
+/**
  * Convert a Node.js IncomingMessage to a Web Request object.
  */
 function nodeToWebRequest(req: IncomingMessage): Request {
   const proto = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim() || "http";
-  const host = (req.headers["x-forwarded-host"] as string) || req.headers.host || "localhost";
+  const host = resolveHost(req, "localhost");
   const origin = `${proto}://${host}`;
   const url = new URL(req.url ?? "/", origin);
 
@@ -535,7 +571,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // Convert Node.js req to Web Request for the server entry
       const protocol = (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim() || "http";
-      const hostHeader = (req.headers["x-forwarded-host"] as string) || req.headers.host || `${host}:${port}`;
+      const hostHeader = resolveHost(req, `${host}:${port}`);
       const reqHeaders = Object.entries(req.headers).reduce((h, [k, v]) => {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
         return h;
@@ -715,4 +751,4 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 }
 
 // Export helpers for testing
-export { sendCompressed, negotiateEncoding, COMPRESSIBLE_TYPES, COMPRESS_THRESHOLD };
+export { sendCompressed, negotiateEncoding, COMPRESSIBLE_TYPES, COMPRESS_THRESHOLD, resolveHost, trustedHosts };
