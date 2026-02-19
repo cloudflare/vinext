@@ -4,15 +4,75 @@
  * Translates Next.js Image props to @unpic/react Image component.
  * @unpic/react auto-detects CDN from URL and uses native transforms.
  * For local images (relative paths), falls back to a basic <img>.
+ *
+ * Remote images are validated against `images.remotePatterns` and
+ * `images.domains` from next.config.js. Unmatched URLs are blocked
+ * in production and warn in development, matching Next.js behavior.
  */
 import React, { forwardRef } from "react";
 import { Image as UnpicImage } from "@unpic/react";
+import { hasRemoteMatch, type RemotePattern } from "./image-config.js";
 
 export interface StaticImageData {
   src: string;
   height: number;
   width: number;
   blurDataURL?: string;
+}
+
+/**
+ * Image config injected at build time via Vite define.
+ * Serialized as JSON — parsed once at module level.
+ */
+const __imageRemotePatterns: RemotePattern[] = (() => {
+  try {
+    return JSON.parse(process.env.__VINEXT_IMAGE_REMOTE_PATTERNS ?? "[]");
+  } catch {
+    return [];
+  }
+})();
+const __imageDomains: string[] = (() => {
+  try {
+    return JSON.parse(process.env.__VINEXT_IMAGE_DOMAINS ?? "[]");
+  } catch {
+    return [];
+  }
+})();
+const __hasImageConfig = __imageRemotePatterns.length > 0 || __imageDomains.length > 0;
+const __isDev = process.env.NODE_ENV !== "production";
+
+/**
+ * Validate that a remote URL is allowed by the configured remote patterns.
+ * Returns true if the URL is allowed, false otherwise.
+ *
+ * When no remotePatterns/domains are configured, all remote URLs are allowed
+ * (backwards-compatible — user hasn't opted into restriction).
+ *
+ * When patterns ARE configured, only matching URLs are allowed.
+ * In development, non-matching URLs produce a console warning.
+ * In production, non-matching URLs are blocked (src replaced with empty string).
+ */
+function validateRemoteUrl(src: string): { allowed: boolean; reason?: string } {
+  if (!__hasImageConfig) {
+    // No image config — allow everything (backwards-compatible)
+    return { allowed: true };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(src, "http://n");
+  } catch {
+    return { allowed: false, reason: `Invalid URL: ${src}` };
+  }
+
+  if (hasRemoteMatch(__imageDomains, __imageRemotePatterns, url)) {
+    return { allowed: true };
+  }
+
+  return {
+    allowed: false,
+    reason: `Image URL "${src}" is not configured in images.remotePatterns or images.domains in next.config.js. See: https://nextjs.org/docs/messages/next-image-unconfigured-host`,
+  };
 }
 
 interface ImageProps {
@@ -119,8 +179,20 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     );
   }
 
-  // For remote URLs, use @unpic/react which auto-detects CDN
+  // For remote URLs, validate against remotePatterns then use @unpic/react
   if (isRemoteUrl(src)) {
+    const validation = validateRemoteUrl(src);
+    if (!validation.allowed) {
+      if (__isDev) {
+        console.warn(`[next/image] ${validation.reason}`);
+        // In dev, render the image but with a warning — matches Next.js dev behavior
+      } else {
+        // In production, block the image entirely
+        console.error(`[next/image] ${validation.reason}`);
+        return null;
+      }
+    }
+
     const bg =
       placeholder === "blur" && imgBlurDataURL
         ? `url(${imgBlurDataURL})`
@@ -235,10 +307,26 @@ export function getImageProps(props: ImageProps): {
   const imgHeight = height ?? (typeof srcProp === "object" ? srcProp.height : undefined);
   const imgBlurDataURL = blurDataURLProp ?? (typeof srcProp === "object" ? srcProp.blurDataURL : undefined);
 
+  // Validate remote URLs against configured patterns
+  let blockedInProd = false;
+  if (isRemoteUrl(src)) {
+    const validation = validateRemoteUrl(src);
+    if (!validation.allowed) {
+      if (__isDev) {
+        console.warn(`[next/image] ${validation.reason}`);
+      } else {
+        console.error(`[next/image] ${validation.reason}`);
+        blockedInProd = true;
+      }
+    }
+  }
+
   // Resolve src through custom loader if provided
-  const resolvedSrc = loader
-    ? loader({ src, width: imgWidth ?? 0, quality: _quality ?? 75 })
-    : src;
+  const resolvedSrc = blockedInProd
+    ? ""
+    : loader
+      ? loader({ src, width: imgWidth ?? 0, quality: _quality ?? 75 })
+      : src;
 
   // Build srcSet for local images
   const srcSet = imgWidth && !fill && !isRemoteUrl(resolvedSrc)

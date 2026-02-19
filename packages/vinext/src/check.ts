@@ -70,7 +70,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   headers: { status: "supported" },
   i18n: { status: "supported", detail: "path-prefix routing (domains not yet supported)" },
   env: { status: "supported" },
-  images: { status: "partial", detail: "remotePatterns accepted, no local optimization" },
+  images: { status: "partial", detail: "remotePatterns validated, no local optimization" },
   output: { status: "supported", detail: "'export' and 'standalone' modes" },
   transpilePackages: { status: "supported", detail: "Vite handles this natively" },
   webpack: { status: "unsupported", detail: "Vite replaces webpack — custom webpack configs need migration" },

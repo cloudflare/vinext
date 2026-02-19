@@ -3924,6 +3924,110 @@ describe("next/image component rendering", () => {
   });
 });
 
+describe("image remote pattern matching", () => {
+  it("matchRemotePattern matches exact hostname", async () => {
+    const { matchRemotePattern } = await import("../packages/vinext/src/shims/image-config.js");
+    const pattern = { hostname: "cdn.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.jpg"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://other.example.com/img.jpg"))).toBe(false);
+  });
+
+  it("matchRemotePattern matches wildcard hostname with *", async () => {
+    const { matchRemotePattern } = await import("../packages/vinext/src/shims/image-config.js");
+    const pattern = { hostname: "*.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.jpg"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://images.example.com/img.jpg"))).toBe(true);
+    // Single * should NOT match nested subdomains
+    expect(matchRemotePattern(pattern, new URL("https://a.b.example.com/img.jpg"))).toBe(false);
+    // Should not match bare domain
+    expect(matchRemotePattern(pattern, new URL("https://example.com/img.jpg"))).toBe(false);
+  });
+
+  it("matchRemotePattern matches ** hostname for any depth", async () => {
+    const { matchRemotePattern } = await import("../packages/vinext/src/shims/image-config.js");
+    const pattern = { hostname: "**.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.jpg"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://a.b.c.example.com/img.jpg"))).toBe(true);
+    // ** requires at least one segment
+    expect(matchRemotePattern(pattern, new URL("https://example.com/img.jpg"))).toBe(false);
+  });
+
+  it("matchRemotePattern checks protocol when specified", async () => {
+    const { matchRemotePattern } = await import("../packages/vinext/src/shims/image-config.js");
+    const pattern = { protocol: "https", hostname: "cdn.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.jpg"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("http://cdn.example.com/img.jpg"))).toBe(false);
+  });
+
+  it("matchRemotePattern checks port when specified", async () => {
+    const { matchRemotePattern } = await import("../packages/vinext/src/shims/image-config.js");
+    const pattern = { hostname: "localhost", port: "3000" };
+    expect(matchRemotePattern(pattern, new URL("http://localhost:3000/img.jpg"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("http://localhost:8080/img.jpg"))).toBe(false);
+  });
+
+  it("matchRemotePattern checks pathname when specified", async () => {
+    const { matchRemotePattern } = await import("../packages/vinext/src/shims/image-config.js");
+    const pattern = { hostname: "cdn.example.com", pathname: "/images/**" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/images/photo.jpg"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/images/nested/photo.jpg"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/other/photo.jpg"))).toBe(false);
+  });
+
+  it("matchRemotePattern checks search when specified", async () => {
+    const { matchRemotePattern } = await import("../packages/vinext/src/shims/image-config.js");
+    const pattern = { hostname: "cdn.example.com", search: "?v=123" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.jpg?v=123"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.jpg?v=456"))).toBe(false);
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.jpg"))).toBe(false);
+  });
+
+  it("matchRemotePattern defaults pathname to ** when not specified", async () => {
+    const { matchRemotePattern } = await import("../packages/vinext/src/shims/image-config.js");
+    const pattern = { hostname: "cdn.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/any/deep/path/img.jpg"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/"))).toBe(true);
+  });
+
+  it("matchRemotePattern handles protocol with trailing colon", async () => {
+    const { matchRemotePattern } = await import("../packages/vinext/src/shims/image-config.js");
+    const pattern = { protocol: "https:", hostname: "cdn.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.jpg"))).toBe(true);
+  });
+
+  it("hasRemoteMatch checks domains list", async () => {
+    const { hasRemoteMatch } = await import("../packages/vinext/src/shims/image-config.js");
+    const domains = ["cdn.example.com", "images.example.com"];
+    expect(hasRemoteMatch(domains, [], new URL("https://cdn.example.com/img.jpg"))).toBe(true);
+    expect(hasRemoteMatch(domains, [], new URL("https://images.example.com/img.jpg"))).toBe(true);
+    expect(hasRemoteMatch(domains, [], new URL("https://other.example.com/img.jpg"))).toBe(false);
+  });
+
+  it("hasRemoteMatch checks remotePatterns when domains don't match", async () => {
+    const { hasRemoteMatch } = await import("../packages/vinext/src/shims/image-config.js");
+    const patterns = [{ protocol: "https", hostname: "**.cdn.example.com" }];
+    expect(hasRemoteMatch([], patterns, new URL("https://us.cdn.example.com/img.jpg"))).toBe(true);
+    expect(hasRemoteMatch([], patterns, new URL("http://us.cdn.example.com/img.jpg"))).toBe(false);
+  });
+
+  it("matchRemotePattern handles single * in pathname", async () => {
+    const { matchRemotePattern } = await import("../packages/vinext/src/shims/image-config.js");
+    const pattern = { hostname: "cdn.example.com", pathname: "/images/*" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/images/photo.jpg"))).toBe(true);
+    // Single * should not match nested paths
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/images/nested/photo.jpg"))).toBe(false);
+  });
+
+  it("matchRemotePattern handles regex special chars in hostname", async () => {
+    const { matchRemotePattern } = await import("../packages/vinext/src/shims/image-config.js");
+    // Dots in hostname are literal (escaped for regex)
+    const pattern = { hostname: "cdn.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.jpg"))).toBe(true);
+    // "cdnXexampleXcom" should not match "cdn.example.com"
+    expect(matchRemotePattern(pattern, new URL("https://cdnXexample.com/img.jpg"))).toBe(false);
+  });
+});
+
 describe("next/navigation enhancements", () => {
   it("exports ReadonlyURLSearchParams type alias", async () => {
     // This is a type-only export, we verify the module loads without error

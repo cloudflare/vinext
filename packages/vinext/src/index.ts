@@ -1291,6 +1291,13 @@ hydrate();
         defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(
           nextConfig.basePath,
         );
+        // Expose image remote patterns for validation in next/image shim
+        defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
+          JSON.stringify(nextConfig.images?.remotePatterns ?? []),
+        );
+        defines["process.env.__VINEXT_IMAGE_DOMAINS"] = JSON.stringify(
+          JSON.stringify(nextConfig.images?.domains ?? []),
+        );
 
         // Build the shim alias map — used by both resolve.alias and resolveId
         // (resolveId handles .js extension variants for libraries like nuqs)

@@ -91,6 +91,7 @@ export interface NextConfig {
       hostname: string;
       port?: string;
       pathname?: string;
+      search?: string;
     }>;
     domains?: string[];
     unoptimized?: boolean;
