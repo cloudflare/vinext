@@ -44,10 +44,30 @@ export function getSSRHeadHTML(): string {
 }
 
 /**
+ * Tags allowed inside <head>. Anything else is silently dropped.
+ * This prevents injection of dangerous elements like <iframe>, <object>, etc.
+ */
+const ALLOWED_HEAD_TAGS = new Set([
+  "title", "meta", "link", "style", "script", "base", "noscript",
+]);
+
+/**
  * Convert a React element to an HTML string for SSR head injection.
+ * Returns an empty string for disallowed tag types.
  */
 function reactElementToHTML(child: React.ReactElement): string {
   const tag = child.type as string;
+
+  if (!ALLOWED_HEAD_TAGS.has(tag)) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(
+        `[vinext] <Head> ignoring disallowed tag <${tag}>. ` +
+        `Only ${[...ALLOWED_HEAD_TAGS].join(", ")} are allowed.`,
+      );
+    }
+    return "";
+  }
+
   const props = child.props as Record<string, unknown>;
   const attrs: string[] = [];
   let innerHTML = "";
@@ -55,9 +75,10 @@ function reactElementToHTML(child: React.ReactElement): string {
   for (const [key, value] of Object.entries(props)) {
     if (key === "children") {
       if (typeof value === "string") {
-        innerHTML = value;
+        innerHTML = escapeHTML(value);
       }
     } else if (key === "dangerouslySetInnerHTML") {
+      // Intentionally raw — developer explicitly opted in
       const html = value as { __html: string };
       if (html?.__html) innerHTML = html.__html;
     } else if (key === "className") {
@@ -80,6 +101,10 @@ function reactElementToHTML(child: React.ReactElement): string {
   return `<${tag}${attrStr} data-vinext-head="true">${innerHTML}</${tag}>`;
 }
 
+function escapeHTML(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export function escapeAttr(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -92,7 +117,8 @@ function Head({ children }: HeadProps): null {
     Children.forEach(children, (child) => {
       if (!isValidElement(child)) return;
       if (typeof child.type !== "string") return;
-      _getSSRHeadElements().push(reactElementToHTML(child));
+      const html = reactElementToHTML(child);
+      if (html) _getSSRHeadElements().push(html);
     });
     return null;
   }
@@ -110,6 +136,7 @@ function Head({ children }: HeadProps): null {
     Children.forEach(children, (child) => {
       if (!isValidElement(child)) return;
       if (typeof child.type !== "string") return;
+      if (!ALLOWED_HEAD_TAGS.has(child.type)) return;
 
       const domEl = document.createElement(child.type);
       const props = child.props as Record<string, unknown>;

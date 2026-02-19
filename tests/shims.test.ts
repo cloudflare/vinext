@@ -4796,3 +4796,122 @@ describe("ViewTransition polyfill behavior", () => {
     expect(addTransitionType).toBe(nativeAddTransitionType);
   });
 });
+
+// ---------------------------------------------------------------------------
+// next/head SSR security tests
+// ---------------------------------------------------------------------------
+
+describe("next/head SSR security", () => {
+  async function collectHeadHTML(children: React.ReactElement[]) {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { default: Head, resetSSRHead, getSSRHeadHTML } = await import(
+      "../packages/vinext/src/shims/head.js"
+    );
+
+    resetSSRHead();
+    // Render Head with children — SSR path collects elements
+    renderToStaticMarkup(
+      React.createElement(Head, null, ...children),
+    );
+    return getSSRHeadHTML();
+  }
+
+  it("escapes HTML special characters in title children", async () => {
+    const React = await import("react");
+    const html = await collectHeadHTML([
+      React.createElement("title", null, '</title><script>alert("xss")</script>'),
+    ]);
+
+    // The injected script tag must be escaped, not raw
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("</title><script>");
+    expect(html).toContain("&lt;/title&gt;&lt;script&gt;");
+  });
+
+  it("escapes ampersands and angle brackets in children", async () => {
+    const React = await import("react");
+    const html = await collectHeadHTML([
+      React.createElement("title", null, "Tom & Jerry < Friends > Foes"),
+    ]);
+
+    expect(html).toContain("Tom &amp; Jerry &lt; Friends &gt; Foes");
+    expect(html).not.toContain("Tom & Jerry < Friends > Foes");
+  });
+
+  it("still allows dangerouslySetInnerHTML (intentionally raw)", async () => {
+    const React = await import("react");
+    const html = await collectHeadHTML([
+      React.createElement("style", {
+        dangerouslySetInnerHTML: { __html: "body { color: red; }" },
+      }),
+    ]);
+
+    expect(html).toContain("body { color: red; }");
+  });
+
+  it("attributes are still properly escaped", async () => {
+    const React = await import("react");
+    const html = await collectHeadHTML([
+      React.createElement("meta", {
+        name: "description",
+        content: 'He said "hello" & <goodbye>',
+      }),
+    ]);
+
+    expect(html).toContain("&quot;hello&quot;");
+    expect(html).toContain("&amp;");
+    expect(html).toContain("&lt;goodbye&gt;");
+  });
+
+  it("rejects disallowed tag types (iframe)", async () => {
+    const React = await import("react");
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const html = await collectHeadHTML([
+      React.createElement("iframe" as any, { src: "https://evil.com" }),
+    ]);
+
+    expect(html).toBe("");
+    expect(consoleWarn).toHaveBeenCalledWith(
+      expect.stringContaining("ignoring disallowed tag <iframe>"),
+    );
+    consoleWarn.mockRestore();
+  });
+
+  it("rejects disallowed tag types (object, embed, form)", async () => {
+    const React = await import("react");
+    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const html = await collectHeadHTML([
+      React.createElement("object" as any, { data: "https://evil.com" }),
+      React.createElement("embed" as any, { src: "https://evil.com" }),
+      React.createElement("form" as any, { action: "https://evil.com" }),
+    ]);
+
+    expect(html).toBe("");
+    consoleWarn.mockRestore();
+  });
+
+  it("allows all valid head tags", async () => {
+    const React = await import("react");
+    const { resetSSRHead } = await import(
+      "../packages/vinext/src/shims/head.js"
+    );
+
+    const allowedTags = ["title", "meta", "link", "style", "script", "base", "noscript"];
+
+    for (const tag of allowedTags) {
+      resetSSRHead();
+      const selfClosing = ["meta", "link", "base"].includes(tag);
+      const el = selfClosing
+        ? React.createElement(tag, { name: "test", content: "test" })
+        : React.createElement(tag, null, "test content");
+
+      const html = await collectHeadHTML([el]);
+
+      expect(html).toContain(`<${tag}`);
+      expect(html).toContain('data-vinext-head="true"');
+    }
+  });
+});
