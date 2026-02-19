@@ -719,7 +719,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 
 | # | OpenNext Test | Vinext Status | Notes |
 |---|---|---|---|
-| 1 | Loading boundary shows "Loading..." before content resolves | FIXME | vinext Suspense streaming does not show loading.tsx fallback in dev mode — feature gap |
+| 1 | Loading boundary shows "Loading..." before content resolves | PASS | Suspense streaming sends loading.tsx fallback in initial HTML shell |
 | 2 | Content replaces loading state after delay | PASS | Full lifecycle (slow page has 2s async delay) |
 | 3 | Fetch cache properly cached across reloads | PASS | Verified via existing tests |
 

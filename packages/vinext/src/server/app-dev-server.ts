@@ -1574,8 +1574,14 @@ async function _handleRequest(request) {
   // Server Components are just functions — we can call PageComponent directly to detect
   // these special throws before starting the RSC stream.
   //
+  // For routes with a loading.tsx Suspense boundary, we skip awaiting async components.
+  // The Suspense boundary + rscOnError will handle redirect/notFound thrown during
+  // streaming, and blocking here would defeat streaming (the slow component's delay
+  // would be hit before the RSC stream even starts).
+  //
   // Because this calls the component outside React's render cycle, hooks like use()
   // trigger "Invalid hook call" console.error in dev. Suppress that expected warning.
+  const _hasLoadingBoundary = !!(route.loading && route.loading.default);
   const _origConsoleError = console.error;
   console.error = (...args) => {
     if (typeof args[0] === "string" && args[0].includes("Invalid hook call")) return;
@@ -1583,9 +1589,17 @@ async function _handleRequest(request) {
   };
   try {
     const testResult = PageComponent({ params });
-    // If it's a promise (async component), await it to catch async redirect/notFound
+    // If it's a promise (async component), only await if there's no loading boundary.
+    // With a loading boundary, the Suspense streaming pipeline handles async resolution
+    // and any redirect/notFound errors via rscOnError.
     if (testResult && typeof testResult === "object" && typeof testResult.then === "function") {
-      await testResult;
+      if (!_hasLoadingBoundary) {
+        await testResult;
+      } else {
+        // Suppress unhandled promise rejection — with a loading boundary,
+        // redirect/notFound errors are handled by rscOnError during streaming.
+        testResult.catch(() => {});
+      }
     }
   } catch (preRenderErr) {
     const specialResponse = await handleRenderError(preRenderErr);
@@ -1851,6 +1865,79 @@ async function collectStreamChunks(stream) {
 }
 
 /**
+ * Create a TransformStream that appends RSC chunks as inline <script> tags
+ * to the HTML stream. This allows progressive hydration — the browser receives
+ * RSC data incrementally as Suspense boundaries resolve, rather than waiting
+ * for the entire RSC payload before hydration can begin.
+ *
+ * Each chunk is written as:
+ *   <script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];self.__VINEXT_RSC_CHUNKS__.push([...])</script>
+ *
+ * The browser entry reads from this array to reconstruct the RSC stream.
+ */
+function createRscEmbedTransform(embedStream) {
+  const reader = embedStream.getReader();
+  let done = false;
+  let pendingChunks = [];
+  let reading = false;
+
+  // Start reading RSC chunks in the background, accumulating them
+  async function pumpReader() {
+    if (reading) return;
+    reading = true;
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) {
+          done = true;
+          break;
+        }
+        pendingChunks.push(Array.from(result.value));
+      }
+    } catch (err) {
+      if (process.env.NODE_ENV !== "production") {
+        console.warn("[vinext] RSC embed stream read error:", err);
+      }
+      done = true;
+    }
+    reading = false;
+  }
+
+  // Fire off the background reader immediately
+  const pumpPromise = pumpReader();
+
+  return {
+    /**
+     * Flush any accumulated RSC chunks as <script> tags.
+     * Called after each HTML chunk is enqueued.
+     */
+    flush() {
+      if (pendingChunks.length === 0) return "";
+      const chunks = pendingChunks;
+      pendingChunks = [];
+      let scripts = "";
+      for (const chunk of chunks) {
+        scripts += "<script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];self.__VINEXT_RSC_CHUNKS__.push(" + safeJsonStringify(chunk) + ")</script>";
+      }
+      return scripts;
+    },
+
+    /**
+     * Wait for the RSC stream to fully complete and return any final
+     * script tags plus the closing signal.
+     */
+    async finalize() {
+      await pumpPromise;
+      let scripts = this.flush();
+      // Signal that all RSC chunks have been sent.
+      // Params are already embedded in <head> — no need to include here.
+      scripts += "<script>self.__VINEXT_RSC_DONE__=true</script>";
+      return scripts;
+    },
+  };
+}
+
+/**
  * Render the RSC stream to HTML.
  *
  * @param rscStream - The RSC payload stream from the RSC environment
@@ -1879,17 +1966,24 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // was used to generate the HTML, avoiding hydration mismatches (React #418).
     const [ssrStream, embedStream] = rscStream.tee();
 
-    // Collect RSC chunks for embedding (runs in parallel with SSR)
-    const rscChunksPromise = collectStreamChunks(embedStream);
+    // Create the progressive RSC embed helper — it reads the embed stream
+    // in the background and provides script tags to inject into the HTML stream.
+    const rscEmbed = createRscEmbedTransform(embedStream);
 
-    // Deserialize RSC stream back to React VDOM
-    const root = await createFromReadableStream(ssrStream);
+    // Deserialize RSC stream back to React VDOM.
+    // IMPORTANT: Do NOT await this — createFromReadableStream returns a thenable
+    // that React's renderToReadableStream can consume progressively. By passing
+    // the unresolved thenable, React will render Suspense fallbacks (loading.tsx)
+    // immediately in the HTML shell, then stream in resolved content as RSC
+    // chunks arrive. Awaiting here would block until all async server components
+    // complete, collapsing the streaming behavior.
+    const root = createFromReadableStream(ssrStream);
 
     // Get the bootstrap script content for the browser entry
     const bootstrapScriptContent =
       await import.meta.viteRsc.loadBootstrapScriptContent("index");
 
-    // Render HTML (traditional SSR)
+    // Render HTML (streaming SSR)
     // useServerInsertedHTML callbacks are registered during this render.
     // The onError callback preserves the digest for Next.js navigation errors
     // (redirect, notFound, forbidden, unauthorized) thrown inside Suspense
@@ -1906,17 +2000,6 @@ export async function handleSsr(rscStream, navContext, fontData) {
       },
     });
 
-    // Wait for RSC chunks to be collected
-    const rscChunks = await rscChunksPromise;
-
-    // Create the script that embeds the RSC payload and route params for hydration.
-    // The browser entry will read this instead of fetching a new RSC stream.
-    // We also embed the route params so useParams() works on hydration.
-    const embedData = {
-      rsc: rscChunks,
-      params: navContext?.params || {},
-    };
-    const rscEmbedScript = '<script>self.__VINEXT_RSC__=' + safeJsonStringify(embedData) + '</script>';
 
     // Flush useServerInsertedHTML callbacks (CSS-in-JS style injection)
     const insertedElements = flushServerInsertedHTML();
@@ -1947,10 +2030,15 @@ export async function handleSsr(rscStream, navContext, fontData) {
       }
     }
 
-    // Combine RSC embed script, server-inserted HTML, and font HTML
-    const injectHTML = rscEmbedScript + insertedHTML + fontHTML;
+    // Head-injected HTML: server-inserted HTML, font HTML, and route params.
+    // RSC payload is now embedded progressively via script tags in the body stream.
+    // Params are embedded eagerly in <head> so they're available before client
+    // hydration starts, avoiding the need for polling on the client.
+    const paramsScript = '<script>self.__VINEXT_RSC_PARAMS__=' + safeJsonStringify(navContext?.params || {}) + '</script>';
+    const injectHTML = paramsScript + insertedHTML + fontHTML;
 
-    // Inject the collected HTML before </head> using a TransformStream
+    // Inject the collected HTML before </head> and progressively embed RSC
+    // chunks as script tags throughout the HTML body stream.
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
     let injected = false;
@@ -1971,7 +2059,9 @@ export async function handleSsr(rscStream, navContext, fontData) {
         const text = decoder.decode(chunk, { stream: true });
         const fixed = fixPreloadAs(text);
         if (injected) {
-          controller.enqueue(encoder.encode(fixed));
+          // Append any accumulated RSC chunks as script tags after each HTML chunk
+          const rscScripts = rscEmbed.flush();
+          controller.enqueue(encoder.encode(fixed + rscScripts));
           return;
         }
         const headEnd = fixed.indexOf("</head>");
@@ -1979,16 +2069,22 @@ export async function handleSsr(rscStream, navContext, fontData) {
           // Inject before </head>
           const before = fixed.slice(0, headEnd);
           const after = fixed.slice(headEnd);
-          controller.enqueue(encoder.encode(before + injectHTML + after));
+          const rscScripts = rscEmbed.flush();
+          controller.enqueue(encoder.encode(before + injectHTML + after + rscScripts));
           injected = true;
         } else {
           controller.enqueue(encoder.encode(fixed));
         }
       },
-      flush(controller) {
+      async flush(controller) {
         // If </head> was never found, append at the end
         if (!injected && injectHTML) {
           controller.enqueue(encoder.encode(injectHTML));
+        }
+        // Finalize: wait for remaining RSC chunks and emit closing signal
+        const finalScripts = await rscEmbed.finalize();
+        if (finalScripts) {
+          controller.enqueue(encoder.encode(finalScripts));
         }
       },
     });
@@ -2035,6 +2131,38 @@ function chunksToReadableStream(chunks) {
         controller.enqueue(new Uint8Array(chunk));
       }
       controller.close();
+    }
+  });
+}
+
+/**
+ * Create a ReadableStream from progressively-embedded RSC chunks.
+ * The server injects RSC data as <script> tags that push to
+ * self.__VINEXT_RSC_CHUNKS__ throughout the HTML stream, and sets
+ * self.__VINEXT_RSC_DONE__ = true when complete.
+ *
+ * This function polls the array and yields chunks as they arrive,
+ * enabling progressive hydration without waiting for the full payload.
+ */
+function createProgressiveRscStream() {
+  let index = 0;
+  return new ReadableStream({
+    async pull(controller) {
+      // Poll until a new chunk is available or the stream is done
+      while (true) {
+        const chunks = self.__VINEXT_RSC_CHUNKS__ || [];
+        if (index < chunks.length) {
+          controller.enqueue(new Uint8Array(chunks[index]));
+          index++;
+          return;
+        }
+        if (self.__VINEXT_RSC_DONE__) {
+          controller.close();
+          return;
+        }
+        // Wait a tick for more chunks to arrive
+        await new Promise(resolve => setTimeout(resolve, 1));
+      }
     }
   });
 }
@@ -2093,16 +2221,28 @@ async function main() {
   // Use embedded RSC data for initial hydration if available.
   // This ensures we use the SAME RSC payload that generated the HTML,
   // avoiding hydration mismatches (React error #418).
-  if (self.__VINEXT_RSC__) {
-    const embedData = self.__VINEXT_RSC__;
-    delete self.__VINEXT_RSC__; // Clean up to free memory
-
-    // Hydrate useParams() with route params from the embedded data
-    if (embedData.params) {
-      setClientParams(embedData.params);
+  //
+  // The server embeds RSC chunks progressively as <script> tags that push
+  // to self.__VINEXT_RSC_CHUNKS__. When complete, self.__VINEXT_RSC_DONE__
+  // is set and self.__VINEXT_RSC_PARAMS__ contains route params.
+  // For backwards compat, also check the legacy self.__VINEXT_RSC__ format.
+  if (self.__VINEXT_RSC_CHUNKS__ || self.__VINEXT_RSC_DONE__ || self.__VINEXT_RSC__) {
+    if (self.__VINEXT_RSC__) {
+      // Legacy format: single object with all chunks
+      const embedData = self.__VINEXT_RSC__;
+      delete self.__VINEXT_RSC__;
+      if (embedData.params) {
+        setClientParams(embedData.params);
+      }
+      rscStream = chunksToReadableStream(embedData.rsc);
+    } else {
+      // Progressive format: chunks arrive incrementally via script tags.
+      // Params are embedded in <head> so they're always available by this point.
+      if (self.__VINEXT_RSC_PARAMS__) {
+        setClientParams(self.__VINEXT_RSC_PARAMS__);
+      }
+      rscStream = createProgressiveRscStream();
     }
-
-    rscStream = chunksToReadableStream(embedData.rsc);
   } else {
     // Fallback: fetch fresh RSC (shouldn't happen on initial page load)
     const rscResponse = await fetch(window.location.pathname + ".rsc" + window.location.search);

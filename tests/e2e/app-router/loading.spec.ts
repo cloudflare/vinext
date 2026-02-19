@@ -31,16 +31,11 @@ test.describe("Loading boundaries (loading.tsx)", () => {
    *
    * The slow page has a 2s async delay. The loading.tsx fallback should appear in
    * the initial streamed HTML shell before the page component resolves.
-   *
-   * KNOWN GAP: vinext Suspense streaming in dev mode may not show the loading
-   * boundary before the page resolves — this depends on how the RSC streaming
-   * pipeline handles async server components.
    */
   test("loading boundary is visible before content resolves", async ({
     page,
   }) => {
     // Ref: opennextjs-cloudflare ssr.test.ts "Server Side Render and loading.tsx"
-    test.fixme(true, "vinext Suspense streaming does not show loading.tsx fallback in dev mode — feature gap");
 
     // Navigate to slow page — loading.tsx should show first due to 2s server delay
     void page.goto(`${BASE}/slow`);
