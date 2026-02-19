@@ -110,25 +110,18 @@ jobs:
             const marker = '<!-- vinext-deploy-previews -->';
             const existingComment = comments.find(c => c.body?.includes(marker));
             
-            const previewUrls = examples
-              .map(e => `- **${e.name}**: https://${alias}-${e.project}.vinext.workers.dev`)
-              .join('\n');
+            const previews = examples
+              .map(e => `[${e.name}](https://${alias}-${e.project}.vinext.workers.dev)`)
+              .join(' · ');
             
-            const productionUrls = examples
-              .map(e => `- **${e.name}**: https://${e.project}.vinext.workers.dev`)
-              .join('\n');
+            const production = examples
+              .map(e => `[${e.name}](https://${e.project}.vinext.workers.dev)`)
+              .join(' · ');
             
             const body = [
               marker,
-              '## Cloudflare Workers Preview',
-              '',
-              '### Preview URLs',
-              previewUrls,
-              '',
-              '> **Note:** Preview URLs only work after the first production deployment. If these URLs return 404, merge this PR first to create the workers.',
-              '',
-              '### Production URLs (after merge)',
-              productionUrls,
+              `**Preview:** ${previews}`,
+              `**Production:** ${production}`,
             ].join('\n');
             
             if (existingComment) {

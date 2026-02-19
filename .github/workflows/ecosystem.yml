@@ -1,12 +1,8 @@
 name: Ecosystem
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "packages/vinext/**"
-      - ".github/workflows/ecosystem.yml"
-      - ".github/repos.json"
+  schedule:
+    - cron: "0 6 * * *" # daily at 06:00 UTC
   workflow_dispatch:
 
 permissions:
