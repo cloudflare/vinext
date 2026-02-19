@@ -2031,6 +2031,38 @@ describe("SSR entry CSS preload fix", () => {
   });
 });
 
+describe("Tick-buffered RSC delivery", () => {
+  it("generateSsrEntry uses setTimeout-based tick buffering for RSC scripts", async () => {
+    const { generateSsrEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const code = generateSsrEntry();
+    // Should use setTimeout(0) for tick buffering instead of emitting
+    // RSC scripts synchronously between HTML chunks
+    expect(code).toContain("setTimeout");
+    expect(code).toContain("buffered");
+    expect(code).toContain("timeoutId");
+    // Should cancel pending timeout in flush() to avoid race condition
+    expect(code).toContain("clearTimeout");
+    // Should still call rscEmbed.flush() for progressive delivery
+    expect(code).toContain("rscEmbed.flush()");
+    // Should call rscEmbed.finalize() in the TransformStream flush handler
+    expect(code).toContain("rscEmbed.finalize()");
+  });
+
+  it("generateBrowserEntry uses monkey-patched push() instead of polling", async () => {
+    const { generateBrowserEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const code = generateBrowserEntry();
+    // Should override push() for immediate chunk delivery
+    expect(code).toContain("arr.push = function");
+    expect(code).toContain("Array.prototype.push.call");
+    // Should guard against double-close
+    expect(code).toContain("closeOnce");
+    // Should have DOMContentLoaded safety net for truncated responses
+    expect(code).toContain("DOMContentLoaded");
+    // Should NOT use setTimeout-based polling
+    expect(code).not.toContain("setTimeout(resolve, 1)");
+  });
+});
+
 // ── Auto-registration of @vitejs/plugin-rsc ─────────────────────────────────
 
 describe("RSC plugin auto-registration", () => {

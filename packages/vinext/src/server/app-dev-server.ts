@@ -2237,39 +2237,88 @@ export async function handleSsr(rscStream, navContext, fontData) {
       });
     }
 
+    // Tick-buffered RSC script injection.
+    //
+    // React's renderToReadableStream (Fizz) flushes chunks synchronously
+    // within one microtask — all chunks from a single flushCompletedQueues
+    // call arrive in the same macrotask. We buffer HTML chunks as they
+    // arrive, then use setTimeout(0) to defer emitting them plus any
+    // accumulated RSC scripts to the next macrotask. This guarantees we
+    // never inject <script> tags between partial HTML chunks (which would
+    // corrupt split elements like "<linearGradi" + "ent>"), while still
+    // delivering RSC data progressively as Suspense boundaries resolve.
+    //
+    // Reference: rsc-html-stream by Devon Govett (credited by Next.js)
+    // https://github.com/devongovett/rsc-html-stream
+    let buffered = [];
+    let timeoutId = null;
+
     const transform = new TransformStream({
       transform(chunk, controller) {
         const text = decoder.decode(chunk, { stream: true });
         const fixed = fixPreloadAs(text);
-        if (injected) {
-          // Pass HTML through without interleaving RSC scripts.
-          // React's renderToReadableStream splits chunks at arbitrary byte
-          // boundaries (e.g. mid-SVG-element like "<linearGradi" + "ent>"),
-          // so injecting <script> tags between chunks corrupts the DOM.
-          // All RSC data is emitted after the HTML stream completes in flush().
-          controller.enqueue(encoder.encode(fixed));
-          return;
-        }
-        const headEnd = fixed.indexOf("</head>");
-        if (headEnd !== -1) {
-          // Inject params, fonts, and server-inserted HTML before </head>
-          const before = fixed.slice(0, headEnd);
-          const after = fixed.slice(headEnd);
-          controller.enqueue(encoder.encode(before + injectHTML + after));
-          injected = true;
-        } else {
-          controller.enqueue(encoder.encode(fixed));
-        }
+        buffered.push(fixed);
+
+        if (timeoutId !== null) return;
+
+        timeoutId = setTimeout(() => {
+          // Flush all buffered HTML chunks from this React flush cycle
+          for (const buf of buffered) {
+            if (!injected) {
+              const headEnd = buf.indexOf("</head>");
+              if (headEnd !== -1) {
+                const before = buf.slice(0, headEnd);
+                const after = buf.slice(headEnd);
+                controller.enqueue(encoder.encode(before + injectHTML + after));
+                injected = true;
+                continue;
+              }
+            }
+            controller.enqueue(encoder.encode(buf));
+          }
+          buffered = [];
+
+          // Now safe to inject any accumulated RSC scripts — we're between
+          // React flush cycles, so no partial HTML chunks can follow until
+          // the next macrotask.
+          const rscScripts = rscEmbed.flush();
+          if (rscScripts) {
+            controller.enqueue(encoder.encode(rscScripts));
+          }
+
+          timeoutId = null;
+        }, 0);
       },
       async flush(controller) {
-        // If </head> was never found, append at the end
+        // Cancel any pending setTimeout callback — flush() drains
+        // everything itself, so the callback would be a no-op but
+        // cancelling makes the code obviously correct.
+        if (timeoutId !== null) {
+          clearTimeout(timeoutId);
+          timeoutId = null;
+        }
+
+        // Flush any remaining buffered HTML chunks
+        for (const buf of buffered) {
+          if (!injected) {
+            const headEnd = buf.indexOf("</head>");
+            if (headEnd !== -1) {
+              const before = buf.slice(0, headEnd);
+              const after = buf.slice(headEnd);
+              controller.enqueue(encoder.encode(before + injectHTML + after));
+              injected = true;
+              continue;
+            }
+          }
+          controller.enqueue(encoder.encode(buf));
+        }
+        buffered = [];
+
         if (!injected && injectHTML) {
           controller.enqueue(encoder.encode(injectHTML));
         }
-        // Emit all RSC chunks after the HTML stream is complete.
-        // This ensures script tags don't corrupt the DOM by appearing
-        // mid-element. The browser entry module loads asynchronously via
-        // import(), so RSC data is always available before hydration starts.
+        // Finalize: wait for the RSC stream to complete and emit remaining
+        // chunks plus the __VINEXT_RSC_DONE__ signal.
         const finalScripts = await rscEmbed.finalize();
         if (finalScripts) {
           controller.enqueue(encoder.encode(finalScripts));
@@ -2329,27 +2378,64 @@ function chunksToReadableStream(chunks) {
  * self.__VINEXT_RSC_CHUNKS__ throughout the HTML stream, and sets
  * self.__VINEXT_RSC_DONE__ = true when complete.
  *
- * This function polls the array and yields chunks as they arrive,
- * enabling progressive hydration without waiting for the full payload.
+ * Instead of polling with setTimeout, we monkey-patch the array's
+ * push() method so new chunks are delivered immediately when the
+ * server's <script> tags execute. This eliminates unnecessary
+ * wakeups and reduces latency — same pattern Next.js uses with
+ * __next_f. The stream closes on DOMContentLoaded (when all
+ * server-injected scripts have executed) or when __VINEXT_RSC_DONE__
+ * is set, whichever comes first.
  */
 function createProgressiveRscStream() {
-  let index = 0;
   return new ReadableStream({
-    async pull(controller) {
-      // Poll until a new chunk is available or the stream is done
-      while (true) {
-        const chunks = self.__VINEXT_RSC_CHUNKS__ || [];
-        if (index < chunks.length) {
-          controller.enqueue(new Uint8Array(chunks[index]));
-          index++;
-          return;
-        }
-        if (self.__VINEXT_RSC_DONE__) {
+    start(controller) {
+      const chunks = self.__VINEXT_RSC_CHUNKS__ || [];
+
+      // Deliver any chunks that arrived before this code ran
+      // (from <script> tags that executed before the browser entry loaded)
+      for (const chunk of chunks) {
+        controller.enqueue(new Uint8Array(chunk));
+      }
+
+      // If the stream is already complete, close immediately
+      if (self.__VINEXT_RSC_DONE__) {
+        controller.close();
+        return;
+      }
+
+      // Monkey-patch push() so future chunks stream in immediately
+      // when the server's <script> tags execute
+      let closed = false;
+      function closeOnce() {
+        if (!closed) {
+          closed = true;
           controller.close();
-          return;
         }
-        // Wait a tick for more chunks to arrive
-        await new Promise(resolve => setTimeout(resolve, 1));
+      }
+
+      const arr = self.__VINEXT_RSC_CHUNKS__ = self.__VINEXT_RSC_CHUNKS__ || [];
+      arr.push = function(chunk) {
+        Array.prototype.push.call(this, chunk);
+        if (!closed) {
+          controller.enqueue(new Uint8Array(chunk));
+          if (self.__VINEXT_RSC_DONE__) {
+            closeOnce();
+          }
+        }
+        return this.length;
+      };
+
+      // Safety net: if the server crashes mid-stream and __VINEXT_RSC_DONE__
+      // never arrives, close the stream when all server-injected scripts
+      // have executed (DOMContentLoaded). Without this, a truncated response
+      // leaves the ReadableStream open forever, hanging hydration.
+      if (typeof document !== "undefined") {
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", closeOnce);
+        } else {
+          // Document already loaded — close immediately if not already done
+          closeOnce();
+        }
       }
     }
   });
