@@ -2,12 +2,11 @@
  * Cloudflare Worker entry point for vinext App Router.
  *
  * Architecture:
- * - The Worker runs in workerd (SSR environment)
- * - The RSC environment runs on Node.js (main Vite process)
- * - Communication uses fetch-based RPC (loadModuleDevProxy)
+ * - Both RSC and SSR environments run in workerd
+ * - import.meta.viteRsc.loadModule (from @vitejs/plugin-rsc) loads the RSC handler
  *
  * For SSR pages, the Worker:
- * 1. Calls the RSC handler via RPC (which returns a Response with HTML)
+ * 1. Calls the RSC handler (which returns a Response with HTML)
  * 2. Returns that Response to the client
  *
  * For .rsc requests (client-side navigation), the RSC handler returns
@@ -19,16 +18,14 @@
 export default {
   async fetch(request: Request): Promise<Response> {
     try {
-      // Load the RSC handler from the RSC environment via RPC.
+      // Load the RSC handler from the RSC environment.
       // @ts-expect-error — import.meta.viteRsc is injected by @vitejs/plugin-rsc
       const rscModule = await import.meta.viteRsc.loadModule("rsc", "index");
 
       // The RSC handler returns a Response.
-      // With loadModuleDevProxy, the Response is serialized/deserialized via turbo-stream.
       const result = await rscModule.default(request);
 
-      // Reconstruct a proper Response if the RPC serialization
-      // didn't produce a native Response instance.
+      // Return the Response if it's a native instance.
       if (result instanceof Response) {
         return result;
       }
