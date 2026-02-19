@@ -131,7 +131,9 @@ export function Dashboard() {
       <section>
         <div className="mb-3 flex items-center gap-3">
           <h2 className="text-lg font-semibold">Latest Results</h2>
-          <Badge variant="secondary">{latest.commitShort}</Badge>
+          <a href={`/commit/${latest.commitShort}`}>
+            <Badge variant="secondary">{latest.commitShort}</Badge>
+          </a>
           <span className="text-xs text-gray-400">
             {new Date(latest.commitDate).toLocaleDateString()}
           </span>
@@ -173,7 +175,7 @@ function LatestResultsTable({ commit }: { commit: BenchmarkCommit }) {
   const runners = Object.entries(commit.runners);
 
   return (
-    <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+    <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
       <Table>
         <Table.Header>
           <Table.Row>
@@ -202,7 +204,6 @@ function LatestResultsTable({ commit }: { commit: BenchmarkCommit }) {
                   {key !== "nextjs" && nextjs && (
                     <ComparisonBadge
                       label={speedup(nextjs.buildTimeMean, metrics.buildTimeMean)}
-                      positive
                     />
                   )}
                 </div>
@@ -213,7 +214,6 @@ function LatestResultsTable({ commit }: { commit: BenchmarkCommit }) {
                   {key !== "nextjs" && nextjs && (
                     <ComparisonBadge
                       label={sizeReduction(nextjs.bundleSizeGzip, metrics.bundleSizeGzip)}
-                      positive
                     />
                   )}
                 </div>
@@ -224,7 +224,6 @@ function LatestResultsTable({ commit }: { commit: BenchmarkCommit }) {
                   {key !== "nextjs" && nextjs && (
                     <ComparisonBadge
                       label={speedup(nextjs.devColdStartMs, metrics.devColdStartMs)}
-                      positive
                     />
                   )}
                 </div>
@@ -242,13 +241,7 @@ function LatestResultsTable({ commit }: { commit: BenchmarkCommit }) {
   );
 }
 
-function ComparisonBadge({
-  label,
-  positive,
-}: {
-  label: string | null;
-  positive?: boolean;
-}) {
+function ComparisonBadge({ label }: { label: string | null }) {
   if (!label) return null;
   const isFaster = label.includes("faster") || label.includes("smaller");
   return (
@@ -267,7 +260,7 @@ function MetricChart({
   data: BenchmarkCommit[];
   metric: MetricTab;
 }) {
-  const runners = ["nextjs", "vinext", "vinext_rolldown"];
+  const runners = Object.keys(RUNNER_LABELS);
 
   const series = runners.map((runner) => ({
     name: RUNNER_LABELS[runner] || runner,
@@ -310,7 +303,7 @@ function MetricChart({
 
 function CommitList({ commits }: { commits: BenchmarkCommit[] }) {
   return (
-    <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">
+    <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">
       <Table>
         <Table.Header>
           <Table.Row>
