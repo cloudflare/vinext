@@ -363,7 +363,8 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | 20. revalidation | 4 | 4 | 0 | 0 | 0 | Done |
 | 21. prefetch | 4 | 4 | 0 | 0 | 0 | Done |
 | 22. metadata-suspense | 3 | 2 | 1 | 0 | 0 | Done |
-| **Total** | **325+** | **132** | **6** | **188+** | **0** | |
+| P5. shim/core unit tests | 230 | 230 | 0 | 0 | 0 | Done |
+| **Total** | **555+** | **362** | **6** | **188+** | **0** | |
 
 ### Playwright Browser Tests
 
@@ -384,7 +385,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | **Total** | **46** | **38** | **8** | **0** | |
 
 ### Combined Key Metrics
-- **170 tests passing** (132 Vitest + 38 Playwright) across 24 test files
+- **400 tests passing** (362 Vitest + 38 Playwright) across 35 test files
 - **11 tests skipped** (6 Vitest + 5 Playwright) with detailed root-cause analysis and fix locations
 - **0 failures** — all non-skipped tests pass
 - **188+ N/A** — build-only, or already covered by existing tests
@@ -497,33 +498,39 @@ returns false by default and true when bypass cookie is present in the request.
 
 Conducted a full audit of vinext's feature surface against 25 Next.js capabilities:
 
-| Feature | Vinext | Tested | Phase 2 Chunk |
-|---------|--------|--------|---------------|
-| Streaming/Suspense SSR | YES | Existing e2e | 15 |
-| Server Actions | YES | Existing e2e (8 tests) | — |
-| useSearchParams/usePathname/useParams | YES | Unit + existing e2e | 11 |
-| Middleware | YES | Existing e2e | — |
-| Rewrites/Redirects config | YES | Existing e2e | — |
-| next/image | PARTIAL | Unit (imports only) | — |
-| next/link (prefetch) | YES | Existing e2e | — |
-| next/script | YES | Partial e2e | — |
-| Catch-all routes | YES | Unit + e2e | — |
-| Route groups | YES | Unit | — |
-| Intercepting routes | YES | Unit + e2e | — |
-| generateStaticParams | YES | Unit (6+ tests) | — |
-| headers()/cookies() | YES | Unit | 16 |
-| next/cache | YES | Unit + e2e | — |
-| PPR | NO | N/A | N/A |
-| "use cache" | YES | E2E | — |
-| forbidden()/unauthorized() | YES | Partial unit | 12 |
-| after() | YES | Export only | — |
-| CSS/Tailwind | PARTIAL (Vite) | None | 17 |
-| "use client" boundaries | YES | E2E | 13 |
-| template.tsx | YES | Fixture + unit | — |
-| Draft mode | YES | Unit (4 tests) | 18 |
-| Shallow routing / pushState | YES | E2E (9+ tests) | — |
-| next/head | YES | E2E | — |
-| useSelectedLayoutSegment(s) | YES | Unit + integration | 11 |
+| Feature | Vinext | Tested | Phase 2 Chunk | Phase 5 |
+|---------|--------|--------|---------------|---------|
+| Streaming/Suspense SSR | YES | Existing e2e | 15 | — |
+| Server Actions | YES | Existing e2e (8 tests) | — | — |
+| useSearchParams/usePathname/useParams | YES | Unit + existing e2e | 11 | — |
+| Middleware | YES | Existing e2e | — | — |
+| Rewrites/Redirects config | YES | Existing e2e | — | — |
+| next/image | PARTIAL | **Unit (55 tests)** | — | **P5-2, P5-3** |
+| next/link (prefetch) | YES | **Unit (24 tests) + e2e** | — | **P5-1** |
+| next/script | YES | **Unit (9 tests) + e2e** | — | **P5-10** |
+| Catch-all routes | YES | Unit + e2e | — | — |
+| Route groups | YES | Unit | — | — |
+| Intercepting routes | YES | Unit + e2e | — | — |
+| generateStaticParams | YES | Unit (6+ tests) | — | — |
+| headers()/cookies() | YES | Unit | 16 | — |
+| next/cache | YES | Unit + e2e | — | — |
+| PPR | NO | N/A | N/A | — |
+| "use cache" | YES | E2E | — | — |
+| forbidden()/unauthorized() | YES | **Unit (21 tests)** | 12 | **P5-8** |
+| after() | YES | Export only | — | — |
+| CSS/Tailwind | PARTIAL (Vite) | None | 17 | — |
+| "use client" boundaries | YES | E2E | 13 | — |
+| template.tsx | YES | Fixture + unit | — | — |
+| Draft mode | YES | Unit (4 tests) | 18 | — |
+| Shallow routing / pushState | YES | E2E (9+ tests) | — | — |
+| next/head | YES | **Unit (26 tests) + e2e** | — | **P5-4** |
+| useSelectedLayoutSegment(s) | YES | Unit + integration | 11 | — |
+| next/dynamic | YES | **Unit (11 tests) + e2e** | — | **P5-9** |
+| next/form | YES | **Unit (6 tests)** | — | **P5-11** |
+| Image remote patterns (SSRF) | YES | **Unit (33 tests)** | — | **P5-3** |
+| ISR cache internals | YES | **Unit (23 tests)** | — | **P5-7** |
+| Metadata routes (sitemap/robots) | YES | **Unit (43 tests)** | — | **P5-5** |
+| Route sorting/precedence | YES | **Unit (12 tests)** | — | **P5-6** |
 
 ---
 
@@ -983,4 +990,246 @@ Fix: skip applying config headers to 3xx redirect responses in `app-dev-server.t
 - `tests/fixtures/app-basic/middleware.ts` — Added redirect-with-cookie, rewrite, block, search-params paths
 - `packages/vinext/src/server/app-dev-server.ts` — Bug fix: skip config headers on redirect responses
 - `tests/app-router.test.ts` — Removed dynamic next.config.mjs writing (uses permanent next.config.ts)
+
+---
+
+## Phase 5: Shim and Core Module Unit Tests
+
+Unit tests for previously untested Next.js shims and core modules. These tests import
+directly from source (`packages/vinext/src/shims/`, `packages/vinext/src/server/`,
+`packages/vinext/src/routing/`) and test pure functions and SSR rendering via
+`ReactDOMServer.renderToString` — no running dev server needed.
+
+**Overlap policy**: 15 redundant tests were removed from `route-sorting.test.ts` that
+duplicated exact test cases from the pre-existing `tests/routing.test.ts`. All remaining
+tests are either entirely new coverage or complementary to existing integration/E2E tests
+(unit-level vs server-level vs browser-level).
+
+### P5-1: next/link — SSR rendering and pure functions ✅
+
+**Local**: `tests/link.test.ts`
+**Next.js mirrors**: `test/unit/link-rendering.test.ts`, `test/unit/link-warnings.test.tsx`
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 1 | Renders `<a>` with correct href | PASS | |
+| 2 | Renders children as anchor content | PASS | |
+| 3 | Renders object href `{ pathname, query }` | PASS | |
+| 4 | Object href defaults pathname to `/` | PASS | |
+| 5 | `as` prop overrides href | PASS | |
+| 6 | Strips `passHref` from HTML output | PASS | |
+| 7 | Strips `locale` from HTML output | PASS | |
+| 8 | Passes through standard anchor attributes | PASS | |
+| 9 | Renders React element children | PASS | |
+| 10 | `useLinkStatus` returns `{ pending: false }` | PASS | |
+| 11 | String href passes through unchanged | PASS | |
+| 12 | Object href resolves pathname + query | PASS | |
+| 13 | Object href with only pathname | PASS | |
+| 14 | `isExternalUrl` detects http/https/`//` | PASS | |
+| 15 | Internal paths not external | PASS | |
+| 16 | Hash-only not external | PASS | |
+| 17 | `isHashOnlyChange` for `#fragment` | PASS | |
+| 18 | Absolute paths not hash-only on server | PASS | |
+| 19 | `locale=false` keeps href as-is | PASS | |
+| 20 | `locale=undefined` keeps href as-is | PASS | |
+| 21 | Locale string prepends prefix | PASS | |
+| 22 | Does not double-prefix locale | PASS | |
+| 23-24 | Additional rendering edge cases | PASS | |
+
+**Result: 24/24 pass**
+
+### P5-2: next/image — Component SSR and getImageProps ✅
+
+**Local**: `tests/image-component.test.ts`
+**Next.js mirrors**: `test/unit/next-image-new.test.ts`, `test/unit/next-image-get-img-props.test.ts`
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 1 | Basic `<img>` with alt, src, width, height, decoding, loading | PASS | |
+| 2 | Priority: `loading="eager"` + `fetchPriority="high"` | PASS | |
+| 3 | Fill mode: absolute positioning, `data-nimg="fill"` | PASS | |
+| 4 | Custom `sizes` prop | PASS | |
+| 5 | Blur placeholder styles | PASS | |
+| 6 | Custom loader URL | PASS | |
+| 7 | StaticImageData handling | PASS | |
+| 8 | className and custom style | PASS | |
+| 9-12 | srcSet generation (responsive widths, large images, small fallback, fill mode) | PASS | |
+| 13-22 | `getImageProps()` API: basic, priority, fill, loader, blur, style merge, passthrough, static, srcSet, loading=eager | PASS | |
+
+**Result: 22/22 pass**
+
+### P5-3: Image remote pattern matching (SSRF prevention) ✅
+
+**Local**: `tests/image-config.test.ts`
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 1-6 | Hostname matching: exact, reject, `*` wildcard, deep subdomain rejection, `**` wildcard, bare domain | PASS | |
+| 7-10 | Protocol matching: with/without colon, rejection, skip when unspecified | PASS | |
+| 11-15 | Port matching: specific, wrong, missing, default, skip | PASS | |
+| 16-20 | Pathname matching: default `**`, exact, single-segment wildcard, multi-segment, rejection | PASS | |
+| 21-23 | Search matching: exact, wrong, skip | PASS | |
+| 24-29 | `hasRemoteMatch()`: domain match, reject, pattern match, either, neither, empty | PASS | |
+| 30-33 | Edge cases: regex escaping in hostname/pathname, multiple wildcards, combined globs | PASS | |
+
+**Result: 33/33 pass**
+
+### P5-4: next/head — SSR collection, tag filtering, escaping ✅
+
+**Local**: `tests/head.test.ts`
+**Next.js mirror**: `test/unit/next-head-rendering.test.ts`
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 1-2 | Renders outside Next.js; returns null inline | PASS | |
+| 3-12 | SSR collection: title, meta, link, style, script, base, noscript, multiple, reset, empty | PASS | All 7 allowed tag types |
+| 13-16 | Disallowed tags: div, iframe, component elements, mixed allowed+disallowed | PASS | Security filtering |
+| 17-21 | Escaping: HTML in text, HTML in attrs, `dangerouslySetInnerHTML`, className→class, boolean attrs | PASS | XSS prevention |
+| 22-26 | `escapeAttr()`: ampersand, quotes, angle brackets, safe passthrough, combined | PASS | |
+
+**Result: 26/26 pass**
+
+### P5-5: Metadata routes — sitemap, robots, manifest, file scanning ✅
+
+**Local**: `tests/metadata-routes.test.ts`
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 1-10 | `sitemapToXml()`: basic, Date/string lastModified, changeFrequency, priority, images, all fields, empty, XML entity escaping, angle bracket escaping | PASS | |
+| 11-20 | `robotsToText()`: basic, multiple rules, multiple agents, array allow/disallow, crawl delay, sitemap, multiple sitemaps, host, default agent, trailing newline | PASS | |
+| 21-23 | `manifestToJson()`: valid JSON, pretty-printed, icons array | PASS | |
+| 24-39 | `scanMetadataFiles()`: non-existent dir, sitemap.xml, dynamic sitemap.ts, robots.txt, manifest, favicon, dynamic icon.tsx, static icon.png, opengraph-image, twitter-image, apple-icon, nestable subdirs, non-nestable root-only, route group transparency, dynamic priority over static, multiple files | PASS | Uses temp directories |
+| 40-43 | `METADATA_FILE_MAP`: all 8 types, favicon not dynamic, robots not nestable, icon nestable+dynamic | PASS | |
+
+**Result: 43/43 pass**
+
+### P5-6: Route sorting and pattern conversion ✅
+
+**Local**: `tests/route-sorting.test.ts`
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 1 | Dynamic routes before catch-all (Pages) | PASS | Unique — not in routing.test.ts |
+| 2 | Deterministic sorting (alphabetic tiebreaker) | PASS | Unique |
+| 3 | Prefers static over dynamic match | PASS | Unique |
+| 4-9 | `patternToNextFormat()`: `:id`→`[id]`, `:slug+`→`[...slug]`, `:slug*`→`[[...slug]]`, multiple segments, static passthrough, mixed | PASS | Unique function not tested elsewhere |
+| 10 | App Router discovers all expected route types | PASS | Unique |
+| 11 | Pages Router discovers API routes | PASS | Unique (`apiRouter`) |
+| 12 | API routes: static before dynamic | PASS | Unique (`apiRouter`) |
+
+**Result: 12/12 pass** (15 redundant tests removed — duplicated `routing.test.ts`)
+
+### P5-7: ISR cache internals ✅
+
+**Local**: `tests/isr-cache.test.ts`
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 1-9 | `isrCacheKey()`: pages/app prefix, root, trailing slash, nested, hash for long paths, deterministic hashing, different hashes | PASS | |
+| 10-11 | `buildPagesCacheValue()`: structure, status field | PASS | |
+| 12-14 | `buildAppPageCacheValue()`: structure, rscData, status | PASS | |
+| 15-18 | `setRevalidateDuration`/`getRevalidateDuration`: store/retrieve, unknown key, overwrite, zero | PASS | |
+| 19-23 | `triggerBackgroundRegeneration()`: calls render, deduplicates, allows after completion, handles errors, independent keys | PASS | |
+
+**Result: 23/23 pass**
+
+### P5-8: Error boundary digest classification ✅
+
+**Local**: `tests/error-boundary.test.ts`
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 1-7 | Digest patterns: `NEXT_NOT_FOUND`, `NEXT_HTTP_ERROR_FALLBACK;{404,403,401}`, `NEXT_REDIRECT`, regular errors, non-special digests | PASS | |
+| 8-15 | `shouldRethrow()` classification: rethrows all special digests, catches regular/unknown/empty | PASS | |
+| 16-21 | `isNotFoundError()` classification: catches NOT_FOUND and 404, rejects 403/401/regular/redirect | PASS | |
+
+**Result: 21/21 pass**
+
+### P5-9: next/dynamic — SSR rendering and ssr:false ✅
+
+**Local**: `tests/dynamic.test.ts`
+**Next.js mirror**: `test/unit/next-dynamic.test.tsx`
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 1-3 | SSR rendering: dynamic component, displayName, bare export | PASS | |
+| 4-6 | `ssr: false`: loading component, nothing, displayName | PASS | |
+| 7 | Loading component props: `isLoading`, `pastDelay`, `error` | PASS | |
+| 8-9 | Defaults: ssr defaults to true, handles undefined options | PASS | |
+| 10-11 | `flushPreloads()`: empty array, safe repeated calls | PASS | |
+
+**Result: 11/11 pass**
+
+### P5-10: next/script — Strategy-based SSR rendering ✅
+
+**Local**: `tests/script.test.ts`
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 1 | `beforeInteractive` renders `<script>` tag | PASS | |
+| 2-4 | `afterInteractive`, `lazyOnload`, `worker` render nothing | PASS | |
+| 5 | Default strategy renders nothing | PASS | |
+| 6-9 | `beforeInteractive` with id, inline content, dangerouslySetInnerHTML, attributes | PASS | |
+
+**Result: 9/9 pass**
+
+### P5-11: next/form — SSR rendering ✅
+
+**Local**: `tests/form.test.ts`
+
+| # | Test | Status | Notes |
+|---|------|--------|-------|
+| 1 | String action renders `<form>` with action attribute | PASS | |
+| 2 | Function action (server action) renders `<form>` | PASS | |
+| 3 | Additional HTML form attributes | PASS | |
+| 4 | Children elements render | PASS | |
+| 5 | No method attribute (GET default) | PASS | |
+| 6 | `useActionState` exported from module | PASS | |
+
+**Result: 6/6 pass**
+
+### Phase 5 Summary
+
+| Chunk | Tests | Pass | Skip | Fail |
+|-------|-------|------|------|------|
+| P5-1. next/link | 24 | 24 | 0 | 0 |
+| P5-2. next/image component | 22 | 22 | 0 | 0 |
+| P5-3. Image remote patterns | 33 | 33 | 0 | 0 |
+| P5-4. next/head | 26 | 26 | 0 | 0 |
+| P5-5. Metadata routes | 43 | 43 | 0 | 0 |
+| P5-6. Route sorting | 12 | 12 | 0 | 0 |
+| P5-7. ISR cache | 23 | 23 | 0 | 0 |
+| P5-8. Error boundary | 21 | 21 | 0 | 0 |
+| P5-9. next/dynamic | 11 | 11 | 0 | 0 |
+| P5-10. next/script | 9 | 9 | 0 | 0 |
+| P5-11. next/form | 6 | 6 | 0 | 0 |
+| **Total** | **230** | **230** | **0** | **0** |
+
+### Redundancy Cleanup
+
+15 tests removed from `route-sorting.test.ts` that were exact duplicates of tests in
+`routing.test.ts`. Both files imported the same functions (`pagesRouter`, `matchRoute`,
+`appRouter`, `matchAppRoute`, `invalidateAppRouteCache`) from the same source modules and
+tested the same inputs/assertions. The removed tests covered:
+
+- Pages Router: static-before-dynamic sorting, root/static/dynamic matching, query stripping, trailing slash stripping, catch-all matching, null for unmatched
+- App Router: static-before-dynamic sorting, root/static/dynamic matching, null for unmatched, API route matching, @slot filtering
+
+The 12 remaining tests in `route-sorting.test.ts` cover unique functionality: dynamic-before-catch-all ordering, deterministic sorting, static-over-dynamic preference, `patternToNextFormat()` conversion (6 tests), App Router route type discovery, and `apiRouter` sorting (2 tests).
+
+### Test Files (New)
+
+| File | Tests | Focus |
+|------|-------|-------|
+| `tests/link.test.ts` | 24 | Link SSR, resolveHref, isExternalUrl, locale |
+| `tests/image-component.test.ts` | 22 | Image SSR, srcSet, getImageProps, fill/priority |
+| `tests/image-config.test.ts` | 33 | Remote pattern matching, SSRF prevention |
+| `tests/head.test.ts` | 26 | Head SSR collection, tag filtering, escaping |
+| `tests/metadata-routes.test.ts` | 43 | Sitemap XML, robots.txt, manifest, file scanner |
+| `tests/route-sorting.test.ts` | 12 | Sorting precedence, patternToNextFormat, apiRouter |
+| `tests/isr-cache.test.ts` | 23 | Cache keys, value builders, revalidation, dedup |
+| `tests/error-boundary.test.ts` | 21 | Digest classification, shouldRethrow, isNotFoundError |
+| `tests/dynamic.test.ts` | 11 | dynamic() SSR, ssr:false, loading props, flushPreloads |
+| `tests/script.test.ts` | 9 | Script strategy SSR (beforeInteractive vs others) |
+| `tests/form.test.ts` | 6 | Form SSR, string/function actions, useActionState |
 
