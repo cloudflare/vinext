@@ -1,27 +1,33 @@
-# API routes with REST
+# API Routes with REST
 
-Next.js ships with [API routes](https://github.com/vercel/next.js#api-routes), which provide an easy solution to build your own `API`. This example shows how it can be used to create your [REST](https://en.wikipedia.org/wiki/Representational_state_transfer) `API`.
-
-## Deploy your own
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/vercel/next.js/tree/canary/examples/api-routes-rest&project-name=api-routes-rest&repository-name=api-routes-rest)
+A [Next.js API routes](https://nextjs.org/docs/pages/building-your-application/routing/api-routes) example running on Cloudflare Workers via vinext. Demonstrates how to build a REST API using the Pages Router `pages/api/` convention.
 
 ## How to use
 
-Execute [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app) with [npm](https://docs.npmjs.com/cli/init), [Yarn](https://yarnpkg.com/lang/en/docs/cli/create/), or [pnpm](https://pnpm.io) to bootstrap the example:
+1. Install dependencies:
 
 ```bash
-npx create-next-app --example api-routes-rest api-routes-rest-app
+pnpm install
 ```
+
+2. Start the dev server:
 
 ```bash
-yarn create next-app --example api-routes-rest api-routes-rest-app
+pnpm dev
 ```
+
+3. Build for production:
 
 ```bash
-pnpm create next-app --example api-routes-rest api-routes-rest-app
+pnpm build
 ```
 
-### Deploy to Vercel
+### Deploy to Cloudflare
 
-Deploy it to the cloud with [Vercel](https://vercel.com/new?utm_source=github&utm_medium=readme&utm_campaign=next-example) ([Documentation](https://nextjs.org/docs/deployment)).
+```bash
+# Build the application
+pnpm build
+
+# Deploy to Cloudflare Workers
+npx wrangler deploy
+```

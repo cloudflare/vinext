@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: { default: 'Next.js Playground', template: '%s | Next.js Playground' },
-  metadataBase: new URL('https://app-router.vercel.app'),
+  metadataBase: new URL('https://app-router-playground.vinext.workers.dev'),
   description:
     'A playground to explore Next.js features such as nested layouts, instant loading states, streaming, and component level data fetching.',
   openGraph: {
