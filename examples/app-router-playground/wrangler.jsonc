@@ -6,6 +6,15 @@
   "main": "./worker/index.ts",
   "preview_urls": true,
   "assets": {
-    "not_found_handling": "none"
+    "not_found_handling": "none",
+    // Expose static assets to the Worker via env.ASSETS so the image
+    // optimization handler can fetch source images programmatically.
+    "binding": "ASSETS"
+  },
+  // Cloudflare Images binding for next/image optimization.
+  // Enables resize, format negotiation (AVIF/WebP), and quality transforms
+  // at the edge. No user setup needed — wrangler creates the binding automatically.
+  "images": {
+    "binding": "IMAGES"
   }
 }

@@ -190,7 +190,7 @@ describe("generateWranglerConfig", () => {
     expect(parsed.name).toBe(info.projectName);
     expect(parsed.compatibility_flags).toContain("nodejs_compat");
     expect(parsed.main).toBe("./worker/index.ts");
-    expect(parsed.assets).toEqual({ not_found_handling: "none" });
+    expect(parsed.assets).toEqual({ not_found_handling: "none", binding: "ASSETS" });
     expect(parsed.$schema).toBe("node_modules/wrangler/config-schema.json");
   });
 

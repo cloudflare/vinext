@@ -291,6 +291,9 @@ export function generateWranglerConfig(info: ProjectInfo): string {
     main: "./worker/index.ts",
     assets: {
       not_found_handling: "none",
+      // Expose static assets to the Worker via env.ASSETS so the image
+      // optimization handler can fetch source images programmatically.
+      binding: "ASSETS",
     },
     // Cloudflare Images binding for next/image optimization.
     // Enables resize, format negotiation (AVIF/WebP), and quality transforms
