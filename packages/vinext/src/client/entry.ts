@@ -81,10 +81,10 @@ async function hydrate() {
 
   const root = hydrateRoot(container, element);
 
-  // HMR support — only expose root via Vite's HMR API, not on window
-  if (import.meta.hot) {
-    import.meta.hot.data.root = root;
-  }
+  // Expose root on window so the router shim (a separate module) can
+  // re-render the tree during client-side navigation. import.meta.hot.data
+  // is module-scoped and cannot be read across module boundaries.
+  (window as any).__VINEXT_ROOT__ = root;
 }
 
 hydrate();

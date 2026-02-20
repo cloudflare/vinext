@@ -1448,7 +1448,7 @@ async function hydrate() {
   }
 
   const root = hydrateRoot(container, element);
-  if (import.meta.hot) { import.meta.hot.data.root = root; }
+  window.__VINEXT_ROOT__ = root;
 }
 
 hydrate();
