@@ -48,7 +48,7 @@ const Form = forwardRef(function Form(
     return <form ref={ref} action={action as any} onSubmit={onSubmit as any} {...rest} />;
   }
 
-  function handleSubmit(e: any) {
+  async function handleSubmit(e: any) {
     // Call user's onSubmit first
     if (onSubmit) {
       (onSubmit as any)(e);
@@ -74,13 +74,13 @@ const Form = forwardRef(function Form(
     // Navigate client-side
     const win = window as any;
     if (typeof win.__VINEXT_RSC_NAVIGATE__ === "function") {
-      // App Router: RSC navigation
+      // App Router: RSC navigation. Await so scroll happens after new content renders.
       if (replace) {
         window.history.replaceState(null, "", url);
       } else {
         window.history.pushState(null, "", url);
       }
-      win.__VINEXT_RSC_NAVIGATE__(url);
+      await win.__VINEXT_RSC_NAVIGATE__(url);
     } else {
       // Pages Router: use router or fallback
       if (replace) {

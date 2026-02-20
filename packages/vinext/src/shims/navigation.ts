@@ -318,11 +318,11 @@ function restoreScrollPosition(state: unknown): void {
 /**
  * Navigate to a URL, handling external URLs, hash-only changes, and RSC navigation.
  */
-function navigateImpl(
+async function navigateImpl(
   href: string,
   mode: "push" | "replace",
   scroll: boolean,
-): void {
+): Promise<void> {
   // External URLs: use full page navigation
   if (isExternalUrl(href)) {
     if (mode === "replace") {
@@ -366,9 +366,11 @@ function navigateImpl(
   }
   notifyListeners();
 
-  // Trigger RSC re-fetch if available
+  // Trigger RSC re-fetch if available, and wait for the new content to render
+  // before scrolling. This prevents the old page from visibly jumping to the
+  // top before the new content paints.
   if (typeof (window as any).__VINEXT_RSC_NAVIGATE__ === "function") {
-    (window as any).__VINEXT_RSC_NAVIGATE__(fullHref);
+    await (window as any).__VINEXT_RSC_NAVIGATE__(fullHref);
   }
 
   if (scroll) {

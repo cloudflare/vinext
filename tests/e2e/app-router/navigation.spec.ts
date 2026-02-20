@@ -136,4 +136,28 @@ test.describe("App Router Client-side Navigation", () => {
       "Dashboard Nav",
     );
   });
+
+  test("scroll-to-top happens after new content renders", async ({ page }) => {
+    await page.goto(`${BASE}/`);
+    await expect(page.locator("h1")).toHaveText("Welcome to App Router");
+    await waitForHydration(page);
+
+    // Make the page scrollable and scroll down
+    await page.evaluate(() => {
+      document.body.style.minHeight = "3000px";
+      window.scrollTo(0, 1500);
+    });
+
+    // Verify we actually scrolled
+    const scrollBefore = await page.evaluate(() => window.scrollY);
+    expect(scrollBefore).toBeGreaterThan(0);
+
+    // Navigate via Link
+    await page.click('a[href="/about"]');
+    await expect(page.locator("h1")).toHaveText("About");
+
+    // Verify we're at the top after the new content rendered
+    const scrollAfter = await page.evaluate(() => window.scrollY);
+    expect(scrollAfter).toBe(0);
+  });
 });

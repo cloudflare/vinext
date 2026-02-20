@@ -400,13 +400,15 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // Try RSC navigation first (App Router), then Pages Router
     const win = window as any;
     if (typeof win.__VINEXT_RSC_NAVIGATE__ === "function") {
-      // App Router: push/replace history state, then fetch RSC stream
+      // App Router: push/replace history state, then fetch RSC stream.
+      // Await the RSC navigate so scroll-to-top happens after the new
+      // content is committed to the DOM (prevents flash of old page at top).
       if (replace) {
         window.history.replaceState(null, "", absoluteFullHref);
       } else {
         window.history.pushState(null, "", absoluteFullHref);
       }
-      win.__VINEXT_RSC_NAVIGATE__(absoluteFullHref);
+      await win.__VINEXT_RSC_NAVIGATE__(absoluteFullHref);
     } else {
       // Pages Router: use the Router singleton
       try {

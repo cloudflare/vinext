@@ -2316,6 +2316,7 @@ import {
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/browser";
 import { hydrateRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { setClientParams } from "next/navigation";
 
 let reactRoot;
@@ -2511,6 +2512,8 @@ async function main() {
   window.__VINEXT_RSC_ROOT__ = reactRoot;
 
   // Client-side navigation handler
+  // Returns a Promise that resolves after the new RSC payload has been rendered,
+  // so callers can defer scroll-to-top until the new content is committed.
   window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(href) {
     try {
       const url = new URL(href, window.location.origin);
@@ -2527,7 +2530,10 @@ async function main() {
       }
 
       const rscPayload = await createFromFetch(Promise.resolve(navResponse));
-      reactRoot.render(rscPayload);
+      // Use flushSync to guarantee React commits the new tree to the DOM
+      // synchronously before this function returns. Callers scroll to top
+      // after awaiting, so the new content must be painted first.
+      flushSync(function () { reactRoot.render(rscPayload); });
     } catch (err) {
       console.error("[vinext] RSC navigation error:", err);
       // Fallback to full page load
