@@ -332,6 +332,78 @@ const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
  *  Shared between the Rolldown hook filter and the transform handler regex. */
 const IMAGE_EXTS = "png|jpe?g|gif|webp|avif|svg|ico|bmp|tiff?";
 
+/**
+ * Extract the npm package name from a module ID (file path).
+ * Returns null if not in node_modules.
+ *
+ * Handles scoped packages (@org/pkg) and pnpm-style paths
+ * (node_modules/.pnpm/pkg@ver/node_modules/pkg).
+ */
+function getPackageName(id: string): string | null {
+  const nmIdx = id.lastIndexOf("node_modules/");
+  if (nmIdx === -1) return null;
+  const rest = id.slice(nmIdx + "node_modules/".length);
+  if (rest.startsWith("@")) {
+    // Scoped package: @org/pkg
+    const parts = rest.split("/");
+    return parts.length >= 2 ? parts[0] + "/" + parts[1] : null;
+  }
+  return rest.split("/")[0] || null;
+}
+
+/** Absolute path to vinext's shims directory, used by clientManualChunks. */
+const _shimsDir = path.resolve(__dirname, "shims") + "/";
+
+/**
+ * manualChunks function for client builds.
+ *
+ * Splits the client bundle into:
+ * - "framework" — React, ReactDOM, and scheduler (loaded on every page)
+ * - "vinext"    — vinext shims (router, head, link, etc.)
+ * - "vendor-X"  — third-party packages, grouped by package name
+ * - Per-route chunks are already created by Vite's dynamic import splitting
+ *
+ * This ensures page-specific dependencies (e.g. mermaid.js) are only
+ * loaded on pages that use them, instead of being bundled into the
+ * monolithic entry chunk.
+ */
+function clientManualChunks(id: string): string | undefined {
+  // React framework — always loaded, shared across all pages
+  if (id.includes("node_modules")) {
+    const pkg = getPackageName(id);
+    if (!pkg) return undefined;
+    if (
+      pkg === "react" ||
+      pkg === "react-dom" ||
+      pkg === "scheduler"
+    ) {
+      return "framework";
+    }
+    // Other node_modules packages get their own vendor chunk.
+    // This is the key fix: without this, Rollup merges all shared
+    // vendor code into the entry chunk, creating a monolithic bundle.
+    // Sanitise package name for use as chunk name (replace / with -)
+    return "vendor-" + pkg.replace("/", "-");
+  }
+
+  // vinext shims — small runtime, shared across all pages.
+  // Use the absolute shims directory path to avoid matching user files
+  // that happen to have "/shims/" in their path.
+  if (id.startsWith(_shimsDir)) {
+    return "vinext";
+  }
+
+  return undefined;
+}
+
+/**
+ * Rollup output config with manualChunks for client code-splitting.
+ * Used by both CLI builds and multi-environment builds.
+ */
+const clientOutputConfig = {
+  manualChunks: clientManualChunks,
+};
+
 export interface VinextOptions {
   /**
    * Base directory containing the app/ and pages/ directories.
@@ -726,20 +798,74 @@ function collectAssetTags(manifest, moduleIds) {
     tags.push('<script type="module" src="/' + entry + '" crossorigin></script>');
   }
   if (m) {
-    const idsToCheck = moduleIds && moduleIds.length > 0
-      ? moduleIds
-      : Object.keys(m);
-    for (const id of idsToCheck) {
-      const files = m[id];
-      if (!files) continue;
-      for (const file of files) {
-        if (seen.has(file)) continue;
-        seen.add(file);
-        if (file.endsWith(".css")) {
-          tags.push('<link rel="stylesheet" href="/' + file + '" />');
-        } else if (file.endsWith(".js")) {
-          tags.push('<script type="module" src="/' + file + '" crossorigin></script>');
+    // Always inject shared chunks (framework, vinext runtime, entry) and
+    // page-specific chunks. The manifest maps module file paths to their
+    // associated JS/CSS assets.
+    //
+    // For page-specific injection, the module IDs may be absolute paths
+    // while the manifest uses relative paths. Try both the original ID
+    // and a suffix match to find the correct manifest entry.
+    var allFiles = [];
+
+    if (moduleIds && moduleIds.length > 0) {
+      // Collect assets for the requested page modules
+      for (var mi = 0; mi < moduleIds.length; mi++) {
+        var id = moduleIds[mi];
+        var files = m[id];
+        if (!files) {
+          // Absolute path didn't match — try matching by suffix.
+          // Manifest keys are relative (e.g. "pages/about.tsx") while
+          // moduleIds may be absolute (e.g. "/home/.../pages/about.tsx").
+          for (var mk in m) {
+            if (id.endsWith("/" + mk) || id === mk) {
+              files = m[mk];
+              break;
+            }
+          }
         }
+        if (files) {
+          for (var fi = 0; fi < files.length; fi++) allFiles.push(files[fi]);
+        }
+      }
+
+      // Also inject shared chunks that every page needs: framework,
+      // vinext runtime, and the entry bootstrap. These are identified
+      // by scanning all manifest values for chunk filenames containing
+      // known prefixes.
+      for (var key in m) {
+        var vals = m[key];
+        if (!vals) continue;
+        for (var vi = 0; vi < vals.length; vi++) {
+          var file = vals[vi];
+          var basename = file.split("/").pop() || "";
+          if (
+            basename.startsWith("framework-") ||
+            basename.startsWith("vinext-") ||
+            basename.includes("vinext-client-entry") ||
+            basename.includes("vinext-app-browser-entry")
+          ) {
+            allFiles.push(file);
+          }
+        }
+      }
+    } else {
+      // No specific modules — include all assets from manifest
+      for (var akey in m) {
+        var avals = m[akey];
+        if (avals) {
+          for (var ai = 0; ai < avals.length; ai++) allFiles.push(avals[ai]);
+        }
+      }
+    }
+
+    for (var ti = 0; ti < allFiles.length; ti++) {
+      var tf = allFiles[ti];
+      if (seen.has(tf)) continue;
+      seen.add(tf);
+      if (tf.endsWith(".css")) {
+        tags.push('<link rel="stylesheet" href="/' + tf + '" />');
+      } else if (tf.endsWith(".js")) {
+        tags.push('<script type="module" src="/' + tf + '" crossorigin></script>');
       }
     }
   }
@@ -1543,6 +1669,16 @@ hydrate();
           }
         }
 
+        // Detect if this is a standalone SSR build (set by `vite build --ssr`
+        // or `build.ssr` in config). SSR builds must NOT use manualChunks
+        // because they use inlineDynamicImports which is incompatible.
+        const isSSR = !!config.build?.ssr;
+        // Detect if this is a multi-environment build (App Router or Cloudflare).
+        // In multi-env builds, manualChunks must only be set per-environment
+        // (on the client env), not globally — otherwise it leaks into RSC/SSR
+        // environments where it can cause asset resolution issues.
+        const isMultiEnv = hasAppDir || hasCloudflarePlugin;
+
         const viteConfig: Record<string, any> = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
@@ -1571,6 +1707,14 @@ hydrate();
                   }
                 };
               })(),
+              // Code-split client bundles: separate framework (React/ReactDOM),
+              // vinext runtime (shims), and vendor packages into their own
+              // chunks so pages only load the JS they need.
+              // Only apply globally for standalone client builds (CLI Pages
+              // Router). For multi-environment builds (App Router, Cloudflare),
+              // manualChunks is set per-environment on the client env below
+              // to avoid leaking into RSC/SSR environments.
+              ...(!isSSR && !isMultiEnv ? { output: clientOutputConfig } : {}),
             },
           },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
@@ -1666,6 +1810,7 @@ hydrate();
               build: {
                 rollupOptions: {
                   input: { index: VIRTUAL_APP_BROWSER_ENTRY },
+                  output: clientOutputConfig,
                 },
               },
             },
@@ -1682,6 +1827,7 @@ hydrate();
                 ssrManifest: true,
                 rollupOptions: {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
+                  output: clientOutputConfig,
                 },
               },
             },
@@ -3001,6 +3147,7 @@ function scanDirForMdx(dir: string): boolean {
 export { staticExportPages, staticExportApp } from "./build/static-export.js";
 export type { StaticExportResult, StaticExportOptions, AppStaticExportOptions } from "./build/static-export.js";
 
-// Exported for testing
+// Exported for CLI and testing
+export { clientManualChunks };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };

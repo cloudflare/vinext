@@ -621,6 +621,23 @@ describe("Production build", () => {
     const assets = fs.readdirSync(assetsDir);
     const jsFiles = assets.filter((f: string) => f.endsWith(".js"));
     expect(jsFiles.length).toBeGreaterThan(0);
+
+    // Client bundle should be code-split: framework (React/ReactDOM) in its
+    // own chunk, vinext runtime in another, and the entry bootstrap should be
+    // small (not a monolithic bundle containing all vendor code).
+    const frameworkChunk = jsFiles.find((f: string) => f.startsWith("framework-"));
+    const vinextChunk = jsFiles.find((f: string) => f.startsWith("vinext-"));
+    const entryChunk = jsFiles.find((f: string) => f.includes("vinext-client-entry"));
+    expect(frameworkChunk).toBeDefined();
+    expect(vinextChunk).toBeDefined();
+    expect(entryChunk).toBeDefined();
+
+    // The entry chunk should be small (just the hydration bootstrap, not the
+    // entire React framework). Before code-splitting this was ~200KB+.
+    if (entryChunk) {
+      const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
+      expect(entrySize).toBeLessThan(20 * 1024); // < 20 KB
+    }
   });
 
   it("serves pages from production build end-to-end", async () => {
