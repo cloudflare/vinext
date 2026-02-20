@@ -490,4 +490,58 @@ describe("matchAppRoute - URL matching", () => {
     expect(homeRoute!.unauthorizedPath).toBeTruthy();
     expect(homeRoute!.unauthorizedPath).toContain("unauthorized.tsx");
   });
+
+  // --- Parallel slot sub-routes ---
+
+  it("generates routes for nested pages inside parallel slots", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    // @team/members/page.tsx should create a route at /dashboard/members
+    const membersRoute = routes.find((r) => r.pattern === "/dashboard/members");
+    expect(membersRoute).toBeDefined();
+  });
+
+  it("slot sub-route uses parent default.tsx as page", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const membersRoute = routes.find((r) => r.pattern === "/dashboard/members");
+    expect(membersRoute).toBeDefined();
+    // The children slot uses dashboard/default.tsx as the page component
+    expect(membersRoute!.pagePath).not.toBeNull();
+    expect(membersRoute!.pagePath).toContain("default.tsx");
+    expect(membersRoute!.pagePath).toContain("dashboard");
+  });
+
+  it("slot sub-route has matching slot with sub-page path", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const membersRoute = routes.find((r) => r.pattern === "/dashboard/members");
+    expect(membersRoute).toBeDefined();
+
+    // @team slot should point to the sub-page
+    const teamSlot = membersRoute!.parallelSlots.find((s) => s.name === "team");
+    expect(teamSlot).toBeDefined();
+    expect(teamSlot!.pagePath).not.toBeNull();
+    expect(teamSlot!.pagePath).toContain("@team");
+    expect(teamSlot!.pagePath).toContain("members");
+
+    // @analytics slot has no members sub-page, should have null pagePath
+    const analyticsSlot = membersRoute!.parallelSlots.find((s) => s.name === "analytics");
+    expect(analyticsSlot).toBeDefined();
+    expect(analyticsSlot!.pagePath).toBeNull();
+    // But should still have defaultPath
+    expect(analyticsSlot!.defaultPath).not.toBeNull();
+  });
+
+  it("slot sub-route inherits parent layouts", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const membersRoute = routes.find((r) => r.pattern === "/dashboard/members");
+    const dashboardRoute = routes.find((r) => r.pattern === "/dashboard");
+    expect(membersRoute).toBeDefined();
+    expect(dashboardRoute).toBeDefined();
+
+    // Should have same layouts as the parent route
+    expect(membersRoute!.layouts).toEqual(dashboardRoute!.layouts);
+  });
 });

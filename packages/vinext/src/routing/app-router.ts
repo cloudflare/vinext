@@ -143,6 +143,13 @@ export async function appRouter(appDir: string): Promise<AppRoute[]> {
     if (route) routes.push(route);
   }
 
+  // Discover sub-routes created by nested pages within parallel slots.
+  // In Next.js, pages nested inside @slot directories create additional URL routes.
+  // For example, @audience/demographics/page.tsx at app/parallel-routes/ creates
+  // a route at /parallel-routes/demographics.
+  const slotSubRoutes = discoverSlotSubRoutes(routes, appDir);
+  routes.push(...slotSubRoutes);
+
   // Sort: static routes first, then dynamic, then catch-all
   routes.sort((a, b) => {
     const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
@@ -152,6 +159,167 @@ export async function appRouter(appDir: string): Promise<AppRoute[]> {
   cachedRoutes = routes;
   cachedAppDir = appDir;
   return routes;
+}
+
+/**
+ * Discover sub-routes created by nested pages within parallel slots.
+ *
+ * In Next.js, pages nested inside @slot directories create additional URL routes.
+ * For example, given:
+ *   app/parallel-routes/@audience/demographics/page.tsx
+ * This creates a route at /parallel-routes/demographics where:
+ * - children slot → parent's default.tsx
+ * - @audience slot → @audience/demographics/page.tsx (matched)
+ * - other slots → their default.tsx (fallback)
+ */
+function discoverSlotSubRoutes(
+  routes: AppRoute[],
+  _appDir: string,
+): AppRoute[] {
+  const syntheticRoutes: AppRoute[] = [];
+  const existingPatterns = new Set(routes.map((r) => r.pattern));
+
+  for (const parentRoute of routes) {
+    if (parentRoute.parallelSlots.length === 0) continue;
+    if (!parentRoute.pagePath) continue;
+
+    const parentPageDir = path.dirname(parentRoute.pagePath);
+
+    // Collect sub-paths from all slots.
+    // Map: relative sub-path (e.g., "demographics") -> Map<slotName, pagePath>
+    const subPathMap = new Map<string, Map<string, string>>();
+
+    for (const slot of parentRoute.parallelSlots) {
+      const slotDir = path.join(parentPageDir, `@${slot.name}`);
+      if (!fs.existsSync(slotDir)) continue;
+
+      const subPages = findSlotSubPages(slotDir);
+      for (const { relativePath, pagePath } of subPages) {
+        if (!subPathMap.has(relativePath)) {
+          subPathMap.set(relativePath, new Map());
+        }
+        subPathMap.get(relativePath)!.set(slot.name, pagePath);
+      }
+    }
+
+    if (subPathMap.size === 0) continue;
+
+    // Find the default.tsx for the children slot at the parent directory
+    const childrenDefault = findFile(parentPageDir, "default");
+
+    for (const [subPath, slotPages] of subPathMap) {
+      // Convert sub-path segments to URL pattern parts
+      const subSegments = subPath.split(path.sep);
+      const urlParts: string[] = [];
+      const subParams: string[] = [];
+      let subIsDynamic = false;
+
+      for (const seg of subSegments) {
+        // Route groups are transparent
+        if (seg.startsWith("(") && seg.endsWith(")")) continue;
+
+        const catchAllMatch = seg.match(/^\[\.\.\.(\w+)\]$/);
+        if (catchAllMatch) {
+          subIsDynamic = true;
+          subParams.push(catchAllMatch[1]);
+          urlParts.push(`:${catchAllMatch[1]}+`);
+          continue;
+        }
+        const optionalCatchAllMatch = seg.match(/^\[\[\.\.\.(\w+)\]\]$/);
+        if (optionalCatchAllMatch) {
+          subIsDynamic = true;
+          subParams.push(optionalCatchAllMatch[1]);
+          urlParts.push(`:${optionalCatchAllMatch[1]}*`);
+          continue;
+        }
+        const dynamicMatch = seg.match(/^\[(\w+)\]$/);
+        if (dynamicMatch) {
+          subIsDynamic = true;
+          subParams.push(dynamicMatch[1]);
+          urlParts.push(`:${dynamicMatch[1]}`);
+          continue;
+        }
+
+        urlParts.push(seg);
+      }
+
+      const subUrlPath = urlParts.join("/");
+      const pattern =
+        parentRoute.pattern === "/"
+          ? "/" + subUrlPath
+          : parentRoute.pattern + "/" + subUrlPath;
+
+      // Skip if this pattern already exists as a regular route
+      if (existingPatterns.has(pattern)) continue;
+      if (syntheticRoutes.some((r) => r.pattern === pattern)) continue;
+
+      // Build parallel slots for this sub-route: matching slots get the sub-page,
+      // non-matching slots get null pagePath (rendering falls back to defaultPath)
+      const subSlots: ParallelSlot[] = parentRoute.parallelSlots.map(
+        (slot) => ({
+          ...slot,
+          pagePath: slotPages.get(slot.name) || null,
+        }),
+      );
+
+      syntheticRoutes.push({
+        pattern,
+        pagePath: childrenDefault, // children slot uses parent's default.tsx as page
+        routePath: null,
+        layouts: parentRoute.layouts,
+        templates: parentRoute.templates,
+        parallelSlots: subSlots,
+        loadingPath: parentRoute.loadingPath,
+        errorPath: parentRoute.errorPath,
+        layoutErrorPaths: parentRoute.layoutErrorPaths,
+        notFoundPath: parentRoute.notFoundPath,
+        notFoundPaths: parentRoute.notFoundPaths,
+        forbiddenPath: parentRoute.forbiddenPath,
+        unauthorizedPath: parentRoute.unauthorizedPath,
+        layoutSegmentDepths: parentRoute.layoutSegmentDepths,
+        isDynamic: parentRoute.isDynamic || subIsDynamic,
+        params: [...parentRoute.params, ...subParams],
+      });
+    }
+  }
+
+  return syntheticRoutes;
+}
+
+/**
+ * Find all page files in subdirectories of a parallel slot directory.
+ * Returns relative paths (from the slot dir) and absolute page paths.
+ * Skips the root page.tsx (already handled as the slot's main page)
+ * and intercepting route directories.
+ */
+function findSlotSubPages(
+  slotDir: string,
+): Array<{ relativePath: string; pagePath: string }> {
+  const results: Array<{ relativePath: string; pagePath: string }> = [];
+
+  function scan(dir: string): void {
+    if (!fs.existsSync(dir)) return;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      // Skip intercepting route directories
+      if (matchInterceptConvention(entry.name)) continue;
+      // Skip private folders (prefixed with _)
+      if (entry.name.startsWith("_")) continue;
+
+      const subDir = path.join(dir, entry.name);
+      const page = findFile(subDir, "page");
+      if (page) {
+        const relativePath = path.relative(slotDir, subDir);
+        results.push({ relativePath, pagePath: page });
+      }
+      // Continue scanning deeper for nested sub-pages
+      scan(subDir);
+    }
+  }
+
+  scan(slotDir);
+  return results;
 }
 
 /**

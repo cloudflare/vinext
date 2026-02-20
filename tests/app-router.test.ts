@@ -246,6 +246,37 @@ describe("App Router integration", () => {
     expect(analyticsRes.status).toBe(404);
   });
 
+  // --- Parallel slot sub-routes ---
+
+  it("renders slot sub-page when navigating to nested parallel route URL", async () => {
+    // /dashboard/members should render @team/members/page.tsx in the team slot
+    // and dashboard/default.tsx as the children content
+    const res = await fetch(`${baseUrl}/dashboard/members`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // Dashboard layout should be present
+    expect(html).toContain('id="dashboard-layout"');
+    // Children slot should show default.tsx content
+    expect(html).toContain('data-testid="dashboard-default"');
+    expect(html).toContain("Dashboard default content");
+    // @team slot should show the members sub-page
+    expect(html).toContain('data-testid="team-members-page"');
+    expect(html).toContain("Team Members Directory");
+    // @analytics slot should show its default.tsx fallback
+    expect(html).toContain('data-testid="analytics-default"');
+  });
+
+  it("slot sub-route wraps sub-page with slot layout", async () => {
+    // @team has a layout.tsx — it should wrap the members sub-page too
+    const res = await fetch(`${baseUrl}/dashboard/members`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain('data-testid="team-slot-layout"');
+    expect(html).toContain('data-testid="team-members-page"');
+  });
+
   // --- useSelectedLayoutSegment(s) ---
 
   it("useSelectedLayoutSegments returns segments relative to dashboard layout", async () => {
