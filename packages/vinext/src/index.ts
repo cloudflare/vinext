@@ -1856,7 +1856,7 @@ hydrate();
           // Enable JSX in .tsx/.jsx files
           // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`
           ...(getViteMajorVersion() >= 8
-            ? { oxc: { jsx: "automatic" } }
+            ? { oxc: { jsx: { runtime: "automatic" } } }
             : { esbuild: { jsx: "automatic" } }),
           // Define env vars for client bundle
           define: defines,
