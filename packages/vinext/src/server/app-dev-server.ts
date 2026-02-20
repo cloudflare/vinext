@@ -305,10 +305,13 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   const resolvedViewport = viewportList.length > 0 ? mergeViewport(viewportList) : null;
 
   // Build element: metadata head + noindex meta + boundary component wrapped in layouts
+  // Always include charset and default viewport for parity with Next.js.
+  const charsetMeta = createElement("meta", { charSet: "utf-8" });
   const noindexMeta = createElement("meta", { name: "robots", content: "noindex" });
-  const headElements = [noindexMeta];
+  const headElements = [charsetMeta, noindexMeta];
   if (resolvedMetadata) headElements.push(createElement(MetadataHead, { metadata: resolvedMetadata }));
-  if (resolvedViewport) headElements.push(createElement(ViewportHead, { viewport: resolvedViewport }));
+  const effectiveViewport = resolvedViewport ?? { width: "device-width", initialScale: 1 };
+  headElements.push(createElement(ViewportHead, { viewport: effectiveViewport }));
   let element = createElement(Fragment, null, ...headElements, createElement(BoundaryComponent));
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
@@ -537,10 +540,16 @@ async function buildPageElement(route, params, opts, searchParams) {
   let element = createElement(PageComponent, pageProps);
 
   // Add metadata + viewport head tags (React 19 hoists title/meta/link to <head>)
-  if (resolvedMetadata || resolvedViewport) {
+  // Next.js always injects charset and default viewport even when no metadata/viewport
+  // is exported. We replicate that by always emitting these essential head elements.
+  {
     const headElements = [];
+    // Always emit <meta charset="utf-8"> — Next.js includes this on every page
+    headElements.push(createElement("meta", { charSet: "utf-8" }));
     if (resolvedMetadata) headElements.push(createElement(MetadataHead, { metadata: resolvedMetadata }));
-    if (resolvedViewport) headElements.push(createElement(ViewportHead, { viewport: resolvedViewport }));
+    // Default viewport to standard responsive settings when none is exported
+    const effectiveViewport = resolvedViewport ?? { width: "device-width", initialScale: 1 };
+    headElements.push(createElement(ViewportHead, { viewport: effectiveViewport }));
     element = createElement(Fragment, null, ...headElements, element);
   }
 

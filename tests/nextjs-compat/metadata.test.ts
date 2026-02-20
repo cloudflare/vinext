@@ -348,6 +348,36 @@ describe("Next.js compat: metadata", () => {
     );
   });
 
+  // ── Default charset and viewport injection ────────────────────
+  // Next.js always injects <meta charset="utf-8"> and
+  // <meta name="viewport" content="width=device-width, initial-scale=1">
+  // on every page, even when no metadata or viewport is exported.
+
+  it("should always include charset meta tag in SSR output", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-title",
+    );
+    expect(html).toMatch(/meta\s+charSet="utf-8"|meta\s+charset="utf-8"/i);
+  });
+
+  it("should always include viewport meta tag in SSR output", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-title",
+    );
+    expect(html).toMatch(/meta\s+name="viewport"\s+content="width=device-width, initial-scale=1"/);
+  });
+
+  it("should include charset and viewport even on pages with only OG metadata", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-opengraph",
+    );
+    expect(html).toMatch(/meta\s+charSet="utf-8"|meta\s+charset="utf-8"/i);
+    expect(html).toMatch(/meta\s+name="viewport"/);
+  });
+
   // ── Browser-only tests (documented, not ported) ──────────────
   //
   // N/A: 'should apply metadata when navigating client-side'

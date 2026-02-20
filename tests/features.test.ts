@@ -1754,6 +1754,86 @@ describe("MetadataHead rendering", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// ViewportHead rendering tests
+
+describe("ViewportHead rendering", () => {
+  let ViewportHead: typeof import("../packages/vinext/src/shims/metadata.js").ViewportHead;
+  let React: typeof import("react");
+  let renderToStaticMarkup: typeof import("react-dom/server").renderToStaticMarkup;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/shims/metadata.js");
+    ViewportHead = mod.ViewportHead;
+    React = await import("react");
+    renderToStaticMarkup = (await import("react-dom/server")).renderToStaticMarkup;
+  });
+
+  it("renders default viewport with width=device-width and initial-scale=1", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ViewportHead, {
+        viewport: { width: "device-width", initialScale: 1 },
+      }),
+    );
+    expect(html).toContain('name="viewport"');
+    expect(html).toContain("width=device-width");
+    expect(html).toContain("initial-scale=1");
+  });
+
+  it("renders custom viewport with all options", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ViewportHead, {
+        viewport: {
+          width: "device-width",
+          initialScale: 1,
+          maximumScale: 1,
+          userScalable: false,
+        },
+      }),
+    );
+    expect(html).toContain("width=device-width");
+    expect(html).toContain("initial-scale=1");
+    expect(html).toContain("maximum-scale=1");
+    expect(html).toContain("user-scalable=no");
+  });
+
+  it("renders theme-color meta tag", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ViewportHead, {
+        viewport: { themeColor: "#000000" },
+      }),
+    );
+    expect(html).toContain('name="theme-color"');
+    expect(html).toContain('content="#000000"');
+  });
+
+  it("renders multiple theme-color entries with media queries", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ViewportHead, {
+        viewport: {
+          themeColor: [
+            { media: "(prefers-color-scheme: light)", color: "#fff" },
+            { media: "(prefers-color-scheme: dark)", color: "#000" },
+          ],
+        },
+      }),
+    );
+    expect(html).toContain('content="#fff"');
+    expect(html).toContain('content="#000"');
+    expect(html).toContain("prefers-color-scheme: light");
+    expect(html).toContain("prefers-color-scheme: dark");
+  });
+
+  it("renders color-scheme meta tag", () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ViewportHead, {
+        viewport: { colorScheme: "dark" },
+      }),
+    );
+    expect(html).toContain('name="color-scheme"');
+    expect(html).toContain('content="dark"');
+  });
+});
 
 describe("fetch cache (extended fetch with next options)", () => {
   // We need a mock server for fetch to hit
