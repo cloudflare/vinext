@@ -1941,17 +1941,21 @@ import { setNavigationContext } from "next/navigation";
 import { safeJsonStringify } from "vinext/html";
 
 /**
- * Collect all chunks from a ReadableStream into an array.
+ * Collect all chunks from a ReadableStream into an array of text strings.
  * Used to capture the RSC payload for embedding in HTML.
+ * The RSC flight protocol is text-based (line-delimited key:value pairs),
+ * so we decode to text strings instead of byte arrays — this is dramatically
+ * more compact when JSON-serialized into inline <script> tags.
  */
 async function collectStreamChunks(stream) {
   const reader = stream.getReader();
+  const decoder = new TextDecoder();
   const chunks = [];
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    // Convert Uint8Array to regular array for JSON serialization
-    chunks.push(Array.from(value));
+    // Decode Uint8Array to text string for compact JSON serialization
+    chunks.push(decoder.decode(value, { stream: true }));
   }
   return chunks;
 }
@@ -1963,14 +1967,15 @@ async function collectStreamChunks(stream) {
  * for the entire RSC payload before hydration can begin.
  *
  * Each chunk is written as:
- *   <script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];self.__VINEXT_RSC_CHUNKS__.push([...])</script>
+ *   <script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];self.__VINEXT_RSC_CHUNKS__.push("...")</script>
  *
- * The browser entry reads from this array to reconstruct the RSC stream.
+ * Chunks are embedded as text strings (not byte arrays) since the RSC flight
+ * protocol is text-based. The browser entry encodes them back to Uint8Array.
+ * This is ~3x more compact than the previous byte-array format.
  */
 function createRscEmbedTransform(embedStream) {
   const reader = embedStream.getReader();
   const _decoder = new TextDecoder();
-  const _encoder = new TextEncoder();
   let done = false;
   let pendingChunks = [];
   let reading = false;
@@ -1981,15 +1986,14 @@ function createRscEmbedTransform(embedStream) {
   // for <link rel="preload">. The fixPreloadAs() below only fixes the
   // server-rendered HTML stream; this fixes the raw Flight data that
   // gets embedded as __VINEXT_RSC_CHUNKS__ and processed client-side.
-  function fixFlightHints(bytes) {
-    const text = _decoder.decode(bytes, { stream: true });
+  function fixFlightHints(text) {
     // Flight hint format: <id>:HL["url","stylesheet"] or with options
-    const fixed = text.replace(/(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g, '$1,"style"$2');
-    if (fixed === text) return bytes;
-    return _encoder.encode(fixed);
+    return text.replace(/(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g, '$1,"style"$2');
   }
 
-  // Start reading RSC chunks in the background, accumulating them
+  // Start reading RSC chunks in the background, accumulating them as text strings.
+  // The RSC flight protocol is text-based, so decoding to strings and embedding
+  // as JSON strings is ~3x more compact than the byte-array format.
   async function pumpReader() {
     if (reading) return;
     reading = true;
@@ -2000,7 +2004,8 @@ function createRscEmbedTransform(embedStream) {
           done = true;
           break;
         }
-        pendingChunks.push(Array.from(fixFlightHints(result.value)));
+        const text = _decoder.decode(result.value, { stream: true });
+        pendingChunks.push(fixFlightHints(text));
       }
     } catch (err) {
       if (process.env.NODE_ENV !== "production") {
@@ -2296,13 +2301,14 @@ let reactRoot;
 
 /**
  * Convert the embedded RSC chunks back to a ReadableStream.
- * Each chunk is an array of numbers (from Uint8Array).
+ * Each chunk is a text string that needs to be encoded back to Uint8Array.
  */
 function chunksToReadableStream(chunks) {
+  const encoder = new TextEncoder();
   return new ReadableStream({
     start(controller) {
       for (const chunk of chunks) {
-        controller.enqueue(new Uint8Array(chunk));
+        controller.enqueue(encoder.encode(chunk));
       }
       controller.close();
     }
@@ -2324,6 +2330,7 @@ function chunksToReadableStream(chunks) {
  * is set, whichever comes first.
  */
 function createProgressiveRscStream() {
+  const encoder = new TextEncoder();
   return new ReadableStream({
     start(controller) {
       const chunks = self.__VINEXT_RSC_CHUNKS__ || [];
@@ -2331,7 +2338,7 @@ function createProgressiveRscStream() {
       // Deliver any chunks that arrived before this code ran
       // (from <script> tags that executed before the browser entry loaded)
       for (const chunk of chunks) {
-        controller.enqueue(new Uint8Array(chunk));
+        controller.enqueue(encoder.encode(chunk));
       }
 
       // If the stream is already complete, close immediately
@@ -2354,7 +2361,7 @@ function createProgressiveRscStream() {
       arr.push = function(chunk) {
         Array.prototype.push.call(this, chunk);
         if (!closed) {
-          controller.enqueue(new Uint8Array(chunk));
+          controller.enqueue(encoder.encode(chunk));
           if (self.__VINEXT_RSC_DONE__) {
             closeOnce();
           }

@@ -36,8 +36,9 @@ import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
  */
 function createRscEmbedTransform(embedStream: ReadableStream<Uint8Array>) {
   const reader = embedStream.getReader();
+  const decoder = new TextDecoder();
   let _done = false;
-  let pendingChunks: number[][] = [];
+  let pendingChunks: string[] = [];
   let reading = false;
 
   async function pumpReader() {
@@ -50,7 +51,7 @@ function createRscEmbedTransform(embedStream: ReadableStream<Uint8Array>) {
           _done = true;
           break;
         }
-        pendingChunks.push(Array.from(result.value));
+        pendingChunks.push(decoder.decode(result.value, { stream: true }));
       }
     } catch {
       _done = true;
@@ -574,11 +575,10 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     // Should have 3 RSC chunks in order
     expect(matches.length).toBe(3);
 
-    // Decode the chunks to verify order
-    const textDecoder = new TextDecoder();
-    const chunk0 = textDecoder.decode(new Uint8Array(JSON.parse(matches[0])));
-    const chunk1 = textDecoder.decode(new Uint8Array(JSON.parse(matches[1])));
-    const chunk2 = textDecoder.decode(new Uint8Array(JSON.parse(matches[2])));
+    // Chunks are now text strings, so just parse the JSON strings directly
+    const chunk0 = JSON.parse(matches[0]);
+    const chunk1 = JSON.parse(matches[1]);
+    const chunk2 = JSON.parse(matches[2]);
 
     expect(chunk0).toContain('0:D{"name":"layout"}');
     expect(chunk1).toContain('1:D{"name":"page"}');
@@ -640,7 +640,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     expect(donePos).toBeGreaterThan(lastChunksPos);
   });
 
-  it("XSS-safe: byte-array encoding prevents </script> breakout in RSC data", async () => {
+  it("XSS-safe: safeJsonStringify prevents </script> breakout in RSC data", async () => {
     const rsc = createMockRscStream();
 
     // Push RSC data that contains a </script> payload
@@ -661,11 +661,10 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     // The output should contain the RSC chunk
     expect(output).toContain("__VINEXT_RSC_CHUNKS__");
 
-    // RSC data is stored as a JSON byte array (number[]), not as a raw string.
-    // The </script> characters are stored as numeric byte values (60, 47, 115, ...),
-    // so they can't break out of the enclosing <script> tag — the byte-array
-    // format is the primary XSS defense here, with safeJsonStringify providing
-    // belt-and-suspenders escaping of <, >, & in any string values.
+    // RSC data is now stored as a JSON text string. safeJsonStringify escapes
+    // <, >, and & characters so that </script> in the RSC data cannot break
+    // out of the enclosing <script> tag. The < and > characters are escaped
+    // to \\u003c and \\u003e respectively.
 
     // The raw string "</script>" should NOT appear outside of the proper
     // script tags we control. Count actual <script> and </script> tags —
@@ -677,8 +676,10 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     // The malicious raw HTML should NOT appear as actual HTML in the output
     expect(output).not.toContain("alert(1)</script>");
 
-    // Verify the byte array contains the expected bytes for '</script>'
-    // '<' = 60, '/' = 47, 's' = 115, 'c' = 99, 'r' = 114, 'i' = 105, 'p' = 112, 't' = 116, '>' = 62
-    expect(output).toContain(",60,47,115,99,114,105,112,116,62,");
+    // Verify the </script> characters are escaped in the JSON string output.
+    // safeJsonStringify escapes '<' to '\\u003c' and '>' to '\\u003e',
+    // so the malicious payload is safely neutralized.
+    expect(output).toContain("\\u003c/script\\u003e");
+    expect(output).not.toContain(",60,47,115,99,114,105,112,116,62,");
   });
 });
