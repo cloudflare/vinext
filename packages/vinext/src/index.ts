@@ -360,15 +360,32 @@ const _shimsDir = path.resolve(__dirname, "shims") + "/";
  * Splits the client bundle into:
  * - "framework" — React, ReactDOM, and scheduler (loaded on every page)
  * - "vinext"    — vinext shims (router, head, link, etc.)
- * - "vendor-X"  — third-party packages, grouped by package name
- * - Per-route chunks are already created by Vite's dynamic import splitting
  *
- * This ensures page-specific dependencies (e.g. mermaid.js) are only
- * loaded on pages that use them, instead of being bundled into the
- * monolithic entry chunk.
+ * All other vendor code is left to Rollup's default chunk-splitting
+ * algorithm. Rollup automatically deduplicates shared modules into
+ * common chunks based on the import graph — no manual intervention
+ * needed.
+ *
+ * Why not split every npm package into its own chunk?
+ * - Per-package splitting (`vendor-X`) creates 50-200+ chunks for a
+ *   typical app, far exceeding the ~25-request sweet spot for HTTP/2.
+ * - gzip/brotli compress small files poorly — each file restarts with
+ *   an empty dictionary, losing ~5-15% total compressed size vs fewer
+ *   larger chunks (Khan Academy measured +2.5% wire size with 10x
+ *   more files containing less raw code).
+ * - ES module evaluation has per-module overhead that compounds on
+ *   mobile devices.
+ * - No major Vite-based framework (Remix, SvelteKit, Astro, TanStack)
+ *   uses per-package splitting. Next.js only isolates packages >160KB.
+ * - Rollup's graph-based splitting already handles the common case
+ *   well: shared dependencies between routes get their own chunks,
+ *   and route-specific code stays in route chunks.
  */
 function clientManualChunks(id: string): string | undefined {
-  // React framework — always loaded, shared across all pages
+  // React framework — always loaded, shared across all pages.
+  // Isolating React into its own chunk is the single highest-value
+  // split: it's ~130KB compressed, loaded on every page, and its
+  // content hash rarely changes between deploys.
   if (id.includes("node_modules")) {
     const pkg = getPackageName(id);
     if (!pkg) return undefined;
@@ -379,11 +396,11 @@ function clientManualChunks(id: string): string | undefined {
     ) {
       return "framework";
     }
-    // Other node_modules packages get their own vendor chunk.
-    // This is the key fix: without this, Rollup merges all shared
-    // vendor code into the entry chunk, creating a monolithic bundle.
-    // Sanitise package name for use as chunk name (replace / with -)
-    return "vendor-" + pkg.replace("/", "-");
+    // Let Rollup handle all other vendor code via its default
+    // graph-based splitting. This produces a reasonable number of
+    // shared chunks (typically 5-15) based on actual import patterns,
+    // with good compression efficiency.
+    return undefined;
   }
 
   // vinext shims — small runtime, shared across all pages.
