@@ -54,6 +54,8 @@ export interface InitResult {
   addedScripts: string[];
   /** Whether vite.config.ts was generated */
   generatedViteConfig: boolean;
+  /** Whether vite.config.ts generation was skipped (already exists) */
+  skippedViteConfig: boolean;
 }
 
 // ─── Vite Config Generation (minimal, non-Cloudflare) ────────────────────────
@@ -189,13 +191,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
     process.exit(1);
   }
 
-  // Check if vite.config already exists
-  if (hasViteConfig(root) && !options.force) {
-    console.error("  Error: vite.config.ts already exists.");
-    console.error("  This project appears to already be configured for Vite.");
-    console.error("  Use --force to overwrite the existing configuration.\n");
-    process.exit(1);
-  }
+  // Check if vite.config already exists — skip generation later, but continue
+  const viteConfigExists = hasViteConfig(root);
 
   const isApp = hasAppDir(root);
   const pmName = detectPackageManagerName(root);
@@ -233,7 +230,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
   // ── Step 5: Generate vite.config.ts ────────────────────────────────────
 
   let generatedViteConfig = false;
-  if (!hasViteConfig(root) || options.force) {
+  const skippedViteConfig = viteConfigExists && !options.force;
+  if (!skippedViteConfig) {
     const configContent = generateViteConfig(isApp);
     fs.writeFileSync(path.join(root, "vite.config.ts"), configContent, "utf-8");
     generatedViteConfig = true;
@@ -258,6 +256,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (generatedViteConfig) {
     console.log(`    \u2713 Generated vite.config.ts`);
   }
+  if (skippedViteConfig) {
+    console.log(`    - Skipped vite.config.ts (already exists, use --force to overwrite)`);
+  }
 
   console.log(`
   Next steps:
@@ -271,5 +272,6 @@ export async function init(options: InitOptions): Promise<InitResult> {
     renamedConfigs,
     addedScripts,
     generatedViteConfig,
+    skippedViteConfig,
   };
 }

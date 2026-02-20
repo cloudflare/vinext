@@ -462,12 +462,35 @@ describe("init — dependency installation", () => {
 // ─── Guard Rails ─────────────────────────────────────────────────────────────
 
 describe("init — guard rails", () => {
-  it("exits when vite.config.ts already exists (without --force)", async () => {
+  it("skips vite.config.ts when it already exists (without --force)", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(tmpDir, "vite.config.ts", "export default {}");
 
-    const msg = await runInitExpectExit(tmpDir);
-    expect(msg).toContain("process.exit(1)");
+    const { result } = await runInit(tmpDir);
+
+    expect(result.generatedViteConfig).toBe(false);
+    expect(result.skippedViteConfig).toBe(true);
+    // Original config should be preserved
+    const config = readFile(tmpDir, "vite.config.ts");
+    expect(config).toBe("export default {}");
+  });
+
+  it("still runs all other steps when vite.config.ts exists", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "vite.config.ts", "export default {}");
+
+    const { result } = await runInit(tmpDir);
+
+    // Dependencies should still be installed
+    expect(result.installedDeps).toContain("vite");
+    // ESM migration should still happen
+    expect(result.addedTypeModule).toBe(true);
+    // Scripts should still be added
+    expect(result.addedScripts).toContain("dev:vinext");
+    expect(result.addedScripts).toContain("build:vinext");
+    // But vite config should be skipped
+    expect(result.generatedViteConfig).toBe(false);
+    expect(result.skippedViteConfig).toBe(true);
   });
 
   it("overwrites vite.config.ts with --force", async () => {
@@ -477,6 +500,7 @@ describe("init — guard rails", () => {
     const { result } = await runInit(tmpDir, { force: true });
 
     expect(result.generatedViteConfig).toBe(true);
+    expect(result.skippedViteConfig).toBe(false);
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain("vinext()");
   });
