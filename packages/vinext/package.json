@@ -25,6 +25,10 @@
     "./cloudflare": {
       "import": "./dist/cloudflare/index.js",
       "types": "./dist/cloudflare/index.d.ts"
+    },
+    "./server/image-optimization": {
+      "import": "./dist/server/image-optimization.js",
+      "types": "./dist/server/image-optimization.d.ts"
     }
   },
   "files": [

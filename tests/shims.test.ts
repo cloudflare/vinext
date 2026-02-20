@@ -4685,6 +4685,77 @@ describe("image optimization request parsing", () => {
   });
 });
 
+describe("handleImageOptimization", () => {
+  it("returns 400 for invalid params", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image");
+    const handlers = {
+      fetchAsset: async () => new Response("", { status: 200 }),
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 404 when fetchAsset fails", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("", { status: 404 }),
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(404);
+  });
+
+  it("returns original image when no transformImage handler", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("original-image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("original-image-data");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(response.headers.get("Vary")).toBe("Accept");
+  });
+
+  it("calls transformImage when provided", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=90", {
+      headers: { Accept: "image/webp" },
+    });
+    let capturedOptions: { width: number; format: string; quality: number } | null = null;
+    const handlers = {
+      fetchAsset: async () => new Response("original", { status: 200 }),
+      transformImage: async (_body: ReadableStream, options: { width: number; format: string; quality: number }) => {
+        capturedOptions = options;
+        return new Response("transformed", { headers: { "Content-Type": options.format } });
+      },
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("transformed");
+    expect(capturedOptions).toEqual({ width: 800, format: "image/webp", quality: 90 });
+  });
+
+  it("falls back to original on transform error", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("original", { status: 200 }),
+      transformImage: async () => {
+        throw new Error("transform failed");
+      },
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("original");
+  });
+});
+
 describe("next/navigation enhancements", () => {
   it("exports ReadonlyURLSearchParams type alias", async () => {
     // This is a type-only export, we verify the module loads without error

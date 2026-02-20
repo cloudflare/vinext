@@ -268,6 +268,12 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("handleImageOptimization");
   });
 
+  it("imports handleImageOptimization from vinext/server/image-optimization", () => {
+    const content = generateAppRouterWorkerEntry();
+    expect(content).toContain('from "vinext/server/image-optimization"');
+    expect(content).toContain("handleImageOptimization");
+  });
+
   it("declares Env interface with IMAGES binding", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("interface Env");
@@ -275,31 +281,12 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("ASSETS");
   });
 
-  it("handles image format negotiation from Accept header", () => {
+  it("passes image handlers inline to handleImageOptimization", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("image/avif");
-    expect(content).toContain("image/webp");
-    expect(content).toContain("image/jpeg");
-  });
-
-  it("blocks non-relative URLs in image optimization", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("Only relative URLs allowed");
-    // Uses allowlist: must start with "/" but not "//"
-    expect(content).toContain('!imageUrl.startsWith("/")');
-    expect(content).toContain('imageUrl.startsWith("//")');
-  });
-
-  it("sets Vary: Accept header on optimized image responses", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain('"Vary", "Accept"');
-  });
-
-  it("validates width and quality ranges in image handler", () => {
-    const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("Number.isNaN(width)");
-    expect(content).toContain("quality < 1");
-    expect(content).toContain("quality > 100");
+    expect(content).toContain("fetchAsset:");
+    expect(content).toContain("transformImage:");
+    expect(content).toContain("env.ASSETS.fetch");
+    expect(content).toContain("env.IMAGES");
   });
 });
 
@@ -336,11 +323,25 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("handleImageOptimization");
   });
 
+  it("imports handleImageOptimization from vinext/server/image-optimization", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain('from "vinext/server/image-optimization"');
+    expect(content).toContain("handleImageOptimization");
+  });
+
   it("declares Env interface with IMAGES binding", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("interface Env");
     expect(content).toContain("IMAGES");
     expect(content).toContain("ASSETS");
+  });
+
+  it("passes image handlers inline to handleImageOptimization", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("fetchAsset:");
+    expect(content).toContain("transformImage:");
+    expect(content).toContain("env.ASSETS.fetch");
+    expect(content).toContain("env.IMAGES");
   });
 });
 

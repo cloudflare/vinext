@@ -57,3 +57,71 @@ export function negotiateImageFormat(acceptHeader: string | null): string {
  * Optimized images are immutable because the URL encodes the transform params.
  */
 export const IMAGE_CACHE_CONTROL = "public, max-age=31536000, immutable";
+
+/**
+ * Handlers for image optimization I/O operations.
+ * Workers provide these callbacks to adapt their specific bindings.
+ */
+export interface ImageHandlers {
+  /** Fetch the source image from storage (e.g., Cloudflare ASSETS binding). */
+  fetchAsset: (path: string, request: Request) => Promise<Response>;
+  /** Optional: Transform the image (resize, format, quality). */
+  transformImage?: (
+    body: ReadableStream,
+    options: { width: number; format: string; quality: number }
+  ) => Promise<Response>;
+}
+
+/**
+ * Handle image optimization requests.
+ *
+ * Parses and validates the request, fetches the source image via the provided
+ * handlers, optionally transforms it, and returns the response with appropriate
+ * cache headers.
+ */
+export async function handleImageOptimization(
+  request: Request,
+  handlers: ImageHandlers
+): Promise<Response> {
+  const url = new URL(request.url);
+  const params = parseImageParams(url);
+
+  if (!params) {
+    return new Response("Bad Request", { status: 400 });
+  }
+
+  const { imageUrl, width, quality } = params;
+
+  // Fetch source image
+  const source = await handlers.fetchAsset(imageUrl, request);
+  if (!source.ok || !source.body) {
+    return new Response("Image not found", { status: 404 });
+  }
+
+  // Negotiate output format from Accept header
+  const format = negotiateImageFormat(request.headers.get("Accept"));
+
+  // Transform if handler provided, otherwise serve original
+  if (handlers.transformImage) {
+    try {
+      const transformed = await handlers.transformImage(source.body, {
+        width,
+        format,
+        quality,
+      });
+      const headers = new Headers(transformed.headers);
+      headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
+      headers.set("Vary", "Accept");
+      return new Response(transformed.body, { status: 200, headers });
+    } catch (e) {
+      console.error("[vinext] Image optimization error:", e);
+      // Fall through to serve original
+    }
+  }
+
+  // Fallback: serve original image with cache headers
+  const headers = new Headers(source.headers);
+  headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
+  headers.set("Vary", "Accept");
+  return new Response(source.body, { status: 200, headers });
+}
