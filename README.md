@@ -319,7 +319,7 @@ These are intentional exclusions:
 
 > **Caveat:** Benchmarks are hard to get right and these are early results. The comparison setup is simple — a shared 33-route App Router app built by both tools. We plan to improve methodology over time, and we expect these numbers to change. Take them as directional, not definitive.
 
-Measured on an 8-core Apple Silicon machine, Node v24.3.0. 3 runs each.
+Measured on an 8-core Apple Silicon machine, Node v24.3.0, Next.js 16.1.6. 5 runs each, randomized execution order.
 
 ### Production build time
 
@@ -345,7 +345,7 @@ Measured on an 8-core Apple Silicon machine, Node v24.3.0. 3 runs each.
 | vinext (Vite 7 / Rollup) | 1.35s | ~1.4x faster |
 | vinext (Vite 8 / Rolldown) | 1.29s | ~1.5x faster |
 
-Reproduce with `node benchmarks/run.mjs --runs=3`. Uses `hyperfine` for timing (falls back to `performance.now()`), `gzipSync` for bundle size. Historical results are tracked at [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev).
+Reproduce with `node benchmarks/run.mjs --runs=5`. Uses `hyperfine` for timing (falls back to `performance.now()`), `gzipSync` for bundle size. Dev server cold start runs are randomized to eliminate positional bias. Exact framework versions are recorded in each result. Historical results are tracked at [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev).
 
 ## Architecture
 

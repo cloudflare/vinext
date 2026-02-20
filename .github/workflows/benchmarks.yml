@@ -50,7 +50,7 @@ jobs:
 
       # Run the benchmarks
       - name: Run benchmarks
-        run: node benchmarks/run.mjs --runs 3
+        run: node benchmarks/run.mjs --runs 5
 
       # Find the latest results JSON
       - name: Locate results

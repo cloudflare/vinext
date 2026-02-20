@@ -9,12 +9,12 @@
   },
   "dependencies": {
     "vinext": "file:../../packages/vinext",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "react-server-dom-webpack": "^19.2.4"
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-server-dom-webpack": "19.2.4"
   },
   "devDependencies": {
-    "@vitejs/plugin-rsc": "^0.5.19",
-    "vite": "^7.3.1"
+    "@vitejs/plugin-rsc": "0.5.19",
+    "vite": "7.3.1"
   }
 }

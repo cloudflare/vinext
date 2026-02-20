@@ -25,7 +25,7 @@ mkdirSync(RESULTS_DIR, { recursive: true });
 
 // ─── CLI args ──────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
-const RUNS = parseInt(args.find((a) => a.startsWith("--runs="))?.split("=")[1] ?? "3", 10);
+const RUNS = parseInt(args.find((a) => a.startsWith("--runs="))?.split("=")[1] ?? "5", 10);
 const SKIP_BUILD = args.includes("--skip-build");
 const SKIP_DEV = args.includes("--skip-dev");
 const SKIP_SSR = args.includes("--skip-ssr");
@@ -186,6 +186,22 @@ async function main() {
   const vinextRolldownDir = join(__dirname, "vinext-rolldown");
   const hasRolldown = !SKIP_ROLLDOWN && existsSync(join(vinextRolldownDir, "package.json"));
 
+  // Detect actual installed versions for reproducibility
+  try {
+    const njsPkg = JSON.parse(readFileSync(join(nextjsDir, "node_modules", "next", "package.json"), "utf-8"));
+    results.system.nextjsVersion = njsPkg.version;
+  } catch { /* deps not installed yet */ }
+  try {
+    const vitePkg = JSON.parse(readFileSync(join(vinextDir, "node_modules", "vite", "package.json"), "utf-8"));
+    results.system.viteVersion = vitePkg.version;
+  } catch { /* deps not installed yet */ }
+  if (hasRolldown) {
+    try {
+      const rdPkg = JSON.parse(readFileSync(join(vinextRolldownDir, "node_modules", "vite", "package.json"), "utf-8"));
+      results.system.viteRolldownVersion = rdPkg.version;
+    } catch { /* deps not installed yet */ }
+  }
+
   // ─── 1. Production Build Time ──────────────────────────────────────────────
   if (!SKIP_BUILD) {
     console.log("\n=== Production Build Time ===\n");
@@ -282,8 +298,9 @@ async function main() {
 
       const avg = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
       const stddev = (arr) => {
+        if (arr.length < 2) return 0;
         const m = avg(arr);
-        return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / arr.length);
+        return Math.sqrt(arr.reduce((s, v) => s + (v - m) ** 2, 0) / (arr.length - 1));
       };
 
       results.nextjs.buildTime = {
@@ -344,33 +361,63 @@ async function main() {
 
     const devResults = { nextjs: [], vinext: [], rolldown: [] };
 
+    // Define the runners; order is randomized each iteration to eliminate
+    // positional bias (first-after-kill penalties, OS cache warming, etc.)
+    const runners = [
+      {
+        key: "nextjs",
+        label: "Next.js",
+        run: async () => {
+          exec("rm -rf .next", { cwd: nextjsDir });
+          return startAndMeasure("npx", ["next", "dev", "--turbopack", "-p", "4100"], nextjsDir, "http://localhost:4100");
+        },
+      },
+      {
+        key: "vinext",
+        label: "vinext (Rollup)",
+        run: async () => {
+          exec("rm -rf node_modules/.vite", { cwd: vinextDir });
+          return startAndMeasure("npx", ["vite", "--port", "4101"], vinextDir, "http://localhost:4101");
+        },
+      },
+      ...(hasRolldown
+        ? [
+            {
+              key: "rolldown",
+              label: "vinext (Rolldown)",
+              run: async () => {
+                exec("rm -rf node_modules/.vite", { cwd: vinextRolldownDir });
+                return startAndMeasure("npx", ["vite", "--port", "4102"], vinextRolldownDir, "http://localhost:4102");
+              },
+            },
+          ]
+        : []),
+    ];
+
+    // Fisher-Yates shuffle
+    function shuffle(arr) {
+      const a = [...arr];
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    const runOrders = [];
+
     for (let i = 0; i < RUNS; i++) {
-      console.log(`  Run ${i + 1}/${RUNS}...`);
+      const order = shuffle(runners);
+      const orderLabels = order.map((r) => r.label);
+      runOrders.push(orderLabels);
+      console.log(`  Run ${i + 1}/${RUNS} (order: ${orderLabels.join(" → ")})...`);
 
-      // Next.js dev
-      console.log("    Starting Next.js dev server...");
-      exec("rm -rf .next", { cwd: nextjsDir });
-      const njsDev = await startAndMeasure("npx", ["next", "dev", "--turbopack", "-p", "4100"], nextjsDir, "http://localhost:4100");
-      devResults.nextjs.push({ coldStartMs: njsDev.coldStartMs, peakRssKb: njsDev.peakRssKb });
-      console.log(`    Next.js: ${formatMs(njsDev.coldStartMs)}, ${Math.round(njsDev.peakRssKb / 1024)} MB RSS`);
-      kill(njsDev.process);
-      await new Promise((r) => setTimeout(r, 2000)); // cooldown
-
-      // vinext (Rollup) dev
-      console.log("    Starting vinext (Rollup) dev server...");
-      const ncDev = await startAndMeasure("npx", ["vite", "--port", "4101"], vinextDir, "http://localhost:4101");
-      devResults.vinext.push({ coldStartMs: ncDev.coldStartMs, peakRssKb: ncDev.peakRssKb });
-      console.log(`    vinext (Rollup): ${formatMs(ncDev.coldStartMs)}, ${Math.round(ncDev.peakRssKb / 1024)} MB RSS`);
-      kill(ncDev.process);
-      await new Promise((r) => setTimeout(r, 2000)); // cooldown
-
-      // vinext (Rolldown) dev
-      if (hasRolldown) {
-        console.log("    Starting vinext (Rolldown) dev server...");
-        const rdDev = await startAndMeasure("npx", ["vite", "--port", "4102"], vinextRolldownDir, "http://localhost:4102");
-        devResults.rolldown.push({ coldStartMs: rdDev.coldStartMs, peakRssKb: rdDev.peakRssKb });
-        console.log(`    vinext (Rolldown): ${formatMs(rdDev.coldStartMs)}, ${Math.round(rdDev.peakRssKb / 1024)} MB RSS`);
-        kill(rdDev.process);
+      for (const runner of order) {
+        console.log(`    Starting ${runner.label} dev server...`);
+        const result = await runner.run();
+        devResults[runner.key].push({ coldStartMs: result.coldStartMs, peakRssKb: result.peakRssKb });
+        console.log(`    ${runner.label}: ${formatMs(result.coldStartMs)}, ${Math.round(result.peakRssKb / 1024)} MB RSS`);
+        kill(result.process);
         await new Promise((r) => setTimeout(r, 2000)); // cooldown
       }
     }
@@ -394,6 +441,7 @@ async function main() {
         runs: devResults.rolldown,
       };
     }
+    results.devRunOrders = runOrders;
   }
 
   // ─── 4. SSR Throughput & TTFB ──────────────────────────────────────────────
@@ -420,7 +468,11 @@ async function main() {
   md += `- **Git**: ${results.gitHash}\n`;
   md += `- **Node**: ${results.system.nodeVersion}\n`;
   md += `- **CPUs**: ${results.system.cpus}\n`;
-  md += `- **Runs**: ${results.runs}\n\n`;
+  md += `- **Runs**: ${results.runs}\n`;
+  if (results.system.nextjsVersion) md += `- **Next.js**: ${results.system.nextjsVersion}\n`;
+  if (results.system.viteVersion) md += `- **Vite (Rollup)**: ${results.system.viteVersion}\n`;
+  if (results.system.viteRolldownVersion) md += `- **Vite (Rolldown)**: ${results.system.viteRolldownVersion}\n`;
+  md += "\n";
 
   const hasRolldownResults = results.vinextRolldown && Object.keys(results.vinextRolldown).length > 0;
 
