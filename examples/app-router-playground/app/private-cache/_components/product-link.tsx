@@ -36,14 +36,17 @@ if (typeof window !== 'undefined') {
         '2'
     ) {
       const url = args[0];
-      console.log('Monitoring fetch for', url.pathname);
+      // Strip .rsc suffix so the key matches the logical route pathname
+      // used by the component when looking up prefetch state via href.
+      const key = url.pathname.replace(/\.rsc$/, '');
+      console.log('Monitoring fetch for', key);
       const promise = originalFetch(url, args[1]);
 
-      loadingState.set(url.pathname, 'prefetching');
+      loadingState.set(key, 'prefetching');
       notifySubscribers();
 
       promise.then(() => {
-        loadingState.set(url.pathname, 'prefetched');
+        loadingState.set(key, 'prefetched');
         notifySubscribers();
       });
 
