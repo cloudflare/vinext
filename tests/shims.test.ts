@@ -305,10 +305,14 @@ describe("next/headers shim", () => {
     const dm2 = await draftMode();
     expect(dm2.isEnabled).toBe(true);
 
-    // The Set-Cookie header should be generated with a non-predictable secret
+    // The Set-Cookie header should be generated with a non-predictable secret (UUID)
     const cookieHeader = getDraftModeCookieHeader();
     expect(cookieHeader).toContain("__prerender_bypass=");
-    expect(cookieHeader).not.toContain("__prerender_bypass=1");
+    const bypassMatch = cookieHeader!.match(/__prerender_bypass=([^;]+)/);
+    expect(bypassMatch).not.toBeNull();
+    expect(bypassMatch![1]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
     expect(cookieHeader).toContain("HttpOnly");
     setHeadersContext(null);
   });
