@@ -47,11 +47,7 @@ function generateFontFaceCSS(
   family: string,
   options: LocalFontOptions,
 ): string {
-  const sources = Array.isArray(options.src)
-    ? options.src
-    : typeof options.src === "string"
-      ? [{ path: options.src }]
-      : [options.src];
+  const sources = normalizeSources(options);
 
   const display = options.display ?? "swap";
   const rules: string[] = [];
@@ -91,6 +87,10 @@ function generateFontFaceCSS(
 // SSR: collect font styles for injection in <head>
 const ssrFontStyles: string[] = [];
 
+// SSR: collect font file URLs for <link rel="preload"> injection
+const ssrFontPreloads: Array<{ href: string; type: string }> = [];
+const ssrFontPreloadHrefs = new Set<string>();
+
 /**
  * Get collected SSR font styles (used by the renderer).
  * Note: We don't clear the arrays because fonts are loaded at module import
@@ -98,6 +98,15 @@ const ssrFontStyles: string[] = [];
  */
 export function getSSRFontStyles(): string[] {
   return [...ssrFontStyles];
+}
+
+/**
+ * Get collected SSR font preload data (used by the renderer).
+ * Returns an array of { href, type } objects for emitting
+ * <link rel="preload" as="font" ...> tags.
+ */
+export function getSSRFontPreloads(): Array<{ href: string; type: string }> {
+  return [...ssrFontPreloads];
 }
 
 function injectFontFaceCSS(css: string, id: string): void {
@@ -196,6 +205,50 @@ function injectVariableClassRule(
   document.head.appendChild(style);
 }
 
+/**
+ * Normalize the `src` option into a flat array of `{ path, weight?, style? }`.
+ * Handles string, single object, and array forms.
+ */
+function normalizeSources(options: LocalFontOptions): LocalFontSrc[] {
+  if (Array.isArray(options.src)) return options.src;
+  if (typeof options.src === "string") return [{ path: options.src }];
+  return [options.src];
+}
+
+/**
+ * Determine the MIME type for a font file based on its extension.
+ * Uses endsWith() only — matching the approach in generateFontFaceCSS —
+ * to avoid false positives from substring matches (e.g. ".woff" matching ".woff2").
+ */
+function getFontMimeType(pathOrUrl: string): string {
+  if (pathOrUrl.endsWith(".woff2")) return "font/woff2";
+  if (pathOrUrl.endsWith(".woff")) return "font/woff";
+  if (pathOrUrl.endsWith(".ttf")) return "font/ttf";
+  if (pathOrUrl.endsWith(".otf")) return "font/opentype";
+  return "font/woff2";
+}
+
+/**
+ * Collect font source URLs for preload link generation.
+ * Only collects on the server (SSR). Deduplicates by href using a Set for O(1) lookups.
+ */
+function collectFontPreloads(options: LocalFontOptions): void {
+  if (typeof document !== "undefined") return; // client-side, skip
+
+  const sources = normalizeSources(options);
+
+  for (const src of sources) {
+    const href = src.path;
+    // Only collect URLs that are absolute (start with /) — relative paths
+    // would resolve incorrectly from different page URLs. The vinext:local-fonts
+    // Vite transform should have already resolved them to absolute URLs.
+    if (href && href.startsWith("/") && !ssrFontPreloadHrefs.has(href)) {
+      ssrFontPreloadHrefs.add(href);
+      ssrFontPreloads.push({ href, type: getFontMimeType(href) });
+    }
+  }
+}
+
 export default function localFont(options: LocalFontOptions): FontResult {
   const id = classCounter++;
   const family = `__local_font_${id}`;
@@ -206,6 +259,9 @@ export default function localFont(options: LocalFontOptions): FontResult {
   // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
   // Users apply this class to set the CSS variable on that element.
   const variableClassName = `__variable_local_${id}`;
+
+  // Collect font URLs for preload <link> tags (SSR only)
+  collectFontPreloads(options);
 
   // Inject @font-face declarations
   const css = generateFontFaceCSS(family, options);

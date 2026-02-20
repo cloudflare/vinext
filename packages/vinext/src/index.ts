@@ -675,6 +675,8 @@ import { setSSRContext } from "next/router";
 import { getCacheHandler } from "next/cache";
 import { withFetchCache } from "vinext/fetch-cache";
 import { safeJsonStringify } from "vinext/html";
+import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle } from "next/font/google";
+import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloads } from "next/font/local";
 ${middlewareImportCode}
 
 // i18n config (embedded at build time)
@@ -1192,6 +1194,25 @@ export async function renderPage(request, url, manifest) {
     if (typeof flushPreloads === "function") await flushPreloads();
 
     const ssrHeadHTML = typeof getSSRHeadHTML === "function" ? getSSRHeadHTML() : "";
+
+    // Collect SSR font data (Google Font links, local font preloads, font-face styles)
+    var fontHeadHTML = "";
+    function _escAttr(s) { return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;"); }
+    try {
+      var fontLinks = typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
+      for (var fl of fontLinks) { fontHeadHTML += '<link rel="stylesheet" href="' + _escAttr(fl) + '" />\\n  '; }
+    } catch (e) { /* next/font/google not used */ }
+    try {
+      var fontPreloads = typeof _getSSRFontPreloads === "function" ? _getSSRFontPreloads() : [];
+      for (var fp of fontPreloads) { fontHeadHTML += '<link rel="preload" href="' + _escAttr(fp.href) + '" as="font" type="' + _escAttr(fp.type) + '" crossorigin />\\n  '; }
+    } catch (e) { /* next/font/local not used */ }
+    try {
+      var allFontStyles = [];
+      if (typeof _getSSRFontStylesGoogle === "function") allFontStyles.push(..._getSSRFontStylesGoogle());
+      if (typeof _getSSRFontStylesLocal === "function") allFontStyles.push(..._getSSRFontStylesLocal());
+      if (allFontStyles.length > 0) { fontHeadHTML += '<style data-vinext-fonts>' + allFontStyles.join("\\n") + '</style>\\n  '; }
+    } catch (e) { /* font styles not available */ }
+
     const pageModuleIds = route.filePath ? [route.filePath] : [];
     const assetTags = collectAssetTags(manifest, pageModuleIds);
     const nextDataPayload = {
@@ -1216,15 +1237,15 @@ export async function renderPage(request, url, manifest) {
       const docElement = React.createElement(DocumentComponent);
       shellHtml = await renderToStringAsync(docElement);
       shellHtml = shellHtml.replace("__NEXT_MAIN__", BODY_MARKER);
-      if (ssrHeadHTML || assetTags) {
-        shellHtml = shellHtml.replace("</head>", "  " + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>");
+      if (ssrHeadHTML || assetTags || fontHeadHTML) {
+        shellHtml = shellHtml.replace("</head>", "  " + fontHeadHTML + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>");
       }
       shellHtml = shellHtml.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
       if (!shellHtml.includes("__NEXT_DATA__")) {
         shellHtml = shellHtml.replace("</body>", "  " + nextDataScript + "\\n</body>");
       }
     } else {
-      shellHtml = "<!DOCTYPE html>\\n<html>\\n<head>\\n  <meta charset=\\"utf-8\\" />\\n  <meta name=\\"viewport\\" content=\\"width=device-width, initial-scale=1\\" />\\n  " + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>\\n<body>\\n  <div id=\\"__next\\">" + BODY_MARKER + "</div>\\n  " + nextDataScript + "\\n</body>\\n</html>";
+      shellHtml = "<!DOCTYPE html>\\n<html>\\n<head>\\n  <meta charset=\\"utf-8\\" />\\n  <meta name=\\"viewport\\" content=\\"width=device-width, initial-scale=1\\" />\\n  " + fontHeadHTML + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>\\n<body>\\n  <div id=\\"__next\\">" + BODY_MARKER + "</div>\\n  " + nextDataScript + "\\n</body>\\n</html>";
     }
 
     if (typeof setSSRContext === "function") setSSRContext(null);

@@ -221,7 +221,7 @@ import { clearPrivateCache as _clearPrivateCache } from "vinext/cache-runtime";
 import "vinext/navigation-state";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle } from "next/font/google";
-import { getSSRFontStyles as _getSSRFontStylesLocal } from "next/font/local";
+import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloads } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 
 // Set navigation context in the ALS-backed store. "use client" components
@@ -332,6 +332,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   const fontData = {
     links: _getSSRFontLinks(),
     styles: _getSSRFontStyles(),
+    preloads: _getSSRFontPreloads(),
   };
   const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
   const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
@@ -398,6 +399,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
   const fontData = {
     links: _getSSRFontLinks(),
     styles: _getSSRFontStyles(),
+    preloads: _getSSRFontPreloads(),
   };
   const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
   const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
@@ -1800,6 +1802,7 @@ async function _handleRequest(request) {
   const fontData = {
     links: _getSSRFontLinks(),
     styles: _getSSRFontStyles(),
+    preloads: _getSSRFontPreloads(),
   };
 
   // Delegate to SSR environment for HTML rendering
@@ -2109,13 +2112,22 @@ export async function handleSsr(rscStream, navContext, fontData) {
       }
     }
 
+    // Escape HTML attribute values (defense-in-depth for font URLs/types).
+    function _escAttr(s) { return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;"); }
+
     // Build font HTML from data passed from RSC environment
     // (Fonts are loaded during RSC rendering, and RSC/SSR are separate module instances)
     let fontHTML = "";
     if (fontData) {
       if (fontData.links && fontData.links.length > 0) {
         for (const url of fontData.links) {
-          fontHTML += '<link rel="stylesheet" href="' + url + '" />\\n';
+          fontHTML += '<link rel="stylesheet" href="' + _escAttr(url) + '" />\\n';
+        }
+      }
+      // Emit <link rel="preload"> for local font files
+      if (fontData.preloads && fontData.preloads.length > 0) {
+        for (const preload of fontData.preloads) {
+          fontHTML += '<link rel="preload" href="' + _escAttr(preload.href) + '" as="font" type="' + _escAttr(preload.type) + '" crossorigin />\\n';
         }
       }
       if (fontData.styles && fontData.styles.length > 0) {

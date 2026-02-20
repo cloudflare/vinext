@@ -550,7 +550,8 @@ export function createSSRHandler(
         if (typeof fontGoogle.getSSRFontLinks === "function") {
           const fontUrls = fontGoogle.getSSRFontLinks();
           for (const fontUrl of fontUrls) {
-            fontHeadHTML += `<link rel="stylesheet" href="${fontUrl}" />\n  `;
+            const safeFontUrl = fontUrl.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+            fontHeadHTML += `<link rel="stylesheet" href="${safeFontUrl}" />\n  `;
           }
         }
         if (typeof fontGoogle.getSSRFontStyles === "function") {
@@ -563,6 +564,17 @@ export function createSSRHandler(
         const fontLocal = await server.ssrLoadModule("next/font/local");
         if (typeof fontLocal.getSSRFontStyles === "function") {
           allFontStyles.push(...fontLocal.getSSRFontStyles());
+        }
+        // Emit <link rel="preload"> for local font files
+        if (typeof fontLocal.getSSRFontPreloads === "function") {
+          const preloads = fontLocal.getSSRFontPreloads();
+          for (const { href, type } of preloads) {
+            // Escape href/type to prevent HTML attribute injection (defense-in-depth;
+            // Vite-resolved asset paths should never contain special chars).
+            const safeHref = href.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+            const safeType = type.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+            fontHeadHTML += `<link rel="preload" href="${safeHref}" as="font" type="${safeType}" crossorigin />\n  `;
+          }
         }
       } catch {
         // next/font/local not used — skip

@@ -2819,6 +2819,87 @@ describe("next/font/local shim", () => {
     expect(a.variable).toMatch(/^__variable_local_/);
     expect(b.variable).toMatch(/^__variable_local_/);
   });
+
+  it("exports getSSRFontPreloads function", async () => {
+    const fontLocal = await import(
+      "../packages/vinext/src/shims/font-local.js"
+    );
+    expect(typeof fontLocal.getSSRFontPreloads).toBe("function");
+  });
+
+  it("collects preload data for fonts with absolute URLs", async () => {
+    const fontLocal = await import(
+      "../packages/vinext/src/shims/font-local.js"
+    );
+    const localFont = fontLocal.default;
+
+    // Simulate a font with an absolute URL (as resolved by Vite transform)
+    localFont({ src: "/assets/my-font-abc123.woff2" });
+
+    const preloads = fontLocal.getSSRFontPreloads();
+    const match = preloads.find(
+      (p: any) => p.href === "/assets/my-font-abc123.woff2",
+    );
+    expect(match).toBeDefined();
+    expect(match!.type).toBe("font/woff2");
+  });
+
+  it("collects preload data for array font sources with absolute URLs", async () => {
+    const fontLocal = await import(
+      "../packages/vinext/src/shims/font-local.js"
+    );
+    const localFont = fontLocal.default;
+
+    localFont({
+      src: [
+        { path: "/assets/regular-abc.woff2", weight: "400" },
+        { path: "/assets/bold-def.woff", weight: "700" },
+      ],
+    });
+
+    const preloads = fontLocal.getSSRFontPreloads();
+    const woff2 = preloads.find(
+      (p: any) => p.href === "/assets/regular-abc.woff2",
+    );
+    const woff = preloads.find(
+      (p: any) => p.href === "/assets/bold-def.woff",
+    );
+    expect(woff2).toBeDefined();
+    expect(woff2!.type).toBe("font/woff2");
+    expect(woff).toBeDefined();
+    expect(woff!.type).toBe("font/woff");
+  });
+
+  it("does not collect preload data for relative URLs", async () => {
+    const fontLocal = await import(
+      "../packages/vinext/src/shims/font-local.js"
+    );
+    const localFont = fontLocal.default;
+
+    const preloadsBefore = fontLocal.getSSRFontPreloads().length;
+    localFont({ src: "./relative-font.woff2" });
+    const preloadsAfter = fontLocal.getSSRFontPreloads().length;
+
+    // Relative URLs should NOT be added to preloads
+    expect(preloadsAfter).toBe(preloadsBefore);
+  });
+
+  it("deduplicates preload entries by href", async () => {
+    const fontLocal = await import(
+      "../packages/vinext/src/shims/font-local.js"
+    );
+    const localFont = fontLocal.default;
+
+    // Call twice with the same font URL
+    localFont({ src: "/assets/dedup-test.woff2" });
+    localFont({ src: "/assets/dedup-test.woff2" });
+
+    const preloads = fontLocal.getSSRFontPreloads();
+    const matches = preloads.filter(
+      (p: any) => p.href === "/assets/dedup-test.woff2",
+    );
+    expect(matches.length).toBe(1);
+  });
 });
 
 describe("next/og shim", () => {
