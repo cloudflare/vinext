@@ -1646,6 +1646,12 @@ hydrate();
         defines["process.env.__VINEXT_IMAGE_DOMAINS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.domains ?? []),
         );
+        // Draft mode secret — generated once at build time so the
+        // __prerender_bypass cookie is consistent across all server
+        // instances (e.g. multiple Cloudflare Workers isolates).
+        defines["process.env.__VINEXT_DRAFT_SECRET"] = JSON.stringify(
+          crypto.randomUUID(),
+        );
 
         // Build the shim alias map — used by both resolve.alias and resolveId
         // (resolveId handles .js extension variants for libraries like nuqs)

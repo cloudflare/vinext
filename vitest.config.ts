@@ -1,9 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
     testTimeout: 30000,
+    env: {
+      // Mirrors the Vite `define` in index.ts that inlines a build-time UUID.
+      // Setting it here means tests exercise the same code path as production.
+      __VINEXT_DRAFT_SECRET: randomUUID(),
+    },
     // Multiple suites spin up Vite dev servers against the same fixture dirs.
     // Running test files in parallel can race on Vite's deps optimizer cache
     // (node_modules/.vite/*) and produce "outdated pre-bundle" 500s.
