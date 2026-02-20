@@ -13,6 +13,15 @@ import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Image, { getImageProps, type StaticImageData } from "../packages/vinext/src/shims/image.js";
 
+/** Helper: expected optimization URL matching what the image shim produces. */
+function optUrl(src: string, w: number, q = 75): string {
+  return `/_vinext/image?url=${encodeURIComponent(src)}&w=${w}&q=${q}`;
+}
+/** Same as optUrl but with HTML entity encoding (for SSR output assertions). */
+function optUrlHtml(src: string, w: number, q = 75): string {
+  return optUrl(src, w, q).replace(/&/g, "&amp;");
+}
+
 // ─── SSR rendering ──────────────────────────────────────────────────────
 
 describe("Image SSR rendering", () => {
@@ -26,7 +35,8 @@ describe("Image SSR rendering", () => {
       }),
     );
     expect(html).toContain('alt="a nice image"');
-    expect(html).toContain('src="/test.png"');
+    // Local images are routed through the optimization endpoint
+    expect(html).toContain(`src="${optUrlHtml("/test.png", 100)}"`);
     expect(html).toContain('width="100"');
     expect(html).toContain('height="100"');
     expect(html).toContain('decoding="async"');
@@ -128,7 +138,8 @@ describe("Image SSR rendering", () => {
         placeholder: "blur",
       }),
     );
-    expect(html).toContain('src="/_next/static/media/test.abc123.png"');
+    expect(html).toContain(`src="${optUrlHtml("/_next/static/media/test.abc123.png", 800)}"`);
+
     expect(html).toContain('width="800"');
     expect(html).toContain('height="600"');
     expect(html).toContain("data:image/png;base64,xyz");
@@ -164,11 +175,10 @@ describe("Image srcSet generation", () => {
     );
     // RESPONSIVE_WIDTHS = [640, 750, 828, 1080, 1200, 1920, 2048, 3840]
     // Filter: widths <= 500 * 2 = 1000 → [640, 750, 828]
-    // Plus any <= 1000
     expect(html).toContain("srcSet");
-    expect(html).toContain("/photo.png 640w");
-    expect(html).toContain("/photo.png 750w");
-    expect(html).toContain("/photo.png 828w");
+    expect(html).toContain(`${optUrlHtml("/photo.png", 640)} 640w`);
+    expect(html).toContain(`${optUrlHtml("/photo.png", 750)} 750w`);
+    expect(html).toContain(`${optUrlHtml("/photo.png", 828)} 828w`);
     // Should not include widths > 1000
     expect(html).not.toContain("1080w");
   });
@@ -183,8 +193,8 @@ describe("Image srcSet generation", () => {
       }),
     );
     // widths <= 4000: all of them
-    expect(html).toContain("/large.png 640w");
-    expect(html).toContain("/large.png 3840w");
+    expect(html).toContain(`${optUrlHtml("/large.png", 640)} 640w`);
+    expect(html).toContain(`${optUrlHtml("/large.png", 3840)} 3840w`);
   });
 
   it("generates fallback srcSet for very small images", () => {
@@ -197,8 +207,8 @@ describe("Image srcSet generation", () => {
       }),
     );
     // widths <= 32: none of RESPONSIVE_WIDTHS qualify
-    // Falls back to single: /icon.png 16w
-    expect(html).toContain("/icon.png 16w");
+    // Falls back to single: optimized icon.png at 16w
+    expect(html).toContain(`${optUrlHtml("/icon.png", 16)} 16w`);
   });
 
   it("does not generate srcSet for fill mode", () => {
@@ -226,7 +236,7 @@ describe("getImageProps", () => {
     });
 
     expect(props.alt).toBe("a nice desc");
-    expect(props.src).toBe("/test.png");
+    expect(props.src).toBe(optUrl("/test.png", 100));
     expect(props.width).toBe(100);
     expect(props.height).toBe(200);
     expect(props.loading).toBe("lazy");
@@ -329,7 +339,7 @@ describe("getImageProps", () => {
       src: staticImage,
     });
 
-    expect(props.src).toBe("/static/photo.png");
+    expect(props.src).toBe(optUrl("/static/photo.png", 1920));
     expect(props.width).toBe(1920);
     expect(props.height).toBe(1080);
   });
@@ -343,7 +353,8 @@ describe("getImageProps", () => {
     });
 
     expect(props.srcSet).toBeDefined();
-    expect(props.srcSet).toContain("/photo.png");
+    expect(props.srcSet).toContain("/_vinext/image");
+    expect(props.srcSet).toContain("photo.png");
     expect(props.srcSet).toContain("w");
   });
 
