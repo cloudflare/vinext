@@ -2682,8 +2682,19 @@ async function main() {
   };
 
   // Handle popstate (browser back/forward)
+  // Store the navigation promise on a well-known property so that
+  // restoreScrollPosition (in navigation.ts) can await it before scrolling.
+  // This prevents a flash where the old content is visible at the restored
+  // scroll position before the new RSC payload has rendered.
   window.addEventListener("popstate", () => {
-    window.__VINEXT_RSC_NAVIGATE__(window.location.href);
+    const p = window.__VINEXT_RSC_NAVIGATE__(window.location.href);
+    window.__VINEXT_RSC_PENDING__ = p;
+    p.finally(() => {
+      // Clear once settled so stale promises aren't awaited later
+      if (window.__VINEXT_RSC_PENDING__ === p) {
+        window.__VINEXT_RSC_PENDING__ = null;
+      }
+    });
   });
 
   // HMR: re-render on server module updates

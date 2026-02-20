@@ -371,6 +371,17 @@ function saveScrollPosition(): void {
 
 /**
  * Restore scroll position from a history state object (used on popstate).
+ *
+ * When an RSC navigation is in flight (back/forward triggers both this
+ * handler and the browser entry's popstate handler which calls
+ * __VINEXT_RSC_NAVIGATE__), we must wait for the new content to render
+ * before scrolling. Otherwise the user sees old content flash at the
+ * restored scroll position.
+ *
+ * This handler fires before the browser entry's popstate handler (because
+ * navigation.ts is loaded before hydration completes), so we defer via a
+ * microtask to give the browser entry handler a chance to set
+ * __VINEXT_RSC_PENDING__ first.
  */
 function restoreScrollPosition(state: unknown): void {
   if (state && typeof state === "object" && "__vinext_scrollY" in state) {
@@ -378,9 +389,26 @@ function restoreScrollPosition(state: unknown): void {
       __vinext_scrollX: number;
       __vinext_scrollY: number;
     };
-    // Use requestAnimationFrame to ensure DOM has updated before scrolling
-    requestAnimationFrame(() => {
-      window.scrollTo(x, y);
+
+    // Defer to allow other popstate listeners (browser entry) to run first
+    // and set __VINEXT_RSC_PENDING__. Promise.resolve() schedules a microtask
+    // that runs after all synchronous event listeners have completed.
+    Promise.resolve().then(() => {
+      const pending: Promise<void> | null = (window as any).__VINEXT_RSC_PENDING__ ?? null;
+
+      if (pending) {
+        // Wait for the RSC navigation to finish rendering, then scroll.
+        pending.then(() => {
+          requestAnimationFrame(() => {
+            window.scrollTo(x, y);
+          });
+        });
+      } else {
+        // No RSC navigation in flight (Pages Router or already settled).
+        requestAnimationFrame(() => {
+          window.scrollTo(x, y);
+        });
+      }
     });
   }
 }
