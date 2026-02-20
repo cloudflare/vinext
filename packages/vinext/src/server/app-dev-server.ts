@@ -2280,12 +2280,26 @@ export async function handleSsr(rscStream, navContext, fontData) {
       }
     }
 
-    // Head-injected HTML: server-inserted HTML, font HTML, and route params.
+    // Extract client entry module URL from bootstrapScriptContent to emit
+    // a <link rel="modulepreload"> hint. The RSC plugin formats bootstrap
+    // content as: import("URL") — we extract the URL so the browser can
+    // speculatively fetch and parse the JS module while still processing
+    // the HTML body, instead of waiting until it reaches the inline script.
+    let modulePreloadHTML = "";
+    if (bootstrapScriptContent) {
+      const m = bootstrapScriptContent.match(/import\\("([^"]+)"\\)/);
+      if (m && m[1]) {
+        modulePreloadHTML = '<link rel="modulepreload" href="' + _escAttr(m[1]) + '" />\\n';
+      }
+    }
+
+    // Head-injected HTML: server-inserted HTML, font HTML, route params,
+    // and modulepreload hints.
     // RSC payload is now embedded progressively via script tags in the body stream.
     // Params are embedded eagerly in <head> so they're available before client
     // hydration starts, avoiding the need for polling on the client.
     const paramsScript = '<script>self.__VINEXT_RSC_PARAMS__=' + safeJsonStringify(navContext?.params || {}) + '</script>';
-    const injectHTML = paramsScript + insertedHTML + fontHTML;
+    const injectHTML = paramsScript + modulePreloadHTML + insertedHTML + fontHTML;
 
     // Inject the collected HTML before </head> and progressively embed RSC
     // chunks as script tags throughout the HTML body stream.

@@ -851,6 +851,7 @@ function collectAssetTags(manifest, moduleIds) {
   if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
     const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
     seen.add(entry);
+    tags.push('<link rel="modulepreload" href="/' + entry + '" />');
     tags.push('<script type="module" src="/' + entry + '" crossorigin></script>');
   }
   if (m) {
@@ -921,6 +922,7 @@ function collectAssetTags(manifest, moduleIds) {
       if (tf.endsWith(".css")) {
         tags.push('<link rel="stylesheet" href="/' + tf + '" />');
       } else if (tf.endsWith(".js")) {
+        tags.push('<link rel="modulepreload" href="/' + tf + '" />');
         tags.push('<script type="module" src="/' + tf + '" crossorigin></script>');
       }
     }
