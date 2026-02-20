@@ -100,6 +100,17 @@ declare module "next/navigation" {
   export function setClientParams(params: Record<string, string | string[]>): void;
   export function getClientParams(): Record<string, string | string[]>;
   export function getLayoutSegmentContext(): import("react").Context<number> | null;
+
+  // RSC prefetch cache utilities (shared between link.tsx and browser entry)
+  export interface PrefetchCacheEntry {
+    response: Response;
+    timestamp: number;
+  }
+  export const PREFETCH_CACHE_TTL: number;
+  export function toRscUrl(href: string): string;
+  export function getPrefetchCache(): Map<string, PrefetchCacheEntry>;
+  export function getPrefetchedUrls(): Set<string>;
+  export function storePrefetchResponse(rscUrl: string, response: Response): void;
 }
 
 declare module "next/image" {

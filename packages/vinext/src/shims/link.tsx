@@ -8,6 +8,9 @@
  * page swap via the router's navigation system.
  */
 import React, { forwardRef, useRef, useEffect, useCallback, useContext, createContext, type AnchorHTMLAttributes, type MouseEvent } from "react";
+// Import shared RSC prefetch utilities from navigation shim (relative path
+// so this resolves both via the Vite plugin and in direct vitest imports)
+import { toRscUrl, getPrefetchedUrls, storePrefetchResponse } from "./navigation.js";
 
 interface NavigateEvent {
   url: URL;
@@ -129,13 +132,11 @@ function scrollToHash(hash: string): void {
 // Prefetching infrastructure
 // ---------------------------------------------------------------------------
 
-/** URLs that have already been prefetched (to avoid duplicates). */
-const prefetchedUrls = new Set<string>();
-
 /**
  * Prefetch a URL for faster navigation.
  *
- * For App Router (RSC): fetches the .rsc payload in the background.
+ * For App Router (RSC): fetches the .rsc payload in the background and
+ * stores it in an in-memory cache for instant use during navigation.
  * For Pages Router: injects a <link rel="prefetch"> for the page module.
  *
  * Uses `requestIdleCallback` (or `setTimeout` fallback) to avoid blocking
@@ -149,33 +150,34 @@ function prefetchUrl(href: string): void {
   // Don't prefetch external URLs
   if (fullHref.startsWith("http://") || fullHref.startsWith("https://") || fullHref.startsWith("//")) return;
 
-  // Don't prefetch the same URL twice
-  if (prefetchedUrls.has(fullHref)) return;
-  prefetchedUrls.add(fullHref);
+  // Don't prefetch the same URL twice (keyed by rscUrl so the browser
+  // entry can clear the key when a cache entry is consumed)
+  const rscUrl = toRscUrl(fullHref);
+  const prefetched = getPrefetchedUrls();
+  if (prefetched.has(rscUrl)) return;
+  prefetched.add(rscUrl);
 
   const schedule = (window as any).requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
 
   schedule(() => {
     const win = window as any;
     if (typeof win.__VINEXT_RSC_NAVIGATE__ === "function") {
-      // App Router: prefetch the RSC payload
-      // Use low priority fetch (no credentials needed for RSC prefetch)
-      const [beforeHash] = fullHref.split("#");
-      const qIdx = beforeHash.indexOf("?");
-      const rscPath = qIdx === -1 ? beforeHash + ".rsc" : beforeHash.slice(0, qIdx) + ".rsc" + beforeHash.slice(qIdx);
-      // Use URL object and include next-router-prefetch header for
-      // runtime prefetch compatibility (Next.js convention).
-      // Value "2" signals runtime prefetch (includes private cached data).
-      const rscUrl = new URL(rscPath, window.location.origin);
+      // App Router: prefetch the RSC payload and store in cache
       fetch(rscUrl, {
+        headers: { Accept: "text/x-component" },
         priority: "low" as any,
         // @ts-expect-error — purpose is a valid fetch option in some browsers
         purpose: "prefetch",
-        headers: {
-          "next-router-prefetch": "2",
-        },
+      }).then((response) => {
+        if (response.ok) {
+          storePrefetchResponse(rscUrl, response);
+        } else {
+          // Non-ok response: allow retry on next viewport intersection
+          prefetched.delete(rscUrl);
+        }
       }).catch(() => {
-        // Silently ignore prefetch failures (network errors, 404s, etc.)
+        // Network error: allow retry on next viewport intersection
+        prefetched.delete(rscUrl);
       });
     } else if (win.__NEXT_DATA__?.__vinext?.pageModuleUrl) {
       // Pages Router: inject a prefetch link for the target page module

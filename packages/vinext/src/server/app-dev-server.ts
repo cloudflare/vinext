@@ -2438,7 +2438,7 @@ import {
 } from "@vitejs/plugin-rsc/browser";
 import { hydrateRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { setClientParams } from "next/navigation";
+import { setClientParams, toRscUrl, getPrefetchCache, getPrefetchedUrls, PREFETCH_CACHE_TTL } from "next/navigation";
 
 let reactRoot;
 
@@ -2534,7 +2534,7 @@ setServerCallback(async (id, args) => {
   const temporaryReferences = createTemporaryReferenceSet();
   const body = await encodeReply(args, { temporaryReferences });
 
-  const fetchResponse = await fetch(window.location.pathname + ".rsc" + window.location.search, {
+  const fetchResponse = await fetch(toRscUrl(window.location.pathname + window.location.search), {
     method: "POST",
     headers: { "x-rsc-action": id },
     body,
@@ -2606,7 +2606,7 @@ async function main() {
     }
   } else {
     // Fallback: fetch fresh RSC (shouldn't happen on initial page load)
-    const rscResponse = await fetch(window.location.pathname + ".rsc" + window.location.search);
+    const rscResponse = await fetch(toRscUrl(window.location.pathname + window.location.search));
 
     // Hydrate useParams() with route params from the server before React hydration
     const paramsHeader = rscResponse.headers.get("X-Vinext-Params");
@@ -2633,14 +2633,33 @@ async function main() {
   window.__VINEXT_RSC_ROOT__ = reactRoot;
 
   // Client-side navigation handler
-  // Returns a Promise that resolves after the new RSC payload has been rendered,
-  // so callers can defer scroll-to-top until the new content is committed.
+  // Checks the prefetch cache (populated by <Link> IntersectionObserver and
+  // router.prefetch()) before making a network request. This makes navigation
+  // near-instant for prefetched routes.
   window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(href) {
     try {
       const url = new URL(href, window.location.origin);
-      const navResponse = await fetch(url.pathname + ".rsc" + url.search, {
-        headers: { Accept: "text/x-component" },
-      });
+      const rscUrl = toRscUrl(url.pathname + url.search);
+
+      // Check the in-memory prefetch cache first
+      let navResponse;
+      const prefetchCache = getPrefetchCache();
+      const cached = prefetchCache.get(rscUrl);
+      if (cached && (Date.now() - cached.timestamp) < PREFETCH_CACHE_TTL) {
+        navResponse = cached.response;
+        prefetchCache.delete(rscUrl); // Consume the cached entry (one-time use)
+        getPrefetchedUrls().delete(rscUrl); // Allow re-prefetch when link is visible again
+      } else if (cached) {
+        prefetchCache.delete(rscUrl); // Expired, clean up
+        getPrefetchedUrls().delete(rscUrl);
+      }
+
+      // Fallback to network fetch if not in cache
+      if (!navResponse) {
+        navResponse = await fetch(rscUrl, {
+          headers: { Accept: "text/x-component" },
+        });
+      }
 
       // Update useParams() with route params from the server before re-rendering
       const navParamsHeader = navResponse.headers.get("X-Vinext-Params");
@@ -2672,7 +2691,7 @@ async function main() {
     import.meta.hot.on("rsc:update", async () => {
       try {
         const rscPayload = await createFromFetch(
-          fetch(window.location.pathname + ".rsc" + window.location.search)
+          fetch(toRscUrl(window.location.pathname + window.location.search))
         );
         reactRoot.render(rscPayload);
       } catch (err) {

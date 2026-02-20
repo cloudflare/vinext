@@ -132,6 +132,76 @@ function withBasePath(p: string): string {
   return __basePath + p;
 }
 
+// ---------------------------------------------------------------------------
+// RSC prefetch cache utilities (shared between link.tsx and browser entry)
+// ---------------------------------------------------------------------------
+
+/** Maximum number of entries in the RSC prefetch cache. */
+const MAX_PREFETCH_CACHE_SIZE = 50;
+
+/** TTL for prefetch cache entries in ms (matches Next.js static prefetch TTL). */
+export const PREFETCH_CACHE_TTL = 30_000;
+
+export interface PrefetchCacheEntry {
+  response: Response;
+  timestamp: number;
+}
+
+/**
+ * Convert a pathname (with optional query/hash) to its .rsc URL.
+ * Strips trailing slashes before appending `.rsc` so that cache keys
+ * are consistent regardless of the `trailingSlash` config setting.
+ */
+export function toRscUrl(href: string): string {
+  const [beforeHash] = href.split("#");
+  const qIdx = beforeHash.indexOf("?");
+  const pathname = qIdx === -1 ? beforeHash : beforeHash.slice(0, qIdx);
+  const query = qIdx === -1 ? "" : beforeHash.slice(qIdx);
+  // Strip trailing slash (but preserve "/" root) for consistent cache keys
+  const normalizedPath = pathname.length > 1 && pathname.endsWith("/")
+    ? pathname.slice(0, -1)
+    : pathname;
+  return normalizedPath + ".rsc" + query;
+}
+
+/** Get or create the shared in-memory RSC prefetch cache on window. */
+export function getPrefetchCache(): Map<string, PrefetchCacheEntry> {
+  if (isServer) return new Map();
+  const win = window as any;
+  if (!win.__VINEXT_RSC_PREFETCH_CACHE__) {
+    win.__VINEXT_RSC_PREFETCH_CACHE__ = new Map<string, PrefetchCacheEntry>();
+  }
+  return win.__VINEXT_RSC_PREFETCH_CACHE__;
+}
+
+/**
+ * Get or create the shared set of already-prefetched RSC URLs on window.
+ * Keyed by rscUrl so that the browser entry can clear entries when consumed.
+ */
+export function getPrefetchedUrls(): Set<string> {
+  if (isServer) return new Set();
+  const win = window as any;
+  if (!win.__VINEXT_RSC_PREFETCHED_URLS__) {
+    win.__VINEXT_RSC_PREFETCHED_URLS__ = new Set<string>();
+  }
+  return win.__VINEXT_RSC_PREFETCHED_URLS__;
+}
+
+/**
+ * Store a prefetched RSC response in the cache.
+ * Enforces a maximum cache size to prevent unbounded memory growth on
+ * link-heavy pages.
+ */
+export function storePrefetchResponse(rscUrl: string, response: Response): void {
+  const cache = getPrefetchCache();
+  // Evict oldest entry if at capacity (Map iterates in insertion order)
+  if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(rscUrl, { response, timestamp: Date.now() });
+}
+
 // Client navigation listeners
 type NavigationListener = () => void;
 const _listeners: Set<NavigationListener> = new Set();
@@ -413,21 +483,25 @@ export function useRouter() {
     },
     prefetch(href: string): void {
       if (isServer) return;
-      // Prefetch the RSC payload for the target route
+      // Prefetch the RSC payload for the target route and store in cache
       const fullHref = withBasePath(href);
-      const beforeHash = fullHref.split("#")[0];
-      const qIdx = beforeHash.indexOf("?");
-      const rscPath = qIdx === -1 ? beforeHash + ".rsc" : beforeHash.slice(0, qIdx) + ".rsc" + beforeHash.slice(qIdx);
-      // Use URL object and include next-router-prefetch header for
-      // runtime prefetch compatibility (Next.js convention).
-      const rscUrl = new URL(rscPath, window.location.origin);
+      const rscUrl = toRscUrl(fullHref);
+      const prefetched = getPrefetchedUrls();
+      if (prefetched.has(rscUrl)) return;
+      prefetched.add(rscUrl);
       fetch(rscUrl, {
+        headers: { Accept: "text/x-component" },
         priority: "low" as RequestInit["priority"],
-        headers: {
-          "next-router-prefetch": "2",
-        },
+      }).then((response) => {
+        if (response.ok) {
+          storePrefetchResponse(rscUrl, response);
+        } else {
+          // Non-ok response: allow retry on next prefetch() call
+          prefetched.delete(rscUrl);
+        }
       }).catch(() => {
-        // Silently ignore prefetch failures
+        // Network error: allow retry on next prefetch() call
+        prefetched.delete(rscUrl);
       });
     },
   };
