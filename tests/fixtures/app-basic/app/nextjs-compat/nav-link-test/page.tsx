@@ -14,6 +14,12 @@ export default function Page() {
         <Link href="/" id="link-to-home">
           Go Home
         </Link>
+        <Link href="/this-route-does-not-exist" id="link-to-nonexistent">
+          Go to Non-Existent Page
+        </Link>
+        <Link href="/notfound-test" id="link-to-notfound-page">
+          Go to notFound() Page
+        </Link>
       </nav>
     </div>
   );

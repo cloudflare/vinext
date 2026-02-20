@@ -224,6 +224,109 @@ describe("Next.js compat: not-found", () => {
     expect(res.status).toBe(404);
   });
 
+  // ── notFound() from both layout AND page ─────────────────────
+  // When both the layout and the page call notFound() for invalid params,
+  // the layout's notFound() should take precedence (layouts render before
+  // pages in Next.js). Without correct pre-render ordering, the page's
+  // notFound() is caught first, and the fallback rendering includes the
+  // throwing layout, causing a 500 error.
+
+  it("layout+page notFound(): valid slug renders page", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-page/hello",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain("not-found-layout-page-content");
+    expect(html).toContain("not-found-layout-page-wrapper");
+  });
+
+  it("layout+page notFound(): invalid slug caught by parent boundary (not 500)", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-page/invalid",
+    );
+    // Must be 404, NOT 500 — the layout's notFound() should be caught first,
+    // rendering with parent layouts only (excluding the throwing layout).
+    expect(res.status).toBe(404);
+    // Should render the PARENT boundary (layout threw, propagates up)
+    expect(html).toContain("Not Found (layout-page parent boundary)");
+    // Should NOT render the slug-level boundary
+    expect(html).not.toContain("Not Found (layout-page slug boundary)");
+    // Should NOT show the layout wrapper (layout threw before rendering)
+    expect(html).not.toContain("not-found-layout-page-wrapper");
+  });
+
+  it("layout+page notFound(): RSC request returns 404 (not 500)", async () => {
+    const res = await fetch(
+      `${baseUrl}/nextjs-compat/not-found-layout-page/invalid.rsc`,
+      { headers: { Accept: "text/x-component" } },
+    );
+    // RSC response must be 404 with valid flight data, not 500
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    const body = await res.text();
+    expect(body.length).toBeGreaterThan(0);
+    // Should contain the parent boundary's not-found content
+    expect(body).toContain("layout-page parent boundary");
+  });
+
+  // ── RSC (client-side navigation) not-found ──────────────────
+  // When navigating client-side, the request goes to .rsc endpoint.
+  // The RSC response must contain valid flight data with not-found content.
+
+  it("RSC request for unmatched route returns 404 with valid RSC payload", async () => {
+    const res = await fetch(`${baseUrl}/does-not-exist.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    const body = await res.text();
+    // RSC flight payload should contain the not-found content
+    expect(body.length).toBeGreaterThan(0);
+    expect(body).toContain("404");
+  });
+
+  it("RSC request for page calling notFound() returns 404 with valid RSC payload", async () => {
+    const res = await fetch(`${baseUrl}/notfound-test.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    const body = await res.text();
+    expect(body.length).toBeGreaterThan(0);
+    expect(body).toContain("404");
+  });
+
+  it("RSC not-found response includes client component wrappers matching normal pages", async () => {
+    // The RSC flight payload for not-found pages must include the same
+    // component wrapper structure (ErrorBoundary, LayoutSegmentProvider) as
+    // normal pages. Without these, React's tree reconciliation during
+    // client-side navigation fails, causing a blank white page.
+    const nfRes = await fetch(`${baseUrl}/does-not-exist.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    const nfBody = await nfRes.text();
+    const normalRes = await fetch(`${baseUrl}/about.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    const normalBody = await normalRes.text();
+
+    // Both should reference ErrorBoundary (from global-error or error boundary wrapper)
+    const normalHasErrorBoundary = normalBody.includes("ErrorBoundary");
+    if (normalHasErrorBoundary) {
+      // If the normal page has ErrorBoundary (meaning global-error.tsx exists),
+      // the not-found RSC should also include it
+      expect(nfBody).toContain("ErrorBoundary");
+    }
+
+    // Both should reference LayoutSegmentProvider
+    const normalHasLSP = normalBody.includes("LayoutSegmentProvider");
+    if (normalHasLSP) {
+      expect(nfBody).toContain("LayoutSegmentProvider");
+    }
+  });
+
   // ── Browser-only tests (need Playwright, documented here) ──
   // These tests require clicking a button client-side which triggers notFound()
   // in a client component. Cannot be tested via HTTP fetch alone.

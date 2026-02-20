@@ -105,6 +105,47 @@ test.describe("Next.js compat: navigation (browser)", () => {
     expect(page.url()).toContain("/nextjs-compat/nav-redirect-result");
   });
 
+  // Client-side navigation to a non-existent route should render not-found
+  // This is the core bug from the issue: clicking a Link to a page that doesn't
+  // exist should render the not-found.tsx boundary, not a blank white page.
+  test("Link to non-existent route renders not-found via client navigation", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
+    await waitForHydration(page);
+
+    // Set marker to verify it's a client-side navigation (no full reload)
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = true;
+    });
+
+    // Click Link to a non-existent page
+    await page.click("#link-to-nonexistent");
+
+    // Should render the not-found.tsx content (not a blank page)
+    await expect(page.locator("body")).toContainText("404", {
+      timeout: 10_000,
+    });
+    expect(page.url()).toContain("/this-route-does-not-exist");
+  });
+
+  // Client-side navigation to a page that calls notFound() should render not-found
+  test("Link to page calling notFound() renders not-found via client navigation", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
+    await waitForHydration(page);
+
+    // Click Link to a page that calls notFound()
+    await page.click("#link-to-notfound-page");
+
+    // Should render the not-found.tsx content (not a blank page)
+    await expect(page.locator("body")).toContainText("404", {
+      timeout: 10_000,
+    });
+    expect(page.url()).toContain("/notfound-test");
+  });
+
   // Back/forward navigation
   test("browser back button works after client navigation", async ({
     page,

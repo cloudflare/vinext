@@ -314,14 +314,36 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   const effectiveViewport = resolvedViewport ?? { width: "device-width", initialScale: 1 };
   headElements.push(createElement(ViewportHead, { viewport: effectiveViewport }));
   let element = createElement(Fragment, null, ...headElements, createElement(BoundaryComponent));
-  for (let i = layouts.length - 1; i >= 0; i--) {
-    const LayoutComponent = layouts[i]?.default;
-    if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element });
-    }
-  }
-  const rscStream = renderToReadableStream(element, { onError: rscOnError });
   if (isRscRequest) {
+    // For RSC requests (client-side navigation), wrap the element with the same
+    // component wrappers that buildPageElement() uses. Without these wrappers,
+    // React's reconciliation would see a mismatched tree structure between the
+    // old fiber tree (ErrorBoundary > LayoutSegmentProvider > html > body > NotFoundBoundary > ...)
+    // and the new tree (html > body > ...), causing it to destroy and recreate
+    // the entire DOM tree, resulting in a blank white page.
+    //
+    // We wrap each layout with LayoutSegmentProvider and add GlobalErrorBoundary
+    // to match the wrapping order in buildPageElement(), ensuring smooth
+    // client-side tree reconciliation.
+    const layoutDepths = route?.layoutSegmentDepths;
+    for (let i = layouts.length - 1; i >= 0; i--) {
+      const LayoutComponent = layouts[i]?.default;
+      if (LayoutComponent) {
+        element = createElement(LayoutComponent, { children: element });
+        const layoutDepth = layoutDepths ? layoutDepths[i] : 0;
+        element = createElement(LayoutSegmentProvider, { depth: layoutDepth }, element);
+      }
+    }
+    ${globalErrorVar ? `
+    const _GlobalErrorComponent = ${globalErrorVar}.default;
+    if (_GlobalErrorComponent) {
+      element = createElement(ErrorBoundary, {
+        fallback: _GlobalErrorComponent,
+        children: element,
+      });
+    }
+    ` : ""}
+    const rscStream = renderToReadableStream(element, { onError: rscOnError });
     setHeadersContext(null);
     setNavigationContext(null);
     return new Response(rscStream, {
@@ -329,6 +351,15 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
       headers: { "Content-Type": "text/x-component; charset=utf-8" },
     });
   }
+  // For HTML (full page load) responses, wrap with layouts only (no client-side
+  // wrappers needed since SSR generates the complete HTML document).
+  for (let i = layouts.length - 1; i >= 0; i--) {
+    const LayoutComponent = layouts[i]?.default;
+    if (LayoutComponent) {
+      element = createElement(LayoutComponent, { children: element });
+    }
+  }
+  const rscStream = renderToReadableStream(element, { onError: rscOnError });
   // Collect font data from RSC environment
   const fontData = {
     links: _getSSRFontLinks(),
@@ -384,14 +415,30 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
     error: errorObj,
   });
   const layouts = route?.layouts ?? rootLayouts;
-  for (let i = layouts.length - 1; i >= 0; i--) {
-    const LayoutComponent = layouts[i]?.default;
-    if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element });
-    }
-  }
-  const rscStream = renderToReadableStream(element, { onError: rscOnError });
   if (isRscRequest) {
+    // For RSC requests (client-side navigation), wrap with the same component
+    // wrappers that buildPageElement() uses (LayoutSegmentProvider, GlobalErrorBoundary).
+    // This ensures React can reconcile the tree without destroying the DOM.
+    // Same rationale as renderHTTPAccessFallbackPage — see comment there.
+    const layoutDepths = route?.layoutSegmentDepths;
+    for (let i = layouts.length - 1; i >= 0; i--) {
+      const LayoutComponent = layouts[i]?.default;
+      if (LayoutComponent) {
+        element = createElement(LayoutComponent, { children: element });
+        const layoutDepth = layoutDepths ? layoutDepths[i] : 0;
+        element = createElement(LayoutSegmentProvider, { depth: layoutDepth }, element);
+      }
+    }
+    ${globalErrorVar ? `
+    const _ErrGlobalComponent = ${globalErrorVar}.default;
+    if (_ErrGlobalComponent) {
+      element = createElement(ErrorBoundary, {
+        fallback: _ErrGlobalComponent,
+        children: element,
+      });
+    }
+    ` : ""}
+    const rscStream = renderToReadableStream(element, { onError: rscOnError });
     setHeadersContext(null);
     setNavigationContext(null);
     return new Response(rscStream, {
@@ -399,6 +446,14 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
       headers: { "Content-Type": "text/x-component; charset=utf-8" },
     });
   }
+  // For HTML (full page load) responses, wrap with layouts only.
+  for (let i = layouts.length - 1; i >= 0; i--) {
+    const LayoutComponent = layouts[i]?.default;
+    if (LayoutComponent) {
+      element = createElement(LayoutComponent, { children: element });
+    }
+  }
+  const rscStream = renderToReadableStream(element, { onError: rscOnError });
   // Collect font data from RSC environment so error pages include font styles
   const fontData = {
     links: _getSSRFontLinks(),
@@ -1685,54 +1740,18 @@ async function _handleRequest(request) {
     return null;
   }
 
-  // Pre-render the page component to catch redirect()/notFound() thrown synchronously.
-  // Server Components are just functions — we can call PageComponent directly to detect
-  // these special throws before starting the RSC stream.
-  //
-  // For routes with a loading.tsx Suspense boundary, we skip awaiting async components.
-  // The Suspense boundary + rscOnError will handle redirect/notFound thrown during
-  // streaming, and blocking here would defeat streaming (the slow component's delay
-  // would be hit before the RSC stream even starts).
-  //
-  // Because this calls the component outside React's render cycle, hooks like use()
-  // trigger "Invalid hook call" console.error in dev. Suppress that expected warning.
-  const _hasLoadingBoundary = !!(route.loading && route.loading.default);
-  const _origConsoleError = console.error;
-  console.error = (...args) => {
-    if (typeof args[0] === "string" && args[0].includes("Invalid hook call")) return;
-    _origConsoleError.apply(console, args);
-  };
-  try {
-    const testResult = PageComponent({ params });
-    // If it's a promise (async component), only await if there's no loading boundary.
-    // With a loading boundary, the Suspense streaming pipeline handles async resolution
-    // and any redirect/notFound errors via rscOnError.
-    if (testResult && typeof testResult === "object" && typeof testResult.then === "function") {
-      if (!_hasLoadingBoundary) {
-        await testResult;
-      } else {
-        // Suppress unhandled promise rejection — with a loading boundary,
-        // redirect/notFound errors are handled by rscOnError during streaming.
-        testResult.catch(() => {});
-      }
-    }
-  } catch (preRenderErr) {
-    const specialResponse = await handleRenderError(preRenderErr);
-    if (specialResponse) return specialResponse;
-    // Non-special errors from the pre-render test are expected (e.g. use() hook
-    // fails outside React's render cycle, client references can't execute on server).
-    // Only redirect/notFound/forbidden/unauthorized are actionable here — other
-    // errors will be properly caught during actual RSC/SSR rendering below.
-  } finally {
-    console.error = _origConsoleError;
-  }
-
   // Pre-render layout components to catch notFound()/redirect() thrown from layouts.
   // In Next.js, each layout level has its own NotFoundBoundary. When a layout throws
   // notFound(), the parent layout's boundary catches it and renders the parent's
   // not-found.tsx. Since React Flight doesn't activate client error boundaries during
   // RSC rendering, we catch layout-level throws here and render the appropriate
   // fallback page with only the layouts above the throwing one.
+  //
+  // IMPORTANT: Layout pre-render runs BEFORE page pre-render. In Next.js, layouts
+  // render before their children — if a layout throws notFound(), the page never
+  // executes. By checking layouts first, we avoid a bug where the page's notFound()
+  // triggers renderHTTPAccessFallbackPage with ALL route layouts, but one of those
+  // layouts itself throws notFound() during the fallback rendering (causing a 500).
   if (route.layouts && route.layouts.length > 0) {
     const asyncParams = Object.assign(Promise.resolve(params), params);
     for (let li = route.layouts.length - 1; li >= 0; li--) {
@@ -1783,6 +1802,48 @@ async function _handleRequest(request) {
         // Not a special error — let it propagate through normal RSC rendering
       }
     }
+  }
+
+  // Pre-render the page component to catch redirect()/notFound() thrown synchronously.
+  // Server Components are just functions — we can call PageComponent directly to detect
+  // these special throws before starting the RSC stream.
+  //
+  // For routes with a loading.tsx Suspense boundary, we skip awaiting async components.
+  // The Suspense boundary + rscOnError will handle redirect/notFound thrown during
+  // streaming, and blocking here would defeat streaming (the slow component's delay
+  // would be hit before the RSC stream even starts).
+  //
+  // Because this calls the component outside React's render cycle, hooks like use()
+  // trigger "Invalid hook call" console.error in dev. Suppress that expected warning.
+  const _hasLoadingBoundary = !!(route.loading && route.loading.default);
+  const _origConsoleError = console.error;
+  console.error = (...args) => {
+    if (typeof args[0] === "string" && args[0].includes("Invalid hook call")) return;
+    _origConsoleError.apply(console, args);
+  };
+  try {
+    const testResult = PageComponent({ params });
+    // If it's a promise (async component), only await if there's no loading boundary.
+    // With a loading boundary, the Suspense streaming pipeline handles async resolution
+    // and any redirect/notFound errors via rscOnError.
+    if (testResult && typeof testResult === "object" && typeof testResult.then === "function") {
+      if (!_hasLoadingBoundary) {
+        await testResult;
+      } else {
+        // Suppress unhandled promise rejection — with a loading boundary,
+        // redirect/notFound errors are handled by rscOnError during streaming.
+        testResult.catch(() => {});
+      }
+    }
+  } catch (preRenderErr) {
+    const specialResponse = await handleRenderError(preRenderErr);
+    if (specialResponse) return specialResponse;
+    // Non-special errors from the pre-render test are expected (e.g. use() hook
+    // fails outside React's render cycle, client references can't execute on server).
+    // Only redirect/notFound/forbidden/unauthorized are actionable here — other
+    // errors will be properly caught during actual RSC/SSR rendering below.
+  } finally {
+    console.error = _origConsoleError;
   }
 
   // Render to RSC stream
