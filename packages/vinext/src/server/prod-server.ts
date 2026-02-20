@@ -173,7 +173,13 @@ function tryServeStatic(
 ): boolean {
   // Resolve the path and guard against directory traversal (e.g. /../../../etc/passwd)
   const resolvedClient = path.resolve(clientDir);
-  const staticFile = path.resolve(clientDir, "." + decodeURIComponent(pathname));
+  let decodedPathname: string;
+  try {
+    decodedPathname = decodeURIComponent(pathname);
+  } catch {
+    return false;
+  }
+  const staticFile = path.resolve(clientDir, "." + decodedPathname);
   if (!staticFile.startsWith(resolvedClient + path.sep) && staticFile !== resolvedClient) {
     return false;
   }

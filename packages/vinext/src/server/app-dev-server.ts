@@ -411,7 +411,8 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
 
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
-  const normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
+  let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
+  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch {}
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
     if (params !== null) return { route, params };
@@ -422,7 +423,7 @@ function matchRoute(url, routes) {
 function matchPattern(url, pattern) {
   const urlParts = url.split("/").filter(Boolean);
   const patternParts = pattern.split("/").filter(Boolean);
-  const params = {};
+  const params = Object.create(null);
   for (let i = 0; i < patternParts.length; i++) {
     const pp = patternParts[i];
     if (pp.endsWith("+")) {
@@ -723,10 +724,10 @@ function matchMiddlewarePath(pathname, matcher) {
     : [];
   return patterns.some(pattern => {
     const reStr = "^" + pattern
+      .replace(/\\./g, "\\\\.")
       .replace(/:(\\w+)\\*/g, "(?:.*)")
       .replace(/:(\\w+)\\+/g, "(?:.+)")
-      .replace(/:(\\w+)/g, "([^/]+)")
-      .replace(/\\./g, "\\\\.") + "$";
+      .replace(/:(\\w+)/g, "([^/]+)") + "$";
     const re = __safeRegExp(reStr);
     return re ? re.test(pathname) : false;
   });
@@ -876,7 +877,7 @@ function __matchConfigPattern(pathname, pattern) {
       if (!re) return null;
       const match = re.exec(pathname);
       if (!match) return null;
-      const params = {};
+      const params = Object.create(null);
       for (let i = 0; i < paramNames.length; i++) params[paramNames[i]] = match[i + 1] || "";
       return params;
     } catch { /* fall through */ }
@@ -889,12 +890,14 @@ function __matchConfigPattern(pathname, pattern) {
     if (!pathname.startsWith(prefix.replace(/\\/$/, ""))) return null;
     const rest = pathname.slice(prefix.replace(/\\/$/, "").length);
     if (isPlus && (!rest || rest === "/")) return null;
-    return { [paramName]: rest.startsWith("/") ? rest.slice(1) : rest };
+    let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
+    try { restValue = decodeURIComponent(restValue); } catch {}
+    return { [paramName]: restValue };
   }
   const parts = pattern.split("/");
   const pathParts = pathname.split("/");
   if (parts.length !== pathParts.length) return null;
-  const params = {};
+  const params = Object.create(null);
   for (let i = 0; i < parts.length; i++) {
     if (parts[i].startsWith(":")) params[parts[i].slice(1)] = pathParts[i];
     else if (parts[i] !== pathParts[i]) return null;

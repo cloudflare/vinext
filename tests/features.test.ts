@@ -362,11 +362,12 @@ describe("ISR (Pages Router)", () => {
     // Wait a moment for background regeneration to complete
     await new Promise((r) => setTimeout(r, 200));
 
-    // Next request should get fresh content from cache
+    // Next request triggers a fresh render — background regen evicts the
+    // stale entry (rather than caching stale HTML with fresh props) to
+    // prevent serving inconsistent content. The fresh render re-populates.
     const res3 = await fetch(`${baseUrl}/isr-test`);
     expect(res3.status).toBe(200);
-    // Should be a HIT now (fresh entry from background regen)
-    expect(res3.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(res3.headers.get("x-vinext-cache")).toBe("MISS");
   });
 
   it("sets Cache-Control header for ISR pages", async () => {

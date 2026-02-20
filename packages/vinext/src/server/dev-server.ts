@@ -14,7 +14,7 @@ import {
 } from "./isr-cache.js";
 import type { CachedPagesValue } from "../shims/cache.js";
 import { withFetchCache } from "../shims/fetch-cache.js";
-import { _initRequestScopedCacheState } from "../shims/cache.js";
+import { _initRequestScopedCacheState, getCacheHandler } from "../shims/cache.js";
 import { clearPrivateCache } from "../shims/cache-runtime.js";
 // Import server-only state modules to register ALS-backed accessors.
 // These modules must be imported before any rendering occurs.
@@ -239,7 +239,12 @@ export function parseCookieLocale(
   const match = cookieHeader.match(/(?:^|;\s*)NEXT_LOCALE=([^;]*)/);
   if (!match) return null;
 
-  const value = decodeURIComponent(match[1].trim());
+  let value: string;
+  try {
+    value = decodeURIComponent(match[1].trim());
+  } catch {
+    return null;
+  }
   // Only return if it's a valid configured locale
   if (i18nConfig.locales.includes(value)) return value;
   return null;
@@ -442,16 +447,14 @@ export function createSSRHandler(
           const cachedHtml = cachedPage.html;
           const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
 
-          // Trigger background regeneration
+          // Trigger background regeneration.
+          // Evict the stale entry so the next request re-renders with fresh data.
+          // A full background re-render would require the complete SSR pipeline
+          // (page module, _app, _document). Caching stale HTML with fresh props
+          // would serve inconsistent content — evicting ensures correctness.
           triggerBackgroundRegeneration(cacheKey, async () => {
-            const freshResult = await pageModule.getStaticProps({ params });
-            if (freshResult && "props" in freshResult) {
-              const revalidate = typeof freshResult.revalidate === "number" ? freshResult.revalidate : 0;
-              if (revalidate > 0) {
-                // Re-render with fresh props (simplified — just update cache)
-                await isrSet(cacheKey, buildPagesCacheValue(cachedHtml, freshResult.props), revalidate);
-              }
-            }
+            const handler = getCacheHandler();
+            await handler.set(cacheKey, null, {});
           });
 
           const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
@@ -602,7 +605,7 @@ async function hydrate() {
   `
   }
   const root = hydrateRoot(document.getElementById("__next"), element);
-  window.__VINEXT_ROOT__ = root;
+  if (import.meta.hot) { import.meta.hot.data.root = root; }
 }
 hydrate();
 </script>`;

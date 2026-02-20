@@ -274,16 +274,18 @@ describe("next/headers shim", () => {
     setHeadersContext(null);
   });
 
-  it("draftMode() returns isEnabled=true when __prerender_bypass cookie is present", async () => {
+  it("draftMode() returns isEnabled=false for arbitrary cookie values (not signed)", async () => {
     const { setHeadersContext, draftMode } = await import(
       "../packages/vinext/src/shims/headers.js"
     );
+    // An arbitrary cookie value should NOT enable draft mode — only the
+    // server-generated secret is valid.
     setHeadersContext({
       headers: new Headers(),
       cookies: new Map([["__prerender_bypass", "1"]]),
     });
     const dm = await draftMode();
-    expect(dm.isEnabled).toBe(true);
+    expect(dm.isEnabled).toBe(false);
     setHeadersContext(null);
   });
 
@@ -303,9 +305,10 @@ describe("next/headers shim", () => {
     const dm2 = await draftMode();
     expect(dm2.isEnabled).toBe(true);
 
-    // The Set-Cookie header should be generated
+    // The Set-Cookie header should be generated with a non-predictable secret
     const cookieHeader = getDraftModeCookieHeader();
-    expect(cookieHeader).toContain("__prerender_bypass=1");
+    expect(cookieHeader).toContain("__prerender_bypass=");
+    expect(cookieHeader).not.toContain("__prerender_bypass=1");
     expect(cookieHeader).toContain("HttpOnly");
     setHeadersContext(null);
   });
@@ -316,12 +319,18 @@ describe("next/headers shim", () => {
     );
     setHeadersContext({
       headers: new Headers(),
-      cookies: new Map([["__prerender_bypass", "1"]]),
+      cookies: new Map(),
     });
+    // Enable first so the cookie is set to the server secret
     const dm = await draftMode();
-    expect(dm.isEnabled).toBe(true);
+    dm.enable();
+    // Consume the enable Set-Cookie header
+    getDraftModeCookieHeader();
 
-    dm.disable();
+    const dm1 = await draftMode();
+    expect(dm1.isEnabled).toBe(true);
+
+    dm1.disable();
     const dm2 = await draftMode();
     expect(dm2.isEnabled).toBe(false);
 

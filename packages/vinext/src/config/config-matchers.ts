@@ -310,7 +310,7 @@ export function matchConfigPattern(
       if (!re) return null;
       const match = re.exec(pathname);
       if (!match) return null;
-      const params: Record<string, string> = {};
+      const params: Record<string, string> = Object.create(null);
       for (let i = 0; i < paramNames.length; i++) {
         params[paramNames[i]] = match[i + 1] ?? "";
       }
@@ -331,7 +331,9 @@ export function matchConfigPattern(
 
     const rest = pathname.slice(prefix.replace(/\/$/, "").length);
     if (isPlus && (!rest || rest === "/")) return null;
-    return { [paramName]: rest.startsWith("/") ? rest.slice(1) : rest };
+    let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
+    try { restValue = decodeURIComponent(restValue); } catch { /* malformed percent-encoding */ }
+    return { [paramName]: restValue };
   }
 
   // Simple segment-based matching for exact patterns and :param
@@ -340,7 +342,7 @@ export function matchConfigPattern(
 
   if (parts.length !== pathParts.length) return null;
 
-  const params: Record<string, string> = {};
+  const params: Record<string, string> = Object.create(null);
   for (let i = 0; i < parts.length; i++) {
     if (parts[i].startsWith(":")) {
       params[parts[i].slice(1)] = pathParts[i];

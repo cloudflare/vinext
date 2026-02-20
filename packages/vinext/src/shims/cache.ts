@@ -19,6 +19,7 @@
 
 import { markDynamicUsage as _markDynamic } from "./headers.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { fnv1a64 } from "../utils/hash.js";
 
 // ---------------------------------------------------------------------------
 // Lazy accessor for cache context — avoids circular imports with cache-runtime.
@@ -584,7 +585,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
 ): T {
   const baseKey = keyParts
     ? keyParts.join(":")
-    : fn.toString().slice(0, 64);
+    : fnv1a64(fn.toString());
   const tags = options?.tags ?? [];
   const revalidateSeconds = options?.revalidate;
 

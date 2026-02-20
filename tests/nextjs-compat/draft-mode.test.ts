@@ -74,12 +74,36 @@ describe("Next.js compat: draft-mode", () => {
     expect(data).toEqual({ isEnabled: false });
   });
 
-  it("draftMode().isEnabled returns true with bypass cookie", async () => {
+  it("draftMode().isEnabled returns false for arbitrary cookie values", async () => {
+    // Arbitrary cookie values should NOT enable draft mode — only the
+    // server-generated secret is valid (prevents predictable bypass).
     const { data } = await fetchJson(
       baseUrl,
       "/nextjs-compat/api/draft-status",
       {
         headers: { Cookie: "__prerender_bypass=some-value" },
+      },
+    );
+    expect(data).toEqual({ isEnabled: false });
+  });
+
+  it("draftMode().isEnabled returns true after enable() round-trip", async () => {
+    // Enable draft mode and extract the Set-Cookie value
+    const enableRes = await fetch(`${baseUrl}/nextjs-compat/api/draft-enable`);
+    const setCookies = enableRes.headers.getSetCookie();
+    const bypassCookie = setCookies.find((c) =>
+      c.includes("__prerender_bypass"),
+    );
+    expect(bypassCookie).toBeDefined();
+    // Extract raw cookie (name=value portion before first ;)
+    const rawCookie = bypassCookie!.split(";")[0];
+
+    // Send the valid cookie back to check isEnabled
+    const { data } = await fetchJson(
+      baseUrl,
+      "/nextjs-compat/api/draft-status",
+      {
+        headers: { Cookie: rawCookie },
       },
     );
     expect(data).toEqual({ isEnabled: true });

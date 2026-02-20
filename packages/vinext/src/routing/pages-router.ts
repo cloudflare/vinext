@@ -65,9 +65,8 @@ async function scanPageRoutes(pagesDir: string): Promise<Route[]> {
 
   // Sort: static routes first, then dynamic, then catch-all
   routes.sort((a, b) => {
-    const aScore = routePrecedence(a.pattern);
-    const bScore = routePrecedence(b.pattern);
-    return aScore - bScore;
+    const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
+    return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
   });
 
   return routes;
@@ -132,14 +131,29 @@ function fileToRoute(file: string, pagesDir: string): Route | null {
 }
 
 /**
- * Lower number = higher precedence.
- * Static routes before dynamic, dynamic before catch-all.
+ * Route precedence — lower score is higher priority.
+ * Matches Next.js specificity rules:
+ * 1. Static routes first (scored by segment count, more = more specific)
+ * 2. Dynamic segments penalized by position
+ * 3. Catch-all comes after dynamic
+ * 4. Optional catch-all last
+ * 5. Lexicographic tiebreaker for determinism
  */
 function routePrecedence(pattern: string): number {
-  if (pattern.includes(":") && pattern.includes("+")) return 3; // catch-all
-  if (pattern.includes(":") && pattern.includes("*")) return 4; // optional catch-all
-  if (pattern.includes(":")) return 2; // dynamic
-  return 1; // static
+  const parts = pattern.split("/").filter(Boolean);
+  let score = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.endsWith("+")) {
+      score += 10000 + i; // catch-all: high penalty
+    } else if (p.endsWith("*")) {
+      score += 20000 + i; // optional catch-all: highest penalty
+    } else if (p.startsWith(":")) {
+      score += 100 + i; // dynamic: moderate penalty by position
+    }
+    // static segments contribute nothing (better specificity)
+  }
+  return score;
 }
 
 /**
@@ -152,8 +166,9 @@ export function matchRoute(
 ): { route: Route; params: Record<string, string | string[]> } | null {
   // Normalize: strip query string and trailing slash
   const pathname = url.split("?")[0];
-  const normalizedUrl =
+  let normalizedUrl =
     pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch { /* malformed percent-encoding — match as-is */ }
 
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
@@ -202,7 +217,10 @@ async function scanApiRoutes(pagesDir: string): Promise<Route[]> {
   }
 
   // Sort same as page routes
-  routes.sort((a, b) => routePrecedence(a.pattern) - routePrecedence(b.pattern));
+  routes.sort((a, b) => {
+    const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
+    return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
+  });
 
   return routes;
 }
@@ -214,7 +232,7 @@ function matchPattern(
   const urlParts = url.split("/").filter(Boolean);
   const patternParts = pattern.split("/").filter(Boolean);
 
-  const params: Record<string, string | string[]> = {};
+  const params: Record<string, string | string[]> = Object.create(null);
 
   for (let i = 0; i < patternParts.length; i++) {
     const pp = patternParts[i];

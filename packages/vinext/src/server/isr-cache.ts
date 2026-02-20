@@ -20,6 +20,7 @@ import {
   type CachedPagesValue,
   type CachedAppPageValue,
 } from "../shims/cache.js";
+import { fnv1a64 } from "../utils/hash.js";
 
 export interface ISRCacheEntry {
   value: CacheHandlerValue;
@@ -130,10 +131,13 @@ export function buildAppPageCacheValue(
 
 /**
  * Compute an ISR cache key for a given router type and pathname.
+ * Long pathnames are hashed to stay within KV key-length limits (512 bytes).
  */
 export function isrCacheKey(router: "pages" | "app", pathname: string): string {
   const normalized = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  return `${router}:${normalized}`;
+  const key = `${router}:${normalized}`;
+  if (key.length <= 200) return key;
+  return `${router}:__hash:${fnv1a64(normalized)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,13 +145,23 @@ export function isrCacheKey(router: "pages" | "app", pathname: string): string {
 // so we can emit correct Cache-Control headers on cache hits.
 // ---------------------------------------------------------------------------
 
+const MAX_REVALIDATE_ENTRIES = 10_000;
 const revalidateDurations = new Map<string, number>();
 
 /**
  * Store the revalidate duration for a cache key.
+ * Uses insertion-order LRU eviction to prevent unbounded growth.
  */
 export function setRevalidateDuration(key: string, seconds: number): void {
+  // Simple LRU: delete and re-insert to move to end (most recent)
+  revalidateDurations.delete(key);
   revalidateDurations.set(key, seconds);
+  // Evict oldest entries if over limit
+  while (revalidateDurations.size > MAX_REVALIDATE_ENTRIES) {
+    const first = revalidateDurations.keys().next().value;
+    if (first !== undefined) revalidateDurations.delete(first);
+    else break;
+  }
 }
 
 /**

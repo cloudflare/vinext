@@ -144,9 +144,10 @@ export async function appRouter(appDir: string): Promise<AppRoute[]> {
   }
 
   // Sort: static routes first, then dynamic, then catch-all
-  routes.sort(
-    (a, b) => routePrecedence(a.pattern) - routePrecedence(b.pattern),
-  );
+  routes.sort((a, b) => {
+    const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
+    return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
+  });
 
   cachedRoutes = routes;
   cachedAppDir = appDir;
@@ -786,7 +787,8 @@ export function matchAppRoute(
   routes: AppRoute[],
 ): { route: AppRoute; params: Record<string, string | string[]> } | null {
   const pathname = url.split("?")[0];
-  const normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+  let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch { /* malformed percent-encoding — match as-is */ }
 
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
@@ -805,7 +807,7 @@ function matchPattern(
   const urlParts = url.split("/").filter(Boolean);
   const patternParts = pattern.split("/").filter(Boolean);
 
-  const params: Record<string, string | string[]> = {};
+  const params: Record<string, string | string[]> = Object.create(null);
 
   for (let i = 0; i < patternParts.length; i++) {
     const pp = patternParts[i];
@@ -841,11 +843,27 @@ function matchPattern(
 }
 
 /**
- * Route precedence — lower is higher priority.
+ * Route precedence — lower score is higher priority.
+ * Matches Next.js specificity rules:
+ * 1. Static routes first (scored by segment count, more = more specific)
+ * 2. Dynamic segments penalized by position
+ * 3. Catch-all comes after dynamic
+ * 4. Optional catch-all last
+ * 5. Lexicographic tiebreaker for determinism
  */
 function routePrecedence(pattern: string): number {
-  if (pattern.includes(":") && pattern.includes("+")) return 3;
-  if (pattern.includes(":") && pattern.includes("*")) return 4;
-  if (pattern.includes(":")) return 2;
-  return 1;
+  const parts = pattern.split("/").filter(Boolean);
+  let score = 0;
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (p.endsWith("+")) {
+      score += 10000 + i; // catch-all: high penalty
+    } else if (p.endsWith("*")) {
+      score += 20000 + i; // optional catch-all: highest penalty
+    } else if (p.startsWith(":")) {
+      score += 100 + i; // dynamic: moderate penalty by position
+    }
+    // static segments contribute nothing (better specificity)
+  }
+  return score;
 }

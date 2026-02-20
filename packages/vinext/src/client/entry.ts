@@ -21,9 +21,21 @@ const { pageProps } = nextData?.props ?? { pageProps: {} };
 const pageModulePath = nextData?.__pageModule;
 const appModulePath = nextData?.__appModule;
 
+/** Defense-in-depth: validate module paths from __NEXT_DATA__. */
+function isValidModulePath(p: unknown): p is string {
+  if (typeof p !== "string" || p.length === 0) return false;
+  // Must start with / or ./ (relative Vite module paths)
+  if (!p.startsWith("/") && !p.startsWith("./")) return false;
+  // Must not contain protocol (prevents importing from external URLs)
+  if (p.includes("://")) return false;
+  // Must not traverse directories
+  if (p.includes("..")) return false;
+  return true;
+}
+
 async function hydrate() {
-  if (!pageModulePath) {
-    console.error("[vinext] No __pageModule in __NEXT_DATA__");
+  if (!isValidModulePath(pageModulePath)) {
+    console.error("[vinext] Invalid or missing __pageModule in __NEXT_DATA__");
     return;
   }
 
@@ -40,18 +52,24 @@ async function hydrate() {
 
   // If there's a custom _app, wrap the page with it
   if (appModulePath) {
-    try {
-      const appModule = await import(/* @vite-ignore */ appModulePath);
-      const AppComponent = appModule.default;
-      element = React.createElement(AppComponent, {
-        Component: PageComponent,
-        pageProps,
-      });
-    } catch {
-      // No _app, render page directly
-      element = React.createElement(PageComponent, pageProps);
+    if (!isValidModulePath(appModulePath)) {
+      console.error("[vinext] Invalid __appModule in __NEXT_DATA__");
+    } else {
+      try {
+        const appModule = await import(/* @vite-ignore */ appModulePath);
+        const AppComponent = appModule.default;
+        element = React.createElement(AppComponent, {
+          Component: PageComponent,
+          pageProps,
+        });
+      } catch {
+        // No _app, render page directly
+      }
     }
-  } else {
+  }
+
+  // @ts-expect-error -- element is assigned in the _app branch above, or falls through here
+  if (!element) {
     element = React.createElement(PageComponent, pageProps);
   }
 
@@ -62,7 +80,11 @@ async function hydrate() {
   }
 
   const root = hydrateRoot(container, element);
-  (window as any).__VINEXT_ROOT__ = root;
+
+  // HMR support — only expose root via Vite's HMR API, not on window
+  if (import.meta.hot) {
+    import.meta.hot.data.root = root;
+  }
 }
 
 hydrate();

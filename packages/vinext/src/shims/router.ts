@@ -289,7 +289,7 @@ async function navigateClient(url: string): Promise<void> {
   if (typeof window === "undefined") return;
 
   const win = window as any;
-  const root = win.__VINEXT_ROOT__;
+  const root = import.meta?.hot?.data?.root ?? win.__VINEXT_ROOT__;
   if (!root) {
     // No React root yet — fall back to hard navigation
     window.location.href = url;

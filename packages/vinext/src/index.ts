@@ -725,7 +725,8 @@ ${apiRouteEntries.join(",\n")}
 
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
-  const normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
+  let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
+  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch {}
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
     if (params !== null) return { route, params };
@@ -736,7 +737,7 @@ function matchRoute(url, routes) {
 function matchPattern(url, pattern) {
   const urlParts = url.split("/").filter(Boolean);
   const patternParts = pattern.split("/").filter(Boolean);
-  const params = {};
+  const params = Object.create(null);
   for (let i = 0; i < patternParts.length; i++) {
     const pp = patternParts[i];
     if (pp.endsWith("+")) {
@@ -1426,7 +1427,7 @@ async function hydrate() {
   }
 
   const root = hydrateRoot(container, element);
-  window.__VINEXT_ROOT__ = root;
+  if (import.meta.hot) { import.meta.hot.data.root = root; }
 }
 
 hydrate();

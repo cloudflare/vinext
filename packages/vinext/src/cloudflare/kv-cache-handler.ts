@@ -68,18 +68,37 @@ const TAG_PREFIX = "__tag:";
 /** Key prefix for cache entries. */
 const ENTRY_PREFIX = "cache:";
 
+/** Max tag length to prevent KV key abuse. */
+const MAX_TAG_LENGTH = 256;
+
+/**
+ * Validate a cache tag. Returns null if invalid.
+ * Note: `:` is rejected because TAG_PREFIX and ENTRY_PREFIX use `:` as a
+ * separator — allowing `:` in user tags could cause ambiguous key lookups.
+ */
+function validateTag(tag: string): string | null {
+  if (typeof tag !== "string" || tag.length === 0 || tag.length > MAX_TAG_LENGTH) return null;
+  // Block control characters, path separators, and KV-special characters.
+  // eslint-disable-next-line no-control-regex -- intentional: reject control chars in tags
+  if (/[\x00-\x1f/\\:]/.test(tag)) return null;
+  return tag;
+}
+
 export class KVCacheHandler implements CacheHandler {
   private kv: KVNamespace;
+  private prefix: string;
 
-  constructor(kvNamespace: KVNamespace) {
+  constructor(kvNamespace: KVNamespace, options?: { appPrefix?: string }) {
     this.kv = kvNamespace;
+    this.prefix = options?.appPrefix ? `${options.appPrefix}:` : "";
   }
 
   async get(
     key: string,
     _ctx?: Record<string, unknown>,
   ): Promise<CacheHandlerValue | null> {
-    const raw = await this.kv.get(ENTRY_PREFIX + key);
+    const kvKey = this.prefix + ENTRY_PREFIX + key;
+    const raw = await this.kv.get(kvKey);
     if (!raw) return null;
 
     let parsed: unknown;
@@ -87,7 +106,7 @@ export class KVCacheHandler implements CacheHandler {
       parsed = JSON.parse(raw);
     } catch {
       // Corrupted JSON — delete and treat as miss
-      await this.kv.delete(ENTRY_PREFIX + key);
+      await this.kv.delete(kvKey);
       return null;
     }
 
@@ -95,7 +114,7 @@ export class KVCacheHandler implements CacheHandler {
     const entry = validateCacheEntry(parsed);
     if (!entry) {
       console.error("[vinext] Invalid cache entry shape for key:", key);
-      await this.kv.delete(ENTRY_PREFIX + key);
+      await this.kv.delete(kvKey);
       return null;
     }
 
@@ -104,7 +123,7 @@ export class KVCacheHandler implements CacheHandler {
       const ok = restoreArrayBuffers(entry.value);
       if (!ok) {
         // base64 decode failed — corrupted entry, treat as miss
-        await this.kv.delete(ENTRY_PREFIX + key);
+        await this.kv.delete(kvKey);
         return null;
       }
     }
@@ -112,14 +131,18 @@ export class KVCacheHandler implements CacheHandler {
     // Check tag-based invalidation (parallel for lower latency)
     if (entry.tags.length > 0) {
       const tagResults = await Promise.all(
-        entry.tags.map((tag) => this.kv.get(TAG_PREFIX + tag)),
+        entry.tags.map((tag) => this.kv.get(this.prefix + TAG_PREFIX + tag)),
       );
       for (let i = 0; i < entry.tags.length; i++) {
         const tagTime = tagResults[i];
-        if (tagTime && Number(tagTime) >= entry.lastModified) {
-          // Tag was invalidated after this entry was stored — treat as miss
-          await this.kv.delete(ENTRY_PREFIX + key);
-          return null;
+        if (tagTime) {
+          const tagTimestamp = Number(tagTime);
+          if (Number.isNaN(tagTimestamp) || tagTimestamp >= entry.lastModified) {
+            // Tag was invalidated after this entry, or timestamp is corrupted
+            // — treat as miss to force re-render
+            await this.kv.delete(kvKey);
+            return null;
+          }
         }
       }
     }
@@ -144,13 +167,19 @@ export class KVCacheHandler implements CacheHandler {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void> {
-    // Collect and dedupe tags from data and context
+    // Collect, validate, and dedupe tags from data and context
     const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
-      for (const t of data.tags) tagSet.add(t);
+      for (const t of data.tags) {
+        const validated = validateTag(t);
+        if (validated) tagSet.add(validated);
+      }
     }
     if (ctx && "tags" in ctx && Array.isArray(ctx.tags)) {
-      for (const t of ctx.tags as string[]) tagSet.add(t);
+      for (const t of ctx.tags as string[]) {
+        const validated = validateTag(t);
+        if (validated) tagSet.add(validated);
+      }
     }
     const tags = [...tagSet];
 
@@ -194,7 +223,7 @@ export class KVCacheHandler implements CacheHandler {
       expirationTtl = Math.max(expirationTtl, 60);
     }
 
-    await this.kv.put(ENTRY_PREFIX + key, JSON.stringify(entry), {
+    await this.kv.put(this.prefix + ENTRY_PREFIX + key, JSON.stringify(entry), {
       expirationTtl,
     });
   }
@@ -205,11 +234,12 @@ export class KVCacheHandler implements CacheHandler {
   ): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
+    const validTags = tagList.filter((t) => validateTag(t) !== null);
     // Store invalidation timestamp for each tag
     // Use a long TTL (30 days) so recent invalidations are always found
     await Promise.all(
-      tagList.map((tag) =>
-        this.kv.put(TAG_PREFIX + tag, String(now), {
+      validTags.map((tag) =>
+        this.kv.put(this.prefix + TAG_PREFIX + tag, String(now), {
           expirationTtl: 30 * 24 * 3600,
         }),
       ),

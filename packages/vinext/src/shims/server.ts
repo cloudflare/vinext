@@ -51,11 +51,14 @@ export class NextRequest extends Request {
   }
 
   /**
-   * Client IP address. Returns undefined in non-platform environments.
-   * In production, set via x-forwarded-for header by the reverse proxy.
+   * Client IP address. Prefers Cloudflare's trusted CF-Connecting-IP header
+   * over the spoofable X-Forwarded-For. Returns undefined if unavailable.
    */
   get ip(): string | undefined {
-    return this.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? undefined;
+    return this.headers.get("cf-connecting-ip")
+      ?? this.headers.get("x-real-ip")
+      ?? this.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
+      ?? undefined;
   }
 
   /**
@@ -285,8 +288,10 @@ export class ResponseCookies {
       const cookieName = header.slice(0, eq);
       if (cookieName === name) {
         const semi = header.indexOf(";", eq);
-        const value = header.slice(eq + 1, semi === -1 ? undefined : semi);
-        return { name, value: decodeURIComponent(value) };
+        const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
+        let value: string;
+        try { value = decodeURIComponent(raw); } catch { value = raw; }
+        return { name, value };
       }
     }
     return undefined;
@@ -299,8 +304,10 @@ export class ResponseCookies {
       if (eq === -1) continue;
       const cookieName = header.slice(0, eq);
       const semi = header.indexOf(";", eq);
-      const value = header.slice(eq + 1, semi === -1 ? undefined : semi);
-      entries.push({ name: cookieName, value: decodeURIComponent(value) });
+      const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
+      let value: string;
+      try { value = decodeURIComponent(raw); } catch { value = raw; }
+      entries.push({ name: cookieName, value });
     }
     return entries;
   }
@@ -317,8 +324,10 @@ export class ResponseCookies {
       if (eq === -1) continue;
       const cookieName = header.slice(0, eq);
       const semi = header.indexOf(";", eq);
-      const value = header.slice(eq + 1, semi === -1 ? undefined : semi);
-      entries.push([cookieName, { name: cookieName, value: decodeURIComponent(value) }]);
+      const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
+      let value: string;
+      try { value = decodeURIComponent(raw); } catch { value = raw; }
+      entries.push([cookieName, { name: cookieName, value }]);
     }
     return entries[Symbol.iterator]();
   }
