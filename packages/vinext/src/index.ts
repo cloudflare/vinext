@@ -19,7 +19,7 @@ import {
 
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
-import { safeRegExp } from "./config/config-matchers.js";
+import { safeRegExp, isExternalUrl, proxyExternalRequest } from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -2326,6 +2326,12 @@ hydrate();
                   url;
               }
 
+              // External rewrite from beforeFiles — proxy to external URL
+              if (isExternalUrl(resolvedUrl)) {
+                await proxyExternalRewriteNode(req, res, resolvedUrl);
+                return;
+              }
+
               // Handle API routes first (pages/api/*)
               const resolvedPathname = resolvedUrl.split("?")[0];
               if (
@@ -2361,6 +2367,12 @@ hydrate();
                 if (afterRewrite) resolvedUrl = afterRewrite;
               }
 
+              // External rewrite from afterFiles — proxy to external URL
+              if (isExternalUrl(resolvedUrl)) {
+                await proxyExternalRewriteNode(req, res, resolvedUrl);
+                return;
+              }
+
               const handler = createSSRHandler(server, routes, pagesDir, nextConfig?.i18n);
               const mwStatus = (req as any).__vinextRewriteStatus as number | undefined;
 
@@ -2378,6 +2390,11 @@ hydrate();
                   nextConfig.rewrites.fallback,
                 );
                 if (fallbackRewrite) {
+                  // External fallback rewrite — proxy to external URL
+                  if (isExternalUrl(fallbackRewrite)) {
+                    await proxyExternalRewriteNode(req, res, fallbackRewrite);
+                    return;
+                  }
                   await handler(req, res, fallbackRewrite, mwStatus);
                   return;
                 }
@@ -3185,6 +3202,8 @@ function applyRedirects(
     if (params) {
       let dest = redirect.destination;
       for (const [key, value] of Object.entries(params)) {
+        dest = dest.replace(`:${key}*`, value);
+        dest = dest.replace(`:${key}+`, value);
         dest = dest.replace(`:${key}`, value);
       }
       res.writeHead(redirect.permanent ? 308 : 307, { Location: dest });
@@ -3193,6 +3212,71 @@ function applyRedirects(
     }
   }
   return false;
+}
+
+/**
+ * Proxy an external rewrite in the Node.js dev server context.
+ *
+ * Converts the Node.js IncomingMessage into a Web Request, calls
+ * proxyExternalRequest(), and pipes the response back to the Node.js
+ * ServerResponse.
+ */
+async function proxyExternalRewriteNode(
+  req: import("node:http").IncomingMessage,
+  res: import("node:http").ServerResponse,
+  externalUrl: string,
+): Promise<void> {
+  try {
+    const proto = "http";
+    const host = req.headers.host || "localhost";
+    const origin = `${proto}://${host}`;
+    const method = req.method ?? "GET";
+    const hasBody = method !== "GET" && method !== "HEAD";
+    const init: RequestInit & { duplex?: string } = {
+      method,
+      headers: Object.fromEntries(
+        Object.entries(req.headers)
+          .filter(([, v]) => v !== undefined)
+          .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
+      ),
+    };
+    if (hasBody) {
+      const { Readable } = await import("node:stream");
+      init.body = Readable.toWeb(req) as unknown as ReadableStream;
+      init.duplex = "half";
+    }
+    const webRequest = new Request(new URL(req.url ?? "/", origin), init);
+    const proxyResponse = await proxyExternalRequest(webRequest, externalUrl);
+
+    // Preserve multi-value headers (e.g. Set-Cookie) — Object.fromEntries()
+    // would collapse them into a single value.
+    const nodeHeaders: Record<string, string | string[]> = {};
+    proxyResponse.headers.forEach((value, key) => {
+      const existing = nodeHeaders[key];
+      if (existing !== undefined) {
+        nodeHeaders[key] = Array.isArray(existing)
+          ? [...existing, value]
+          : [existing, value];
+      } else {
+        nodeHeaders[key] = value;
+      }
+    });
+    res.writeHead(proxyResponse.status, nodeHeaders);
+
+    if (proxyResponse.body) {
+      const { Readable: ReadableImport } = await import("node:stream");
+      const nodeStream = ReadableImport.fromWeb(proxyResponse.body as unknown as import("stream/web").ReadableStream);
+      nodeStream.pipe(res);
+    } else {
+      res.end();
+    }
+  } catch (e) {
+    console.error("[vinext] External rewrite proxy error:", e);
+    if (!res.headersSent) {
+      res.writeHead(502);
+      res.end("Bad Gateway");
+    }
+  }
 }
 
 /**
@@ -3208,6 +3292,8 @@ function applyRewrites(
     if (params) {
       let dest = rewrite.destination;
       for (const [key, value] of Object.entries(params)) {
+        dest = dest.replace(`:${key}*`, value);
+        dest = dest.replace(`:${key}+`, value);
         dest = dest.replace(`:${key}`, value);
       }
       return dest;

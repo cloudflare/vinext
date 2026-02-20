@@ -1863,6 +1863,43 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(fallbackIdx).toBeGreaterThan(noMatchIdx);
   });
 
+  it("generates external URL proxy helpers for external rewrites", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      rewrites: {
+        beforeFiles: [{ source: "/ph/:path*", destination: "https://us.i.posthog.com/:path*" }],
+        afterFiles: [],
+        fallback: [],
+      },
+    });
+    // Should include the external URL detection and proxy functions
+    expect(code).toContain("__isExternalUrl");
+    expect(code).toContain("__proxyExternalRequest");
+    // beforeFiles rewrite should check for external URL
+    expect(code).toContain("__isExternalUrl(__rewritten)");
+  });
+
+  it("generates external URL checks for afterFiles rewrites", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      rewrites: {
+        beforeFiles: [],
+        afterFiles: [{ source: "/api/:path*", destination: "https://api.example.com/:path*" }],
+        fallback: [],
+      },
+    });
+    expect(code).toContain("__isExternalUrl(__afterRewritten)");
+  });
+
+  it("generates external URL checks for fallback rewrites", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      rewrites: {
+        beforeFiles: [],
+        afterFiles: [],
+        fallback: [{ source: "/fallback/:path*", destination: "https://fallback.example.com/:path*" }],
+      },
+    });
+    expect(code).toContain("__isExternalUrl(__fallbackRewritten)");
+  });
+
   it("adds basePath prefix to redirect destinations", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "/app", false, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],

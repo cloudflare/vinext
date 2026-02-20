@@ -1032,7 +1032,7 @@ function __applyConfigRedirects(pathname, ctx) {
     if (params) {
       if (ctx && (rule.has || rule.missing)) { if (!__checkHasConditions(rule.has, rule.missing, ctx)) continue; }
       let dest = rule.destination;
-      for (const [key, value] of Object.entries(params)) dest = dest.replace(":" + key, value);
+      for (const [key, value] of Object.entries(params)) { dest = dest.replace(":" + key + "*", value); dest = dest.replace(":" + key + "+", value); dest = dest.replace(":" + key, value); }
       return { destination: dest, permanent: rule.permanent };
     }
   }
@@ -1045,11 +1045,38 @@ function __applyConfigRewrites(pathname, rules, ctx) {
     if (params) {
       if (ctx && (rule.has || rule.missing)) { if (!__checkHasConditions(rule.has, rule.missing, ctx)) continue; }
       let dest = rule.destination;
-      for (const [key, value] of Object.entries(params)) dest = dest.replace(":" + key, value);
+      for (const [key, value] of Object.entries(params)) { dest = dest.replace(":" + key + "*", value); dest = dest.replace(":" + key + "+", value); dest = dest.replace(":" + key, value); }
       return dest;
     }
   }
   return null;
+}
+
+function __isExternalUrl(url) {
+  return url.startsWith("http://") || url.startsWith("https://");
+}
+
+const __hopByHopHeaders = new Set(["connection","keep-alive","proxy-authenticate","proxy-authorization","te","trailers","transfer-encoding","upgrade"]);
+
+async function __proxyExternalRequest(request, externalUrl) {
+  const originalUrl = new URL(request.url);
+  const targetUrl = new URL(externalUrl);
+  for (const [key, value] of originalUrl.searchParams) {
+    if (!targetUrl.searchParams.has(key)) targetUrl.searchParams.set(key, value);
+  }
+  const headers = new Headers(request.headers);
+  headers.set("host", targetUrl.host);
+  headers.delete("connection");
+  const method = request.method;
+  const hasBody = method !== "GET" && method !== "HEAD";
+  const init = { method, headers, redirect: "manual" };
+  if (hasBody && request.body) { init.body = request.body; init.duplex = "half"; }
+  let upstream;
+  try { upstream = await fetch(targetUrl.href, init); }
+  catch (e) { console.error("[vinext] External rewrite proxy error:", e); return new Response("Bad Gateway", { status: 502 }); }
+  const respHeaders = new Headers();
+  upstream.headers.forEach(function(value, key) { if (!__hopByHopHeaders.has(key.toLowerCase())) respHeaders.append(key, value); });
+  return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: respHeaders });
 }
 
 function __applyConfigHeaders(pathname) {
@@ -1152,7 +1179,14 @@ async function _handleRequest(request) {
   // ── Apply beforeFiles rewrites from next.config.js ────────────────────
   if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
     const __rewritten = __applyConfigRewrites(pathname, __configRewrites.beforeFiles, __reqCtx);
-    if (__rewritten) pathname = __rewritten;
+    if (__rewritten) {
+      if (__isExternalUrl(__rewritten)) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return __proxyExternalRequest(request, __rewritten);
+      }
+      pathname = __rewritten;
+    }
   }
 
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
@@ -1409,7 +1443,14 @@ async function _handleRequest(request) {
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
     const __afterRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.afterFiles, __reqCtx);
-    if (__afterRewritten) cleanPathname = __afterRewritten;
+    if (__afterRewritten) {
+      if (__isExternalUrl(__afterRewritten)) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return __proxyExternalRequest(request, __afterRewritten);
+      }
+      cleanPathname = __afterRewritten;
+    }
   }
 
   let match = matchRoute(cleanPathname, routes);
@@ -1418,6 +1459,11 @@ async function _handleRequest(request) {
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
     const __fallbackRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.fallback, __reqCtx);
     if (__fallbackRewritten) {
+      if (__isExternalUrl(__fallbackRewritten)) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return __proxyExternalRequest(request, __fallbackRewritten);
+      }
       cleanPathname = __fallbackRewritten;
       match = matchRoute(cleanPathname, routes);
     }

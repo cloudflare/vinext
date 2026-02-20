@@ -23,7 +23,7 @@ import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
-import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest } from "../config/config-matchers.js";
+import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, isExternalUrl, proxyExternalRequest } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { IMAGE_OPTIMIZATION_PATH, parseImageParams } from "./image-optimization.js";
 
@@ -727,6 +727,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (configRewrites.beforeFiles?.length) {
         const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, reqCtx);
         if (rewritten) {
+          if (isExternalUrl(rewritten)) {
+            const proxyResponse = await proxyExternalRequest(webRequest, rewritten);
+            await sendWebResponse(proxyResponse, req, res, compress);
+            return;
+          }
           resolvedUrl = rewritten;
           resolvedPathname = rewritten.split("?")[0];
         }
@@ -755,6 +760,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (configRewrites.afterFiles?.length) {
         const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, reqCtx);
         if (rewritten) {
+          if (isExternalUrl(rewritten)) {
+            const proxyResponse = await proxyExternalRequest(webRequest, rewritten);
+            await sendWebResponse(proxyResponse, req, res, compress);
+            return;
+          }
           resolvedUrl = rewritten;
           resolvedPathname = rewritten.split("?")[0];
         }
@@ -769,6 +779,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         if (response && response.status === 404 && configRewrites.fallback?.length) {
           const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, reqCtx);
           if (fallbackRewrite) {
+            if (isExternalUrl(fallbackRewrite)) {
+              const proxyResponse = await proxyExternalRequest(webRequest, fallbackRewrite);
+              await sendWebResponse(proxyResponse, req, res, compress);
+              return;
+            }
             response = await renderPage(webRequest, fallbackRewrite, ssrManifest);
           }
         }

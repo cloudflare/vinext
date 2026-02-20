@@ -149,6 +149,132 @@ export default function Help({ path }) {
 });
 
 // ---------------------------------------------------------------------------
+// External URL rewrites (proxy to third-party hosts)
+// ---------------------------------------------------------------------------
+
+describe("external URL rewrites", () => {
+  let extServer: ViteDevServer;
+  let extBaseUrl: string;
+  let extTmpDir: string;
+  // Local HTTP server to act as the external upstream
+  let upstreamServer: import("node:http").Server;
+  let upstreamPort: number;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const http = await import("node:http");
+
+    // Start a local HTTP server to act as the "external" upstream
+    upstreamServer = http.createServer((req, res) => {
+      const url = new URL(req.url ?? "/", `http://localhost`);
+      if (url.pathname === "/api/data") {
+        res.writeHead(200, { "Content-Type": "application/json", "X-Upstream": "true" });
+        res.end(JSON.stringify({ source: "upstream", path: url.pathname }));
+      } else if (url.pathname.startsWith("/static/")) {
+        res.writeHead(200, { "Content-Type": "text/plain", "X-Upstream": "true" });
+        res.end("static:" + url.pathname.slice("/static/".length));
+      } else {
+        res.writeHead(200, { "Content-Type": "text/plain", "X-Upstream": "true" });
+        res.end("upstream:" + url.pathname);
+      }
+    });
+    await new Promise<void>((resolve) => {
+      upstreamServer.listen(0, () => {
+        const addr = upstreamServer.address();
+        upstreamPort = typeof addr === "object" && addr ? addr.port : 0;
+        resolve();
+      });
+    });
+
+    extTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ext-rewrite-"));
+
+    // Symlink node_modules
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(extTmpDir, "node_modules"), "junction");
+
+    // next.config.mjs with external rewrites pointing to our local upstream
+    await fsp.writeFile(
+      path.join(extTmpDir, "next.config.mjs"),
+      `export default {
+  async rewrites() {
+    return [
+      { source: "/proxy/api/data", destination: "http://localhost:${upstreamPort}/api/data" },
+      { source: "/proxy/static/:path*", destination: "http://localhost:${upstreamPort}/static/:path*" },
+      { source: "/proxy/catch/:path*", destination: "http://localhost:${upstreamPort}/:path*" },
+    ];
+  },
+};`,
+    );
+
+    await fsp.mkdir(path.join(extTmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(extTmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    const plugins: any[] = [vinext()];
+    extServer = await createServer({
+      root: extTmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await extServer.listen();
+    const addr = extServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      extBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (extServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        extServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    upstreamServer?.close();
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(extTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("proxies exact path external rewrite to upstream", async () => {
+    const res = await fetch(`${extBaseUrl}/proxy/api/data`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-upstream")).toBe("true");
+    const data = await res.json();
+    expect(data.source).toBe("upstream");
+    expect(data.path).toBe("/api/data");
+  });
+
+  it("proxies catch-all external rewrite with path substitution", async () => {
+    const res = await fetch(`${extBaseUrl}/proxy/static/script`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-upstream")).toBe("true");
+    const body = await res.text();
+    expect(body).toBe("static:script");
+  });
+
+  it("proxies nested catch-all paths", async () => {
+    const res = await fetch(`${extBaseUrl}/proxy/catch/deeply/nested/path`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toBe("upstream:/deeply/nested/path");
+  });
+
+  it("does not proxy internal rewrites (non-external URLs still work)", async () => {
+    const res = await fetch(`${extBaseUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Home");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CSS Modules support
 // ---------------------------------------------------------------------------
 

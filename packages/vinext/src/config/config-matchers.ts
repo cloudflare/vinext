@@ -7,6 +7,18 @@
 
 import type { NextRedirect, NextRewrite, NextHeader, HasCondition } from "./next-config.js";
 
+/** Hop-by-hop headers that should not be forwarded through a proxy. */
+const HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailers",
+  "transfer-encoding",
+  "upgrade",
+]);
+
 /**
  * Detect regex patterns vulnerable to catastrophic backtracking (ReDoS).
  *
@@ -376,6 +388,10 @@ export function matchRedirect(
       }
       let dest = redirect.destination;
       for (const [key, value] of Object.entries(params)) {
+        // Replace :param*, :param+, and :param forms in the destination.
+        // The catch-all suffixes (* and +) must be stripped along with the param name.
+        dest = dest.replace(`:${key}*`, value);
+        dest = dest.replace(`:${key}+`, value);
         dest = dest.replace(`:${key}`, value);
       }
       return { destination: dest, permanent: redirect.permanent };
@@ -407,12 +423,95 @@ export function matchRewrite(
       }
       let dest = rewrite.destination;
       for (const [key, value] of Object.entries(params)) {
+        // Replace :param*, :param+, and :param forms in the destination.
+        // The catch-all suffixes (* and +) must be stripped along with the param name.
+        dest = dest.replace(`:${key}*`, value);
+        dest = dest.replace(`:${key}+`, value);
         dest = dest.replace(`:${key}`, value);
       }
       return dest;
     }
   }
   return null;
+}
+
+/**
+ * Check if a URL is an external (absolute) URL.
+ * Returns true for URLs starting with http:// or https://.
+ */
+export function isExternalUrl(url: string): boolean {
+  return url.startsWith("http://") || url.startsWith("https://");
+}
+
+/**
+ * Proxy an incoming request to an external URL and return the upstream response.
+ *
+ * Used for external rewrites (e.g. `/ph/:path*` → `https://us.i.posthog.com/:path*`).
+ * Next.js handles these as server-side reverse proxies, forwarding the request
+ * method, headers, and body to the external destination.
+ *
+ * Works in all runtimes (Node.js, Cloudflare Workers) via the standard fetch() API.
+ */
+export async function proxyExternalRequest(
+  request: Request,
+  externalUrl: string,
+): Promise<Response> {
+  // Build the full external URL, preserving query parameters from the original request
+  const originalUrl = new URL(request.url);
+  const targetUrl = new URL(externalUrl);
+
+  // If the rewrite destination already has query params, merge them.
+  // Destination params take precedence — original request params are only added
+  // when the destination doesn't already specify that key.
+  for (const [key, value] of originalUrl.searchParams) {
+    if (!targetUrl.searchParams.has(key)) {
+      targetUrl.searchParams.set(key, value);
+    }
+  }
+
+  // Forward the request with appropriate headers
+  const headers = new Headers(request.headers);
+  // Set Host to the external target (required for correct routing)
+  headers.set("host", targetUrl.host);
+  // Remove headers that should not be forwarded to external services
+  headers.delete("connection");
+
+  const method = request.method;
+  const hasBody = method !== "GET" && method !== "HEAD";
+
+  const init: RequestInit & { duplex?: string } = {
+    method,
+    headers,
+    redirect: "manual", // Don't follow redirects — pass them through to the client
+  };
+
+  if (hasBody && request.body) {
+    init.body = request.body;
+    init.duplex = "half";
+  }
+
+  let upstreamResponse: Response;
+  try {
+    upstreamResponse = await fetch(targetUrl.href, init);
+  } catch (e) {
+    console.error("[vinext] External rewrite proxy error:", e);
+    return new Response("Bad Gateway", { status: 502 });
+  }
+
+  // Build the response to return to the client.
+  // Copy all upstream headers except hop-by-hop headers.
+  const responseHeaders = new Headers();
+  upstreamResponse.headers.forEach((value, key) => {
+    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+      responseHeaders.append(key, value);
+    }
+  });
+
+  return new Response(upstreamResponse.body, {
+    status: upstreamResponse.status,
+    statusText: upstreamResponse.statusText,
+    headers: responseHeaders,
+  });
 }
 
 /**

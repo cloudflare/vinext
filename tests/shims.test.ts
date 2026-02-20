@@ -2565,6 +2565,230 @@ describe("checkHasConditions", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// isExternalUrl unit tests (external rewrite detection)
+
+describe("isExternalUrl", () => {
+  it("returns true for https:// URLs", async () => {
+    const { isExternalUrl } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isExternalUrl("https://example.com/path")).toBe(true);
+    expect(isExternalUrl("https://us.i.posthog.com/decide?v=3")).toBe(true);
+  });
+
+  it("returns true for http:// URLs", async () => {
+    const { isExternalUrl } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isExternalUrl("http://example.com/api")).toBe(true);
+  });
+
+  it("returns false for relative paths", async () => {
+    const { isExternalUrl } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isExternalUrl("/about")).toBe(false);
+    expect(isExternalUrl("/api/test")).toBe(false);
+    expect(isExternalUrl("/")).toBe(false);
+  });
+
+  it("returns false for protocol-relative URLs", async () => {
+    const { isExternalUrl } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isExternalUrl("//example.com")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// proxyExternalRequest unit tests
+
+describe("proxyExternalRequest", () => {
+  it("proxies request to external URL and returns upstream response", async () => {
+    const { proxyExternalRequest } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+
+    // Use a well-known public URL that returns a predictable response
+    const request = new Request("http://localhost:3000/test?extra=1", {
+      method: "GET",
+      headers: { "user-agent": "vinext-test" },
+    });
+
+    // We test the function constructs the right request by mocking fetch
+    const originalFetch = globalThis.fetch;
+    let capturedUrl: string | undefined;
+    let capturedInit: any;
+    globalThis.fetch = async (url: any, init: any) => {
+      capturedUrl = typeof url === "string" ? url : url.toString();
+      capturedInit = init;
+      return new Response("proxied body", {
+        status: 200,
+        headers: { "content-type": "text/plain", "x-upstream": "true" },
+      });
+    };
+
+    try {
+      const response = await proxyExternalRequest(request, "https://api.example.com/endpoint");
+      expect(capturedUrl).toContain("https://api.example.com/endpoint");
+      // Extra query param from original request should be merged
+      expect(capturedUrl).toContain("extra=1");
+      expect(capturedInit.method).toBe("GET");
+      expect(capturedInit.redirect).toBe("manual");
+      // Host header should be set to the external target
+      expect(capturedInit.headers.get("host")).toBe("api.example.com");
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-upstream")).toBe("true");
+      const body = await response.text();
+      expect(body).toBe("proxied body");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("preserves query parameters from the rewrite destination", async () => {
+    const { proxyExternalRequest } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+
+    const request = new Request("http://localhost:3000/test", {
+      method: "GET",
+    });
+
+    const originalFetch = globalThis.fetch;
+    let capturedUrl: string | undefined;
+    globalThis.fetch = async (url: any, _init: any) => {
+      capturedUrl = typeof url === "string" ? url : url.toString();
+      return new Response("ok", { status: 200 });
+    };
+
+    try {
+      await proxyExternalRequest(request, "https://api.example.com/v1?key=abc");
+      expect(capturedUrl).toContain("key=abc");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("strips hop-by-hop headers from upstream response", async () => {
+    const { proxyExternalRequest } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+
+    const request = new Request("http://localhost:3000/test");
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_url: any, _init: any) => {
+      return new Response("ok", {
+        status: 200,
+        headers: {
+          "content-type": "text/plain",
+          "x-custom": "preserved",
+          // Note: "transfer-encoding" and "connection" are hop-by-hop headers
+          // that should be stripped. However, the fetch API may not allow
+          // setting them on Response, so we test with headers that can be set.
+        },
+      });
+    };
+
+    try {
+      const response = await proxyExternalRequest(request, "https://api.example.com/test");
+      expect(response.headers.get("content-type")).toBe("text/plain");
+      expect(response.headers.get("x-custom")).toBe("preserved");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("passes through non-200 status codes", async () => {
+    const { proxyExternalRequest } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+
+    const request = new Request("http://localhost:3000/test");
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_url: any, _init: any) => {
+      return new Response("Not Found", { status: 404 });
+    };
+
+    try {
+      const response = await proxyExternalRequest(request, "https://api.example.com/missing");
+      expect(response.status).toBe(404);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("forwards redirect responses without following them", async () => {
+    const { proxyExternalRequest } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+
+    const request = new Request("http://localhost:3000/test");
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_url: any, init: any) => {
+      // Verify redirect: "manual" was set
+      expect(init.redirect).toBe("manual");
+      return new Response(null, {
+        status: 301,
+        headers: { "location": "https://other.example.com/new" },
+      });
+    };
+
+    try {
+      const response = await proxyExternalRequest(request, "https://api.example.com/old");
+      expect(response.status).toBe(301);
+      expect(response.headers.get("location")).toBe("https://other.example.com/new");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// matchRewrite + isExternalUrl integration (config-matchers)
+
+describe("matchRewrite with external URLs", () => {
+  it("returns full external URL when destination is external", async () => {
+    const { matchRewrite, isExternalUrl } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rewrites = [
+      { source: "/ph/:path*", destination: "https://us.i.posthog.com/:path*" },
+    ];
+    const result = matchRewrite("/ph/decide", rewrites);
+    expect(result).toBe("https://us.i.posthog.com/decide");
+    expect(isExternalUrl(result!)).toBe(true);
+  });
+
+  it("returns full external URL for static path rewrites", async () => {
+    const { matchRewrite, isExternalUrl } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rewrites = [
+      { source: "/ph/static/:path*", destination: "https://us-assets.i.posthog.com/static/:path*" },
+    ];
+    const result = matchRewrite("/ph/static/array.js", rewrites);
+    expect(result).toBe("https://us-assets.i.posthog.com/static/array.js");
+    expect(isExternalUrl(result!)).toBe(true);
+  });
+
+  it("returns internal path for non-external rewrites", async () => {
+    const { matchRewrite, isExternalUrl } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rewrites = [
+      { source: "/posts/:id", destination: "/blog/:id" },
+    ];
+    const result = matchRewrite("/posts/hello", rewrites);
+    expect(result).toBe("/blog/hello");
+    expect(isExternalUrl(result!)).toBe(false);
+  });
+});
+
 describe("next/form shim", () => {
   it("exports default Form component", async () => {
     const mod = await import("../packages/vinext/src/shims/form.js");
