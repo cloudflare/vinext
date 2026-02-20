@@ -654,16 +654,11 @@ Ported from: https://github.com/opennextjs/opennextjs-cloudflare/tree/main/examp
 
 ### Background
 
-[OpenNext](https://github.com/opennextjs) is a post-build adapter that takes `next build` output
-and deploys it to non-Vercel platforms (Cloudflare Workers, AWS Lambda). Their E2E test suites are
-**behavioral conformance tests** — they verify that Next.js features work correctly when not running
-on Vercel. This is directly analogous to what vinext needs: we both test "does this Next.js feature
-work on Cloudflare Workers?"
-
-**Key difference**: OpenNext patches compiled Next.js output; vinext reimplements from scratch via
-Vite. Their E2E assertions (what the user sees, what headers are returned, how caching behaves) are
-framework-agnostic and portable. Their unit tests (AST transforms on Next.js server code) are not
-relevant.
+[OpenNext](https://github.com/opennextjs) deploys Next.js apps to non-Vercel platforms (Cloudflare
+Workers, AWS Lambda, etc.). Their E2E test suites are **behavioral conformance tests** — they verify
+that Next.js features work correctly across different deployment targets. These assertions (what the
+user sees, what headers are returned, how caching behaves) are framework-agnostic and portable,
+making them a good reference for vinext's own compatibility testing.
 
 **Approach**: We port the *test patterns and assertions* into our existing Playwright specs, running
 against our Vite-based fixture apps. Each test links back to the OpenNext source for reference.

@@ -160,7 +160,6 @@ describe("Next.js compat: not-found", () => {
 
   // ── Metadata cascade into not-found pages ───────────────────
   // Next.js cascades metadata from parent layouts into not-found/error pages.
-  // See: https://github.com/user/vinext/issues/XXX
 
   it("not-found page should inherit metadata title from parent layout", async () => {
     const { res, html } = await fetchHtml(

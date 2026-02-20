@@ -8,7 +8,7 @@ Instructions for AI agents working on this codebase.
 
 **vinext** is a Vite plugin that reimplements the Next.js API surface, with Cloudflare Workers as the primary deployment target. The goal: take any Next.js app and deploy it to Workers with one command.
 
-**Key thesis:** Next.js is locked to Vercel. Cloudflare Workers is a better runtime. vinext lets you keep your Next.js code and deploy to Workers without adapter hacks.
+vinext reimplements the Next.js API surface using Vite, with Cloudflare Workers as the primary deployment target. The goal is to let developers keep their existing Next.js code and deploy it to Workers.
 
 ---
 

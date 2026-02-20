@@ -117,7 +117,7 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 
 - **Stale-while-revalidate requires returning stale cache entries, not null**. The original `MemoryCacheHandler.get()` deleted expired entries and returned null. ISR needs the stale entry to serve while background regeneration runs. Fixed by returning entries with `cacheState: "stale"` on expiry, while tag-invalidated entries are still hard-deleted (return null).
 - **Background regeneration dedup is essential**. Without it, 100 concurrent requests to a stale page would trigger 100 re-renders. A `Map<string, Promise>` keyed by cache key ensures only one regeneration per key at a time.
-- **ISR cache layer sits above CacheHandler**, not inside it. The `CacheHandler` interface is a dumb key-value store (matching Next.js 16's interface). ISR semantics (stale detection, background regen, dedup) live in a separate `isr-cache.ts` module. This preserves pluggable backends — Redis/KV users get ISR automatically.
+- **ISR cache layer sits above CacheHandler**, not inside it. The `CacheHandler` interface is a simple key-value store (matching Next.js 16's interface). ISR semantics (stale detection, background regen, dedup) live in a separate `isr-cache.ts` module. This preserves pluggable backends — Redis/KV users get ISR automatically.
 - **Revalidate duration tracking**: Cache hits need the original revalidate seconds for `Cache-Control` headers, but the `CacheHandler` interface doesn't expose this. Solution: a side `Map<string, number>` stores revalidate durations by cache key, populated on MISS, read on HIT/STALE.
 - **Pages Router ISR**: `getStaticProps` returns `{ revalidate: N }`. On MISS, render + cache. On HIT, serve cached HTML. On STALE, serve cached HTML + trigger background `getStaticProps` re-call.
 - **App Router ISR**: `export const revalidate = N` in page modules. Read at runtime from `route.page.revalidate` in the generated RSC handler. The RSC stream output is tee'd — one copy for the response, one consumed for caching.
@@ -353,13 +353,9 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 - **bare `app/` imports** from tsconfig `baseUrl: "."` are resolved automatically by `vite-tsconfig-paths` (bundled in vinext).
 - **`codehike` dependency** was too heavy for a demo fixture. Replaced `ui/codehike.tsx` with a simplified shim that provides the same exports (`Grid`, `Mdx`) without `codehike/blocks`, `codehike/code`, `zod`, or `mdx/types` dependencies.
 
-## Benchmarks (Phase 5)
+## Benchmarks
 
-- **vinext builds 2.6x faster** than Next.js 16 with Turbopack (2.09s vs 5.43s, 33-route App Router app).
-- **vinext produces 55% smaller client bundles** (75.4 KB vs 168.9 KB gzipped).
-- **Dev server cold start 33% faster** (1.16s vs 1.72s).
-- **Memory usage identical** (~88 MB peak RSS for both).
-- **vinext builds are more consistent** (stddev 13ms vs 99ms for Next.js).
+- **Benchmark methodology**: See `benchmarks/` for the runner, fixture app, and CI workflow. Results are point-in-time measurements on a specific 33-route App Router fixture and may not generalize to all apps.
 - **Symlinks don't work with Next.js/Turbopack** — must copy shared app directories. Our `generate-app.mjs` now copies to both project directories.
 - **`turbopack.root`** must be set in next.config.ts if there are multiple lockfiles in parent directories, otherwise Turbopack picks the wrong workspace root.
 - **`process.cwd()` works** but Node ESM imports (`import { dirname }`) crash in next.config.ts because Next.js 16 compiles configs as CJS (`exports is not defined in ES module scope`).
@@ -462,15 +458,11 @@ Several globals are used for per-request state: `globalThis.__VINEXT_LOCALE__`, 
 
 The `KVCacheHandler` stores `ArrayBuffer` body data by encoding the entire buffer to base64 in a single operation. For very large payloads (multi-MB ISR pages), this could cause memory spikes. A chunked encoding approach would be more memory-efficient, but typical ISR payloads are well under 1MB so this is a micro-optimization that isn't worth the complexity right now.
 
-## Strategic Shift: Cloudflare-First (2026-02-15)
+## Cloudflare Workers Node.js Compatibility Notes
 
-- **Project focus changed**: vinext is no longer "deploy anywhere." Cloudflare Workers is THE primary deployment target. The thesis is now: "any Next.js app deploys to Cloudflare with one command and runs better there than anywhere else."
-- **Non-Cloudflare targets are non-goals**: AWS, Netlify, generic Node.js servers are not tested or maintained. If they work because we use standard APIs, fine. We won't spend engineering effort on them.
-- **Workers has near-full Node.js compat**: `nodejs_compat` covers ~85% of Node APIs. The old assumption that Workers is a "constrained environment" is outdated.
+- **Workers has near-full Node.js compat**: `nodejs_compat` covers ~85% of Node APIs.
 - **`node:fs` on Workers**: Built-in via `nodejs_compat` (compat date 2025-09-01+). Provides read-only `/bundle/` (all Worker bundle files), writable `/tmp/` (per-request, non-persistent), and `/dev/*` devices. All operations are synchronous. 128MB max file size. [Docs](https://developers.cloudflare.com/workers/runtime-apis/nodejs/fs/).
 - **`worker-fs-mount` for persistent fs**: [`worker-fs-mount`](https://github.com/danlapid/worker-fs-mount) extends `node:fs` with mount points backed by real persistent storage. Three backends available: `durable-object-fs` (SQLite in DO), `r2-fs` (R2 bucket), `memory-fs` (ephemeral). Configured via wrangler alias: `"node:fs/promises" = "worker-fs-mount/fs"`, then `mount("/mnt/storage", env.STORAGE_SERVICE)`. Standard `fs.readFile`/`fs.writeFile` work against persistent storage. This means libraries that depend on `node:fs` can work on Workers with real persistence.
-- **Priority order going forward**: (1) Client hydration on Workers, (2) `vinext deploy` one-command deployment, (3) Cloudflare platform integration (KV/R2/D1/AI bindings), (4) DX polish.
-- **`vinext start` deprioritized**: The Node.js production server is a local testing convenience, not the production target. Workers IS the production server.
 
 ## Pages Router Client Hydration on Workers (FIXED, 2026-02-15)
 
@@ -590,7 +582,7 @@ mdx({ remarkPlugins: [[remarkCodeHike, codeHikeConfig]], recmaPlugins: [[recmaCo
 
 ### Route Status After Fix
 
-All 19 tested routes return HTTP 200 and render correctly on Cloudflare Workers, matching the Vercel reference demo at https://app-router.vercel.app/.
+All 19 tested routes return HTTP 200 and render correctly on Cloudflare Workers.
 
 ---
 
