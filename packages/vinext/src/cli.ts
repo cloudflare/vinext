@@ -13,7 +13,7 @@
  * needed for most Next.js apps.
  */
 
-import vinext, { clientManualChunks } from "./index.js";
+import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
 import rsc from "@vitejs/plugin-rsc";
 import path from "node:path";
 import fs from "node:fs";
@@ -231,9 +231,8 @@ async function buildApp() {
         ssrManifest: true,
         rollupOptions: {
           input: "virtual:vinext-client-entry",
-          output: {
-            manualChunks: clientManualChunks,
-          },
+          output: clientOutputConfig,
+          treeshake: clientTreeshakeConfig,
         },
       },
     });

@@ -416,9 +416,45 @@ function clientManualChunks(id: string): string | undefined {
 /**
  * Rollup output config with manualChunks for client code-splitting.
  * Used by both CLI builds and multi-environment builds.
+ *
+ * experimentalMinChunkSize merges tiny shared chunks (< 10KB) back into
+ * their importers. This reduces HTTP request count and improves gzip
+ * compression efficiency — small files restart the compression dictionary,
+ * adding ~5-15% wire overhead vs fewer larger chunks.
  */
 const clientOutputConfig = {
   manualChunks: clientManualChunks,
+  experimentalMinChunkSize: 10_000,
+};
+
+/**
+ * Rollup treeshake configuration for production client builds.
+ *
+ * Uses the 'recommended' preset as a safe base, then overrides
+ * moduleSideEffects to strip unused re-exports from npm packages.
+ *
+ * The 'no-external' value for moduleSideEffects means:
+ * - Local project modules: preserve side effects (CSS imports, polyfills)
+ * - node_modules packages: treat as side-effect-free unless exports are used
+ *
+ * This is the single highest-impact optimization for large barrel-exporting
+ * libraries like mermaid, @mui/material, lucide-react, etc. These libraries
+ * re-export hundreds of sub-modules through barrel files. Without this,
+ * Rollup preserves every sub-module even when only a few exports are consumed.
+ *
+ * Why 'no-external' instead of false (global side-effect-free)?
+ * - User code may rely on import-time side effects (e.g., `import './global.css'`)
+ * - 'no-external' is safe for app code while still enabling aggressive DCE for deps
+ *
+ * Why not the 'smallest' preset?
+ * - 'smallest' also sets propertyReadSideEffects: false and
+ *   tryCatchDeoptimization: false, which can break specific libraries
+ *   that rely on property access side effects or try/catch for feature detection
+ * - 'recommended' + 'no-external' gives most of the benefit with less risk
+ */
+const clientTreeshakeConfig = {
+  preset: "recommended" as const,
+  moduleSideEffects: "no-external" as const,
 };
 
 export interface VinextOptions {
@@ -1765,6 +1801,15 @@ hydrate();
                   }
                 };
               })(),
+              // Enable aggressive tree-shaking for client builds.
+              // See clientTreeshakeConfig for rationale.
+              // Only apply globally for standalone client builds (Pages Router
+              // CLI). For multi-environment builds (App Router, Cloudflare),
+              // treeshake is set per-environment on the client env below to
+              // avoid leaking into RSC/SSR environments where
+              // moduleSideEffects: 'no-external' could drop server packages
+              // that rely on module-level side effects.
+              ...(!isSSR && !isMultiEnv ? { treeshake: clientTreeshakeConfig } : {}),
               // Code-split client bundles: separate framework (React/ReactDOM),
               // vinext runtime (shims), and vendor packages into their own
               // chunks so pages only load the JS they need.
@@ -1869,6 +1914,7 @@ hydrate();
                 rollupOptions: {
                   input: { index: VIRTUAL_APP_BROWSER_ENTRY },
                   output: clientOutputConfig,
+                  treeshake: clientTreeshakeConfig,
                 },
               },
             },
@@ -1886,6 +1932,7 @@ hydrate();
                 rollupOptions: {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
                   output: clientOutputConfig,
+                  treeshake: clientTreeshakeConfig,
                 },
               },
             },
@@ -3246,6 +3293,6 @@ export { staticExportPages, staticExportApp } from "./build/static-export.js";
 export type { StaticExportResult, StaticExportOptions, AppStaticExportOptions } from "./build/static-export.js";
 
 // Exported for CLI and testing
-export { clientManualChunks };
+export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
