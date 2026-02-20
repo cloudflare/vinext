@@ -1167,6 +1167,18 @@ async function _handleRequest(request) {
   }
   ` : ""}
 
+  // ── Image optimization passthrough (dev mode — no transformation) ───────
+  if (cleanPathname === "/_vinext/image") {
+    const __imgUrl = url.searchParams.get("url");
+    // Allowlist: must start with "/" but not "//" — blocks absolute URLs,
+    // protocol-relative, and exotic schemes (data:, javascript:, etc.).
+    if (!__imgUrl || !__imgUrl.startsWith("/") || __imgUrl.startsWith("//")) {
+      return new Response(!__imgUrl ? "Missing url parameter" : "Only relative URLs allowed", { status: 400 });
+    }
+    // In dev, redirect to the original asset URL so Vite's static serving handles it.
+    return Response.redirect(new URL(__imgUrl, request.url).href, 302);
+  }
+
   // Handle metadata routes (sitemap.xml, robots.txt, manifest.webmanifest, etc.)
   for (const metaRoute of metadataRoutes) {
     if (cleanPathname === metaRoute.servedUrl) {

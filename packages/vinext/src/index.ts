@@ -2095,6 +2095,23 @@ hydrate();
                 return next();
               }
 
+              // ── Image optimization passthrough (dev mode) ─────────────
+              // In dev, redirect to the original asset URL so Vite serves it.
+              if (url.split("?")[0] === "/_vinext/image") {
+                const imgParams = new URLSearchParams(url.split("?")[1] ?? "");
+                const imgUrl = imgParams.get("url");
+                // Allowlist: must start with "/" but not "//" — blocks absolute
+                // URLs, protocol-relative, and exotic schemes (data:, javascript:, etc.).
+                if (!imgUrl || !imgUrl.startsWith("/") || imgUrl.startsWith("//")) {
+                  res.writeHead(400);
+                  res.end(!imgUrl ? "Missing url parameter" : "Only relative URLs allowed");
+                  return;
+                }
+                res.writeHead(302, { Location: imgUrl });
+                res.end();
+                return;
+              }
+
               // Vite's built-in middleware may rewrite "/" to "/index.html".
               // Normalize it back so our router can match correctly.
               const rawPathname = url.split("?")[0];

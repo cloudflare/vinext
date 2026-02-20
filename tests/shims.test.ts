@@ -3900,7 +3900,10 @@ describe("next/image enhancements", () => {
       height: 600,
       priority: true,
     });
-    expect(result.props.src).toBe("/photo.jpg");
+    // Local images now route through the optimization endpoint
+    expect(result.props.src).toContain("/_vinext/image");
+    expect(result.props.src).toContain("url=%2Fphoto.jpg");
+    expect(result.props.src).toContain("w=800");
     expect(result.props.alt).toBe("Test");
     expect(result.props.width).toBe(800);
     expect(result.props.height).toBe(600);
@@ -3929,7 +3932,9 @@ describe("next/image enhancements", () => {
       src: { src: "/imported.jpg", width: 1200, height: 800, blurDataURL: "data:..." },
       alt: "Imported",
     });
-    expect(result.props.src).toBe("/imported.jpg");
+    expect(result.props.src).toContain("/_vinext/image");
+    expect(result.props.src).toContain("url=%2Fimported.jpg");
+    expect(result.props.src).toContain("w=1200");
     expect(result.props.width).toBe(1200);
     expect(result.props.height).toBe(800);
   });
@@ -3945,7 +3950,9 @@ describe("next/image enhancements", () => {
       height: 800,
     });
     expect(result.props.srcSet).toBeDefined();
-    expect(result.props.srcSet).toContain("/photo.jpg");
+    // srcSet entries point to /_vinext/image optimization endpoint
+    expect(result.props.srcSet).toContain("/_vinext/image");
+    expect(result.props.srcSet).toContain("url=%2Fphoto.jpg");
     expect(result.props.srcSet).toContain("w");
   });
 
@@ -4025,7 +4032,23 @@ describe("next/image enhancements", () => {
       height: 600,
       loader: ({ src, width, quality }) => `https://cdn.example.com${src}?w=${width}&q=${quality}`,
     });
+    // Custom loader bypasses the /_vinext/image endpoint
     expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=800&q=75");
+    expect(result.props.src).not.toContain("/_vinext/image");
+  });
+
+  it("unoptimized prop bypasses /_vinext/image endpoint", async () => {
+    const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+    const result = getImageProps({
+      src: "/photo.jpg",
+      alt: "Unoptimized",
+      width: 800,
+      height: 600,
+      unoptimized: true,
+    });
+    // unoptimized=true should serve the raw src, not the optimization endpoint
+    expect(result.props.src).toBe("/photo.jpg");
+    expect(result.props.src).not.toContain("/_vinext/image");
   });
 });
 
@@ -4038,7 +4061,9 @@ describe("next/image component rendering", () => {
     const html = renderToStaticMarkup(
       React.createElement(Image, { src: "/photo.jpg", alt: "Test photo", width: 800, height: 600 }),
     );
-    expect(html).toContain('src="/photo.jpg"');
+    // Local images route through the optimization endpoint
+    expect(html).toContain("/_vinext/image");
+    expect(html).toContain("url=%2Fphoto.jpg");
     expect(html).toContain('alt="Test photo"');
     expect(html).toContain('width="800"');
     expect(html).toContain('height="600"');
@@ -4092,8 +4117,9 @@ describe("next/image component rendering", () => {
       React.createElement(Image, { src: "/photo.jpg", alt: "Photo", width: 1200, height: 800 }),
     );
     expect(html).toContain("srcSet");
-    expect(html).toContain("/photo.jpg");
-    expect(html).toContain("w");
+    // srcSet entries point to /_vinext/image optimization endpoint
+    expect(html).toContain("/_vinext/image");
+    expect(html).toContain("url=%2Fphoto.jpg");
   });
 
   it("renders blur placeholder with background-image", async () => {
@@ -4172,7 +4198,8 @@ describe("next/image component rendering", () => {
     const html = renderToStaticMarkup(
       React.createElement(Image, { src: staticImport, alt: "Imported" }),
     );
-    expect(html).toContain('src="/imported.jpg"');
+    expect(html).toContain("/_vinext/image");
+    expect(html).toContain("url=%2Fimported.jpg");
     expect(html).toContain('width="1200"');
     expect(html).toContain('height="800"');
   });
@@ -4318,6 +4345,115 @@ describe("image remote pattern matching", () => {
     expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.jpg"))).toBe(true);
     // "cdnXexampleXcom" should not match "cdn.example.com"
     expect(matchRemotePattern(pattern, new URL("https://cdnXexample.com/img.jpg"))).toBe(false);
+  });
+});
+
+describe("image optimization URL generation", () => {
+  it("imageOptimizationUrl generates correct URL", async () => {
+    const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
+    const url = imageOptimizationUrl("/images/hero.webp", 1200, 75);
+    expect(url).toBe("/_vinext/image?url=%2Fimages%2Fhero.webp&w=1200&q=75");
+  });
+
+  it("imageOptimizationUrl encodes special characters", async () => {
+    const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
+    const url = imageOptimizationUrl("/images/my photo.jpg", 800, 80);
+    expect(url).toContain("url=%2Fimages%2Fmy%20photo.jpg");
+    expect(url).toContain("w=800");
+    expect(url).toContain("q=80");
+  });
+
+  it("imageOptimizationUrl uses default quality of 75", async () => {
+    const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
+    const url = imageOptimizationUrl("/img.png", 640);
+    expect(url).toContain("q=75");
+  });
+});
+
+describe("image optimization request parsing", () => {
+  it("parseImageParams extracts url, width, quality", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    const url = new URL("http://localhost/_vinext/image?url=%2Fimages%2Fhero.webp&w=1200&q=75");
+    const params = parseImageParams(url);
+    expect(params).not.toBeNull();
+    expect(params!.imageUrl).toBe("/images/hero.webp");
+    expect(params!.width).toBe(1200);
+    expect(params!.quality).toBe(75);
+  });
+
+  it("parseImageParams returns null when url is missing", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    const url = new URL("http://localhost/_vinext/image?w=800&q=75");
+    expect(parseImageParams(url)).toBeNull();
+  });
+
+  it("parseImageParams blocks absolute http URLs", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    const url = new URL("http://localhost/_vinext/image?url=http%3A%2F%2Fevil.com%2Fimg.jpg&w=800");
+    expect(parseImageParams(url)).toBeNull();
+  });
+
+  it("parseImageParams blocks absolute https URLs", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    const url = new URL("http://localhost/_vinext/image?url=https%3A%2F%2Fevil.com%2Fimg.jpg&w=800");
+    expect(parseImageParams(url)).toBeNull();
+  });
+
+  it("parseImageParams blocks protocol-relative URLs", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    const url = new URL("http://localhost/_vinext/image?url=%2F%2Fevil.com%2Fimg.jpg&w=800");
+    expect(parseImageParams(url)).toBeNull();
+  });
+
+  it("parseImageParams defaults width to 0 and quality to 75", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    const url = new URL("http://localhost/_vinext/image?url=%2Fimg.jpg");
+    const params = parseImageParams(url);
+    expect(params).not.toBeNull();
+    expect(params!.width).toBe(0);
+    expect(params!.quality).toBe(75);
+  });
+
+  it("parseImageParams blocks data: URIs (exotic scheme bypass)", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(parseImageParams(new URL("http://localhost/_vinext/image?url=data%3Atext%2Fhtml%2C%3Cscript%3Ealert(1)%3C%2Fscript%3E&w=800"))).toBeNull();
+  });
+
+  it("parseImageParams blocks javascript: URIs", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(parseImageParams(new URL("http://localhost/_vinext/image?url=javascript%3Aalert(1)&w=800"))).toBeNull();
+  });
+
+  it("parseImageParams blocks bare filenames (no leading slash)", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(parseImageParams(new URL("http://localhost/_vinext/image?url=img.jpg&w=800"))).toBeNull();
+  });
+
+  it("parseImageParams rejects quality outside 1-100", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&q=0"))).toBeNull();
+    expect(parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&q=101"))).toBeNull();
+  });
+
+  it("negotiateImageFormat prefers AVIF over WebP", async () => {
+    const { negotiateImageFormat } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(negotiateImageFormat("image/avif,image/webp,image/jpeg")).toBe("image/avif");
+  });
+
+  it("negotiateImageFormat selects WebP when no AVIF", async () => {
+    const { negotiateImageFormat } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(negotiateImageFormat("image/webp,image/jpeg")).toBe("image/webp");
+  });
+
+  it("negotiateImageFormat falls back to JPEG", async () => {
+    const { negotiateImageFormat } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(negotiateImageFormat("image/png,image/jpeg")).toBe("image/jpeg");
+    expect(negotiateImageFormat(null)).toBe("image/jpeg");
+  });
+
+  it("IMAGE_OPTIMIZATION_PATH is /_vinext/image", async () => {
+    const { IMAGE_OPTIMIZATION_PATH } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(IMAGE_OPTIMIZATION_PATH).toBe("/_vinext/image");
   });
 });
 

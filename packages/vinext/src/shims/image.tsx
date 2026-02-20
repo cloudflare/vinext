@@ -3,7 +3,8 @@
  *
  * Translates Next.js Image props to @unpic/react Image component.
  * @unpic/react auto-detects CDN from URL and uses native transforms.
- * For local images (relative paths), falls back to a basic <img>.
+ * For local images (relative paths), routes through `/_vinext/image`
+ * for server-side optimization (resize, format negotiation, quality).
  *
  * Remote images are validated against `images.remotePatterns` and
  * `images.domains` from next.config.js. Unmatched URLs are blocked
@@ -113,18 +114,27 @@ function isRemoteUrl(src: string): boolean {
 const RESPONSIVE_WIDTHS = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
 
 /**
+ * Build a `/_vinext/image` optimization URL.
+ *
+ * In production (Cloudflare Workers), the worker intercepts this path and uses
+ * the Images binding to resize/transcode on the fly. In dev, the Vite dev
+ * server handles it as a passthrough (serves the original file).
+ */
+export function imageOptimizationUrl(src: string, width: number, quality: number = 75): string {
+  return `/_vinext/image?url=${encodeURIComponent(src)}&w=${width}&q=${quality}`;
+}
+
+/**
  * Generate a srcSet string for responsive images.
  *
- * For local images in development, the src stays the same (Vite serves the
- * original). The srcSet hints help the browser's responsive image selection.
- * In production with vite-imagetools, these would point to resized variants.
- *
- * Only includes widths <= 2x the original image width.
+ * Each width points to the `/_vinext/image` optimization endpoint so the
+ * server can resize and transcode the image. Only includes widths that are
+ * <= 2x the original image width to avoid pointless upscaling.
  */
-function generateSrcSet(src: string, originalWidth: number): string {
+function generateSrcSet(src: string, originalWidth: number, quality: number = 75): string {
   const widths = RESPONSIVE_WIDTHS.filter((w) => w <= originalWidth * 2);
-  if (widths.length === 0) return `${src} ${originalWidth}w`;
-  return widths.map((w) => `${src} ${w}w`).join(", ");
+  if (widths.length === 0) return `${imageOptimizationUrl(src, originalWidth, quality)} ${originalWidth}w`;
+  return widths.map((w) => `${imageOptimizationUrl(src, w, quality)} ${w}w`).join(", ");
 }
 
 const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
@@ -231,13 +241,28 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     // (unpic requires them for constrained layout)
   }
 
+  // Route local images through the /_vinext/image optimization endpoint.
+  // In production on Cloudflare Workers, this resizes and transcodes via
+  // the Images binding. In dev, it serves the original file as a passthrough.
+  // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
+  const imgQuality = quality ?? 75;
+  const skipOptimization = _unoptimized === true;
+
   // Build srcSet for responsive local images (common breakpoints).
-  // Vite serves images at original resolution; srcSet hints help browsers
-  // pick the right size for their viewport. No actual resizing happens at
-  // runtime — Vite's asset pipeline handles that at build time.
-  const srcSet = imgWidth && !fill
-    ? generateSrcSet(src, imgWidth)
-    : undefined;
+  // Each entry points to /_vinext/image with the appropriate width.
+  const srcSet = imgWidth && !fill && !skipOptimization
+    ? generateSrcSet(src, imgWidth, imgQuality)
+    : imgWidth && !fill
+      ? RESPONSIVE_WIDTHS.filter((w) => w <= imgWidth * 2).map((w) => `${src} ${w}w`).join(", ") || `${src} ${imgWidth}w`
+      : undefined;
+
+  // The main `src` also goes through the optimization endpoint. Use the
+  // declared width (or the first responsive width as fallback).
+  const optimizedSrc = skipOptimization
+    ? src
+    : imgWidth
+      ? imageOptimizationUrl(src, imgWidth, imgQuality)
+      : imageOptimizationUrl(src, RESPONSIVE_WIDTHS[0], imgQuality);
 
   // Blur placeholder: show a low-quality background while the image loads
   const blurStyle = placeholder === "blur" && imgBlurDataURL
@@ -250,11 +275,11 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     : undefined;
 
   // For local images, render a standard <img> tag with srcSet and blur support.
-  // In production, vite-imagetools would optimize these at build time.
+  // The src and srcSet point to the /_vinext/image optimization endpoint.
   return (
     <img
       ref={ref}
-      src={src}
+      src={optimizedSrc}
       alt={alt}
       width={fill ? undefined : imgWidth}
       height={fill ? undefined : imgHeight}
@@ -322,15 +347,25 @@ export function getImageProps(props: ImageProps): {
   }
 
   // Resolve src through custom loader if provided
+  const imgQuality = _quality ?? 75;
   const resolvedSrc = blockedInProd
     ? ""
     : loader
-      ? loader({ src, width: imgWidth ?? 0, quality: _quality ?? 75 })
+      ? loader({ src, width: imgWidth ?? 0, quality: imgQuality })
       : src;
 
-  // Build srcSet for local images
-  const srcSet = imgWidth && !fill && !isRemoteUrl(resolvedSrc)
-    ? generateSrcSet(resolvedSrc, imgWidth)
+  // For local images (no loader, not remote), route through optimization endpoint.
+  // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
+  const skipOpt = _unoptimized === true || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
+  const optimizedSrc = skipOpt
+    ? resolvedSrc
+    : imgWidth
+      ? imageOptimizationUrl(resolvedSrc, imgWidth, imgQuality)
+      : imageOptimizationUrl(resolvedSrc, RESPONSIVE_WIDTHS[0], imgQuality);
+
+  // Build srcSet for local images — each width points to /_vinext/image
+  const srcSet = imgWidth && !fill && !isRemoteUrl(resolvedSrc) && !loader && !_unoptimized
+    ? generateSrcSet(resolvedSrc, imgWidth, imgQuality)
     : undefined;
 
   // Blur placeholder styles
@@ -345,7 +380,7 @@ export function getImageProps(props: ImageProps): {
 
   return {
     props: {
-      src: resolvedSrc,
+      src: optimizedSrc,
       alt,
       width: fill ? undefined : imgWidth,
       height: fill ? undefined : imgHeight,

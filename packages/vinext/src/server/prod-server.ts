@@ -25,6 +25,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
+import { IMAGE_OPTIMIZATION_PATH, parseImageParams } from "./image-optimization.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -464,6 +465,25 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       return;
     }
 
+    // Image optimization passthrough (Node.js prod server has no Images binding;
+    // serves the original file with cache headers)
+    if (pathname === IMAGE_OPTIMIZATION_PATH) {
+      const parsedUrl = new URL(url, "http://localhost");
+      const params = parseImageParams(parsedUrl);
+      if (!params) {
+        res.writeHead(400);
+        res.end("Bad Request");
+        return;
+      }
+      // Serve the original image from the client build directory
+      if (tryServeStatic(req, res, clientDir, params.imageUrl, false)) {
+        return;
+      }
+      res.writeHead(404);
+      res.end("Image not found");
+      return;
+    }
+
     try {
       // Convert Node.js request to Web Request and call the RSC handler
       const request = nodeToWebRequest(req);
@@ -557,6 +577,23 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       !staticLookupPath.startsWith("/api/") &&
       tryServeStatic(req, res, clientDir, staticLookupPath, compress)
     ) {
+      return;
+    }
+
+    // ── Image optimization passthrough ──────────────────────────────
+    if (pathname === IMAGE_OPTIMIZATION_PATH || staticLookupPath === IMAGE_OPTIMIZATION_PATH) {
+      const parsedUrl = new URL(rawUrl, "http://localhost");
+      const params = parseImageParams(parsedUrl);
+      if (!params) {
+        res.writeHead(400);
+        res.end("Bad Request");
+        return;
+      }
+      if (tryServeStatic(req, res, clientDir, params.imageUrl, false)) {
+        return;
+      }
+      res.writeHead(404);
+      res.end("Image not found");
       return;
     }
 
