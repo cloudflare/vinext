@@ -220,9 +220,10 @@ import { clearPrivateCache as _clearPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
-import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle } from "next/font/google";
-import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloads } from "next/font/local";
+import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
+import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
+function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
 
 // Set navigation context in the ALS-backed store. "use client" components
 // rendered during SSR need the pathname/searchParams/params but the SSR
@@ -338,9 +339,12 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
   setHeadersContext(null);
   setNavigationContext(null);
+  const _respHeaders = { "Content-Type": "text/html; charset=utf-8" };
+  const _linkParts = (fontData.preloads || []).map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; });
+  if (_linkParts.length > 0) _respHeaders["Link"] = _linkParts.join(", ");
   return new Response(htmlStream, {
     status: statusCode,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
+    headers: _respHeaders,
   });
 }
 
@@ -405,9 +409,12 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
   const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
   setHeadersContext(null);
   setNavigationContext(null);
+  const _errHeaders = { "Content-Type": "text/html; charset=utf-8" };
+  const _errLinkParts = (fontData.preloads || []).map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; });
+  if (_errLinkParts.length > 0) _errHeaders["Link"] = _errLinkParts.join(", ");
   return new Response(htmlStream, {
     status: 200,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
+    headers: _errHeaders,
   });
 }
 
@@ -1817,6 +1824,16 @@ async function _handleRequest(request) {
     preloads: _getSSRFontPreloads(),
   };
 
+  // Build HTTP Link header for font preloading.
+  // This lets the browser (and CDN) start fetching font files before parsing HTML,
+  // eliminating the CSS → woff2 download waterfall.
+  const fontPreloads = fontData.preloads || [];
+  const fontLinkHeaderParts = [];
+  for (const preload of fontPreloads) {
+    fontLinkHeaderParts.push("<" + preload.href + ">; rel=preload; as=font; type=" + preload.type + "; crossorigin");
+  }
+  const fontLinkHeader = fontLinkHeaderParts.length > 0 ? fontLinkHeaderParts.join(", ") : "";
+
   // Delegate to SSR environment for HTML rendering
   let htmlStream;
   try {
@@ -1837,10 +1854,14 @@ async function _handleRequest(request) {
   setHeadersContext(null);
   setNavigationContext(null);
 
-  // Helper to attach draftMode cookie, middleware headers, and rewrite status to a response
+  // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
   function attachMiddlewareContext(response) {
     if (draftCookie) {
       response.headers.append("Set-Cookie", draftCookie);
+    }
+    // Set HTTP Link header for font preloading
+    if (fontLinkHeader) {
+      response.headers.set("Link", fontLinkHeader);
     }
     // Merge middleware response headers into the final response
     if (_middlewareResponseHeaders) {

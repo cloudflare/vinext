@@ -692,8 +692,8 @@ import { setSSRContext } from "next/router";
 import { getCacheHandler } from "next/cache";
 import { withFetchCache } from "vinext/fetch-cache";
 import { safeJsonStringify } from "vinext/html";
-import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle } from "next/font/google";
-import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloads } from "next/font/local";
+import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
+import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 ${middlewareImportCode}
 
 // i18n config (embedded at build time)
@@ -1154,6 +1154,19 @@ export async function renderPage(request, url, manifest) {
         return new Response("404", { status: 404 });
       }
     }
+    // Build font Link header early so it's available for ISR cached responses too.
+    // Font preloads are module-level state populated at import time and persist across requests.
+    var _fontLinkHeader = "";
+    var _allFp = [];
+    try {
+      var _fpGoogle = typeof _getSSRFontPreloadsGoogle === "function" ? _getSSRFontPreloadsGoogle() : [];
+      var _fpLocal = typeof _getSSRFontPreloadsLocal === "function" ? _getSSRFontPreloadsLocal() : [];
+      _allFp = _fpGoogle.concat(_fpLocal);
+      if (_allFp.length > 0) {
+        _fontLinkHeader = _allFp.map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; }).join(", ");
+      }
+    } catch (e) { /* font preloads not available */ }
+
     let isrRevalidateSeconds = null;
     if (typeof pageModule.getStaticProps === "function") {
       const pathname = routeUrl.split("?")[0];
@@ -1161,10 +1174,12 @@ export async function renderPage(request, url, manifest) {
       const cached = await isrGet(cacheKey);
 
       if (cached && !cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
-        return new Response(cached.value.value.html, { status: 200, headers: {
+        var _hitHeaders = {
           "Content-Type": "text/html", "X-Vinext-Cache": "HIT",
           "Cache-Control": "s-maxage=" + (cached.value.value.revalidate || 60) + ", stale-while-revalidate",
-        }});
+        };
+        if (_fontLinkHeader) _hitHeaders["Link"] = _fontLinkHeader;
+        return new Response(cached.value.value.html, { status: 200, headers: _hitHeaders });
       }
 
       if (cached && cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
@@ -1174,10 +1189,12 @@ export async function renderPage(request, url, manifest) {
             await isrSet(cacheKey, { kind: "PAGES", html: cached.value.value.html, pageData: freshResult.props, headers: undefined, status: undefined }, freshResult.revalidate);
           }
         });
-        return new Response(cached.value.value.html, { status: 200, headers: {
+        var _staleHeaders = {
           "Content-Type": "text/html", "X-Vinext-Cache": "STALE",
           "Cache-Control": "s-maxage=0, stale-while-revalidate",
-        }});
+        };
+        if (_fontLinkHeader) _staleHeaders["Link"] = _fontLinkHeader;
+        return new Response(cached.value.value.html, { status: 200, headers: _staleHeaders });
       }
 
       const ctx = {
@@ -1212,17 +1229,15 @@ export async function renderPage(request, url, manifest) {
 
     const ssrHeadHTML = typeof getSSRHeadHTML === "function" ? getSSRHeadHTML() : "";
 
-    // Collect SSR font data (Google Font links, local font preloads, font-face styles)
+    // Collect SSR font data (Google Font links, font preloads, font-face styles)
     var fontHeadHTML = "";
     function _escAttr(s) { return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;"); }
     try {
       var fontLinks = typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
       for (var fl of fontLinks) { fontHeadHTML += '<link rel="stylesheet" href="' + _escAttr(fl) + '" />\\n  '; }
     } catch (e) { /* next/font/google not used */ }
-    try {
-      var fontPreloads = typeof _getSSRFontPreloads === "function" ? _getSSRFontPreloads() : [];
-      for (var fp of fontPreloads) { fontHeadHTML += '<link rel="preload" href="' + _escAttr(fp.href) + '" as="font" type="' + _escAttr(fp.type) + '" crossorigin />\\n  '; }
-    } catch (e) { /* next/font/local not used */ }
+    // Emit <link rel="preload"> for all font files (reuse _allFp collected earlier for Link header)
+    for (var fp of _allFp) { fontHeadHTML += '<link rel="preload" href="' + _escAttr(fp.href) + '" as="font" type="' + _escAttr(fp.type) + '" crossorigin />\\n  '; }
     try {
       var allFontStyles = [];
       if (typeof _getSSRFontStylesGoogle === "function") allFontStyles.push(..._getSSRFontStylesGoogle());
@@ -1316,6 +1331,10 @@ export async function renderPage(request, url, manifest) {
     if (isrRevalidateSeconds) {
       responseHeaders["Cache-Control"] = "s-maxage=" + isrRevalidateSeconds + ", stale-while-revalidate";
       responseHeaders["X-Vinext-Cache"] = "MISS";
+    }
+    // Set HTTP Link header for font preloading
+    if (_fontLinkHeader) {
+      responseHeaders["Link"] = _fontLinkHeader;
     }
     return new Response(compositeStream, { status: 200, headers: responseHeaders });
   } catch (e) {

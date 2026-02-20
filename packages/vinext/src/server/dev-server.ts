@@ -423,6 +423,29 @@ export function createSSRHandler(
           return;
         }
       }
+      // Collect font preloads early so ISR cached responses can include
+      // the Link header (font preloads are module-level state that persists
+      // across requests after the font modules are first loaded).
+      let earlyFontLinkHeader = "";
+      try {
+        const earlyPreloads: Array<{ href: string; type: string }> = [];
+        const fontGoogleEarly = await server.ssrLoadModule("next/font/google");
+        if (typeof fontGoogleEarly.getSSRFontPreloads === "function") {
+          earlyPreloads.push(...fontGoogleEarly.getSSRFontPreloads());
+        }
+        const fontLocalEarly = await server.ssrLoadModule("next/font/local");
+        if (typeof fontLocalEarly.getSSRFontPreloads === "function") {
+          earlyPreloads.push(...fontLocalEarly.getSSRFontPreloads());
+        }
+        if (earlyPreloads.length > 0) {
+          earlyFontLinkHeader = earlyPreloads
+            .map((p) => `<${p.href}>; rel=preload; as=font; type=${p.type}; crossorigin`)
+            .join(", ");
+        }
+      } catch {
+        // Font modules not loaded yet — skip
+      }
+
       if (typeof pageModule.getStaticProps === "function") {
         // Check ISR cache before calling getStaticProps
         const cacheKey = isrCacheKey("pages", url.split("?")[0]);
@@ -434,11 +457,13 @@ export function createSSRHandler(
           const cachedHtml = cachedPage.html;
           const transformedHtml = await server.transformIndexHtml(url, cachedHtml);
           const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
-          res.writeHead(200, {
+          const hitHeaders: Record<string, string> = {
             "Content-Type": "text/html",
             "X-Vinext-Cache": "HIT",
             "Cache-Control": `s-maxage=${revalidateSecs}, stale-while-revalidate`,
-          });
+          };
+          if (earlyFontLinkHeader) hitHeaders["Link"] = earlyFontLinkHeader;
+          res.writeHead(200, hitHeaders);
           res.end(transformedHtml);
           return;
         }
@@ -462,11 +487,13 @@ export function createSSRHandler(
           });
 
           const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;
-          res.writeHead(200, {
+          const staleHeaders: Record<string, string> = {
             "Content-Type": "text/html",
             "X-Vinext-Cache": "STALE",
             "Cache-Control": `s-maxage=${revalidateSecs}, stale-while-revalidate`,
-          });
+          };
+          if (earlyFontLinkHeader) staleHeaders["Link"] = earlyFontLinkHeader;
+          res.writeHead(200, staleHeaders);
           res.end(transformedHtml);
           return;
         }
@@ -549,6 +576,7 @@ export function createSSRHandler(
       // Collect SSR font links (Google Fonts <link> tags) and font class styles
       let fontHeadHTML = "";
       const allFontStyles: string[] = [];
+      const allFontPreloads: Array<{ href: string; type: string }> = [];
       try {
         const fontGoogle = await server.ssrLoadModule("next/font/google");
         if (typeof fontGoogle.getSSRFontLinks === "function") {
@@ -561,6 +589,10 @@ export function createSSRHandler(
         if (typeof fontGoogle.getSSRFontStyles === "function") {
           allFontStyles.push(...fontGoogle.getSSRFontStyles());
         }
+        // Collect preloads from self-hosted Google fonts
+        if (typeof fontGoogle.getSSRFontPreloads === "function") {
+          allFontPreloads.push(...fontGoogle.getSSRFontPreloads());
+        }
       } catch {
         // next/font/google not used — skip
       }
@@ -569,19 +601,20 @@ export function createSSRHandler(
         if (typeof fontLocal.getSSRFontStyles === "function") {
           allFontStyles.push(...fontLocal.getSSRFontStyles());
         }
-        // Emit <link rel="preload"> for local font files
+        // Collect preloads from local font files
         if (typeof fontLocal.getSSRFontPreloads === "function") {
-          const preloads = fontLocal.getSSRFontPreloads();
-          for (const { href, type } of preloads) {
-            // Escape href/type to prevent HTML attribute injection (defense-in-depth;
-            // Vite-resolved asset paths should never contain special chars).
-            const safeHref = href.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-            const safeType = type.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
-            fontHeadHTML += `<link rel="preload" href="${safeHref}" as="font" type="${safeType}" crossorigin />\n  `;
-          }
+          allFontPreloads.push(...fontLocal.getSSRFontPreloads());
         }
       } catch {
         // next/font/local not used — skip
+      }
+      // Emit <link rel="preload"> for all collected font files (Google + local)
+      for (const { href, type } of allFontPreloads) {
+        // Escape href/type to prevent HTML attribute injection (defense-in-depth;
+        // Vite-resolved asset paths should never contain special chars).
+        const safeHref = href.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+        const safeType = type.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+        fontHeadHTML += `<link rel="preload" href="${safeHref}" as="font" type="${safeType}" crossorigin />\n  `;
       }
       if (allFontStyles.length > 0) {
         fontHeadHTML += `<style data-vinext-fonts>${allFontStyles.join("\n")}</style>\n  `;
@@ -660,6 +693,14 @@ hydrate();
       if (isrRevalidateSeconds) {
         extraHeaders["Cache-Control"] = `s-maxage=${isrRevalidateSeconds}, stale-while-revalidate`;
         extraHeaders["X-Vinext-Cache"] = "MISS";
+      }
+
+      // Set HTTP Link header for font preloading.
+      // This lets the browser (and CDN) start fetching font files before parsing HTML.
+      if (allFontPreloads.length > 0) {
+        extraHeaders["Link"] = allFontPreloads
+          .map((p) => `<${p.href}>; rel=preload; as=font; type=${p.type}; crossorigin`)
+          .join(", ");
       }
 
       // Stream the page using progressive SSR.

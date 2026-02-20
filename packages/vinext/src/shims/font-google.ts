@@ -217,6 +217,64 @@ export function getSSRFontLinks(): string[] {
   return [...ssrFontUrls];
 }
 
+// SSR: collect font file URLs for <link rel="preload"> injection (self-hosted Google fonts)
+const ssrFontPreloads: Array<{ href: string; type: string }> = [];
+const ssrFontPreloadHrefs = new Set<string>();
+
+/**
+ * Get collected SSR font preload data (used by the renderer).
+ * Returns an array of { href, type } objects for emitting
+ * <link rel="preload" as="font" ...> tags.
+ */
+export function getSSRFontPreloads(): Array<{ href: string; type: string }> {
+  return [...ssrFontPreloads];
+}
+
+/**
+ * Determine the MIME type for a font file based on its extension.
+ */
+function getFontMimeType(pathOrUrl: string): string {
+  if (pathOrUrl.endsWith(".woff2")) return "font/woff2";
+  if (pathOrUrl.endsWith(".woff")) return "font/woff";
+  if (pathOrUrl.endsWith(".ttf")) return "font/ttf";
+  if (pathOrUrl.endsWith(".otf")) return "font/opentype";
+  return "font/woff2";
+}
+
+/**
+ * Extract font file URLs from @font-face CSS rules.
+ * Parses url('...') references from the CSS text.
+ */
+function extractFontUrlsFromCSS(css: string): string[] {
+  const urls: string[] = [];
+  const urlRegex = /url\(['"]?([^'")]+)['"]?\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = urlRegex.exec(css)) !== null) {
+    const url = match[1];
+    // Only collect absolute paths (starting with /) — these are self-hosted font files
+    if (url && url.startsWith("/")) {
+      urls.push(url);
+    }
+  }
+  return urls;
+}
+
+/**
+ * Collect font file URLs from self-hosted CSS for preload link generation.
+ * Only collects on the server (SSR). Deduplicates by href using a Set for O(1) lookups.
+ */
+function collectFontPreloadsFromCSS(css: string): void {
+  if (typeof document !== "undefined") return; // client-side, skip
+
+  const urls = extractFontUrlsFromCSS(css);
+  for (const href of urls) {
+    if (!ssrFontPreloadHrefs.has(href)) {
+      ssrFontPreloadHrefs.add(href);
+      ssrFontPreloads.push({ href, type: getFontMimeType(href) });
+    }
+  }
+}
+
 /** Track injected self-hosted @font-face blocks (deduplicate) */
 const injectedSelfHosted = new Set<string>();
 
@@ -227,6 +285,9 @@ const injectedSelfHosted = new Set<string>();
 function injectSelfHostedCSS(css: string): void {
   if (injectedSelfHosted.has(css)) return;
   injectedSelfHosted.add(css);
+
+  // Extract font file URLs for preload hints (SSR only)
+  collectFontPreloadsFromCSS(css);
 
   if (typeof document === "undefined") {
     // SSR: add to collected styles
