@@ -262,22 +262,21 @@ function MetricChart({
 }) {
   const runners = Object.keys(RUNNER_LABELS);
 
+  // Shared x-axis labels — one per commit, in chronological order
+  const labels = data.map((commit) => commit.commitShort);
+
+  // Each series has one value per commit; null when the runner has no data for that commit
   const series = runners.map((runner) => ({
     name: RUNNER_LABELS[runner] || runner,
     color: RUNNER_COLORS[runner],
-    points: data
-      .map((commit) => {
-        const m = commit.runners[runner];
-        if (!m) return null;
-        let value: number | null = null;
-        if (metric === "build_time") value = m.buildTimeMean;
-        else if (metric === "bundle_size") value = m.bundleSizeGzip;
-        else if (metric === "cold_start") value = m.devColdStartMs;
-        return value !== null
-          ? { label: commit.commitShort, value }
-          : null;
-      })
-      .filter(Boolean) as { label: string; value: number }[],
+    values: data.map((commit) => {
+      const m = commit.runners[runner];
+      if (!m) return null;
+      if (metric === "build_time") return m.buildTimeMean;
+      if (metric === "bundle_size") return m.bundleSizeGzip;
+      if (metric === "cold_start") return m.devColdStartMs;
+      return null;
+    }),
   }));
 
   const yLabel =
@@ -294,7 +293,7 @@ function MetricChart({
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-4">
-      <TrendChart series={series} yLabel={yLabel} formatY={formatY} height={300} />
+      <TrendChart labels={labels} series={series} yLabel={yLabel} formatY={formatY} height={300} />
     </div>
   );
 }

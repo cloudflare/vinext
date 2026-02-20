@@ -4,18 +4,16 @@ import { useState, useRef } from "react";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-interface DataPoint {
-  label: string;
-  value: number;
-}
-
 interface Series {
   name: string;
   color: string;
-  points: DataPoint[];
+  /** One value per label. null = no data for this commit. */
+  values: (number | null)[];
 }
 
 interface TrendChartProps {
+  /** Shared x-axis labels (e.g. commit short hashes), same length as each series' values array. */
+  labels: string[];
   series: Series[];
   yLabel?: string;
   formatY?: (value: number) => string;
@@ -27,6 +25,7 @@ interface TrendChartProps {
 const PADDING = { top: 20, right: 20, bottom: 40, left: 70 };
 
 export function TrendChart({
+  labels,
   series,
   yLabel = "",
   formatY = (v) => String(v),
@@ -39,8 +38,10 @@ export function TrendChart({
     content: string;
   } | null>(null);
 
-  // Determine data bounds
-  const allValues = series.flatMap((s) => s.points.map((p) => p.value));
+  // Collect all non-null values to determine y-axis bounds
+  const allValues = series.flatMap((s) =>
+    s.values.filter((v): v is number => v !== null),
+  );
   if (allValues.length === 0) {
     return (
       <div className="flex items-center justify-center py-12 text-gray-400 text-sm">
@@ -49,7 +50,7 @@ export function TrendChart({
     );
   }
 
-  const maxPoints = Math.max(...series.map((s) => s.points.length));
+  const numPoints = labels.length;
   const minVal = Math.min(...allValues) * 0.9;
   const maxVal = Math.max(...allValues) * 1.1;
 
@@ -58,8 +59,8 @@ export function TrendChart({
   const innerH = height - PADDING.top - PADDING.bottom;
 
   function scaleX(i: number): number {
-    if (maxPoints <= 1) return PADDING.left + innerW / 2;
-    return PADDING.left + (i / (maxPoints - 1)) * innerW;
+    if (numPoints <= 1) return PADDING.left + innerW / 2;
+    return PADDING.left + (i / (numPoints - 1)) * innerW;
   }
 
   function scaleY(v: number): number {
@@ -73,9 +74,8 @@ export function TrendChart({
     return { value: v, y: scaleY(v) };
   });
 
-  // X-axis labels (use first series for labels, show every Nth)
-  const labels = series[0]?.points || [];
-  const labelStep = Math.max(1, Math.floor(labels.length / 8));
+  // X-axis labels (show every Nth)
+  const labelStep = Math.max(1, Math.floor(numPoints / 8));
 
   return (
     <div className="relative">
@@ -109,8 +109,8 @@ export function TrendChart({
         ))}
 
         {/* X-axis labels */}
-        {labels.map((point, i) => {
-          if (i % labelStep !== 0 && i !== labels.length - 1) return null;
+        {labels.map((label, i) => {
+          if (i % labelStep !== 0 && i !== numPoints - 1) return null;
           return (
             <text
               key={i}
@@ -120,50 +120,66 @@ export function TrendChart({
               fontSize="10"
               fill="#9ca3af"
             >
-              {point.label}
+              {label}
             </text>
           );
         })}
 
         {/* Series lines + dots */}
         {series.map((s) => {
-          if (s.points.length === 0) return null;
+          // Build path segments, breaking on null values
+          const segments: string[] = [];
+          let inSegment = false;
 
-          const pathD = s.points
-            .map((p, i) => {
-              const x = scaleX(i);
-              const y = scaleY(p.value);
-              return `${i === 0 ? "M" : "L"} ${x} ${y}`;
-            })
-            .join(" ");
+          for (let i = 0; i < s.values.length; i++) {
+            const v = s.values[i];
+            if (v === null) {
+              inSegment = false;
+              continue;
+            }
+            const x = scaleX(i);
+            const y = scaleY(v);
+            if (!inSegment) {
+              segments.push(`M ${x} ${y}`);
+              inSegment = true;
+            } else {
+              segments.push(`L ${x} ${y}`);
+            }
+          }
+
+          if (segments.length === 0) return null;
+          const pathD = segments.join(" ");
 
           return (
             <g key={s.name}>
               {/* Line */}
               <path d={pathD} fill="none" stroke={s.color} strokeWidth="2" />
-              {/* Dots */}
-              {s.points.map((p, i) => (
-                <circle
-                  key={i}
-                  cx={scaleX(i)}
-                  cy={scaleY(p.value)}
-                  r="3.5"
-                  fill={s.color}
-                  stroke="white"
-                  strokeWidth="1.5"
-                  className="cursor-pointer"
-                  onMouseEnter={(e) => {
-                    const rect = svgRef.current?.getBoundingClientRect();
-                    if (!rect) return;
-                    setTooltip({
-                      x: e.clientX - rect.left,
-                      y: e.clientY - rect.top - 10,
-                      content: `${s.name}: ${formatY(p.value)} (${p.label})`,
-                    });
-                  }}
-                  onMouseLeave={() => setTooltip(null)}
-                />
-              ))}
+              {/* Dots — only for non-null values */}
+              {s.values.map((v, i) => {
+                if (v === null) return null;
+                return (
+                  <circle
+                    key={i}
+                    cx={scaleX(i)}
+                    cy={scaleY(v)}
+                    r="3.5"
+                    fill={s.color}
+                    stroke="white"
+                    strokeWidth="1.5"
+                    className="cursor-pointer"
+                    onMouseEnter={(e) => {
+                      const rect = svgRef.current?.getBoundingClientRect();
+                      if (!rect) return;
+                      setTooltip({
+                        x: e.clientX - rect.left,
+                        y: e.clientY - rect.top - 10,
+                        content: `${s.name}: ${formatY(v)} (${labels[i]})`,
+                      });
+                    }}
+                    onMouseLeave={() => setTooltip(null)}
+                  />
+                );
+              })}
             </g>
           );
         })}
