@@ -3459,6 +3459,94 @@ export function middleware(request) {
 });
 
 // ---------------------------------------------------------------------------
+// Middleware rewrite status propagation (Pages Router dev)
+// ---------------------------------------------------------------------------
+
+describe("middleware rewriteStatus propagation (Pages Router dev)", () => {
+  let statusServer: ViteDevServer;
+  let statusBaseUrl: string;
+  let statusTmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    statusTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-rewrite-status-"));
+
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(statusTmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(statusTmpDir, "pages"), { recursive: true });
+
+    // Middleware: rewrites /blocked to /allowed with status 403
+    await fsp.writeFile(
+      path.join(statusTmpDir, "middleware.ts"),
+      `import { NextResponse } from "next/server";
+export function middleware(request) {
+  const url = new URL(request.url);
+  if (url.pathname === "/blocked") {
+    return NextResponse.rewrite(new URL("/allowed", request.url), { status: 403 });
+  }
+  return NextResponse.next();
+}`,
+    );
+
+    await fsp.writeFile(
+      path.join(statusTmpDir, "pages", "allowed.tsx"),
+      `export default function Allowed() { return <h1>ALLOWED PAGE</h1>; }`,
+    );
+
+    await fsp.writeFile(
+      path.join(statusTmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    statusServer = await createServer({
+      root: statusTmpDir,
+      configFile: false,
+      plugins: [vinext()],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await statusServer.listen();
+    const addr = statusServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      statusBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    try {
+      (statusServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        statusServer?.close(),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+    } catch { /* ignore */ }
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(statusTmpDir, { recursive: true, force: true }).catch(() => {});
+  }, 15000);
+
+  it("middleware rewrite with custom status returns that status code", async () => {
+    const res = await fetch(`${statusBaseUrl}/blocked`);
+    // Page content should be from /allowed (rewrite target)
+    const html = await res.text();
+    expect(html).toContain("ALLOWED PAGE");
+    // Status code should be 403 from the middleware rewrite
+    expect(res.status).toBe(403);
+  });
+
+  it("normal requests without rewrite status return 200", async () => {
+    const res = await fetch(`${statusBaseUrl}/allowed`);
+    const html = await res.text();
+    expect(html).toContain("ALLOWED PAGE");
+    expect(res.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Additional Next.js edge cases (batch 2)
 // ---------------------------------------------------------------------------
 

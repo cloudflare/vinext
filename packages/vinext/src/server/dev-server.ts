@@ -270,6 +270,8 @@ export function createSSRHandler(
     req: IncomingMessage,
     res: ServerResponse,
     url: string,
+    /** Status code override — propagated from middleware rewrite status. */
+    statusCode?: number,
   ): Promise<void> => {
     // --- i18n: extract locale from URL prefix ---
     let locale: string | undefined;
@@ -667,6 +669,7 @@ hydrate();
         fontHeadHTML,
         scripts: allScripts,
         DocumentComponent,
+        statusCode,
         extraHeaders,
         // Collect head HTML AFTER the shell renders (inside streamPageToResponse,
         // after renderToReadableStream resolves). Head tags from Suspense

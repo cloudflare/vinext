@@ -2188,9 +2188,12 @@ hydrate();
                   }
                 }
 
-                // Apply middleware rewrite
+                // Apply middleware rewrite (URL and optional status code)
                 if (result.rewriteUrl) {
                   url = result.rewriteUrl;
+                }
+                if (result.rewriteStatus) {
+                  (req as any).__vinextRewriteStatus = result.rewriteStatus;
                 }
               }
 
@@ -2253,11 +2256,12 @@ hydrate();
               }
 
               const handler = createSSRHandler(server, routes, pagesDir, nextConfig?.i18n);
+              const mwStatus = (req as any).__vinextRewriteStatus as number | undefined;
 
               // Try rendering the resolved URL
               const match = matchRoute(resolvedUrl.split("?")[0], routes);
               if (match) {
-                await handler(req, res, resolvedUrl);
+                await handler(req, res, resolvedUrl, mwStatus);
                 return;
               }
 
@@ -2268,13 +2272,13 @@ hydrate();
                   nextConfig.rewrites.fallback,
                 );
                 if (fallbackRewrite) {
-                  await handler(req, res, fallbackRewrite);
+                  await handler(req, res, fallbackRewrite, mwStatus);
                   return;
                 }
               }
 
               // No fallback matched — render as-is (will hit 404 handler)
-              await handler(req, res, resolvedUrl);
+              await handler(req, res, resolvedUrl, mwStatus);
             } catch (e) {
               next(e);
             }
