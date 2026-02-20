@@ -241,7 +241,7 @@ function MetricSection({ title, children }: { title: string; children: React.Rea
   return (
     <section>
       <h2 className="mb-2 text-base font-semibold">{title}</h2>
-      <div className="overflow-hidden rounded-lg border border-gray-200 bg-white">{children}</div>
+      <div className="overflow-x-auto rounded-lg border border-gray-200 bg-white">{children}</div>
     </section>
   );
 }
