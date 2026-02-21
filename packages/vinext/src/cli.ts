@@ -228,6 +228,7 @@ async function buildApp() {
       plugins: [vinext()],
       build: {
         outDir: "dist/client",
+        manifest: true,
         ssrManifest: true,
         rollupOptions: {
           input: "virtual:vinext-client-entry",

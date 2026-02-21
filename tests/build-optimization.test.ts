@@ -9,6 +9,7 @@ import { describe, it, expect } from "vitest";
 import {
   clientManualChunks,
   clientTreeshakeConfig,
+  computeLazyChunks,
 } from "../packages/vinext/src/index.js";
 
 // ─── clientTreeshakeConfig ────────────────────────────────────────────────────
@@ -260,4 +261,406 @@ describe("treeshake config integration", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+});
+
+// ─── computeLazyChunks ────────────────────────────────────────────────────────
+
+describe("computeLazyChunks", () => {
+  it("returns empty array for manifest with only entry chunks", () => {
+    const manifest = {
+      "src/main.ts": {
+        file: "assets/main-abc123.js",
+        isEntry: true,
+        imports: [],
+      },
+    };
+    expect(computeLazyChunks(manifest)).toEqual([]);
+  });
+
+  it("excludes statically imported chunks from lazy set", () => {
+    const manifest = {
+      "src/main.ts": {
+        file: "assets/main-abc123.js",
+        isEntry: true,
+        imports: ["src/utils.ts"],
+      },
+      "src/utils.ts": {
+        file: "assets/utils-def456.js",
+      },
+    };
+    expect(computeLazyChunks(manifest)).toEqual([]);
+  });
+
+  it("identifies dynamically-imported-only chunks as lazy", () => {
+    const manifest = {
+      "src/main.ts": {
+        file: "assets/main-abc123.js",
+        isEntry: true,
+        imports: ["src/framework.ts"],
+        dynamicImports: ["src/mermaid.ts"],
+      },
+      "src/framework.ts": {
+        file: "assets/framework-abc.js",
+      },
+      "src/mermaid.ts": {
+        file: "assets/mermaid-NOHMQCX5.js",
+        isDynamicEntry: true,
+      },
+    };
+    const lazy = computeLazyChunks(manifest);
+    expect(lazy).toContain("assets/mermaid-NOHMQCX5.js");
+    expect(lazy).not.toContain("assets/main-abc123.js");
+    expect(lazy).not.toContain("assets/framework-abc.js");
+  });
+
+  it("handles transitive static imports from entry", () => {
+    // entry -> A -> B (all static) — none should be lazy
+    const manifest = {
+      "src/main.ts": {
+        file: "assets/main.js",
+        isEntry: true,
+        imports: ["src/a.ts"],
+      },
+      "src/a.ts": {
+        file: "assets/a.js",
+        imports: ["src/b.ts"],
+      },
+      "src/b.ts": {
+        file: "assets/b.js",
+      },
+    };
+    expect(computeLazyChunks(manifest)).toEqual([]);
+  });
+
+  it("handles transitive dynamic imports as lazy", () => {
+    // entry -> A (static) -> B (dynamic) -> C (static from B)
+    // B and C should be lazy (B is only reachable via dynamic import)
+    // But C is statically imported by B, which is a dynamic entry
+    // Since B is not an entry, C is only reachable through B which is lazy
+    const manifest = {
+      "src/main.ts": {
+        file: "assets/main.js",
+        isEntry: true,
+        imports: ["src/a.ts"],
+      },
+      "src/a.ts": {
+        file: "assets/a.js",
+        dynamicImports: ["src/b.ts"],
+      },
+      "src/b.ts": {
+        file: "assets/b.js",
+        isDynamicEntry: true,
+        imports: ["src/c.ts"],
+      },
+      "src/c.ts": {
+        file: "assets/c.js",
+      },
+    };
+    const lazy = computeLazyChunks(manifest);
+    expect(lazy).toContain("assets/b.js");
+    expect(lazy).toContain("assets/c.js");
+    expect(lazy).not.toContain("assets/main.js");
+    expect(lazy).not.toContain("assets/a.js");
+  });
+
+  it("does not mark CSS files as lazy", () => {
+    const manifest = {
+      "src/main.ts": {
+        file: "assets/main.js",
+        isEntry: true,
+        dynamicImports: ["src/lazy.ts"],
+      },
+      "src/lazy.ts": {
+        file: "assets/lazy.js",
+        isDynamicEntry: true,
+        css: ["assets/lazy-styles.css"],
+      },
+    };
+    const lazy = computeLazyChunks(manifest);
+    expect(lazy).toContain("assets/lazy.js");
+    // CSS files are never in the lazy list (only .js files)
+    expect(lazy).not.toContain("assets/lazy-styles.css");
+  });
+
+  it("handles chunk shared between static and dynamic paths as eager", () => {
+    // If a chunk is statically imported by one module AND dynamically by another,
+    // it should NOT be lazy (it's reachable statically)
+    const manifest = {
+      "src/main.ts": {
+        file: "assets/main.js",
+        isEntry: true,
+        imports: ["src/shared.ts"],
+        dynamicImports: ["src/lazy.ts"],
+      },
+      "src/shared.ts": {
+        file: "assets/shared.js",
+      },
+      "src/lazy.ts": {
+        file: "assets/lazy.js",
+        isDynamicEntry: true,
+        imports: ["src/shared.ts"],
+      },
+    };
+    const lazy = computeLazyChunks(manifest);
+    expect(lazy).toContain("assets/lazy.js");
+    expect(lazy).not.toContain("assets/shared.js");
+    expect(lazy).not.toContain("assets/main.js");
+  });
+
+  it("returns empty array for empty manifest", () => {
+    expect(computeLazyChunks({})).toEqual([]);
+  });
+
+  it("handles circular static imports without infinite loop", () => {
+    const manifest = {
+      "src/entry.ts": {
+        file: "assets/entry.js",
+        isEntry: true,
+        imports: ["src/a.ts"],
+      },
+      "src/a.ts": {
+        file: "assets/a.js",
+        imports: ["src/b.ts"],
+      },
+      "src/b.ts": {
+        file: "assets/b.js",
+        imports: ["src/a.ts"], // circular: b -> a -> b -> ...
+      },
+    };
+    const lazy = computeLazyChunks(manifest);
+    expect(lazy).toEqual([]);
+    // All three are statically reachable from entry
+  });
+
+  it("handles multiple entry points", () => {
+    const manifest = {
+      "src/main.ts": {
+        file: "assets/main.js",
+        isEntry: true,
+        imports: ["src/a.ts"],
+      },
+      "src/other-entry.ts": {
+        file: "assets/other.js",
+        isEntry: true,
+        imports: ["src/b.ts"],
+      },
+      "src/a.ts": {
+        file: "assets/a.js",
+      },
+      "src/b.ts": {
+        file: "assets/b.js",
+        dynamicImports: ["src/lazy.ts"],
+      },
+      "src/lazy.ts": {
+        file: "assets/lazy.js",
+        isDynamicEntry: true,
+      },
+    };
+    const lazy = computeLazyChunks(manifest);
+    expect(lazy).toContain("assets/lazy.js");
+    expect(lazy).not.toContain("assets/main.js");
+    expect(lazy).not.toContain("assets/other.js");
+    expect(lazy).not.toContain("assets/a.js");
+    expect(lazy).not.toContain("assets/b.js");
+  });
+
+  it("handles manifest with no entry chunks (all chunks marked lazy)", () => {
+    // If no chunks have isEntry, the BFS starts with an empty queue
+    // and all JS files should be classified as lazy
+    const manifest = {
+      "src/orphan.ts": {
+        file: "assets/orphan.js",
+        imports: [],
+      },
+      "src/other.ts": {
+        file: "assets/other.js",
+      },
+    };
+    const lazy = computeLazyChunks(manifest);
+    expect(lazy).toContain("assets/orphan.js");
+    expect(lazy).toContain("assets/other.js");
+  });
+
+  it("handles realistic mermaid-like scenario", () => {
+    // Simulates: client entry -> page (dynamic) -> streamdown (static from page)
+    //            streamdown -> mermaid (dynamic via React.lazy)
+    // The page itself is dynamic from the entry (vinext pattern), but
+    // mermaid is dynamic from streamdown — mermaid should be lazy
+    const manifest = {
+      "virtual:vinext-client-entry": {
+        file: "assets/vinext-client-entry-abc.js",
+        isEntry: true,
+        imports: ["node_modules/react/index.js", "node_modules/react-dom/client.js"],
+        dynamicImports: ["src/pages/index.tsx", "src/pages/about.tsx"],
+      },
+      "node_modules/react/index.js": {
+        file: "assets/framework-xyz.js",
+      },
+      "node_modules/react-dom/client.js": {
+        file: "assets/framework-xyz.js", // same chunk (manualChunks)
+      },
+      "src/pages/index.tsx": {
+        file: "assets/index-page.js",
+        isDynamicEntry: true,
+        imports: ["node_modules/streamdown/index.js"],
+        dynamicImports: [],
+      },
+      "src/pages/about.tsx": {
+        file: "assets/about-page.js",
+        isDynamicEntry: true,
+      },
+      "node_modules/streamdown/index.js": {
+        file: "assets/streamdown-chunk.js",
+        dynamicImports: ["node_modules/mermaid/dist/mermaid.js"],
+      },
+      "node_modules/mermaid/dist/mermaid.js": {
+        file: "assets/mermaid-NOHMQCX5.js",
+        isDynamicEntry: true,
+      },
+    };
+    const lazy = computeLazyChunks(manifest);
+    // Mermaid should be lazy — only reachable through dynamic imports
+    expect(lazy).toContain("assets/mermaid-NOHMQCX5.js");
+    // Pages are dynamic from entry — they should also be lazy
+    expect(lazy).toContain("assets/index-page.js");
+    expect(lazy).toContain("assets/about-page.js");
+    // streamdown is statically imported by a page, but the page itself is
+    // dynamic from entry — so streamdown is also lazy
+    expect(lazy).toContain("assets/streamdown-chunk.js");
+    // Framework and entry should NOT be lazy
+    expect(lazy).not.toContain("assets/vinext-client-entry-abc.js");
+    expect(lazy).not.toContain("assets/framework-xyz.js");
+  });
+});
+
+// ─── collectAssetTags lazy filtering (integration) ────────────────────────────
+
+describe("collectAssetTags lazy chunk filtering", () => {
+  // collectAssetTags lives inside the generated virtual server entry and
+  // can't be imported directly. These tests verify the filtering behavior
+  // by simulating what collectAssetTags does: build a lazy set from
+  // computeLazyChunks output, then filter asset tags accordingly.
+
+  /**
+   * Simulates the collectAssetTags filtering logic:
+   * - CSS files always get a <link rel="stylesheet"> tag
+   * - Non-lazy JS files get both modulepreload and script tags
+   * - Lazy JS files are skipped entirely
+   */
+  function simulateAssetTagFiltering(
+    ssrManifestFiles: string[],
+    lazyChunks: string[],
+  ): string[] {
+    const lazySet = new Set(lazyChunks);
+    const tags: string[] = [];
+    const seen = new Set<string>();
+
+    for (const tf of ssrManifestFiles) {
+      if (seen.has(tf)) continue;
+      seen.add(tf);
+      if (tf.endsWith(".css")) {
+        tags.push(`<link rel="stylesheet" href="/${tf}" />`);
+      } else if (tf.endsWith(".js")) {
+        if (lazySet.has(tf)) continue;
+        tags.push(`<link rel="modulepreload" href="/${tf}" />`);
+        tags.push(`<script type="module" src="/${tf}" crossorigin></script>`);
+      }
+    }
+    return tags;
+  }
+
+  it("excludes lazy JS chunks from modulepreload and script tags", () => {
+    const buildManifest = {
+      "virtual:vinext-client-entry": {
+        file: "assets/entry.js",
+        isEntry: true,
+        imports: ["node_modules/react/index.js"],
+        dynamicImports: ["src/pages/index.tsx"],
+      },
+      "node_modules/react/index.js": {
+        file: "assets/framework.js",
+      },
+      "src/pages/index.tsx": {
+        file: "assets/page-index.js",
+        isDynamicEntry: true,
+        dynamicImports: ["node_modules/mermaid/dist/mermaid.js"],
+      },
+      "node_modules/mermaid/dist/mermaid.js": {
+        file: "assets/mermaid-big.js",
+        isDynamicEntry: true,
+      },
+    };
+
+    const lazyChunks = computeLazyChunks(buildManifest);
+
+    // SSR manifest for the index page would include these files
+    const ssrFiles = [
+      "assets/entry.js",
+      "assets/framework.js",
+      "assets/page-index.js",
+      "assets/mermaid-big.js",
+    ];
+
+    const tags = simulateAssetTagFiltering(ssrFiles, lazyChunks);
+
+    // Entry and framework should have modulepreload + script tags
+    expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
+    expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
+    expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
+
+    // Page chunk and mermaid are lazy — should have NO tags at all
+    expect(tags.join("\n")).not.toContain("page-index.js");
+    expect(tags.join("\n")).not.toContain("mermaid-big.js");
+  });
+
+  it("always includes CSS files even for lazy chunks", () => {
+    const buildManifest = {
+      "src/entry.ts": {
+        file: "assets/entry.js",
+        isEntry: true,
+        dynamicImports: ["src/lazy.ts"],
+      },
+      "src/lazy.ts": {
+        file: "assets/lazy.js",
+        isDynamicEntry: true,
+        css: ["assets/lazy.css"],
+      },
+    };
+
+    const lazyChunks = computeLazyChunks(buildManifest);
+    const ssrFiles = ["assets/entry.js", "assets/lazy.js", "assets/lazy.css"];
+    const tags = simulateAssetTagFiltering(ssrFiles, lazyChunks);
+
+    // CSS always included (prevents FOUC)
+    expect(tags).toContain('<link rel="stylesheet" href="/assets/lazy.css" />');
+    // Lazy JS excluded
+    expect(tags.join("\n")).not.toContain("lazy.js");
+    // Entry included
+    expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
+  });
+
+  it("includes all chunks when lazy list is empty", () => {
+    const buildManifest = {
+      "src/entry.ts": {
+        file: "assets/entry.js",
+        isEntry: true,
+        imports: ["src/utils.ts"],
+      },
+      "src/utils.ts": {
+        file: "assets/utils.js",
+      },
+    };
+
+    const lazyChunks = computeLazyChunks(buildManifest);
+    expect(lazyChunks).toEqual([]); // nothing is lazy
+
+    const ssrFiles = ["assets/entry.js", "assets/utils.js"];
+    const tags = simulateAssetTagFiltering(ssrFiles, lazyChunks);
+
+    // Both should be present
+    expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
+    expect(tags).toContain('<link rel="modulepreload" href="/assets/utils.js" />');
+    expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
+    expect(tags).toContain('<script type="module" src="/assets/utils.js" crossorigin></script>');
+  });
 });

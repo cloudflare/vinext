@@ -457,6 +457,90 @@ const clientTreeshakeConfig = {
   moduleSideEffects: "no-external" as const,
 };
 
+/**
+ * Compute the set of chunk filenames that are ONLY reachable through dynamic
+ * imports (i.e. behind React.lazy(), next/dynamic, or manual import()).
+ *
+ * These chunks should NOT be modulepreloaded in the HTML — they will be
+ * fetched on demand when the dynamic import executes.
+ *
+ * Algorithm: Starting from all entry chunks in the build manifest, walk the
+ * static `imports` tree (breadth-first). Any chunk file NOT reached by this
+ * walk is only reachable through `dynamicImports` and is therefore "lazy".
+ *
+ * @param buildManifest - Vite's build manifest (manifest.json), which is a
+ *   Record<string, ManifestChunk> where each chunk has `file`, `imports`,
+ *   `dynamicImports`, `isEntry`, and `isDynamicEntry` fields.
+ * @returns Array of chunk filenames (e.g. "assets/mermaid-NOHMQCX5.js") that
+ *   should be excluded from modulepreload hints.
+ */
+function computeLazyChunks(
+  buildManifest: Record<string, {
+    file: string;
+    isEntry?: boolean;
+    isDynamicEntry?: boolean;
+    imports?: string[];
+    dynamicImports?: string[];
+    css?: string[];
+  }>
+): string[] {
+  // Collect all chunk files that are statically reachable from entries
+  const eagerFiles = new Set<string>();
+  const visited = new Set<string>();
+  const queue: string[] = [];
+
+  // Start BFS from all entry chunks
+  for (const key of Object.keys(buildManifest)) {
+    const chunk = buildManifest[key];
+    if (chunk.isEntry) {
+      queue.push(key);
+    }
+  }
+
+  while (queue.length > 0) {
+    const key = queue.shift()!;
+    if (visited.has(key)) continue;
+    visited.add(key);
+
+    const chunk = buildManifest[key];
+    if (!chunk) continue;
+
+    // Mark this chunk's file as eager
+    eagerFiles.add(chunk.file);
+
+    // Also mark its CSS as eager (CSS should always be preloaded to avoid FOUC)
+    if (chunk.css) {
+      for (const cssFile of chunk.css) {
+        eagerFiles.add(cssFile);
+      }
+    }
+
+    // Follow only static imports — NOT dynamicImports
+    if (chunk.imports) {
+      for (const imp of chunk.imports) {
+        if (!visited.has(imp)) {
+          queue.push(imp);
+        }
+      }
+    }
+  }
+
+  // Any JS file in the manifest that's NOT in eagerFiles is a lazy chunk
+  const lazyChunks: string[] = [];
+  const allFiles = new Set<string>();
+  for (const key of Object.keys(buildManifest)) {
+    const chunk = buildManifest[key];
+    if (chunk.file && !allFiles.has(chunk.file)) {
+      allFiles.add(chunk.file);
+      if (!eagerFiles.has(chunk.file) && chunk.file.endsWith(".js")) {
+        lazyChunks.push(chunk.file);
+      }
+    }
+  }
+
+  return lazyChunks;
+}
+
 export interface VinextOptions {
   /**
    * Base directory containing the app/ and pages/ directories.
@@ -847,6 +931,14 @@ function collectAssetTags(manifest, moduleIds) {
     : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
   const tags = [];
   const seen = new Set();
+
+  // Load the set of lazy chunk filenames (only reachable via dynamic imports).
+  // These should NOT get <link rel="modulepreload"> or <script type="module">
+  // tags — they are fetched on demand when the dynamic import() executes (e.g.
+  // chunks behind React.lazy() or next/dynamic boundaries).
+  var lazyChunks = (typeof globalThis !== "undefined" && globalThis.__VINEXT_LAZY_CHUNKS__) || null;
+  var lazySet = lazyChunks && lazyChunks.length > 0 ? new Set(lazyChunks) : null;
+
   // Inject the client entry script if embedded by vinext:cloudflare-build
   if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
     const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
@@ -922,6 +1014,9 @@ function collectAssetTags(manifest, moduleIds) {
       if (tf.endsWith(".css")) {
         tags.push('<link rel="stylesheet" href="/' + tf + '" />');
       } else if (tf.endsWith(".js")) {
+        // Skip lazy chunks — they are behind dynamic import() boundaries
+        // (React.lazy, next/dynamic) and should only be fetched on demand.
+        if (lazySet && lazySet.has(tf)) continue;
         tags.push('<link rel="modulepreload" href="/' + tf + '" />');
         tags.push('<script type="module" src="/' + tf + '" crossorigin></script>');
       }
@@ -2966,7 +3061,9 @@ hydrate();
             let clientEntryFile: string | null = null;
             let ssrManifestData: Record<string, string[]> | null = null;
 
-            // Read build manifest to find the client entry chunk filename
+            // Read build manifest to find the client entry chunk filename and
+            // compute lazy chunks (only reachable via dynamic imports)
+            let lazyChunksData: string[] | null = null;
             const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
             if (fs.existsSync(buildManifestPath)) {
               try {
@@ -2977,6 +3074,8 @@ hydrate();
                     break;
                   }
                 }
+                const lazy = computeLazyChunks(buildManifest);
+                if (lazy.length > 0) lazyChunksData = lazy;
               } catch { /* ignore parse errors */ }
             }
 
@@ -3000,7 +3099,7 @@ hydrate();
             }
 
             // Prepend globals to worker entry
-            if (clientEntryFile || ssrManifestData) {
+            if (clientEntryFile || ssrManifestData || lazyChunksData) {
               let code = fs.readFileSync(workerEntry, "utf-8");
               const globals: string[] = [];
               if (clientEntryFile) {
@@ -3008,6 +3107,9 @@ hydrate();
               }
               if (ssrManifestData) {
                 globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+              }
+              if (lazyChunksData) {
+                globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
               }
               code = globals.join("\n") + "\n" + code;
               fs.writeFileSync(workerEntry, code);
@@ -3399,6 +3501,6 @@ export { staticExportPages, staticExportApp } from "./build/static-export.js";
 export type { StaticExportResult, StaticExportOptions, AppStaticExportOptions } from "./build/static-export.js";
 
 // Exported for CLI and testing
-export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig };
+export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig, computeLazyChunks };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };

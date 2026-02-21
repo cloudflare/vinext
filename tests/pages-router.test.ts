@@ -598,6 +598,7 @@ describe("Production build", () => {
       logLevel: "silent",
       build: {
         outDir: path.join(outDir, "client"),
+        manifest: true,
         ssrManifest: true,
         rollupOptions: {
           input: "virtual:vinext-client-entry",
@@ -616,6 +617,10 @@ describe("Production build", () => {
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
     // Manifest should have entries (module IDs -> asset URLs)
     expect(Object.keys(manifest).length).toBeGreaterThan(0);
+
+    // Verify build manifest was also produced (needed for lazy chunk computation)
+    const buildManifestPath = path.join(outDir, "client", ".vite", "manifest.json");
+    expect(fs.existsSync(buildManifestPath)).toBe(true);
 
     // There should be JS files in the assets directory
     const assets = fs.readdirSync(assetsDir);
@@ -665,6 +670,7 @@ describe("Production build", () => {
         logLevel: "silent",
         build: {
           outDir: path.join(outDir, "client"),
+          manifest: true,
           ssrManifest: true,
           rollupOptions: { input: "virtual:vinext-client-entry" },
         },
@@ -844,6 +850,7 @@ describe("Production server middleware (Pages Router)", () => {
         logLevel: "silent",
         build: {
           outDir: path.join(outDir, "client"),
+          manifest: true,
           ssrManifest: true,
           rollupOptions: { input: "virtual:vinext-client-entry" },
         },
@@ -944,6 +951,7 @@ describe("Production server next.config.js features (Pages Router)", () => {
         logLevel: "silent",
         build: {
           outDir: path.join(outDir, "client"),
+          manifest: true,
           ssrManifest: true,
           rollupOptions: { input: "virtual:vinext-client-entry" },
         },

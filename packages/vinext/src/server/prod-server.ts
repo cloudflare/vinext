@@ -26,6 +26,7 @@ import zlib from "node:zlib";
 import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, isExternalUrl, proxyExternalRequest } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { IMAGE_OPTIMIZATION_PATH, parseImageParams } from "./image-optimization.js";
+import { computeLazyChunks } from "../index.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -539,6 +540,20 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const manifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
   if (fs.existsSync(manifestPath)) {
     ssrManifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+  }
+
+  // Load the build manifest to compute lazy chunks — chunks only reachable via
+  // dynamic imports (React.lazy, next/dynamic). These should not be
+  // modulepreloaded since they are fetched on demand.
+  const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
+  if (fs.existsSync(buildManifestPath)) {
+    try {
+      const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
+      const lazyChunks = computeLazyChunks(buildManifest);
+      if (lazyChunks.length > 0) {
+        (globalThis as any).__VINEXT_LAZY_CHUNKS__ = lazyChunks;
+      }
+    } catch { /* ignore parse errors */ }
   }
 
   // Import the server entry module (use file:// URL for reliable dynamic import)
