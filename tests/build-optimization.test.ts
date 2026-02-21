@@ -261,6 +261,72 @@ describe("treeshake config integration", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it("App Router client env gets manifest: true when Cloudflare plugin is present", async () => {
+    // When deploying to Cloudflare Workers, the client environment must produce
+    // a build manifest (manifest.json) so the vinext:cloudflare-build plugin can
+    // read dynamicImports and compute lazy chunks. Without this, all chunks get
+    // modulepreloaded on every page, defeating code-splitting for React.lazy()
+    // and next/dynamic boundaries.
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-cf-manifest-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    // Create an app/ directory to trigger App Router multi-env mode
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default {};`,
+    );
+
+    try {
+      // Simulate having the Cloudflare plugin in the plugin list.
+      // The vinext config hook detects it by checking plugin names.
+      const fakeCloudflarePlugin = { name: "vite-plugin-cloudflare" };
+      const mockConfig = {
+        root: tmpDir,
+        build: {},
+        plugins: [fakeCloudflarePlugin],
+      };
+      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+
+      // Client environment should have manifest: true for lazy chunk detection
+      expect(result.environments).toBeDefined();
+      expect(result.environments.client).toBeDefined();
+      expect(result.environments.client.build.manifest).toBe(true);
+
+      // Without Cloudflare plugin, manifest should NOT be set (standard App Router)
+      const resultNoCf = await (mainPlugin as any).config({
+        root: tmpDir,
+        build: {},
+        plugins: [],
+      }, { command: "build" });
+
+      expect(resultNoCf.environments.client.build.manifest).toBeUndefined();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
 });
 
 // ─── computeLazyChunks ────────────────────────────────────────────────────────

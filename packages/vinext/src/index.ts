@@ -2026,6 +2026,14 @@ hydrate();
                 include: ["react", "react-dom", "react-dom/client"],
               },
               build: {
+                // When targeting Cloudflare Workers, enable manifest generation
+                // so the vinext:cloudflare-build closeBundle hook can read the
+                // client build manifest, compute lazy chunks (only reachable
+                // via dynamic imports), and inject __VINEXT_LAZY_CHUNKS__ into
+                // the worker entry. Without this, all chunks are modulepreloaded
+                // on every page — defeating code-splitting for React.lazy() and
+                // next/dynamic boundaries.
+                ...(hasCloudflarePlugin ? { manifest: true } : {}),
                 rollupOptions: {
                   input: { index: VIRTUAL_APP_BROWSER_ENTRY },
                   output: clientOutputConfig,
@@ -3079,13 +3087,15 @@ hydrate();
               } catch { /* ignore parse errors */ }
             }
 
-            // Fallback: scan dist/client/assets/ for the client entry chunk
+            // Fallback: scan dist/client/assets/ for the client entry chunk.
+            // Pages Router uses "vinext-client-entry", App Router uses
+            // "vinext-app-browser-entry".
             if (!clientEntryFile) {
               const assetsDir = path.join(clientDir, "assets");
               if (fs.existsSync(assetsDir)) {
                 const files = fs.readdirSync(assetsDir);
                 const entry = files.find((f: string) =>
-                  f.includes("vinext-client-entry") && f.endsWith(".js"));
+                  (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) && f.endsWith(".js"));
                 if (entry) clientEntryFile = "assets/" + entry;
               }
             }
