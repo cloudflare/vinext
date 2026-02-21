@@ -2548,6 +2548,18 @@ setServerCallback(async (id, args) => {
   // Check for redirect signal from server action that called redirect()
   const actionRedirect = fetchResponse.headers.get("x-action-redirect");
   if (actionRedirect) {
+    // External URLs (different origin) need a hard redirect — client-side
+    // RSC navigation only works for same-origin paths.
+    try {
+      const redirectUrl = new URL(actionRedirect, window.location.origin);
+      if (redirectUrl.origin !== window.location.origin) {
+        window.location.href = actionRedirect;
+        return undefined;
+      }
+    } catch {
+      // If URL parsing fails, fall through to client-side navigation
+    }
+
     // Navigate to the redirect target using client-side navigation
     const redirectType = fetchResponse.headers.get("x-action-redirect-type") || "replace";
     if (redirectType === "push") {
