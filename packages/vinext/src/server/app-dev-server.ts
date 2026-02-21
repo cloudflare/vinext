@@ -1436,7 +1436,12 @@ async function _handleRequest(request) {
       ).catch(() => {});
       setHeadersContext(null);
       setNavigationContext(null);
-      return new Response("Server action failed: " + (err && err.message ? err.message : String(err)), { status: 500 });
+      return new Response(
+        process.env.NODE_ENV === "production"
+          ? "Internal Server Error"
+          : "Server action failed: " + (err && err.message ? err.message : String(err)),
+        { status: 500 },
+      );
     }
   }
 
