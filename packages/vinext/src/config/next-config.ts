@@ -6,6 +6,7 @@
  */
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import fs from "node:fs";
 
 export interface HasCondition {
@@ -144,8 +145,45 @@ const CONFIG_FILES = [
 ];
 
 /**
+ * Check whether an error indicates a CJS module was loaded in an ESM context
+ * (i.e. the file uses `require()` which is not available in ESM).
+ */
+function isCjsError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  const msg = e.message;
+  return (
+    msg.includes("require is not a function") ||
+    msg.includes("require is not defined") ||
+    msg.includes("exports is not defined") ||
+    msg.includes("module is not defined") ||
+    msg.includes("__dirname is not defined") ||
+    msg.includes("__filename is not defined")
+  );
+}
+
+/**
+ * Unwrap the config value from a loaded module, calling it if it's a
+ * function-form config (Next.js supports `module.exports = (phase, opts) => config`).
+ */
+async function unwrapConfig(mod: any): Promise<NextConfig> {
+  const config = mod.default ?? mod;
+  if (typeof config === "function") {
+    const result = await config("phase-development-server", {
+      defaultConfig: {},
+    });
+    return result as NextConfig;
+  }
+  return config as NextConfig;
+}
+
+/**
  * Find and load the next.config file from the project root.
  * Returns null if no config file is found.
+ *
+ * Attempts ESM dynamic `import()` first. If the file uses CJS constructs
+ * (`require`, `module.exports`) that aren't available in ESM context, falls
+ * back to loading it via `createRequire` so that CJS config files (common in
+ * the Next.js ecosystem for plugin wrappers like nextra, @next/mdx, etc.) work.
  */
 export async function loadNextConfig(root: string): Promise<NextConfig | null> {
   for (const filename of CONFIG_FILES) {
@@ -156,18 +194,23 @@ export async function loadNextConfig(root: string): Promise<NextConfig | null> {
       // Use dynamic import for ESM/TS config files
       const fileUrl = pathToFileURL(configPath).href;
       const mod = await import(fileUrl);
-      const config = mod.default ?? mod;
-
-      // next.config can be a function that returns the config
-      if (typeof config === "function") {
-        const result = await config("phase-development-server", {
-          defaultConfig: {},
-        });
-        return result as NextConfig;
+      return await unwrapConfig(mod);
+    } catch (e) {
+      // If the error indicates a CJS file loaded in ESM context, retry with
+      // createRequire which provides a proper CommonJS environment.
+      if (isCjsError(e) && (filename.endsWith(".js") || filename.endsWith(".cjs"))) {
+        try {
+          const require = createRequire(path.join(root, "package.json"));
+          const mod = require(configPath);
+          return await unwrapConfig({ default: mod });
+        } catch (e2) {
+          console.warn(
+            `[vinext] Failed to load ${filename}: ${(e2 as Error).message}`,
+          );
+          return null;
+        }
       }
 
-      return config as NextConfig;
-    } catch (e) {
       console.warn(
         `[vinext] Failed to load ${filename}: ${(e as Error).message}`,
       );

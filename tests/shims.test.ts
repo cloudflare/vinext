@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import path from "node:path";
 import { PAGES_FIXTURE_DIR } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
@@ -3771,6 +3771,135 @@ describe("cacheComponents config (Next.js 16)", () => {
     );
     const config = await resolveNextConfig(null);
     expect(config.serverActionsAllowedOrigins).toEqual([]);
+  });
+});
+
+describe("loadNextConfig CJS support", () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cjs-cfg-"));
+  });
+
+  afterEach(async () => {
+    const fsp = await import("node:fs/promises");
+    await fsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("loads a CJS next.config.js that uses module.exports", async () => {
+    const fsp = await import("node:fs/promises");
+    const { loadNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = { basePath: "/cjs-app", trailingSlash: true };`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config).not.toBeNull();
+    expect(config!.basePath).toBe("/cjs-app");
+    expect(config!.trailingSlash).toBe(true);
+  });
+
+  it("loads a CJS next.config.js with require() plugin wrapper", async () => {
+    const fsp = await import("node:fs/promises");
+    const { loadNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+
+    // Simulate a CJS plugin wrapper like nextra/next-intl/etc.
+    // Create a fake plugin module that wraps the config
+    await fsp.mkdir(path.join(tmpDir, "node_modules", "fake-plugin"), {
+      recursive: true,
+    });
+    await fsp.writeFile(
+      path.join(tmpDir, "node_modules", "fake-plugin", "index.js"),
+      `module.exports = function fakePlugin(pluginOpts) {
+        return function withPlugin(nextConfig) {
+          return Object.assign({}, nextConfig, { env: { PLUGIN: "loaded" } });
+        };
+      };`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "node_modules", "fake-plugin", "package.json"),
+      JSON.stringify({ name: "fake-plugin", version: "1.0.0", main: "index.js" }),
+    );
+
+    // Write a next.config.js that uses require() — this is the pattern that fails
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.js"),
+      `const withPlugin = require('fake-plugin')({ theme: 'docs' });
+module.exports = withPlugin({ basePath: "/wrapped" });`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config).not.toBeNull();
+    expect(config!.basePath).toBe("/wrapped");
+    expect(config!.env).toEqual({ PLUGIN: "loaded" });
+  });
+
+  it("loads a CJS function-form next.config.js", async () => {
+    const fsp = await import("node:fs/promises");
+    const { loadNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = function(phase, { defaultConfig }) {
+        return { basePath: "/fn-" + phase.split("-")[1] };
+      };`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config).not.toBeNull();
+    // phase is "phase-development-server", split("-")[1] = "development"
+    expect(config!.basePath).toBe("/fn-development");
+  });
+
+  it("loads a .cjs config file", async () => {
+    const fsp = await import("node:fs/promises");
+    const { loadNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.cjs"),
+      `module.exports = { basePath: "/cjs-ext" };`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config).not.toBeNull();
+    expect(config!.basePath).toBe("/cjs-ext");
+  });
+
+  it("loads an ESM next.config.mjs normally", async () => {
+    const fsp = await import("node:fs/promises");
+    const { loadNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { basePath: "/esm-app" };`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config).not.toBeNull();
+    expect(config!.basePath).toBe("/esm-app");
+  });
+
+  it("returns null when no config file exists", async () => {
+    const { loadNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config).toBeNull();
   });
 });
 
