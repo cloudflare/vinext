@@ -16,6 +16,20 @@
  *   // myFont.variable -> generated class name (e.g. "__variable_local_0")
  */
 
+/**
+ * Escape a string for safe interpolation inside a CSS single-quoted string.
+ *
+ * Prevents CSS injection by escaping characters that could break out of
+ * a `'...'` CSS string context: backslashes, single quotes, and newlines.
+ */
+function escapeCSSString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, "\\a ")
+    .replace(/\r/g, "\\d ");
+}
+
 let classCounter = 0;
 const injectedFonts = new Set<string>();
 
@@ -66,8 +80,8 @@ function generateFontFaceCSS(
             : "woff2";
 
     rules.push(`@font-face {
-  font-family: '${family}';
-  src: url('${src.path}') format('${format}');
+  font-family: '${escapeCSSString(family)}';
+  src: url('${escapeCSSString(src.path)}') format('${format}');
   font-weight: ${weight};
   font-style: ${style};
   font-display: ${display};
@@ -77,7 +91,7 @@ function generateFontFaceCSS(
   // Add extra declarations if provided
   if (options.declarations) {
     for (const decl of options.declarations) {
-      rules.push(`@font-face { font-family: '${family}'; ${decl.prop}: ${decl.value}; }`);
+      rules.push(`@font-face { font-family: '${escapeCSSString(family)}'; ${decl.prop}: ${decl.value}; }`);
     }
   }
 

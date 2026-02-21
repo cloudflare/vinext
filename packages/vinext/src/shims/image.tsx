@@ -101,6 +101,33 @@ interface ImageProps {
 }
 
 /**
+ * Sanitize a blurDataURL to prevent CSS injection.
+ *
+ * A crafted data URL containing `)` can break out of the `url()` CSS function,
+ * allowing injection of arbitrary CSS properties or rules. Characters like `{`,
+ * `}`, and `\` can also assist in crafting injection payloads.
+ *
+ * This validates the URL starts with `data:image/` and rejects characters that
+ * could escape the `url()` context. Semicolons are allowed since they're part
+ * of valid data URLs (`data:image/png;base64,...`) and harmless inside `url()`.
+ *
+ * Returns undefined for invalid URLs, which causes the blur placeholder to be
+ * skipped gracefully.
+ */
+function sanitizeBlurDataURL(url: string): string | undefined {
+  // Must be a data: image URL
+  if (!url.startsWith("data:image/")) return undefined;
+  // Reject characters that can break out of CSS url():
+  //   ) - closes url()
+  //   ( - could open nested functions
+  //   { } - CSS rule boundaries
+  //   \ - CSS escape sequences
+  //   newlines - break CSS parsing
+  if (/[)(}{\\'"\n\r]/.test(url)) return undefined;
+  return url;
+}
+
+/**
  * Determine if a src is a remote URL (CDN-optimizable) or local.
  */
 function isRemoteUrl(src: string): boolean {
@@ -203,9 +230,10 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       }
     }
 
+    const sanitizedBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
     const bg =
-      placeholder === "blur" && imgBlurDataURL
-        ? `url(${imgBlurDataURL})`
+      placeholder === "blur" && sanitizedBlur
+        ? `url(${sanitizedBlur})`
         : undefined;
 
     if (fill) {
@@ -264,10 +292,12 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       ? imageOptimizationUrl(src, imgWidth, imgQuality)
       : imageOptimizationUrl(src, RESPONSIVE_WIDTHS[0], imgQuality);
 
-  // Blur placeholder: show a low-quality background while the image loads
-  const blurStyle = placeholder === "blur" && imgBlurDataURL
+  // Blur placeholder: show a low-quality background while the image loads.
+  // Sanitize blurDataURL to prevent CSS injection via crafted data URLs.
+  const sanitizedLocalBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
+  const blurStyle = placeholder === "blur" && sanitizedLocalBlur
     ? {
-        backgroundImage: `url(${imgBlurDataURL})`,
+        backgroundImage: `url(${sanitizedLocalBlur})`,
         backgroundSize: "cover",
         backgroundRepeat: "no-repeat",
         backgroundPosition: "center",
@@ -368,10 +398,11 @@ export function getImageProps(props: ImageProps): {
     ? generateSrcSet(resolvedSrc, imgWidth, imgQuality)
     : undefined;
 
-  // Blur placeholder styles
-  const blurStyle = placeholder === "blur" && imgBlurDataURL
+  // Blur placeholder styles — sanitize to prevent CSS injection
+  const sanitizedBlurURL = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
+  const blurStyle = placeholder === "blur" && sanitizedBlurURL
     ? {
-        backgroundImage: `url(${imgBlurDataURL})`,
+        backgroundImage: `url(${sanitizedBlurURL})`,
         backgroundSize: "cover",
         backgroundRepeat: "no-repeat" as const,
         backgroundPosition: "center" as const,

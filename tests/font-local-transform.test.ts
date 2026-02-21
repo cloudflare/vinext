@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import vinext from "../packages/vinext/src/index.js";
+import localFont, { getSSRFontStyles } from "../packages/vinext/src/shims/font-local.js";
 import type { Plugin } from "vite";
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -284,6 +285,38 @@ describe("vinext:local-fonts plugin", () => {
     const result = transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain(`import __vinext_local_font_0 from "../fonts/my-font.woff2";`);
+  });
+
+  // ── Security: CSS injection via font file paths ────────────
+
+  it("escapes single quotes in font file paths to prevent CSS injection", () => {
+    const beforeCount = getSSRFontStyles().length;
+
+    // A crafted font path with a single quote could break out of url('...')
+    const result = localFont({
+      src: "./font'); } body { color: red; } .x { src: url('.woff2",
+    });
+    // The font should still load (it's escaped, not rejected)
+    expect(result.className).toBeDefined();
+    expect(result.style.fontFamily).toBeDefined();
+
+    // Check that the generated CSS has the quote escaped
+    const styles = getSSRFontStyles();
+    const newStyles = styles.slice(beforeCount);
+    const fontFaceCSS = newStyles.find((s: string) => s.includes("@font-face"));
+    if (fontFaceCSS) {
+      // Should contain escaped quote, not raw breakout
+      expect(fontFaceCSS).not.toContain("url('./font');");
+      expect(fontFaceCSS).toContain("\\'");
+    }
+  });
+
+  it("escapes backslashes in font file paths", () => {
+    const result = localFont({
+      src: "./fonts\\evil.woff2",
+    });
+    expect(result.className).toBeDefined();
+    expect(result.style.fontFamily).toBeDefined();
   });
 
   // ── Sourcemap ────────────────────────────────────────────────

@@ -156,6 +156,30 @@ describe("next/font/google shim", () => {
       expect(typeof (mod as any)[name]).toBe("function");
     }
   });
+
+  // ── Security: CSS injection via font family names ──
+
+  it("escapes single quotes in font family names", async () => {
+    const mod = await import("../packages/vinext/src/shims/font-google.js");
+    const fonts = mod.default as any;
+    // Proxy converts PascalCase to spaced, so a crafted property name
+    // could produce a family with special characters
+    const result = fonts["Evil']; } body { color: red; } .x { font-family: '"]({
+      weight: ["400"],
+    });
+    // The fontFamily in the result should have the quote escaped
+    expect(result.style.fontFamily).toContain("\\'");
+    // Should not contain an unescaped breakout sequence
+    expect(result.style.fontFamily).not.toMatch(/[^\\]'; }/);
+  });
+
+  it("escapes backslashes in font family names", async () => {
+    const mod = await import("../packages/vinext/src/shims/font-google.js");
+    const fonts = mod.default as any;
+    const result = fonts["Test\\Font"]({ weight: ["400"] });
+    // The backslash should be escaped in the CSS string
+    expect(result.style.fontFamily).toContain("\\\\");
+  });
 });
 
 // ── Plugin tests ──────────────────────────────────────────────

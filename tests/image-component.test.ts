@@ -370,3 +370,109 @@ describe("getImageProps", () => {
     expect(props.loading).toBe("eager");
   });
 });
+
+// ─── Security: blurDataURL CSS injection ────────────────────────────────
+
+describe("blurDataURL CSS injection prevention", () => {
+  it("rejects blurDataURL with ) character (CSS url breakout)", () => {
+    const { props } = getImageProps({
+      alt: "malicious",
+      src: "/photo.jpg",
+      width: 400,
+      height: 300,
+      placeholder: "blur",
+      blurDataURL: "data:x); color: red; background: url(",
+    });
+
+    // Should NOT have any backgroundImage — the malicious URL is rejected
+    expect((props.style as any)?.backgroundImage).toBeUndefined();
+  });
+
+  it("rejects blurDataURL with ; character (CSS property injection)", () => {
+    const { props } = getImageProps({
+      alt: "malicious",
+      src: "/photo.jpg",
+      width: 400,
+      height: 300,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,abc); color: red; x: url(",
+    });
+
+    // The ; in data:image/png;base64 is fine, but ) breaks out of url()
+    expect((props.style as any)?.backgroundImage).toBeUndefined();
+  });
+
+  it("rejects blurDataURL with { character (CSS rule injection)", () => {
+    const { props } = getImageProps({
+      alt: "malicious",
+      src: "/photo.jpg",
+      width: 400,
+      height: 300,
+      placeholder: "blur",
+      blurDataURL: "data:image/svg+xml,<svg>{</svg>",
+    });
+
+    expect((props.style as any)?.backgroundImage).toBeUndefined();
+  });
+
+  it("rejects blurDataURL that does not start with data:image/", () => {
+    const { props } = getImageProps({
+      alt: "malicious",
+      src: "/photo.jpg",
+      width: 400,
+      height: 300,
+      placeholder: "blur",
+      blurDataURL: "javascript:alert(1)",
+    });
+
+    expect((props.style as any)?.backgroundImage).toBeUndefined();
+  });
+
+  it("accepts valid base64 blurDataURL", () => {
+    const { props } = getImageProps({
+      alt: "valid",
+      src: "/photo.jpg",
+      width: 400,
+      height: 300,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    });
+
+    expect((props.style as any)?.backgroundImage).toContain("data:image/png;base64,");
+  });
+
+  it("sanitizes blurDataURL in SSR rendering (Image component)", () => {
+    const maliciousURL = "data:x); color: red; background: url(";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "malicious",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        placeholder: "blur",
+        blurDataURL: maliciousURL,
+      }),
+    );
+    // Should NOT contain the malicious CSS injection
+    expect(html).not.toContain("color: red");
+    expect(html).not.toContain("color:red");
+    // Should NOT contain any background-image at all (blur was rejected)
+    expect(html).not.toContain("background-image");
+  });
+
+  it("renders valid blurDataURL in SSR", () => {
+    const validURL = "data:image/png;base64,abc123";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "valid blur",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        placeholder: "blur",
+        blurDataURL: validURL,
+      }),
+    );
+    expect(html).toContain("background-image");
+    expect(html).toContain(validURL);
+  });
+});

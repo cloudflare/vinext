@@ -17,6 +17,20 @@
  *   // inter.variable -> CSS variable name like '--font-inter'
  */
 
+/**
+ * Escape a string for safe interpolation inside a CSS single-quoted string.
+ *
+ * Prevents CSS injection by escaping characters that could break out of
+ * a `'...'` CSS string context: backslashes, single quotes, and newlines.
+ */
+function escapeCSSString(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'")
+    .replace(/\n/g, "\\a ")
+    .replace(/\r/g, "\\d ");
+}
+
 // Counter for generating unique class names
 let classCounter = 0;
 
@@ -307,7 +321,7 @@ function createFontLoader(family: string) {
     const id = classCounter++;
     const className = `__font_${family.toLowerCase().replace(/\s+/g, "_")}_${id}`;
     const fallback = options.fallback ?? ["sans-serif"];
-    const fontFamily = `'${family}', ${fallback.join(", ")}`;
+    const fontFamily = `'${escapeCSSString(family)}', ${fallback.join(", ")}`;
     const cssVarName = options.variable ?? toVarName(family);
     // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
     // Users apply this class to set the CSS variable on that element.
