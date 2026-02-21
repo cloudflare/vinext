@@ -998,6 +998,21 @@ describe("App Router integration", () => {
     expect(ssrGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
   });
 
+  it("pre-includes framework dependencies in optimizeDeps.include to avoid late discovery", () => {
+    // Framework deps like react-dom/server.edge (SSR) and react/react-dom (client)
+    // are not imported by user app code, so they won't be found by crawling
+    // optimizeDeps.entries. They must be explicitly included to prevent
+    // re-optimisation cascades and "Invalid hook call" errors during dev.
+    const ssrInclude = server.config.environments.ssr?.optimizeDeps?.include;
+    const clientInclude = server.config.environments.client?.optimizeDeps?.include;
+
+    expect(ssrInclude).toContain("react-dom/server.edge");
+
+    expect(clientInclude).toContain("react");
+    expect(clientInclude).toContain("react-dom");
+    expect(clientInclude).toContain("react-dom/client");
+  });
+
   // ── CSRF protection for server actions ───────────────────────────────
   it("rejects server action POST with mismatched Origin header (CSRF protection)", async () => {
     const res = await fetch(`${baseUrl}/actions.rsc`, {
