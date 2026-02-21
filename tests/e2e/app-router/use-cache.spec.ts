@@ -11,10 +11,10 @@ test.describe('"use cache" file-level directive', () => {
     await expect(page.getByTestId("message")).toContainText("use cache");
   });
 
-  // SKIP: ISR page cache is disabled in dev mode (PR #234). File-level "use cache"
-  // relies on the ISR page cache to serve identical HTML across requests. This test
-  // should run against a production server E2E project.
-  test.skip("use-cache page returns same timestamp on repeated requests (cached)", async ({
+  // File-level "use cache" wraps the page default export with
+  // registerCachedFunction, so the component output is cached at the RSC
+  // level (not ISR). This works in both dev and production.
+  test("use-cache page returns same timestamp on repeated requests (cached)", async ({
     request,
   }) => {
     // First request — populates cache
@@ -32,10 +32,9 @@ test.describe('"use cache" file-level directive', () => {
     expect(ts1).toBe(ts2);
   });
 
-  // SKIP: ISR page cache is disabled in dev mode (PR #234). TTL expiry and
-  // stale-while-revalidate are ISR page cache behaviors. This test should run
-  // against a production server E2E project.
-  test.skip("use-cache page returns fresh data after TTL expires", async ({
+  // TTL expiry: the "seconds" cacheLife profile has revalidate: 1s, so after
+  // ~1.5s the cached entry becomes stale and re-execution produces fresh data.
+  test("use-cache page returns fresh data after TTL expires", async ({
     request,
   }) => {
     // First request

@@ -2769,19 +2769,19 @@ hydrate();
           );
 
           if (cacheDirective) {
-            // File-level "use cache" — wrap function exports with caching.
-            // For data functions (generateMetadata, etc.), RSC stream serialization
-            // handles all RSC-serializable types including React elements.
-            // For page/layout/template default exports, we still skip wrapping
-            // because page component caching requires tighter integration with the
-            // RSC rendering pipeline (in-memory stream caching with temporary
-            // references for dynamic children). For pages, file-level "use cache"
-            // is treated as ISR — cacheLife() sets the revalidation period via
-            // request-scoped state, which the server reads after rendering.
+            // File-level "use cache" — wrap function exports with
+            // registerCachedFunction. Page default exports are wrapped directly
+            // (they're leaf components). Layout/template defaults are excluded
+            // because they receive {children} from the framework.
             const directiveValue: string = cacheDirective.expression.value;
             const variant = directiveValue === "use cache" ? "" : directiveValue.replace("use cache:", "").replace("use cache: ", "").trim();
 
-            const isComponentFile = /\/(page|layout|template|loading|error|not-found|default)\.(tsx?|jsx?|mjs)$/.test(id);
+            // Only skip default export wrapping for layouts and templates —
+            // they receive {children} from the framework which requires
+            // temporary reference handling that registerCachedFunction doesn't
+            // support yet. Pages, not-found, loading, error, and default are
+            // leaf components with no {children} prop and can be cached directly.
+            const isLayoutOrTemplate = /\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id);
 
             const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
             const result = transformWrapExport(code, ast as any, {
@@ -2791,11 +2791,11 @@ hydrate();
               filter: (name: any, meta: any) => {
                 // Skip non-functions (constants, types, etc.)
                 if (meta.isFunction === false) return false;
-                // Skip the default export on component convention files — page
-                // component caching requires in-memory RSC stream caching with
-                // temporary references, which is a separate feature. These are
-                // handled through ISR instead.
-                if (isComponentFile && name === "default") return false;
+                // Skip the default export on layout/template files — these
+                // receive {children} from the framework, and caching them
+                // requires temporary reference handling for the children slot.
+                // Named exports (e.g. generateMetadata) are still wrapped.
+                if (isLayoutOrTemplate && name === "default") return false;
                 return true;
               },
             });
@@ -2811,7 +2811,7 @@ hydrate();
             }
 
             // Even if no exports were wrapped, still strip the directive
-            // (e.g., page-only file with just a default export)
+            // (e.g., layout/template file with only a default export)
             const output = new MagicString(code);
             output.overwrite(cacheDirective.start, cacheDirective.end, `/* "use cache" — handled by vinext */`);
             return {
