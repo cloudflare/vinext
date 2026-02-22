@@ -323,7 +323,7 @@ These benchmarks measure **compilation and bundling speed**, not production serv
 
 The benchmark app is a shared 33-route App Router application (server components, client components, dynamic routes, nested layouts, API routes) built identically by both tools.
 
-Measured on an 8-core Apple Silicon machine, Node v24.3.0, Next.js 16.1.6.
+Benchmarks run on GitHub CI runners on every merge to `main`. Results below are a recent snapshot — see [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev) for historical data.
 
 ### Production build time
 
