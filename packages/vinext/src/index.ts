@@ -1,6 +1,6 @@
 import type { Plugin, ViteDevServer } from "vite";
 import { parseAst } from "vite";
-import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, type Route } from "./routing/pages-router.js";
+import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, patternToNextFormat as pagesPatternToNextFormat, type Route } from "./routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
@@ -1009,6 +1009,13 @@ function collectAssetTags(manifest, moduleIds) {
 
     for (var ti = 0; ti < allFiles.length; ti++) {
       var tf = allFiles[ti];
+      // Normalize: Vite's SSR manifest values include a leading '/'
+      // (from base path), but we prepend '/' ourselves when building
+      // href/src attributes. Strip any existing leading slash to avoid
+      // producing protocol-relative URLs like "//assets/chunk.js".
+      // This also ensures consistent keys for the seen-set dedup and
+      // lazySet.has() checks (which use values without leading slash).
+      if (tf.charAt(0) === '/') tf = tf.slice(1);
       if (seen.has(tf)) continue;
       seen.add(tf);
       if (tf.endsWith(".css")) {
@@ -1555,10 +1562,13 @@ ${middlewareExportCode}
 
     const hasApp = fs.existsSync(path.join(pagesDir, "_app.tsx")) || fs.existsSync(path.join(pagesDir, "_app.jsx")) || fs.existsSync(path.join(pagesDir, "_app.ts")) || fs.existsSync(path.join(pagesDir, "_app.js"));
 
-    // Build a map of route pattern -> dynamic import
+    // Build a map of route pattern -> dynamic import.
+    // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
+    // __NEXT_DATA__.page which is set via patternToNextFormat() during SSR.
     const loaderEntries = pageRoutes.map((r: Route) => {
       const absPath = r.filePath.replace(/\\/g, "/");
-      return `  ${JSON.stringify(r.pattern)}: () => import(${JSON.stringify(absPath)})`;
+      const nextFormatPattern = pagesPatternToNextFormat(r.pattern);
+      return `  ${JSON.stringify(nextFormatPattern)}: () => import(${JSON.stringify(absPath)})`;
     });
 
     const appFileBase = path.join(pagesDir, "_app").replace(/\\/g, "/");

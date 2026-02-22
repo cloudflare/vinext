@@ -459,6 +459,40 @@ describe("Virtual server entry generation", () => {
       await testServer.close();
     }
   });
+
+  it("client entry uses Next.js bracket format for dynamic route keys", async () => {
+    // The client entry generates a pageLoaders map keyed by route pattern.
+    // These keys MUST match __NEXT_DATA__.page (which uses Next.js bracket
+    // format like "/posts/[id]"), not the internal Express-style ":id" format.
+    // A mismatch prevents client-side hydration for dynamic route pages.
+    const testServer = await createServer({
+      root: FIXTURE_DIR,
+      configFile: false,
+      plugins: [vinext()],
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    try {
+      const resolved = await testServer.pluginContainer.resolveId("virtual:vinext-client-entry");
+      expect(resolved).toBeTruthy();
+      const loaded = await testServer.pluginContainer.load(resolved!.id);
+      expect(loaded).toBeTruthy();
+      const code = typeof loaded === "string" ? loaded : (loaded as any)?.code ?? "";
+
+      // Dynamic routes should use [param] format, not :param
+      // The fixture has pages/posts/[id].tsx
+      expect(code).toContain('"/posts/[id]"');
+      // Catch-all routes: pages/docs/[...slug].tsx
+      expect(code).toContain('"/docs/[...slug]"');
+      // Should NOT contain Express-style :param patterns for any route
+      expect(code).not.toMatch(/["']\/(posts|blog|articles|docs|products)\/:[\w]+["']/);
+      expect(code).not.toContain(":slug+");
+      expect(code).not.toContain(":slug*");
+    } finally {
+      await testServer.close();
+    }
+  });
 });
 
 describe("Plugin config", () => {

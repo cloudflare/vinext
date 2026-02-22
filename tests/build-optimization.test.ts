@@ -609,9 +609,12 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
   /**
    * Simulates the collectAssetTags filtering logic:
+   * - Normalizes leading slashes from SSR manifest values
    * - CSS files always get a <link rel="stylesheet"> tag
    * - Non-lazy JS files get both modulepreload and script tags
    * - Lazy JS files are skipped entirely
+   *
+   * Must match the actual collectAssetTags implementation in index.ts.
    */
   function simulateAssetTagFiltering(
     ssrManifestFiles: string[],
@@ -621,7 +624,11 @@ describe("collectAssetTags lazy chunk filtering", () => {
     const tags: string[] = [];
     const seen = new Set<string>();
 
-    for (const tf of ssrManifestFiles) {
+    for (let tf of ssrManifestFiles) {
+      // Normalize: strip leading slash from SSR manifest values to avoid
+      // producing protocol-relative URLs (e.g. "//assets/chunk.js") and
+      // to ensure consistent matching against lazySet and seen set.
+      if (tf.startsWith("/")) tf = tf.slice(1);
       if (seen.has(tf)) continue;
       seen.add(tf);
       if (tf.endsWith(".css")) {
@@ -728,5 +735,73 @@ describe("collectAssetTags lazy chunk filtering", () => {
     expect(tags).toContain('<link rel="modulepreload" href="/assets/utils.js" />');
     expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
     expect(tags).toContain('<script type="module" src="/assets/utils.js" crossorigin></script>');
+  });
+
+  it("normalizes leading slashes from SSR manifest values", () => {
+    // Vite's SSR manifest values include a leading "/" (from joinUrlSegments
+    // with base="/"), e.g. "/assets/framework-AbCd.js". Without normalization,
+    // prepending "/" produces protocol-relative URLs "//assets/..." which
+    // browsers interpret as https://assets/... (wrong host).
+    const buildManifest = {
+      "src/entry.ts": {
+        file: "assets/entry.js",
+        isEntry: true,
+        imports: ["node_modules/react/index.js"],
+        dynamicImports: ["src/pages/index.tsx"],
+      },
+      "node_modules/react/index.js": {
+        file: "assets/framework.js",
+      },
+      "src/pages/index.tsx": {
+        file: "assets/page-index.js",
+        isDynamicEntry: true,
+      },
+    };
+
+    const lazyChunks = computeLazyChunks(buildManifest);
+
+    // Simulate SSR manifest values WITH leading slashes (real Vite output)
+    const ssrFilesWithLeadingSlash = [
+      "/assets/entry.js",
+      "/assets/framework.js",
+      "/assets/page-index.js",
+    ];
+
+    const tags = simulateAssetTagFiltering(ssrFilesWithLeadingSlash, lazyChunks);
+
+    // All URLs should have exactly one leading slash, not double
+    for (const tag of tags) {
+      expect(tag).not.toContain('href="//');
+      expect(tag).not.toContain('src="//');
+    }
+
+    // Entry and framework should be present with correct single-slash paths
+    expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
+    expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
+    expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
+
+    // Page chunk is lazy — should be excluded even with leading-slash input
+    expect(tags.join("\n")).not.toContain("page-index.js");
+  });
+
+  it("deduplicates entries when SSR manifest has leading slashes and client entry does not", () => {
+    // The client entry (from __VINEXT_CLIENT_ENTRY__) uses values without
+    // leading slashes ("assets/entry.js"), while SSR manifest values have
+    // them ("/assets/entry.js"). After normalization, both should resolve
+    // to the same key and the entry should appear only once.
+    const ssrFiles = [
+      "assets/entry.js",      // added first (e.g. from client entry)
+      "/assets/entry.js",     // same file from SSR manifest with leading slash
+      "/assets/framework.js",
+    ];
+
+    const tags = simulateAssetTagFiltering(ssrFiles, []);
+
+    // entry.js should appear exactly once in modulepreload tags
+    const entryPreloads = tags.filter((t) => t.includes("entry.js") && t.includes("modulepreload"));
+    expect(entryPreloads).toHaveLength(1);
+
+    // framework.js should also appear with correct path
+    expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
   });
 });
