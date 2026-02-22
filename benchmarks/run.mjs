@@ -10,7 +10,7 @@
  *   5. Memory usage (peak RSS during build and dev)
  *
  * Prerequisites: hyperfine, autocannon (npm i -g autocannon)
- * Usage: node benchmarks/run.mjs [--runs N] [--skip-build] [--skip-dev] [--skip-ssr] [--skip-rolldown]
+ * Usage: node benchmarks/run.mjs [--runs N] [--dev-runs N] [--skip-build] [--skip-dev] [--skip-ssr] [--skip-rolldown]
  */
 
 import { execSync, spawn } from "node:child_process";
@@ -26,6 +26,7 @@ mkdirSync(RESULTS_DIR, { recursive: true });
 // ─── CLI args ──────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 const RUNS = parseInt(args.find((a) => a.startsWith("--runs="))?.split("=")[1] ?? "5", 10);
+const DEV_RUNS = parseInt(args.find((a) => a.startsWith("--dev-runs="))?.split("=")[1] ?? "10", 10);
 const SKIP_BUILD = args.includes("--skip-build");
 const SKIP_DEV = args.includes("--skip-dev");
 const SKIP_SSR = args.includes("--skip-ssr");
@@ -169,7 +170,8 @@ async function main() {
   const results = {
     timestamp: new Date().toISOString(),
     gitHash: getGitHash(),
-    runs: RUNS,
+    buildRuns: RUNS,
+    devRuns: DEV_RUNS,
     system: {
       platform: process.platform,
       arch: process.arch,
@@ -326,6 +328,11 @@ async function main() {
     }
 
     // ─── 2. Bundle Size ────────────────────────────────────────────────────────
+    // Measures client-side JS/CSS/MJS files only. Both directories (.next/static
+    // and dist/client) contain only browser assets, not server bundles.
+    // TODO: If the benchmark app ever uses CSS Modules or global CSS imports,
+    // verify that both frameworks extract CSS to the measured directories.
+    // Currently the app uses inline styles so CSS extraction is not a factor.
     console.log("\n=== Production Bundle Size ===\n");
 
     // Rebuild both to get fresh output
@@ -406,11 +413,11 @@ async function main() {
 
     const runOrders = [];
 
-    for (let i = 0; i < RUNS; i++) {
+    for (let i = 0; i < DEV_RUNS; i++) {
       const order = shuffle(runners);
       const orderLabels = order.map((r) => r.label);
       runOrders.push(orderLabels);
-      console.log(`  Run ${i + 1}/${RUNS} (order: ${orderLabels.join(" → ")})...`);
+      console.log(`  Run ${i + 1}/${DEV_RUNS} (order: ${orderLabels.join(" → ")})...`);
 
       for (const runner of order) {
         console.log(`    Starting ${runner.label} dev server...`);
@@ -468,7 +475,8 @@ async function main() {
   md += `- **Git**: ${results.gitHash}\n`;
   md += `- **Node**: ${results.system.nodeVersion}\n`;
   md += `- **CPUs**: ${results.system.cpus}\n`;
-  md += `- **Runs**: ${results.runs}\n`;
+  md += `- **Build runs**: ${results.buildRuns}\n`;
+  md += `- **Dev cold start runs**: ${results.devRuns}\n`;
   if (results.system.nextjsVersion) md += `- **Next.js**: ${results.system.nextjsVersion}\n`;
   if (results.system.viteVersion) md += `- **Vite (Rollup)**: ${results.system.viteVersion}\n`;
   if (results.system.viteRolldownVersion) md += `- **Vite (Rolldown)**: ${results.system.viteRolldownVersion}\n`;

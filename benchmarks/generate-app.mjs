@@ -19,6 +19,13 @@ function write(rel, content) {
 
 // ─── Root layout ───────────────────────────────────────────────────────────────
 write("layout.tsx", `
+// Force all pages to be dynamically rendered (no static pre-rendering).
+// Without this, Next.js detects most pages as static and pre-renders them at
+// build time — work that vinext doesn't do. This benchmark is designed to
+// compare build/compilation speed, not static generation, so we opt out of
+// pre-rendering to keep the comparison apples-to-apples.
+export const dynamic = "force-dynamic";
+
 export const metadata = {
   title: { default: "Benchmark App", template: "%s | Benchmark" },
   description: "A realistic benchmark app for comparing Next.js and vinext",
@@ -137,15 +144,16 @@ export default function ProductsLayout({ children }: { children: React.ReactNode
 }
 `);
 
+// Pre-compute product prices at generation time so the source code is deterministic.
+const productPrices = Array.from({ length: 20 }, () => (Math.round(Math.random() * 10000) / 100).toFixed(2));
+
 write("products/page.tsx", `
 import Link from "next/link";
 export const metadata = { title: "Products" };
 
-const products = Array.from({ length: 20 }, (_, i) => ({
-  id: i + 1,
-  name: \`Product \${i + 1}\`,
-  price: Math.round(Math.random() * 10000) / 100,
-}));
+const products = [
+${productPrices.map((price, i) => `  { id: ${i + 1}, name: "Product ${i + 1}", price: ${price} },`).join("\n")}
+];
 
 export default function ProductsPage() {
   return (
@@ -288,12 +296,20 @@ export default function DashboardPage() {
 }
 `);
 
+// Pre-compute analytics data at generation time so the source code is deterministic.
+const analyticsRows = Array.from({ length: 10 }, () => ({
+  views: Math.floor(Math.random() * 10000),
+  bounce: Math.floor(Math.random() * 100),
+}));
+
 write("dashboard/analytics/page.tsx", `
 export const metadata = { title: "Analytics" };
+
+const rows = [
+${analyticsRows.map((r, i) => `  { page: "/page-${i + 1}", views: ${r.views}, bounce: ${r.bounce} },`).join("\n")}
+];
+
 export default function AnalyticsPage() {
-  const rows = Array.from({ length: 10 }, (_, i) => ({
-    page: \`/page-\${i + 1}\`, views: Math.floor(Math.random() * 10000), bounce: Math.floor(Math.random() * 100),
-  }));
   return (
     <div>
       <h1>Analytics</h1>

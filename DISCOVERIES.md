@@ -355,7 +355,7 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 
 ## Benchmarks
 
-- **Benchmark methodology**: See `benchmarks/` for the runner, fixture app, and CI workflow. Results are point-in-time measurements on a specific 33-route App Router fixture and may not generalize to all apps.
+- **Benchmark methodology**: See `benchmarks/` for the runner, fixture app, and CI workflow. Results are point-in-time measurements on a specific 33-route App Router fixture and may not generalize to all apps. The benchmark measures compilation/bundling speed, not production serving. All pages use `export const dynamic = "force-dynamic"` to disable Next.js static pre-rendering, keeping the comparison focused on build toolchain performance rather than Next.js's ability to pre-render static content (which vinext doesn't do).
 - **Symlinks don't work with Next.js/Turbopack** — must copy shared app directories. Our `generate-app.mjs` now copies to both project directories.
 - **`turbopack.root`** must be set in next.config.ts if there are multiple lockfiles in parent directories, otherwise Turbopack picks the wrong workspace root.
 - **`process.cwd()` works** but Node ESM imports (`import { dirname }`) crash in next.config.ts because Next.js 16 compiles configs as CJS (`exports is not defined in ES module scope`).

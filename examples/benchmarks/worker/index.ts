@@ -128,7 +128,7 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
       results.system?.arch ?? null,
       results.system?.nodeVersion ?? null,
       results.system?.cpus ?? null,
-      results.runs ?? null,
+      results.buildRuns ?? results.runs ?? null,
     ).run();
 
     inserted.push(dbRunner);
