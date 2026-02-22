@@ -1,0 +1,13 @@
+.item {
+  padding: 10px 20px;
+}
+
+.form {
+  padding: 15px 0 30px 0;
+}
+
+@media (max-width: 750px) {
+  .item {
+    padding: 8px 0px;
+  }
+}

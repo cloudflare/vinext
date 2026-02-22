@@ -1,0 +1,51 @@
+.story {
+  flex: 100 1;
+  display: inline-block;
+}
+
+.title {
+  font-size: 15px;
+  margin-bottom: 1px;
+}
+
+.votearrow {
+  cursor: pointer;
+  font-family: sans-serif;
+  color: #ccc;
+  font-size: 12px;
+  margin-right: 2px;
+}
+
+.votearrow--voted {
+  composes: votearrow;
+  color: #ffa52a;
+}
+
+.title > a {
+  color: #000;
+  text-decoration: none;
+}
+
+.title > a:visited {
+  color: #757575;
+}
+
+.meta {
+  font-size: 12px;
+}
+.source {
+  font-size: 12px;
+  display: inline-block;
+  margin-left: 5px;
+}
+
+.source a,
+.meta a {
+  color: #757575;
+  text-decoration: none;
+}
+
+.source a:hover,
+.meta a:hover {
+  text-decoration: underline;
+}

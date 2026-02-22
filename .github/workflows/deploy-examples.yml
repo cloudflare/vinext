@@ -32,6 +32,9 @@ jobs:
           - name: benchmarks
             project: benchmarks
             dist_name: benchmarks
+          - name: hackernews
+            project: hackernews
+            dist_name: hackernews
     steps:
       - uses: actions/checkout@v4
 
@@ -96,9 +99,10 @@ jobs:
             const examples = [
               { name: 'app-router-cloudflare', project: 'app-router-cloudflare' },
               { name: 'pages-router-cloudflare', project: 'pages-router-cloudflare' },
-              { name: 'app-router-playground', project: 'app-router-playground' },
+              { name: 'app-router-playground', project: 'app-router-playground', original: 'https://app-router.vercel.app' },
               { name: 'realworld-api-rest', project: 'realworld-api-rest' },
               { name: 'benchmarks', project: 'benchmarks' },
+              { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
             ];
             
             const { data: comments } = await github.rest.issues.listComments({
@@ -110,18 +114,18 @@ jobs:
             const marker = '<!-- vinext-deploy-previews -->';
             const existingComment = comments.find(c => c.body?.includes(marker));
             
-            const previews = examples
-              .map(e => `[${e.name}](https://${alias}-${e.project}.vinext.workers.dev)`)
-              .join(' · ');
-            
-            const production = examples
-              .map(e => `[${e.name}](https://${e.project}.vinext.workers.dev)`)
-              .join(' · ');
+            const rows = examples
+              .map(e => {
+                const orig = e.original ? `[original](${e.original})` : '';
+                return `| ${e.name} | [preview](https://${alias}-${e.project}.vinext.workers.dev) | [production](https://${e.project}.vinext.workers.dev) | ${orig} |`;
+              })
+              .join('\n');
             
             const body = [
               marker,
-              `**Preview:** ${previews}`,
-              `**Production:** ${production}`,
+              '| Example | Preview | Production | Original |',
+              '|---------|---------|------------|----------|',
+              rows,
             ].join('\n');
             
             if (existingComment) {

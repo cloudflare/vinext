@@ -200,6 +200,36 @@ importers:
         specifier: ^4.65.0
         version: 4.66.0
 
+  examples/hackernews:
+    dependencies:
+      '@cloudflare/vite-plugin':
+        specifier: ^1.25.0
+        version: 1.25.1(vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.31.1))(workerd@1.20260217.0)(wrangler@4.66.0)
+      '@vitejs/plugin-rsc':
+        specifier: ^0.5.19
+        version: 0.5.20(react-dom@19.2.4(react@19.2.4))(react-server-dom-webpack@19.2.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.31.1))
+      ms:
+        specifier: 3.0.0-canary.1
+        version: 3.0.0-canary.1
+      react:
+        specifier: ^19.2.4
+        version: 19.2.4
+      react-dom:
+        specifier: ^19.2.4
+        version: 19.2.4(react@19.2.4)
+      server-only:
+        specifier: ^0.0.1
+        version: 0.0.1
+      vinext:
+        specifier: workspace:*
+        version: link:../../packages/vinext
+      vite:
+        specifier: ^7.3.1
+        version: 7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.31.1)
+      wrangler:
+        specifier: ^4.65.0
+        version: 4.66.0
+
   examples/pages-router-cloudflare:
     dependencies:
       '@cloudflare/vite-plugin':
@@ -2771,6 +2801,9 @@ packages:
     resolution: {integrity: sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA==}
     engines: {node: '>=10'}
     hasBin: true
+
+  server-only@0.0.1:
+    resolution: {integrity: sha512-qepMx2JxAa5jjfzxG79yPPq+8BuFToHd1hm7kI+Z4zAq1ftQiP7HcxMhDDItrbtwVeLg/cY2JnKnrcFkmiswNA==}
 
   set-cookie-parser@2.7.2:
     resolution: {integrity: sha512-oeM1lpU/UvhTxw+g3cIfxXHyJRc/uidd3yK1P242gzHds0udQBYzs3y8j4gCCW+ZJ7ad0yctld8RYO+bdurlvw==}
@@ -5356,6 +5389,8 @@ snapshots:
   scheduler@0.27.0: {}
 
   semver@7.7.4: {}
+
+  server-only@0.0.1: {}
 
   set-cookie-parser@2.7.2: {}
 

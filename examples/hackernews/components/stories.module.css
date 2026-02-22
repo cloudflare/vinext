@@ -1,0 +1,34 @@
+.item {
+  display: flex;
+  margin: 10px 0;
+}
+
+.count {
+  flex-basis: auto;
+  flex-grow: 1;
+  font-size: 14px;
+  padding-right: 5px;
+  display: block;
+  width: 12px;
+  text-align: right;
+}
+
+.count::after {
+  content: '.';
+}
+
+.story {
+  flex: 100;
+  display: inline-block;
+}
+
+.footer {
+  padding: 10px 0 0 32px;
+}
+
+.footer a {
+  color: #000;
+  font-size: 14px;
+  display: inline-block;
+  text-decoration: none;
+}
