@@ -113,7 +113,7 @@ You can, with caution. This is experimental software with known bugs. It works w
 Yes. Next.js supports [self-hosting](https://nextjs.org/docs/app/building-your-application/deploying#self-hosting) on Node.js servers, Docker containers, and static exports. If you're happy with the Next.js toolchain and just want to run it somewhere other than Vercel, self-hosting is the simplest path.
 
 **How are you verifying this works?**
-The test suite has over 1,000 Vitest tests and 278 Playwright E2E tests. This includes tests ported directly from the [Next.js test suite](https://github.com/vercel/next.js/tree/canary/test) and [OpenNext's Cloudflare conformance suite](https://github.com/opennextjs/opennextjs-cloudflare), covering routing, SSR, RSC, server actions, caching, metadata, middleware, streaming, and more. Vercel's [App Router Playground](https://github.com/vercel/next-app-router-playground) also runs on vinext as an integration test. See the [Tests](#tests) section and `tests/nextjs-compat/TRACKING.md` for details.
+The test suite has over 1,700 Vitest tests and 380 Playwright E2E tests. This includes tests ported directly from the [Next.js test suite](https://github.com/vercel/next.js/tree/canary/test) and [OpenNext's Cloudflare conformance suite](https://github.com/opennextjs/opennextjs-cloudflare), covering routing, SSR, RSC, server actions, caching, metadata, middleware, streaming, and more. Vercel's [App Router Playground](https://github.com/vercel/next-app-router-playground) also runs on vinext as an integration test. See the [Tests](#tests) section and `tests/nextjs-compat/TRACKING.md` for details.
 
 **Who is reviewing this code?**
 Mostly nobody. This is an experiment in seeing how far AI-driven development can go. The test suite is the primary quality gate — not human code review. Contributions and code review are welcome.
@@ -146,7 +146,7 @@ The deploy command also auto-detects and fixes common migration issues:
 - Resolves tsconfig.json path aliases automatically (via `vite-tsconfig-paths`)
 - Detects MDX usage and configures `@mdx-js/rollup`
 - Renames CJS config files (postcss.config.js, etc.) to `.cjs` when needed
-- Detects native Node.js modules (sharp, resvg, satori) and stubs them for Workers
+- Detects native Node.js modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas) and auto-stubs them for Workers. If you encounter others that need stubbing, PRs are welcome.
 
 Both App Router and Pages Router work on Workers with full client-side hydration — interactive components, client-side navigation, and React state all work.
 
@@ -308,20 +308,26 @@ These are intentional exclusions:
 
 ## Known limitations
 
-- **Image optimization doesn't happen at build time.** Remote images work via `@unpic/react` (auto-detects 28 CDN providers). Local images are served as-is without resizing or format conversion.
+- **Image optimization doesn't happen at build time.** Remote images work via `@unpic/react` (auto-detects 28 CDN providers). Local images are routed through a `/_vinext/image` endpoint that can resize and transcode on Cloudflare Workers (via the Images binding) in production, but no build-time optimization or static resizing occurs.
 - **Google Fonts are loaded from the CDN, not self-hosted.** No `size-adjust` fallback font metrics. Local fonts work but `@font-face` CSS is injected at runtime, not extracted at build time.
 - **`useSelectedLayoutSegment(s)`** derives segments from the pathname rather than being truly layout-aware. May differ from Next.js in edge cases with parallel routes.
 - **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same environment).
 - **Node.js production server (`vinext start`)** works for testing but is less complete than Workers deployment. Cloudflare Workers is the primary target.
-- **Native Node modules (sharp, resvg, satori)** crash Vite's RSC dev environment. Dynamic OG image/icon routes using these work in production builds but not in dev mode.
+- **Native Node modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas)** crash Vite's RSC dev environment. Dynamic OG image/icon routes using these work in production builds but not in dev mode. These are auto-stubbed during `vinext deploy`.
 
 ## Benchmarks
 
-> **Caveat:** Benchmarks are hard to get right and these are early results. The comparison setup is simple — a shared 33-route App Router app built by both tools. We plan to improve methodology over time, and we expect these numbers to change. Take them as directional, not definitive.
+> **Caveat:** Benchmarks are hard to get right and these are early results. Take them as directional, not definitive.
 
-Measured on an 8-core Apple Silicon machine, Node v24.3.0, Next.js 16.1.6. 5 runs each, randomized execution order.
+These benchmarks measure **compilation and bundling speed**, not production serving performance. Next.js and vinext have fundamentally different default approaches: Next.js statically pre-renders pages at build time (making builds slower but production serving faster for static content), while vinext server-renders all pages on each request. To make the comparison apples-to-apples, the benchmark app uses `export const dynamic = "force-dynamic"` to disable Next.js static pre-rendering — both frameworks are doing the same work: compiling, bundling, and preparing server-rendered routes.
+
+The benchmark app is a shared 33-route App Router application (server components, client components, dynamic routes, nested layouts, API routes) built identically by both tools.
+
+Measured on an 8-core Apple Silicon machine, Node v24.3.0, Next.js 16.1.6.
 
 ### Production build time
+
+5 runs, timed with `hyperfine`.
 
 | Framework | Mean | vs Next.js |
 |-----------|------|------------|
@@ -337,7 +343,21 @@ Measured on an 8-core Apple Silicon machine, Node v24.3.0, Next.js 16.1.6. 5 run
 | vinext (Rollup) | 76.4 KB | ~55% smaller |
 | vinext (Rolldown) | 74.6 KB | ~56% smaller |
 
+<details>
+<summary>Why the bundle size difference?</summary>
+
+Analysis of the build output shows two main factors:
+
+1. **Tree-shaking**: Vite/Rollup produces a 193KB React+ReactDOM bundle vs Next.js/Turbopack's ~338KB (across two chunks). Rollup's more aggressive dead-code elimination accounts for roughly half the overall difference.
+2. **Framework overhead**: Next.js ships ~83KB of client-side infrastructure (router, Turbopack runtime loader, prefetching, error handling). vinext's client runtime is ~46KB.
+
+Both frameworks ship the same app code and the same RSC client runtime (`react-server-dom-webpack`). The difference is in how much of React's internals survive tree-shaking and how much framework plumbing each tool adds.
+
+</details>
+
 ### Dev server cold start
+
+10 runs, randomized execution order to eliminate positional bias.
 
 | Framework | Mean | vs Next.js |
 |-----------|------|------------|
@@ -345,7 +365,7 @@ Measured on an 8-core Apple Silicon machine, Node v24.3.0, Next.js 16.1.6. 5 run
 | vinext (Vite 7 / Rollup) | 1.35s | ~1.4x faster |
 | vinext (Vite 8 / Rolldown) | 1.29s | ~1.5x faster |
 
-Reproduce with `node benchmarks/run.mjs --runs=5`. Uses `hyperfine` for timing (falls back to `performance.now()`), `gzipSync` for bundle size. Dev server cold start runs are randomized to eliminate positional bias. Exact framework versions are recorded in each result. Historical results are tracked at [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev).
+Reproduce with `node benchmarks/run.mjs --runs=5 --dev-runs=10`. Exact framework versions are recorded in each result. Historical results are tracked at [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev).
 
 ## Architecture
 
@@ -399,7 +419,7 @@ packages/vinext/
       instrumentation.ts  # instrumentation.ts support
     cloudflare/
       kv-cache-handler.ts # Cloudflare KV-backed CacheHandler for ISR
-    shims/                # One file per next/* module (30 shims + 6 internal)
+    shims/                # One file per next/* module (33 shims + 6 internal)
     build/
       static-export.ts    # output: 'export' support
     utils/
@@ -460,7 +480,7 @@ Or add it to your `package.json` as a file dependency:
 }
 ```
 
-vinext has peer dependencies on `react >= 19.2`, `react-dom >= 19.2`, and `vite >= 7.0`. Then replace `next` with `vinext` in your scripts and run as normal.
+vinext has peer dependencies on `react ^19.2.4`, `react-dom ^19.2.4`, and `vite ^7.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
 
 ## Contributing
 
