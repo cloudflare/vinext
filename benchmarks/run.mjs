@@ -95,6 +95,33 @@ async function waitForServer(url, timeoutMs = 60000) {
 }
 
 /**
+ * Sum RSS (in KB) for an entire process group.
+ * The process was spawned with detached:true so proc.pid is the PGID.
+ * On Linux, `ps -g` selects by SESSION ID (not PGID), so we use `pgrep -g`
+ * to enumerate PIDs in the process group, then query their RSS individually.
+ * On macOS, pgrep -g is not available; fall back to the leader PID only.
+ */
+function getGroupRssKb(pid) {
+  try {
+    let out;
+    if (process.platform === "linux") {
+      const pidsRaw = execSync(`pgrep -g ${pid}`, { encoding: "utf-8" }).trim();
+      if (!pidsRaw) return 0;
+      const pidList = pidsRaw.split("\n").join(",");
+      out = execSync(`ps -o rss= -p ${pidList}`, { encoding: "utf-8" });
+    } else {
+      out = execSync(`ps -o rss= -p ${pid}`, { encoding: "utf-8" });
+    }
+    return out
+      .trim()
+      .split("\n")
+      .reduce((sum, line) => sum + (parseInt(line.trim(), 10) || 0), 0);
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Start a process and measure cold start time + peak RSS.
  * Returns { coldStartMs, peakRssKb, process }
  */
@@ -105,7 +132,7 @@ async function startAndMeasure(cmd, args, cwd, url) {
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
     detached: true, // Own process group so we can kill the tree safely
-    env: { ...process.env, NODE_ENV: "production", PORT: new URL(url).port },
+    env: { ...process.env, PORT: new URL(url).port },
   });
 
   // Collect stderr/stdout for debugging
@@ -113,15 +140,10 @@ async function startAndMeasure(cmd, args, cwd, url) {
   proc.stdout?.on("data", (d) => (output += d.toString()));
   proc.stderr?.on("data", (d) => (output += d.toString()));
 
-  // Poll RSS every 200ms
+  // Poll RSS every 200ms (sum across process group on Linux)
   const rssInterval = setInterval(() => {
-    try {
-      const rssLine = execSync(`ps -o rss= -p ${proc.pid}`, { encoding: "utf-8" }).trim();
-      const rss = parseInt(rssLine, 10);
-      if (rss > peakRssKb) peakRssKb = rss;
-    } catch {
-      // process may have died
-    }
+    const rss = getGroupRssKb(proc.pid);
+    if (rss > peakRssKb) peakRssKb = rss;
   }, 200);
 
   try {
@@ -129,16 +151,13 @@ async function startAndMeasure(cmd, args, cwd, url) {
     clearInterval(rssInterval);
 
     // Final RSS
-    try {
-      const rssLine = execSync(`ps -o rss= -p ${proc.pid}`, { encoding: "utf-8" }).trim();
-      const rss = parseInt(rssLine, 10);
-      if (rss > peakRssKb) peakRssKb = rss;
-    } catch { /* process may have died */ }
+    const rss = getGroupRssKb(proc.pid);
+    if (rss > peakRssKb) peakRssKb = rss;
 
     return { coldStartMs, peakRssKb, process: proc, output };
   } catch (err) {
     clearInterval(rssInterval);
-    proc.kill("SIGTERM");
+    kill(proc);
     console.error("Server output:", output);
     throw err;
   }
@@ -152,6 +171,16 @@ function kill(proc) {
   try {
     process.kill(-proc.pid, "SIGKILL");
   } catch {}
+}
+
+// Fisher-Yates shuffle — used to randomize runner order and eliminate positional bias.
+function shuffle(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
 function formatBytes(b) {
@@ -273,29 +302,46 @@ async function main() {
         results.vinextRolldown.buildTime = parseHyperfine(rdJson);
       }
     } catch {
-      // Fallback: manual timing
+      // Fallback: manual timing with randomized runner order to eliminate positional bias
       console.log("  hyperfine failed, falling back to manual timing...");
       const buildTimes = { nextjs: [], vinext: [], rolldown: [] };
 
+      const buildRunners = [
+        {
+          key: "nextjs",
+          run: () => {
+            exec("rm -rf .next", { cwd: nextjsDir });
+            const start = performance.now();
+            exec("npx next build", { cwd: nextjsDir, timeout: 120000 });
+            buildTimes.nextjs.push(performance.now() - start);
+          },
+        },
+        {
+          key: "vinext",
+          run: () => {
+            exec("rm -rf dist", { cwd: vinextDir });
+            const start = performance.now();
+            exec("npx vite build", { cwd: vinextDir, timeout: 120000 });
+            buildTimes.vinext.push(performance.now() - start);
+          },
+        },
+        ...(hasRolldown
+          ? [{
+              key: "rolldown",
+              run: () => {
+                exec("rm -rf dist", { cwd: vinextRolldownDir });
+                const start = performance.now();
+                exec("npx vite build", { cwd: vinextRolldownDir, timeout: 120000 });
+                buildTimes.rolldown.push(performance.now() - start);
+              },
+            }]
+          : []),
+      ];
+
       for (let i = 0; i < RUNS; i++) {
-        console.log(`  Run ${i + 1}/${RUNS}...`);
-
-        exec("rm -rf .next", { cwd: nextjsDir });
-        const njsStart = performance.now();
-        exec("npx next build", { cwd: nextjsDir, timeout: 120000 });
-        buildTimes.nextjs.push(performance.now() - njsStart);
-
-        exec("rm -rf dist", { cwd: vinextDir });
-        const ncStart = performance.now();
-        exec("npx vite build", { cwd: vinextDir, timeout: 120000 });
-        buildTimes.vinext.push(performance.now() - ncStart);
-
-        if (hasRolldown) {
-          exec("rm -rf dist", { cwd: vinextRolldownDir });
-          const rdStart = performance.now();
-          exec("npx vite build", { cwd: vinextRolldownDir, timeout: 120000 });
-          buildTimes.rolldown.push(performance.now() - rdStart);
-        }
+        const order = shuffle(buildRunners);
+        console.log(`  Run ${i + 1}/${RUNS} (order: ${order.map((r) => r.key).join(" → ")})...`);
+        for (const runner of order) runner.run();
       }
 
       const avg = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
@@ -401,16 +447,6 @@ async function main() {
         : []),
     ];
 
-    // Fisher-Yates shuffle
-    function shuffle(arr) {
-      const a = [...arr];
-      for (let i = a.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [a[i], a[j]] = [a[j], a[i]];
-      }
-      return a;
-    }
-
     const runOrders = [];
 
     for (let i = 0; i < DEV_RUNS; i++) {
@@ -484,18 +520,32 @@ async function main() {
 
   const hasRolldownResults = results.vinextRolldown && Object.keys(results.vinextRolldown).length > 0;
 
+  // Format a speed ratio comparison: "2.1x faster" or "1.3x slower"
+  function fmtSpeedup(baseline, value) {
+    if (!baseline || !value) return "N/A";
+    const ratio = baseline / value;
+    if (ratio > 1) return `**${ratio.toFixed(1)}x faster**`;
+    if (ratio < 1) return `**${(1 / ratio).toFixed(1)}x slower**`;
+    return "same";
+  }
+  // Format a size reduction: "56% smaller" or "12% larger"
+  function fmtSizeReduction(baseline, value) {
+    if (!baseline || !value) return "N/A";
+    const pct = Math.round((1 - value / baseline) * 100);
+    if (pct > 0) return `**${pct}% smaller**`;
+    if (pct < 0) return `**${Math.abs(pct)}% larger**`;
+    return "same";
+  }
+
   if (results.nextjs.buildTime && results.vinext.buildTime) {
     md += `## Production Build Time\n\n`;
     md += `| Framework | Mean | StdDev | Min | Max | vs Next.js |\n`;
     md += `|-----------|------|--------|-----|-----|------------|\n`;
     md += `| Next.js 16 (Turbopack) | ${formatMs(results.nextjs.buildTime.mean)} | ±${formatMs(results.nextjs.buildTime.stddev)} | ${formatMs(results.nextjs.buildTime.min)} | ${formatMs(results.nextjs.buildTime.max)} | baseline |\n`;
-
-    const rollupRatio = results.nextjs.buildTime.mean / results.vinext.buildTime.mean;
-    md += `| vinext (Vite 7 / Rollup) | ${formatMs(results.vinext.buildTime.mean)} | ±${formatMs(results.vinext.buildTime.stddev)} | ${formatMs(results.vinext.buildTime.min)} | ${formatMs(results.vinext.buildTime.max)} | **${rollupRatio.toFixed(1)}x faster** |\n`;
+    md += `| vinext (Vite 7 / Rollup) | ${formatMs(results.vinext.buildTime.mean)} | ±${formatMs(results.vinext.buildTime.stddev)} | ${formatMs(results.vinext.buildTime.min)} | ${formatMs(results.vinext.buildTime.max)} | ${fmtSpeedup(results.nextjs.buildTime.mean, results.vinext.buildTime.mean)} |\n`;
 
     if (hasRolldownResults && results.vinextRolldown.buildTime) {
-      const rolldownRatio = results.nextjs.buildTime.mean / results.vinextRolldown.buildTime.mean;
-      md += `| vinext (Vite 8 / Rolldown) | ${formatMs(results.vinextRolldown.buildTime.mean)} | ±${formatMs(results.vinextRolldown.buildTime.stddev)} | ${formatMs(results.vinextRolldown.buildTime.min)} | ${formatMs(results.vinextRolldown.buildTime.max)} | **${rolldownRatio.toFixed(1)}x faster** |\n`;
+      md += `| vinext (Vite 8 / Rolldown) | ${formatMs(results.vinextRolldown.buildTime.mean)} | ±${formatMs(results.vinextRolldown.buildTime.stddev)} | ${formatMs(results.vinextRolldown.buildTime.min)} | ${formatMs(results.vinextRolldown.buildTime.max)} | ${fmtSpeedup(results.nextjs.buildTime.mean, results.vinextRolldown.buildTime.mean)} |\n`;
     }
     md += "\n";
   }
@@ -505,13 +555,10 @@ async function main() {
     md += `| Framework | Files | Raw | Gzipped | vs Next.js (gzip) |\n`;
     md += `|-----------|-------|-----|----------|--------------------|\n`;
     md += `| Next.js 16 | ${results.nextjs.bundleSize.files} | ${formatBytes(results.nextjs.bundleSize.raw)} | ${formatBytes(results.nextjs.bundleSize.gzip)} | baseline |\n`;
-
-    const rollupSizePct = ((1 - results.vinext.bundleSize.gzip / results.nextjs.bundleSize.gzip) * 100).toFixed(0);
-    md += `| vinext (Rollup) | ${results.vinext.bundleSize.files} | ${formatBytes(results.vinext.bundleSize.raw)} | ${formatBytes(results.vinext.bundleSize.gzip)} | **${rollupSizePct}% smaller** |\n`;
+    md += `| vinext (Rollup) | ${results.vinext.bundleSize.files} | ${formatBytes(results.vinext.bundleSize.raw)} | ${formatBytes(results.vinext.bundleSize.gzip)} | ${fmtSizeReduction(results.nextjs.bundleSize.gzip, results.vinext.bundleSize.gzip)} |\n`;
 
     if (hasRolldownResults && results.vinextRolldown.bundleSize) {
-      const rolldownSizePct = ((1 - results.vinextRolldown.bundleSize.gzip / results.nextjs.bundleSize.gzip) * 100).toFixed(0);
-      md += `| vinext (Rolldown) | ${results.vinextRolldown.bundleSize.files} | ${formatBytes(results.vinextRolldown.bundleSize.raw)} | ${formatBytes(results.vinextRolldown.bundleSize.gzip)} | **${rolldownSizePct}% smaller** |\n`;
+      md += `| vinext (Rolldown) | ${results.vinextRolldown.bundleSize.files} | ${formatBytes(results.vinextRolldown.bundleSize.raw)} | ${formatBytes(results.vinextRolldown.bundleSize.gzip)} | ${fmtSizeReduction(results.nextjs.bundleSize.gzip, results.vinextRolldown.bundleSize.gzip)} |\n`;
     }
     md += "\n";
   }
@@ -521,13 +568,10 @@ async function main() {
     md += `| Framework | Mean Cold Start | Mean Peak RSS | vs Next.js |\n`;
     md += `|-----------|----------------|----------------|------------|\n`;
     md += `| Next.js 16 (Turbopack) | ${formatMs(results.nextjs.devColdStart.meanMs)} | ${Math.round(results.nextjs.devColdStart.meanRssKb / 1024)} MB | baseline |\n`;
-
-    const rollupDevRatio = results.nextjs.devColdStart.meanMs / results.vinext.devColdStart.meanMs;
-    md += `| vinext (Vite 7 / Rollup) | ${formatMs(results.vinext.devColdStart.meanMs)} | ${Math.round(results.vinext.devColdStart.meanRssKb / 1024)} MB | **${rollupDevRatio.toFixed(1)}x faster** |\n`;
+    md += `| vinext (Vite 7 / Rollup) | ${formatMs(results.vinext.devColdStart.meanMs)} | ${Math.round(results.vinext.devColdStart.meanRssKb / 1024)} MB | ${fmtSpeedup(results.nextjs.devColdStart.meanMs, results.vinext.devColdStart.meanMs)} |\n`;
 
     if (hasRolldownResults && results.vinextRolldown.devColdStart) {
-      const rolldownDevRatio = results.nextjs.devColdStart.meanMs / results.vinextRolldown.devColdStart.meanMs;
-      md += `| vinext (Vite 8 / Rolldown) | ${formatMs(results.vinextRolldown.devColdStart.meanMs)} | ${Math.round(results.vinextRolldown.devColdStart.meanRssKb / 1024)} MB | **${rolldownDevRatio.toFixed(1)}x faster** |\n`;
+      md += `| vinext (Vite 8 / Rolldown) | ${formatMs(results.vinextRolldown.devColdStart.meanMs)} | ${Math.round(results.vinextRolldown.devColdStart.meanRssKb / 1024)} MB | ${fmtSpeedup(results.nextjs.devColdStart.meanMs, results.vinextRolldown.devColdStart.meanMs)} |\n`;
     }
     md += "\n";
   }

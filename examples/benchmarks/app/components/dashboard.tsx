@@ -5,6 +5,15 @@ import { Tabs } from "@cloudflare/kumo/components/tabs";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Table } from "@cloudflare/kumo/components/table";
 import { TrendChart } from "./chart";
+import {
+  formatMs,
+  formatBytes,
+  speedup,
+  sizeReduction,
+  isImprovement,
+  RUNNER_LABELS,
+  RUNNER_COLORS,
+} from "./format";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -28,50 +37,6 @@ interface BenchmarkCommit {
 }
 
 type MetricTab = "build_time" | "bundle_size" | "cold_start";
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function formatMs(ms: number | null): string {
-  if (ms === null) return "-";
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  return `${(ms / 1000).toFixed(2)} s`;
-}
-
-function formatBytes(b: number | null): string {
-  if (b === null) return "-";
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-function speedup(baseline: number | null, value: number | null): string | null {
-  if (baseline === null || value === null || value === 0) return null;
-  const ratio = baseline / value;
-  if (ratio > 1) return `${ratio.toFixed(1)}x faster`;
-  if (ratio < 1) return `${(1 / ratio).toFixed(1)}x slower`;
-  return "same";
-}
-
-function sizeReduction(baseline: number | null, value: number | null): string | null {
-  if (baseline === null || value === null || baseline === 0) return null;
-  const pct = ((1 - value / baseline) * 100).toFixed(0);
-  const num = parseInt(pct, 10);
-  if (num > 0) return `${pct}% smaller`;
-  if (num < 0) return `${Math.abs(num)}% larger`;
-  return "same";
-}
-
-const RUNNER_LABELS: Record<string, string> = {
-  nextjs: "Next.js 16",
-  vinext: "vinext (Rollup)",
-  vinext_rolldown: "vinext (Rolldown)",
-};
-
-const RUNNER_COLORS: Record<string, string> = {
-  nextjs: "var(--color-chart-nextjs, #f97316)",
-  vinext: "var(--color-chart-vinext, #3b82f6)",
-  vinext_rolldown: "var(--color-chart-rolldown, #8b5cf6)",
-};
 
 // ─── Dashboard Component ─────────────────────────────────────────────────────
 
@@ -243,9 +208,8 @@ function LatestResultsTable({ commit }: { commit: BenchmarkCommit }) {
 
 function ComparisonBadge({ label }: { label: string | null }) {
   if (!label) return null;
-  const isFaster = label.includes("faster") || label.includes("smaller");
   return (
-    <Badge variant={isFaster ? "primary" : "destructive"}>
+    <Badge variant={isImprovement(label) ? "primary" : "destructive"}>
       {label}
     </Badge>
   );

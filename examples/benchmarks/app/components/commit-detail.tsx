@@ -3,6 +3,14 @@
 import { useState, useEffect } from "react";
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Table } from "@cloudflare/kumo/components/table";
+import {
+  formatMs,
+  formatBytes,
+  speedup,
+  sizeReduction,
+  isImprovement,
+  RUNNER_LABELS,
+} from "./format";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -26,27 +34,6 @@ interface RunnerResult {
   commit_date: string;
   run_date: string;
 }
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function formatMs(ms: number | null): string {
-  if (ms === null) return "-";
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  return `${(ms / 1000).toFixed(2)} s`;
-}
-
-function formatBytes(b: number | null): string {
-  if (b === null) return "-";
-  if (b < 1024) return `${b} B`;
-  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
-  return `${(b / (1024 * 1024)).toFixed(2)} MB`;
-}
-
-const RUNNER_LABELS: Record<string, string> = {
-  nextjs: "Next.js 16 (Turbopack)",
-  vinext: "vinext (Vite 7 / Rollup)",
-  vinext_rolldown: "vinext (Vite 8 / Rolldown)",
-};
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
@@ -136,20 +123,21 @@ export function CommitDetail({ sha }: { sha: string }) {
                 </Table.Cell>
                 <Table.Cell>{formatMs(r.build_time_mean)}</Table.Cell>
                 <Table.Cell className="text-gray-400">
-                  {r.build_time_stddev !== null ? `+${formatMs(r.build_time_stddev)}` : "-"}
+                  {r.build_time_stddev !== null ? `\u00b1${formatMs(r.build_time_stddev)}` : "-"}
                 </Table.Cell>
                 <Table.Cell>{formatMs(r.build_time_min)}</Table.Cell>
                 <Table.Cell>{formatMs(r.build_time_max)}</Table.Cell>
                 <Table.Cell>
                   {r.runner === "nextjs" ? (
                     <span className="text-gray-400">baseline</span>
-                  ) : nextjs?.build_time_mean && r.build_time_mean ? (
-                    <Badge variant="primary">
-                      {(nextjs.build_time_mean / r.build_time_mean).toFixed(1)}x faster
-                    </Badge>
-                  ) : (
-                    "-"
-                  )}
+                  ) : (() => {
+                    const label = speedup(nextjs?.build_time_mean ?? null, r.build_time_mean);
+                    return label ? (
+                      <Badge variant={isImprovement(label) ? "primary" : "destructive"}>
+                        {label}
+                      </Badge>
+                    ) : "-";
+                  })()}
                 </Table.Cell>
               </Table.Row>
             ))}
@@ -181,14 +169,14 @@ export function CommitDetail({ sha }: { sha: string }) {
                 <Table.Cell>
                   {r.runner === "nextjs" ? (
                     <span className="text-gray-400">baseline</span>
-                  ) : nextjs?.bundle_size_gzip && r.bundle_size_gzip ? (
-                    <Badge variant="primary">
-                      {((1 - r.bundle_size_gzip / nextjs.bundle_size_gzip) * 100).toFixed(0)}%
-                      smaller
-                    </Badge>
-                  ) : (
-                    "-"
-                  )}
+                  ) : (() => {
+                    const label = sizeReduction(nextjs?.bundle_size_gzip ?? null, r.bundle_size_gzip);
+                    return label ? (
+                      <Badge variant={isImprovement(label) ? "primary" : "destructive"}>
+                        {label}
+                      </Badge>
+                    ) : "-";
+                  })()}
                 </Table.Cell>
               </Table.Row>
             ))}
@@ -220,13 +208,14 @@ export function CommitDetail({ sha }: { sha: string }) {
                 <Table.Cell>
                   {r.runner === "nextjs" ? (
                     <span className="text-gray-400">baseline</span>
-                  ) : nextjs?.dev_cold_start_ms && r.dev_cold_start_ms ? (
-                    <Badge variant="primary">
-                      {(nextjs.dev_cold_start_ms / r.dev_cold_start_ms).toFixed(1)}x faster
-                    </Badge>
-                  ) : (
-                    "-"
-                  )}
+                  ) : (() => {
+                    const label = speedup(nextjs?.dev_cold_start_ms ?? null, r.dev_cold_start_ms);
+                    return label ? (
+                      <Badge variant={isImprovement(label) ? "primary" : "destructive"}>
+                        {label}
+                      </Badge>
+                    ) : "-";
+                  })()}
                 </Table.Cell>
               </Table.Row>
             ))}

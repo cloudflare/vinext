@@ -1,10 +1,22 @@
 #!/usr/bin/env node
 /**
- * Generate a realistic benchmark app with 50+ pages.
+ * Generate the shared 33-route benchmark app.
  * Shared between the Next.js and vinext benchmark projects.
  */
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
+
+// Seeded PRNG (mulberry32) for deterministic source generation across runs.
+function mulberry32(seed) {
+  let s = seed | 0;
+  return () => {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const random = mulberry32(42);
 
 const APP = join(dirname(new URL(import.meta.url).pathname), "app");
 
@@ -59,7 +71,7 @@ export default function Home() {
     <div>
       <h1>Benchmark App</h1>
       <p>Server-rendered at {now}</p>
-      <p>This is a realistic benchmark app with 50+ pages, nested layouts, dynamic routes, and client components.</p>
+      <p>This is a realistic benchmark app with 33 routes, nested layouts, dynamic routes, and client components.</p>
     </div>
   );
 }
@@ -124,7 +136,7 @@ export default function AboutPage() {
     <div>
       <h1>About</h1>
       <p>This is a benchmark application for comparing Next.js and vinext (Vite) performance.</p>
-      <p>It includes 50+ pages with nested layouts, dynamic routes, server components, client components, and metadata.</p>
+      <p>It includes 33 routes with nested layouts, dynamic routes, server components, client components, and metadata.</p>
     </div>
   );
 }
@@ -144,8 +156,8 @@ export default function ProductsLayout({ children }: { children: React.ReactNode
 }
 `);
 
-// Pre-compute product prices at generation time so the source code is deterministic.
-const productPrices = Array.from({ length: 20 }, () => (Math.round(Math.random() * 10000) / 100).toFixed(2));
+// Pre-compute product prices at generation time with seeded PRNG for reproducibility.
+const productPrices = Array.from({ length: 20 }, () => (Math.round(random() * 10000) / 100).toFixed(2));
 
 write("products/page.tsx", `
 import Link from "next/link";
@@ -296,10 +308,10 @@ export default function DashboardPage() {
 }
 `);
 
-// Pre-compute analytics data at generation time so the source code is deterministic.
+// Pre-compute analytics data at generation time with seeded PRNG for reproducibility.
 const analyticsRows = Array.from({ length: 10 }, () => ({
-  views: Math.floor(Math.random() * 10000),
-  bounce: Math.floor(Math.random() * 100),
+  views: Math.floor(random() * 10000),
+  bounce: Math.floor(random() * 100),
 }));
 
 write("dashboard/analytics/page.tsx", `

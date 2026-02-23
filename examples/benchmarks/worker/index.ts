@@ -74,49 +74,63 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
     );
   }
 
-  // Insert one row per runner
+  // Insert one row per runner, batched in a single transaction
   const inserted: string[] = [];
+  const stmts: D1PreparedStatement[] = [];
 
   for (const [key, dbRunner] of Object.entries(RUNNER_MAP)) {
     const data = results[key];
     if (!data || Object.keys(data).length === 0) continue;
 
-    await env.DB.prepare(`
-      INSERT INTO benchmark_results (
-        commit_sha, commit_short, commit_message, commit_date,
-        run_date, runner,
-        build_time_mean, build_time_stddev, build_time_min, build_time_max,
-        bundle_size_raw, bundle_size_gzip, bundle_file_count,
-        dev_cold_start_ms, dev_peak_rss_kb,
-        ssr_rps, ssr_ttfb_ms,
-        platform, arch, node_version, cpu_count, run_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      commitSha,
-      commitShort,
-      commitMessage,
-      commitDate,
-      results.timestamp || new Date().toISOString(),
-      dbRunner,
-      data.buildTime?.mean ?? null,
-      data.buildTime?.stddev ?? null,
-      data.buildTime?.min ?? null,
-      data.buildTime?.max ?? null,
-      data.bundleSize?.raw ?? null,
-      data.bundleSize?.gzip ?? null,
-      data.bundleSize?.files ?? null,
-      data.devColdStart?.meanMs ?? null,
-      data.devColdStart?.meanRssKb ?? null,
-      null, // ssr_rps (future)
-      null, // ssr_ttfb_ms (future)
-      results.system?.platform ?? null,
-      results.system?.arch ?? null,
-      results.system?.nodeVersion ?? null,
-      results.system?.cpus ?? null,
-      results.buildRuns ?? results.runs ?? null,
-    ).run();
-
+    stmts.push(
+      env.DB.prepare(`
+        INSERT INTO benchmark_results (
+          commit_sha, commit_short, commit_message, commit_date,
+          run_date, runner,
+          build_time_mean, build_time_stddev, build_time_min, build_time_max,
+          bundle_size_raw, bundle_size_gzip, bundle_file_count,
+          dev_cold_start_ms, dev_peak_rss_kb,
+          ssr_rps, ssr_ttfb_ms,
+          platform, arch, node_version, cpu_count, run_count
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).bind(
+        commitSha,
+        commitShort,
+        commitMessage,
+        commitDate,
+        results.timestamp || new Date().toISOString(),
+        dbRunner,
+        data.buildTime?.mean ?? null,
+        data.buildTime?.stddev ?? null,
+        data.buildTime?.min ?? null,
+        data.buildTime?.max ?? null,
+        data.bundleSize?.raw ?? null,
+        data.bundleSize?.gzip ?? null,
+        data.bundleSize?.files ?? null,
+        data.devColdStart?.meanMs ?? null,
+        data.devColdStart?.meanRssKb ?? null,
+        null, // ssr_rps (future)
+        null, // ssr_ttfb_ms (future)
+        results.system?.platform ?? null,
+        results.system?.arch ?? null,
+        results.system?.nodeVersion ?? null,
+        results.system?.cpus ?? null,
+        results.buildRuns ?? results.runs ?? null,
+      ),
+    );
     inserted.push(dbRunner);
+  }
+
+  if (stmts.length > 0) {
+    try {
+      await env.DB.batch(stmts);
+    } catch (err) {
+      console.error("DB.batch failed:", err);
+      return Response.json(
+        { error: "Failed to insert benchmark results" },
+        { status: 500 },
+      );
+    }
   }
 
   return Response.json({ ok: true, inserted }, { status: 201 });
