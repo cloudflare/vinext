@@ -323,7 +323,7 @@ These benchmarks measure **compilation and bundling speed**, not production serv
 
 The benchmark app is a shared 33-route App Router application (server components, client components, dynamic routes, nested layouts, API routes) built identically by both tools.
 
-Benchmarks run on GitHub CI runners on every merge to `main`. Results below are a recent snapshot — see [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev) for historical data.
+Benchmarks run on GitHub CI runners (2-core Ubuntu) on every merge to `main`. Results below are from the latest CI run — see [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev) for historical data. Turbopack and Rolldown both parallelize across cores, so results on machines with more cores may differ significantly.
 
 ### Production build time
 
@@ -331,17 +331,17 @@ Benchmarks run on GitHub CI runners on every merge to `main`. Results below are 
 
 | Framework | Mean | vs Next.js |
 |-----------|------|------------|
-| Next.js 16 (Turbopack) | 6.03s | baseline |
-| vinext (Vite 7 / Rollup) | 2.52s | ~2.4x faster |
-| vinext (Vite 8 / Rolldown) | 972ms | ~6x faster |
+| Next.js 16.1.6 (Turbopack) | 10.80s | baseline |
+| vinext (Vite 7.3.1 / Rollup) | 4.95s | ~2.2x faster |
+| vinext (Vite 8.0.0-beta / Rolldown) | 1.96s | ~5.5x faster |
 
 ### Client bundle size (gzipped)
 
 | Framework | Gzipped | vs Next.js |
 |-----------|---------|------------|
-| Next.js 16 | 168.9 KB | baseline |
-| vinext (Rollup) | 76.4 KB | ~55% smaller |
-| vinext (Rolldown) | 74.6 KB | ~56% smaller |
+| Next.js 16.1.6 | 172.9 KB | baseline |
+| vinext (Rollup) | 75.7 KB | ~56% smaller |
+| vinext (Rolldown) | 74.6 KB | ~57% smaller |
 
 <details>
 <summary>Why the bundle size difference?</summary>
@@ -357,13 +357,15 @@ Both frameworks ship the same app code and the same RSC client runtime (`react-s
 
 ### Dev server cold start
 
-10 runs, randomized execution order to eliminate positional bias.
+10 runs, randomized execution order to eliminate positional bias. Vite's dependency optimizer cache is cleared before each run.
 
 | Framework | Mean | vs Next.js |
 |-----------|------|------------|
-| Next.js 16 (Turbopack) | 1.94s | baseline |
-| vinext (Vite 7 / Rollup) | 1.35s | ~1.4x faster |
-| vinext (Vite 8 / Rolldown) | 1.29s | ~1.5x faster |
+| Next.js 16.1.6 (Turbopack) | 4.00s | baseline |
+| vinext (Vite 7.3.1 / Rollup) | 2.33s | ~1.7x faster |
+| vinext (Vite 8.0.0-beta / Rolldown) | 2.36s | ~1.7x faster |
+
+Rollup and Rolldown show similar dev cold-start times because Vite's dev server uses on-demand module loading — the bundler only matters for production builds.
 
 Reproduce with `node benchmarks/run.mjs --runs=5 --dev-runs=10`. Exact framework versions are recorded in each result. Historical results are tracked at [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev).
 
