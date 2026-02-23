@@ -1212,6 +1212,66 @@ describe('"use cache" runtime', () => {
     await cached(() => {});
     expect(callCount).toBe(2);
   });
+
+  it("produces different cache entries for Promise-augmented params with different values", async () => {
+    // Regression test: Next.js 16 params are created via
+    // Object.assign(Promise.resolve(params), params) — a "thenable object".
+    // encodeReply with temporaryReferences treats Promises as temp refs,
+    // which excluded the actual param values from the cache key.
+    // This caused all dynamic route pages with "use cache" to share one
+    // cache entry (e.g., /layouts/sports showed /layouts/electronics data).
+    const { registerCachedFunction } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { setCacheHandler, MemoryCacheHandler } = await import(
+      "../packages/vinext/src/shims/cache.js"
+    );
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    // Simulates a page component: async function Page({ params }) { ... }
+    const fn = async (props: { params: any }) => {
+      callCount++;
+      const p = typeof props.params.then === "function"
+        ? await props.params
+        : props.params;
+      return { section: p.section, data: `data-for-${p.section}` };
+    };
+
+    const cached = registerCachedFunction(fn, "test:thenable-params");
+
+    // Create Promise-augmented params (same pattern as app-dev-server.ts)
+    const electronicsParams = { section: "electronics" };
+    const asyncElectronics = Object.assign(
+      Promise.resolve(electronicsParams),
+      electronicsParams,
+    );
+
+    const sportsParams = { section: "sports" };
+    const asyncSports = Object.assign(
+      Promise.resolve(sportsParams),
+      sportsParams,
+    );
+
+    // First call — electronics
+    const r1 = await cached({ params: asyncElectronics });
+    expect(r1).toEqual({ section: "electronics", data: "data-for-electronics" });
+    expect(callCount).toBe(1);
+
+    // Second call with SAME params — should be cached
+    const asyncElectronics2 = Object.assign(
+      Promise.resolve({ section: "electronics" }),
+      { section: "electronics" },
+    );
+    const r2 = await cached({ params: asyncElectronics2 });
+    expect(r2).toEqual({ section: "electronics", data: "data-for-electronics" });
+    expect(callCount).toBe(1); // Cache hit
+
+    // Third call with DIFFERENT params — must be a cache MISS
+    const r3 = await cached({ params: asyncSports });
+    expect(r3).toEqual({ section: "sports", data: "data-for-sports" });
+    expect(callCount).toBe(2); // Must have called the function again!
+  });
 });
 
 describe("replyToCacheKey deterministic hashing", () => {

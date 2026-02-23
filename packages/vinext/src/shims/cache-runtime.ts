@@ -284,7 +284,16 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
         // Temporary references let encodeReply handle non-serializable values
         // (like React elements in args) by excluding them from the key.
         const tempRefs = rsc.createClientTemporaryReferenceSet();
-        const encoded = await rsc.encodeReply(args, {
+        // Unwrap Promise-augmented objects before encoding.
+        // Next.js 16 params/searchParams are created via
+        // Object.assign(Promise.resolve(obj), obj) — a Promise with own
+        // enumerable properties. encodeReply treats Promises as temporary
+        // references (excluded from the key), which means different param
+        // values (e.g., section:"sports" vs section:"electronics") produce
+        // identical cache keys. We must extract the plain data so the actual
+        // values are included in the cache key.
+        const processedArgs = unwrapThenableObjects(args) as unknown[];
+        const encoded = await rsc.encodeReply(processedArgs, {
           temporaryReferences: tempRefs,
         });
         const argsKey = await replyToCacheKey(encoded);
@@ -406,6 +415,58 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   };
 
   return cacheContextStorage.run(ctx, () => fn(...args));
+}
+
+// ---------------------------------------------------------------------------
+// Unwrap Promise-augmented objects for cache key generation
+// ---------------------------------------------------------------------------
+
+/**
+ * Recursively unwrap "thenable objects" — values created by
+ * `Object.assign(Promise.resolve(obj), obj)` — into plain objects.
+ *
+ * Next.js 16 params and searchParams are passed as Promise-augmented objects
+ * that work both as `await params` and `params.key`. When these are fed to
+ * `encodeReply` with `temporaryReferences`, the Promise is treated as a
+ * temporary reference and its actual values are **excluded** from the
+ * serialized output. This means different param values (e.g.,
+ * `section:"sports"` vs `section:"electronics"`) produce identical cache keys.
+ *
+ * This function extracts the own enumerable properties into plain objects
+ * so `encodeReply` can serialize the actual values into the cache key.
+ * Only used for cache key generation — the original Promise-augmented
+ * objects are still passed to the actual function on cache miss.
+ */
+function unwrapThenableObjects(value: unknown): unknown {
+  if (value === null || value === undefined || typeof value !== "object") {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(unwrapThenableObjects);
+  }
+
+  // Detect thenable (Promise-like) with own enumerable properties —
+  // this is the Object.assign(Promise.resolve(obj), obj) pattern.
+  if (typeof (value as any).then === "function") {
+    const keys = Object.keys(value);
+    if (keys.length > 0) {
+      const plain: Record<string, unknown> = {};
+      for (const key of keys) {
+        plain[key] = unwrapThenableObjects((value as any)[key]);
+      }
+      return plain;
+    }
+    // Pure Promise with no own properties — leave as-is
+    return value;
+  }
+
+  // Regular object — recurse into values
+  const result: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    result[key] = unwrapThenableObjects((value as any)[key]);
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
