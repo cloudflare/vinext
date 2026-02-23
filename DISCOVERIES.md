@@ -306,7 +306,9 @@ Running log of non-obvious findings, gotchas, and architectural decisions made d
 ## next/font className
 
 - **Next.js generates CSS rules at build time** mapping each font's `className` to its `font-family`. Our runtime shim must do the same — without the CSS rule, `<div className={inter.className}>` has no effect.
-- **CSS variable injection**: When `variable` is specified (e.g., `variable: "--font-inter"`), a CSS rule like `.className { --font-inter: 'Inter', sans-serif; }` is generated. This enables the `var(--font-inter)` pattern in Tailwind/CSS modules.
+- **`.className` only sets `font-family`** — it does NOT set CSS variables. CSS variables are handled exclusively by the `.variable` class.
+- **`.variable` only sets the CSS variable** — it does NOT set `font-family`. This is critical because apps commonly apply multiple `.variable` classes to `<body>` (e.g., `geistSans.variable + geistMono.variable`). If `.variable` also set `font-family`, the last class would win due to CSS cascade, causing all text to use that font (e.g., everything becomes monospace).
+- **`:root` injection**: CSS variables are also injected at `:root` so they're available globally for Tailwind utilities like `font-sans` that reference `var(--font-geist-sans)`.
 - **SSR font styles collection**: On the server (`typeof document === "undefined"`), CSS rules are collected into an array (`ssrFontStyles`) for injection in `<head>`. On the client, `<style>` tags are directly appended to `<head>`.
 
 ## Next.js 16 Async Params

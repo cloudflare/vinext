@@ -129,23 +129,21 @@ const injectedClassRules = new Set<string>();
 
 /**
  * Inject a CSS rule that maps a className to a font-family.
- * Also creates a CSS variable rule if a variable name is specified.
  *
  * This is what makes `<div className={inter.className}>` apply the font.
  * Next.js generates equivalent rules at build time.
+ *
+ * In Next.js, the .className class ONLY sets font-family — it does NOT
+ * set CSS variables. CSS variables are handled separately by the .variable class.
  */
 function injectClassNameRule(
   className: string,
   fontFamily: string,
-  variable?: string,
 ): void {
   if (injectedClassRules.has(className)) return;
   injectedClassRules.add(className);
 
-  let css = `.${className} { font-family: ${fontFamily}; }\n`;
-  if (variable) {
-    css += `.${className} { ${variable}: ${fontFamily}; }\n`;
-  }
+  const css = `.${className} { font-family: ${fontFamily}; }\n`;
 
   // On server, store the CSS for SSR injection
   if (typeof document === "undefined") {
@@ -171,9 +169,11 @@ const injectedRootVariables = new Set<string>();
  * This is what makes `<html className={inter.variable}>` set the CSS variable
  * that can be referenced by other styles (e.g., Tailwind's font-sans).
  *
- * Note: Tailwind v4's @theme inline uses build-time --theme() functions that
- * don't resolve runtime CSS variables. So we also apply font-family directly
- * to ensure fonts work even when the app relies on @theme inline variables.
+ * In Next.js, the .variable class ONLY sets the CSS variable — it does NOT
+ * set font-family. This is critical because apps commonly apply multiple
+ * .variable classes to <body> (e.g., geistSans.variable + geistMono.variable).
+ * If we also set font-family here, the last class wins due to CSS cascade,
+ * causing all text to use that font (e.g., everything becomes monospace).
  */
 function injectVariableClassRule(
   variableClassName: string,
@@ -183,12 +183,13 @@ function injectVariableClassRule(
   if (injectedVariableRules.has(variableClassName)) return;
   injectedVariableRules.add(variableClassName);
 
-  // Set the CSS variable AND apply font-family directly.
-  // The font-family ensures fonts work with Tailwind v4's @theme inline which
-  // uses build-time resolution and can't see runtime-defined CSS variables.
-  let css = `.${variableClassName} { ${cssVarName}: ${fontFamily}; font-family: ${fontFamily}; }\n`;
+  // Only set the CSS variable — do NOT set font-family.
+  // This matches Next.js behavior where .variable classes only define CSS variables.
+  let css = `.${variableClassName} { ${cssVarName}: ${fontFamily}; }\n`;
   
   // Also inject at :root so CSS variable inheritance works throughout the page.
+  // This ensures Tailwind utilities like `font-sans` that reference these
+  // variables via var(--font-geist-sans) work correctly.
   if (!injectedRootVariables.has(cssVarName)) {
     injectedRootVariables.add(cssVarName);
     css += `:root { ${cssVarName}: ${fontFamily}; }\n`;
@@ -345,7 +346,7 @@ function createFontLoader(family: string) {
 
     // Inject a CSS rule that maps className to font-family.
     // This is what makes `<div className={inter.className}>` work.
-    injectClassNameRule(className, fontFamily, cssVarName);
+    injectClassNameRule(className, fontFamily);
     
     // Inject a CSS rule for the variable class name.
     // This is what makes `<html className={inter.variable}>` set the CSS variable.
