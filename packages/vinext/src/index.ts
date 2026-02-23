@@ -2015,11 +2015,6 @@ hydrate();
             ssr: {
               optimizeDeps: {
                 entries: appEntries,
-                // react-dom/server.edge is imported by the SSR entry (not user
-                // code), so it won't be found by crawling appEntries.
-                // Pre-include it to avoid late discovery, re-optimisation
-                // cascades and "Invalid hook call" errors.
-                include: ["react-dom/server.edge"],
               },
               build: {
                 rollupOptions: {

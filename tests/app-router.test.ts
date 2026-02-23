@@ -999,13 +999,22 @@ describe("App Router integration", () => {
   });
 
   it("pre-includes framework dependencies in optimizeDeps.include to avoid late discovery", () => {
-    // Framework deps like react-dom/server.edge (SSR) and react/react-dom (client)
-    // are not imported by user app code, so they won't be found by crawling
-    // optimizeDeps.entries. They must be explicitly included to prevent
-    // re-optimisation cascades and "Invalid hook call" errors during dev.
+    // Framework deps that are imported by virtual modules (not user code)
+    // won't be found by crawling optimizeDeps.entries. They must be
+    // explicitly included to prevent late discovery, re-optimisation
+    // cascades and "Invalid hook call" errors during dev.
+    //
+    // SSR: react-dom/server.edge is used for both renderToReadableStream
+    // (static import) and renderToStaticMarkup (dynamic import) in the
+    // SSR entry. It's included by @vitejs/plugin-rsc, so vinext doesn't
+    // need to add it explicitly.
+    //
+    // Client: react, react-dom, and react-dom/client are framework deps
+    // used for hydration that aren't in user source files.
     const ssrInclude = server.config.environments.ssr?.optimizeDeps?.include;
     const clientInclude = server.config.environments.client?.optimizeDeps?.include;
 
+    // react-dom/server.edge should be present (added by @vitejs/plugin-rsc)
     expect(ssrInclude).toContain("react-dom/server.edge");
 
     expect(clientInclude).toContain("react");

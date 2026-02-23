@@ -2251,7 +2251,7 @@ export async function handleSsr(rscStream, navContext, fontData) {
     const insertedElements = flushServerInsertedHTML();
 
     // Render the inserted elements to HTML strings
-    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { renderToStaticMarkup } = await import("react-dom/server.edge");
     const { createElement, Fragment } = await import("react");
     let insertedHTML = "";
     for (const el of insertedElements) {
