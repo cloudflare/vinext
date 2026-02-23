@@ -14,7 +14,7 @@ jobs:
   bonk:
     if: github.event.sender.type != 'Bot'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     permissions:
       id-token: write
       contents: write

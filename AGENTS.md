@@ -94,6 +94,59 @@ When fixing a bug in any of these files, check whether the same bug exists in th
 
 Add new test pages to fixtures, not to examples. Examples are for user-facing demos.
 
+### Examples (Ecosystem Ports)
+
+The `examples/` directory contains real-world Next.js apps ported to run on vinext. These are deployed to Cloudflare Workers on every push to main (see `.github/workflows/deploy-examples.yml`).
+
+| Example | Type | URL |
+|---------|------|-----|
+| `app-router-cloudflare` | App Router basics | `app-router-cloudflare.vinext.workers.dev` |
+| `pages-router-cloudflare` | Pages Router basics | `pages-router-cloudflare.vinext.workers.dev` |
+| `app-router-playground` | Next.js playground (MDX, Tailwind) | `app-router-playground.vinext.workers.dev` |
+| `realworld-api-rest` | RealWorld spec (Pages Router) | `realworld-api-rest.vinext.workers.dev` |
+| `nextra-docs-template` | Nextra docs site (MDX, App Router) | `nextra-docs-template.vinext.workers.dev` |
+| `benchmarks` | Performance benchmarks | `benchmarks.vinext.workers.dev` |
+| `hackernews` | HN clone (App Router, RSC) | `hackernews.vinext.workers.dev` |
+
+#### Adding a New Example
+
+1. Create a directory under `examples/` with a `package.json` (use `"vinext": "workspace:*"`)
+2. Add a `vite.config.ts` with `vinext()` and `cloudflare()` plugins
+3. Add a `wrangler.jsonc` — for simple apps use `"main": "vinext/server/app-router-entry"` (no custom worker entry needed)
+4. Add the example to the deploy matrix in `.github/workflows/deploy-examples.yml`:
+   - Add to `matrix.example` array (with `name`, `project`, `wrangler_config`)
+   - Add to the `examples` array in the PR comment step
+5. Add a smoke test entry in `scripts/smoke-test.sh` — add a line to the `CHECKS` array:
+   ```
+   "your-example-name  /  expected-text-in-body"
+   ```
+6. Run `./scripts/smoke-test.sh` locally to verify after deploying
+
+#### Smoke Tests
+
+`scripts/smoke-test.sh` is a lightweight post-deploy check that curls every deployed example and verifies HTTP 200 + expected content. It runs automatically in CI after the deploy job completes.
+
+```bash
+./scripts/smoke-test.sh                    # check production URLs
+./scripts/smoke-test.sh --preview pr-42    # check PR preview URLs
+```
+
+When adding a new example, always add a corresponding smoke test entry. The format is:
+```
+"worker-name  /path  expected-text"
+```
+where `expected-text` is a case-insensitive string that must appear in the response body.
+
+#### Porting Strategy
+
+The examples in `.github/repos.json` are the ecosystem of Next.js apps we want to support. When porting one:
+
+1. **Use App Router** unless the original app specifically requires Pages Router
+2. **Keep the same content** — the goal is to prove the app works on vinext, not to rewrite it
+3. **Use `@mdx-js/rollup`** for MDX support (vinext auto-detects and injects it, or you can register it manually in `vite.config.ts`)
+4. **File issues** for anything that requires workarounds — missing shims, unsupported config options, etc.
+5. **Don't depend on the original framework's build plugins** — e.g., Nextra's webpack plugin won't work; port the content and build a lightweight equivalent
+
 ---
 
 ## Research Tools
