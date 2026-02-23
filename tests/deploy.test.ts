@@ -650,6 +650,129 @@ describe("renameCJSConfigs", () => {
   });
 });
 
+// ─── detectProject: src/ directory support ──────────────────────────────────
+
+describe("detectProject — src/ directory convention", () => {
+  it("detects App Router when src/app/ exists", () => {
+    mkdir(tmpDir, "src/app");
+    writeFile(tmpDir, "src/app/page.tsx", "export default function Home() { return <div>hi</div> }");
+    const info = detectProject(tmpDir);
+    expect(info.isAppRouter).toBe(true);
+    expect(info.isPagesRouter).toBe(false);
+  });
+
+  it("detects Pages Router when only src/pages/ exists", () => {
+    mkdir(tmpDir, "src/pages");
+    writeFile(tmpDir, "src/pages/index.tsx", "export default function Home() { return <div>hi</div> }");
+    const info = detectProject(tmpDir);
+    expect(info.isAppRouter).toBe(false);
+    expect(info.isPagesRouter).toBe(true);
+  });
+
+  it("prefers App Router when both src/app/ and src/pages/ exist", () => {
+    mkdir(tmpDir, "src/app");
+    mkdir(tmpDir, "src/pages");
+    const info = detectProject(tmpDir);
+    expect(info.isAppRouter).toBe(true);
+    expect(info.isPagesRouter).toBe(false);
+  });
+
+  it("prefers root-level app/ over src/app/", () => {
+    mkdir(tmpDir, "app");
+    mkdir(tmpDir, "src/app");
+    const info = detectProject(tmpDir);
+    expect(info.isAppRouter).toBe(true);
+  });
+
+  it("prefers root-level pages/ over src/pages/", () => {
+    mkdir(tmpDir, "pages");
+    mkdir(tmpDir, "src/pages");
+    const info = detectProject(tmpDir);
+    expect(info.isPagesRouter).toBe(true);
+  });
+
+  it("detects App Router from root app/ even when src/pages/ exists", () => {
+    mkdir(tmpDir, "app");
+    mkdir(tmpDir, "src/pages");
+    const info = detectProject(tmpDir);
+    expect(info.isAppRouter).toBe(true);
+    expect(info.isPagesRouter).toBe(false);
+  });
+
+  it("detects ISR in src/app/ directory", () => {
+    mkdir(tmpDir, "src/app");
+    writeFile(
+      tmpDir,
+      "src/app/posts/page.tsx",
+      `export const revalidate = 60;\nexport default function Posts() { return <div>posts</div> }`,
+    );
+    const info = detectProject(tmpDir);
+    expect(info.isAppRouter).toBe(true);
+    expect(info.hasISR).toBe(true);
+  });
+
+  it("does not detect ISR when src/app/ has no revalidate exports", () => {
+    mkdir(tmpDir, "src/app");
+    writeFile(tmpDir, "src/app/page.tsx", "export default function Home() { return <div>hi</div> }");
+    const info = detectProject(tmpDir);
+    expect(info.isAppRouter).toBe(true);
+    expect(info.hasISR).toBe(false);
+  });
+
+  it("detects MDX in src/app/ directory", () => {
+    mkdir(tmpDir, "src/app");
+    writeFile(tmpDir, "src/app/about/page.mdx", "# About\nHello world");
+    const info = detectProject(tmpDir);
+    expect(info.isAppRouter).toBe(true);
+    expect(info.hasMDX).toBe(true);
+  });
+
+  it("detects MDX in src/pages/ directory", () => {
+    mkdir(tmpDir, "src/pages");
+    writeFile(tmpDir, "src/pages/about.mdx", "# About\nHello world");
+    const info = detectProject(tmpDir);
+    expect(info.isPagesRouter).toBe(true);
+    expect(info.hasMDX).toBe(true);
+  });
+
+  it("generates correct files for src/app/ project", () => {
+    mkdir(tmpDir, "src/app");
+    writeFile(tmpDir, "src/app/page.tsx", "export default function Home() { return <div>hi</div> }");
+    const info = detectProject(tmpDir);
+    const files = getFilesToGenerate(info);
+
+    expect(files).toHaveLength(3);
+    const descriptions = files.map((f) => f.description);
+    expect(descriptions).toContain("wrangler.jsonc");
+    expect(descriptions).toContain("worker/index.ts");
+    expect(descriptions).toContain("vite.config.ts");
+
+    // Should generate App Router worker entry
+    const workerFile = files.find((f) => f.description === "worker/index.ts");
+    expect(workerFile!.content).toContain("vinext/server/app-router-entry");
+  });
+
+  it("generates correct files for src/pages/ project", () => {
+    mkdir(tmpDir, "src/pages");
+    writeFile(tmpDir, "src/pages/index.tsx", "export default function Home() { return <div>hi</div> }");
+    const info = detectProject(tmpDir);
+    const files = getFilesToGenerate(info);
+
+    expect(files).toHaveLength(3);
+
+    // Should generate Pages Router worker entry
+    const workerFile = files.find((f) => f.description === "worker/index.ts");
+    expect(workerFile!.content).toContain("virtual:vinext-server-entry");
+  });
+
+  it("detects neither when no app/, pages/, src/app/, or src/pages/", () => {
+    mkdir(tmpDir, "src/lib");
+    const info = detectProject(tmpDir);
+    expect(info.isAppRouter).toBe(false);
+    expect(info.isPagesRouter).toBe(false);
+  });
+});
+
 // ─── detectProject: new fields ──────────────────────────────────────────────
 
 describe("detectProject — new detection features", () => {

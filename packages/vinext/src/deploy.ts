@@ -65,8 +65,12 @@ interface ProjectInfo {
 // ─── Detection ───────────────────────────────────────────────────────────────
 
 export function detectProject(root: string): ProjectInfo {
-  const hasApp = fs.existsSync(path.join(root, "app"));
-  const hasPages = fs.existsSync(path.join(root, "pages"));
+  const hasApp =
+    fs.existsSync(path.join(root, "app")) ||
+    fs.existsSync(path.join(root, "src", "app"));
+  const hasPages =
+    fs.existsSync(path.join(root, "pages")) ||
+    fs.existsSync(path.join(root, "src", "pages"));
 
   // Prefer App Router if both exist
   const isAppRouter = hasApp;
@@ -170,7 +174,11 @@ export function detectProject(root: string): ProjectInfo {
 function detectISR(root: string, isAppRouter: boolean): boolean {
   if (!isAppRouter) return false;
   try {
-    const appDir = path.join(root, "app");
+    // Check root-level app/ first, then fall back to src/app/
+    let appDir = path.join(root, "app");
+    if (!fs.existsSync(appDir)) {
+      appDir = path.join(root, "src", "app");
+    }
     if (!fs.existsSync(appDir)) return false;
     // Quick check: search .ts/.tsx files in app/ for `export const revalidate`
     return scanDirForPattern(appDir, /export\s+const\s+revalidate\s*=/);
@@ -216,10 +224,20 @@ function detectMDX(root: string, isAppRouter: boolean, hasPages: boolean): boole
     }
   }
 
-  // Check for .mdx files in app/ or pages/
+  // Check for .mdx files in app/ or pages/ (with src/ fallback)
   const dirs: string[] = [];
-  if (isAppRouter) dirs.push(path.join(root, "app"));
-  if (hasPages) dirs.push(path.join(root, "pages"));
+  if (isAppRouter) {
+    const appDir = fs.existsSync(path.join(root, "app"))
+      ? path.join(root, "app")
+      : path.join(root, "src", "app");
+    dirs.push(appDir);
+  }
+  if (hasPages) {
+    const pagesDir = fs.existsSync(path.join(root, "pages"))
+      ? path.join(root, "pages")
+      : path.join(root, "src", "pages");
+    dirs.push(pagesDir);
+  }
 
   for (const dir of dirs) {
     if (fs.existsSync(dir) && scanDirForExtension(dir, ".mdx")) return true;
@@ -687,7 +705,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
 
   if (!info.isAppRouter && !info.isPagesRouter) {
     console.error("  Error: No app/ or pages/ directory found.");
-    console.error("  vinext deploy requires a Next.js project with app/ or pages/ directory.\n");
+    console.error("  vinext deploy requires a Next.js project with an app/ or pages/ directory");
+    console.error("  (also checks src/app/ and src/pages/).\n");
     process.exit(1);
   }
 
