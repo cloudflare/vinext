@@ -100,6 +100,12 @@ function buildGoogleFontsUrl(family: string, options: FontOptions): string {
         spec += `:wght@${weights.join(";")}`;
       }
     }
+  } else {
+    // When no weight is specified, request the full variable weight range.
+    // Without this, Google Fonts returns only weight 400 (the default).
+    // Next.js loads the full variable font by default, so we match that
+    // behavior to ensure all font weights render correctly.
+    spec += `:wght@100..900`;
   }
 
   params.set("family", spec);

@@ -2737,6 +2737,10 @@ hydrate();
               } else {
                 spec += `:wght@${weights.join(";")}`;
               }
+            } else if (styles.length === 0) {
+              // Request full variable weight range when no weight specified.
+              // Without this, Google Fonts returns only weight 400.
+              spec += `:wght@100..900`;
             }
             const params = new URLSearchParams();
             params.set("family", spec);
