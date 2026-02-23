@@ -14,7 +14,6 @@
  */
 
 import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
-import rsc from "@vitejs/plugin-rsc";
 import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
@@ -134,7 +133,6 @@ function hasViteConfig(): boolean {
 }
 
 function buildViteConfig(overrides: Record<string, unknown> = {}) {
-  const isApp = hasAppDir();
   const hasConfig = hasViteConfig();
 
   // If a vite.config exists, let Vite load it — only set root and overrides.
@@ -148,22 +146,13 @@ function buildViteConfig(overrides: Record<string, unknown> = {}) {
     };
   }
 
-  // No vite.config — auto-configure everything
+  // No vite.config — auto-configure everything.
+  // vinext() auto-registers @vitejs/plugin-rsc when app/ is detected,
+  // so we only need vinext() in the plugins array.
   const config: Record<string, unknown> = {
     root: process.cwd(),
     configFile: false,
-    plugins: isApp
-      ? [
-          rsc({
-            entries: {
-              rsc: "virtual:vinext-rsc-entry",
-              ssr: "virtual:vinext-app-ssr-entry",
-              client: "virtual:vinext-app-browser-entry",
-            },
-          }),
-          vinext(),
-        ]
-      : [vinext()],
+    plugins: [vinext()],
     // Deduplicate React packages to prevent "Invalid hook call" errors
     // when vinext is symlinked (bun link / npm link) and both vinext's
     // and the project's node_modules contain React.

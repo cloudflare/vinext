@@ -1,12 +1,6 @@
 [
-  { "name": "ai-chatbot", "url": "https://github.com/vercel/ai-chatbot.git" },
-  { "name": "next-learn", "url": "https://github.com/vercel/next-learn.git" },
-  { "name": "nextjs-subscription-payments", "url": "https://github.com/vercel/nextjs-subscription-payments.git" },
-  { "name": "nextra-docs-template", "url": "https://github.com/shuding/nextra-docs-template.git" },
-  { "name": "nextjs-commerce", "url": "https://github.com/vercel/commerce.git" },
-  { "name": "next-react-server-components", "url": "https://github.com/vercel/next-react-server-components.git" },
-  { "name": "app-directory", "url": "https://github.com/vercel/next-app-router-playground.git" },
+  { "name": "openchat", "url": "https://github.com/vercel/openchat.git" },
   { "name": "platforms-starter-kit", "url": "https://github.com/vercel/platforms.git" },
-  { "name": "swr-site", "url": "https://github.com/vercel/swr-site.git" },
-  { "name": "virtual-event-starter-kit", "url": "https://github.com/vercel/virtual-event-starter-kit.git" }
+  { "name": "nextgram", "url": "https://github.com/vercel/nextgram.git" },
+  { "name": "next-enterprise", "url": "https://github.com/Blazity/next-enterprise.git" }
 ]

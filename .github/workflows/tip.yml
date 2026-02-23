@@ -25,57 +25,14 @@ jobs:
   test:
     name: "${{ matrix.repo.name }} (next@canary)"
     needs: load-repos
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         repo: ${{ fromJson(needs.load-repos.outputs.repos) }}
-
-    steps:
-      - name: Checkout vinext
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Build vinext
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm run build
-
-      - name: Clone target repo
-        run: git clone --depth 1 ${{ matrix.repo.url }} target-repo
-
-      - name: Install dependencies
-        working-directory: target-repo
-        run: npm install --legacy-peer-deps
-
-      - name: Install Next.js canary
-        working-directory: target-repo
-        run: npm install --legacy-peer-deps next@canary
-
-      - name: Install vinext
-        working-directory: target-repo
-        run: npm install "${{ github.workspace }}/packages/vinext"
-
-      - name: Build
-        working-directory: target-repo
-        run: npm run build
-
-      - name: Test
-        working-directory: target-repo
-        run: npm run test --if-present
-
-      - name: E2E
-        working-directory: target-repo
-        run: npm run test:e2e --if-present
+    uses: ./.github/workflows/ecosystem-run.yml
+    with:
+      repo_url: ${{ matrix.repo.url }}
+      next_version: "canary"
 
   notify-on-failure:
     name: Send failure email

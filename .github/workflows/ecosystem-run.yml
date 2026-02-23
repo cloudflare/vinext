@@ -1,0 +1,160 @@
+name: Ecosystem Run
+
+on:
+  workflow_call:
+    inputs:
+      repo_url:
+        required: true
+        type: string
+      next_version:
+        required: true
+        type: string
+      node_version:
+        required: false
+        type: string
+        default: "24"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout vinext
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: pnpm
+
+      - name: Build vinext
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Read vinext versions
+        id: versions
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const pkg = require('./packages/vinext/package.json');
+          const clean = (value) => value.replace(/^[^0-9]*/, '');
+          const react = clean(pkg.peerDependencies.react);
+          const reactDom = clean(pkg.peerDependencies['react-dom']);
+          const vite = clean(pkg.peerDependencies.vite);
+          const rsc = clean(pkg.dependencies['@vitejs/plugin-rsc']);
+          const lines = [
+            `react=${react}`,
+            `react_dom=${reactDom}`,
+            `vite=${vite}`,
+            `rsc=${rsc}`,
+          ].join('\n');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `${lines}\n`);
+          NODE
+
+      - name: Validate repo URL
+        env:
+          REPO_URL: ${{ inputs.repo_url }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+
+          const input = process.env.REPO_URL;
+          const allowed = JSON.parse(fs.readFileSync('.github/repos.json', 'utf8'))
+            .map((repo) => repo.url);
+
+          if (!allowed.includes(input)) {
+            console.error(`repo_url not in allowlist: ${input}`);
+            process.exit(1);
+          }
+          NODE
+
+      - name: Clone target repo
+        env:
+          REPO_URL: ${{ inputs.repo_url }}
+        run: git clone --depth 1 -- "$REPO_URL" target-repo
+
+      - name: Install dependencies
+        working-directory: target-repo
+        run: npm install --legacy-peer-deps
+
+      - name: Pin Next.js and React versions
+        working-directory: target-repo
+        env:
+          NEXT_VERSION: ${{ inputs.next_version }}
+          REACT_VERSION: ${{ steps.versions.outputs.react }}
+          REACT_DOM_VERSION: ${{ steps.versions.outputs.react_dom }}
+        run: npm install --legacy-peer-deps "next@$NEXT_VERSION" "react@$REACT_VERSION" "react-dom@$REACT_DOM_VERSION"
+
+      - name: Install vinext
+        working-directory: target-repo
+        env:
+          VINEXT_PKG: ${{ github.workspace }}/packages/vinext
+          VITE_VERSION: ${{ steps.versions.outputs.vite }}
+          RSC_VERSION: ${{ steps.versions.outputs.rsc }}
+        run: npm install --legacy-peer-deps "$VINEXT_PKG" "vite@$VITE_VERSION" "@vitejs/plugin-rsc@$RSC_VERSION"
+
+      - name: Build with vinext
+        working-directory: target-repo
+        run: ./node_modules/.bin/vinext build
+
+      - name: Verify build output
+        working-directory: target-repo
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const ensureNonEmptyDir = (dir) => {
+            if (!fs.existsSync(dir)) {
+              console.error(`missing ${dir}`);
+              process.exit(1);
+            }
+            const entries = fs.readdirSync(dir);
+            if (entries.length === 0) {
+              console.error(`empty ${dir}`);
+              process.exit(1);
+            }
+          };
+
+          const clientDir = 'dist/client';
+          ensureNonEmptyDir(clientDir);
+
+          const hasJs = (dir) => {
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            for (const entry of entries) {
+              const entryPath = path.join(dir, entry.name);
+              if (entry.isDirectory()) {
+                if (hasJs(entryPath)) {
+                  return true;
+                }
+                continue;
+              }
+              if (entry.name.endsWith('.js') || entry.name.endsWith('.mjs')) {
+                return true;
+              }
+            }
+            return false;
+          };
+
+          if (!hasJs(clientDir)) {
+            console.error(`no js artifacts in ${clientDir}`);
+            process.exit(1);
+          }
+
+          const serverDir = 'dist/server';
+          ensureNonEmptyDir(serverDir);
+
+          if (!hasJs(serverDir)) {
+            console.error(`no js artifacts in ${serverDir}`);
+            process.exit(1);
+          }
+          NODE
