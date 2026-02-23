@@ -19,22 +19,22 @@ jobs:
         example:
           - name: app-router-cloudflare
             project: app-router-cloudflare
-            dist_name: app_router_cloudflare
+            wrangler_config: dist/server/wrangler.json
           - name: pages-router-cloudflare
             project: pages-router-cloudflare
-            dist_name: pages_router_cloudflare
+            wrangler_config: dist/pages_router_cloudflare/wrangler.json
           - name: app-router-playground
             project: app-router-playground
-            dist_name: app_router_playground
+            wrangler_config: dist/server/wrangler.json
           - name: realworld-api-rest
             project: realworld-api-rest
-            dist_name: realworld_api_rest
+            wrangler_config: dist/realworld_api_rest/wrangler.json
           - name: benchmarks
             project: benchmarks
-            dist_name: benchmarks
+            wrangler_config: dist/server/wrangler.json
           - name: hackernews
             project: hackernews
-            dist_name: hackernews
+            wrangler_config: dist/server/wrangler.json
     steps:
       - uses: actions/checkout@v4
 
@@ -70,7 +70,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: examples/${{ matrix.example.name }}
-          command: deploy --config dist/${{ matrix.example.dist_name }}/wrangler.json
+          command: deploy --config ${{ matrix.example.wrangler_config }}
 
       - name: Deploy Preview Version
         if: github.event_name == 'pull_request'
@@ -79,7 +79,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: examples/${{ matrix.example.name }}
-          command: versions upload --config dist/${{ matrix.example.dist_name }}/wrangler.json --preview-alias pr-${{ github.event.pull_request.number }}
+          command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
 
   comment:
     name: Comment Preview URLs

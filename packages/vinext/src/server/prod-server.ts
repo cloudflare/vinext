@@ -14,8 +14,8 @@
  *
  * Build output for App Router:
  * - dist/client/  — static assets (JS, CSS, images)
- * - dist/rsc/index.js — RSC entry (default export: handler(Request) → Response)
- * - dist/ssr/index.js — SSR entry (imported by RSC entry at runtime)
+ * - dist/server/index.js — RSC entry (default export: handler(Request) → Response)
+ * - dist/server/ssr/index.js — SSR entry (imported by RSC entry at runtime)
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable, pipeline } from "node:stream";
@@ -377,8 +377,8 @@ async function sendWebResponse(
 /**
  * Start the production server.
  *
- * Automatically detects whether the build is App Router (dist/rsc/) or
- * Pages Router (dist/server/) and configures the appropriate handler.
+ * Automatically detects whether the build is App Router (dist/server/index.js) or
+ * Pages Router (dist/server/entry.js) and configures the appropriate handler.
  */
 export async function startProdServer(options: ProdServerOptions = {}) {
   const {
@@ -394,7 +394,7 @@ export async function startProdServer(options: ProdServerOptions = {}) {
   const clientDir = path.join(resolvedOutDir, "client");
 
   // Detect build type
-  const rscEntryPath = path.join(resolvedOutDir, "rsc", "index.js");
+  const rscEntryPath = path.join(resolvedOutDir, "server", "index.js");
   const serverEntryPath = path.join(resolvedOutDir, "server", "entry.js");
   const isAppRouter = fs.existsSync(rscEntryPath);
 
@@ -424,11 +424,11 @@ interface AppRouterServerOptions {
 /**
  * Start the App Router production server.
  *
- * The RSC entry (dist/rsc/index.js) exports a default handler function:
+ * The RSC entry (dist/server/index.js) exports a default handler function:
  *   handler(request: Request) → Promise<Response>
  *
  * This handler already does everything: route matching, RSC rendering,
- * SSR HTML generation (via import("../ssr/index.js")), route handlers,
+ * SSR HTML generation (via import("./ssr/index.js")), route handlers,
  * server actions, ISR caching, 404s, redirects, etc.
  *
  * The production server's job is simply to:

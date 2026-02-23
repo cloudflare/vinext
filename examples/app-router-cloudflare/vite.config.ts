@@ -6,10 +6,10 @@ export default defineConfig({
   plugins: [
     vinext(),
     cloudflare({
-      // Link RSC/SSR as child environments so they're built with workerd
-      // conditions and bundled into the Worker output.
+      // The worker entry runs in the RSC environment, with SSR as a child.
       viteEnvironment: {
-        childEnvironments: ["rsc", "ssr"],
+        name: "rsc",
+        childEnvironments: ["ssr"],
       },
     }),
   ],

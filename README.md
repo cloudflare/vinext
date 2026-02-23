@@ -180,7 +180,7 @@ export default defineConfig({
       },
     }),
     cloudflare({
-      viteEnvironment: { childEnvironments: ["rsc", "ssr"] },
+      viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
     }),
   ],
 });

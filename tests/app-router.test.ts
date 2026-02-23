@@ -1113,10 +1113,10 @@ describe("App Router Production build", () => {
     });
     await builder.buildApp();
 
-    // RSC entry should exist
-    expect(fs.existsSync(path.join(outDir, "rsc", "index.js"))).toBe(true);
-    // SSR entry should exist
-    expect(fs.existsSync(path.join(outDir, "ssr", "index.js"))).toBe(true);
+    // RSC entry should exist (at dist/server/index.js)
+    expect(fs.existsSync(path.join(outDir, "server", "index.js"))).toBe(true);
+    // SSR entry should exist (at dist/server/ssr/index.js)
+    expect(fs.existsSync(path.join(outDir, "server", "ssr", "index.js"))).toBe(true);
     // Client bundle should exist
     expect(fs.existsSync(path.join(outDir, "client"))).toBe(true);
 
@@ -1126,7 +1126,7 @@ describe("App Router Production build", () => {
 
     // RSC bundle should contain route handling code
     const rscEntry = fs.readFileSync(
-      path.join(outDir, "rsc", "index.js"),
+      path.join(outDir, "server", "index.js"),
       "utf-8",
     );
     expect(rscEntry).toContain("handler");
@@ -1134,7 +1134,7 @@ describe("App Router Production build", () => {
     // Asset manifest should be generated
     expect(
       fs.existsSync(
-        path.join(outDir, "rsc", "__vite_rsc_assets_manifest.js"),
+        path.join(outDir, "server", "__vite_rsc_assets_manifest.js"),
       ),
     ).toBe(true);
   }, 30000);

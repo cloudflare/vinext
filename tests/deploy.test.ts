@@ -246,15 +246,14 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("Promise<Response>");
   });
 
-  it("uses import.meta.viteRsc.loadModule", () => {
+  it("imports handler from vinext/server/app-router-entry", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain('import.meta.viteRsc.loadModule("rsc", "index")');
+    expect(content).toContain('import handler from "vinext/server/app-router-entry"');
   });
 
-  it("includes error handling", () => {
+  it("delegates to handler.fetch", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("catch (error)");
-    expect(content).toContain("Internal Server Error");
+    expect(content).toContain("handler.fetch(request)");
   });
 
   it("includes auto-generated comment", () => {
@@ -365,9 +364,10 @@ describe("generateAppRouterViteConfig", () => {
     expect(content).toContain("virtual:vinext-app-browser-entry");
   });
 
-  it("configures childEnvironments for Workers", () => {
+  it("configures viteEnvironment with name: rsc and childEnvironments for Workers", () => {
     const content = generateAppRouterViteConfig();
-    expect(content).toContain('childEnvironments: ["rsc", "ssr"]');
+    expect(content).toContain('name: "rsc"');
+    expect(content).toContain('childEnvironments: ["ssr"]');
   });
 });
 
@@ -522,7 +522,7 @@ describe("getFilesToGenerate", () => {
 
     const workerFile = files.find((f) => f.description === "worker/index.ts");
     expect(workerFile).toBeDefined();
-    expect(workerFile!.content).toContain("viteRsc.loadModule");
+    expect(workerFile!.content).toContain("vinext/server/app-router-entry");
     expect(workerFile!.content).not.toContain("virtual:vinext-server-entry");
   });
 

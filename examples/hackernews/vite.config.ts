@@ -7,7 +7,8 @@ export default defineConfig({
     vinext(),
     cloudflare({
       viteEnvironment: {
-        childEnvironments: ["rsc", "ssr"],
+        name: "rsc",
+        childEnvironments: ["ssr"],
       },
     }),
   ],

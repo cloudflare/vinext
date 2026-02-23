@@ -55,7 +55,7 @@ const projectServers = {
     server: {
       // Build app-router-cloudflare with Vite, then serve with wrangler dev (miniflare)
       command:
-        "npx vite build && npx wrangler dev --config dist/app_router_cloudflare/wrangler.json --port 4176",
+        "npx vite build && npx wrangler dev --config dist/server/wrangler.json --port 4176",
       cwd: "./examples/app-router-cloudflare",
       port: 4176,
       reuseExistingServer: !process.env.CI,

@@ -3,7 +3,7 @@
   "name": "hackernews",
   "compatibility_date": "2026-02-12",
   "compatibility_flags": ["nodejs_compat"],
-  "main": "./worker/index.ts",
+  "main": "vinext/server/app-router-entry",
   "preview_urls": true,
   "assets": {
     "not_found_handling": "none"

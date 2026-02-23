@@ -1,20 +1,11 @@
 /**
- * Cloudflare Worker entry point for vinext App Router.
+ * Cloudflare Worker entry point with image optimization.
  *
- * Architecture:
- * - Both RSC and SSR environments run in workerd
- * - import.meta.viteRsc.loadModule (from @vitejs/plugin-rsc) loads the RSC handler
- *
- * For SSR pages, the Worker:
- * 1. Calls the RSC handler (which returns a Response with HTML)
- * 2. Returns that Response to the client
- *
- * For .rsc requests (client-side navigation), the RSC handler returns
- * the RSC stream directly.
- *
- * For API routes, the RSC handler handles them directly and returns JSON.
+ * For apps without image optimization, use vinext/server/app-router-entry
+ * directly in wrangler.jsonc: "main": "vinext/server/app-router-entry"
  */
 import { handleImageOptimization } from "vinext/server/image-optimization";
+import handler from "vinext/server/app-router-entry";
 
 interface Env {
   ASSETS: Fetcher;
@@ -29,51 +20,20 @@ interface Env {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    try {
-      const url = new URL(request.url);
-      const { pathname } = url;
+    const url = new URL(request.url);
 
-      // Block protocol-relative URL open redirect attacks (//evil.com/).
-      if (pathname.startsWith("//")) {
-        return new Response("404 Not Found", { status: 404 });
-      }
-
-      // ── Image optimization via Cloudflare Images binding ──────────
-      if (pathname === "/_vinext/image") {
-        return handleImageOptimization(request, {
-          fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
-          transformImage: async (body, { width, format, quality }) => {
-            const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
-            return result.response();
-          },
-        });
-      }
-
-      // Load the RSC handler from the RSC environment.
-      // @ts-expect-error — import.meta.viteRsc is injected by @vitejs/plugin-rsc
-      const rscModule = await import.meta.viteRsc.loadModule("rsc", "index");
-
-      // The RSC handler returns a Response.
-      const result = await rscModule.default(request);
-
-      // Return the Response if it's a native instance.
-      if (result instanceof Response) {
-        return result;
-      }
-
-      // turbo-stream should handle Response, but if it returns something else:
-      if (result === null || result === undefined) {
-        return new Response("Not Found", { status: 404 });
-      }
-
-      // Fallback: try to construct a Response from whatever we got
-      return new Response(String(result), { status: 200 });
-    } catch (error) {
-      console.error("[vinext] Worker error:", error);
-      return new Response(
-        `Internal Server Error: ${error instanceof Error ? error.message : String(error)}`,
-        { status: 500 },
-      );
+    // Image optimization via Cloudflare Images binding
+    if (url.pathname === "/_vinext/image") {
+      return handleImageOptimization(request, {
+        fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
+        transformImage: async (body, { width, format, quality }) => {
+          const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
+          return result.response();
+        },
+      });
     }
+
+    // Delegate everything else to vinext
+    return handler.fetch(request);
   },
 };

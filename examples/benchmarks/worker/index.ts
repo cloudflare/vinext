@@ -5,6 +5,7 @@
  * 1. API routes (/api/upload, /api/results) with D1 database access
  * 2. All other routes delegated to the vinext RSC handler
  */
+import handler from "vinext/server/app-router-entry";
 
 interface Env {
   DB: D1Database;
@@ -38,24 +39,8 @@ export default {
       return handleCommitDetail(sha, env);
     }
 
-    // ─── All other routes: delegate to RSC handler ─────────────────────
-    try {
-      // @ts-expect-error — import.meta.viteRsc is injected by @vitejs/plugin-rsc
-      const rscModule = await import.meta.viteRsc.loadModule("rsc", "index");
-      const result = await rscModule.default(request);
-
-      if (result instanceof Response) return result;
-      if (result === null || result === undefined) {
-        return new Response("Not Found", { status: 404 });
-      }
-      return new Response(String(result), { status: 200 });
-    } catch (error) {
-      console.error("[benchmarks] Worker error:", error);
-      return new Response(
-        `Internal Server Error: ${error instanceof Error ? error.message : String(error)}`,
-        { status: 500 },
-      );
-    }
+    // ─── All other routes: delegate to vinext RSC handler ────────────────
+    return handler.fetch(request);
   },
 };
 

@@ -2007,6 +2007,7 @@ hydrate();
                 entries: appEntries,
               },
               build: {
+                outDir: "dist/server",
                 rollupOptions: {
                   input: { index: VIRTUAL_RSC_ENTRY },
                 },
@@ -2017,6 +2018,7 @@ hydrate();
                 entries: appEntries,
               },
               build: {
+                outDir: "dist/server/ssr",
                 rollupOptions: {
                   input: { index: VIRTUAL_APP_SSR_ENTRY },
                 },
@@ -3024,10 +3026,10 @@ hydrate();
         },
       },
     },
-    // Cloudflare Workers production build integration:
-    // After all environments are built, copy RSC/SSR outputs into the Worker
-    // directory, rewrite cross-environment imports so workerd can resolve them,
-    // and embed the client manifest for Pages Router hydration.
+    // Cloudflare Workers production build integration (Pages Router only):
+    // After all environments are built, embed the client manifest in the
+    // worker entry for hydration. App Router doesn't need this — the RSC
+    // plugin handles client entry via loadBootstrapScriptContent().
     {
       name: "vinext:cloudflare-build",
       apply: "build",
@@ -3036,162 +3038,113 @@ hydrate();
         sequential: true,
         order: "post",
         async handler() {
-          // Only act if Cloudflare plugin is present.
           const envName = (this as any).environment?.name as string | undefined;
           if (!envName || !hasCloudflarePlugin) return;
+          if (envName !== "client") return;
 
-          // Skip RSC and SSR environments — they're handled by the worker env
-          if (envName === "rsc" || envName === "ssr") return;
-
-          // Client environment: embed manifest in the worker entry for hydration.
-          // The client builds AFTER the worker, so this is the right time to
-          // read the client manifest and patch the worker entry.
-          if (envName === "client") {
-            const envConfig = (this as any).environment?.config;
-            if (!envConfig) return;
-            const buildRoot = envConfig.root ?? process.cwd();
-
-            // Find the worker output directory by scanning dist/ for
-            // a directory containing wrangler.json (the worker output)
-            const distDir = path.resolve(buildRoot, "dist");
-            if (!fs.existsSync(distDir)) return;
-            let workerOutDir: string | null = null;
-            for (const entry of fs.readdirSync(distDir)) {
-              const candidate = path.join(distDir, entry);
-              if (entry === "client" || entry === "rsc" || entry === "ssr") continue;
-              if (fs.statSync(candidate).isDirectory() &&
-                  fs.existsSync(path.join(candidate, "wrangler.json"))) {
-                workerOutDir = candidate;
-                break;
-              }
-            }
-            if (!workerOutDir) return;
-
-            const workerEntry = path.join(workerOutDir, "index.js");
-            if (!fs.existsSync(workerEntry)) return;
-
-            const clientDir = path.resolve(buildRoot, "dist", "client");
-            let clientEntryFile: string | null = null;
-            let ssrManifestData: Record<string, string[]> | null = null;
-
-            // Read build manifest to find the client entry chunk filename and
-            // compute lazy chunks (only reachable via dynamic imports)
-            let lazyChunksData: string[] | null = null;
-            const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-            if (fs.existsSync(buildManifestPath)) {
-              try {
-                const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
-                for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
-                  if (value && value.isEntry && value.file) {
-                    clientEntryFile = value.file;
-                    break;
-                  }
-                }
-                const lazy = computeLazyChunks(buildManifest);
-                if (lazy.length > 0) lazyChunksData = lazy;
-              } catch { /* ignore parse errors */ }
-            }
-
-            // Fallback: scan dist/client/assets/ for the client entry chunk.
-            // Pages Router uses "vinext-client-entry", App Router uses
-            // "vinext-app-browser-entry".
-            if (!clientEntryFile) {
-              const assetsDir = path.join(clientDir, "assets");
-              if (fs.existsSync(assetsDir)) {
-                const files = fs.readdirSync(assetsDir);
-                const entry = files.find((f: string) =>
-                  (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) && f.endsWith(".js"));
-                if (entry) clientEntryFile = "assets/" + entry;
-              }
-            }
-
-            // Read SSR manifest for per-page CSS/JS injection
-            const ssrManifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
-            if (fs.existsSync(ssrManifestPath)) {
-              try {
-                ssrManifestData = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8"));
-              } catch { /* ignore parse errors */ }
-            }
-
-            // Prepend globals to worker entry
-            if (clientEntryFile || ssrManifestData || lazyChunksData) {
-              let code = fs.readFileSync(workerEntry, "utf-8");
-              const globals: string[] = [];
-              if (clientEntryFile) {
-                globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`);
-              }
-              if (ssrManifestData) {
-                globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
-              }
-              if (lazyChunksData) {
-                globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
-              }
-              code = globals.join("\n") + "\n" + code;
-              fs.writeFileSync(workerEntry, code);
-            }
-
-            // Generate _headers file for Cloudflare Workers static asset caching.
-            // Vite outputs content-hashed files (JS, CSS, fonts) to the assetsDir
-            // (defaults to "assets"). These are safe to cache indefinitely since
-            // the hash changes on any content change. Without this, Cloudflare
-            // serves them with max-age=0 which forces unnecessary revalidation
-            // on every page load.
-            const headersPath = path.join(clientDir, "_headers");
-            if (!fs.existsSync(headersPath)) {
-              const assetsDir = envConfig.build?.assetsDir ?? "assets";
-              const headersContent = [
-                "# Cache content-hashed assets immutably (generated by vinext)",
-                `/${assetsDir}/*`,
-                "  Cache-Control: public, max-age=31536000, immutable",
-                "",
-              ].join("\n");
-              fs.writeFileSync(headersPath, headersContent);
-            }
-
-            return;
-          }
+          // App Router: skip — the RSC plugin handles client entry injection.
+          if (hasAppDir) return;
 
           const envConfig = (this as any).environment?.config;
           if (!envConfig) return;
           const buildRoot = envConfig.root ?? process.cwd();
-          const workerOutDir = path.resolve(buildRoot, envConfig.build.outDir);
 
-          // Copy RSC and SSR outputs into the worker directory
-          for (const childEnv of ["rsc", "ssr"]) {
-            const srcDir = path.resolve(buildRoot, "dist", childEnv);
-            const destDir = path.join(workerOutDir, childEnv);
-            if (!fs.existsSync(srcDir)) continue;
-            fs.cpSync(srcDir, destDir, { recursive: true });
+          // Pages Router: find worker output by scanning dist/ for a
+          // directory containing wrangler.json (Cloudflare plugin default).
+          const distDir = path.resolve(buildRoot, "dist");
+          if (!fs.existsSync(distDir)) return;
+          let workerOutDir: string | null = null;
+          for (const entry of fs.readdirSync(distDir)) {
+            const candidate = path.join(distDir, entry);
+            if (entry === "client") continue;
+            if (fs.statSync(candidate).isDirectory() &&
+                fs.existsSync(path.join(candidate, "wrangler.json"))) {
+              workerOutDir = candidate;
+              break;
+            }
+          }
+          if (!workerOutDir) return;
+
+          const workerEntry = path.join(workerOutDir, "index.js");
+          if (!fs.existsSync(workerEntry)) return;
+
+          const clientDir = path.resolve(buildRoot, "dist", "client");
+          let clientEntryFile: string | null = null;
+          let ssrManifestData: Record<string, string[]> | null = null;
+
+          // Read build manifest to find the client entry chunk filename and
+          // compute lazy chunks (only reachable via dynamic imports)
+          let lazyChunksData: string[] | null = null;
+          const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
+          if (fs.existsSync(buildManifestPath)) {
+            try {
+              const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
+              for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
+                if (value && value.isEntry && value.file) {
+                  clientEntryFile = value.file;
+                  break;
+                }
+              }
+              const lazy = computeLazyChunks(buildManifest);
+              if (lazy.length > 0) lazyChunksData = lazy;
+            } catch { /* ignore parse errors */ }
           }
 
-          // Rewrite imports in the worker entry from "../rsc/" → "./rsc/", "../ssr/" → "./ssr/"
-          const workerEntry = path.join(workerOutDir, "index.js");
-          if (fs.existsSync(workerEntry)) {
+          // Fallback: scan dist/client/assets/ for the client entry chunk.
+          // Pages Router uses "vinext-client-entry", App Router uses
+          // "vinext-app-browser-entry".
+          if (!clientEntryFile) {
+            const assetsDir = path.join(clientDir, "assets");
+            if (fs.existsSync(assetsDir)) {
+              const files = fs.readdirSync(assetsDir);
+              const entry = files.find((f: string) =>
+                (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) && f.endsWith(".js"));
+              if (entry) clientEntryFile = "assets/" + entry;
+            }
+          }
+
+          // Read SSR manifest for per-page CSS/JS injection
+          const ssrManifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
+          if (fs.existsSync(ssrManifestPath)) {
+            try {
+              ssrManifestData = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8"));
+            } catch { /* ignore parse errors */ }
+          }
+
+          // Prepend globals to worker entry
+          if (clientEntryFile || ssrManifestData || lazyChunksData) {
             let code = fs.readFileSync(workerEntry, "utf-8");
-            code = code.replace(/from\s*"\.\.\/rsc\//g, 'from "./rsc/');
-            code = code.replace(/from\s*"\.\.\/ssr\//g, 'from "./ssr/');
-            code = code.replace(/import\(\s*"\.\.\/rsc\//g, 'import("./rsc/');
-            code = code.replace(/import\(\s*"\.\.\/ssr\//g, 'import("./ssr/');
+            const globals: string[] = [];
+            if (clientEntryFile) {
+              globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`);
+            }
+            if (ssrManifestData) {
+              globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+            }
+            if (lazyChunksData) {
+              globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+            }
+            code = globals.join("\n") + "\n" + code;
             fs.writeFileSync(workerEntry, code);
           }
 
-          // Rewrite cross-env imports within RSC entry (rsc → ssr: "../../ssr/" → "../ssr/")
-          const rscEntry = path.join(workerOutDir, "rsc", "index.js");
-          if (fs.existsSync(rscEntry)) {
-            let code = fs.readFileSync(rscEntry, "utf-8");
-            code = code.replace(/import\(\s*"\.\.\/\.\.\/ssr\//g, 'import("../ssr/');
-            fs.writeFileSync(rscEntry, code);
+          // Generate _headers file for Cloudflare Workers static asset caching.
+          // Vite outputs content-hashed files (JS, CSS, fonts) to the assetsDir
+          // (defaults to "assets"). These are safe to cache indefinitely since
+          // the hash changes on any content change. Without this, Cloudflare
+          // serves them with max-age=0 which forces unnecessary revalidation
+          // on every page load.
+          const headersPath = path.join(clientDir, "_headers");
+          if (!fs.existsSync(headersPath)) {
+            const assetsDir = envConfig.build?.assetsDir ?? "assets";
+            const headersContent = [
+              "# Cache content-hashed assets immutably (generated by vinext)",
+              `/${assetsDir}/*`,
+              "  Cache-Control: public, max-age=31536000, immutable",
+              "",
+            ].join("\n");
+            fs.writeFileSync(headersPath, headersContent);
           }
-
-          // Rewrite cross-env imports within SSR entry (ssr → rsc: "../../rsc/" → "../rsc/")
-          const ssrEntry = path.join(workerOutDir, "ssr", "index.js");
-          if (fs.existsSync(ssrEntry)) {
-            let code = fs.readFileSync(ssrEntry, "utf-8");
-            code = code.replace(/import\(\s*"\.\.\/\.\.\/rsc\//g, 'import("../rsc/');
-            fs.writeFileSync(ssrEntry, code);
-          }
-
-
         },
       },
     },

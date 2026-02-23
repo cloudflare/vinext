@@ -29,6 +29,10 @@
     "./server/image-optimization": {
       "import": "./dist/server/image-optimization.js",
       "types": "./dist/server/image-optimization.d.ts"
+    },
+    "./server/app-router-entry": {
+      "import": "./dist/server/app-router-entry.js",
+      "types": "./dist/server/app-router-entry.d.ts"
     }
   },
   "files": [

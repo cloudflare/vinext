@@ -75,10 +75,12 @@ export default defineConfig({
     // @vitejs/plugin-rsc is auto-registered when app/ is detected.
     vinext(),
 
-    // Cloudflare Workers plugin — builds for workerd runtime
+    // Cloudflare Workers plugin — builds for workerd runtime.
+    // The worker entry runs in the RSC environment, with SSR as a child.
     cloudflare({
       viteEnvironment: {
-        childEnvironments: ["rsc", "ssr"],
+        name: "rsc",
+        childEnvironments: ["ssr"],
       },
     }),
   ],
