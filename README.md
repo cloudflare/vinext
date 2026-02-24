@@ -54,7 +54,7 @@ Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted
 
 #### Use the agent skill
 
-Install the `migrate-to-vinext` skill to let your AI coding agent handle the migration for you:
+Install the `migrate-to-vinext` skill to let your AI coding agent handle the migration for you. This works in any coding agent that supports the [Agent Skills](https://agentskills.io/home) specification, and provides guidance on how to use `vinext` and the `vite` toolchain to migrate, check and address any issues itself:
 
 ```sh
 npx skills add cloudflare/vinext
