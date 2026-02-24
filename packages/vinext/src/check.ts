@@ -540,7 +540,7 @@ export function formatReport(result: CheckResult): string {
   lines.push("");
   lines.push("  Or manually:");
   lines.push(`    1. Add \x1b[36m"type": "module"\x1b[0m to package.json`);
-  lines.push(`    2. Install: \x1b[36mnpm install -D vite @vitejs/plugin-rsc\x1b[0m`);
+  lines.push(`    2. Install: \x1b[36mnpm install -D vinext vite @vitejs/plugin-rsc\x1b[0m`);
   lines.push(`    3. Create vite.config.ts (see docs)`);
   lines.push(`    4. Run: \x1b[36mnpx vite dev\x1b[0m`);
 

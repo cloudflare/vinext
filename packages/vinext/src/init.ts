@@ -60,27 +60,7 @@ export interface InitResult {
 
 // ─── Vite Config Generation (minimal, non-Cloudflare) ────────────────────────
 
-export function generateViteConfig(isAppRouter: boolean): string {
-  if (isAppRouter) {
-    return `import vinext from "vinext";
-import rsc from "@vitejs/plugin-rsc";
-import { defineConfig } from "vite";
-
-export default defineConfig({
-  plugins: [
-    vinext(),
-    rsc({
-      entries: {
-        rsc: "virtual:vinext-rsc-entry",
-        ssr: "virtual:vinext-app-ssr-entry",
-        client: "virtual:vinext-app-browser-entry",
-      },
-    }),
-  ],
-});
-`;
-  }
-
+export function generateViteConfig(_isAppRouter: boolean): string {
   return `import vinext from "vinext";
 import { defineConfig } from "vite";
 
@@ -133,7 +113,7 @@ export function addScripts(root: string, port: number): string[] {
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
 export function getInitDeps(isAppRouter: boolean): string[] {
-  const deps = ["vite"];
+  const deps = ["vinext", "vite"];
   if (isAppRouter) {
     deps.push("@vitejs/plugin-rsc");
   }

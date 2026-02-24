@@ -348,21 +348,12 @@ describe("generatePagesRouterWorkerEntry", () => {
 // ─── Vite Config Generation ─────────────────────────────────────────────��───
 
 describe("generateAppRouterViteConfig", () => {
-  it("includes vinext, rsc, and cloudflare plugins", () => {
+  it("includes vinext and cloudflare plugins", () => {
     const content = generateAppRouterViteConfig();
     expect(content).toContain('import vinext from "vinext"');
-    expect(content).toContain('import rsc from "@vitejs/plugin-rsc"');
     expect(content).toContain('from "@cloudflare/vite-plugin"');
     expect(content).toContain("vinext()");
-    expect(content).toContain("rsc(");
     expect(content).toContain("cloudflare(");
-  });
-
-  it("configures RSC entries correctly", () => {
-    const content = generateAppRouterViteConfig();
-    expect(content).toContain("virtual:vinext-rsc-entry");
-    expect(content).toContain("virtual:vinext-app-ssr-entry");
-    expect(content).toContain("virtual:vinext-app-browser-entry");
   });
 
   it("configures viteEnvironment with name: rsc and childEnvironments for Workers", () => {
@@ -545,7 +536,7 @@ describe("getFilesToGenerate", () => {
 
     const viteFile = files.find((f) => f.description === "vite.config.ts");
     expect(viteFile).toBeDefined();
-    expect(viteFile!.content).toContain("plugin-rsc");
+    expect(viteFile!.content).toContain("vinext()");
     expect(viteFile!.content).toContain("childEnvironments");
   });
 
@@ -903,7 +894,6 @@ describe("generateAppRouterViteConfig — with project info", () => {
   it("still works without info (backward compatible)", () => {
     const config = generateAppRouterViteConfig();
     expect(config).toContain("vinext()");
-    expect(config).toContain("rsc(");
     expect(config).toContain("cloudflare(");
     // Generated config no longer includes a separate mdx() import/call
     expect(config).not.toContain('import mdx from "@mdx-js/rollup"');

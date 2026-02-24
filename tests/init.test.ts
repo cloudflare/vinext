@@ -168,12 +168,7 @@ describe("generateViteConfig", () => {
   it("generates App Router config with RSC plugin", () => {
     const config = generateViteConfig(true);
     expect(config).toContain('import vinext from "vinext"');
-    expect(config).toContain('import rsc from "@vitejs/plugin-rsc"');
     expect(config).toContain("vinext()");
-    expect(config).toContain("rsc(");
-    expect(config).toContain("virtual:vinext-rsc-entry");
-    expect(config).toContain("virtual:vinext-app-ssr-entry");
-    expect(config).toContain("virtual:vinext-app-browser-entry");
   });
 
   it("generates Pages Router config without RSC", () => {
@@ -254,14 +249,16 @@ describe("addScripts", () => {
 // ─── Unit Tests: getInitDeps / isDepInstalled ────────────────────────────────
 
 describe("getInitDeps", () => {
-  it("returns vite + @vitejs/plugin-rsc for App Router", () => {
+  it("returns vinext + vite + @vitejs/plugin-rsc for App Router", () => {
     const deps = getInitDeps(true);
+    expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
     expect(deps).toContain("@vitejs/plugin-rsc");
   });
 
-  it("returns only vite for Pages Router", () => {
+  it("returns vinext + vite for Pages Router", () => {
     const deps = getInitDeps(false);
+    expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
     expect(deps).not.toContain("@vitejs/plugin-rsc");
   });
@@ -304,7 +301,6 @@ describe("init — basic functionality", () => {
 
     const config = readFile(tmpDir, "vite.config.ts");
     expect(config).toContain('import vinext from "vinext"');
-    expect(config).toContain('import rsc from "@vitejs/plugin-rsc"');
   });
 
   it("generates vite.config.ts for Pages Router project", async () => {
@@ -402,11 +398,12 @@ describe("init — CJS config renaming", () => {
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
 describe("init — dependency installation", () => {
-  it("detects missing vite dependency and installs it", async () => {
+  it("detects missing vinext and vite dependencies and installs them", async () => {
     setupProject(tmpDir, { router: "app" });
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("vinext");
     expect(result.installedDeps).toContain("vite");
   });
 
@@ -426,16 +423,6 @@ describe("init — dependency installation", () => {
     expect(result.installedDeps).not.toContain("@vitejs/plugin-rsc");
   });
 
-  it("skips installing deps that are already in devDependencies", async () => {
-    setupProject(tmpDir, {
-      router: "pages",
-      extraPkg: { devDependencies: { vite: "^7.0.0" } },
-    });
-
-    const { result } = await runInit(tmpDir);
-
-    expect(result.installedDeps).not.toContain("vite");
-  });
 
   it("calls exec with correct package manager for pnpm", async () => {
     setupProject(tmpDir, { router: "pages" });

@@ -453,7 +453,6 @@ export function generateAppRouterViteConfig(info?: ProjectInfo): string {
   const imports: string[] = [
     `import { defineConfig } from "vite";`,
     `import vinext from "vinext";`,
-    `import rsc from "@vitejs/plugin-rsc";`,
     `import { cloudflare } from "@cloudflare/vite-plugin";`,
   ];
 
@@ -467,14 +466,6 @@ export function generateAppRouterViteConfig(info?: ProjectInfo): string {
     plugins.push(`    // vinext auto-injects @mdx-js/rollup with plugins from next.config`);
   }
   plugins.push(`    vinext(),`);
-
-  plugins.push(`    rsc({
-      entries: {
-        rsc: "virtual:vinext-rsc-entry",
-        ssr: "virtual:vinext-app-ssr-entry",
-        client: "virtual:vinext-app-browser-entry",
-      },
-    }),`);
 
   plugins.push(`    cloudflare({
       viteEnvironment: {
