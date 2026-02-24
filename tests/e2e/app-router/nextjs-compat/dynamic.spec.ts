@@ -95,4 +95,26 @@ test.describe("Next.js compat: next/dynamic (browser)", () => {
       expect(text).toContain("next-dynamic dynamic no ssr on client");
     }).toPass({ timeout: 10_000 });
   });
+
+  // ssr:false from a server component — the dynamic shim must be a client
+  // module so the RSC serializer emits a client reference instead of
+  // executing dynamic() inline and sending null to the client.
+  test("ssr:false from server component loads after hydration", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/dynamic/ssr-false-server`);
+
+    // Server-rendered static content should be present immediately
+    await expect(page.locator("#server-text")).toHaveText("Server rendered");
+
+    await waitForHydration(page);
+
+    // After hydration, the ssr:false component should appear
+    await expect(async () => {
+      const text = await page
+        .locator("#css-text-dynamic-no-ssr-client")
+        .textContent();
+      expect(text).toContain("next-dynamic dynamic no ssr on client");
+    }).toPass({ timeout: 10_000 });
+  });
 });
