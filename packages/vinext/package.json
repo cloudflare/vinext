@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "license": "MIT",
   "repository": {
@@ -11,7 +11,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "vinext": "./dist/cli.js"
+    "vinext": "dist/cli.js"
   },
   "exports": {
     ".": {
