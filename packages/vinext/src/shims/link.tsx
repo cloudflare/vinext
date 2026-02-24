@@ -7,7 +7,7 @@
  * On click, prevents full page reload and triggers client-side
  * page swap via the router's navigation system.
  */
-import React, { forwardRef, useRef, useEffect, useCallback, useContext, createContext, type AnchorHTMLAttributes, type MouseEvent } from "react";
+import React, { forwardRef, useRef, useEffect, useCallback, useContext, createContext, useState, type AnchorHTMLAttributes, type MouseEvent } from "react";
 // Import shared RSC prefetch utilities from navigation shim (relative path
 // so this resolves both via the Vite plugin and in direct vitest imports)
 import { toRscUrl, getPrefetchedUrls, storePrefetchResponse } from "./navigation.js";
@@ -282,6 +282,14 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Full href with basePath for browser URLs and fetches
   const fullHref = withBasePath(localizedHref);
 
+  // Track pending state for useLinkStatus()
+  const [pending, setPending] = useState(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
   // Prefetching: observe the element when it enters the viewport.
   // prefetch={false} disables, prefetch={true} or undefined/null (default) enables.
   const internalRef = useRef<HTMLAnchorElement | null>(null);
@@ -410,7 +418,12 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       } else {
         window.history.pushState(null, "", absoluteFullHref);
       }
-      await win.__VINEXT_RSC_NAVIGATE__(absoluteFullHref);
+      setPending(true);
+      try {
+        await win.__VINEXT_RSC_NAVIGATE__(absoluteFullHref);
+      } finally {
+        if (mountedRef.current) setPending(false);
+      }
     } else {
       // Pages Router: use the Router singleton
       try {
@@ -445,10 +458,14 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Remove props that shouldn't be on <a>
   const { passHref: _p, ...anchorProps } = restWithoutLocale;
 
+  const linkStatusValue = React.useMemo(() => ({ pending }), [pending]);
+
   return (
-    <a ref={setRefs} href={fullHref} onClick={handleClick} {...anchorProps}>
-      {children}
-    </a>
+    <LinkStatusContext.Provider value={linkStatusValue}>
+      <a ref={setRefs} href={fullHref} onClick={handleClick} {...anchorProps}>
+        {children}
+      </a>
+    </LinkStatusContext.Provider>
   );
 });
 
