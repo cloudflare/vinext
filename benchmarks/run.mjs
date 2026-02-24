@@ -248,7 +248,7 @@ async function main() {
 
     // Warmup run for all (not measured)
     console.log("  Warmup: Next.js build...");
-    exec("npx next build", { cwd: nextjsDir, timeout: 120000 });
+    exec("npx next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
     exec("rm -rf .next", { cwd: nextjsDir });
 
     console.log("  Warmup: vinext (Rollup) build...");
@@ -279,7 +279,7 @@ async function main() {
       // Next.js
       console.log("  Timing Next.js builds...");
       const njsJson = exec(
-        `hyperfine --runs ${RUNS} --prepare 'rm -rf .next' 'npx next build' --export-json /dev/stdout 2>/dev/null`,
+        `hyperfine --runs ${RUNS} --prepare 'rm -rf .next' 'npx next build --turbopack' --export-json /dev/stdout 2>/dev/null`,
         { cwd: nextjsDir, timeout: 600000 }
       );
       results.nextjs.buildTime = parseHyperfine(njsJson);
@@ -312,7 +312,7 @@ async function main() {
           run: () => {
             exec("rm -rf .next", { cwd: nextjsDir });
             const start = performance.now();
-            exec("npx next build", { cwd: nextjsDir, timeout: 120000 });
+            exec("npx next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
             buildTimes.nextjs.push(performance.now() - start);
           },
         },
@@ -383,7 +383,7 @@ async function main() {
 
     // Rebuild both to get fresh output
     exec("rm -rf .next", { cwd: nextjsDir });
-    exec("npx next build", { cwd: nextjsDir, timeout: 120000 });
+    exec("npx next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
 
     exec("rm -rf dist", { cwd: vinextDir });
     exec("npx vite build", { cwd: vinextDir, timeout: 120000 });
