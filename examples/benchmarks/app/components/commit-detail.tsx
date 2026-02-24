@@ -145,7 +145,7 @@ export function CommitDetail({ sha }: { sha: string }) {
         </Table>
       </MetricSection>
 
-      {/* Bundle Size */}
+      {/* Client Bundle Size */}
       <MetricSection title="Production Bundle Size (Client)">
         <Table>
           <Table.Header>

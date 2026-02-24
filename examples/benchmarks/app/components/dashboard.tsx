@@ -113,8 +113,8 @@ export function Dashboard() {
           variant="segmented"
           tabs={[
             { value: "build_time", label: "Build Time" },
-            { value: "bundle_size", label: "Bundle Size" },
-            { value: "cold_start", label: "Cold Start" },
+            { value: "bundle_size", label: "Client Bundle Size" },
+            { value: "cold_start", label: "Dev Cold Start" },
           ]}
           value={activeTab}
           onValueChange={(v) => setActiveTab(v as MetricTab)}
@@ -146,7 +146,7 @@ function LatestResultsTable({ commit }: { commit: BenchmarkCommit }) {
           <Table.Row>
             <Table.Head>Framework</Table.Head>
             <Table.Head>Build Time</Table.Head>
-            <Table.Head>Bundle (gzip)</Table.Head>
+            <Table.Head>Client Bundle Size (gzip)</Table.Head>
             <Table.Head>Dev Cold Start</Table.Head>
             <Table.Head>Peak RSS</Table.Head>
           </Table.Row>
@@ -272,8 +272,8 @@ function CommitList({ commits }: { commits: BenchmarkCommit[] }) {
           <Table.Row>
             <Table.Head>Commit</Table.Head>
             <Table.Head>Date</Table.Head>
-            <Table.Head>Build (vinext Rolldown)</Table.Head>
-            <Table.Head>Bundle (vinext Rolldown)</Table.Head>
+            <Table.Head>Build Time (vinext Rolldown)</Table.Head>
+            <Table.Head>Client Bundle Size (vinext Rolldown)</Table.Head>
           </Table.Row>
         </Table.Header>
         <Table.Body>
