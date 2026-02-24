@@ -365,6 +365,108 @@ function getPackageName(id: string): string | null {
   return rest.split("/")[0] || null;
 }
 
+/**
+ * Find installed packages that declare a `react-server` export condition
+ * and should be excluded from RSC `optimizeDeps`.
+ *
+ * Vite's pre-bundler runs before the RSC plugin's `"use client"` transform,
+ * so it resolves deps using the RSC environment's `react-server` condition.
+ * For packages like `swr`, this picks up a stripped-down entry that omits
+ * client APIs (e.g. `useSWR`). The RSC plugin would normally strip these
+ * imports at transform time, but pre-bundling happens first. Excluding
+ * these packages forces on-demand resolution, by which point the transform
+ * has already removed the imports.
+ *
+ * This is a known issue tracked upstream in `@vitejs/plugin-rsc`:
+ * - https://github.com/vitejs/vite-plugin-react/issues/736
+ * - https://github.com/vitejs/vite-plugin-react/issues/775
+ *
+ * Uses `createRequire` to resolve package.json files, which works correctly
+ * across all package managers (npm, pnpm, yarn, Yarn PnP). Skips
+ * react/react-dom since those must be pre-bundled with `react-server`.
+ *
+ * Users can extend the exclude list via normal Vite config — Vite
+ * deep-merges arrays, so user entries are appended:
+ *
+ *   environments: { rsc: { optimizeDeps: { exclude: ["my-pkg"] } } }
+ */
+function findReactServerPackages(root: string): string[] {
+  const SKIP = new Set([
+    "react",
+    "react-dom",
+    "react-server-dom-webpack",
+    "react-server-dom-turbopack",
+  ]);
+
+  // Read the project's direct dependencies from package.json
+  const pkgPath = path.join(root, "package.json");
+  let deps: string[];
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+    deps = [
+      ...Object.keys(pkg.dependencies ?? {}),
+      ...Object.keys(pkg.devDependencies ?? {}),
+    ];
+  } catch {
+    return [];
+  }
+
+  // Use createRequire from the project root so Node's resolution algorithm
+  // finds packages wherever the package manager installed them (hoisted,
+  // pnpm content-addressable store, Yarn PnP, etc.).
+  const req = createRequire(pkgPath);
+  const result: string[] = [];
+
+  for (const dep of deps) {
+    if (SKIP.has(dep)) continue;
+
+    // Resolve the package's main entry, then walk up to find its
+    // package.json. We can't use require('dep/package.json') because
+    // many packages don't export ./package.json in their exports map.
+    let depPkgJson: { name?: string; exports?: Record<string, unknown> } | undefined;
+    try {
+      const resolved = req.resolve(dep);
+      let dir = path.dirname(resolved);
+      while (dir !== path.dirname(dir)) {
+        const candidate = path.join(dir, "package.json");
+        try {
+          const pkg = JSON.parse(fs.readFileSync(candidate, "utf-8"));
+          if (pkg.name === dep || dep.startsWith(pkg.name + "/")) {
+            depPkgJson = pkg;
+            break;
+          }
+        } catch {
+          // no package.json at this level, keep walking up
+        }
+        dir = path.dirname(dir);
+      }
+    } catch {
+      // Package not installed or not resolvable. Skip silently.
+      continue;
+    }
+
+    if (depPkgJson?.exports && hasReactServerCondition(depPkgJson.exports)) {
+      result.push(dep);
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Recursively check if an exports map contains a `react-server` condition.
+ */
+function hasReactServerCondition(exports: unknown): boolean {
+  if (typeof exports !== "object" || exports === null) return false;
+  for (const [key, value] of Object.entries(exports)) {
+    if (key === "react-server") return true;
+    if (typeof value === "object" && value !== null) {
+      if (hasReactServerCondition(value)) return true;
+    }
+  }
+  return false;
+}
+
 /** Absolute path to vinext's shims directory, used by clientManualChunks. */
 const _shimsDir = path.resolve(__dirname, "shims") + "/";
 
@@ -2010,7 +2112,7 @@ hydrate();
                 },
               }),
               optimizeDeps: {
-                exclude: ["vinext"],
+                exclude: ["vinext", ...findReactServerPackages(root)],
                 entries: appEntries,
               },
               build: {
