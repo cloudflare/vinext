@@ -2,9 +2,27 @@
 
 The Next.js API surface, reimplemented on Vite.
 
+> **Read the announcement:** [How we rebuilt Next.js with AI in one week](https://blog.cloudflare.com/vinext/)
+
 > 🚧 **Experimental — under heavy development.** This project is an experiment in AI-driven software development. The vast majority of the code, tests, and documentation were written by AI (Claude Code). Humans direct architecture, priorities, and design decisions, but have not reviewed most of the code line-by-line. Treat this accordingly — there will be bugs, rough edges, and things that don't work. Use at your own risk.
 
 ## Quick start
+
+vinext includes an [Agent Skill](https://agentskills.io/home) that handles migration for you. It works with Claude Code, OpenCode, Cursor, Codex, and dozens of other AI coding tools. Install it, open your Next.js project, and tell the AI to migrate:
+
+```sh
+npx skills add cloudflare/vinext
+```
+
+Then open your Next.js project in any supported tool and say:
+
+```
+migrate this project to vinext
+```
+
+The skill handles compatibility checking, dependency installation, config generation, and dev server startup. It knows what vinext supports and will flag anything that needs manual attention.
+
+### Or do it manually
 
 ```bash
 npm install vinext
@@ -51,18 +69,6 @@ Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted
 `vinext init` options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
 ### Migrating an existing Next.js project
-
-#### Use the agent skill
-
-Install the `migrate-to-vinext` skill to let your AI coding agent handle the migration for you. This works in any coding agent that supports the [Agent Skills](https://agentskills.io/home) specification, and provides guidance on how to use `vinext` and the `vite` toolchain to migrate, check and address any issues itself:
-
-```sh
-npx skills add cloudflare/vinext
-```
-
-The skill walks the agent through compatibility checking, package replacement, ESM conversion, Vite config generation, and verification.
-
-#### Manual migration
 
 `vinext init` automates the migration in one command:
 
@@ -173,7 +179,7 @@ vinext deploy --experimental-tpr --tpr-limit 500    # Cap at 500 pages
 vinext deploy --experimental-tpr --tpr-window 48    # Use 48h of analytics
 ```
 
-Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission. See the [TPR demo](https://github.com/cloudflare/vinext/tree/main/examples/tpr-demo) for an interactive visualization of how it works.
+Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission.
 
 For production caching (ISR), use the built-in Cloudflare KV cache handler:
 
@@ -220,10 +226,11 @@ These are deployed to Cloudflare Workers and updated on every push to `main`:
 | Example | Description | URL |
 |---------|-------------|-----|
 | App Router Playground | [Vercel's Next.js App Router Playground](https://github.com/vercel/next-app-router-playground) running on vinext | [app-router-playground.vinext.workers.dev](https://app-router-playground.vinext.workers.dev) |
+| Hacker News | HN clone (App Router, RSC) | [hackernews.vinext.workers.dev](https://hackernews.vinext.workers.dev) |
+| Nextra Docs | Nextra docs site (MDX, App Router) | [nextra-docs-template.vinext.workers.dev](https://nextra-docs-template.vinext.workers.dev) |
 | App Router (minimal) | Minimal App Router on Workers | [app-router-cloudflare.vinext.workers.dev](https://app-router-cloudflare.vinext.workers.dev) |
 | Pages Router (minimal) | Minimal Pages Router on Workers | [pages-router-cloudflare.vinext.workers.dev](https://pages-router-cloudflare.vinext.workers.dev) |
 | RealWorld API | REST API routes example | [realworld-api-rest.vinext.workers.dev](https://realworld-api-rest.vinext.workers.dev) |
-| TPR Demo | Interactive visualization of Traffic-aware Pre-Rendering | [tpr-demo.vinext.workers.dev](https://tpr-demo.vinext.workers.dev) |
 | Benchmarks Dashboard | Build performance tracking over time (D1-backed) | [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev) |
 
 ## API coverage
@@ -347,53 +354,29 @@ These are intentional exclusions:
 
 These benchmarks measure **compilation and bundling speed**, not production serving performance. Next.js and vinext have fundamentally different default approaches: Next.js statically pre-renders pages at build time (making builds slower but production serving faster for static content), while vinext server-renders all pages on each request. To make the comparison apples-to-apples, the benchmark app uses `export const dynamic = "force-dynamic"` to disable Next.js static pre-rendering — both frameworks are doing the same work: compiling, bundling, and preparing server-rendered routes.
 
-The benchmark app is a shared 33-route App Router application (server components, client components, dynamic routes, nested layouts, API routes) built identically by both tools.
+The benchmark app is a shared 33-route App Router application (server components, client components, dynamic routes, nested layouts, API routes) built identically by both tools. We compare Next.js 16 (Turbopack) against vinext on both Vite 7 (Rollup) and Vite 8 (Rolldown). Turbopack and Rolldown both parallelize across cores, so results on machines with more cores may differ significantly.
 
-Benchmarks run on GitHub CI runners (2-core Ubuntu) on every merge to `main`. Results below are from the latest CI run — see [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev) for historical data. Turbopack and Rolldown both parallelize across cores, so results on machines with more cores may differ significantly.
+We measure three things:
 
-### Production build time
+- **Production build time** — 5 runs, timed with `hyperfine`.
+- **Client bundle size** — gzipped output of each build.
+- **Dev server cold start** — 10 runs, randomized execution order. Vite's dependency optimizer cache is cleared before each run.
 
-5 runs, timed with `hyperfine`.
-
-| Framework | Mean | vs Next.js |
-|-----------|------|------------|
-| Next.js 16.1.6 (Turbopack) | 10.80s | baseline |
-| vinext (Vite 7.3.1 / Rollup) | 4.95s | ~2.2x faster |
-| vinext (Vite 8.0.0-beta / Rolldown) | 1.96s | ~5.5x faster |
-
-### Client bundle size (gzipped)
-
-| Framework | Gzipped | vs Next.js |
-|-----------|---------|------------|
-| Next.js 16.1.6 | 172.9 KB | baseline |
-| vinext (Rollup) | 75.7 KB | ~56% smaller |
-| vinext (Rolldown) | 74.6 KB | ~57% smaller |
+Benchmarks run on GitHub CI runners (2-core Ubuntu) on every merge to `main`. See the launch numbers in the [announcement blog post](https://blog.cloudflare.com/vinext/) and the latest results at **[benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev)**.
 
 <details>
 <summary>Why the bundle size difference?</summary>
 
 Analysis of the build output shows two main factors:
 
-1. **Tree-shaking**: Vite/Rollup produces a 193KB React+ReactDOM bundle vs Next.js/Turbopack's ~338KB (across two chunks). Rollup's more aggressive dead-code elimination accounts for roughly half the overall difference.
-2. **Framework overhead**: Next.js ships ~83KB of client-side infrastructure (router, Turbopack runtime loader, prefetching, error handling). vinext's client runtime is ~46KB.
+1. **Tree-shaking**: Vite/Rollup produces a smaller React+ReactDOM bundle than Next.js/Turbopack. Rollup's more aggressive dead-code elimination accounts for roughly half the overall difference.
+2. **Framework overhead**: Next.js ships more client-side infrastructure (router, Turbopack runtime loader, prefetching, error handling) than vinext's lighter client runtime.
 
 Both frameworks ship the same app code and the same RSC client runtime (`react-server-dom-webpack`). The difference is in how much of React's internals survive tree-shaking and how much framework plumbing each tool adds.
 
 </details>
 
-### Dev server cold start
-
-10 runs, randomized execution order to eliminate positional bias. Vite's dependency optimizer cache is cleared before each run.
-
-| Framework | Mean | vs Next.js |
-|-----------|------|------------|
-| Next.js 16.1.6 (Turbopack) | 4.00s | baseline |
-| vinext (Vite 7.3.1 / Rollup) | 2.33s | ~1.7x faster |
-| vinext (Vite 8.0.0-beta / Rolldown) | 2.36s | ~1.7x faster |
-
-Rollup and Rolldown show similar dev cold-start times because Vite's dev server uses on-demand module loading — the bundler only matters for production builds.
-
-Reproduce with `node benchmarks/run.mjs --runs=5 --dev-runs=10`. Exact framework versions are recorded in each result. Historical results are tracked at [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev).
+Reproduce with `node benchmarks/run.mjs --runs=5 --dev-runs=10`. Exact framework versions are recorded in each result.
 
 ## Architecture
 
