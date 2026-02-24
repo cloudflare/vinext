@@ -100,9 +100,10 @@ async function waitForServer(url, timeoutMs = 60000) {
 /**
  * Sum RSS (in KB) for an entire process group.
  * The process was spawned with detached:true so proc.pid is the PGID.
- * On Linux, `ps -g` selects by SESSION ID (not PGID), so we use `pgrep -g`
- * to enumerate PIDs in the process group, then query their RSS individually.
- * On macOS, pgrep -g is not available; fall back to the leader PID only.
+ * On Linux, `pgrep -g` enumerates PIDs in the process group reliably.
+ * On macOS, `pgrep -g` matches by GID (not PGID), so instead we list all
+ * processes with `ps -axo pid=,pgid=,rss=` and sum RSS for rows whose PGID
+ * matches the leader PID.
  */
 function getGroupRssKb(pid) {
   try {
@@ -112,13 +113,25 @@ function getGroupRssKb(pid) {
       if (!pidsRaw) return 0;
       const pidList = pidsRaw.split("\n").join(",");
       out = execSync(`ps -o rss= -p ${pidList}`, { encoding: "utf-8" });
+      return out
+        .trim()
+        .split("\n")
+        .reduce((sum, line) => sum + (parseInt(line.trim(), 10) || 0), 0);
     } else {
-      out = execSync(`ps -o rss= -p ${pid}`, { encoding: "utf-8" });
+      // macOS: enumerate all processes and sum RSS for those in our PGID
+      out = execSync(`ps -axo pid=,pgid=,rss=`, { encoding: "utf-8" });
+      const pgid = String(pid);
+      return out
+        .trim()
+        .split("\n")
+        .reduce((sum, line) => {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 3 && parts[1] === pgid) {
+            return sum + (parseInt(parts[2], 10) || 0);
+          }
+          return sum;
+        }, 0);
     }
-    return out
-      .trim()
-      .split("\n")
-      .reduce((sum, line) => sum + (parseInt(line.trim(), 10) || 0), 0);
   } catch {
     return 0;
   }
