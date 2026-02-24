@@ -264,12 +264,10 @@ async function main() {
       exec("rm -rf dist", { cwd: vinextRolldownDir });
     }
 
-    // Measured runs with hyperfine (separate runs per project for clean --prepare)
-    console.log(`\n  Running ${RUNS} build iterations with hyperfine...\n`);
+    // Measured runs with hyperfine (single invocation with --shuffle for fair ordering)
+    console.log(`\n  Running ${RUNS} build iterations with hyperfine (randomized order)...\n`);
 
-    function parseHyperfine(jsonStr) {
-      const hf = JSON.parse(jsonStr);
-      const r = hf.results[0];
+    function parseHyperfineResult(r) {
       return {
         mean: r.mean * 1000,
         stddev: r.stddev * 1000,
@@ -279,31 +277,37 @@ async function main() {
     }
 
     try {
-      // Next.js
-      console.log("  Timing Next.js builds...");
-      const njsJson = exec(
-        `hyperfine --runs ${RUNS} --prepare 'rm -rf .next' 'npx next build --turbopack' --export-json /dev/stdout 2>/dev/null`,
-        { cwd: nextjsDir, timeout: 600000 }
-      );
-      results.nextjs.buildTime = parseHyperfine(njsJson);
-
-      // vinext (Rollup)
-      console.log("  Timing vinext (Rollup) builds...");
-      const ncJson = exec(
-        `hyperfine --runs ${RUNS} --prepare 'rm -rf dist' 'npx vite build' --export-json /dev/stdout 2>/dev/null`,
-        { cwd: vinextDir, timeout: 600000 }
-      );
-      results.vinext.buildTime = parseHyperfine(ncJson);
-
-      // vinext (Rolldown)
+      // Build a single hyperfine command with all projects and --shuffle so
+      // runs are interleaved randomly, eliminating positional bias from
+      // warmed filesystem caches, CPU thermal state, or residual process state.
+      const cmds = [
+        `--command-name nextjs 'rm -rf ${nextjsDir}/.next && npx next build --turbopack'`,
+        `--command-name vinext 'rm -rf ${vinextDir}/dist && npx vite build --root ${vinextDir}'`,
+      ];
       if (hasRolldown) {
-        console.log("  Timing vinext (Rolldown) builds...");
-        const rdJson = exec(
-          `hyperfine --runs ${RUNS} --prepare 'rm -rf dist' 'npx vite build' --export-json /dev/stdout 2>/dev/null`,
-          { cwd: vinextRolldownDir, timeout: 600000 }
+        cmds.push(
+          `--command-name rolldown 'rm -rf ${vinextRolldownDir}/dist && npx vite build --root ${vinextRolldownDir}'`
         );
-        results.vinextRolldown.buildTime = parseHyperfine(rdJson);
       }
+
+      console.log("  Timing all builds (shuffled)...");
+      const hfJson = exec(
+        `hyperfine --runs ${RUNS} --shuffle ${cmds.join(" ")} --export-json /dev/stdout 2>/dev/null`,
+        { cwd: __dirname, timeout: 600000 }
+      );
+      const hf = JSON.parse(hfJson);
+
+      // Map results by command name
+      for (const r of hf.results) {
+        if (r.command.includes("next build")) {
+          results.nextjs.buildTime = parseHyperfineResult(r);
+        } else if (r.command.includes(vinextDir)) {
+          results.vinext.buildTime = parseHyperfineResult(r);
+        } else if (hasRolldown && r.command.includes(vinextRolldownDir)) {
+          results.vinextRolldown.buildTime = parseHyperfineResult(r);
+        }
+      }
+      results.buildMethodology = "hyperfine --shuffle (randomized)";
     } catch {
       // Fallback: manual timing with randomized runner order to eliminate positional bias
       console.log("  hyperfine failed, falling back to manual timing...");
@@ -341,8 +345,10 @@ async function main() {
           : []),
       ];
 
+      const buildRunOrders = [];
       for (let i = 0; i < RUNS; i++) {
         const order = shuffle(buildRunners);
+        buildRunOrders.push(order.map((r) => r.key));
         console.log(`  Run ${i + 1}/${RUNS} (order: ${order.map((r) => r.key).join(" → ")})...`);
         for (const runner of order) runner.run();
       }
@@ -374,6 +380,8 @@ async function main() {
           max: Math.max(...buildTimes.rolldown),
         };
       }
+      results.buildMethodology = "manual timing (randomized)";
+      results.buildRunOrders = buildRunOrders;
     }
 
     // ─── 2. Bundle Size ────────────────────────────────────────────────────────
@@ -521,6 +529,7 @@ async function main() {
   if (results.system.viteRolldownVersion) md += `- **Vite (Rolldown)**: ${results.system.viteRolldownVersion}\n`;
   md += "\n";
   md += `> **Note:** TypeScript type checking is disabled for the Next.js build (\`typescript.ignoreBuildErrors: true\`) so that build timings measure bundler/compilation speed only. Vite does not type-check during build.\n\n`;
+  md += `> **Methodology:** Build and dev cold start runs are executed in randomized order to eliminate positional bias from filesystem caches, CPU thermal state, and residual process state.\n\n`;
 
   const hasRolldownResults = results.vinextRolldown && Object.keys(results.vinextRolldown).length > 0;
 
