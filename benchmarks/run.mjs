@@ -23,6 +23,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const RESULTS_DIR = join(__dirname, "results");
 mkdirSync(RESULTS_DIR, { recursive: true });
 
+// Disable Next.js telemetry to avoid non-deterministic network latency in benchmarks.
+process.env.NEXT_TELEMETRY_DISABLED = "1";
+
 // ─── CLI args ──────────────────────────────────────────────────────────────────
 const args = process.argv.slice(2);
 const RUNS = parseInt(args.find((a) => a.startsWith("--runs="))?.split("=")[1] ?? "5", 10);
