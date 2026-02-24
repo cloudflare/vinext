@@ -12,6 +12,7 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
+    "inlineSources": true,
     "outDir": "dist"
   },
   "exclude": ["node_modules", "dist", "fixtures", "tests/fixtures", "benchmarks", "examples"]
