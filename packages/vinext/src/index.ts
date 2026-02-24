@@ -3046,10 +3046,16 @@ hydrate();
         },
       },
     },
-    // Cloudflare Workers production build integration (Pages Router only):
-    // After all environments are built, embed the client manifest in the
-    // worker entry for hydration. App Router doesn't need this — the RSC
-    // plugin handles client entry via loadBootstrapScriptContent().
+    // Cloudflare Workers production build integration:
+    // After all environments are built, compute lazy chunks from the client
+    // build manifest and inject globals into the worker entry.
+    //
+    // Pages Router: injects __VINEXT_CLIENT_ENTRY__, __VINEXT_SSR_MANIFEST__,
+    //   and __VINEXT_LAZY_CHUNKS__ into the worker entry (found via wrangler.json).
+    // App Router: the RSC plugin handles __VINEXT_CLIENT_ENTRY__ via
+    //   loadBootstrapScriptContent(), but we still inject __VINEXT_LAZY_CHUNKS__
+    //   and __VINEXT_SSR_MANIFEST__ into the worker entry at dist/server/index.js.
+    // Both: generates _headers file for immutable asset caching.
     {
       name: "vinext:cloudflare-build",
       apply: "build",
@@ -3062,39 +3068,20 @@ hydrate();
           if (!envName || !hasCloudflarePlugin) return;
           if (envName !== "client") return;
 
-          // App Router: skip — the RSC plugin handles client entry injection.
-          if (hasAppDir) return;
-
           const envConfig = (this as any).environment?.config;
           if (!envConfig) return;
           const buildRoot = envConfig.root ?? process.cwd();
-
-          // Pages Router: find worker output by scanning dist/ for a
-          // directory containing wrangler.json (Cloudflare plugin default).
           const distDir = path.resolve(buildRoot, "dist");
           if (!fs.existsSync(distDir)) return;
-          let workerOutDir: string | null = null;
-          for (const entry of fs.readdirSync(distDir)) {
-            const candidate = path.join(distDir, entry);
-            if (entry === "client") continue;
-            if (fs.statSync(candidate).isDirectory() &&
-                fs.existsSync(path.join(candidate, "wrangler.json"))) {
-              workerOutDir = candidate;
-              break;
-            }
-          }
-          if (!workerOutDir) return;
-
-          const workerEntry = path.join(workerOutDir, "index.js");
-          if (!fs.existsSync(workerEntry)) return;
 
           const clientDir = path.resolve(buildRoot, "dist", "client");
-          let clientEntryFile: string | null = null;
-          let ssrManifestData: Record<string, string[]> | null = null;
 
-          // Read build manifest to find the client entry chunk filename and
-          // compute lazy chunks (only reachable via dynamic imports)
+          // Read build manifest and compute lazy chunks (only reachable via
+          // dynamic imports). This runs for BOTH App Router and Pages Router.
+          // clientEntryFile is only used by the Pages Router path below —
+          // App Router gets its client entry via the RSC plugin instead.
           let lazyChunksData: string[] | null = null;
+          let clientEntryFile: string | null = null;
           const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
           if (fs.existsSync(buildManifestPath)) {
             try {
@@ -3110,20 +3097,8 @@ hydrate();
             } catch { /* ignore parse errors */ }
           }
 
-          // Fallback: scan dist/client/assets/ for the client entry chunk.
-          // Pages Router uses "vinext-client-entry", App Router uses
-          // "vinext-app-browser-entry".
-          if (!clientEntryFile) {
-            const assetsDir = path.join(clientDir, "assets");
-            if (fs.existsSync(assetsDir)) {
-              const files = fs.readdirSync(assetsDir);
-              const entry = files.find((f: string) =>
-                (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) && f.endsWith(".js"));
-              if (entry) clientEntryFile = "assets/" + entry;
-            }
-          }
-
           // Read SSR manifest for per-page CSS/JS injection
+          let ssrManifestData: Record<string, string[]> | null = null;
           const ssrManifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
           if (fs.existsSync(ssrManifestPath)) {
             try {
@@ -3131,21 +3106,71 @@ hydrate();
             } catch { /* ignore parse errors */ }
           }
 
-          // Prepend globals to worker entry
-          if (clientEntryFile || ssrManifestData || lazyChunksData) {
-            let code = fs.readFileSync(workerEntry, "utf-8");
-            const globals: string[] = [];
-            if (clientEntryFile) {
-              globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`);
+          if (hasAppDir) {
+            // App Router: the RSC plugin handles __VINEXT_CLIENT_ENTRY__
+            // via loadBootstrapScriptContent(), but we still need to inject
+            // __VINEXT_LAZY_CHUNKS__ and __VINEXT_SSR_MANIFEST__ into the
+            // worker entry at dist/server/index.js.
+            const workerEntry = path.resolve(distDir, "server", "index.js");
+            if (fs.existsSync(workerEntry) && (lazyChunksData || ssrManifestData)) {
+              let code = fs.readFileSync(workerEntry, "utf-8");
+              const globals: string[] = [];
+              if (ssrManifestData) {
+                globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+              }
+              if (lazyChunksData) {
+                globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+              }
+              code = globals.join("\n") + "\n" + code;
+              fs.writeFileSync(workerEntry, code);
             }
-            if (ssrManifestData) {
-              globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+          } else {
+            // Pages Router: find worker output by scanning dist/ for a
+            // directory containing wrangler.json (Cloudflare plugin default).
+            let workerOutDir: string | null = null;
+            for (const entry of fs.readdirSync(distDir)) {
+              const candidate = path.join(distDir, entry);
+              if (entry === "client") continue;
+              if (fs.statSync(candidate).isDirectory() &&
+                  fs.existsSync(path.join(candidate, "wrangler.json"))) {
+                workerOutDir = candidate;
+                break;
+              }
             }
-            if (lazyChunksData) {
-              globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+            if (!workerOutDir) return;
+
+            const workerEntry = path.join(workerOutDir, "index.js");
+            if (!fs.existsSync(workerEntry)) return;
+
+            // Fallback: scan dist/client/assets/ for the client entry chunk.
+            // Pages Router uses "vinext-client-entry", App Router uses
+            // "vinext-app-browser-entry".
+            if (!clientEntryFile) {
+              const assetsDir = path.join(clientDir, "assets");
+              if (fs.existsSync(assetsDir)) {
+                const files = fs.readdirSync(assetsDir);
+                const entry = files.find((f: string) =>
+                  (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) && f.endsWith(".js"));
+                if (entry) clientEntryFile = "assets/" + entry;
+              }
             }
-            code = globals.join("\n") + "\n" + code;
-            fs.writeFileSync(workerEntry, code);
+
+            // Prepend globals to worker entry
+            if (clientEntryFile || ssrManifestData || lazyChunksData) {
+              let code = fs.readFileSync(workerEntry, "utf-8");
+              const globals: string[] = [];
+              if (clientEntryFile) {
+                globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`);
+              }
+              if (ssrManifestData) {
+                globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+              }
+              if (lazyChunksData) {
+                globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+              }
+              code = globals.join("\n") + "\n" + code;
+              fs.writeFileSync(workerEntry, code);
+            }
           }
 
           // Generate _headers file for Cloudflare Workers static asset caching.
