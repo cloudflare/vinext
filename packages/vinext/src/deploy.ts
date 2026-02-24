@@ -24,6 +24,7 @@ import {
   renameCJSConfigs as _renameCJSConfigs,
   detectPackageManager as _detectPackageManager,
 } from "./utils/project.js";
+import { getReactUpgradeDeps } from "./init.js";
 import { runTPR } from "./cloudflare/tpr.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -593,6 +594,15 @@ export function getMissingDeps(info: ProjectInfo): MissingDep[] {
   if (info.isAppRouter && !info.hasRscPlugin) {
     missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
   }
+  if (info.isAppRouter) {
+    // react-server-dom-webpack must be resolvable from the project root for Vite
+    const hasRsdw = fs.existsSync(
+      path.join(info.root, "node_modules", "react-server-dom-webpack"),
+    );
+    if (!hasRsdw) {
+      missing.push({ name: "react-server-dom-webpack", version: "latest" });
+    }
+  }
   if (info.hasMDX) {
     // Check if @mdx-js/rollup is already installed
     const hasMdxRollup = fs.existsSync(
@@ -774,6 +784,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
   console.log(`  ISR:     ${info.hasISR ? "detected" : "none"}`);
 
   // Step 2: Check and install missing dependencies
+  // For App Router: upgrade React first if needed for react-server-dom-webpack compatibility
+  if (info.isAppRouter) {
+    const reactUpgrade = getReactUpgradeDeps(root);
+    if (reactUpgrade.length > 0) {
+      const installCmd = detectPackageManager(root).replace(/ -D$/, "");
+      console.log(`  Upgrading ${reactUpgrade.map(d => d.replace(/@latest$/, "")).join(", ")}...`);
+      execSync(`${installCmd} ${reactUpgrade.join(" ")}`, { cwd: root, stdio: "inherit" });
+    }
+  }
   const missingDeps = getMissingDeps(info);
   if (missingDeps.length > 0) {
     console.log();

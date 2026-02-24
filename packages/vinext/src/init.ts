@@ -116,6 +116,7 @@ export function getInitDeps(isAppRouter: boolean): string[] {
   const deps = ["vinext", "vite"];
   if (isAppRouter) {
     deps.push("@vitejs/plugin-rsc");
+    deps.push("react-server-dom-webpack");
   }
   return deps;
 }
@@ -136,14 +137,47 @@ export function isDepInstalled(root: string, dep: string): boolean {
   }
 }
 
+/**
+ * Check if react/react-dom need upgrading for react-server-dom-webpack compatibility.
+ *
+ * react-server-dom-webpack versions are pinned to match their React version
+ * (e.g. rsdw@19.2.4 requires react@^19.2.4). When a project has an older
+ * React (e.g. create-next-app ships react@19.2.3), we need to upgrade
+ * react/react-dom BEFORE installing rsdw to avoid peer-dep conflicts.
+ *
+ * Returns ["react@latest", "react-dom@latest"] if upgrade is needed, [] otherwise.
+ */
+export function getReactUpgradeDeps(root: string): string[] {
+  try {
+    const reactPkgPath = path.join(root, "node_modules", "react", "package.json");
+    if (!fs.existsSync(reactPkgPath)) return [];
+    const reactPkg = JSON.parse(fs.readFileSync(reactPkgPath, "utf-8"));
+    const version = reactPkg.version as string;
+    // react-server-dom-webpack@latest currently requires react@^19.2.4
+    const parts = version.split(".");
+    const major = parseInt(parts[0], 10);
+    const minor = parseInt(parts[1], 10);
+    const patch = parseInt(parts[2], 10);
+    if (major < 19 || (major === 19 && minor < 2) || (major === 19 && minor === 2 && patch < 4)) {
+      return ["react@latest", "react-dom@latest"];
+    }
+    return [];
+  } catch {
+    return [];
+  }
+}
+
 function installDeps(
   root: string,
   deps: string[],
   exec: (cmd: string, opts: { cwd: string; stdio: string }) => void,
+  { dev = true }: { dev?: boolean } = {},
 ): void {
   if (deps.length === 0) return;
 
-  const installCmd = detectPackageManager(root);
+  const baseCmd = detectPackageManager(root);
+  // Strip " -D" for non-dev installs (keeps deps in "dependencies", not "devDependencies")
+  const installCmd = dev ? baseCmd : baseCmd.replace(/ -D$/, "");
   const depsStr = deps.join(" ");
 
   exec(`${installCmd} ${depsStr}`, {
@@ -190,6 +224,18 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   const neededDeps = getInitDeps(isApp);
   const missingDeps = neededDeps.filter((dep) => !isDepInstalled(root, dep));
+
+  // For App Router: react-server-dom-webpack requires react/react-dom versions
+  // to match exactly (e.g. rsdw@19.2.4 needs react@^19.2.4). If the installed
+  // React is too old (common with create-next-app), upgrade it first as a
+  // regular dependency to avoid ERESOLVE peer-dep conflicts.
+  if (isApp && missingDeps.includes("react-server-dom-webpack")) {
+    const reactUpgrade = getReactUpgradeDeps(root);
+    if (reactUpgrade.length > 0) {
+      console.log(`  Upgrading ${reactUpgrade.map(d => d.replace(/@latest$/, "")).join(", ")}...`);
+      installDeps(root, reactUpgrade, exec, { dev: false });
+    }
+  }
 
   if (missingDeps.length > 0) {
     console.log(`  Installing ${missingDeps.join(", ")}...`);

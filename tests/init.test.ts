@@ -8,6 +8,7 @@ import {
   addScripts,
   getInitDeps,
   isDepInstalled,
+  getReactUpgradeDeps,
   type InitOptions,
 } from "../packages/vinext/src/init.js";
 
@@ -249,11 +250,12 @@ describe("addScripts", () => {
 // ─── Unit Tests: getInitDeps / isDepInstalled ────────────────────────────────
 
 describe("getInitDeps", () => {
-  it("returns vinext + vite + @vitejs/plugin-rsc for App Router", () => {
+  it("returns vinext + vite + @vitejs/plugin-rsc + react-server-dom-webpack for App Router", () => {
     const deps = getInitDeps(true);
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
     expect(deps).toContain("@vitejs/plugin-rsc");
+    expect(deps).toContain("react-server-dom-webpack");
   });
 
   it("returns vinext + vite for Pages Router", () => {
@@ -261,6 +263,68 @@ describe("getInitDeps", () => {
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
     expect(deps).not.toContain("@vitejs/plugin-rsc");
+    expect(deps).not.toContain("react-server-dom-webpack");
+  });
+});
+
+describe("getReactUpgradeDeps", () => {
+  it("returns react@latest + react-dom@latest when React is too old", () => {
+    setupProject(tmpDir, { router: "app" });
+    // Simulate installed react@19.2.3 (too old for react-server-dom-webpack@19.2.4)
+    const reactDir = path.join(tmpDir, "node_modules", "react");
+    fs.mkdirSync(reactDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(reactDir, "package.json"),
+      JSON.stringify({ name: "react", version: "19.2.3" }),
+    );
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual(["react@latest", "react-dom@latest"]);
+  });
+
+  it("returns empty array when React is new enough", () => {
+    setupProject(tmpDir, { router: "app" });
+    const reactDir = path.join(tmpDir, "node_modules", "react");
+    fs.mkdirSync(reactDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(reactDir, "package.json"),
+      JSON.stringify({ name: "react", version: "19.2.4" }),
+    );
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual([]);
+  });
+
+  it("returns empty array when React is a newer minor version", () => {
+    setupProject(tmpDir, { router: "app" });
+    const reactDir = path.join(tmpDir, "node_modules", "react");
+    fs.mkdirSync(reactDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(reactDir, "package.json"),
+      JSON.stringify({ name: "react", version: "19.3.0" }),
+    );
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual([]);
+  });
+
+  it("returns upgrade deps when React major is below 19", () => {
+    setupProject(tmpDir, { router: "app" });
+    const reactDir = path.join(tmpDir, "node_modules", "react");
+    fs.mkdirSync(reactDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(reactDir, "package.json"),
+      JSON.stringify({ name: "react", version: "18.3.1" }),
+    );
+
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual(["react@latest", "react-dom@latest"]);
+  });
+
+  it("returns empty array when node_modules/react does not exist", () => {
+    setupProject(tmpDir, { router: "app" });
+    const deps = getReactUpgradeDeps(tmpDir);
+    expect(deps).toEqual([]);
   });
 });
 
@@ -415,6 +479,14 @@ describe("init — dependency installation", () => {
     expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
   });
 
+  it("detects missing react-server-dom-webpack for App Router", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.installedDeps).toContain("react-server-dom-webpack");
+  });
+
   it("does not require @vitejs/plugin-rsc for Pages Router", async () => {
     setupProject(tmpDir, { router: "pages" });
 
@@ -423,6 +495,64 @@ describe("init — dependency installation", () => {
     expect(result.installedDeps).not.toContain("@vitejs/plugin-rsc");
   });
 
+  it("does not require react-server-dom-webpack for Pages Router", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.installedDeps).not.toContain("react-server-dom-webpack");
+  });
+
+  it("upgrades React before installing dev deps when React is too old (App Router)", async () => {
+    setupProject(tmpDir, { router: "app" });
+    // Simulate react@19.2.3 in node_modules (too old for rsdw)
+    const reactDir = path.join(tmpDir, "node_modules", "react");
+    fs.mkdirSync(reactDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(reactDir, "package.json"),
+      JSON.stringify({ name: "react", version: "19.2.3" }),
+    );
+
+    const { execCalls } = await runInit(tmpDir);
+
+    // The first exec call should be the React upgrade (without -D)
+    const reactUpgradeCall = execCalls.find(
+      (c) => c.cmd.includes("react@latest") && c.cmd.includes("react-dom@latest"),
+    );
+    expect(reactUpgradeCall).toBeDefined();
+    // The React upgrade should NOT use -D flag (keeps them in dependencies)
+    expect(reactUpgradeCall!.cmd).not.toContain("-D");
+
+    // The second exec call should be the dev deps install (with -D)
+    const devDepsCall = execCalls.find(
+      (c) => c.cmd.includes("react-server-dom-webpack") && c.cmd.includes("-D"),
+    );
+    expect(devDepsCall).toBeDefined();
+
+    // React upgrade should come before dev deps install
+    const upgradeIdx = execCalls.indexOf(reactUpgradeCall!);
+    const devDepsIdx = execCalls.indexOf(devDepsCall!);
+    expect(upgradeIdx).toBeLessThan(devDepsIdx);
+  });
+
+  it("does not upgrade React when version is already compatible", async () => {
+    setupProject(tmpDir, { router: "app" });
+    // Simulate react@19.2.4 in node_modules (compatible)
+    const reactDir = path.join(tmpDir, "node_modules", "react");
+    fs.mkdirSync(reactDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(reactDir, "package.json"),
+      JSON.stringify({ name: "react", version: "19.2.4" }),
+    );
+
+    const { execCalls } = await runInit(tmpDir);
+
+    // No React upgrade call
+    const reactUpgradeCall = execCalls.find(
+      (c) => c.cmd.includes("react@latest"),
+    );
+    expect(reactUpgradeCall).toBeUndefined();
+  });
 
   it("calls exec with correct package manager for pnpm", async () => {
     setupProject(tmpDir, { router: "pages" });

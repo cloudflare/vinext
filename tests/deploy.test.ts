@@ -526,8 +526,36 @@ describe("getMissingDeps", () => {
     );
   });
 
+  it("reports missing react-server-dom-webpack for App Router", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+
+    const missing = getMissingDeps(info);
+    expect(missing).toContainEqual(
+      expect.objectContaining({ name: "react-server-dom-webpack" }),
+    );
+  });
+
+  it("does not require react-server-dom-webpack for Pages Router", () => {
+    mkdir(tmpDir, "pages");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = false;
+
+    const missing = getMissingDeps(info);
+    expect(missing).not.toContainEqual(
+      expect.objectContaining({ name: "react-server-dom-webpack" }),
+    );
+  });
+
   it("returns empty array when everything is installed", () => {
     mkdir(tmpDir, "app");
+    // Simulate react-server-dom-webpack installed in node_modules
+    fs.mkdirSync(path.join(tmpDir, "node_modules", "react-server-dom-webpack"), { recursive: true });
     const info = detectProject(tmpDir);
     info.hasCloudflarePlugin = true;
     info.hasWrangler = true;
