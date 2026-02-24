@@ -3,6 +3,10 @@
   "version": "0.0.5",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cloudflare/vinext"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
