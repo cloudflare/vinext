@@ -497,6 +497,14 @@ vinext has peer dependencies on `react ^19.2.4`, `react-dom ^19.2.4`, and `vite 
 
 This project is experimental and under active development. Issues and PRs are welcome.
 
+### Reporting bugs
+
+If something doesn't work with your Next.js app, please file an issue — we want to hear about it.
+
+Before you do, try pointing an AI agent at the problem. Open your project with Claude Code, Cursor, OpenCode, or whatever you use, and ask it to figure out why your app isn't working with vinext. In our experience, agents are very good at tracing through the vinext source, identifying the gap or bug, and often producing a fix or at least a clear diagnosis. An issue that includes "here's what the agent found" is significantly more actionable than "it doesn't work."
+
+Even a partial diagnosis helps — stack traces, which `next/*` import is involved, whether it's a dev or production build issue, App Router vs Pages Router. The more context, the faster we can fix it.
+
 ## License
 
 MIT
