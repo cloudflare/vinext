@@ -23,6 +23,7 @@ import {
   renameCJSConfigs as _renameCJSConfigs,
   detectPackageManager as _detectPackageManager,
 } from "./utils/project.js";
+import { runTPR } from "./cloudflare/tpr.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -37,6 +38,14 @@ export interface DeployOptions {
   skipBuild?: boolean;
   /** Dry run — generate config files but don't build or deploy */
   dryRun?: boolean;
+  /** Enable experimental TPR (Traffic-aware Pre-Rendering) */
+  experimentalTPR?: boolean;
+  /** TPR: traffic coverage percentage target (0–100, default: 90) */
+  tprCoverage?: number;
+  /** TPR: hard cap on number of pages to pre-render (default: 1000) */
+  tprLimit?: number;
+  /** TPR: analytics lookback window in hours (default: 24) */
+  tprWindow?: number;
 }
 
 interface ProjectInfo {
@@ -760,7 +769,22 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
-  // Step 6: Deploy via wrangler
+  // Step 6: TPR — pre-render hot pages into KV cache (experimental, opt-in)
+  if (options.experimentalTPR) {
+    console.log();
+    const tprResult = await runTPR({
+      root,
+      coverage: Math.max(1, Math.min(100, options.tprCoverage ?? 90)),
+      limit: Math.max(1, options.tprLimit ?? 1000),
+      window: Math.max(1, options.tprWindow ?? 24),
+    });
+
+    if (tprResult.skipped) {
+      console.log(`  TPR: Skipped (${tprResult.skipped})`);
+    }
+  }
+
+  // Step 7: Deploy via wrangler
   const url = runWranglerDeploy(root, options.preview ?? false);
 
   console.log("\n  ─────────────────────────────────────────");

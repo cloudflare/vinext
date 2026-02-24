@@ -46,7 +46,7 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
-`vinext deploy` options: `--preview`, `--name <name>`, `--skip-build`, `--dry-run`.
+`vinext deploy` options: `--preview`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
 
 `vinext init` options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
@@ -150,6 +150,19 @@ The deploy command also auto-detects and fixes common migration issues:
 
 Both App Router and Pages Router work on Workers with full client-side hydration — interactive components, client-side navigation, and React state all work.
 
+### Traffic-aware Pre-Rendering (experimental)
+
+TPR queries Cloudflare zone analytics at deploy time to find which pages actually get traffic, pre-renders only those, and uploads them to KV cache. The result is SSG-level latency for popular pages without pre-rendering your entire site.
+
+```bash
+vinext deploy --experimental-tpr                    # Pre-render pages covering 90% of traffic
+vinext deploy --experimental-tpr --tpr-coverage 95  # More aggressive coverage
+vinext deploy --experimental-tpr --tpr-limit 500    # Cap at 500 pages
+vinext deploy --experimental-tpr --tpr-window 48    # Use 48h of analytics
+```
+
+Requires a custom domain (zone analytics are unavailable on `*.workers.dev`) and `CLOUDFLARE_API_TOKEN` with Zone.Analytics read permission. See the [TPR demo](https://github.com/cloudflare/vinext/tree/main/examples/tpr-demo) for an interactive visualization of how it works.
+
 For production caching (ISR), use the built-in Cloudflare KV cache handler:
 
 ```ts
@@ -198,6 +211,7 @@ These are deployed to Cloudflare Workers and updated on every push to `main`:
 | App Router (minimal) | Minimal App Router on Workers | [app-router-cloudflare.vinext.workers.dev](https://app-router-cloudflare.vinext.workers.dev) |
 | Pages Router (minimal) | Minimal Pages Router on Workers | [pages-router-cloudflare.vinext.workers.dev](https://pages-router-cloudflare.vinext.workers.dev) |
 | RealWorld API | REST API routes example | [realworld-api-rest.vinext.workers.dev](https://realworld-api-rest.vinext.workers.dev) |
+| TPR Demo | Interactive visualization of Traffic-aware Pre-Rendering | [tpr-demo.vinext.workers.dev](https://tpr-demo.vinext.workers.dev) |
 | Benchmarks Dashboard | Build performance tracking over time (D1-backed) | [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev) |
 
 ## API coverage

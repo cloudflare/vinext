@@ -110,6 +110,21 @@ function parseArgs(args: string[]): ParsedArgs {
   return result;
 }
 
+/** Parse a numeric flag like --tpr-coverage 95 or --tpr-coverage=95. */
+function parseNumericFlag(args: string[], flag: string): number | undefined {
+  const idx = args.indexOf(flag);
+  if (idx !== -1 && args[idx + 1]) {
+    const val = parseInt(args[idx + 1], 10);
+    if (!isNaN(val)) return val;
+  }
+  const eq = args.find((a) => a.startsWith(`${flag}=`));
+  if (eq) {
+    const val = parseInt(eq.split("=")[1], 10);
+    if (!isNaN(val)) return val;
+  }
+  return undefined;
+}
+
 // ─── Auto-configuration ───────────────────────────────────────────────────────
 
 /**
@@ -327,6 +342,7 @@ async function deployCommand() {
   const preview = rawArgs.includes("--preview");
   const skipBuild = rawArgs.includes("--skip-build");
   const dryRun = rawArgs.includes("--dry-run");
+  const experimentalTPR = rawArgs.includes("--experimental-tpr");
 
   // Parse --name flag
   let name: string | undefined;
@@ -338,12 +354,21 @@ async function deployCommand() {
     if (nameEq) name = nameEq.split("=")[1];
   }
 
+  // Parse TPR flags
+  const tprCoverage = parseNumericFlag(rawArgs, "--tpr-coverage");
+  const tprLimit = parseNumericFlag(rawArgs, "--tpr-limit");
+  const tprWindow = parseNumericFlag(rawArgs, "--tpr-window");
+
   await runDeploy({
     root: process.cwd(),
     preview,
     skipBuild,
     dryRun,
     name,
+    experimentalTPR,
+    tprCoverage,
+    tprLimit,
+    tprWindow,
   });
 }
 
@@ -442,17 +467,32 @@ function printHelp(cmd?: string) {
     - Deploys via wrangler
 
   Options:
-    --preview           Deploy to a preview environment
-    --name <name>       Custom Worker name (default: from package.json)
-    --skip-build        Skip the build step (use existing dist/)
-    --dry-run           Generate config files without building or deploying
-    -h, --help          Show this help
+    --preview                Deploy to a preview environment
+    --name <name>            Custom Worker name (default: from package.json)
+    --skip-build             Skip the build step (use existing dist/)
+    --dry-run                Generate config files without building or deploying
+    -h, --help               Show this help
+
+  Experimental:
+    --experimental-tpr               Enable Traffic-aware Pre-Rendering
+    --tpr-coverage <pct>             Traffic coverage target, 0–100 (default: 90)
+    --tpr-limit <count>              Hard cap on pages to pre-render (default: 1000)
+    --tpr-window <hours>             Analytics lookback window in hours (default: 24)
+
+  TPR (Traffic-aware Pre-Rendering) uses Cloudflare zone analytics to determine
+  which pages get the most traffic and pre-renders them into KV cache during
+  deploy. This feature is experimental and must be explicitly enabled. Requires
+  a custom domain (zone analytics are unavailable on *.workers.dev) and the
+  CLOUDFLARE_API_TOKEN environment variable with Zone.Analytics read permission.
 
   Examples:
-    vinext deploy                   Build and deploy to production
-    vinext deploy --preview         Deploy to a preview URL
-    vinext deploy --dry-run         See what files would be generated
-    vinext deploy --name my-app     Deploy with a custom Worker name
+    vinext deploy                              Build and deploy to production
+    vinext deploy --preview                    Deploy to a preview URL
+    vinext deploy --dry-run                    See what files would be generated
+    vinext deploy --name my-app                Deploy with a custom Worker name
+    vinext deploy --experimental-tpr           Enable TPR during deploy
+    vinext deploy --experimental-tpr --tpr-coverage 95   Cover 95% of traffic
+    vinext deploy --experimental-tpr --tpr-limit 500     Cap at 500 pages
 `);
     return;
   }

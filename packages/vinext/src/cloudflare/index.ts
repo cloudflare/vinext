@@ -5,3 +5,4 @@
  */
 
 export { KVCacheHandler } from "./kv-cache-handler.js";
+export { runTPR, type TPROptions, type TPRResult } from "./tpr.js";
