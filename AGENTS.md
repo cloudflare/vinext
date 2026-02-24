@@ -200,6 +200,74 @@ If you're trying to understand how something works under the hood — route matc
 
 ---
 
-## Project Context
+## Architecture & Gotchas
 
-See `DISCOVERIES.md` for technical findings and architectural decisions discovered during development. That file documents non-obvious behaviors, gotchas, and implementation details that provide context for future work.
+Non-obvious patterns and pitfalls discovered during development. Read this before making significant changes.
+
+### RSC and SSR Are Separate Vite Environments
+
+This is the single most important architectural detail. The RSC environment and the SSR environment are **separate Vite module graphs with separate module instances**. If you set state in a module in the RSC environment (e.g., `setNavigationContext()` in `next/navigation`), the SSR environment's copy of that module is unaffected.
+
+Per-request state (pathname, searchParams, params, headers, cookies) must be **explicitly passed** from the RSC entry to the SSR entry via the `handleSsr(rscStream, navContext)` call. The SSR entry calls the setter before rendering and cleans up afterward.
+
+**Rule of thumb:** Any per-request state that `"use client"` components need during SSR must be passed across the environment boundary. They don't share module state.
+
+### What `@vitejs/plugin-rsc` Does vs What vinext Does
+
+The RSC plugin handles:
+- Bundler transforms for `"use client"` / `"use server"` directives
+- RSC stream serialization (wraps `react-server-dom-webpack`)
+- Multi-environment builds (RSC/SSR/Client)
+- CSS code-splitting and auto-injection
+- HMR for server components
+- Bootstrap script injection for client hydration
+
+vinext handles everything else:
+- File-system routing (scanning `app/` and `pages/` directories)
+- Request lifecycle (middleware, headers, redirects, rewrites, then route handling)
+- Layout nesting and React tree construction
+- Client-side navigation and prefetching
+- Caching (ISR, `"use cache"`, fetch cache)
+- All `next/*` module shims
+
+The RSC entry's `default` export is the request handler. The plugin calls it for every request; vinext does route matching, builds the React tree, renders to RSC stream, and delegates to the SSR entry for HTML.
+
+### Production Builds Require `createBuilder`
+
+You **must** use `createBuilder()` + `builder.buildApp()` for production builds, not `build()` directly. Calling `build()` from the Vite JS API doesn't trigger the RSC plugin's multi-environment build pipeline. `buildApp()` runs the 5-step RSC/SSR/client build sequence in the correct order.
+
+### Virtual Module Resolution Quirks
+
+- **Build-time root prefix:** Vite prefixes virtual module IDs with the project root path when resolving SSR build entries. The `resolveId` hook must handle both `virtual:vinext-server-entry` and `<root>/virtual:vinext-server-entry`.
+- **`\0` prefix in client environment:** When the RSC plugin generates its browser entry, it imports virtual modules using the already-resolved `\0`-prefixed ID. Vite's `import-analysis` plugin can't resolve this. Fix: strip the `\0` prefix before matching in `resolveId`.
+- **Absolute paths required:** Virtual modules have no real file location, so all imports within them must use absolute paths.
+
+### Next.js 15+ Thenable Params
+
+Next.js 15 changed `params` and `searchParams` to Promises. For backward compatibility with pre-15 code, vinext creates "thenable objects":
+
+```js
+Object.assign(Promise.resolve(params), params)
+```
+
+This works both as `await params` (new style) and `params.id` (old style). The same pattern applies to `generateMetadata` and `generateViewport`.
+
+### ISR Architecture
+
+The ISR cache layer sits **above** `CacheHandler`, not inside it. `CacheHandler` (matching Next.js 16's interface) is a simple key-value store. ISR semantics live in a separate `isr-cache.ts` module:
+
+- **Stale-while-revalidate:** Returns stale entries (not null) while background regeneration runs
+- **Dedup:** A `Map<string, Promise>` keyed by cache key ensures only one regeneration per key at a time
+- **Revalidate tracking:** A side map stores revalidate durations by cache key (populated on MISS, read on HIT/STALE)
+- **Tag invalidation:** Tag-invalidated entries are hard-deleted (return null), unlike time-expired entries which return stale
+
+The caching layer is pluggable via `setCacheHandler()`. KV is the default for Cloudflare Workers. The ISR logic works automatically with any backend.
+
+### Ecosystem Library Compatibility
+
+When adding support for third-party Next.js libraries:
+
+- **`next/navigation.js` (with .js extension):** Libraries like `nuqs` import with the `.js` extension. Vite's `resolve.alias` does exact matching, so a `resolveId` hook strips `.js` from `next/*` imports and redirects through the shim map.
+- **next-themes:** Works out of the box. ThemeProvider, `useTheme`, SSR script injection all function correctly.
+- **next-intl:** Requires deep integration. It expects a plugin from `next.config.ts` (`createNextIntlPlugin`) that injects config at build time. Simply installing and importing doesn't work.
+- **General pattern:** Libraries that only import from `next/*` public APIs tend to work. Libraries that depend on Next.js build plugins or internal APIs need custom shimming.
