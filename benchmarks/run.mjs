@@ -260,20 +260,20 @@ async function main() {
 
     // Ensure plugin is built
     console.log("  Building vinext plugin...");
-    exec("npx tsc -p packages/vinext/tsconfig.json", { cwd: join(__dirname, "..") });
+    exec("./node_modules/.bin/tsc -p packages/vinext/tsconfig.json", { cwd: join(__dirname, "..") });
 
     // Warmup run for all (not measured)
     console.log("  Warmup: Next.js build...");
-    exec("npx next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
+    exec("./node_modules/.bin/next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
     exec("rm -rf .next", { cwd: nextjsDir });
 
     console.log("  Warmup: vinext (Rollup) build...");
-    exec("npx vite build", { cwd: vinextDir, timeout: 120000 });
+    exec("./node_modules/.bin/vite build", { cwd: vinextDir, timeout: 120000 });
     exec("rm -rf dist", { cwd: vinextDir });
 
     if (hasRolldown) {
       console.log("  Warmup: vinext (Rolldown) build...");
-      exec("npx vite build", { cwd: vinextRolldownDir, timeout: 120000 });
+      exec("./node_modules/.bin/vite build", { cwd: vinextRolldownDir, timeout: 120000 });
       exec("rm -rf dist", { cwd: vinextRolldownDir });
     }
 
@@ -294,12 +294,12 @@ async function main() {
       // runs are interleaved randomly, eliminating positional bias from
       // warmed filesystem caches, CPU thermal state, or residual process state.
       const cmds = [
-        `--command-name nextjs 'rm -rf ${nextjsDir}/.next && npx next build --turbopack'`,
-        `--command-name vinext 'rm -rf ${vinextDir}/dist && npx vite build --root ${vinextDir}'`,
+        `--command-name nextjs 'rm -rf ${nextjsDir}/.next && ./node_modules/.bin/next build --turbopack'`,
+        `--command-name vinext 'rm -rf ${vinextDir}/dist && ./node_modules/.bin/vite build --root ${vinextDir}'`,
       ];
       if (hasRolldown) {
         cmds.push(
-          `--command-name rolldown 'rm -rf ${vinextRolldownDir}/dist && npx vite build --root ${vinextRolldownDir}'`
+          `--command-name rolldown 'rm -rf ${vinextRolldownDir}/dist && ./node_modules/.bin/vite build --root ${vinextRolldownDir}'`
         );
       }
 
@@ -332,7 +332,7 @@ async function main() {
           run: () => {
             exec("rm -rf .next", { cwd: nextjsDir });
             const start = performance.now();
-            exec("npx next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
+            exec("./node_modules/.bin/next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
             buildTimes.nextjs.push(performance.now() - start);
           },
         },
@@ -341,7 +341,7 @@ async function main() {
           run: () => {
             exec("rm -rf dist", { cwd: vinextDir });
             const start = performance.now();
-            exec("npx vite build", { cwd: vinextDir, timeout: 120000 });
+            exec("./node_modules/.bin/vite build", { cwd: vinextDir, timeout: 120000 });
             buildTimes.vinext.push(performance.now() - start);
           },
         },
@@ -351,7 +351,7 @@ async function main() {
               run: () => {
                 exec("rm -rf dist", { cwd: vinextRolldownDir });
                 const start = performance.now();
-                exec("npx vite build", { cwd: vinextRolldownDir, timeout: 120000 });
+                exec("./node_modules/.bin/vite build", { cwd: vinextRolldownDir, timeout: 120000 });
                 buildTimes.rolldown.push(performance.now() - start);
               },
             }]
@@ -407,10 +407,10 @@ async function main() {
 
     // Rebuild both to get fresh output
     exec("rm -rf .next", { cwd: nextjsDir });
-    exec("npx next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
+    exec("./node_modules/.bin/next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
 
     exec("rm -rf dist", { cwd: vinextDir });
-    exec("npx vite build", { cwd: vinextDir, timeout: 120000 });
+    exec("./node_modules/.bin/vite build", { cwd: vinextDir, timeout: 120000 });
 
     // Next.js: client bundles are in .next/static
     const njsSize = bundleSize(join(nextjsDir, ".next", "static"));
@@ -425,7 +425,7 @@ async function main() {
     // vinext (Rolldown): client bundles are in dist/client
     if (hasRolldown) {
       exec("rm -rf dist", { cwd: vinextRolldownDir });
-      exec("npx vite build", { cwd: vinextRolldownDir, timeout: 120000 });
+      exec("./node_modules/.bin/vite build", { cwd: vinextRolldownDir, timeout: 120000 });
       const rdSize = bundleSize(join(vinextRolldownDir, "dist", "client"));
       results.vinextRolldown.bundleSize = rdSize;
       console.log(`  vinext (Rolldown):  ${rdSize.files} files, ${formatBytes(rdSize.raw)} raw, ${formatBytes(rdSize.gzip)} gzip`);
@@ -446,7 +446,7 @@ async function main() {
         label: "Next.js",
         run: async () => {
           exec("rm -rf .next", { cwd: nextjsDir });
-          return startAndMeasure("npx", ["next", "dev", "--turbopack", "-p", "4100"], nextjsDir, "http://localhost:4100");
+          return startAndMeasure("./node_modules/.bin/next", ["dev", "--turbopack", "-p", "4100"], nextjsDir, "http://localhost:4100");
         },
       },
       {
@@ -454,7 +454,7 @@ async function main() {
         label: "vinext (Rollup)",
         run: async () => {
           exec("rm -rf node_modules/.vite", { cwd: vinextDir });
-          return startAndMeasure("npx", ["vite", "--port", "4101"], vinextDir, "http://localhost:4101");
+          return startAndMeasure("./node_modules/.bin/vite", ["--port", "4101"], vinextDir, "http://localhost:4101");
         },
       },
       ...(hasRolldown
@@ -464,7 +464,7 @@ async function main() {
               label: "vinext (Rolldown)",
               run: async () => {
                 exec("rm -rf node_modules/.vite", { cwd: vinextRolldownDir });
-                return startAndMeasure("npx", ["vite", "--port", "4102"], vinextRolldownDir, "http://localhost:4102");
+                return startAndMeasure("./node_modules/.bin/vite", ["--port", "4102"], vinextRolldownDir, "http://localhost:4102");
               },
             },
           ]
