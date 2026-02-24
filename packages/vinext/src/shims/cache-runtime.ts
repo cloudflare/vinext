@@ -272,6 +272,14 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 ): T {
   const cacheVariant = variant ?? "";
 
+  // In dev mode, skip the shared cache so code changes are immediately
+  // visible after HMR. Without this, the MemoryCacheHandler returns stale
+  // results because the cache key (module path + export name) doesn't
+  // change when the file is edited — only the function body changes.
+  // Per-request ("use cache: private") caching still works in dev since
+  // it's scoped to a single request and doesn't persist across HMR.
+  const isDev = typeof process !== "undefined" && process.env.NODE_ENV === "development";
+
   const cachedFn = async (...args: any[]): Promise<any> => {
     const rsc = await getRscModule();
 
@@ -318,6 +326,15 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
       const result = await executeWithContext(fn, args, cacheVariant);
       privateCache.set(cacheKey, result);
       return result;
+    }
+
+    // In dev mode, always execute fresh — skip shared cache lookup/storage.
+    // This ensures HMR changes are reflected immediately.
+    if (isDev) {
+      return cacheContextStorage.run(
+        { tags: [], lifeConfigs: [], variant: cacheVariant || "default" },
+        () => fn(...args),
+      );
     }
 
     // Shared cache ("use cache" / "use cache: remote")

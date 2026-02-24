@@ -11,25 +11,28 @@ test.describe('"use cache" file-level directive', () => {
     await expect(page.getByTestId("message")).toContainText("use cache");
   });
 
-  // File-level "use cache" wraps the page default export with
-  // registerCachedFunction, so the component output is cached at the RSC
-  // level (not ISR). This works in both dev and production.
-  test("use-cache page returns same timestamp on repeated requests (cached)", async ({
+  // In dev mode, shared cache is bypassed so HMR changes are immediately
+  // reflected (cache key is module path + export name, not file content).
+  // Each request executes fresh, so timestamps differ between requests.
+  test("use-cache page returns fresh data on each request in dev mode", async ({
     request,
   }) => {
-    // First request — populates cache
+    // First request
     const res1 = await request.get(`${BASE}/use-cache-test`);
     expect(res1.status()).toBe(200);
     const html1 = await res1.text();
     const ts1 = html1.match(/data-testid="timestamp">(\d+)</)?.[1];
     expect(ts1).toBeDefined();
 
-    // Second request immediately — should return same cached timestamp
+    // Small delay to ensure timestamp changes
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Second request — should return fresh (different) timestamp in dev
     const res2 = await request.get(`${BASE}/use-cache-test`);
     const html2 = await res2.text();
     const ts2 = html2.match(/data-testid="timestamp">(\d+)</)?.[1];
 
-    expect(ts1).toBe(ts2);
+    expect(Number(ts2)).toBeGreaterThan(Number(ts1));
   });
 
   // TTL expiry: the "seconds" cacheLife profile has revalidate: 1s, so after
@@ -76,7 +79,9 @@ test.describe('"use cache" function-level directive', () => {
     await expect(page.getByTestId("message")).toContainText("function-level");
   });
 
-  test("function-level use-cache caches getData return value", async ({
+  // In dev mode, shared cache is bypassed for HMR correctness.
+  // Each request re-executes getData(), producing fresh values.
+  test("function-level use-cache returns fresh data on each request in dev mode", async ({
     request,
   }) => {
     // First request
@@ -86,16 +91,14 @@ test.describe('"use cache" function-level directive', () => {
     const dataValue1 = html1.match(/data-testid="data-value">(\d+)</)?.[1];
     expect(dataValue1).toBeDefined();
 
-    // Wait a bit, then make a second request
-    await new Promise((r) => setTimeout(r, 100));
+    // Wait a bit so timestamp changes
+    await new Promise((r) => setTimeout(r, 50));
 
-    // Second request
+    // Second request — should return fresh (different) data in dev
     const res2 = await request.get(`${BASE}/use-cache-fn-test`);
     const html2 = await res2.text();
     const dataValue2 = html2.match(/data-testid="data-value">(\d+)</)?.[1];
 
-    // getData() is cached — data-value should be the same
-    // (the "seconds" profile caches for 1s, so within 100ms it should still be cached)
-    expect(dataValue1).toBe(dataValue2);
+    expect(Number(dataValue2)).toBeGreaterThan(Number(dataValue1));
   });
 });

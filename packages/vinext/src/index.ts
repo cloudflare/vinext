@@ -2240,6 +2240,22 @@ hydrate();
     {
       name: "vinext:pages-router",
 
+      // HMR: trigger full-reload for Pages Router page changes.
+      // Without @vitejs/plugin-react (React Fast Refresh), component edits
+      // can't be hot-updated. In theory Vite's default propagation should
+      // reach the root and trigger a full-reload, but the Pages Router
+      // injects hydration via inline <script type="module"> which may not
+      // be tracked in the module graph. Explicitly sending full-reload
+      // ensures changes are always reflected in the browser.
+      hotUpdate(options: { file: string; server: ViteDevServer; modules: any[] }) {
+        if (!hasPagesDir || hasAppDir) return;
+        const ext = /\.(tsx?|jsx?|mdx)$/;
+        if (options.file.startsWith(pagesDir) && ext.test(options.file)) {
+          options.server.environments.client.hot.send({ type: "full-reload" });
+          return [];
+        }
+      },
+
       configureServer(server: ViteDevServer) {
         // Watch pages directory for file additions/removals to invalidate route cache.
         const pageExtensions = /\.(tsx?|jsx?|mdx)$/;
