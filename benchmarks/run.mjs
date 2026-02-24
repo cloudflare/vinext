@@ -517,6 +517,7 @@ async function main() {
   if (results.system.viteVersion) md += `- **Vite (Rollup)**: ${results.system.viteVersion}\n`;
   if (results.system.viteRolldownVersion) md += `- **Vite (Rolldown)**: ${results.system.viteRolldownVersion}\n`;
   md += "\n";
+  md += `> **Note:** TypeScript type checking is disabled for the Next.js build (\`typescript.ignoreBuildErrors: true\`) so that build timings measure bundler/compilation speed only. Vite does not type-check during build.\n\n`;
 
   const hasRolldownResults = results.vinextRolldown && Object.keys(results.vinextRolldown).length > 0;
 
