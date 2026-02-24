@@ -1,9 +1,7 @@
 name: "Next.js tip"
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"
-  workflow_dispatch:
+  workflow_dispatch: # disabled schedule — re-enable once ecosystem tests are stable
 
 permissions:
   contents: read
