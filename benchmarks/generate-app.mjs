@@ -482,7 +482,7 @@ const pages = countFiles(APP, "page.tsx");
 const routes = countFiles(APP, "route.ts");
 console.log(`Generated benchmark app: ${pages} pages + ${routes} API routes = ${pages + routes} total routes`);
 
-// Copy to both benchmark projects (symlinks don't work with Turbopack)
+// Copy to each benchmark project (symlinks don't work with Turbopack)
 import { cpSync } from "node:fs";
 const BASE = dirname(new URL(import.meta.url).pathname);
 for (const project of ["nextjs", "vinext", "vinext-rolldown"]) {
