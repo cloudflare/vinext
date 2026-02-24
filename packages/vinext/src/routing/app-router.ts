@@ -377,7 +377,11 @@ function fileToAppRoute(
       continue;
     }
 
-    urlSegments.push(segment);
+    try {
+      urlSegments.push(decodeURIComponent(segment));
+    } catch {
+      urlSegments.push(segment);
+    }
   }
 
   const pattern = "/" + urlSegments.join("/");
@@ -390,7 +394,11 @@ function fileToAppRoute(
   // Each layout corresponds to a directory level. We need to count how many
   // of the filesystem segments up to that layout's level contribute URL segments
   // (i.e., are not route groups or parallel slots).
-  const layoutSegmentDepths = computeLayoutSegmentDepths(segments, appDir, layouts);
+  const layoutSegmentDepths = computeLayoutSegmentDepths(
+    segments,
+    appDir,
+    layouts,
+  );
 
   // Discover per-layout error boundaries (aligned with layouts array).
   // In Next.js, each segment independently wraps its children with an ErrorBoundary.
@@ -405,7 +413,11 @@ function fileToAppRoute(
   // Discover not-found/forbidden/unauthorized: walk from route directory up to root (nearest wins).
   const notFoundPath = discoverBoundaryFile(segments, appDir, "not-found");
   const forbiddenPath = discoverBoundaryFile(segments, appDir, "forbidden");
-  const unauthorizedPath = discoverBoundaryFile(segments, appDir, "unauthorized");
+  const unauthorizedPath = discoverBoundaryFile(
+    segments,
+    appDir,
+    "unauthorized",
+  );
 
   // Discover per-layout not-found files (one per layout directory).
   // These are used for per-layout NotFoundBoundary to match Next.js behavior where
@@ -415,7 +427,11 @@ function fileToAppRoute(
   // Discover parallel slots (@team, @analytics, etc.).
   // Slots at the route's own directory use page.tsx; slots at ancestor directories
   // (inherited from parent layouts) use default.tsx as fallback.
-  const parallelSlots = discoverInheritedParallelSlots(segments, appDir, routeDir);
+  const parallelSlots = discoverInheritedParallelSlots(
+    segments,
+    appDir,
+    routeDir,
+  );
 
   return {
     pattern: pattern === "/" ? "/" : pattern,
@@ -533,7 +549,10 @@ function discoverTemplates(segments: string[], appDir: string): string[] {
  * rendering tree, matching Next.js behavior where each segment independently
  * wraps its children with an error boundary.
  */
-function discoverLayoutAlignedErrors(segments: string[], appDir: string): (string | null)[] {
+function discoverLayoutAlignedErrors(
+  segments: string[],
+  appDir: string,
+): (string | null)[] {
   const errors: (string | null)[] = [];
 
   // Root level (only if root has a layout — matching discoverLayouts logic)
@@ -888,7 +907,10 @@ function computeInterceptTarget(
   }
 
   // Build the target URL segments from baseDir relative to appDir
-  const baseParts = path.relative(appDir, baseDir).split(path.sep).filter(Boolean);
+  const baseParts = path
+    .relative(appDir, baseDir)
+    .split(path.sep)
+    .filter(Boolean);
 
   // Add the intercept segment and any nested path segments
   const nestedParts = path
@@ -927,7 +949,12 @@ function computeInterceptTarget(
       continue;
     }
 
-    urlSegments.push(segment);
+    // Decode URL-encoded directory names (e.g., %5Fsites -> _sites)
+    try {
+      urlSegments.push(decodeURIComponent(segment));
+    } catch {
+      urlSegments.push(segment);
+    }
   }
 
   const pattern = "/" + urlSegments.join("/");
@@ -956,7 +983,11 @@ export function matchAppRoute(
 ): { route: AppRoute; params: Record<string, string | string[]> } | null {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch { /* malformed percent-encoding — match as-is */ }
+  try {
+    normalizedUrl = decodeURIComponent(normalizedUrl);
+  } catch {
+    /* malformed percent-encoding — match as-is */
+  }
 
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
@@ -1018,20 +1049,36 @@ function matchPattern(
  * 3. Catch-all comes after dynamic
  * 4. Optional catch-all last
  * 5. Lexicographic tiebreaker for determinism
+ *
+ * Key insight: routes with static prefix segments should have higher priority
+ * than catch-all routes without them. E.g., /_sites/:subdomain/:slug* should
+ * match before /:slug* because "_sites" must match exactly.
  */
 function routePrecedence(pattern: string): number {
   const parts = pattern.split("/").filter(Boolean);
   let score = 0;
+  let staticPrefixCount = 0;
+
+  // Count static prefix segments (before first dynamic/catch-all)
+  for (const p of parts) {
+    if (p.startsWith(":") || p.endsWith("+") || p.endsWith("*")) break;
+    staticPrefixCount++;
+  }
+
+  // Static prefix segments dramatically reduce score (increase priority).
+  // Each static prefix segment gives -10000 priority boost.
+  score -= staticPrefixCount * 10000;
+
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
     if (p.endsWith("+")) {
-      score += 10000 + i; // catch-all: high penalty
+      score += 1000 + i; // catch-all: moderate penalty
     } else if (p.endsWith("*")) {
-      score += 20000 + i; // optional catch-all: highest penalty
+      score += 2000 + i; // optional catch-all: high penalty
     } else if (p.startsWith(":")) {
-      score += 100 + i; // dynamic: moderate penalty by position
+      score += 100 + i; // dynamic: small penalty by position
     }
-    // static segments contribute nothing (better specificity)
+    // static segments after first dynamic don't contribute extra
   }
   return score;
 }
