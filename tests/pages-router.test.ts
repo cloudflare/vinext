@@ -948,6 +948,17 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.headers.get("x-middleware-test")).toBeNull();
   });
 
+  it("preserves binary API response bytes", async () => {
+    const res = await fetch(`${prodUrl}/api/binary`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/octet-stream");
+
+    const body = Buffer.from(await res.arrayBuffer());
+    // Must match exactly: invalid UTF-8-leading bytes + null + ASCII tail.
+    // This catches any accidental text() decode/re-encode in prod-server.
+    expect(body.equals(Buffer.from([0xff, 0xfe, 0xfd, 0x00, 0x61, 0x62, 0x63]))).toBe(true);
+  });
+
   it("serves normal pages without middleware interference", async () => {
     const res = await fetch(`${prodUrl}/`);
     expect(res.status).toBe(200);

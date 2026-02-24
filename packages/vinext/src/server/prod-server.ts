@@ -762,7 +762,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         }
 
         // Merge middleware + config headers into the response
-        const responseBody = await response.text();
+        const responseBody = Buffer.from(await response.arrayBuffer());
         const ct = response.headers.get("content-type") ?? "text/html";
         const responseHeaders: Record<string, string> = { ...middlewareHeaders };
         response.headers.forEach((v, k) => { responseHeaders[k] = v; });
@@ -811,7 +811,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
 
       // Merge middleware + config headers into the response
-      const responseBody = await response.text();
+      const responseBody = Buffer.from(await response.arrayBuffer());
       const ct = response.headers.get("content-type") ?? "text/html";
       const responseHeaders: Record<string, string> = { ...middlewareHeaders };
       response.headers.forEach((v, k) => { responseHeaders[k] = v; });
