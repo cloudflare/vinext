@@ -371,7 +371,7 @@ export function checkConventions(root: string): CheckItem[] {
       items.push({
         name: 'Missing "type": "module" in package.json',
         status: "unsupported",
-        detail: "required for Vite — run `vinext init` to add it automatically",
+        detail: "required for Vite — vinext init will add it automatically",
       });
     }
   }
@@ -452,7 +452,7 @@ export function runCheck(root: string): CheckResult {
 /**
  * Format the check result as a colored terminal report.
  */
-export function formatReport(result: CheckResult): string {
+export function formatReport(result: CheckResult, opts?: { calledFromInit?: boolean }): string {
   const lines: string[] = [];
   const statusIcon = (s: Status) => s === "supported" ? "\x1b[32m✓\x1b[0m" : s === "partial" ? "\x1b[33m~\x1b[0m" : "\x1b[31m✗\x1b[0m";
 
@@ -533,16 +533,18 @@ export function formatReport(result: CheckResult): string {
     }
   }
 
-  // Actionable next steps
-  lines.push("");
-  lines.push("  \x1b[1mRecommended next steps:\x1b[0m");
-  lines.push(`    Run \x1b[36mvinext init\x1b[0m to set up your project automatically`);
-  lines.push("");
-  lines.push("  Or manually:");
-  lines.push(`    1. Add \x1b[36m"type": "module"\x1b[0m to package.json`);
-  lines.push(`    2. Install: \x1b[36mnpm install -D vinext vite @vitejs/plugin-rsc\x1b[0m`);
-  lines.push(`    3. Create vite.config.ts (see docs)`);
-  lines.push(`    4. Run: \x1b[36mnpx vite dev\x1b[0m`);
+  // Actionable next steps (skip when called from init — it prints its own summary)
+  if (!opts?.calledFromInit) {
+    lines.push("");
+    lines.push("  \x1b[1mRecommended next steps:\x1b[0m");
+    lines.push(`    Run \x1b[36mvinext init\x1b[0m to set up your project automatically`);
+    lines.push("");
+    lines.push("  Or manually:");
+    lines.push(`    1. Add \x1b[36m"type": "module"\x1b[0m to package.json`);
+    lines.push(`    2. Install: \x1b[36mnpm install -D vinext vite @vitejs/plugin-rsc\x1b[0m`);
+    lines.push(`    3. Create vite.config.ts (see docs)`);
+    lines.push(`    4. Run: \x1b[36mnpx vite dev\x1b[0m`);
+  }
 
   lines.push("");
   return lines.join("\n");

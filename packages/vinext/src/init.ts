@@ -182,7 +182,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (!options.skipCheck) {
     console.log("  Running compatibility check...\n");
     const checkResult = runCheck(root);
-    console.log(formatReport(checkResult));
+    console.log(formatReport(checkResult, { calledFromInit: true }));
     console.log(); // blank line before migration steps
   }
 
