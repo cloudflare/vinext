@@ -180,6 +180,62 @@ describe("next/font/google shim", () => {
     // The backslash should be escaped in the CSS string
     expect(result.style.fontFamily).toContain("\\\\");
   });
+
+  it("sanitizes fallback font names with CSS injection attempts", async () => {
+    const mod = await import("../packages/vinext/src/shims/font-google.js");
+    const { Inter } = mod;
+    const result = Inter({
+      weight: ["400"],
+      fallback: ["sans-serif", "'); } body { color: red; } .x { font-family: ('"],
+    });
+    // The malicious single quotes in the fallback should be escaped with \'
+    // so they can't break out of the CSS string context
+    expect(result.style.fontFamily).toContain("\\'");
+    // Should still have sans-serif as a safe generic
+    expect(result.style.fontFamily).toContain("sans-serif");
+    // The malicious fallback should be wrapped in quotes (not used as a bare identifier)
+    // so it's treated as a CSS string value. The sanitizeFallback function
+    // wraps non-generic names in quotes and escapes internal quotes.
+    // Verify the fontFamily contains the escaped quote, meaning the CSS parser
+    // will treat the entire value as a string and not interpret '; }' as CSS syntax.
+    expect(result.style.fontFamily).toMatch(/'\\'.*\\'/);
+  });
+
+  it("rejects invalid CSS variable names and falls back to auto-generated", async () => {
+    const mod = await import("../packages/vinext/src/shims/font-google.js");
+    const { Inter } = mod;
+    const beforeStyles = mod.getSSRFontStyles().length;
+    const result = Inter({
+      weight: ["400"],
+      variable: "--x; } body { color: red; } .y { --z",
+    });
+    // Should still return a valid result
+    expect(result.className).toBeDefined();
+    expect(result.variable).toBeDefined();
+    // Generated CSS should NOT contain the injection payload
+    const styles = mod.getSSRFontStyles();
+    const newStyles = styles.slice(beforeStyles);
+    for (const css of newStyles) {
+      expect(css).not.toContain("color: red");
+      expect(css).not.toContain("color:red");
+    }
+  });
+
+  it("accepts valid CSS variable names", async () => {
+    const mod = await import("../packages/vinext/src/shims/font-google.js");
+    const { Inter } = mod;
+    const beforeStyles = mod.getSSRFontStyles().length;
+    const result = Inter({
+      weight: ["400"],
+      variable: "--font-inter",
+    });
+    expect(result.className).toBeDefined();
+    // Should use the provided variable name in the CSS
+    const styles = mod.getSSRFontStyles();
+    const newStyles = styles.slice(beforeStyles);
+    const hasVar = newStyles.some((s: string) => s.includes("--font-inter"));
+    expect(hasVar).toBe(true);
+  });
 });
 
 // ── Plugin tests ──────────────────────────────────────────────

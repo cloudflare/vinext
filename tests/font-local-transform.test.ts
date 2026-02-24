@@ -319,6 +319,90 @@ describe("vinext:local-fonts plugin", () => {
     expect(result.style.fontFamily).toBeDefined();
   });
 
+  it("sanitizes fallback font names with CSS injection attempts", () => {
+    const result = localFont({
+      src: "./font.woff2",
+      fallback: ["sans-serif", "'); } body { color: red; } .x { font-family: ('"],
+    });
+    expect(result.className).toBeDefined();
+    // The malicious single quotes in the fallback should be escaped with \'
+    // so they can't break out of the CSS string context
+    expect(result.style.fontFamily).toContain("\\'");
+    // Should still have sans-serif as a safe generic
+    expect(result.style.fontFamily).toContain("sans-serif");
+    // The malicious fallback should be wrapped in quotes (not used as a bare identifier)
+    // so it's treated as a CSS string value. The sanitizeFallback function
+    // wraps non-generic names in quotes and escapes internal quotes.
+    expect(result.style.fontFamily).toMatch(/'\\'.*\\'/);
+  });
+
+  it("rejects invalid CSS variable names", () => {
+    const beforeCount = getSSRFontStyles().length;
+    const result = localFont({
+      src: "./font.woff2",
+      variable: "--x; } body { color: red; } .y { --z",
+    });
+    expect(result.className).toBeDefined();
+    // The malicious variable should be rejected — no variable class should be injected
+    const styles = getSSRFontStyles();
+    const newStyles = styles.slice(beforeCount);
+    // Should NOT contain the injection payload in any generated CSS
+    for (const css of newStyles) {
+      expect(css).not.toContain("color: red");
+      expect(css).not.toContain("color:red");
+    }
+  });
+
+  it("accepts valid CSS variable names", () => {
+    const result = localFont({
+      src: "./font.woff2",
+      variable: "--font-custom",
+    });
+    expect(result.className).toBeDefined();
+    // variable returns a class name, not the variable name
+    expect(result.variable).toMatch(/^__variable_local_\d+$/);
+  });
+
+  it("sanitizes declaration props to prevent injection", () => {
+    const beforeCount = getSSRFontStyles().length;
+    const result = localFont({
+      src: "./font.woff2",
+      declarations: [
+        { prop: "font-weight", value: "400" }, // valid
+        { prop: "} body { color: red; } .x { font-weight", value: "400" }, // malicious prop
+      ],
+    });
+    expect(result.className).toBeDefined();
+    const styles = getSSRFontStyles();
+    const newStyles = styles.slice(beforeCount);
+    // Valid declaration should be present
+    const hasFontWeight = newStyles.some((s: string) => s.includes("font-weight: 400"));
+    expect(hasFontWeight).toBe(true);
+    // Malicious declaration should be rejected entirely
+    for (const css of newStyles) {
+      expect(css).not.toContain("color: red");
+      expect(css).not.toContain("color:red");
+    }
+  });
+
+  it("sanitizes declaration values to prevent injection", () => {
+    const beforeCount = getSSRFontStyles().length;
+    const result = localFont({
+      src: "./font.woff2",
+      declarations: [
+        { prop: "font-weight", value: "400; } body { color: red; } .x { font-weight: 400" },
+      ],
+    });
+    expect(result.className).toBeDefined();
+    const styles = getSSRFontStyles();
+    const newStyles = styles.slice(beforeCount);
+    // The value with } should be rejected — no rule should contain the injection
+    for (const css of newStyles) {
+      expect(css).not.toContain("color: red");
+      expect(css).not.toContain("color:red");
+    }
+  });
+
   // ── Sourcemap ────────────────────────────────────────────────
 
   it("generates a sourcemap", () => {

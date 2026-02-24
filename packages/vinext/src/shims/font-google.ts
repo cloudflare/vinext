@@ -31,6 +31,40 @@ function escapeCSSString(value: string): string {
     .replace(/\r/g, "\\d ");
 }
 
+/**
+ * Validate a CSS custom property name (e.g. `--font-inter`).
+ *
+ * Custom properties must start with `--` and only contain alphanumeric
+ * characters, hyphens, and underscores. Anything else could be used to
+ * break out of the CSS declaration and inject arbitrary rules.
+ *
+ * Returns the name if valid, undefined otherwise.
+ */
+function sanitizeCSSVarName(name: string): string | undefined {
+  if (/^--[a-zA-Z0-9_-]+$/.test(name)) return name;
+  return undefined;
+}
+
+/**
+ * Sanitize a CSS font-family fallback name.
+ *
+ * Generic family names (sans-serif, serif, monospace, etc.) are used as-is.
+ * Named families are wrapped in escaped quotes. This prevents injection via
+ * crafted fallback values like `); } body { color: red; } .x {`.
+ */
+function sanitizeFallback(name: string): string {
+  // CSS generic font families — safe to use unquoted
+  const generics = new Set([
+    "serif", "sans-serif", "monospace", "cursive", "fantasy",
+    "system-ui", "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded",
+    "emoji", "math", "fangsong",
+  ]);
+  const trimmed = name.trim();
+  if (generics.has(trimmed)) return trimmed;
+  // Wrap in single quotes with escaping to prevent CSS injection
+  return `'${escapeCSSString(trimmed)}'`;
+}
+
 // Counter for generating unique class names
 let classCounter = 0;
 
@@ -328,8 +362,12 @@ function createFontLoader(family: string) {
     const id = classCounter++;
     const className = `__font_${family.toLowerCase().replace(/\s+/g, "_")}_${id}`;
     const fallback = options.fallback ?? ["sans-serif"];
-    const fontFamily = `'${escapeCSSString(family)}', ${fallback.join(", ")}`;
-    const cssVarName = options.variable ?? toVarName(family);
+    // Sanitize each fallback name to prevent CSS injection via crafted values
+    const fontFamily = `'${escapeCSSString(family)}', ${fallback.map(sanitizeFallback).join(", ")}`;
+    // Validate CSS variable name — reject anything that could inject CSS.
+    // Fall back to auto-generated name if invalid.
+    const defaultVarName = toVarName(family);
+    const cssVarName = options.variable ? (sanitizeCSSVarName(options.variable) ?? defaultVarName) : defaultVarName;
     // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
     // Users apply this class to set the CSS variable on that element.
     const variableClassName = `__variable_${family.toLowerCase().replace(/\s+/g, "_")}_${id}`;
