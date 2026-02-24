@@ -1960,6 +1960,12 @@ hydrate();
               "react/jsx-dev-runtime",
             ],
           },
+          // Exclude vinext from dependency optimization so esbuild doesn't
+          // scan dist files containing virtual module imports (virtual:vinext-*)
+          // that only resolve at Vite plugin time, not during pre-bundling.
+          optimizeDeps: {
+            exclude: ["vinext"],
+          },
           // Enable JSX in .tsx/.jsx files
           // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`
           ...(getViteMajorVersion() >= 8
@@ -2004,6 +2010,7 @@ hydrate();
                 },
               }),
               optimizeDeps: {
+                exclude: ["vinext"],
                 entries: appEntries,
               },
               build: {
@@ -2015,6 +2022,7 @@ hydrate();
             },
             ssr: {
               optimizeDeps: {
+                exclude: ["vinext"],
                 entries: appEntries,
               },
               build: {
@@ -2026,6 +2034,7 @@ hydrate();
             },
             client: {
               optimizeDeps: {
+                exclude: ["vinext"],
                 // react and react-dom are framework dependencies used for
                 // hydration. They aren't crawled from app/ source files so
                 // must be pre-included to prevent late discovery and page
