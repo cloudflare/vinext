@@ -25,7 +25,7 @@ import { staticExportPages } from "./build/static-export.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import MagicString from "magic-string";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 
@@ -1677,7 +1677,7 @@ hydrate();
         "Run: npm install -D @vitejs/plugin-rsc",
       );
     }
-    const rscImport = import(resolvedRscPath);
+    const rscImport = import(pathToFileURL(resolvedRscPath));
     rscPluginPromise = rscImport
       .then((mod) => {
         const rsc = mod.default;
