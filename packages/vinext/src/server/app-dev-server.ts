@@ -2093,6 +2093,59 @@ async function collectStreamChunks(stream) {
   return chunks;
 }
 
+// Cached production decoder used only in dev-mode fallback.
+let _prodCreateFromReadableStream = null;
+
+/**
+ * React 19 dev-mode bug workaround:
+ *
+ * In dev, Flight error decoding in react-server-dom-webpack/client.edge
+ * can hit resolveErrorDev() which calls hook internals with a null dispatcher,
+ * triggering:
+ *   - "Invalid hook call"
+ *   - "Cannot read properties of null (reading 'useContext')"
+ *
+ * We avoid this by using the production Flight decoder for SSR stream decode
+ * in dev mode. This preserves real application errors (they still flow through
+ * error boundaries), while avoiding the dev-only decoder crash.
+ */
+async function getCreateFromReadableStreamForSsr() {
+  if (!import.meta.env.DEV) {
+    return createFromReadableStream;
+  }
+
+  if (_prodCreateFromReadableStream) {
+    return _prodCreateFromReadableStream;
+  }
+
+  try {
+    const [{ createRequire }, pathMod] = await Promise.all([
+      import("node:module"),
+      import("node:path"),
+    ]);
+    const require = createRequire(import.meta.url);
+    const rscPkgJson = require.resolve("react-server-dom-webpack/package.json");
+    const prodClientPath = pathMod.join(
+      pathMod.dirname(rscPkgJson),
+      "cjs",
+      "react-server-dom-webpack-client.edge.production.js",
+    );
+    const prodClient = require(prodClientPath);
+    if (typeof prodClient?.createFromReadableStream !== "function") {
+      throw new Error("createFromReadableStream export missing");
+    }
+    _prodCreateFromReadableStream = prodClient.createFromReadableStream;
+    return _prodCreateFromReadableStream;
+  } catch (err) {
+    // If loading the production decoder fails, fall back to the default
+    // decoder so we don't hide the underlying issue.
+    if (process.env.NODE_ENV !== "production") {
+      console.warn("[vinext] Failed to load production Flight decoder fallback:", err);
+    }
+    return createFromReadableStream;
+  }
+}
+
 /**
  * Create a TransformStream that appends RSC chunks as inline <script> tags
  * to the HTML stream. This allows progressive hydration — the browser receives
@@ -2223,7 +2276,8 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // immediately in the HTML shell, then stream in resolved content as RSC
     // chunks arrive. Awaiting here would block until all async server components
     // complete, collapsing the streaming behavior.
-    const root = createFromReadableStream(ssrStream);
+    const decodeRscStream = await getCreateFromReadableStreamForSsr();
+    const root = decodeRscStream(ssrStream);
 
     // Get the bootstrap script content for the browser entry
     const bootstrapScriptContent =

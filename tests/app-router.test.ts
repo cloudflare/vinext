@@ -588,6 +588,19 @@ describe("App Router integration", () => {
     expect(html).toMatch(/\$RX\("[^"]*","NEXT_HTTP_ERROR_FALLBACK/);
   });
 
+  it("async server throw in Suspense renders local error boundary (React 19 dev decode regression)", async () => {
+    // Regression for issue #50:
+    // React 19 dev-mode Flight decoding can crash in resolveErrorDev() with
+    // "Invalid hook call" / null dispatcher errors while SSR consumes an RSC
+    // stream that includes an error chunk.
+    const res = await fetch(`${baseUrl}/react19-dev-rsc-error`);
+    const html = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(html).toContain("react19-dev-rsc-error-boundary");
+    expect(html).toContain("React 19 dev-mode error boundary rendered");
+  });
+
   it("renders error boundary wrapper for routes with error.tsx", async () => {
     const res = await fetch(`${baseUrl}/error-test`);
     expect(res.status).toBe(200);
