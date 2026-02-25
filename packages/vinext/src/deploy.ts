@@ -24,6 +24,7 @@ import {
   detectPackageManager as _detectPackageManager,
 } from "./utils/project.js";
 import { runTPR } from "./cloudflare/tpr.js";
+import { loadDotenv } from "./config/dotenv.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -697,6 +698,7 @@ function runWranglerDeploy(root: string, preview: boolean): string {
 
 export async function deploy(options: DeployOptions): Promise<void> {
   const root = path.resolve(options.root);
+  loadDotenv({ root, mode: "production" });
 
   console.log("\n  vinext deploy\n");
 

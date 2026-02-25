@@ -313,8 +313,37 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 |---------|---|-------|
 | `next.config.js` / `.ts` / `.mjs` | ✅ | Function configs, phase argument |
 | `rewrites` / `redirects` / `headers` | ✅ | All phases, param interpolation |
-| Environment variables (`NEXT_PUBLIC_*`) | ✅ | Inlined at build time via Vite |
+| Environment variables (`.env*`, `NEXT_PUBLIC_*`) | ✅ | Auto-loads Next.js-style dotenv files; only public vars are inlined |
 | `images` config | 🟡 | Parsed but not used for optimization |
+
+### Environment variable loading (`.env*`)
+
+vinext automatically loads dotenv files for `dev`, `build`, `start`, and `deploy`.
+
+Load order matches Next.js (highest priority first):
+
+1. Existing `process.env` values (shell/CI)
+2. `.env.<mode>.local`
+3. `.env.local` (skipped when mode is `test`)
+4. `.env.<mode>`
+5. `.env`
+
+Modes:
+
+- `vinext dev` uses `development`
+- `vinext build`, `vinext start`, and `vinext deploy` use `production`
+
+Variable expansion (`$VAR` / `${VAR}`) is supported.
+
+Client exposure remains explicit:
+
+- `NEXT_PUBLIC_*` variables are inlined for browser usage
+- `next.config.js` `env` entries are also inlined
+- Other env vars stay server-only unless you explicitly expose them through Vite (for example `VITE_*` + `import.meta.env`)
+
+Override behavior:
+
+- To override any `.env*` value, set it in your shell/CI environment before running vinext. Existing `process.env` always wins.
 
 ### Caching
 
