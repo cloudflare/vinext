@@ -16,7 +16,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execSync, type ExecSyncOptions } from "node:child_process";
+import { execFileSync, execSync, type ExecSyncOptions } from "node:child_process";
+import { parseArgs as nodeParseArgs } from "node:util";
 import { createBuilder, build } from "vite";
 import {
   ensureESModule as _ensureESModule,
@@ -49,6 +50,40 @@ export interface DeployOptions {
   /** TPR: analytics lookback window in hours (default: 24) */
   tprWindow?: number;
 }
+
+// ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
+
+/** Deploy command flag definitions for util.parseArgs. */
+const deployArgOptions = {
+  help:               { type: "boolean", short: "h", default: false },
+  preview:            { type: "boolean", default: false },
+  env:                { type: "string" },
+  name:               { type: "string" },
+  "skip-build":       { type: "boolean", default: false },
+  "dry-run":          { type: "boolean", default: false },
+  "experimental-tpr": { type: "boolean", default: false },
+  "tpr-coverage":     { type: "string" },
+  "tpr-limit":        { type: "string" },
+  "tpr-window":       { type: "string" },
+} as const;
+
+export function parseDeployArgs(args: string[]) {
+  const { values } = nodeParseArgs({ args, options: deployArgOptions, strict: true });
+  return {
+    help: values.help,
+    preview: values.preview,
+    env: values.env?.trim() || undefined,
+    name: values.name?.trim() || undefined,
+    skipBuild: values["skip-build"],
+    dryRun: values["dry-run"],
+    experimentalTPR: values["experimental-tpr"],
+    tprCoverage: values["tpr-coverage"] ? parseInt(values["tpr-coverage"], 10) : undefined,
+    tprLimit: values["tpr-limit"] ? parseInt(values["tpr-limit"], 10) : undefined,
+    tprWindow: values["tpr-window"] ? parseInt(values["tpr-window"], 10) : undefined,
+  };
+}
+
+// ─── Project Detection ──────────────────────────────────────────────────────
 
 interface ProjectInfo {
   root: string;
@@ -663,13 +698,18 @@ async function runBuild(info: ProjectInfo): Promise<void> {
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
 
-export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" | "env">): string[] {
+export interface WranglerDeployArgs {
+  args: string[];
+  env: string | undefined;
+}
+
+export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" | "env">): WranglerDeployArgs {
   const args = ["deploy"];
-  const env = options.env?.trim() || (options.preview ? "preview" : undefined);
+  const env = options.env || (options.preview ? "preview" : undefined);
   if (env) {
     args.push("--env", env);
   }
-  return args;
+  return { args, env };
 }
 
 function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string {
@@ -681,19 +721,17 @@ function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" 
     encoding: "utf-8",
   };
 
-  // wrangler deploy outputs the URL to stdout
-  const args = buildWranglerDeployArgs(options);
-  const cmd = `"${wranglerBin}" ${args.join(" ")}`;
-  const envFlagIndex = args.indexOf("--env");
-  const deployEnv = envFlagIndex === -1 ? null : args[envFlagIndex + 1];
+  const { args, env } = buildWranglerDeployArgs(options);
 
-  if (deployEnv) {
-    console.log(`\n  Deploying to env: ${deployEnv}...`);
+  if (env) {
+    console.log(`\n  Deploying to env: ${env}...`);
   } else {
     console.log("\n  Deploying to production...");
   }
 
-  const output = execSync(cmd, execOpts) as string;
+  // Use execFileSync to avoid shell injection — args are passed as an array,
+  // never interpolated into a shell command string.
+  const output = execFileSync(wranglerBin, args, execOpts) as string;
 
   // Parse the deployed URL from wrangler output
   // Wrangler prints: "Published <name> (version_id)\n  https://<name>.<subdomain>.workers.dev"

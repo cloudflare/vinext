@@ -14,6 +14,7 @@ import {
   ensureESModule,
   renameCJSConfigs,
   buildWranglerDeployArgs,
+  parseDeployArgs,
 } from "../packages/vinext/src/deploy.js";
 import { computeLazyChunks } from "../packages/vinext/src/index.js";
 
@@ -48,23 +49,93 @@ afterEach(() => {
 
 describe("buildWranglerDeployArgs", () => {
   it("uses plain deploy for production by default", () => {
-    expect(buildWranglerDeployArgs({})).toEqual(["deploy"]);
+    expect(buildWranglerDeployArgs({})).toEqual({ args: ["deploy"], env: undefined });
   });
 
   it("maps --preview to wrangler --env preview", () => {
-    expect(buildWranglerDeployArgs({ preview: true })).toEqual(["deploy", "--env", "preview"]);
+    expect(buildWranglerDeployArgs({ preview: true })).toEqual({
+      args: ["deploy", "--env", "preview"],
+      env: "preview",
+    });
   });
 
   it("passes through explicit env names", () => {
-    expect(buildWranglerDeployArgs({ env: "staging" })).toEqual(["deploy", "--env", "staging"]);
+    expect(buildWranglerDeployArgs({ env: "staging" })).toEqual({
+      args: ["deploy", "--env", "staging"],
+      env: "staging",
+    });
   });
 
   it("prefers explicit env over --preview shorthand", () => {
-    expect(buildWranglerDeployArgs({ preview: true, env: "qa" })).toEqual([
-      "deploy",
-      "--env",
-      "qa",
+    expect(buildWranglerDeployArgs({ preview: true, env: "qa" })).toEqual({
+      args: ["deploy", "--env", "qa"],
+      env: "qa",
+    });
+  });
+
+  it("treats empty string env as production", () => {
+    expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
+  });
+});
+
+// ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
+
+describe("parseDeployArgs", () => {
+  it("defaults to production deploy with no flags", () => {
+    const parsed = parseDeployArgs([]);
+    expect(parsed.preview).toBe(false);
+    expect(parsed.env).toBeUndefined();
+    expect(parsed.name).toBeUndefined();
+    expect(parsed.skipBuild).toBe(false);
+    expect(parsed.dryRun).toBe(false);
+  });
+
+  it("parses --env with space-separated value", () => {
+    expect(parseDeployArgs(["--env", "staging"]).env).toBe("staging");
+  });
+
+  it("parses --env=value form", () => {
+    expect(parseDeployArgs(["--env=staging"]).env).toBe("staging");
+  });
+
+  it("parses --name with space-separated value", () => {
+    expect(parseDeployArgs(["--name", "my-app"]).name).toBe("my-app");
+  });
+
+  it("parses --name=value form", () => {
+    expect(parseDeployArgs(["--name=my-app"]).name).toBe("my-app");
+  });
+
+  it("parses boolean flags", () => {
+    const parsed = parseDeployArgs(["--preview", "--skip-build", "--dry-run"]);
+    expect(parsed.preview).toBe(true);
+    expect(parsed.skipBuild).toBe(true);
+    expect(parsed.dryRun).toBe(true);
+  });
+
+  it("parses numeric TPR flags from string values", () => {
+    const parsed = parseDeployArgs([
+      "--experimental-tpr",
+      "--tpr-coverage", "95",
+      "--tpr-limit", "500",
+      "--tpr-window", "48",
     ]);
+    expect(parsed.experimentalTPR).toBe(true);
+    expect(parsed.tprCoverage).toBe(95);
+    expect(parsed.tprLimit).toBe(500);
+    expect(parsed.tprWindow).toBe(48);
+  });
+
+  it("trims whitespace from --env value", () => {
+    expect(parseDeployArgs(["--env", "  staging  "]).env).toBe("staging");
+  });
+
+  it("treats whitespace-only --env as undefined", () => {
+    expect(parseDeployArgs(["--env", "   "]).env).toBeUndefined();
+  });
+
+  it("throws on unknown flags (strict mode)", () => {
+    expect(() => parseDeployArgs(["--bogus"])).toThrow();
   });
 });
 

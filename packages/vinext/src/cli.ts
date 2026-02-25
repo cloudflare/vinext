@@ -18,7 +18,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
-import { deploy as runDeploy } from "./deploy.js";
+import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit } from "./init.js";
 
@@ -108,38 +108,6 @@ function parseArgs(args: string[]): ParsedArgs {
     }
   }
   return result;
-}
-
-/** Parse a numeric flag like --tpr-coverage 95 or --tpr-coverage=95. */
-function parseNumericFlag(args: string[], flag: string): number | undefined {
-  const idx = args.indexOf(flag);
-  if (idx !== -1 && args[idx + 1]) {
-    const val = parseInt(args[idx + 1], 10);
-    if (!isNaN(val)) return val;
-  }
-  const eq = args.find((a) => a.startsWith(`${flag}=`));
-  if (eq) {
-    const val = parseInt(eq.split("=")[1], 10);
-    if (!isNaN(val)) return val;
-  }
-  return undefined;
-}
-
-/** Parse a string flag like --name my-app or --name=my-app. */
-function parseStringFlag(args: string[], flag: string): string | undefined {
-  const idx = args.indexOf(flag);
-  const next = idx !== -1 ? args[idx + 1] : undefined;
-  if (next && !next.startsWith("-")) {
-    return next;
-  }
-
-  const eq = args.find((a) => a.startsWith(`${flag}=`));
-  if (eq) {
-    const value = eq.slice(flag.length + 1);
-    if (value) return value;
-  }
-
-  return undefined;
 }
 
 // ─── Auto-configuration ───────────────────────────────────────────────────────
@@ -349,38 +317,23 @@ async function lint() {
 }
 
 async function deployCommand() {
-  const parsed = parseArgs(rawArgs);
+  const parsed = parseDeployArgs(rawArgs);
   if (parsed.help) return printHelp("deploy");
 
   await loadVite();
   console.log(`\n  vinext deploy  (Vite ${getViteVersion()})\n`);
 
-  // Parse deploy-specific flags
-  const preview = rawArgs.includes("--preview");
-  const skipBuild = rawArgs.includes("--skip-build");
-  const dryRun = rawArgs.includes("--dry-run");
-  const experimentalTPR = rawArgs.includes("--experimental-tpr");
-
-  // Parse string flags
-  const name = parseStringFlag(rawArgs, "--name");
-  const env = parseStringFlag(rawArgs, "--env");
-
-  // Parse TPR flags
-  const tprCoverage = parseNumericFlag(rawArgs, "--tpr-coverage");
-  const tprLimit = parseNumericFlag(rawArgs, "--tpr-limit");
-  const tprWindow = parseNumericFlag(rawArgs, "--tpr-window");
-
   await runDeploy({
     root: process.cwd(),
-    preview,
-    env,
-    skipBuild,
-    dryRun,
-    name,
-    experimentalTPR,
-    tprCoverage,
-    tprLimit,
-    tprWindow,
+    preview: parsed.preview,
+    env: parsed.env,
+    skipBuild: parsed.skipBuild,
+    dryRun: parsed.dryRun,
+    name: parsed.name,
+    experimentalTPR: parsed.experimentalTPR,
+    tprCoverage: parsed.tprCoverage,
+    tprLimit: parsed.tprLimit,
+    tprWindow: parsed.tprWindow,
   });
 }
 
