@@ -213,7 +213,7 @@ import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
-${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
+${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(decodeURIComponent(new URL("./metadata-routes.js", import.meta.url).pathname).replace(/\\/g, "/"))};` : ""}
 import { _consumeRequestScopedCacheLife, _initRequestScopedCacheState } from "next/cache";
 import { runWithFetchCache } from "vinext/fetch-cache";
 import { clearPrivateCache as _clearPrivateCache } from "vinext/cache-runtime";

@@ -1959,6 +1959,27 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
     expect(code).toContain("__allowedOrigins = []");
   });
+
+  it("decodes metadata helper import paths for Windows directories with spaces", () => {
+    const code = generateRscEntry(
+      "/tmp/test/app",
+      minimalRoutes,
+      null,
+      [{
+        type: "sitemap",
+        isDynamic: true,
+        servedUrl: "/sitemap.xml",
+        contentType: "application/xml",
+        filePath: "/tmp/test/app/sitemap.ts",
+      }] as any,
+      null,
+      "",
+      false,
+    );
+    const match = code.match(/import \{ sitemapToXml, robotsToText, manifestToJson \} from "([^"]*metadata-routes\.js)";/);
+    expect(match).not.toBeNull();
+    expect(match?.[1]).not.toContain("%20");
+  });
 });
 
 describe("App Router middleware with NextRequest", () => {
