@@ -20,4 +20,4 @@ jobs:
           cache: pnpm
       - run: pnpm install
       - run: pnpm run build
-      - run: pnpm dlx pkg-pr-new publish './packages/vinext'
+      - run: pnpm dlx pkg-pr-new publish --pnpm './packages/vinext'
