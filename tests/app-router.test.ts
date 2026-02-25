@@ -2535,3 +2535,18 @@ describe("App Router external rewrite proxy credential stripping", () => {
     expect(capturedHeaders!["x-custom-safe"]).toBe("keep-me");
   });
 });
+
+describe("SSR entry react-dom/server.edge import", () => {
+  it("imports renderToStaticMarkup statically (no dual-import warning)", async () => {
+    const { generateSsrEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const code = generateSsrEntry();
+    // renderToStaticMarkup must be in the static import to avoid Rollup
+    // warnings about react-dom/server.edge being both statically and
+    // dynamically imported in the same module.
+    expect(code).toContain(
+      'import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge"'
+    );
+    // Must NOT have a dynamic import of react-dom/server.edge
+    expect(code).not.toContain('await import("react-dom/server.edge")');
+  });
+});

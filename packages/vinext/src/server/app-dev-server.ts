@@ -2209,7 +2209,7 @@ if (import.meta.hot) {
 export function generateSsrEntry(): string {
   return `
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
-import { renderToReadableStream } from "react-dom/server.edge";
+import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import { setNavigationContext } from "next/navigation";
 import { runWithNavigationContext as _runWithNavCtx } from "vinext/navigation-state";
 import { safeJsonStringify } from "vinext/html";
@@ -2414,7 +2414,7 @@ export async function handleSsr(rscStream, navContext, fontData) {
     const insertedElements = flushServerInsertedHTML();
 
     // Render the inserted elements to HTML strings
-    const { renderToStaticMarkup } = await import("react-dom/server.edge");
+    // renderToStaticMarkup is statically imported at the top of this module.
     const { createElement, Fragment } = await import("react");
     let insertedHTML = "";
     for (const el of insertedElements) {
