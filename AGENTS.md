@@ -6,9 +6,9 @@ Instructions for AI agents working on this codebase.
 
 ## Project Overview
 
-**vinext** is a Vite plugin that reimplements the Next.js API surface, with Cloudflare Workers as the primary deployment target. The goal: take any Next.js app and deploy it to Workers with one command.
+**vinext** is a Vite plugin that reimplements the Next.js API surface, with Cloudflare Workers and Netlify as deployment targets. The goal: take any Next.js app and deploy it to Workers or Netlify with one command.
 
-vinext reimplements the Next.js API surface using Vite, with Cloudflare Workers as the primary deployment target. The goal is to let developers keep their existing Next.js code and deploy it to Workers.
+vinext reimplements the Next.js API surface using Vite, with Cloudflare Workers and Netlify as deployment targets. The goal is to let developers keep their existing Next.js code and deploy it to Workers or Netlify.
 
 ---
 
@@ -33,7 +33,8 @@ packages/vinext/src/
   shims/                # One file per next/* module
   routing/              # File-system route scanners
   server/               # SSR handlers, ISR, middleware
-  cloudflare/           # KV cache handler
+  cloudflare/           # KV cache handler (Cloudflare Workers)
+  netlify/              # Blob cache handler (Netlify)
 
 tests/
   *.test.ts             # Vitest tests
@@ -91,6 +92,8 @@ When fixing a bug in any of these files, check whether the same bug exists in th
 - `tests/fixtures/app-basic/` — App Router test app
 - `examples/app-router-cloudflare/` — App Router on Workers
 - `examples/pages-router-cloudflare/` — Pages Router on Workers
+- `examples/app-router-netlify/` — App Router on Netlify
+- `examples/pages-router-netlify/` — Pages Router on Netlify
 
 Add new test pages to fixtures, not to examples. Examples are for user-facing demos.
 
@@ -100,8 +103,10 @@ The `examples/` directory contains real-world Next.js apps ported to run on vine
 
 | Example | Type | URL |
 |---------|------|-----|
-| `app-router-cloudflare` | App Router basics | `app-router-cloudflare.vinext.workers.dev` |
-| `pages-router-cloudflare` | Pages Router basics | `pages-router-cloudflare.vinext.workers.dev` |
+| `app-router-cloudflare` | App Router basics (Cloudflare) | `app-router-cloudflare.vinext.workers.dev` |
+| `pages-router-cloudflare` | Pages Router basics (Cloudflare) | `pages-router-cloudflare.vinext.workers.dev` |
+| `app-router-netlify` | App Router basics (Netlify) | — |
+| `pages-router-netlify` | Pages Router basics (Netlify) | — |
 | `app-router-playground` | Next.js playground (MDX, Tailwind) | `app-router-playground.vinext.workers.dev` |
 | `realworld-api-rest` | RealWorld spec (Pages Router) | `realworld-api-rest.vinext.workers.dev` |
 | `nextra-docs-template` | Nextra docs site (MDX, App Router) | `nextra-docs-template.vinext.workers.dev` |
@@ -268,6 +273,14 @@ Object.assign(Promise.resolve(params), params)
 ```
 
 This works both as `await params` (new style) and `params.id` (old style). The same pattern applies to `generateMetadata` and `generateViewport`.
+
+### Netlify Integration
+
+Netlify support uses `@netlify/vite-plugin` for dev-time emulation of the Netlify environment and platform, while vinext handles build output itself via the `vinext:netlify-build` plugin (similar to `vinext:cloudflare-build`).
+
+- **Cache backend**: `vinext/netlify` exports `BlobCacheHandler` which uses `@netlify/blobs` (deploy scoped)
+- **Build output**: `vinext:netlify-build` generates `.netlify/v1/functions/server.mjs` (the Netlify Function wrapper) and injects `__VINEXT_SSR_MANIFEST__` / `__VINEXT_LAZY_CHUNKS__` into the server entry
+- **Static assets**: Published from `dist/client/` with a `_headers` file for immutable caching
 
 ### ISR Architecture
 

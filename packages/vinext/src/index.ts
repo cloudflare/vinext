@@ -569,6 +569,7 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
   let hasCloudflarePlugin = false;
+  let hasNetlifyPlugin = false;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
@@ -1831,6 +1832,11 @@ hydrate();
             p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")
           ),
         );
+        hasNetlifyPlugin = pluginsFlat.some(
+          (p: any) => p && typeof p === "object" && typeof p.name === "string" && (
+            p.name === "vite-plugin-netlify" || p.name.startsWith("vite-plugin-netlify:")
+          ),
+        );
 
         // Resolve PostCSS string plugin names that Vite can't handle.
         // Next.js projects commonly use array-form plugins like
@@ -1940,8 +1946,10 @@ hydrate();
           server: { cors: { preflightContinue: true } },
           // Externalize React packages from SSR transform — they are CJS and
           // must be loaded natively by Node, not through Vite's ESM evaluator.
-          // Skip when targeting Cloudflare Workers (they bundle everything).
-          ...(hasCloudflarePlugin ? {} : {
+          // Skip when targeting Cloudflare Workers or Netlify (they bundle
+          // everything — externalizing React would cause dev/prod mismatches
+          // at runtime since NODE_ENV may not be set).
+          ...(hasCloudflarePlugin || hasNetlifyPlugin ? {} : {
             ssr: {
               external: ["react", "react-dom", "react-dom/server"],
             },
@@ -2042,14 +2050,14 @@ hydrate();
                 include: ["react", "react-dom", "react-dom/client"],
               },
               build: {
-                // When targeting Cloudflare Workers, enable manifest generation
-                // so the vinext:cloudflare-build closeBundle hook can read the
-                // client build manifest, compute lazy chunks (only reachable
-                // via dynamic imports), and inject __VINEXT_LAZY_CHUNKS__ into
-                // the worker entry. Without this, all chunks are modulepreloaded
-                // on every page — defeating code-splitting for React.lazy() and
+                // When targeting Cloudflare Workers or Netlify, enable manifest
+                // generation so the closeBundle hook can read the client build
+                // manifest, compute lazy chunks (only reachable via dynamic
+                // imports), and inject __VINEXT_LAZY_CHUNKS__ into the server
+                // entry. Without this, all chunks are modulepreloaded on every
+                // page — defeating code-splitting for React.lazy() and
                 // next/dynamic boundaries.
-                ...(hasCloudflarePlugin ? { manifest: true } : {}),
+                ...(hasCloudflarePlugin || hasNetlifyPlugin ? { manifest: true } : {}),
                 rollupOptions: {
                   input: { index: VIRTUAL_APP_BROWSER_ENTRY },
                   output: clientOutputConfig,
@@ -2058,11 +2066,11 @@ hydrate();
               },
             },
           };
-        } else if (hasCloudflarePlugin) {
-          // Pages Router on Cloudflare Workers: add a client environment
-          // so the multi-environment build produces client JS bundles
-          // alongside the worker. Without this, only the worker is built
-          // and there's no client-side hydration.
+        } else if (hasCloudflarePlugin || hasNetlifyPlugin) {
+          // Pages Router on Cloudflare Workers / Netlify: add a client
+          // environment so the multi-environment build produces client JS
+          // bundles alongside the server entry. Without this, only the
+          // server is built and there's no client-side hydration.
           viteConfig.environments = {
             client: {
               build: {
@@ -3198,6 +3206,199 @@ hydrate();
               "",
             ].join("\n");
             fs.writeFileSync(headersPath, headersContent);
+          }
+        },
+      },
+    },
+    // Netlify production build integration:
+    // After the client build completes, reads the client build manifest,
+    // injects globals into the server entry, and generates the Netlify
+    // Function wrapper at .netlify/v1/functions/server.mjs.
+    //
+    // Pages Router: injects __VINEXT_CLIENT_ENTRY__, __VINEXT_SSR_MANIFEST__,
+    //   and __VINEXT_LAZY_CHUNKS__ into the server entry.
+    // App Router: the RSC plugin handles __VINEXT_CLIENT_ENTRY__ via
+    //   loadBootstrapScriptContent(), but we still inject __VINEXT_LAZY_CHUNKS__
+    //   and __VINEXT_SSR_MANIFEST__ into dist/server/index.js.
+    // Both: generates _headers file for immutable asset caching and the
+    //   Netlify Function entry point.
+    {
+      name: "vinext:netlify-build",
+      apply: "build",
+      enforce: "post",
+      closeBundle: {
+        sequential: true,
+        order: "post",
+        async handler() {
+          const envName = (this as any).environment?.name as string | undefined;
+          if (!envName || !hasNetlifyPlugin || hasCloudflarePlugin) return;
+
+          // App Router: all environments are built together by the RSC
+          // plugin, so everything runs in a single "client" closeBundle.
+          // Pages Router: two separate `vite build` commands —
+          //   1. client build (envName="client"): generate wrapper, _headers
+          //   2. SSR build (envName="ssr"): patch server entry with globals
+          if (hasAppDir && envName !== "client") return;
+          if (!hasAppDir && envName !== "client" && envName !== "ssr") return;
+
+          const envConfig = (this as any).environment?.config;
+          if (!envConfig) return;
+          const buildRoot = envConfig.root ?? process.cwd();
+          const distDir = path.resolve(buildRoot, "dist");
+          if (!fs.existsSync(distDir)) return;
+
+          const clientDir = path.resolve(buildRoot, "dist", "client");
+
+          // Read build manifest and compute lazy chunks (only reachable via
+          // dynamic imports). For Pages Router, the manifest is in dist/
+          // (not dist/client/).
+          let lazyChunksData: string[] | null = null;
+          let clientEntryFile: string | null = null;
+          const manifestDir = hasAppDir ? clientDir : distDir;
+          const buildManifestPath = path.join(manifestDir, ".vite", "manifest.json");
+          if (fs.existsSync(buildManifestPath)) {
+            try {
+              const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
+              for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
+                if (value && value.isEntry && value.file) {
+                  clientEntryFile = value.file;
+                  break;
+                }
+              }
+              const lazy = computeLazyChunks(buildManifest);
+              if (lazy.length > 0) lazyChunksData = lazy;
+            } catch { /* ignore parse errors */ }
+          }
+
+          // Read SSR manifest for per-page CSS/JS injection
+          let ssrManifestData: Record<string, string[]> | null = null;
+          const ssrManifestPath = path.join(manifestDir, ".vite", "ssr-manifest.json");
+          if (fs.existsSync(ssrManifestPath)) {
+            try {
+              ssrManifestData = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8"));
+            } catch { /* ignore parse errors */ }
+          }
+
+          if (hasAppDir) {
+            // App Router: inject __VINEXT_LAZY_CHUNKS__ and
+            // __VINEXT_SSR_MANIFEST__ into dist/server/index.js.
+            const serverEntry = path.resolve(distDir, "server", "index.js");
+            if (fs.existsSync(serverEntry)) {
+              let code = fs.readFileSync(serverEntry, "utf-8");
+              const globals: string[] = [];
+              if (ssrManifestData) {
+                globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+              }
+              if (lazyChunksData) {
+                globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+              }
+              code = globals.join("\n") + "\n" + code;
+              fs.writeFileSync(serverEntry, code);
+            }
+
+            // Generate Netlify Function wrapper.
+            // Use dynamic import() so the NODE_ENV assignment runs before
+            // React is loaded (static imports are hoisted above statements).
+            const netlifyFuncDir = path.resolve(buildRoot, ".netlify", "v1", "functions");
+            fs.mkdirSync(netlifyFuncDir, { recursive: true });
+            const wrapperCode = [
+              `// Ensure React resolves to its production bundle (matches Next.js behavior).`,
+              `process.env.NODE_ENV ??= "production";`,
+              ``,
+              `const { default: handler } = await import("../../../dist/server/index.js");`,
+              ``,
+              `export default async (request) => {`,
+              `  const response = await handler(request);`,
+              `  return response ?? new Response("Not Found", { status: 404 });`,
+              `};`,
+              ``,
+              `export const config = { path: "/*", preferStatic: true };`,
+              ``,
+            ].join("\n");
+            fs.writeFileSync(path.join(netlifyFuncDir, "server.mjs"), wrapperCode);
+          } else if (envName === "client") {
+            // Pages Router client build: generate function wrapper and
+            // _headers. The server entry doesn't exist yet (SSR build
+            // hasn't run), so patching happens in the SSR closeBundle.
+            const netlifyFuncDir = path.resolve(buildRoot, ".netlify", "v1", "functions");
+            fs.mkdirSync(netlifyFuncDir, { recursive: true });
+            const wrapperCode = [
+              `// Ensure React resolves to its production bundle (matches Next.js behavior).`,
+              `process.env.NODE_ENV ??= "production";`,
+              ``,
+              `const { renderPage, handleApiRoute } = await import("../../../dist/server/_virtual_vinext-server-entry.js");`,
+              ``,
+              `export default async (request) => {`,
+              `  const url = new URL(request.url);`,
+              `  const pathname = url.pathname;`,
+              ``,
+              `  // Block protocol-relative URL open redirect attacks (//evil.com/).`,
+              `  if (pathname.startsWith("//")) {`,
+              `    return new Response("404 Not Found", { status: 404 });`,
+              `  }`,
+              ``,
+              `  const urlWithQuery = pathname + url.search;`,
+              ``,
+              `  if (pathname.startsWith("/api/") || pathname === "/api") {`,
+              `    return handleApiRoute(request, urlWithQuery);`,
+              `  }`,
+              ``,
+              `  return renderPage(request, urlWithQuery, null);`,
+              `};`,
+              ``,
+              `export const config = { path: "/*", preferStatic: true };`,
+              ``,
+            ].join("\n");
+            fs.writeFileSync(path.join(netlifyFuncDir, "server.mjs"), wrapperCode);
+          } else if (envName === "ssr") {
+            // Pages Router SSR build: patch the server entry with globals.
+            const serverEntry = path.resolve(distDir, "server", "_virtual_vinext-server-entry.js");
+
+            // Fallback: scan dist/assets/ for the client entry chunk.
+            if (!clientEntryFile) {
+              const assetsDir = path.join(distDir, "assets");
+              if (fs.existsSync(assetsDir)) {
+                const files = fs.readdirSync(assetsDir);
+                const entry = files.find((f: string) =>
+                  (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) && f.endsWith(".js"));
+                if (entry) clientEntryFile = "assets/" + entry;
+              }
+            }
+
+            if (fs.existsSync(serverEntry)) {
+              let code = fs.readFileSync(serverEntry, "utf-8");
+              const globals: string[] = [];
+              if (clientEntryFile) {
+                globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`);
+              }
+              if (ssrManifestData) {
+                globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+              }
+              if (lazyChunksData) {
+                globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+              }
+              code = globals.join("\n") + "\n" + code;
+              fs.writeFileSync(serverEntry, code);
+            }
+          }
+
+          // Generate _headers file for Netlify static asset caching.
+          // For App Router the publish dir is dist/client/, for Pages
+          // Router it's dist/ (no separate client environment).
+          // Only generate during the client build (not the SSR build).
+          if (envName === "client") {
+            const publishDir = hasAppDir ? clientDir : distDir;
+            const headersPath = path.join(publishDir, "_headers");
+            if (!fs.existsSync(headersPath)) {
+              const assetsDir = envConfig.build?.assetsDir ?? "assets";
+              const headersContent = [
+                "# Cache content-hashed assets immutably (generated by vinext)",
+                `/${assetsDir}/*`,
+                "  Cache-Control: public, max-age=31536000, immutable",
+                "",
+              ].join("\n");
+              fs.writeFileSync(headersPath, headersContent);
+            }
           }
         },
       },
