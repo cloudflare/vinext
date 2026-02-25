@@ -2294,7 +2294,7 @@ hydrate();
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
-          server.middlewares.use(async (req: any, res: any, next: any) => {
+          server.middlewares.use(async (req, res, next) => {
             try {
               let url: string = req.url ?? "/";
 
