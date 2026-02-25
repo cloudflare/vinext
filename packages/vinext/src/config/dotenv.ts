@@ -33,6 +33,23 @@ export function getDotenvFiles(mode: VinextEnvMode): string[] {
  * process.env > .env.<mode>.local > .env.local > .env.<mode> > .env.
  *
  * This mutates processEnv (defaults to process.env).
+ *
+ * ## Interaction with Vite's own .env loading
+ *
+ * Vite also loads .env files internally during createServer()/build(). That's
+ * fine — the two systems serve different purposes and don't conflict:
+ *
+ * - **vinext** populates `process.env` so that server-side code (SSR, API
+ *   routes, Server Components) can read env vars at runtime, and so the Vite
+ *   plugin's `config()` hook can scan `process.env` for `NEXT_PUBLIC_*` vars
+ *   to inline via `define`.
+ *
+ * - **Vite** loads .env files to populate `import.meta.env.VITE_*` for its
+ *   own client exposure mechanism (which Next.js apps don't use).
+ *
+ * Because we load first and neither system overwrites existing keys, Vite's
+ * pass is effectively a no-op for overlapping keys. For `start` and `deploy`
+ * commands (which don't go through Vite at all), this is the only loading.
  */
 export function loadDotenv({
   root,
@@ -47,7 +64,7 @@ export function loadDotenv({
     if (!fs.existsSync(filePath)) continue;
 
     const fileContent = fs.readFileSync(filePath, "utf-8");
-    const parsed = parseEnv(fileContent);
+    const parsed = parseEnv(fileContent) as Record<string, string>;
     const expanded = expandEnv(parsed, processEnv);
 
     for (const [key, value] of Object.entries(expanded)) {
@@ -91,12 +108,15 @@ function expandEnv(
     if (raw === undefined) return "";
 
     resolving.add(key);
-    const value = raw.replace(ENV_REF_RE, (match, escaped, braced, bare) => {
+    let value = raw.replace(ENV_REF_RE, (match, escaped, braced, bare) => {
       if (escaped) return match.slice(1);
 
       const refKey = (braced || bare) as string;
       return resolveValue(refKey);
     });
+    // Strip remaining \$ escapes not caught by the regex (e.g. \$100 where
+    // what follows $ isn't a valid variable name).
+    value = value.replace(/\\\$/g, "$");
     resolving.delete(key);
 
     expanded[key] = value;
