@@ -3161,22 +3161,25 @@ hydrate();
     // caches them locally in .vinext/fonts/, and rewrites font constructor
     // calls to pass _selfHostedCSS with @font-face rules pointing at local assets.
     // In dev mode, this plugin is a no-op (CDN loading is used instead).
-    {
+    (() => {
+      // Vite does not bind `this` to the plugin object when calling hooks, so
+      // plugin state must be held in closure variables rather than as properties.
+      let isBuild = false;
+      const fontCache = new Map<string, string>(); // url -> local @font-face CSS
+      let cacheDir = "";
+
+      return {
       name: "vinext:google-fonts",
       enforce: "pre",
 
-      _isBuild: false,
-      _fontCache: new Map<string, string>(), // url -> local @font-face CSS
-      _cacheDir: "",
-
       configResolved(config) {
-        (this as any)._isBuild = config.command === "build";
-        (this as any)._cacheDir = path.join(config.root, ".vinext", "fonts");
+        isBuild = config.command === "build";
+        cacheDir = path.join(config.root, ".vinext", "fonts");
       },
 
       transform: {
         // Hook filter: only invoke JS when code contains 'next/font/google'.
-        // The _isBuild runtime check can't be expressed as a filter, but this
+        // The isBuild runtime check can't be expressed as a filter, but this
         // still eliminates nearly all Rust-to-JS calls since very few files
         // import from next/font/google.
         filter: {
@@ -3187,7 +3190,7 @@ hydrate();
           code: "next/font/google",
         },
         async handler(code, id) {
-          if (!(this as any)._isBuild) return null;
+          if (!isBuild) return null;
           // Defensive guard — duplicates filter logic
           if (id.includes("node_modules")) return null;
           if (id.startsWith("\0")) return null;
@@ -3210,9 +3213,6 @@ hydrate();
 
           const s = new MagicString(code);
           let hasChanges = false;
-
-          const cacheDir = (this as any)._cacheDir as string;
-          const fontCache = (this as any)._fontCache as Map<string, string>;
 
           let match;
           while ((match = fontCallRe.exec(code)) !== null) {
@@ -3296,7 +3296,8 @@ hydrate();
           };
         },
       },
-    } as Plugin & { _isBuild: boolean; _fontCache: Map<string, string>; _cacheDir: string },
+      } satisfies Plugin;
+    })(),
     // Local font path resolution:
     // When a source file calls localFont({ src: "./font.woff2" }) or
     // localFont({ src: [{ path: "./font.woff2" }] }), the relative paths
