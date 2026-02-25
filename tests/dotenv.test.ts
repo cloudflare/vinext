@@ -224,6 +224,32 @@ describe("loadDotenv", () => {
     expect(result.loadedFiles).toEqual([".env"]);
   });
 
+  it("expands variables across files (lower-priority file references higher-priority)", () => {
+    // DB_HOST is defined in .env.development.local (highest file priority)
+    // DB_URL in .env references it — should resolve via processEnv accumulation
+    writeFile(".env.development.local", "DB_HOST=localhost\n");
+    writeFile(".env", "DB_URL=postgres://$DB_HOST/mydb\n");
+
+    const env: NodeJS.ProcessEnv = {};
+    loadDotenv({ root: tmpDir, mode: "development", processEnv: env });
+
+    expect(env.DB_HOST).toBe("localhost");
+    expect(env.DB_URL).toBe("postgres://localhost/mydb");
+  });
+
+  it("handles multi-line quoted values", () => {
+    writeFile(
+      ".env",
+      'MULTI="line1\nline2\nline3"\nSINGLE=plain\n',
+    );
+
+    const env: NodeJS.ProcessEnv = {};
+    loadDotenv({ root: tmpDir, mode: "development", processEnv: env });
+
+    expect(env.MULTI).toBe("line1\nline2\nline3");
+    expect(env.SINGLE).toBe("plain");
+  });
+
   it("returns empty result when no .env files exist", () => {
     const env: NodeJS.ProcessEnv = {};
     const result = loadDotenv({
