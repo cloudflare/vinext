@@ -2934,10 +2934,10 @@ hydrate();
             // leaf components with no {children} prop and can be cached directly.
             const isLayoutOrTemplate = /\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id);
 
-            const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
+            const runtimeModuleUrl = pathToFileURL(path.join(shimsDir, "cache-runtime.js")).href;
             const result = transformWrapExport(code, ast as any, {
               runtime: (value: any, name: any) =>
-                `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
+                `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
               rejectNonAsyncFunction: false,
               filter: (name: any, meta: any) => {
                 // Skip non-functions (constants, types, etc.)
@@ -2975,7 +2975,7 @@ hydrate();
           // (e.g., async function getData() { "use cache"; ... })
           const hasInlineCache = code.includes("use cache") && !cacheDirective;
           if (hasInlineCache) {
-            const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
+            const runtimeModuleUrl2 = pathToFileURL(path.join(shimsDir, "cache-runtime.js")).href;
 
             try {
               const result = transformHoistInlineDirective(code, ast as any, {
@@ -2983,7 +2983,7 @@ hydrate();
                 runtime: (value: any, name: any, meta: any) => {
                   const directiveMatch = meta.directiveMatch[0];
                   const variant = directiveMatch === "use cache" ? "" : directiveMatch.replace("use cache:", "").replace("use cache: ", "").trim();
-                  return `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
+                  return `(await import(${JSON.stringify(runtimeModuleUrl2)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
                 },
                 rejectNonAsyncFunction: false,
               });
