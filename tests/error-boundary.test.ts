@@ -9,6 +9,10 @@
  * to distinguish between notFound(), redirect(), forbidden(), and
  * genuine application errors.
  */
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { createServer } from "vite";
 import { describe, it, expect, beforeAll, vi } from "vitest";
 
 // Mock next/navigation since it's a virtual module provided by the vinext plugin.
@@ -133,5 +137,58 @@ describe("ErrorBoundary digest classification (actual class)", () => {
     const e = Object.assign(new Error(), { digest: "" });
     const state = ErrorBoundary.getDerivedStateFromError(e);
     expect(state).toEqual({ error: e });
+  });
+});
+
+describe("ErrorBoundary module runtime compatibility", () => {
+  it("loads when react/jsx-runtime only exposes a default export", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-error-boundary-"));
+    const jsxRuntimePath = path.join(tmpDir, "jsx-runtime-default-only.mjs");
+    const nextNavigationModuleId = "\0vinext-test-next-navigation";
+    const repoRoot = path.resolve(import.meta.dirname, "..");
+    const shimPath = path.resolve(
+      import.meta.dirname,
+      "../packages/vinext/src/shims/error-boundary.tsx",
+    );
+
+    await fs.writeFile(jsxRuntimePath, "export default {};\n");
+
+    let server: Awaited<ReturnType<typeof createServer>> | undefined;
+    try {
+      server = await createServer({
+        root: repoRoot,
+        configFile: false,
+        server: { port: 0 },
+        logLevel: "silent",
+        plugins: [
+          {
+            name: "vinext:error-boundary-runtime-compat-test",
+            enforce: "pre",
+            resolveId(id) {
+              if (id === "react/jsx-runtime") {
+                return jsxRuntimePath;
+              }
+              if (id === "next/navigation") {
+                return nextNavigationModuleId;
+              }
+              return null;
+            },
+            load(id) {
+              if (id === nextNavigationModuleId) {
+                return "export const usePathname = () => '/';";
+              }
+              return null;
+            },
+          },
+        ],
+      });
+
+      const mod = await server.ssrLoadModule(shimPath);
+      expect(typeof mod.ErrorBoundary).toBe("function");
+      expect(typeof mod.NotFoundBoundary).toBe("function");
+    } finally {
+      await server?.close();
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });

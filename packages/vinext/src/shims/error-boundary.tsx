@@ -51,9 +51,10 @@ export class ErrorBoundary extends React.Component<
   render() {
     if (this.state.error) {
       const FallbackComponent = this.props.fallback;
-      return (
-        <FallbackComponent error={this.state.error} reset={this.reset} />
-      );
+      return React.createElement(FallbackComponent, {
+        error: this.state.error,
+        reset: this.reset,
+      });
     }
     return this.props.children;
   }
@@ -134,9 +135,9 @@ class NotFoundBoundaryInner extends React.Component<
  */
 export function NotFoundBoundary({ fallback, children }: NotFoundBoundaryProps) {
   const pathname = usePathname();
-  return (
-    <NotFoundBoundaryInner pathname={pathname} fallback={fallback}>
-      {children}
-    </NotFoundBoundaryInner>
+  return React.createElement(
+    NotFoundBoundaryInner,
+    { pathname, fallback },
+    children,
   );
 }
