@@ -56,8 +56,12 @@ jobs:
       - run: pnpm test
 
   create-next-app:
-    name: create-next-app smoke test
-    runs-on: ubuntu-latest
+    name: create-next-app (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -69,32 +73,58 @@ jobs:
       - name: Build plugin
         run: pnpm run build
       - name: Pack vinext for local install
-        run: cd packages/vinext && npm pack --pack-destination /tmp
+        run: npm pack --pack-destination "${{ runner.temp }}"
+        working-directory: packages/vinext
       - name: Scaffold a fresh create-next-app project
-        run: npx create-next-app@latest /tmp/cna-test --yes
+        run: npx create-next-app@latest "${{ runner.temp }}/cna-test" --yes
       - name: Install vinext from local tarball
-        working-directory: /tmp/cna-test
-        run: npm install /tmp/vinext-*.tgz
+        working-directory: ${{ runner.temp }}/cna-test
+        shell: bash
+        run: npm install "${{ runner.temp }}"/vinext-*.tgz
       - name: Run vinext init
-        working-directory: /tmp/cna-test
+        working-directory: ${{ runner.temp }}/cna-test
         run: npx vinext init --skip-check
       - name: Start dev server and verify HTTP 200
-        working-directory: /tmp/cna-test
+        working-directory: ${{ runner.temp }}/cna-test
+        shell: node {0}
         run: |
-          npx vite dev --port 3099 &
-          SERVER_PID=$!
-          # Wait for server to be ready
-          for i in $(seq 1 30); do
-            if curl -s -o /dev/null -w '%{http_code}' http://localhost:3099/ 2>/dev/null | grep -q 200; then
-              echo "Server responded with HTTP 200"
-              kill $SERVER_PID 2>/dev/null || true
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Server did not respond with HTTP 200 within 30 seconds"
-          kill $SERVER_PID 2>/dev/null || true
-          exit 1
+          const { spawn } = require("child_process");
+          const http = require("http");
+
+          const isWin = process.platform === "win32";
+          const server = spawn("npx", ["vite", "dev", "--port", "3099"], {
+            cwd: process.cwd(),
+            stdio: "inherit",
+            shell: true,
+          });
+
+          let attempts = 0;
+          const maxAttempts = 30;
+          const interval = setInterval(() => {
+            attempts++;
+            http.get("http://localhost:3099/", (res) => {
+              if (res.statusCode === 200) {
+                console.log(`Server responded with HTTP 200 (attempt ${attempts})`);
+                clearInterval(interval);
+                if (isWin) {
+                  spawn("taskkill", ["/pid", String(server.pid), "/T", "/F"], { stdio: "ignore" });
+                } else {
+                  server.kill("SIGTERM");
+                }
+                process.exit(0);
+              }
+            }).on("error", () => {});
+            if (attempts >= maxAttempts) {
+              console.error("Server did not respond with HTTP 200 within 30 seconds");
+              clearInterval(interval);
+              if (isWin) {
+                spawn("taskkill", ["/pid", String(server.pid), "/T", "/F"], { stdio: "ignore" });
+              } else {
+                server.kill("SIGTERM");
+              }
+              process.exit(1);
+            }
+          }, 1000);
 
   e2e:
     name: E2E (${{ matrix.project }})
