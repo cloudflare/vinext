@@ -1,5 +1,5 @@
 import type { Plugin, ViteDevServer } from "vite";
-import { parseAst } from "vite";
+import { defineConfig, parseAst } from "vite";
 import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, patternToNextFormat as pagesPatternToNextFormat, type Route } from "./routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
@@ -1886,7 +1886,7 @@ hydrate();
         // environments where it can cause asset resolution issues.
         const isMultiEnv = hasAppDir || hasCloudflarePlugin;
 
-        const viteConfig: Record<string, any> = {
+        const viteConfig = defineConfig({
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           build: {
@@ -1899,7 +1899,7 @@ hydrate();
               // warning handling is not lost.
               onwarn: (() => {
                 const userOnwarn = config.build?.rollupOptions?.onwarn;
-                return (warning: any, defaultHandler: any) => {
+                return (warning, defaultHandler) => {
                   if (
                     warning.code === "MODULE_LEVEL_DIRECTIVE" &&
                     (warning.message?.includes('"use client"') ||
@@ -1977,7 +1977,7 @@ hydrate();
           ...(nextConfig.basePath ? { base: nextConfig.basePath + "/" } : {}),
           // Inject resolved PostCSS plugins if string names were found
           ...(postcssOverride ? { css: { postcss: postcssOverride } } : {}),
-        };
+        });
 
         // If app/ directory exists, configure RSC environments
         if (hasAppDir) {
