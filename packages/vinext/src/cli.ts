@@ -16,6 +16,7 @@
 import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
 import path from "node:path";
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
@@ -60,7 +61,10 @@ async function loadVite(): Promise<ViteModule> {
     vitePath = "vite";
   }
 
-  const vite = (await import(/* @vite-ignore */ vitePath)) as ViteModule;
+  // On Windows, absolute paths must be file:// URLs for ESM import().
+  // The fallback ("vite") is a bare specifier and works as-is.
+  const viteUrl = vitePath === "vite" ? vitePath : pathToFileURL(vitePath).href;
+  const vite = (await import(/* @vite-ignore */ viteUrl)) as ViteModule;
   _viteModule = vite;
   return vite;
 }
