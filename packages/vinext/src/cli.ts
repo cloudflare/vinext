@@ -76,7 +76,9 @@ function getViteVersion(): string {
   return _viteModule?.version ?? "unknown";
 }
 
-const VERSION = "0.0.1";
+const VERSION = JSON.parse(
+  fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
+).version as string;
 
 // ─── CLI Argument Parsing ──────────────────────────────────────────────────────
 
