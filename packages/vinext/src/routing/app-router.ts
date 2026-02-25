@@ -13,9 +13,9 @@
  * - Error: app/error.tsx -> ErrorBoundary
  * - Not Found: app/not-found.tsx
  */
-import { glob } from "glob";
 import path from "node:path";
 import fs from "node:fs";
+import { glob } from "node:fs/promises";
 
 export interface InterceptingRoute {
   /** The interception convention: "." | ".." | "../.." | "..." */
@@ -120,14 +120,16 @@ export async function appRouter(appDir: string): Promise<AppRoute[]> {
 
   // Find all page.tsx and route.ts files, excluding @slot directories
   // (slot pages are not standalone routes — they're rendered as props of their parent layout)
-  const allPageFiles = await glob("**/page.{tsx,ts,jsx,js}", { cwd: appDir });
-  const pageFiles = allPageFiles.filter(
-    (f) => !f.split(path.sep).some((s) => s.startsWith("@")),
-  );
-  const allRouteFiles = await glob("**/route.{tsx,ts,jsx,js}", { cwd: appDir });
-  const routeFiles = allRouteFiles.filter(
-    (f) => !f.split(path.sep).some((s) => s.startsWith("@")),
-  );
+  const hasSlotSegment = (name: string) =>
+    name.split(/[\\/]/).some((segment) => segment.startsWith("@"));
+  const pageFiles: string[] = [];
+  for await (const file of glob("**/page.{tsx,ts,jsx,js}", { cwd: appDir, exclude: hasSlotSegment })) {
+    pageFiles.push(file);
+  }
+  const routeFiles: string[] = [];
+  for await (const file of glob("**/route.{tsx,ts,jsx,js}", { cwd: appDir, exclude: hasSlotSegment })) {
+    routeFiles.push(file);
+  }
 
   const routes: AppRoute[] = [];
 
@@ -435,8 +437,14 @@ function fileToAppRoute(
 
   return {
     pattern: pattern === "/" ? "/" : pattern,
-    pagePath: type === "page" ? path.join(appDir, file) : null,
-    routePath: type === "route" ? path.join(appDir, file) : null,
+    pagePath:
+      type === "page"
+        ? path.join(appDir, file).replaceAll("\\", "/")
+        : null,
+    routePath:
+      type === "route"
+        ? path.join(appDir, file).replaceAll("\\", "/")
+        : null,
     layouts,
     templates,
     parallelSlots,

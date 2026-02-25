@@ -1,4 +1,4 @@
-import { glob } from "glob";
+import { glob } from "node:fs/promises";
 import path from "node:path";
 
 export interface Route {
@@ -49,10 +49,11 @@ export async function pagesRouter(pagesDir: string): Promise<Route[]> {
 }
 
 async function scanPageRoutes(pagesDir: string): Promise<Route[]> {
-  const files = await glob("**/*.{tsx,ts,jsx,js}", {
-    cwd: pagesDir,
-    ignore: ["api/**", "_*"],
-  });
+  const files: string[] = [];
+  const excludePrivate = (name: string) => name === "api" || name.startsWith("_");
+  for await (const file of glob("**/*.{tsx,ts,jsx,js}", { cwd: pagesDir, exclude: excludePrivate })) {
+    files.push(file);
+  }
 
   const routes: Route[] = [];
 
@@ -202,9 +203,15 @@ export async function apiRouter(pagesDir: string): Promise<Route[]> {
 
 async function scanApiRoutes(pagesDir: string): Promise<Route[]> {
   const apiDir = path.join(pagesDir, "api");
-  const files = await glob("**/*.{ts,tsx,js,jsx}", {
-    cwd: apiDir,
-  }).catch(() => [] as string[]);
+  let files: string[];
+  try {
+    files = [];
+    for await (const file of glob("**/*.{ts,tsx,js,jsx}", { cwd: apiDir })) {
+      files.push(file);
+    }
+  } catch {
+    files = [];
+  }
 
   const routes: Route[] = [];
 
