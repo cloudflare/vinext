@@ -3073,11 +3073,11 @@ hydrate();
         sequential: true,
         order: "post",
         async handler() {
-          const envName = (this as any).environment?.name as string | undefined;
+          const envName = this.environment?.name
           if (!envName || !hasCloudflarePlugin) return;
           if (envName !== "client") return;
 
-          const envConfig = (this as any).environment?.config;
+          const envConfig = this.environment?.config;
           if (!envConfig) return;
           const buildRoot = envConfig.root ?? process.cwd();
           const distDir = path.resolve(buildRoot, "dist");
