@@ -2907,7 +2907,7 @@ hydrate();
               "Run: npm install -D @vitejs/plugin-rsc",
             );
           }
-          const { transformWrapExport, transformHoistInlineDirective } = await import(resolvedRscTransformsPath);
+          const { transformWrapExport, transformHoistInlineDirective } = await import(pathToFileURL(resolvedRscTransformsPath));
           const ast = parseAst(code);
 
           // Check for file-level "use cache" directive
