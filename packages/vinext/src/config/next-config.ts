@@ -295,7 +295,7 @@ export async function resolveNextConfig(
 
   const output = config.output ?? "";
   if (output && output !== "export" && output !== "standalone") {
-    console.warn(`[vinext] Unknown output mode "${output}", ignoring`);
+    console.warn(`[vinext] Unknown output mode "${output as string}", ignoring`);
   }
 
   // Parse i18n config

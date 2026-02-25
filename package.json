@@ -7,7 +7,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsgo --noEmit",
-    "lint": "oxlint --deny-warnings",
+    "lint": "oxlint --deny-warnings --type-aware",
     "test:e2e": "playwright test"
   },
   "devDependencies": {
@@ -19,6 +19,7 @@
     "@vitejs/plugin-rsc": "^0.5.19",
     "image-size": "2.0.2",
     "oxlint": "^1.47.0",
+    "oxlint-tsgolint": "^0.15.0",
     "playwright": "^1.52.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

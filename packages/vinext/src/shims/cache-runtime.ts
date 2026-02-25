@@ -148,7 +148,8 @@ export async function replyToCacheKey(reply: string | FormData): Promise<string>
   // Collect entries in stable order (sorted by name, then by value for
   // entries with the same name) so the hash is deterministic.
   const entries: [string, FormDataEntryValue][] = [...reply.entries()];
-  entries.sort((a, b) => a[0].localeCompare(b[0]) || String(a[1]).localeCompare(String(b[1])));
+  const valStr = (v: FormDataEntryValue): string => typeof v === "string" ? v : v.name;
+  entries.sort((a, b) => a[0].localeCompare(b[0]) || valStr(a[1]).localeCompare(valStr(b[1])));
 
   const parts: string[] = [];
   for (const [name, value] of entries) {

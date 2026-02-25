@@ -393,12 +393,12 @@ function restoreScrollPosition(state: unknown): void {
     // Defer to allow other popstate listeners (browser entry) to run first
     // and set __VINEXT_RSC_PENDING__. Promise.resolve() schedules a microtask
     // that runs after all synchronous event listeners have completed.
-    Promise.resolve().then(() => {
+    void Promise.resolve().then(() => {
       const pending: Promise<void> | null = (window as any).__VINEXT_RSC_PENDING__ ?? null;
 
       if (pending) {
         // Wait for the RSC navigation to finish rendering, then scroll.
-        pending.then(() => {
+        void pending.then(() => {
           requestAnimationFrame(() => {
             window.scrollTo(x, y);
           });
@@ -488,11 +488,11 @@ export function useRouter() {
   const router = {
     push(href: string, options?: { scroll?: boolean }): void {
       if (isServer) return;
-      navigateImpl(href, "push", options?.scroll !== false);
+      void navigateImpl(href, "push", options?.scroll !== false);
     },
     replace(href: string, options?: { scroll?: boolean }): void {
       if (isServer) return;
-      navigateImpl(href, "replace", options?.scroll !== false);
+      void navigateImpl(href, "replace", options?.scroll !== false);
     },
     back(): void {
       if (isServer) return;

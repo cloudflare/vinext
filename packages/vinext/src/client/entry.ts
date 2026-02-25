@@ -87,4 +87,4 @@ async function hydrate() {
   (window as any).__VINEXT_ROOT__ = root;
 }
 
-hydrate();
+void hydrate();
