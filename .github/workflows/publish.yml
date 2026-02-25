@@ -104,14 +104,17 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
         run: |
           COMMITS=$(cat /tmp/commits.txt)
+          echo "::group::Commits since last release"
+          echo "$COMMITS"
+          echo "::endgroup::"
 
-          RESPONSE=$(curl -sf \
+          RESPONSE=$(curl -s --max-time 30 \
             "https://gateway.ai.cloudflare.com/v1/${CF_ACCOUNT_ID}/${CF_GATEWAY_NAME}/anthropic/v1/messages" \
             -H "Content-Type: application/json" \
-            -H "x-api-key: ${CF_API_TOKEN}" \
+            -H "cf-aig-authorization: Bearer ${CF_API_TOKEN}" \
             -H "anthropic-version: 2023-06-01" \
             -d "$(jq -n --arg commits "$COMMITS" '{
-              model: "claude-haiku-4-20250414",
+              model: "claude-sonnet-4-20250514",
               max_tokens: 300,
               messages: [{
                 role: "user",
@@ -121,12 +124,22 @@ jobs:
 
           SUMMARY=""
           if [ -n "$RESPONSE" ]; then
-            SUMMARY=$(echo "$RESPONSE" | jq -r '.content[0].text // empty')
+            # Check for API errors
+            ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty' 2>/dev/null)
+            if [ -n "$ERROR" ]; then
+              echo "::warning::AI Gateway error: $ERROR"
+            else
+              SUMMARY=$(echo "$RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null)
+            fi
           fi
 
           if [ -z "$SUMMARY" ]; then
             SUMMARY="See commits: https://github.com/${{ github.repository }}/commits/v${{ steps.version.outputs.version }}"
           fi
+
+          echo "::group::Release summary"
+          echo "$SUMMARY"
+          echo "::endgroup::"
 
           {
             echo "text<<EOFMARKER"
@@ -142,9 +155,17 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           SUMMARY: ${{ steps.summary.outputs.text }}
         run: |
-          TEXT=$(printf "*vinext v%s published to npm*\n\n%s\n\nnpm: https://www.npmjs.com/package/vinext/v/%s" \
-            "$VERSION" "$SUMMARY" "$VERSION")
+          PAYLOAD=$(jq -n \
+            --arg version "$VERSION" \
+            --arg summary "$SUMMARY" \
+            '{"text": ("*vinext v" + $version + " published to npm*\n\n" + $summary + "\n\nnpm: https://www.npmjs.com/package/vinext/v/" + $version)}')
 
-          curl -fSs -o /dev/null -w "HTTP %{http_code}" -X POST "$GOOGLE_CHAT_WEBHOOK" \
+          echo "::group::Webhook payload"
+          echo "$PAYLOAD"
+          echo "::endgroup::"
+
+          RESPONSE=$(curl -sS -w "\nHTTP %{http_code}" -X POST "$GOOGLE_CHAT_WEBHOOK" \
             -H "Content-Type: application/json; charset=UTF-8" \
-            -d "$(jq -n --arg text "$TEXT" '{"text": $text}')"
+            -d "$PAYLOAD")
+
+          echo "$RESPONSE"
