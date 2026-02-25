@@ -21,6 +21,7 @@ import { execSync } from "node:child_process";
 import { deploy as runDeploy } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit } from "./init.js";
+import { importModule } from "./utils/import-path.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -60,7 +61,7 @@ async function loadVite(): Promise<ViteModule> {
     vitePath = "vite";
   }
 
-  const vite = (await import(/* @vite-ignore */ vitePath)) as ViteModule;
+  const vite = await importModule<ViteModule>(vitePath);
   _viteModule = vite;
   return vite;
 }
