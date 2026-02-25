@@ -16,6 +16,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { execFileSync, execSync, type ExecSyncOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
 import { createBuilder, build } from "vite";
@@ -582,7 +583,26 @@ interface MissingDep {
   version: string;
 }
 
-export function getMissingDeps(info: ProjectInfo): MissingDep[] {
+/**
+ * Check if a package is resolvable from a given root directory using
+ * Node's module resolution (createRequire). Handles hoisting, pnpm
+ * symlinks, monorepos, and Yarn PnP correctly.
+ */
+export function isPackageResolvable(root: string, packageName: string): boolean {
+  try {
+    const req = createRequire(path.join(root, "package.json"));
+    req.resolve(packageName);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getMissingDeps(
+  info: ProjectInfo,
+  /** Override for testing — defaults to `isPackageResolvable` */
+  _isResolvable: (root: string, pkg: string) => boolean = isPackageResolvable,
+): MissingDep[] {
   const missing: MissingDep[] = [];
 
   if (!info.hasCloudflarePlugin) {
@@ -595,11 +615,8 @@ export function getMissingDeps(info: ProjectInfo): MissingDep[] {
     missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
   }
   if (info.isAppRouter) {
-    // react-server-dom-webpack must be resolvable from the project root for Vite
-    const hasRsdw = fs.existsSync(
-      path.join(info.root, "node_modules", "react-server-dom-webpack"),
-    );
-    if (!hasRsdw) {
+    // react-server-dom-webpack must be resolvable from the project root for Vite.
+    if (!_isResolvable(info.root, "react-server-dom-webpack")) {
       missing.push({ name: "react-server-dom-webpack", version: "latest" });
     }
   }

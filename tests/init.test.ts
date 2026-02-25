@@ -267,16 +267,21 @@ describe("getInitDeps", () => {
   });
 });
 
+/** Helper: create a fake resolvable react package in node_modules */
+function setupFakeReact(dir: string, version: string): void {
+  const reactDir = path.join(dir, "node_modules", "react");
+  fs.mkdirSync(reactDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(reactDir, "package.json"),
+    JSON.stringify({ name: "react", version, main: "index.js" }),
+  );
+  fs.writeFileSync(path.join(reactDir, "index.js"), "");
+}
+
 describe("getReactUpgradeDeps", () => {
   it("returns react@latest + react-dom@latest when React is too old", () => {
     setupProject(tmpDir, { router: "app" });
-    // Simulate installed react@19.2.3 (too old for react-server-dom-webpack@19.2.4)
-    const reactDir = path.join(tmpDir, "node_modules", "react");
-    fs.mkdirSync(reactDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(reactDir, "package.json"),
-      JSON.stringify({ name: "react", version: "19.2.3" }),
-    );
+    setupFakeReact(tmpDir, "19.2.3");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual(["react@latest", "react-dom@latest"]);
@@ -284,12 +289,7 @@ describe("getReactUpgradeDeps", () => {
 
   it("returns empty array when React is new enough", () => {
     setupProject(tmpDir, { router: "app" });
-    const reactDir = path.join(tmpDir, "node_modules", "react");
-    fs.mkdirSync(reactDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(reactDir, "package.json"),
-      JSON.stringify({ name: "react", version: "19.2.4" }),
-    );
+    setupFakeReact(tmpDir, "19.2.4");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual([]);
@@ -297,12 +297,7 @@ describe("getReactUpgradeDeps", () => {
 
   it("returns empty array when React is a newer minor version", () => {
     setupProject(tmpDir, { router: "app" });
-    const reactDir = path.join(tmpDir, "node_modules", "react");
-    fs.mkdirSync(reactDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(reactDir, "package.json"),
-      JSON.stringify({ name: "react", version: "19.3.0" }),
-    );
+    setupFakeReact(tmpDir, "19.3.0");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual([]);
@@ -310,12 +305,7 @@ describe("getReactUpgradeDeps", () => {
 
   it("returns upgrade deps when React major is below 19", () => {
     setupProject(tmpDir, { router: "app" });
-    const reactDir = path.join(tmpDir, "node_modules", "react");
-    fs.mkdirSync(reactDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(reactDir, "package.json"),
-      JSON.stringify({ name: "react", version: "18.3.1" }),
-    );
+    setupFakeReact(tmpDir, "18.3.1");
 
     const deps = getReactUpgradeDeps(tmpDir);
     expect(deps).toEqual(["react@latest", "react-dom@latest"]);
@@ -505,13 +495,7 @@ describe("init — dependency installation", () => {
 
   it("upgrades React before installing dev deps when React is too old (App Router)", async () => {
     setupProject(tmpDir, { router: "app" });
-    // Simulate react@19.2.3 in node_modules (too old for rsdw)
-    const reactDir = path.join(tmpDir, "node_modules", "react");
-    fs.mkdirSync(reactDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(reactDir, "package.json"),
-      JSON.stringify({ name: "react", version: "19.2.3" }),
-    );
+    setupFakeReact(tmpDir, "19.2.3");
 
     const { execCalls } = await runInit(tmpDir);
 
@@ -537,13 +521,7 @@ describe("init — dependency installation", () => {
 
   it("does not upgrade React when version is already compatible", async () => {
     setupProject(tmpDir, { router: "app" });
-    // Simulate react@19.2.4 in node_modules (compatible)
-    const reactDir = path.join(tmpDir, "node_modules", "react");
-    fs.mkdirSync(reactDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(reactDir, "package.json"),
-      JSON.stringify({ name: "react", version: "19.2.4" }),
-    );
+    setupFakeReact(tmpDir, "19.2.4");
 
     const { execCalls } = await runInit(tmpDir);
 

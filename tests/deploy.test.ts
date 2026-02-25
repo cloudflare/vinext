@@ -15,6 +15,7 @@ import {
   renameCJSConfigs,
   buildWranglerDeployArgs,
   parseDeployArgs,
+  isPackageResolvable,
 } from "../packages/vinext/src/deploy.js";
 import { computeLazyChunks } from "../packages/vinext/src/index.js";
 
@@ -533,7 +534,11 @@ describe("getMissingDeps", () => {
     info.hasWrangler = true;
     info.hasRscPlugin = true;
 
-    const missing = getMissingDeps(info);
+    // Pass a resolver that always returns false to simulate rsdw not being installed.
+    // (Vitest's createRequire finds rsdw via the monorepo root, so we can't rely
+    // on filesystem isolation in tmpdir.)
+    const notResolvable = () => false;
+    const missing = getMissingDeps(info, notResolvable);
     expect(missing).toContainEqual(
       expect.objectContaining({ name: "react-server-dom-webpack" }),
     );
@@ -554,15 +559,45 @@ describe("getMissingDeps", () => {
 
   it("returns empty array when everything is installed", () => {
     mkdir(tmpDir, "app");
-    // Simulate react-server-dom-webpack installed in node_modules
-    fs.mkdirSync(path.join(tmpDir, "node_modules", "react-server-dom-webpack"), { recursive: true });
     const info = detectProject(tmpDir);
     info.hasCloudflarePlugin = true;
     info.hasWrangler = true;
     info.hasRscPlugin = true;
 
-    const missing = getMissingDeps(info);
+    // Pass a resolver that always returns true to simulate all packages installed.
+    const allResolvable = () => true;
+    const missing = getMissingDeps(info, allResolvable);
     expect(missing).toHaveLength(0);
+  });
+});
+
+// ─── isPackageResolvable ─────────────────────────────────────────────────────
+
+describe("isPackageResolvable", () => {
+  it("returns true when package exists in node_modules", () => {
+    // Create a proper resolvable package in the tmpdir
+    const pkgDir = path.join(tmpDir, "node_modules", "fake-pkg");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name: "fake-pkg", version: "1.0.0", main: "index.js" }),
+    );
+    fs.writeFileSync(path.join(pkgDir, "index.js"), "");
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test", version: "1.0.0" }),
+    );
+
+    expect(isPackageResolvable(tmpDir, "fake-pkg")).toBe(true);
+  });
+
+  it("returns false when package does not exist", () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test", version: "1.0.0" }),
+    );
+    // no-such-package-xyz123 should never exist in any node_modules
+    expect(isPackageResolvable(tmpDir, "no-such-package-xyz123")).toBe(false);
   });
 });
 
