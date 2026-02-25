@@ -1822,6 +1822,18 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.headers.get("x-page-header")).toBe("about-page");
   });
 
+  it("applies has/missing conditions for next.config.js headers", async () => {
+    const guestRes = await fetch(`${baseUrl}/about`);
+    expect(guestRes.headers.get("x-guest-only-header")).toBe("1");
+    expect(guestRes.headers.get("x-auth-only-header")).toBeNull();
+
+    const authRes = await fetch(`${baseUrl}/about`, {
+      headers: { Cookie: "logged-in=1" },
+    });
+    expect(authRes.headers.get("x-auth-only-header")).toBe("1");
+    expect(authRes.headers.get("x-guest-only-header")).toBeNull();
+  });
+
   it("does not redirect for non-matching paths", async () => {
     const res = await fetch(`${baseUrl}/about`);
     expect(res.status).toBe(200);

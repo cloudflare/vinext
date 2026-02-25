@@ -665,16 +665,25 @@ export async function proxyExternalRequest(
 /**
  * Apply custom header rules from next.config.js.
  * Returns an array of { key, value } pairs to set on the response.
+ *
+ * When `ctx` is provided, has/missing conditions on header rules are
+ * evaluated against the request context (cookies, headers, query, host).
  */
 export function matchHeaders(
   pathname: string,
   headers: NextHeader[],
+  ctx?: RequestContext,
 ): Array<{ key: string; value: string }> {
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
     const escaped = escapeHeaderSource(rule.source);
     const sourceRegex = safeRegExp("^" + escaped + "$");
     if (sourceRegex && sourceRegex.test(pathname)) {
+      if (ctx && (rule.has || rule.missing)) {
+        if (!checkHasConditions(rule.has, rule.missing, ctx)) {
+          continue;
+        }
+      }
       result.push(...rule.headers);
     }
   }

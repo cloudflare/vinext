@@ -2924,6 +2924,75 @@ describe("checkHasConditions", () => {
   });
 });
 
+describe("matchHeaders", () => {
+  function makeCtx(overrides: Partial<{
+    headers: Record<string, string>;
+    cookies: Record<string, string>;
+    query: Record<string, string>;
+    host: string;
+  }> = {}) {
+    const headers = new Headers(overrides.headers ?? {});
+    if (overrides.cookies) {
+      headers.set(
+        "cookie",
+        Object.entries(overrides.cookies).map(([k, v]) => `${k}=${v}`).join("; "),
+      );
+    }
+    const query = new URLSearchParams(overrides.query ?? {});
+    return {
+      headers,
+      cookies: overrides.cookies ?? {},
+      query,
+      host: overrides.host ?? "localhost",
+    };
+  }
+
+  it("applies headers when has condition matches", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules = [
+      {
+        source: "/about",
+        has: [{ type: "cookie" as const, key: "logged-in" }],
+        headers: [{ key: "x-auth-header", value: "yes" }],
+      },
+    ];
+    const matched = matchHeaders("/about", rules, makeCtx({ cookies: { "logged-in": "1" } }));
+    expect(matched).toEqual([{ key: "x-auth-header", value: "yes" }]);
+  });
+
+  it("skips headers when has condition does not match", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules = [
+      {
+        source: "/about",
+        has: [{ type: "cookie" as const, key: "logged-in" }],
+        headers: [{ key: "x-auth-header", value: "yes" }],
+      },
+    ];
+    const matched = matchHeaders("/about", rules, makeCtx());
+    expect(matched).toEqual([]);
+  });
+
+  it("applies headers when missing condition matches", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules = [
+      {
+        source: "/about",
+        missing: [{ type: "cookie" as const, key: "logged-in" }],
+        headers: [{ key: "x-guest-header", value: "yes" }],
+      },
+    ];
+    const matched = matchHeaders("/about", rules, makeCtx());
+    expect(matched).toEqual([{ key: "x-guest-header", value: "yes" }]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // isExternalUrl unit tests (external rewrite detection)
 

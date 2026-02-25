@@ -150,14 +150,15 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
   );
 
   // Ref: opennextjs-cloudflare headers.test.ts — has/missing conditions
-  // vinext matchHeaders() in config-matchers.ts only checks source pattern.
-  // Tests: ON-15 #6 in TRACKING.md
-  test.fixme(
-    "config headers with has/missing conditions",
-    async () => {
-      // Would test: header rule with has: [{ type: "cookie", key: "logged-in" }]
-      // only applies when the cookie is present in the request.
-      // Needs: has/missing support in matchHeaders(), matchRedirect(), matchRewrite()
-    },
-  );
+  test("config headers with has/missing conditions", async ({ request }) => {
+    const guestRes = await request.get(`${BASE}/about`);
+    expect(guestRes.headers()["x-guest-only-header"]).toBe("1");
+    expect(guestRes.headers()["x-auth-only-header"]).toBeUndefined();
+
+    const authRes = await request.get(`${BASE}/about`, {
+      headers: { Cookie: "logged-in=1" },
+    });
+    expect(authRes.headers()["x-auth-only-header"]).toBe("1");
+    expect(authRes.headers()["x-guest-only-header"]).toBeUndefined();
+  });
 });

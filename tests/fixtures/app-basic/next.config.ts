@@ -95,6 +95,17 @@ const nextConfig: NextConfig = {
         source: "/(.*)",
         headers: [{ key: "X-E2E-Header", value: "vinext-e2e" }],
       },
+      // Used by Vitest: app-router.test.ts — has/missing conditions on headers
+      {
+        source: "/about",
+        has: [{ type: "cookie", key: "logged-in" }],
+        headers: [{ key: "X-Auth-Only-Header", value: "1" }],
+      },
+      {
+        source: "/about",
+        missing: [{ type: "cookie", key: "logged-in" }],
+        headers: [{ key: "X-Guest-Only-Header", value: "1" }],
+      },
     ];
   },
 };

@@ -33,6 +33,8 @@ export interface NextRewrite {
 export interface NextHeader {
   source: string;
   headers: Array<{ key: string; value: string }>;
+  has?: HasCondition[];
+  missing?: HasCondition[];
 }
 
 export interface NextI18nConfig {
