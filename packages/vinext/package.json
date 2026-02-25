@@ -5,7 +5,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/cloudflare/vinext"
+    "url": "git+https://github.com/cloudflare/vinext.git"
   },
   "type": "module",
   "engines": {

@@ -13,6 +13,9 @@ import {
   getFilesToGenerate,
   ensureESModule,
   renameCJSConfigs,
+  buildWranglerDeployArgs,
+  parseDeployArgs,
+  isPackageResolvable,
 } from "../packages/vinext/src/deploy.js";
 import { computeLazyChunks } from "../packages/vinext/src/index.js";
 
@@ -41,6 +44,100 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+// ─── Wrangler deploy args ───────────────────────────────────────────────────
+
+describe("buildWranglerDeployArgs", () => {
+  it("uses plain deploy for production by default", () => {
+    expect(buildWranglerDeployArgs({})).toEqual({ args: ["deploy"], env: undefined });
+  });
+
+  it("maps --preview to wrangler --env preview", () => {
+    expect(buildWranglerDeployArgs({ preview: true })).toEqual({
+      args: ["deploy", "--env", "preview"],
+      env: "preview",
+    });
+  });
+
+  it("passes through explicit env names", () => {
+    expect(buildWranglerDeployArgs({ env: "staging" })).toEqual({
+      args: ["deploy", "--env", "staging"],
+      env: "staging",
+    });
+  });
+
+  it("prefers explicit env over --preview shorthand", () => {
+    expect(buildWranglerDeployArgs({ preview: true, env: "qa" })).toEqual({
+      args: ["deploy", "--env", "qa"],
+      env: "qa",
+    });
+  });
+
+  it("treats empty string env as production", () => {
+    expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
+  });
+});
+
+// ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
+
+describe("parseDeployArgs", () => {
+  it("defaults to production deploy with no flags", () => {
+    const parsed = parseDeployArgs([]);
+    expect(parsed.preview).toBe(false);
+    expect(parsed.env).toBeUndefined();
+    expect(parsed.name).toBeUndefined();
+    expect(parsed.skipBuild).toBe(false);
+    expect(parsed.dryRun).toBe(false);
+  });
+
+  it("parses --env with space-separated value", () => {
+    expect(parseDeployArgs(["--env", "staging"]).env).toBe("staging");
+  });
+
+  it("parses --env=value form", () => {
+    expect(parseDeployArgs(["--env=staging"]).env).toBe("staging");
+  });
+
+  it("parses --name with space-separated value", () => {
+    expect(parseDeployArgs(["--name", "my-app"]).name).toBe("my-app");
+  });
+
+  it("parses --name=value form", () => {
+    expect(parseDeployArgs(["--name=my-app"]).name).toBe("my-app");
+  });
+
+  it("parses boolean flags", () => {
+    const parsed = parseDeployArgs(["--preview", "--skip-build", "--dry-run"]);
+    expect(parsed.preview).toBe(true);
+    expect(parsed.skipBuild).toBe(true);
+    expect(parsed.dryRun).toBe(true);
+  });
+
+  it("parses numeric TPR flags from string values", () => {
+    const parsed = parseDeployArgs([
+      "--experimental-tpr",
+      "--tpr-coverage", "95",
+      "--tpr-limit", "500",
+      "--tpr-window", "48",
+    ]);
+    expect(parsed.experimentalTPR).toBe(true);
+    expect(parsed.tprCoverage).toBe(95);
+    expect(parsed.tprLimit).toBe(500);
+    expect(parsed.tprWindow).toBe(48);
+  });
+
+  it("trims whitespace from --env value", () => {
+    expect(parseDeployArgs(["--env", "  staging  "]).env).toBe("staging");
+  });
+
+  it("treats whitespace-only --env as undefined", () => {
+    expect(parseDeployArgs(["--env", "   "]).env).toBeUndefined();
+  });
+
+  it("throws on unknown flags (strict mode)", () => {
+    expect(() => parseDeployArgs(["--bogus"])).toThrow();
+  });
 });
 
 // ─── detectProject ──────────────────────────────────────────────────────────
@@ -430,6 +527,36 @@ describe("getMissingDeps", () => {
     );
   });
 
+  it("reports missing react-server-dom-webpack for App Router", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+
+    // Pass a resolver that always returns false to simulate rsdw not being installed.
+    // (Vitest's createRequire finds rsdw via the monorepo root, so we can't rely
+    // on filesystem isolation in tmpdir.)
+    const notResolvable = () => false;
+    const missing = getMissingDeps(info, notResolvable);
+    expect(missing).toContainEqual(
+      expect.objectContaining({ name: "react-server-dom-webpack" }),
+    );
+  });
+
+  it("does not require react-server-dom-webpack for Pages Router", () => {
+    mkdir(tmpDir, "pages");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = false;
+
+    const missing = getMissingDeps(info);
+    expect(missing).not.toContainEqual(
+      expect.objectContaining({ name: "react-server-dom-webpack" }),
+    );
+  });
+
   it("returns empty array when everything is installed", () => {
     mkdir(tmpDir, "app");
     const info = detectProject(tmpDir);
@@ -437,8 +564,40 @@ describe("getMissingDeps", () => {
     info.hasWrangler = true;
     info.hasRscPlugin = true;
 
-    const missing = getMissingDeps(info);
+    // Pass a resolver that always returns true to simulate all packages installed.
+    const allResolvable = () => true;
+    const missing = getMissingDeps(info, allResolvable);
     expect(missing).toHaveLength(0);
+  });
+});
+
+// ─── isPackageResolvable ─────────────────────────────────────────────────────
+
+describe("isPackageResolvable", () => {
+  it("returns true when package exists in node_modules", () => {
+    // Create a proper resolvable package in the tmpdir
+    const pkgDir = path.join(tmpDir, "node_modules", "fake-pkg");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name: "fake-pkg", version: "1.0.0", main: "index.js" }),
+    );
+    fs.writeFileSync(path.join(pkgDir, "index.js"), "");
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test", version: "1.0.0" }),
+    );
+
+    expect(isPackageResolvable(tmpDir, "fake-pkg")).toBe(true);
+  });
+
+  it("returns false when package does not exist", () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test", version: "1.0.0" }),
+    );
+    // no-such-package-xyz123 should never exist in any node_modules
+    expect(isPackageResolvable(tmpDir, "no-such-package-xyz123")).toBe(false);
   });
 });
 
