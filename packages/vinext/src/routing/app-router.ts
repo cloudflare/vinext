@@ -437,14 +437,8 @@ function fileToAppRoute(
 
   return {
     pattern: pattern === "/" ? "/" : pattern,
-    pagePath:
-      type === "page"
-        ? path.join(appDir, file).replaceAll("\\", "/")
-        : null,
-    routePath:
-      type === "route"
-        ? path.join(appDir, file).replaceAll("\\", "/")
-        : null,
+    pagePath: type === "page" ? path.join(appDir, file) : null,
+    routePath: type === "route" ? path.join(appDir, file) : null,
     layouts,
     templates,
     parallelSlots,

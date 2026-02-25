@@ -49,11 +49,17 @@ export async function pagesRouter(pagesDir: string): Promise<Route[]> {
 }
 
 async function scanPageRoutes(pagesDir: string): Promise<Route[]> {
-  const files: string[] = [];
-  const excludePrivate = (name: string) => name === "api" || name.startsWith("_");
-  for await (const file of glob("**/*.{tsx,ts,jsx,js}", { cwd: pagesDir, exclude: excludePrivate })) {
-    files.push(file);
+  const allFiles: string[] = [];
+  for await (const file of glob("**/*.{tsx,ts,jsx,js}", { cwd: pagesDir })) {
+    allFiles.push(file);
   }
+  // Filter on the first path segment to match the old glob package's root-relative
+  // ignore behavior. The native exclude callback fires at every directory depth,
+  // which would incorrectly exclude nested _-prefixed files and api/ directories.
+  const files = allFiles.filter((f) => {
+    const first = f.split(path.sep)[0];
+    return first !== "api" && !first.startsWith("_");
+  });
 
   const routes: Route[] = [];
 
