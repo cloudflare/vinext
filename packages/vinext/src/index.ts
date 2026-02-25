@@ -3016,7 +3016,7 @@ hydrate();
         sequential: true,
         order: "post",
         async handler(options) {
-          const envName = (this as any).environment?.name as string | undefined;
+          const envName = this.environment?.name;
           if (envName !== "rsc") return;
 
           const outDir = options.dir;
