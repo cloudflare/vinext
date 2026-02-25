@@ -1658,12 +1658,19 @@ hydrate();
   const earlyRequire = createRequire(path.join(earlyBaseDir, "package.json"));
   let resolvedRscPath: string | null = null;
   let resolvedRscTransformsPath: string | null = null;
+  let hasReactServerDomWebpack = false;
   try {
     resolvedRscPath = earlyRequire.resolve("@vitejs/plugin-rsc");
     resolvedRscTransformsPath = earlyRequire.resolve("@vitejs/plugin-rsc/transforms");
   } catch {
     // @vitejs/plugin-rsc not installed — that's fine for Pages Router
     // projects. If App Router is detected, the error is thrown below.
+  }
+  try {
+    earlyRequire.resolve("react-server-dom-webpack/package.json");
+    hasReactServerDomWebpack = true;
+  } catch {
+    // react-server-dom-webpack is only required for App Router projects.
   }
 
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
@@ -1675,6 +1682,12 @@ hydrate();
       throw new Error(
         "vinext: App Router detected but @vitejs/plugin-rsc is not installed.\n" +
         "Run: npm install -D @vitejs/plugin-rsc",
+      );
+    }
+    if (!hasReactServerDomWebpack) {
+      throw new Error(
+        "vinext: App Router detected but react-server-dom-webpack is not installed.\n" +
+        "Run: npm install react-server-dom-webpack",
       );
     }
     const rscImport = import(resolvedRscPath);

@@ -7,6 +7,7 @@ import {
   generateViteConfig,
   addScripts,
   getInitDeps,
+  getInitDepsByTarget,
   isDepInstalled,
   type InitOptions,
 } from "../packages/vinext/src/init.js";
@@ -14,6 +15,10 @@ import {
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
 let tmpDir: string;
+const CREATE_NEXT_APP_FIXTURE = path.resolve(
+  import.meta.dirname,
+  "./fixtures/create-next-app-app-router",
+);
 
 function createTmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "vinext-init-test-"));
@@ -249,11 +254,12 @@ describe("addScripts", () => {
 // ─── Unit Tests: getInitDeps / isDepInstalled ────────────────────────────────
 
 describe("getInitDeps", () => {
-  it("returns vinext + vite + @vitejs/plugin-rsc for App Router", () => {
+  it("returns vinext + vite + @vitejs/plugin-rsc + react-server-dom-webpack for App Router", () => {
     const deps = getInitDeps(true);
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
     expect(deps).toContain("@vitejs/plugin-rsc");
+    expect(deps).toContain("react-server-dom-webpack");
   });
 
   it("returns vinext + vite for Pages Router", () => {
@@ -261,6 +267,20 @@ describe("getInitDeps", () => {
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
     expect(deps).not.toContain("@vitejs/plugin-rsc");
+  });
+});
+
+describe("getInitDepsByTarget", () => {
+  it("splits App Router deps across devDependencies and dependencies", () => {
+    const deps = getInitDepsByTarget(true);
+    expect(deps.devDependencies).toEqual(["vinext", "vite", "@vitejs/plugin-rsc"]);
+    expect(deps.dependencies).toEqual(["react-server-dom-webpack"]);
+  });
+
+  it("returns only devDependencies for Pages Router", () => {
+    const deps = getInitDepsByTarget(false);
+    expect(deps.devDependencies).toEqual(["vinext", "vite"]);
+    expect(deps.dependencies).toEqual([]);
   });
 });
 
@@ -415,6 +435,14 @@ describe("init — dependency installation", () => {
     expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
   });
 
+  it("detects missing react-server-dom-webpack for App Router", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.installedDeps).toContain("react-server-dom-webpack");
+  });
+
   it("does not require @vitejs/plugin-rsc for Pages Router", async () => {
     setupProject(tmpDir, { router: "pages" });
 
@@ -443,6 +471,35 @@ describe("init — dependency installation", () => {
     const installCall = execCalls.find((c) => c.cmd.includes("install -D") || c.cmd.includes("add -D"));
     expect(installCall).toBeDefined();
     expect(installCall!.cmd).toMatch(/^npm install -D/);
+  });
+
+  it("installs react-server-dom-webpack as a dependency (not devDependency)", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { execCalls } = await runInit(tmpDir);
+
+    const runtimeInstall = execCalls.find((c) =>
+      c.cmd.includes("react-server-dom-webpack") && !c.cmd.includes(" -D "),
+    );
+    expect(runtimeInstall).toBeDefined();
+    expect(runtimeInstall!.cmd).toMatch(/^npm install react-server-dom-webpack$/);
+  });
+
+  it("installs missing RSC deps for a create-next-app App Router project", async () => {
+    fs.cpSync(CREATE_NEXT_APP_FIXTURE, tmpDir, { recursive: true });
+    fs.copyFileSync(
+      path.join(tmpDir, "package.json.template"),
+      path.join(tmpDir, "package.json"),
+    );
+
+    const { result, execCalls } = await runInit(tmpDir);
+
+    expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
+    expect(result.installedDeps).toContain("react-server-dom-webpack");
+    const runtimeInstall = execCalls.find((c) =>
+      c.cmd.includes("react-server-dom-webpack") && !c.cmd.includes(" -D "),
+    );
+    expect(runtimeInstall).toBeDefined();
   });
 });
 

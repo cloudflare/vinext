@@ -5,7 +5,7 @@
  *
  *   1. Detects App Router vs Pages Router
  *   2. Auto-generates missing config files (wrangler.jsonc, worker/index.ts, vite.config.ts)
- *   3. Ensures dependencies are installed (@cloudflare/vite-plugin, wrangler, @vitejs/plugin-rsc)
+ *   3. Ensures dependencies are installed (@cloudflare/vite-plugin, wrangler, App Router RSC deps)
  *   4. Runs the Vite build
  *   5. Deploys to Cloudflare Workers via wrangler
  *
@@ -21,7 +21,7 @@ import { createBuilder, build } from "vite";
 import {
   ensureESModule as _ensureESModule,
   renameCJSConfigs as _renameCJSConfigs,
-  detectPackageManager as _detectPackageManager,
+  detectPackageManagerName as _detectPackageManagerName,
 } from "./utils/project.js";
 import { runTPR } from "./cloudflare/tpr.js";
 
@@ -57,6 +57,7 @@ interface ProjectInfo {
   hasWorkerEntry: boolean;
   hasCloudflarePlugin: boolean;
   hasRscPlugin: boolean;
+  hasReactServerDomWebpack: boolean;
   hasWrangler: boolean;
   projectName: string;
   /** Pages that use `revalidate` (ISR) */
@@ -105,6 +106,9 @@ export function detectProject(root: string): ProjectInfo {
   );
   const hasRscPlugin = fs.existsSync(
     path.join(root, "node_modules", "@vitejs", "plugin-rsc"),
+  );
+  const hasReactServerDomWebpack = fs.existsSync(
+    path.join(root, "node_modules", "react-server-dom-webpack"),
   );
   const hasWrangler = fs.existsSync(
     path.join(root, "node_modules", ".bin", "wrangler"),
@@ -170,6 +174,7 @@ export function detectProject(root: string): ProjectInfo {
     hasWorkerEntry,
     hasCloudflarePlugin,
     hasRscPlugin,
+    hasReactServerDomWebpack,
     hasWrangler,
     projectName,
     hasISR,
@@ -542,19 +547,39 @@ export default defineConfig({
 interface MissingDep {
   name: string;
   version: string;
+  target: "dependencies" | "devDependencies";
 }
 
 export function getMissingDeps(info: ProjectInfo): MissingDep[] {
   const missing: MissingDep[] = [];
 
   if (!info.hasCloudflarePlugin) {
-    missing.push({ name: "@cloudflare/vite-plugin", version: "latest" });
+    missing.push({
+      name: "@cloudflare/vite-plugin",
+      version: "latest",
+      target: "devDependencies",
+    });
   }
   if (!info.hasWrangler) {
-    missing.push({ name: "wrangler", version: "latest" });
+    missing.push({
+      name: "wrangler",
+      version: "latest",
+      target: "devDependencies",
+    });
   }
   if (info.isAppRouter && !info.hasRscPlugin) {
-    missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
+    missing.push({
+      name: "@vitejs/plugin-rsc",
+      version: "latest",
+      target: "devDependencies",
+    });
+  }
+  if (info.isAppRouter && !info.hasReactServerDomWebpack) {
+    missing.push({
+      name: "react-server-dom-webpack",
+      version: "latest",
+      target: "dependencies",
+    });
   }
   if (info.hasMDX) {
     // Check if @mdx-js/rollup is already installed
@@ -562,7 +587,11 @@ export function getMissingDeps(info: ProjectInfo): MissingDep[] {
       path.join(info.root, "node_modules", "@mdx-js", "rollup"),
     );
     if (!hasMdxRollup) {
-      missing.push({ name: "@mdx-js/rollup", version: "latest" });
+      missing.push({
+        name: "@mdx-js/rollup",
+        version: "latest",
+        target: "devDependencies",
+      });
     }
   }
 
@@ -572,17 +601,47 @@ export function getMissingDeps(info: ProjectInfo): MissingDep[] {
 function installDeps(root: string, deps: MissingDep[]): void {
   if (deps.length === 0) return;
 
-  const depsStr = deps.map((d) => `${d.name}@${d.version}`).join(" ");
-  const installCmd = detectPackageManager(root);
+  const groups: Record<"dependencies" | "devDependencies", MissingDep[]> = {
+    dependencies: [],
+    devDependencies: [],
+  };
+  for (const dep of deps) {
+    groups[dep.target].push(dep);
+  }
 
-  console.log(`  Installing: ${deps.map((d) => d.name).join(", ")}`);
-  execSync(`${installCmd} ${depsStr}`, {
-    cwd: root,
-    stdio: "inherit",
-  });
+  for (const [target, targetDeps] of Object.entries(groups) as Array<
+    [keyof typeof groups, MissingDep[]]
+  >) {
+    if (targetDeps.length === 0) continue;
+    const depsStr = targetDeps.map((d) => `${d.name}@${d.version}`).join(" ");
+    const installCmd = getInstallCommand(root, target);
+
+    console.log(`  Installing: ${targetDeps.map((d) => d.name).join(", ")}`);
+    execSync(`${installCmd} ${depsStr}`, {
+      cwd: root,
+      stdio: "inherit",
+    });
+  }
 }
 
-const detectPackageManager = _detectPackageManager;
+function getInstallCommand(
+  root: string,
+  target: "dependencies" | "devDependencies",
+): string {
+  const pm = detectPackageManagerName(root);
+  switch (pm) {
+    case "pnpm":
+      return target === "devDependencies" ? "pnpm add -D" : "pnpm add";
+    case "yarn":
+      return target === "devDependencies" ? "yarn add -D" : "yarn add";
+    case "bun":
+      return target === "devDependencies" ? "bun add -d" : "bun add";
+    default:
+      return target === "devDependencies" ? "npm install -D" : "npm install";
+  }
+}
+
+const detectPackageManagerName = _detectPackageManagerName;
 
 // ─── File Writing ────────────────────────────────────────────────────────────
 
@@ -726,7 +785,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
     // Re-detect after install
     info.hasCloudflarePlugin = true;
     info.hasWrangler = true;
-    if (info.isAppRouter) info.hasRscPlugin = true;
+    if (info.isAppRouter) {
+      info.hasRscPlugin = true;
+      info.hasReactServerDomWebpack = true;
+    }
   }
 
   // Step 3: Ensure ESM + rename CJS configs

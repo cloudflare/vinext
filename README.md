@@ -79,7 +79,7 @@ npx vinext init
 This will:
 
 1. Run `vinext check` to scan for compatibility issues
-2. Install `vite` (and `@vitejs/plugin-rsc` for App Router projects) as devDependencies
+2. Install `vite`/`vinext` as devDependencies, plus App Router RSC deps (`@vitejs/plugin-rsc` in `devDependencies` and `react-server-dom-webpack` in `dependencies`)
 3. Rename CJS config files (e.g. `postcss.config.js` -> `.cjs`) to avoid ESM conflicts
 4. Add `"type": "module"` to `package.json`
 5. Add `dev:vinext` and `build:vinext` scripts to `package.json`

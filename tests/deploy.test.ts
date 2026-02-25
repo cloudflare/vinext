@@ -177,6 +177,13 @@ describe("detectProject", () => {
     const info = detectProject(tmpDir);
     expect(info.hasISR).toBe(false);
   });
+
+  it("detects react-server-dom-webpack when installed in node_modules", () => {
+    mkdir(tmpDir, "app");
+    mkdir(tmpDir, "node_modules/react-server-dom-webpack");
+    const info = detectProject(tmpDir);
+    expect(info.hasReactServerDomWebpack).toBe(true);
+  });
 });
 
 // ─── generateWranglerConfig ─────────────────────────────────────────────────
@@ -384,6 +391,7 @@ describe("getMissingDeps", () => {
     info.hasCloudflarePlugin = false;
     info.hasWrangler = true;
     info.hasRscPlugin = true;
+    info.hasReactServerDomWebpack = true;
 
     const missing = getMissingDeps(info);
     expect(missing).toContainEqual(
@@ -397,6 +405,7 @@ describe("getMissingDeps", () => {
     info.hasCloudflarePlugin = true;
     info.hasWrangler = false;
     info.hasRscPlugin = true;
+    info.hasReactServerDomWebpack = true;
 
     const missing = getMissingDeps(info);
     expect(missing).toContainEqual(
@@ -410,10 +419,11 @@ describe("getMissingDeps", () => {
     info.hasCloudflarePlugin = true;
     info.hasWrangler = true;
     info.hasRscPlugin = false;
+    info.hasReactServerDomWebpack = true;
 
     const missing = getMissingDeps(info);
     expect(missing).toContainEqual(
-      expect.objectContaining({ name: "@vitejs/plugin-rsc" }),
+      expect.objectContaining({ name: "@vitejs/plugin-rsc", target: "devDependencies" }),
     );
   });
 
@@ -423,10 +433,39 @@ describe("getMissingDeps", () => {
     info.hasCloudflarePlugin = true;
     info.hasWrangler = true;
     info.hasRscPlugin = false;
+    info.hasReactServerDomWebpack = false;
 
     const missing = getMissingDeps(info);
     expect(missing).not.toContainEqual(
       expect.objectContaining({ name: "@vitejs/plugin-rsc" }),
+    );
+  });
+
+  it("reports missing react-server-dom-webpack for App Router", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+    info.hasReactServerDomWebpack = false;
+
+    const missing = getMissingDeps(info);
+    expect(missing).toContainEqual(
+      expect.objectContaining({ name: "react-server-dom-webpack", target: "dependencies" }),
+    );
+  });
+
+  it("does not require react-server-dom-webpack for Pages Router", () => {
+    mkdir(tmpDir, "pages");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+    info.hasReactServerDomWebpack = false;
+
+    const missing = getMissingDeps(info);
+    expect(missing).not.toContainEqual(
+      expect.objectContaining({ name: "react-server-dom-webpack" }),
     );
   });
 
@@ -436,6 +475,7 @@ describe("getMissingDeps", () => {
     info.hasCloudflarePlugin = true;
     info.hasWrangler = true;
     info.hasRscPlugin = true;
+    info.hasReactServerDomWebpack = true;
 
     const missing = getMissingDeps(info);
     expect(missing).toHaveLength(0);
@@ -934,6 +974,7 @@ describe("getMissingDeps — MDX", () => {
     info.hasCloudflarePlugin = true;
     info.hasWrangler = true;
     info.hasRscPlugin = true;
+    info.hasReactServerDomWebpack = true;
     const missing = getMissingDeps(info);
     expect(missing).toContainEqual(expect.objectContaining({ name: "@mdx-js/rollup" }));
   });

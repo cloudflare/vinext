@@ -2286,6 +2286,46 @@ describe("RSC plugin auto-registration", () => {
     }
   });
 
+  it("throws a clear error before optimizeDeps when react-server-dom-webpack is missing", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-missing-rsdw-"));
+    try {
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, "node_modules", "@vitejs", "plugin-rsc"), {
+        recursive: true,
+      });
+
+      fs.writeFileSync(
+        path.join(tmpDir, "package.json"),
+        JSON.stringify({ name: "tmp-app", private: true, type: "module" }, null, 2),
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        "export default function Home() { return <div>ok</div>; }",
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        "export default function RootLayout({ children }) { return <html><body>{children}</body></html>; }",
+      );
+
+      // Minimal module files so createRequire.resolve("@vitejs/plugin-rsc")
+      // and createRequire.resolve("@vitejs/plugin-rsc/transforms") succeed.
+      fs.writeFileSync(
+        path.join(tmpDir, "node_modules", "@vitejs", "plugin-rsc", "index.js"),
+        "export default function rsc() { return []; }",
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "node_modules", "@vitejs", "plugin-rsc", "transforms.js"),
+        "export {};",
+      );
+
+      expect(() => vinext({ appDir: tmpDir })).toThrow(
+        "react-server-dom-webpack is not installed",
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("does NOT auto-inject RSC plugin when neither app/ nor src/app/ exists", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-app-"));
     try {

@@ -4,7 +4,7 @@
  * Automates the steps needed to run a Next.js app under vinext:
  *
  *   1. Run `vinext check` to show compatibility report
- *   2. Install dependencies (vite, @vitejs/plugin-rsc for App Router)
+ *   2. Install dependencies (vite/vinext, plus App Router RSC deps)
  *   3. Add "type": "module" to package.json
  *   4. Rename CJS config files to .cjs
  *   5. Add vinext scripts to package.json
@@ -22,7 +22,6 @@ import { runCheck, formatReport } from "./check.js";
 import {
   ensureESModule,
   renameCJSConfigs,
-  detectPackageManager,
   detectPackageManagerName,
   hasViteConfig,
   hasAppDir,
@@ -57,6 +56,8 @@ export interface InitResult {
   /** Whether vite.config.ts generation was skipped (already exists) */
   skippedViteConfig: boolean;
 }
+
+type DependencyTarget = "dependencies" | "devDependencies";
 
 // ─── Vite Config Generation (minimal, non-Cloudflare) ────────────────────────
 
@@ -112,12 +113,22 @@ export function addScripts(root: string, port: number): string[] {
 
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
+export function getInitDepsByTarget(
+  isAppRouter: boolean,
+): Record<DependencyTarget, string[]> {
+  return {
+    dependencies: isAppRouter ? ["react-server-dom-webpack"] : [],
+    devDependencies: [
+      "vinext",
+      "vite",
+      ...(isAppRouter ? ["@vitejs/plugin-rsc"] : []),
+    ],
+  };
+}
+
 export function getInitDeps(isAppRouter: boolean): string[] {
-  const deps = ["vinext", "vite"];
-  if (isAppRouter) {
-    deps.push("@vitejs/plugin-rsc");
-  }
-  return deps;
+  const depsByTarget = getInitDepsByTarget(isAppRouter);
+  return [...depsByTarget.devDependencies, ...depsByTarget.dependencies];
 }
 
 export function isDepInstalled(root: string, dep: string): boolean {
@@ -139,17 +150,32 @@ export function isDepInstalled(root: string, dep: string): boolean {
 function installDeps(
   root: string,
   deps: string[],
+  target: DependencyTarget,
   exec: (cmd: string, opts: { cwd: string; stdio: string }) => void,
 ): void {
   if (deps.length === 0) return;
 
-  const installCmd = detectPackageManager(root);
+  const installCmd = getInstallCommand(root, target);
   const depsStr = deps.join(" ");
 
   exec(`${installCmd} ${depsStr}`, {
     cwd: root,
     stdio: "inherit",
   });
+}
+
+function getInstallCommand(root: string, target: DependencyTarget): string {
+  const pm = detectPackageManagerName(root);
+  switch (pm) {
+    case "pnpm":
+      return target === "devDependencies" ? "pnpm add -D" : "pnpm add";
+    case "yarn":
+      return target === "devDependencies" ? "yarn add -D" : "yarn add";
+    case "bun":
+      return target === "devDependencies" ? "bun add -d" : "bun add";
+    default:
+      return target === "devDependencies" ? "npm install -D" : "npm install";
+  }
 }
 
 // ─── Main Entry ──────────────────────────────────────────────────────────────
@@ -188,12 +214,20 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 2: Install dependencies ───────────────────────────────────────
 
-  const neededDeps = getInitDeps(isApp);
-  const missingDeps = neededDeps.filter((dep) => !isDepInstalled(root, dep));
+  const depsByTarget = getInitDepsByTarget(isApp);
+  const missingDevDeps = depsByTarget.devDependencies.filter((dep) => !isDepInstalled(root, dep));
+  const missingRuntimeDeps = depsByTarget.dependencies.filter((dep) => !isDepInstalled(root, dep));
+  const missingDeps = [...missingDevDeps, ...missingRuntimeDeps];
 
+  if (missingDevDeps.length > 0) {
+    console.log(`  Installing ${missingDevDeps.join(", ")}...`);
+    installDeps(root, missingDevDeps, "devDependencies", exec);
+  }
+  if (missingRuntimeDeps.length > 0) {
+    console.log(`  Installing ${missingRuntimeDeps.join(", ")}...`);
+    installDeps(root, missingRuntimeDeps, "dependencies", exec);
+  }
   if (missingDeps.length > 0) {
-    console.log(`  Installing ${missingDeps.join(", ")}...`);
-    installDeps(root, missingDeps, exec);
     console.log();
   }
 
@@ -221,8 +255,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   console.log("  vinext init complete!\n");
 
-  if (missingDeps.length > 0) {
-    console.log(`    \u2713 Added ${missingDeps.join(", ")} to devDependencies`);
+  if (missingDevDeps.length > 0) {
+    console.log(`    \u2713 Added ${missingDevDeps.join(", ")} to devDependencies`);
+  }
+  if (missingRuntimeDeps.length > 0) {
+    console.log(`    \u2713 Added ${missingRuntimeDeps.join(", ")} to dependencies`);
   }
   if (addedTypeModule) {
     console.log(`    \u2713 Added "type": "module" to package.json`);
