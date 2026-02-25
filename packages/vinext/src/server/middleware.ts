@@ -132,8 +132,9 @@ export function matchPattern(pathname: string, pattern: string): boolean {
 
   // Convert Next.js path patterns to regex in a single pass.
   // Matches /:param*, /:param+, :param, dots, and literal text.
+  // Param names may contain hyphens (e.g. [[...sign-in]]).
   let regexStr = "";
-  const tokenRe = /\/:(\w+)\*|\/:(\w+)\+|:(\w+)|[.]|[^/:.]+|./g;
+  const tokenRe = /\/:([\w-]+)\*|\/:([\w-]+)\+|:([\w-]+)|[.]|[^/:.]+|./g;
   let tok: RegExpExecArray | null;
   while ((tok = tokenRe.exec(pattern)) !== null) {
     if (tok[1] !== undefined) {

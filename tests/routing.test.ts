@@ -579,4 +579,103 @@ describe("matchAppRoute - URL matching", () => {
     // Should have same layouts as the parent route
     expect(membersRoute!.layouts).toEqual(dashboardRoute!.layouts);
   });
+
+  // --- Hyphenated param names (issue #71) ---
+
+  it("discovers optional catch-all with hyphenated param name [[...sign-in]]", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const patterns = routes.map((r) => r.pattern);
+
+    // [[...sign-in]] should produce :sign-in* pattern
+    expect(patterns).toContain("/sign-in/:sign-in*");
+  });
+
+  it("hyphenated optional catch-all has correct params and isDynamic", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const route = routes.find((r) => r.pattern === "/sign-in/:sign-in*");
+
+    expect(route).toBeDefined();
+    expect(route!.isDynamic).toBe(true);
+    expect(route!.params).toContain("sign-in");
+  });
+
+  it("matches hyphenated optional catch-all with zero segments", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    const result = matchAppRoute("/sign-in", routes);
+    expect(result).not.toBeNull();
+    expect(result!.route.pattern).toBe("/sign-in/:sign-in*");
+    expect(result!.params["sign-in"]).toEqual([]);
+  });
+
+  it("matches hyphenated optional catch-all with segments", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    const result = matchAppRoute("/sign-in/sso/callback", routes);
+    expect(result).not.toBeNull();
+    expect(result!.route.pattern).toBe("/sign-in/:sign-in*");
+    expect(result!.params["sign-in"]).toEqual(["sso", "callback"]);
+  });
+
+  it("discovers dynamic segment with hyphenated param name [auth-method]", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+    const patterns = routes.map((r) => r.pattern);
+
+    // [auth-method] should produce :auth-method pattern
+    expect(patterns).toContain("/auth/:auth-method");
+  });
+
+  it("matches dynamic segment with hyphenated param name", async () => {
+    invalidateAppRouteCache();
+    const routes = await appRouter(APP_FIXTURE_DIR);
+
+    const result = matchAppRoute("/auth/google", routes);
+    expect(result).not.toBeNull();
+    expect(result!.route.pattern).toBe("/auth/:auth-method");
+    expect(result!.params["auth-method"]).toBe("google");
+  });
+});
+
+// --- Pages Router: hyphenated param names ---
+
+describe("pagesRouter - hyphenated param names", () => {
+  it("discovers optional catch-all with hyphenated param name [[...sign-up]]", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+    const patterns = routes.map((r) => r.pattern);
+
+    // [[...sign-up]] should produce :sign-up* pattern
+    expect(patterns).toContain("/sign-up/:sign-up*");
+  });
+
+  it("hyphenated optional catch-all has correct params and isDynamic", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+    const route = routes.find((r) => r.pattern === "/sign-up/:sign-up*");
+
+    expect(route).toBeDefined();
+    expect(route!.isDynamic).toBe(true);
+    expect(route!.params).toContain("sign-up");
+  });
+
+  it("matches hyphenated optional catch-all with zero segments", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+
+    const result = matchRoute("/sign-up", routes);
+    expect(result).not.toBeNull();
+    expect(result!.route.pattern).toBe("/sign-up/:sign-up*");
+    expect(result!.params["sign-up"]).toEqual([]);
+  });
+
+  it("matches hyphenated optional catch-all with segments", async () => {
+    const routes = await pagesRouter(FIXTURE_DIR);
+
+    const result = matchRoute("/sign-up/step/2", routes);
+    expect(result).not.toBeNull();
+    expect(result!.route.pattern).toBe("/sign-up/:sign-up*");
+    expect(result!.params["sign-up"]).toEqual(["step", "2"]);
+  });
 });

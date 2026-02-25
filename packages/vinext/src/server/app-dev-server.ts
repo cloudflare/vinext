@@ -914,7 +914,7 @@ ${generateNormalizePathCode("modern")}
 
 // ── Config pattern matching (redirects, rewrites, headers) ──────────────
 function __matchConfigPattern(pathname, pattern) {
-  if (pattern.includes("(") || pattern.includes("\\\\") || /:\\w+[*+][^/]/.test(pattern)) {
+  if (pattern.includes("(") || pattern.includes("\\\\") || /:[\\w-]+[*+][^/]/.test(pattern)) {
     try {
       const paramNames = [];
       const regexStr = pattern

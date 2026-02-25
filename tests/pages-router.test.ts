@@ -197,6 +197,28 @@ describe("Pages Router integration", () => {
     expect(html).toMatch(/Path:\s*(<!--\s*-->)?\s*intro/);
   });
 
+  // --- Hyphenated param names (issue #71) ---
+
+  it("renders optional catch-all with hyphenated param name [[...sign-up]]", async () => {
+    const res = await fetch(`${baseUrl}/sign-up`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Sign Up");
+    expect(html).toContain('data-testid="sign-up-page"');
+    expect(html).toMatch(/Segments:.*0/);
+    expect(html).toContain("(root)");
+  });
+
+  it("renders hyphenated optional catch-all with segments", async () => {
+    const res = await fetch(`${baseUrl}/sign-up/step/2`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Sign Up");
+    expect(html).toMatch(/Segments:.*2/);
+  });
+
   // --- Hydration ---
 
   // --- next.config.js ---

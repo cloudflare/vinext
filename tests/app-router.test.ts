@@ -668,6 +668,39 @@ describe("App Router integration", () => {
     expect(html).toMatch(/Segments:.*2/);
   });
 
+  // --- Hyphenated param names (issue #71: [[...sign-in]] causes 404) ---
+
+  it("renders optional catch-all with hyphenated param name [[...sign-in]]", async () => {
+    const res = await fetch(`${baseUrl}/sign-in`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Sign In");
+    expect(html).toContain('data-testid="sign-in-page"');
+    expect(html).toMatch(/Segments:.*0/);
+    expect(html).toContain("(root)");
+  });
+
+  it("renders hyphenated optional catch-all with segments", async () => {
+    const res = await fetch(`${baseUrl}/sign-in/sso/callback`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Sign In");
+    expect(html).toMatch(/Segments:.*2/);
+    expect(html).toContain("sso/callback");
+  });
+
+  it("renders dynamic segment with hyphenated param name [auth-method]", async () => {
+    const res = await fetch(`${baseUrl}/auth/google`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Auth Method");
+    expect(html).toContain('data-testid="auth-method-page"');
+    expect(html).toContain("google");
+  });
+
   it("renders static metadata (export const metadata) as head elements", async () => {
     const res = await fetch(`${baseUrl}/metadata-test`);
     expect(res.status).toBe(200);

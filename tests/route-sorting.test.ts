@@ -82,6 +82,18 @@ describe("patternToNextFormat", () => {
   it("handles mixed static and dynamic", () => {
     expect(patternToNextFormat("/blog/:year/:month/:slug")).toBe("/blog/[year]/[month]/[slug]");
   });
+
+  it("converts hyphenated dynamic :auth-method to [auth-method]", () => {
+    expect(patternToNextFormat("/auth/:auth-method")).toBe("/auth/[auth-method]");
+  });
+
+  it("converts hyphenated catch-all :sign-in+ to [...sign-in]", () => {
+    expect(patternToNextFormat("/login/:sign-in+")).toBe("/login/[...sign-in]");
+  });
+
+  it("converts hyphenated optional catch-all :sign-up* to [[...sign-up]]", () => {
+    expect(patternToNextFormat("/register/:sign-up*")).toBe("/register/[[...sign-up]]");
+  });
 });
 
 // ─── App Router route sorting ───────────────────────────────────────────

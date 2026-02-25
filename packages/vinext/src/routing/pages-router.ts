@@ -86,24 +86,24 @@ function fileToRoute(file: string, pagesDir: string): Route | null {
 
   // Convert Next.js dynamic segments to URL patterns
   const urlSegments = segments.map((segment) => {
-    // Catch-all: [...slug] -> :slug+
-    const catchAllMatch = segment.match(/^\[\.\.\.(\w+)\]$/);
+    // Catch-all: [...slug] -> :slug+ (param names may contain hyphens)
+    const catchAllMatch = segment.match(/^\[\.\.\.([\w-]+)\]$/);
     if (catchAllMatch) {
       isDynamic = true;
       params.push(catchAllMatch[1]);
       return `:${catchAllMatch[1]}+`;
     }
 
-    // Optional catch-all: [[...slug]] -> :slug*
-    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.(\w+)\]\]$/);
+    // Optional catch-all: [[...slug]] -> :slug* (param names may contain hyphens)
+    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.([\w-]+)\]\]$/);
     if (optionalCatchAllMatch) {
       isDynamic = true;
       params.push(optionalCatchAllMatch[1]);
       return `:${optionalCatchAllMatch[1]}*`;
     }
 
-    // Dynamic segment: [id] -> :id
-    const dynamicMatch = segment.match(/^\[(\w+)\]$/);
+    // Dynamic segment: [id] -> :id (param names may contain hyphens)
+    const dynamicMatch = segment.match(/^\[([\w-]+)\]$/);
     if (dynamicMatch) {
       isDynamic = true;
       params.push(dynamicMatch[1]);
@@ -278,7 +278,7 @@ function matchPattern(
  */
 export function patternToNextFormat(pattern: string): string {
   return pattern
-    .replace(/:(\w+)\*/g, "[[...$1]]")   // optional catch-all :slug* -> [[...slug]]
-    .replace(/:(\w+)\+/g, "[...$1]")     // catch-all :slug+ -> [...slug]
-    .replace(/:(\w+)/g, "[$1]");          // dynamic :id -> [id]
+    .replace(/:([\w-]+)\*/g, "[[...$1]]")   // optional catch-all :slug* -> [[...slug]]
+    .replace(/:([\w-]+)\+/g, "[...$1]")     // catch-all :slug+ -> [...slug]
+    .replace(/:([\w-]+)/g, "[$1]");          // dynamic :id -> [id]
 }
