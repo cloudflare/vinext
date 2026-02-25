@@ -1,17 +1,34 @@
 name: Publish to npm
 
 on:
-  workflow_dispatch: # manual trigger only for now
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
 
 concurrency:
   group: npm-publish
   cancel-in-progress: true
 
 permissions:
+  contents: write
   id-token: write
 
 jobs:
+  ci:
+    name: CI Gate
+    uses: ./.github/workflows/ci.yml
+
   publish:
+    name: Publish
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -31,17 +48,48 @@ jobs:
         working-directory: packages/vinext
 
       - name: Bump version
+        id: version
         working-directory: packages/vinext
         run: |
-          # Get the latest published version from npm, default to 0.0.0 if none
           LATEST=$(npm view vinext version 2>/dev/null || echo "0.0.0")
-          # Bump patch: 0.0.0 -> 0.0.1, 0.0.1 -> 0.0.2, etc.
           IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST"
-          NEXT_PATCH=$((PATCH + 1))
-          VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+
+          case "${{ inputs.bump }}" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          VERSION="${MAJOR}.${MINOR}.${PATCH}"
           npm version "$VERSION" --no-git-tag-version
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Publishing vinext@${VERSION} (was ${LATEST})"
 
-      - name: Publish
+      - name: Publish (OIDC trusted publishing)
         working-directory: packages/vinext
         run: npm publish --access public --provenance
+
+      - name: Tag release
+        run: |
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Notify Google Chat
+        if: success()
+        continue-on-error: true
+        env:
+          GOOGLE_CHAT_WEBHOOK: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
+        run: |
+          VERSION="v${{ steps.version.outputs.version }}"
+          curl -fSs -o /dev/null -w "HTTP %{http_code}" -X POST "$GOOGLE_CHAT_WEBHOOK" \
+            -H "Content-Type: application/json; charset=UTF-8" \
+            -d "$(jq -n --arg text "vinext@${VERSION} published to npm: https://www.npmjs.com/package/vinext/v/${VERSION#v}" '{text: $text}')"

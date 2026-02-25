@@ -16,13 +16,16 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execSync, type ExecSyncOptions } from "node:child_process";
+import { createRequire } from "node:module";
+import { execFileSync, execSync, type ExecSyncOptions } from "node:child_process";
+import { parseArgs as nodeParseArgs } from "node:util";
 import { createBuilder, build } from "vite";
 import {
   ensureESModule as _ensureESModule,
   renameCJSConfigs as _renameCJSConfigs,
   detectPackageManager as _detectPackageManager,
 } from "./utils/project.js";
+import { getReactUpgradeDeps } from "./init.js";
 import { runTPR } from "./cloudflare/tpr.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -32,6 +35,8 @@ export interface DeployOptions {
   root: string;
   /** Deploy to preview environment (default: production) */
   preview?: boolean;
+  /** Wrangler environment name from wrangler.jsonc env.<name> */
+  env?: string;
   /** Custom project name for the Worker */
   name?: string;
   /** Skip the build step (assume already built) */
@@ -47,6 +52,40 @@ export interface DeployOptions {
   /** TPR: analytics lookback window in hours (default: 24) */
   tprWindow?: number;
 }
+
+// ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
+
+/** Deploy command flag definitions for util.parseArgs. */
+const deployArgOptions = {
+  help:               { type: "boolean", short: "h", default: false },
+  preview:            { type: "boolean", default: false },
+  env:                { type: "string" },
+  name:               { type: "string" },
+  "skip-build":       { type: "boolean", default: false },
+  "dry-run":          { type: "boolean", default: false },
+  "experimental-tpr": { type: "boolean", default: false },
+  "tpr-coverage":     { type: "string" },
+  "tpr-limit":        { type: "string" },
+  "tpr-window":       { type: "string" },
+} as const;
+
+export function parseDeployArgs(args: string[]) {
+  const { values } = nodeParseArgs({ args, options: deployArgOptions, strict: true });
+  return {
+    help: values.help,
+    preview: values.preview,
+    env: values.env?.trim() || undefined,
+    name: values.name?.trim() || undefined,
+    skipBuild: values["skip-build"],
+    dryRun: values["dry-run"],
+    experimentalTPR: values["experimental-tpr"],
+    tprCoverage: values["tpr-coverage"] ? parseInt(values["tpr-coverage"], 10) : undefined,
+    tprLimit: values["tpr-limit"] ? parseInt(values["tpr-limit"], 10) : undefined,
+    tprWindow: values["tpr-window"] ? parseInt(values["tpr-window"], 10) : undefined,
+  };
+}
+
+// ─── Project Detection ──────────────────────────────────────────────────────
 
 interface ProjectInfo {
   root: string;
@@ -544,7 +583,26 @@ interface MissingDep {
   version: string;
 }
 
-export function getMissingDeps(info: ProjectInfo): MissingDep[] {
+/**
+ * Check if a package is resolvable from a given root directory using
+ * Node's module resolution (createRequire). Handles hoisting, pnpm
+ * symlinks, monorepos, and Yarn PnP correctly.
+ */
+export function isPackageResolvable(root: string, packageName: string): boolean {
+  try {
+    const req = createRequire(path.join(root, "package.json"));
+    req.resolve(packageName);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getMissingDeps(
+  info: ProjectInfo,
+  /** Override for testing — defaults to `isPackageResolvable` */
+  _isResolvable: (root: string, pkg: string) => boolean = isPackageResolvable,
+): MissingDep[] {
   const missing: MissingDep[] = [];
 
   if (!info.hasCloudflarePlugin) {
@@ -555,6 +613,12 @@ export function getMissingDeps(info: ProjectInfo): MissingDep[] {
   }
   if (info.isAppRouter && !info.hasRscPlugin) {
     missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
+  }
+  if (info.isAppRouter) {
+    // react-server-dom-webpack must be resolvable from the project root for Vite.
+    if (!_isResolvable(info.root, "react-server-dom-webpack")) {
+      missing.push({ name: "react-server-dom-webpack", version: "latest" });
+    }
   }
   if (info.hasMDX) {
     // Check if @mdx-js/rollup is already installed
@@ -661,7 +725,21 @@ async function runBuild(info: ProjectInfo): Promise<void> {
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
 
-function runWranglerDeploy(root: string, preview: boolean): string {
+export interface WranglerDeployArgs {
+  args: string[];
+  env: string | undefined;
+}
+
+export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" | "env">): WranglerDeployArgs {
+  const args = ["deploy"];
+  const env = options.env || (options.preview ? "preview" : undefined);
+  if (env) {
+    args.push("--env", env);
+  }
+  return { args, env };
+}
+
+function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string {
   const wranglerBin = path.join(root, "node_modules", ".bin", "wrangler");
 
   const execOpts: ExecSyncOptions = {
@@ -670,13 +748,17 @@ function runWranglerDeploy(root: string, preview: boolean): string {
     encoding: "utf-8",
   };
 
-  // wrangler deploy outputs the URL to stdout
-  const args = preview ? ["deploy", "--env", "preview"] : ["deploy"];
-  const cmd = `"${wranglerBin}" ${args.join(" ")}`;
+  const { args, env } = buildWranglerDeployArgs(options);
 
-  console.log(preview ? "\n  Deploying to preview..." : "\n  Deploying to production...");
+  if (env) {
+    console.log(`\n  Deploying to env: ${env}...`);
+  } else {
+    console.log("\n  Deploying to production...");
+  }
 
-  const output = execSync(cmd, execOpts) as string;
+  // Use execFileSync to avoid shell injection — args are passed as an array,
+  // never interpolated into a shell command string.
+  const output = execFileSync(wranglerBin, args, execOpts) as string;
 
   // Parse the deployed URL from wrangler output
   // Wrangler prints: "Published <name> (version_id)\n  https://<name>.<subdomain>.workers.dev"
@@ -719,6 +801,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
   console.log(`  ISR:     ${info.hasISR ? "detected" : "none"}`);
 
   // Step 2: Check and install missing dependencies
+  // For App Router: upgrade React first if needed for react-server-dom-webpack compatibility
+  if (info.isAppRouter) {
+    const reactUpgrade = getReactUpgradeDeps(root);
+    if (reactUpgrade.length > 0) {
+      const installCmd = detectPackageManager(root).replace(/ -D$/, "");
+      console.log(`  Upgrading ${reactUpgrade.map(d => d.replace(/@latest$/, "")).join(", ")}...`);
+      execSync(`${installCmd} ${reactUpgrade.join(" ")}`, { cwd: root, stdio: "inherit" });
+    }
+  }
   const missingDeps = getMissingDeps(info);
   if (missingDeps.length > 0) {
     console.log();
@@ -776,7 +867,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   // Step 7: Deploy via wrangler
-  const url = runWranglerDeploy(root, options.preview ?? false);
+  const url = runWranglerDeploy(root, {
+    preview: options.preview ?? false,
+    env: options.env,
+  });
 
   console.log("\n  ─────────────────────────────────────────");
   console.log(`  Deployed to: ${url}`);
