@@ -13,6 +13,7 @@ import {
   getFilesToGenerate,
   ensureESModule,
   renameCJSConfigs,
+  buildWranglerDeployArgs,
 } from "../packages/vinext/src/deploy.js";
 import { computeLazyChunks } from "../packages/vinext/src/index.js";
 
@@ -41,6 +42,30 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+// ─── Wrangler deploy args ───────────────────────────────────────────────────
+
+describe("buildWranglerDeployArgs", () => {
+  it("uses plain deploy for production by default", () => {
+    expect(buildWranglerDeployArgs({})).toEqual(["deploy"]);
+  });
+
+  it("maps --preview to wrangler --env preview", () => {
+    expect(buildWranglerDeployArgs({ preview: true })).toEqual(["deploy", "--env", "preview"]);
+  });
+
+  it("passes through explicit env names", () => {
+    expect(buildWranglerDeployArgs({ env: "staging" })).toEqual(["deploy", "--env", "staging"]);
+  });
+
+  it("prefers explicit env over --preview shorthand", () => {
+    expect(buildWranglerDeployArgs({ preview: true, env: "qa" })).toEqual([
+      "deploy",
+      "--env",
+      "qa",
+    ]);
+  });
 });
 
 // ─── detectProject ──────────────────────────────────────────────────────────
