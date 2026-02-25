@@ -32,6 +32,8 @@ export interface DeployOptions {
   root: string;
   /** Deploy to preview environment (default: production) */
   preview?: boolean;
+  /** Wrangler environment name from wrangler.jsonc env.<name> */
+  env?: string;
   /** Custom project name for the Worker */
   name?: string;
   /** Skip the build step (assume already built) */
@@ -661,7 +663,16 @@ async function runBuild(info: ProjectInfo): Promise<void> {
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
 
-function runWranglerDeploy(root: string, preview: boolean): string {
+export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" | "env">): string[] {
+  const args = ["deploy"];
+  const env = options.env?.trim() || (options.preview ? "preview" : undefined);
+  if (env) {
+    args.push("--env", env);
+  }
+  return args;
+}
+
+function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string {
   const wranglerBin = path.join(root, "node_modules", ".bin", "wrangler");
 
   const execOpts: ExecSyncOptions = {
@@ -671,10 +682,16 @@ function runWranglerDeploy(root: string, preview: boolean): string {
   };
 
   // wrangler deploy outputs the URL to stdout
-  const args = preview ? ["deploy", "--env", "preview"] : ["deploy"];
+  const args = buildWranglerDeployArgs(options);
   const cmd = `"${wranglerBin}" ${args.join(" ")}`;
+  const envFlagIndex = args.indexOf("--env");
+  const deployEnv = envFlagIndex === -1 ? null : args[envFlagIndex + 1];
 
-  console.log(preview ? "\n  Deploying to preview..." : "\n  Deploying to production...");
+  if (deployEnv) {
+    console.log(`\n  Deploying to env: ${deployEnv}...`);
+  } else {
+    console.log("\n  Deploying to production...");
+  }
 
   const output = execSync(cmd, execOpts) as string;
 
@@ -776,7 +793,10 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
 
   // Step 7: Deploy via wrangler
-  const url = runWranglerDeploy(root, options.preview ?? false);
+  const url = runWranglerDeploy(root, {
+    preview: options.preview ?? false,
+    env: options.env,
+  });
 
   console.log("\n  ─────────────────────────────────────────");
   console.log(`  Deployed to: ${url}`);

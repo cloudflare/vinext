@@ -64,7 +64,7 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
-`vinext deploy` options: `--preview`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
+`vinext deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
 
 `vinext init` options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
@@ -157,7 +157,10 @@ We track the public Next.js API surface and add support for new stable features.
 
 ```bash
 vinext deploy
+vinext deploy --env staging
 ```
+
+Use `--env <name>` to target `wrangler.jsonc` `env.<name>`. `--preview` is shorthand for `--env preview`.
 
 The deploy command also auto-detects and fixes common migration issues:
 - Adds `"type": "module"` to package.json if missing

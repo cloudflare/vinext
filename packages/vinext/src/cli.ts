@@ -125,6 +125,23 @@ function parseNumericFlag(args: string[], flag: string): number | undefined {
   return undefined;
 }
 
+/** Parse a string flag like --name my-app or --name=my-app. */
+function parseStringFlag(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  const next = idx !== -1 ? args[idx + 1] : undefined;
+  if (next && !next.startsWith("-")) {
+    return next;
+  }
+
+  const eq = args.find((a) => a.startsWith(`${flag}=`));
+  if (eq) {
+    const value = eq.slice(flag.length + 1);
+    if (value) return value;
+  }
+
+  return undefined;
+}
+
 // ─── Auto-configuration ───────────────────────────────────────────────────────
 
 /**
@@ -344,15 +361,9 @@ async function deployCommand() {
   const dryRun = rawArgs.includes("--dry-run");
   const experimentalTPR = rawArgs.includes("--experimental-tpr");
 
-  // Parse --name flag
-  let name: string | undefined;
-  const nameIdx = rawArgs.indexOf("--name");
-  if (nameIdx !== -1 && rawArgs[nameIdx + 1]) {
-    name = rawArgs[nameIdx + 1];
-  } else {
-    const nameEq = rawArgs.find((a) => a.startsWith("--name="));
-    if (nameEq) name = nameEq.split("=")[1];
-  }
+  // Parse string flags
+  const name = parseStringFlag(rawArgs, "--name");
+  const env = parseStringFlag(rawArgs, "--env");
 
   // Parse TPR flags
   const tprCoverage = parseNumericFlag(rawArgs, "--tpr-coverage");
@@ -362,6 +373,7 @@ async function deployCommand() {
   await runDeploy({
     root: process.cwd(),
     preview,
+    env,
     skipBuild,
     dryRun,
     name,
@@ -467,7 +479,8 @@ function printHelp(cmd?: string) {
     - Deploys via wrangler
 
   Options:
-    --preview                Deploy to a preview environment
+    --preview                Deploy to preview environment (same as --env preview)
+    --env <name>             Deploy using wrangler env.<name>
     --name <name>            Custom Worker name (default: from package.json)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Generate config files without building or deploying
@@ -488,6 +501,7 @@ function printHelp(cmd?: string) {
   Examples:
     vinext deploy                              Build and deploy to production
     vinext deploy --preview                    Deploy to a preview URL
+    vinext deploy --env staging                Deploy using wrangler env.staging
     vinext deploy --dry-run                    See what files would be generated
     vinext deploy --name my-app                Deploy with a custom Worker name
     vinext deploy --experimental-tpr           Enable TPR during deploy
