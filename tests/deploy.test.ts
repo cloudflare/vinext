@@ -77,6 +77,20 @@ describe("buildWranglerDeployArgs", () => {
   it("treats empty string env as production", () => {
     expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
   });
+
+  it("appends passthroughArgs to wrangler command", () => {
+    expect(buildWranglerDeployArgs({ passthroughArgs: ["--keep-vars"] })).toEqual({
+      args: ["deploy", "--keep-vars"],
+      env: undefined,
+    });
+  });
+
+  it("appends passthroughArgs after env flag", () => {
+    expect(buildWranglerDeployArgs({ env: "staging", passthroughArgs: ["--keep-vars"] })).toEqual({
+      args: ["deploy", "--env", "staging", "--keep-vars"],
+      env: "staging",
+    });
+  });
 });
 
 // ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
@@ -135,8 +149,31 @@ describe("parseDeployArgs", () => {
     expect(parseDeployArgs(["--env", "   "]).env).toBeUndefined();
   });
 
-  it("throws on unknown flags (strict mode)", () => {
-    expect(() => parseDeployArgs(["--bogus"])).toThrow();
+  it("collects unknown flags as passthroughArgs", () => {
+    const parsed = parseDeployArgs(["--keep-vars"]);
+    expect(parsed.passthroughArgs).toEqual(["--keep-vars"]);
+  });
+
+  it("collects unknown flags with values as passthroughArgs", () => {
+    const parsed = parseDeployArgs(["--config", "my-wrangler.toml"]);
+    expect(parsed.passthroughArgs).toEqual(["--config", "my-wrangler.toml"]);
+  });
+
+  it("collects unknown inline flags as passthroughArgs", () => {
+    const parsed = parseDeployArgs(["--config=my-wrangler.toml"]);
+    expect(parsed.passthroughArgs).toEqual(["--config=my-wrangler.toml"]);
+  });
+
+  it("separates known and unknown flags", () => {
+    const parsed = parseDeployArgs(["--preview", "--keep-vars", "--skip-build"]);
+    expect(parsed.preview).toBe(true);
+    expect(parsed.skipBuild).toBe(true);
+    expect(parsed.passthroughArgs).toEqual(["--keep-vars"]);
+  });
+
+  it("returns empty passthroughArgs when no unknown flags", () => {
+    const parsed = parseDeployArgs(["--preview"]);
+    expect(parsed.passthroughArgs).toEqual([]);
   });
 });
 

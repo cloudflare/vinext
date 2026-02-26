@@ -52,6 +52,8 @@ export interface DeployOptions {
   tprLimit?: number;
   /** TPR: analytics lookback window in hours (default: 24) */
   tprWindow?: number;
+  /** Extra args to pass through to `wrangler deploy` (e.g. --keep-vars) */
+  passthroughArgs?: string[];
 }
 
 // ─── CLI arg parsing (uses Node.js util.parseArgs) ──────────────────────────
@@ -71,7 +73,35 @@ const deployArgOptions = {
 } as const;
 
 export function parseDeployArgs(args: string[]) {
-  const { values } = nodeParseArgs({ args, options: deployArgOptions, strict: true });
+  const knownNames = new Set(Object.keys(deployArgOptions));
+
+  const { values, tokens } = nodeParseArgs({
+    args,
+    options: deployArgOptions,
+    strict: false,
+    tokens: true,
+    allowPositionals: true,
+  });
+
+  // Collect unknown flags/options to pass through to wrangler
+  const passthroughArgs: string[] = [];
+  // tokens is always defined when tokens:true, narrowing for TS
+  if (tokens) {
+    for (const token of tokens) {
+      if (token.kind === "option" && !knownNames.has(token.name)) {
+        passthroughArgs.push(token.rawName);
+        if (token.value !== undefined && token.inlineValue) {
+          // Reconstruct inline assignment (e.g. --config=path)
+          passthroughArgs[passthroughArgs.length - 1] = `${token.rawName}=${token.value}`;
+        } else if (token.value !== undefined) {
+          passthroughArgs.push(token.value);
+        }
+      } else if (token.kind === "positional") {
+        passthroughArgs.push(token.value);
+      }
+    }
+  }
+
   return {
     help: values.help,
     preview: values.preview,
@@ -80,9 +110,10 @@ export function parseDeployArgs(args: string[]) {
     skipBuild: values["skip-build"],
     dryRun: values["dry-run"],
     experimentalTPR: values["experimental-tpr"],
-    tprCoverage: values["tpr-coverage"] ? parseInt(values["tpr-coverage"], 10) : undefined,
-    tprLimit: values["tpr-limit"] ? parseInt(values["tpr-limit"], 10) : undefined,
-    tprWindow: values["tpr-window"] ? parseInt(values["tpr-window"], 10) : undefined,
+    tprCoverage: values["tpr-coverage"] ? parseInt(String(values["tpr-coverage"]), 10) : undefined,
+    tprLimit: values["tpr-limit"] ? parseInt(String(values["tpr-limit"]), 10) : undefined,
+    tprWindow: values["tpr-window"] ? parseInt(String(values["tpr-window"]), 10) : undefined,
+    passthroughArgs,
   };
 }
 
@@ -737,16 +768,19 @@ export interface WranglerDeployArgs {
   env: string | undefined;
 }
 
-export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" | "env">): WranglerDeployArgs {
+export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" | "env" | "passthroughArgs">): WranglerDeployArgs {
   const args = ["deploy"];
   const env = options.env || (options.preview ? "preview" : undefined);
   if (env) {
     args.push("--env", env);
   }
+  if (options.passthroughArgs && options.passthroughArgs.length > 0) {
+    args.push(...options.passthroughArgs);
+  }
   return { args, env };
 }
 
-function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string {
+function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env" | "passthroughArgs">): string {
   const wranglerBin = path.join(root, "node_modules", ".bin", "wrangler");
 
   const execOpts: ExecSyncOptions = {
@@ -878,6 +912,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   const url = runWranglerDeploy(root, {
     preview: options.preview ?? false,
     env: options.env,
+    passthroughArgs: options.passthroughArgs,
   });
 
   console.log("\n  ─────────────────────────────────────────");
