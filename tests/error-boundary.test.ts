@@ -151,7 +151,10 @@ describe("ErrorBoundary module runtime compatibility", () => {
       "../packages/vinext/src/shims/error-boundary.tsx",
     );
 
-    await fs.writeFile(jsxRuntimePath, "export default {};\n");
+    await fs.writeFile(
+      jsxRuntimePath,
+      "const jsx = () => null; const jsxs = () => null; const Fragment = 'div'; export default { jsx, jsxs, Fragment };\n",
+    );
 
     let server: Awaited<ReturnType<typeof createServer>> | undefined;
     try {
@@ -184,8 +187,12 @@ describe("ErrorBoundary module runtime compatibility", () => {
       });
 
       const mod = await server.ssrLoadModule(shimPath);
+
       expect(typeof mod.ErrorBoundary).toBe("function");
       expect(typeof mod.NotFoundBoundary).toBe("function");
+      expect(
+        () => new mod.ErrorBoundary({ fallback: () => null, children: "child" }),
+      ).not.toThrow();
     } finally {
       await server?.close();
       await fs.rm(tmpDir, { recursive: true, force: true });
