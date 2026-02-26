@@ -2090,20 +2090,20 @@ describe("App Router middleware with NextRequest", () => {
   });
 
   it("middleware receives NextRequest and can use .nextUrl", async () => {
-    // The middleware sets x-middleware-pathname from request.nextUrl.pathname
+    // The middleware sets x-mw-pathname from request.nextUrl.pathname
     // If the middleware received a plain Request, this would throw TypeError
     const res = await fetch(`${baseUrl}/about`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-middleware-ran")).toBe("true");
-    expect(res.headers.get("x-middleware-pathname")).toBe("/about");
+    expect(res.headers.get("x-mw-ran")).toBe("true");
+    expect(res.headers.get("x-mw-pathname")).toBe("/about");
   });
 
   it("middleware NextRequest.nextUrl.pathname strips .rsc suffix", async () => {
     // Regression: .rsc is an internal transport detail; middleware should see
     // the clean pathname (/about), not the raw URL (/about.rsc).
     const res = await fetch(`${baseUrl}/about.rsc`);
-    expect(res.headers.get("x-middleware-ran")).toBe("true");
-    expect(res.headers.get("x-middleware-pathname")).toBe("/about");
+    expect(res.headers.get("x-mw-ran")).toBe("true");
+    expect(res.headers.get("x-mw-pathname")).toBe("/about");
   });
 
   it("middleware receives NextRequest and can use .cookies", async () => {
@@ -2114,8 +2114,8 @@ describe("App Router middleware with NextRequest", () => {
       },
     });
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-middleware-ran")).toBe("true");
-    expect(res.headers.get("x-middleware-has-session")).toBe("true");
+    expect(res.headers.get("x-mw-ran")).toBe("true");
+    expect(res.headers.get("x-mw-has-session")).toBe("true");
   });
 
   it("middleware can redirect using NextRequest", async () => {

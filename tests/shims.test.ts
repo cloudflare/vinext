@@ -3080,7 +3080,7 @@ describe("proxyExternalRequest", () => {
     }
   });
 
-  it("strips cookie, authorization, and x-middleware-* headers from proxied requests", async () => {
+  it("strips credentials and x-middleware-* headers from proxied requests", async () => {
     const { proxyExternalRequest } = await import(
       "../packages/vinext/src/config/config-matchers.js"
     );
@@ -3090,6 +3090,8 @@ describe("proxyExternalRequest", () => {
       headers: {
         "cookie": "session=secret123",
         "authorization": "Bearer tok_secret",
+        "x-api-key": "sk_live_secret",
+        "proxy-authorization": "Basic cHJveHk=",
         "x-middleware-rewrite": "/internal",
         "x-middleware-next": "1",
         "x-custom-header": "keep-me",
@@ -3110,6 +3112,8 @@ describe("proxyExternalRequest", () => {
       // Sensitive headers must be stripped
       expect(capturedHeaders!.get("cookie")).toBeNull();
       expect(capturedHeaders!.get("authorization")).toBeNull();
+      expect(capturedHeaders!.get("x-api-key")).toBeNull();
+      expect(capturedHeaders!.get("proxy-authorization")).toBeNull();
       expect(capturedHeaders!.get("x-middleware-rewrite")).toBeNull();
       expect(capturedHeaders!.get("x-middleware-next")).toBeNull();
       // Non-sensitive headers must be preserved
@@ -3207,6 +3211,16 @@ describe("sanitizeDestination", () => {
     );
     expect(sanitizeDestination("https://example.com/path")).toBe("https://example.com/path");
     expect(sanitizeDestination("http://example.com")).toBe("http://example.com");
+  });
+
+  it("normalizes leading backslashes (browsers treat \\ as /)", async () => {
+    const { sanitizeDestination } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(sanitizeDestination("\\/evil.com")).toBe("/evil.com");
+    expect(sanitizeDestination("\\\\evil.com")).toBe("/evil.com");
+    expect(sanitizeDestination("\\\\/evil.com")).toBe("/evil.com");
+    expect(sanitizeDestination("/\\evil.com")).toBe("/evil.com");
   });
 
   it("preserves normal relative paths", async () => {

@@ -41,13 +41,13 @@ test.describe("Middleware (Pages Router)", () => {
     expect(body).toContain("Access Denied");
   });
 
-  test("injects x-middleware-test header on matched pages", async ({ page }) => {
+  test("injects x-custom-middleware header on matched pages", async ({ page }) => {
     // Use the API response to check headers since page.goto doesn't expose
     // response headers easily. Use a route handler instead.
     const response = await page.goto(`${BASE}/about`);
     const headers = response?.headers();
 
-    expect(headers?.["x-middleware-test"]).toBe("active");
+    expect(headers?.["x-custom-middleware"]).toBe("active");
   });
 
   test("does not inject middleware header on /api routes", async ({ request }) => {
@@ -55,14 +55,14 @@ test.describe("Middleware (Pages Router)", () => {
     const response = await request.get(`${BASE}/api/hello`);
 
     expect(response.status()).toBe(200);
-    expect(response.headers()["x-middleware-test"]).toBeUndefined();
+    expect(response.headers()["x-custom-middleware"]).toBeUndefined();
   });
 
   test("sets middleware header on the index page", async ({ page }) => {
     const response = await page.goto(`${BASE}/`);
     const headers = response?.headers();
 
-    expect(headers?.["x-middleware-test"]).toBe("active");
+    expect(headers?.["x-custom-middleware"]).toBe("active");
     await expect(page.locator("h1")).toHaveText("Hello, vinext!");
   });
 
@@ -112,6 +112,6 @@ test.describe("Middleware (Pages Router)", () => {
     // /favicon.ico should not get middleware headers
     const faviconRes = await request.get(`${BASE}/favicon.ico`);
     // May be 404 if no favicon exists, but shouldn't have middleware header
-    expect(faviconRes.headers()["x-middleware-test"]).toBeUndefined();
+    expect(faviconRes.headers()["x-custom-middleware"]).toBeUndefined();
   });
 });

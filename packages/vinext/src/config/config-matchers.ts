@@ -549,12 +549,11 @@ export function sanitizeDestination(dest: string): string {
   if (dest.startsWith("http://") || dest.startsWith("https://")) {
     return dest;
   }
-  // Collapse leading double (or more) slashes to a single slash.
-  // This prevents protocol-relative URLs like //evil.com from being emitted
-  // as Location headers.
-  if (dest.startsWith("//")) {
-    dest = dest.replace(/^\/\/+/, "/");
-  }
+  // Normalize leading backslashes to forward slashes. Browsers interpret
+  // backslash as forward slash in URL contexts, so "\/evil.com" becomes
+  // "//evil.com" (protocol-relative redirect). Replace any mix of leading
+  // slashes and backslashes with a single forward slash.
+  dest = dest.replace(/^[\\/]+/, "/");
   return dest;
 }
 
@@ -602,6 +601,8 @@ export async function proxyExternalRequest(
   // session cookies, and middleware internals to third-party origins.
   headers.delete("cookie");
   headers.delete("authorization");
+  headers.delete("x-api-key");
+  headers.delete("proxy-authorization");
   const keysToDelete: string[] = [];
   for (const key of headers.keys()) {
     if (key.startsWith("x-middleware-")) {

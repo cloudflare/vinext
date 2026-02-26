@@ -1331,12 +1331,13 @@ async function _handleRequest(request) {
 
   // Unpack x-middleware-request-* headers into the request context so that
   // headers() returns the middleware-modified headers instead of the original
-  // request headers. Also strip those internal headers from the set that will
-  // be merged into the outgoing HTTP response.
+  // request headers. Strip ALL x-middleware-* headers from the set that will
+  // be merged into the outgoing HTTP response — this prefix is reserved for
+  // internal routing signals and must never reach clients.
   if (_middlewareResponseHeaders) {
     applyMiddlewareRequestHeaders(_middlewareResponseHeaders);
     for (const key of [..._middlewareResponseHeaders.keys()]) {
-      if (key.startsWith("x-middleware-request-")) {
+      if (key.startsWith("x-middleware-")) {
         _middlewareResponseHeaders.delete(key);
       }
     }

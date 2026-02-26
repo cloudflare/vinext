@@ -3346,12 +3346,13 @@ export function matchConfigPattern(
 }
 
 /**
- * Sanitize a redirect/rewrite destination by collapsing leading // to /
- * for non-external URLs, preventing unintended protocol-relative redirects.
+ * Sanitize a redirect/rewrite destination by collapsing leading slashes and
+ * backslashes to a single "/" for non-external URLs. Browsers interpret "\"
+ * as "/" in URL contexts, so "\/evil.com" becomes "//evil.com" (protocol-relative).
  */
 function sanitizeDestinationLocal(dest: string): string {
   if (dest.startsWith("http://") || dest.startsWith("https://")) return dest;
-  if (dest.startsWith("//")) dest = dest.replace(/^\/\/+/, "/");
+  dest = dest.replace(/^[\\/]+/, "/");
   return dest;
 }
 
