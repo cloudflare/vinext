@@ -30,76 +30,151 @@ import { AsyncLocalStorage } from "node:async_hooks";
 // ---------------------------------------------------------------------------
 
 /**
- * Headers that carry per-user identity. When any of these are present in a
- * fetch request, they MUST be included in the cache key to prevent one user's
- * authenticated response from being served to another user.
- *
- * Checked case-insensitively to match HTTP header semantics.
- *
- * SECURITY NOTE: Only these three headers are keyed. If your application uses
- * custom authentication headers (e.g. "X-Session-Token", "X-Auth-Token"),
- * responses may be incorrectly shared across users. In such cases, use
- * `cache: 'no-store'` on authenticated fetches or add the header to the URL
- * as a query parameter to ensure unique cache keys.
+ * Headers excluded from the cache key. These are W3C trace context headers
+ * that can break request caching and deduplication.
+ * All other headers ARE included in the cache key, matching Next.js behavior.
  */
-const AUTH_HEADERS = ["authorization", "cookie", "x-api-key"];
+const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
+
+// Cache key version — bump when changing the key format to bust stale entries
+const CACHE_KEY_PREFIX = "v1";
 
 /**
- * Check whether a fetch request includes any per-user authentication headers.
- * Returns the normalized header values (sorted by name) for cache key inclusion,
- * or null if no auth headers are present.
+ * Collect all headers from the request, excluding the blocklist.
+ * Merges headers from both the Request object and the init object,
+ * with init taking precedence (matching fetch() spec behavior).
  */
-function extractAuthHeaders(input: string | URL | Request, init?: RequestInit): string | null {
-  const collected: [string, string][] = [];
+function collectHeaders(input: string | URL | Request, init?: RequestInit): Record<string, string> {
+  const merged: Record<string, string> = {};
 
-  // Gather headers from the init object
+  // Start with headers from Request object (if any)
+  if (input instanceof Request && input.headers) {
+    input.headers.forEach((v, k) => { merged[k] = v; });
+  }
+
+  // Override with headers from init (init takes precedence per fetch spec)
   if (init?.headers) {
     const headers = init.headers instanceof Headers
       ? init.headers
       : new Headers(init.headers as HeadersInit);
-    for (const name of AUTH_HEADERS) {
-      const value = headers.get(name);
-      if (value) collected.push([name, value]);
-    }
+    headers.forEach((v, k) => { merged[k] = v; });
   }
 
-  // Also check headers from the Request object (if input is a Request)
-  if (input instanceof Request && input.headers) {
-    for (const name of AUTH_HEADERS) {
-      // Don't duplicate if already found in init
-      if (collected.some(([n]) => n === name)) continue;
-      const value = input.headers.get(name);
-      if (value) collected.push([name, value]);
-    }
+  // Remove blocklisted headers
+  for (const blocked of HEADER_BLOCKLIST) {
+    delete merged[blocked];
   }
 
-  if (collected.length === 0) return null;
-
-  // Sort for deterministic key ordering
-  collected.sort((a, b) => a[0].localeCompare(b[0]));
-  return collected.map(([k, v]) => `${k}=${v}`).join("&");
+  return merged;
 }
 
 /**
  * Check whether a fetch request carries any per-user auth headers.
+ * Used for the safety bypass (skip caching when auth headers are present
+ * without an explicit cache opt-in).
  */
+const AUTH_HEADERS = ["authorization", "cookie", "x-api-key"];
+
 function hasAuthHeaders(input: string | URL | Request, init?: RequestInit): boolean {
-  return extractAuthHeaders(input, init) !== null;
+  const headers = collectHeaders(input, init);
+  return AUTH_HEADERS.some((name) => name in headers);
+}
+
+/**
+ * Serialize request body into string chunks for cache key inclusion.
+ * Handles all body types: string, Uint8Array, ReadableStream, FormData, Blob.
+ * Returns the serialized body chunks and optionally stashes the original body
+ * on init as `_ogBody` so it can still be used after stream consumption.
+ */
+async function serializeBody(init?: RequestInit): Promise<string[]> {
+  if (!init?.body) return [];
+
+  const bodyChunks: string[] = [];
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  if (init.body instanceof Uint8Array) {
+    bodyChunks.push(decoder.decode(init.body));
+    (init as any)._ogBody = init.body;
+  } else if (typeof (init.body as any).getReader === "function") {
+    // ReadableStream
+    const readableBody = init.body as ReadableStream<Uint8Array | string>;
+    const chunks: Uint8Array[] = [];
+
+    try {
+      await readableBody.pipeTo(
+        new WritableStream({
+          write(chunk) {
+            if (typeof chunk === "string") {
+              chunks.push(encoder.encode(chunk));
+              bodyChunks.push(chunk);
+            } else {
+              chunks.push(chunk);
+              bodyChunks.push(decoder.decode(chunk, { stream: true }));
+            }
+          },
+        })
+      );
+      // Flush the decoder
+      bodyChunks.push(decoder.decode());
+
+      // Reconstruct the body so it can still be sent
+      const length = chunks.reduce((total, arr) => total + arr.length, 0);
+      const arrayBuffer = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        arrayBuffer.set(chunk, offset);
+        offset += chunk.length;
+      }
+      (init as any)._ogBody = arrayBuffer;
+    } catch (err) {
+      console.error("[vinext] Problem reading body for cache key", err);
+    }
+  } else if (init.body instanceof URLSearchParams) {
+    // URLSearchParams — .toString() gives a stable serialization
+    (init as any)._ogBody = init.body;
+    bodyChunks.push(init.body.toString());
+  } else if (typeof (init.body as any).keys === "function") {
+    // FormData
+    const formData = init.body as FormData;
+    (init as any)._ogBody = init.body;
+    for (const key of new Set(formData.keys())) {
+      const values = formData.getAll(key);
+      bodyChunks.push(
+        `${key}=${(
+          await Promise.all(
+            values.map(async (val) => {
+              if (typeof val === "string") return val;
+              return await val.text();
+            })
+          )
+        ).join(",")}`
+      );
+    }
+  } else if (typeof (init.body as any).arrayBuffer === "function") {
+    // Blob
+    const blob = init.body as Blob;
+    bodyChunks.push(await blob.text());
+    const arrayBuffer = await blob.arrayBuffer();
+    (init as any)._ogBody = new Blob([arrayBuffer], { type: blob.type });
+  } else if (typeof init.body === "string") {
+    bodyChunks.push(init.body);
+    (init as any)._ogBody = init.body;
+  }
+
+  return bodyChunks;
 }
 
 /**
  * Generate a deterministic cache key from a fetch request.
  *
- * Key = "fetch:" + method + ":" + URL [+ "|" + body] [+ "|auth:" + auth_headers].
- *
- * When per-user headers (Authorization, Cookie, X-API-Key) are present,
- * they are included in the cache key so different users get separate cache
- * entries. This prevents authenticated responses from leaking across users.
+ * Matches Next.js behavior: the key is a SHA-256 hash of a JSON array
+ * containing URL, method, all headers (minus blocklist), all RequestInit
+ * options, and the serialized body.
  */
-function buildFetchCacheKey(input: string | URL | Request, init?: RequestInit & { next?: NextFetchOptions }): string {
+async function buildFetchCacheKey(input: string | URL | Request, init?: RequestInit & { next?: NextFetchOptions }): Promise<string> {
   let url: string;
   let method = "GET";
-  let body: string | undefined;
 
   if (typeof input === "string") {
     url = input;
@@ -112,17 +187,31 @@ function buildFetchCacheKey(input: string | URL | Request, init?: RequestInit & 
   }
 
   if (init?.method) method = init.method;
-  if (init?.body && typeof init.body === "string") body = init.body;
 
-  // Build a stable key from URL + method + body + auth headers
-  const parts = [`fetch:${method}:${url}`];
-  if (body) parts.push(body);
+  const headers = collectHeaders(input, init);
+  const bodyChunks = await serializeBody(init);
 
-  // Include per-user auth headers in the key to prevent cross-user leakage
-  const authPart = extractAuthHeaders(input, init);
-  if (authPart) parts.push(`auth:${authPart}`);
+  const cacheString = JSON.stringify([
+    CACHE_KEY_PREFIX,
+    url,
+    method,
+    headers,
+    init?.mode,
+    init?.redirect,
+    init?.credentials,
+    init?.referrer,
+    init?.referrerPolicy,
+    init?.integrity,
+    init?.cache,
+    bodyChunks,
+  ]);
 
-  return parts.join("|");
+  const encoder = new TextEncoder();
+  const buffer = encoder.encode(cacheString);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.prototype.map
+    .call(new Uint8Array(hashBuffer), (b: number) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -264,7 +353,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     const tags = nextOpts?.tags ?? [];
-    const cacheKey = buildFetchCacheKey(input, init);
+    const cacheKey = await buildFetchCacheKey(input, init);
     const handler = getCacheHandler();
 
     // Collect tags for this render pass
@@ -378,8 +467,13 @@ function createPatchedFetch(): typeof globalThis.fetch {
  */
 function stripNextFromInit(init?: RequestInit): RequestInit | undefined {
   if (!init) return init;
-  if (!("next" in init)) return init;
-  const { next: _next, ...rest } = init as RequestInit & { next?: unknown };
+  const castInit = init as RequestInit & { next?: unknown; _ogBody?: BodyInit };
+  const { next: _next, _ogBody, ...rest } = castInit;
+  // Restore the original body if it was stashed by serializeBody (e.g. after
+  // consuming a ReadableStream for cache key generation).
+  if (_ogBody !== undefined) {
+    rest.body = _ogBody;
+  }
   return Object.keys(rest).length > 0 ? rest : undefined;
 }
 

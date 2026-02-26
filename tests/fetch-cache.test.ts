@@ -207,12 +207,10 @@ describe("fetch cache shim", () => {
     const data1 = await res1.json();
     expect(data1.count).toBe(1);
 
-    // Manually expire the cache entry
+    // Manually expire the cache entry (key is a SHA-256 hash, find it dynamically)
     const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
-    const cacheKey = "fetch:GET:https://api.example.com/stale-test";
     const store = (handler as any).store as Map<string, any>;
-    const entry = store.get(cacheKey);
-    if (entry) {
+    for (const [, entry] of store) {
       entry.revalidateAt = Date.now() - 1000; // Expired 1 second ago
     }
 
@@ -400,12 +398,10 @@ describe("fetch cache shim", () => {
     const data2 = await res2.json();
     expect(data2.count).toBe(1);
 
-    // Expire the cache manually
+    // Expire the cache manually (key is a SHA-256 hash, find it dynamically)
     const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
     const store = (handler as any).store as Map<string, any>;
-    const cacheKey = "fetch:GET:https://api.example.com/force-ttl";
-    const entry = store.get(cacheKey);
-    if (entry) {
+    for (const [, entry] of store) {
       entry.revalidateAt = Date.now() - 1000;
     }
 
@@ -677,5 +673,415 @@ describe("fetch cache shim", () => {
     const data2 = await res2.json();
     expect(data2.count).toBe(2); // Always fresh
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  // ── Cache key: body type handling ─────────────────────────────────
+
+  describe("cache key body type handling", () => {
+    it("different string bodies produce separate cache entries", async () => {
+      const res1 = await fetch("https://api.example.com/body-str", {
+        method: "POST",
+        body: '{"type":"a"}',
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/body-str", {
+        method: "POST",
+        body: '{"type":"b"}',
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different body = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("same string bodies hit the same cache entry", async () => {
+      const res1 = await fetch("https://api.example.com/body-same", {
+        method: "POST",
+        body: '{"query":"test"}',
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/body-same", {
+        method: "POST",
+        body: '{"query":"test"}',
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(1); // Same body = same cache
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("Uint8Array bodies are included in cache key", async () => {
+      const bodyA = new TextEncoder().encode("payload-a");
+      const bodyB = new TextEncoder().encode("payload-b");
+
+      const res1 = await fetch("https://api.example.com/body-uint8", {
+        method: "POST",
+        body: bodyA,
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/body-uint8", {
+        method: "POST",
+        body: bodyB,
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different binary body = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("same Uint8Array bodies hit the same cache entry", async () => {
+      const body1 = new TextEncoder().encode("same-payload");
+      const body2 = new TextEncoder().encode("same-payload");
+
+      const res1 = await fetch("https://api.example.com/body-uint8-same", {
+        method: "POST",
+        body: body1,
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/body-uint8-same", {
+        method: "POST",
+        body: body2,
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(1); // Same payload = same cache
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("Blob bodies are included in cache key", async () => {
+      const blobA = new Blob(["blob-content-a"], { type: "text/plain" });
+      const blobB = new Blob(["blob-content-b"], { type: "text/plain" });
+
+      const res1 = await fetch("https://api.example.com/body-blob", {
+        method: "POST",
+        body: blobA,
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/body-blob", {
+        method: "POST",
+        body: blobB,
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different blob = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("FormData bodies are included in cache key", async () => {
+      const formA = new FormData();
+      formA.append("name", "alice");
+
+      const formB = new FormData();
+      formB.append("name", "bob");
+
+      const res1 = await fetch("https://api.example.com/body-form", {
+        method: "POST",
+        body: formA,
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/body-form", {
+        method: "POST",
+        body: formB,
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different form data = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("ReadableStream bodies are included in cache key", async () => {
+      const streamA = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("stream-a"));
+          controller.close();
+        },
+      });
+      const streamB = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("stream-b"));
+          controller.close();
+        },
+      });
+
+      const res1 = await fetch("https://api.example.com/body-stream", {
+        method: "POST",
+        body: streamA,
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/body-stream", {
+        method: "POST",
+        body: streamB,
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different stream = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── Cache key: header inclusion (all headers minus blocklist) ──────
+
+  describe("cache key header inclusion", () => {
+    it("different Accept headers produce separate cache entries", async () => {
+      const res1 = await fetch("https://api.example.com/accept-test", {
+        headers: { Accept: "application/json" },
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/accept-test", {
+        headers: { Accept: "text/html" },
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different Accept = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("different Accept-Language headers produce separate cache entries", async () => {
+      const res1 = await fetch("https://api.example.com/lang-test", {
+        headers: { "Accept-Language": "en-US" },
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/lang-test", {
+        headers: { "Accept-Language": "fr-FR" },
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different language = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("custom headers are included in cache key", async () => {
+      const res1 = await fetch("https://api.example.com/custom-hdr", {
+        headers: { "X-Feature-Flag": "variant-a" },
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/custom-hdr", {
+        headers: { "X-Feature-Flag": "variant-b" },
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different custom header = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("traceparent and tracestate headers are excluded from cache key", async () => {
+      const res1 = await fetch("https://api.example.com/trace-test", {
+        headers: {
+          traceparent: "00-trace-id-1-01",
+          tracestate: "vendor=value1",
+          "X-Custom": "same",
+        },
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      // Same request but different trace headers — should hit cache
+      const res2 = await fetch("https://api.example.com/trace-test", {
+        headers: {
+          traceparent: "00-trace-id-2-01",
+          tracestate: "vendor=value2",
+          "X-Custom": "same",
+        },
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(1); // Cached — trace headers excluded from key
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("same headers produce same cache entry regardless of order", async () => {
+      const res1 = await fetch("https://api.example.com/hdr-order", {
+        headers: new Headers([
+          ["X-First", "1"],
+          ["X-Second", "2"],
+        ]),
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      // Headers in different construction order — Headers object normalizes
+      const res2 = await fetch("https://api.example.com/hdr-order", {
+        headers: new Headers([
+          ["X-Second", "2"],
+          ["X-First", "1"],
+        ]),
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(1); // Same cache entry
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("requests with no headers vs with headers get separate cache entries", async () => {
+      const res1 = await fetch("https://api.example.com/hdr-vs-none", {
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/hdr-vs-none", {
+        headers: { "X-Extra": "present" },
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different cache entry
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── Body restoration after cache key generation ───────────────────
+
+  describe("body restoration (_ogBody)", () => {
+    it("ReadableStream body is correctly passed to real fetch after cache key generation", async () => {
+      const stream = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("stream-body-content"));
+          controller.close();
+        },
+      });
+
+      await fetch("https://api.example.com/stream-restore", {
+        method: "POST",
+        body: stream,
+        next: { revalidate: 60 },
+      });
+
+      // Verify the mock was called and the body was not a spent stream
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const call = fetchMock.mock.calls[0];
+      const init = call[1] as RequestInit;
+      // The body should be a Uint8Array (reconstructed from the consumed stream)
+      expect(init.body).toBeInstanceOf(Uint8Array);
+      const decoded = new TextDecoder().decode(init.body as Uint8Array);
+      expect(decoded).toBe("stream-body-content");
+    });
+
+    it("Blob body is correctly passed to real fetch after cache key generation", async () => {
+      const blob = new Blob(["blob-body-content"], { type: "text/plain" });
+
+      await fetch("https://api.example.com/blob-restore", {
+        method: "POST",
+        body: blob,
+        next: { revalidate: 60 },
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const call = fetchMock.mock.calls[0];
+      const init = call[1] as RequestInit;
+      // The body should be a Blob (reconstructed)
+      expect(init.body).toBeInstanceOf(Blob);
+      const text = await (init.body as Blob).text();
+      expect(text).toBe("blob-body-content");
+    });
+
+    it("Uint8Array body is correctly passed to real fetch after cache key generation", async () => {
+      const body = new TextEncoder().encode("uint8-body-content");
+
+      await fetch("https://api.example.com/uint8-restore", {
+        method: "POST",
+        body: body,
+        next: { revalidate: 60 },
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const call = fetchMock.mock.calls[0];
+      const init = call[1] as RequestInit;
+      expect(init.body).toBeInstanceOf(Uint8Array);
+      const decoded = new TextDecoder().decode(init.body as Uint8Array);
+      expect(decoded).toBe("uint8-body-content");
+    });
+
+    it("string body is correctly passed to real fetch after cache key generation", async () => {
+      await fetch("https://api.example.com/string-restore", {
+        method: "POST",
+        body: '{"key":"value"}',
+        next: { revalidate: 60 },
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const call = fetchMock.mock.calls[0];
+      const init = call[1] as RequestInit;
+      expect(init.body).toBe('{"key":"value"}');
+    });
+  });
+
+  // ── URLSearchParams body ──────────────────────────────────────────
+
+  describe("URLSearchParams body", () => {
+    it("different URLSearchParams bodies produce separate cache entries", async () => {
+      const paramsA = new URLSearchParams({ q: "alpha" });
+      const paramsB = new URLSearchParams({ q: "beta" });
+
+      const res1 = await fetch("https://api.example.com/body-usp", {
+        method: "POST",
+        body: paramsA,
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/body-usp", {
+        method: "POST",
+        body: paramsB,
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different params = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("same URLSearchParams bodies hit the same cache entry", async () => {
+      const params1 = new URLSearchParams({ q: "same" });
+      const params2 = new URLSearchParams({ q: "same" });
+
+      const res1 = await fetch("https://api.example.com/body-usp-same", {
+        method: "POST",
+        body: params1,
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/body-usp-same", {
+        method: "POST",
+        body: params2,
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(1); // Same params = cached
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
   });
 });
