@@ -752,34 +752,99 @@ function _runWithCacheState(fn) {
   };
   return _cacheAls.run(state, fn);
 }
-const AUTH_HEADERS = ["authorization", "cookie", "x-api-key"];
-function extractAuthHeaders(input, init) {
-  const collected = [];
+const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
+const CACHE_KEY_PREFIX = "v1";
+function collectHeaders(input, init) {
+  const merged = {};
+  if (input instanceof Request && input.headers) {
+    input.headers.forEach((v, k) => {
+      merged[k] = v;
+    });
+  }
   if (init?.headers) {
     const headers = init.headers instanceof Headers ? init.headers : new Headers(init.headers);
-    for (const name of AUTH_HEADERS) {
-      const value = headers.get(name);
-      if (value) collected.push([name, value]);
-    }
+    headers.forEach((v, k) => {
+      merged[k] = v;
+    });
   }
-  if (input instanceof Request && input.headers) {
-    for (const name of AUTH_HEADERS) {
-      if (collected.some(([n]) => n === name)) continue;
-      const value = input.headers.get(name);
-      if (value) collected.push([name, value]);
-    }
+  for (const blocked of HEADER_BLOCKLIST) {
+    delete merged[blocked];
   }
-  if (collected.length === 0) return null;
-  collected.sort((a, b) => a[0].localeCompare(b[0]));
-  return collected.map(([k, v]) => `${k}=${v}`).join("&");
+  return merged;
 }
+const AUTH_HEADERS = ["authorization", "cookie", "x-api-key"];
 function hasAuthHeaders(input, init) {
-  return extractAuthHeaders(input, init) !== null;
+  const headers = collectHeaders(input, init);
+  return AUTH_HEADERS.some((name) => name in headers);
 }
-function buildFetchCacheKey(input, init) {
+async function serializeBody(init) {
+  if (!init?.body) return [];
+  const bodyChunks = [];
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  if (init.body instanceof Uint8Array) {
+    bodyChunks.push(decoder.decode(init.body));
+    init._ogBody = init.body;
+  } else if (typeof init.body.getReader === "function") {
+    const readableBody = init.body;
+    const chunks = [];
+    try {
+      await readableBody.pipeTo(
+        new WritableStream({
+          write(chunk) {
+            if (typeof chunk === "string") {
+              chunks.push(encoder.encode(chunk));
+              bodyChunks.push(chunk);
+            } else {
+              chunks.push(chunk);
+              bodyChunks.push(decoder.decode(chunk, { stream: true }));
+            }
+          }
+        })
+      );
+      bodyChunks.push(decoder.decode());
+      const length = chunks.reduce((total, arr) => total + arr.length, 0);
+      const arrayBuffer = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        arrayBuffer.set(chunk, offset);
+        offset += chunk.length;
+      }
+      init._ogBody = arrayBuffer;
+    } catch (err) {
+      console.error("[vinext] Problem reading body for cache key", err);
+    }
+  } else if (init.body instanceof URLSearchParams) {
+    init._ogBody = init.body;
+    bodyChunks.push(init.body.toString());
+  } else if (typeof init.body.keys === "function") {
+    const formData = init.body;
+    init._ogBody = init.body;
+    for (const key of new Set(formData.keys())) {
+      const values = formData.getAll(key);
+      bodyChunks.push(
+        `${key}=${(await Promise.all(
+          values.map(async (val) => {
+            if (typeof val === "string") return val;
+            return await val.text();
+          })
+        )).join(",")}`
+      );
+    }
+  } else if (typeof init.body.arrayBuffer === "function") {
+    const blob = init.body;
+    bodyChunks.push(await blob.text());
+    const arrayBuffer = await blob.arrayBuffer();
+    init._ogBody = new Blob([arrayBuffer], { type: blob.type });
+  } else if (typeof init.body === "string") {
+    bodyChunks.push(init.body);
+    init._ogBody = init.body;
+  }
+  return bodyChunks;
+}
+async function buildFetchCacheKey(input, init) {
   let url;
   let method = "GET";
-  let body;
   if (typeof input === "string") {
     url = input;
   } else if (input instanceof URL) {
@@ -789,12 +854,26 @@ function buildFetchCacheKey(input, init) {
     method = input.method || "GET";
   }
   if (init?.method) method = init.method;
-  if (init?.body && typeof init.body === "string") body = init.body;
-  const parts = [`fetch:${method}:${url}`];
-  if (body) parts.push(body);
-  const authPart = extractAuthHeaders(input, init);
-  if (authPart) parts.push(`auth:${authPart}`);
-  return parts.join("|");
+  const headers = collectHeaders(input, init);
+  const bodyChunks = await serializeBody(init);
+  const cacheString = JSON.stringify([
+    CACHE_KEY_PREFIX,
+    url,
+    method,
+    headers,
+    init?.mode,
+    init?.redirect,
+    init?.credentials,
+    init?.referrer,
+    init?.referrerPolicy,
+    init?.integrity,
+    init?.cache,
+    bodyChunks
+  ]);
+  const encoder = new TextEncoder();
+  const buffer = encoder.encode(cacheString);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.prototype.map.call(new Uint8Array(hashBuffer), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 const _ORIG_FETCH_KEY = /* @__PURE__ */ Symbol.for("vinext.fetchCache.originalFetch");
 const _gFetch = globalThis;
@@ -839,7 +918,7 @@ function createPatchedFetch() {
       }
     }
     const tags = nextOpts?.tags ?? [];
-    const cacheKey = buildFetchCacheKey(input, init);
+    const cacheKey = await buildFetchCacheKey(input, init);
     const handler2 = getCacheHandler();
     const reqTags = _getState$2().currentRequestTags;
     if (tags.length > 0) {
@@ -927,8 +1006,11 @@ function createPatchedFetch() {
 }
 function stripNextFromInit(init) {
   if (!init) return init;
-  if (!("next" in init)) return init;
-  const { next: _next, ...rest } = init;
+  const castInit = init;
+  const { next: _next, _ogBody, ...rest } = castInit;
+  if (_ogBody !== void 0) {
+    rest.body = _ogBody;
+  }
   return Object.keys(rest).length > 0 ? rest : void 0;
 }
 const _PATCH_KEY = /* @__PURE__ */ Symbol.for("vinext.fetchCache.patchInstalled");

@@ -129,6 +129,17 @@ async function serializeBody(init?: RequestInit): Promise<string[]> {
       (init as any)._ogBody = arrayBuffer;
     } catch (err) {
       console.error("[vinext] Problem reading body for cache key", err);
+      // Still reconstruct what we have so originalFetch doesn't get a spent stream
+      if (chunks.length > 0) {
+        const length = chunks.reduce((total, arr) => total + arr.length, 0);
+        const partial = new Uint8Array(length);
+        let offset = 0;
+        for (const chunk of chunks) {
+          partial.set(chunk, offset);
+          offset += chunk.length;
+        }
+        (init as any)._ogBody = partial;
+      }
     }
   } else if (init.body instanceof URLSearchParams) {
     // URLSearchParams — .toString() gives a stable serialization
@@ -145,6 +156,8 @@ async function serializeBody(init?: RequestInit): Promise<string[]> {
           await Promise.all(
             values.map(async (val) => {
               if (typeof val === "string") return val;
+              // Note: File name/type/lastModified are not included — only content.
+              // Two Files with identical content but different names produce the same key.
               return await val.text();
             })
           )
