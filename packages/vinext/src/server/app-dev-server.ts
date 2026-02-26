@@ -1056,6 +1056,71 @@ function __isExternalUrl(url) {
   return url.startsWith("http://") || url.startsWith("https://");
 }
 
+/**
+ * Maximum server-action request body size (1 MB).
+ * Matches the Next.js default for serverActions.bodySizeLimit.
+ * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/serverActions#bodysizelimit
+ * Prevents unbounded request body buffering.
+ */
+var __MAX_ACTION_BODY_SIZE = 1 * 1024 * 1024;
+
+/**
+ * Read a request body as text with a size limit.
+ * Enforces the limit on the actual byte stream to prevent bypasses
+ * via chunked transfer-encoding where Content-Length is absent or spoofed.
+ */
+async function __readBodyWithLimit(request, maxBytes) {
+  if (!request.body) return "";
+  var reader = request.body.getReader();
+  var decoder = new TextDecoder();
+  var chunks = [];
+  var totalSize = 0;
+  for (;;) {
+    var result = await reader.read();
+    if (result.done) break;
+    totalSize += result.value.byteLength;
+    if (totalSize > maxBytes) {
+      reader.cancel();
+      throw new Error("Request body too large");
+    }
+    chunks.push(decoder.decode(result.value, { stream: true }));
+  }
+  chunks.push(decoder.decode());
+  return chunks.join("");
+}
+
+/**
+ * Read a request body as FormData with a size limit.
+ * Consumes the body stream with a byte counter and then parses the
+ * collected bytes as multipart form data via the Response constructor.
+ */
+async function __readFormDataWithLimit(request, maxBytes) {
+  if (!request.body) return new FormData();
+  var reader = request.body.getReader();
+  var chunks = [];
+  var totalSize = 0;
+  for (;;) {
+    var result = await reader.read();
+    if (result.done) break;
+    totalSize += result.value.byteLength;
+    if (totalSize > maxBytes) {
+      reader.cancel();
+      throw new Error("Request body too large");
+    }
+    chunks.push(result.value);
+  }
+  // Reconstruct a Response with the original Content-Type so that
+  // the FormData parser can handle multipart boundaries correctly.
+  var combined = new Uint8Array(totalSize);
+  var offset = 0;
+  for (var chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  var contentType = request.headers.get("content-type") || "";
+  return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
+}
+
 const __hopByHopHeaders = new Set(["connection","keep-alive","proxy-authenticate","proxy-authorization","te","trailers","transfer-encoding","upgrade"]);
 
 async function __proxyExternalRequest(request, externalUrl) {
@@ -1330,11 +1395,33 @@ async function _handleRequest(request) {
     // cross-site request forgery, matching Next.js server action behavior.
     const csrfResponse = __validateCsrfOrigin(request);
     if (csrfResponse) return csrfResponse;
+
+    // ── Body size limit ─────────────────────────────────────────────────
+    // Reject payloads larger than the configured limit.
+    // Check Content-Length as a fast path, then enforce on the actual
+    // stream to prevent bypasses via chunked transfer-encoding.
+    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
+    if (contentLength > __MAX_ACTION_BODY_SIZE) {
+      setHeadersContext(null);
+      setNavigationContext(null);
+      return new Response("Payload Too Large", { status: 413 });
+    }
+
     try {
       const contentType = request.headers.get("content-type") || "";
-      const body = contentType.startsWith("multipart/form-data")
-        ? await request.formData()
-        : await request.text();
+      let body;
+      try {
+        body = contentType.startsWith("multipart/form-data")
+          ? await __readFormDataWithLimit(request, __MAX_ACTION_BODY_SIZE)
+          : await __readBodyWithLimit(request, __MAX_ACTION_BODY_SIZE);
+      } catch (sizeErr) {
+        if (sizeErr && sizeErr.message === "Request body too large") {
+          setHeadersContext(null);
+          setNavigationContext(null);
+          return new Response("Payload Too Large", { status: 413 });
+        }
+        throw sizeErr;
+      }
       const temporaryReferences = createTemporaryReferenceSet();
       const args = await decodeReply(body, { temporaryReferences });
       const action = await loadServerAction(actionId);
