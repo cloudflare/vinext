@@ -3169,133 +3169,133 @@ hydrate();
       let cacheDir = "";
 
       return {
-      name: "vinext:google-fonts",
-      enforce: "pre",
+        name: "vinext:google-fonts",
+        enforce: "pre",
 
-      configResolved(config) {
-        isBuild = config.command === "build";
-        cacheDir = path.join(config.root, ".vinext", "fonts");
-      },
+        configResolved(config) {
+          isBuild = config.command === "build";
+          cacheDir = path.join(config.root, ".vinext", "fonts");
+        },
 
-      transform: {
-        // Hook filter: only invoke JS when code contains 'next/font/google'.
-        // The isBuild runtime check can't be expressed as a filter, but this
-        // still eliminates nearly all Rust-to-JS calls since very few files
-        // import from next/font/google.
-        filter: {
-          id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
-            exclude: /node_modules/,
+        transform: {
+          // Hook filter: only invoke JS when code contains 'next/font/google'.
+          // The isBuild runtime check can't be expressed as a filter, but this
+          // still eliminates nearly all Rust-to-JS calls since very few files
+          // import from next/font/google.
+          filter: {
+            id: {
+              include: /\.(tsx?|jsx?|mjs)$/,
+              exclude: /node_modules/,
+            },
+            code: "next/font/google",
           },
-          code: "next/font/google",
-        },
-        async handler(code, id) {
-          if (!isBuild) return null;
-          // Defensive guard — duplicates filter logic
-          if (id.includes("node_modules")) return null;
-          if (id.startsWith("\0")) return null;
-          if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
-          if (!code.includes("next/font/google")) return null;
+          async handler(code, id) {
+            if (!isBuild) return null;
+            // Defensive guard — duplicates filter logic
+            if (id.includes("node_modules")) return null;
+            if (id.startsWith("\0")) return null;
+            if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
+            if (!code.includes("next/font/google")) return null;
 
-          // Match font constructor calls: Inter({ weight: ..., subsets: ... })
-          // We look for PascalCase or Name_Name identifiers followed by ({...})
-          // This regex captures the font name and the options object literal
-          const fontCallRe = /\b([A-Z][A-Za-z]*(?:_[A-Z][A-Za-z]*)*)\s*\(\s*(\{[^}]*\})\s*\)/g;
+            // Match font constructor calls: Inter({ weight: ..., subsets: ... })
+            // We look for PascalCase or Name_Name identifiers followed by ({...})
+            // This regex captures the font name and the options object literal
+            const fontCallRe = /\b([A-Z][A-Za-z]*(?:_[A-Z][A-Za-z]*)*)\s*\(\s*(\{[^}]*\})\s*\)/g;
 
-          // Also need to verify these names came from next/font/google import
-          const importRe = /import\s*\{([^}]+)\}\s*from\s*['"]next\/font\/google['"]/;
-          const importMatch = code.match(importRe);
-          if (!importMatch) return null;
+            // Also need to verify these names came from next/font/google import
+            const importRe = /import\s*\{([^}]+)\}\s*from\s*['"]next\/font\/google['"]/;
+            const importMatch = code.match(importRe);
+            if (!importMatch) return null;
 
-          const importedNames = new Set(
-            importMatch[1].split(",").map((s) => s.trim()).filter(Boolean),
-          );
+            const importedNames = new Set(
+              importMatch[1].split(",").map((s) => s.trim()).filter(Boolean),
+            );
 
-          const s = new MagicString(code);
-          let hasChanges = false;
+            const s = new MagicString(code);
+            let hasChanges = false;
 
-          let match;
-          while ((match = fontCallRe.exec(code)) !== null) {
-            const [fullMatch, fontName, optionsStr] = match;
-            if (!importedNames.has(fontName)) continue;
+            let match;
+            while ((match = fontCallRe.exec(code)) !== null) {
+              const [fullMatch, fontName, optionsStr] = match;
+              if (!importedNames.has(fontName)) continue;
 
-            // Convert PascalCase/Underscore to font family
-            const family = fontName.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
+              // Convert PascalCase/Underscore to font family
+              const family = fontName.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
 
-            // Parse options safely via AST — no eval/new Function
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            let options: Record<string, any> = {};
-            try {
-              const parsed = parseStaticObjectLiteral(optionsStr);
-              if (!parsed) continue; // Contains dynamic expressions, skip
-              options = parsed as Record<string, any>;
-            } catch {
-              continue; // Can't parse options statically, skip
-            }
-
-            // Build the Google Fonts CSS URL
-            const weights = options.weight
-              ? Array.isArray(options.weight) ? options.weight : [options.weight]
-              : [];
-            const styles = options.style
-              ? Array.isArray(options.style) ? options.style : [options.style]
-              : [];
-            const display = options.display ?? "swap";
-
-            let spec = family.replace(/\s+/g, "+");
-            if (weights.length > 0) {
-              const hasItalic = styles.includes("italic");
-              if (hasItalic) {
-                const pairs: string[] = [];
-                for (const w of weights) { pairs.push(`0,${w}`); pairs.push(`1,${w}`); }
-                spec += `:ital,wght@${pairs.join(";")}`;
-              } else {
-                spec += `:wght@${weights.join(";")}`;
-              }
-            } else if (styles.length === 0) {
-              // Request full variable weight range when no weight specified.
-              // Without this, Google Fonts returns only weight 400.
-              spec += `:wght@100..900`;
-            }
-            const params = new URLSearchParams();
-            params.set("family", spec);
-            params.set("display", display);
-            const cssUrl = `https://fonts.googleapis.com/css2?${params.toString()}`;
-
-            // Check cache
-            let localCSS = fontCache.get(cssUrl);
-            if (!localCSS) {
+              // Parse options safely via AST — no eval/new Function
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              let options: Record<string, any> = {};
               try {
-                localCSS = await fetchAndCacheFont(cssUrl, family, cacheDir);
-                fontCache.set(cssUrl, localCSS);
+                const parsed = parseStaticObjectLiteral(optionsStr);
+                if (!parsed) continue; // Contains dynamic expressions, skip
+                options = parsed as Record<string, any>;
               } catch {
-                // Fetch failed (offline?) — fall back to CDN mode
-                continue;
+                continue; // Can't parse options statically, skip
               }
+
+              // Build the Google Fonts CSS URL
+              const weights = options.weight
+                ? Array.isArray(options.weight) ? options.weight : [options.weight]
+                : [];
+              const styles = options.style
+                ? Array.isArray(options.style) ? options.style : [options.style]
+                : [];
+              const display = options.display ?? "swap";
+
+              let spec = family.replace(/\s+/g, "+");
+              if (weights.length > 0) {
+                const hasItalic = styles.includes("italic");
+                if (hasItalic) {
+                  const pairs: string[] = [];
+                  for (const w of weights) { pairs.push(`0,${w}`); pairs.push(`1,${w}`); }
+                  spec += `:ital,wght@${pairs.join(";")}`;
+                } else {
+                  spec += `:wght@${weights.join(";")}`;
+                }
+              } else if (styles.length === 0) {
+                // Request full variable weight range when no weight specified.
+                // Without this, Google Fonts returns only weight 400.
+                spec += `:wght@100..900`;
+              }
+              const params = new URLSearchParams();
+              params.set("family", spec);
+              params.set("display", display);
+              const cssUrl = `https://fonts.googleapis.com/css2?${params.toString()}`;
+
+              // Check cache
+              let localCSS = fontCache.get(cssUrl);
+              if (!localCSS) {
+                try {
+                  localCSS = await fetchAndCacheFont(cssUrl, family, cacheDir);
+                  fontCache.set(cssUrl, localCSS);
+                } catch {
+                  // Fetch failed (offline?) — fall back to CDN mode
+                  continue;
+                }
+              }
+
+              // Inject _selfHostedCSS into the options object
+              const matchStart = match.index;
+              const matchEnd = matchStart + fullMatch.length;
+              const escapedCSS = JSON.stringify(localCSS);
+              const closingBrace = optionsStr.lastIndexOf("}");
+              const optionsWithCSS = optionsStr.slice(0, closingBrace) +
+                (optionsStr.slice(0, closingBrace).trim().endsWith("{") ? "" : ", ") +
+                `_selfHostedCSS: ${escapedCSS}` +
+                optionsStr.slice(closingBrace);
+
+              const replacement = `${fontName}(${optionsWithCSS})`;
+              s.overwrite(matchStart, matchEnd, replacement);
+              hasChanges = true;
             }
 
-            // Inject _selfHostedCSS into the options object
-            const matchStart = match.index;
-            const matchEnd = matchStart + fullMatch.length;
-            const escapedCSS = JSON.stringify(localCSS);
-            const closingBrace = optionsStr.lastIndexOf("}");
-            const optionsWithCSS = optionsStr.slice(0, closingBrace) +
-              (optionsStr.slice(0, closingBrace).trim().endsWith("{") ? "" : ", ") +
-              `_selfHostedCSS: ${escapedCSS}` +
-              optionsStr.slice(closingBrace);
-
-            const replacement = `${fontName}(${optionsWithCSS})`;
-            s.overwrite(matchStart, matchEnd, replacement);
-            hasChanges = true;
-          }
-
-          if (!hasChanges) return null;
-          return {
-            code: s.toString(),
-            map: s.generateMap({ hires: "boundary" }),
-          };
+            if (!hasChanges) return null;
+            return {
+              code: s.toString(),
+              map: s.generateMap({ hires: "boundary" }),
+            };
+          },
         },
-      },
       } satisfies Plugin;
     })(),
     // Local font path resolution:
