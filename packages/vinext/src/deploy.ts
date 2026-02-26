@@ -103,13 +103,13 @@ export function parseDeployArgs(args: string[]) {
   }
 
   return {
-    help: values.help,
-    preview: values.preview,
-    env: values.env?.trim() || undefined,
-    name: values.name?.trim() || undefined,
-    skipBuild: values["skip-build"],
-    dryRun: values["dry-run"],
-    experimentalTPR: values["experimental-tpr"],
+    help: values.help as boolean | undefined,
+    preview: values.preview as boolean | undefined,
+    env: (values.env as string | undefined)?.trim() || undefined,
+    name: (values.name as string | undefined)?.trim() || undefined,
+    skipBuild: values["skip-build"] as boolean | undefined,
+    dryRun: values["dry-run"] as boolean | undefined,
+    experimentalTPR: values["experimental-tpr"] as boolean | undefined,
     tprCoverage: values["tpr-coverage"] ? parseInt(String(values["tpr-coverage"]), 10) : undefined,
     tprLimit: values["tpr-limit"] ? parseInt(String(values["tpr-limit"]), 10) : undefined,
     tprWindow: values["tpr-window"] ? parseInt(String(values["tpr-window"]), 10) : undefined,
