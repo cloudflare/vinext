@@ -2425,3 +2425,66 @@ describe("RSC plugin auto-registration", () => {
     }
   });
 });
+
+// ── External rewrite proxy credential stripping (App Router) ─────────────────
+// Regression test: the inline __proxyExternalRequest in the generated RSC entry
+// must strip Cookie, Authorization, x-api-key, proxy-authorization, and
+// x-middleware-* headers before forwarding to external rewrite destinations.
+describe("App Router external rewrite proxy credential stripping", () => {
+  let mockServer: import("node:http").Server;
+  let mockPort: number;
+  let capturedHeaders: import("node:http").IncomingHttpHeaders | null = null;
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    // 1. Start a mock HTTP server that captures request headers
+    const http = await import("node:http");
+    mockServer = http.createServer((req, res) => {
+      capturedHeaders = req.headers;
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("proxied ok");
+    });
+    await new Promise<void>((resolve) => mockServer.listen(0, resolve));
+    const addr = mockServer.address();
+    mockPort = typeof addr === "object" && addr ? addr.port : 0;
+
+    // 2. Set env var so the app-basic next.config.ts adds the external rewrite
+    process.env.TEST_EXTERNAL_PROXY_TARGET = `http://localhost:${mockPort}`;
+
+    // 3. Start the App Router dev server (reads next.config.ts at boot)
+    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
+  }, 30000);
+
+  afterAll(async () => {
+    delete process.env.TEST_EXTERNAL_PROXY_TARGET;
+    await server?.close();
+    await new Promise<void>((resolve) => mockServer?.close(() => resolve()));
+  });
+
+  it("strips credential headers from proxied requests to external rewrite targets", async () => {
+    capturedHeaders = null;
+
+    await fetch(`${baseUrl}/proxy-external-test/some-path`, {
+      headers: {
+        "Cookie": "session=secret123",
+        "Authorization": "Bearer tok_secret",
+        "x-api-key": "sk_live_secret",
+        "proxy-authorization": "Basic cHJveHk=",
+        "x-middleware-next": "1",
+        "x-custom-safe": "keep-me",
+      },
+    });
+
+    expect(capturedHeaders).not.toBeNull();
+    // Credential headers must be stripped
+    expect(capturedHeaders!["cookie"]).toBeUndefined();
+    expect(capturedHeaders!["authorization"]).toBeUndefined();
+    expect(capturedHeaders!["x-api-key"]).toBeUndefined();
+    expect(capturedHeaders!["proxy-authorization"]).toBeUndefined();
+    // Internal middleware headers must be stripped
+    expect(capturedHeaders!["x-middleware-next"]).toBeUndefined();
+    // Non-sensitive headers must be preserved
+    expect(capturedHeaders!["x-custom-safe"]).toBe("keep-me");
+  });
+});

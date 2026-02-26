@@ -1124,13 +1124,25 @@ async function __proxyExternalRequest(request, externalUrl) {
   const headers = new Headers(request.headers);
   headers.set("host", targetUrl.host);
   headers.delete("connection");
+  // Strip credentials and internal headers to prevent leaking auth tokens,
+  // session cookies, and middleware internals to third-party origins.
+  headers.delete("cookie");
+  headers.delete("authorization");
+  headers.delete("x-api-key");
+  headers.delete("proxy-authorization");
+  for (const key of [...headers.keys()]) {
+    if (key.startsWith("x-middleware-")) headers.delete(key);
+  }
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";
-  const init = { method, headers, redirect: "manual" };
+  const init = { method, headers, redirect: "manual", signal: AbortSignal.timeout(30000) };
   if (hasBody && request.body) { init.body = request.body; init.duplex = "half"; }
   let upstream;
   try { upstream = await fetch(targetUrl.href, init); }
-  catch (e) { console.error("[vinext] External rewrite proxy error:", e); return new Response("Bad Gateway", { status: 502 }); }
+  catch (e) {
+    if (e && e.name === "TimeoutError") return new Response("Gateway Timeout", { status: 504 });
+    console.error("[vinext] External rewrite proxy error:", e); return new Response("Bad Gateway", { status: 502 });
+  }
   const respHeaders = new Headers();
   upstream.headers.forEach(function(value, key) { if (!__hopByHopHeaders.has(key.toLowerCase())) respHeaders.append(key, value); });
   return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: respHeaders });

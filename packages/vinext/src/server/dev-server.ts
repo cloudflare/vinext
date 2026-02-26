@@ -520,10 +520,11 @@ export function createSSRHandler(
         if (result && "redirect" in result) {
           const { redirect } = result;
           const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
-          // Sanitize destination to prevent open redirect via protocol-relative URLs
+          // Sanitize destination to prevent open redirect via protocol-relative URLs.
+          // Also normalize backslashes — browsers treat \ as / in URL contexts.
           let dest = redirect.destination;
-          if (!dest.startsWith("http://") && !dest.startsWith("https://") && dest.startsWith("//")) {
-            dest = dest.replace(/^\/\/+/, "/");
+          if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
+            dest = dest.replace(/^[\\/]+/, "/");
           }
           res.writeHead(status, {
             Location: dest,
