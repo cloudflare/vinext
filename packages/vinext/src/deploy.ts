@@ -19,7 +19,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync, type ExecSyncOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
-import { createBuilder, build } from "vite";
+import { createBuilder } from "vite";
 import {
   ensureESModule as _ensureESModule,
   renameCJSConfigs as _renameCJSConfigs,
@@ -716,19 +716,10 @@ function writeGeneratedFiles(files: GeneratedFile[]): void {
 async function runBuild(info: ProjectInfo): Promise<void> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
-  // Use Vite's JS API for the build. The user's vite.config.ts (or our
-  // generated one) has the cloudflare() plugin which handles the Worker
-  // output format. We just need to trigger the build.
-  //
-  // For App Router, createBuilder().buildApp() handles multi-environment builds.
-  // For Pages Router, a single build() call suffices (cloudflare plugin manages it).
-
-  if (info.isAppRouter) {
-    const builder = await createBuilder({ root: info.root });
-    await builder.buildApp();
-  } else {
-    await build({ root: info.root });
-  }
+  // cloudflare() sets a custom buildApp for multi-environment builds.
+  // build() forces legacy single-env mode which has no index.html fallback.
+  const builder = await createBuilder({ root: info.root });
+  await builder.buildApp();
 }
 
 // ─── Deploy ──────────────────────────────────────────────────────────────────
