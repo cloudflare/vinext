@@ -540,3 +540,13 @@ Even a partial diagnosis helps — stack traces, which `next/*` import is involv
 ## License
 
 MIT
+
+## Ecosystem
+
+Projects building on vinext:
+
+| Project | Description |
+|---------|-------------|
+| [**FABRK Framework**](https://github.com/jpoindexter/fabrk-framework) | Full-stack AI-first framework with 109+ components, 18 themes, auth, payments, AI cost tracking, and security — built on vinext |
+
+_Building something on vinext? Open a PR to add it here._
