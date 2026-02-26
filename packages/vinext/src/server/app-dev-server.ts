@@ -837,8 +837,12 @@ function __validateCsrfOrigin(request) {
     return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
   }
 
+  // Only use the Host header for origin comparison — never trust
+  // X-Forwarded-Host here, since it can be freely set by the client
+  // and would allow the check to be bypassed if it matched a spoofed
+  // Origin. The prod server's resolveHost() handles trusted proxy
+  // scenarios separately.
   const hostHeader = (
-    request.headers.get("x-forwarded-host") ||
     request.headers.get("host") ||
     ""
   ).split(",")[0].trim().toLowerCase();

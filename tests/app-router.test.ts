@@ -1095,6 +1095,24 @@ describe("App Router integration", () => {
     // should be treated as missing and allowed through.
     expect(res.status).not.toBe(403);
   });
+
+  it("rejects server action POST when X-Forwarded-Host matches spoofed Origin", async () => {
+    // Sending both Origin: evil.com and X-Forwarded-Host: evil.com should
+    // still be rejected. The origin check must only use the Host header,
+    // not X-Forwarded-Host.
+    const res = await fetch(`${baseUrl}/actions.rsc`, {
+      method: "POST",
+      headers: {
+        "x-rsc-action": "fake-action-id",
+        "Origin": "https://evil.com",
+        "Host": new URL(baseUrl).host,
+        "X-Forwarded-Host": "evil.com",
+      },
+    });
+    expect(res.status).toBe(403);
+    const text = await res.text();
+    expect(text).toBe("Forbidden");
+  });
 });
 
 describe("App Router Production build", () => {
@@ -1958,6 +1976,19 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
   it("embeds empty allowedOrigins when none provided", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
     expect(code).toContain("__allowedOrigins = []");
+  });
+
+  it("origin validation does not use x-forwarded-host", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    // The __validateCsrfOrigin function must not read x-forwarded-host.
+    // Extract just the CSRF validation function to ensure no false positives
+    // from other parts of the generated code.
+    const csrfStart = code.indexOf("function __validateCsrfOrigin");
+    const csrfEnd = code.indexOf("\n}", csrfStart) + 2;
+    const csrfFn = code.slice(csrfStart, csrfEnd);
+    expect(csrfFn).not.toContain("x-forwarded-host");
+    // It should use the host header only
+    expect(csrfFn).toContain('request.headers.get("host")');
   });
 });
 
