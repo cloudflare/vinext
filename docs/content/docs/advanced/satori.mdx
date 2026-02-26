@@ -1,0 +1,27 @@
+---
+title: Satori
+description: Converting HTML/CSS to SVG for Open Graph images
+---
+
+# Satori
+
+Satori is a Japanese Buddhist term for awakening, "comprehension; understanding".
+
+## About Satori
+
+[Satori](https://github.com/vercel/satori) is a library by Vercel that converts HTML and CSS to SVG, which powers `next/og` for generating Open Graph images.
+
+It's a great example of the kind of tool that works well with documentation sites — you can generate dynamic social images for each page.
+
+```ts
+import { ImageResponse } from 'next/og';
+
+export default function og() {
+  return new ImageResponse(
+    <div style={{ display: 'flex', background: '#000', color: '#fff' }}>
+      My Docs
+    </div>,
+    { width: 1200, height: 630 }
+  );
+}
+```

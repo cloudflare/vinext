@@ -3,3 +3,4 @@ packages:
   - "examples/*"
   - "tests/fixtures/*"
   - "tests/fixtures/ecosystem/*"
+  - "docs"
