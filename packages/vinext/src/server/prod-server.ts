@@ -122,11 +122,22 @@ function sendCompressed(
 
   if (encoding && COMPRESSIBLE_TYPES.has(baseType) && buf.length >= COMPRESS_THRESHOLD) {
     const compressor = createCompressor(encoding);
+    // Merge Accept-Encoding into existing Vary header from extraHeaders instead
+    // of overwriting. Preserves Vary values set by the App Router for content
+    // negotiation (e.g. "RSC, Accept").
+    const existingVary = extraHeaders["Vary"] ?? extraHeaders["vary"];
+    let varyValue: string;
+    if (existingVary) {
+      const existing = String(existingVary).toLowerCase();
+      varyValue = existing.includes("accept-encoding") ? String(existingVary) : existingVary + ", Accept-Encoding";
+    } else {
+      varyValue = "Accept-Encoding";
+    }
     res.writeHead(statusCode, {
       ...extraHeaders,
       "Content-Type": contentType,
       "Content-Encoding": encoding,
-      Vary: "Accept-Encoding",
+      Vary: varyValue,
     });
     compressor.end(buf);
     pipeline(compressor, res, () => { /* ignore pipeline errors on closed connections */ });
@@ -351,7 +362,19 @@ async function sendWebResponse(
     delete nodeHeaders["content-length"];
     delete nodeHeaders["Content-Length"];
     nodeHeaders["Content-Encoding"] = encoding!;
-    nodeHeaders["Vary"] = "Accept-Encoding";
+    // Merge Accept-Encoding into existing Vary header (e.g. "RSC, Accept") instead
+    // of overwriting. This prevents stripping the Vary values that the App Router
+    // sets for content negotiation (RSC stream vs HTML), which would cause CDN
+    // cache poisoning (GHSA-jgqv-mvrh-hv36).
+    const existingVary = nodeHeaders["Vary"] ?? nodeHeaders["vary"];
+    if (existingVary) {
+      const existing = String(existingVary).toLowerCase();
+      if (!existing.includes("accept-encoding")) {
+        nodeHeaders["Vary"] = existingVary + ", Accept-Encoding";
+      }
+    } else {
+      nodeHeaders["Vary"] = "Accept-Encoding";
+    }
   }
 
   res.writeHead(status, nodeHeaders);

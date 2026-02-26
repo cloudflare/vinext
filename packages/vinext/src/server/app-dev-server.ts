@@ -348,7 +348,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     setNavigationContext(null);
     return new Response(rscStream, {
       status: statusCode,
-      headers: { "Content-Type": "text/x-component; charset=utf-8" },
+      headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
     });
   }
   // For HTML (full page load) responses, wrap with layouts only (no client-side
@@ -370,7 +370,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
   setHeadersContext(null);
   setNavigationContext(null);
-  const _respHeaders = { "Content-Type": "text/html; charset=utf-8" };
+  const _respHeaders = { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" };
   const _linkParts = (fontData.preloads || []).map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; });
   if (_linkParts.length > 0) _respHeaders["Link"] = _linkParts.join(", ");
   return new Response(htmlStream, {
@@ -443,7 +443,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
     setNavigationContext(null);
     return new Response(rscStream, {
       status: 200,
-      headers: { "Content-Type": "text/x-component; charset=utf-8" },
+      headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
     });
   }
   // For HTML (full page load) responses, wrap with layouts only.
@@ -464,7 +464,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
   const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
   setHeadersContext(null);
   setNavigationContext(null);
-  const _errHeaders = { "Content-Type": "text/html; charset=utf-8" };
+  const _errHeaders = { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" };
   const _errLinkParts = (fontData.preloads || []).map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; });
   if (_errLinkParts.length > 0) _errHeaders["Link"] = _errLinkParts.join(", ");
   return new Response(htmlStream, {
@@ -1378,6 +1378,7 @@ async function _handleRequest(request) {
         setNavigationContext(null);
         const redirectHeaders = new Headers({
           "Content-Type": "text/x-component; charset=utf-8",
+          "Vary": "RSC, Accept",
           "x-action-redirect": actionRedirect.url,
           "x-action-redirect-type": actionRedirect.type,
           "x-action-redirect-status": String(actionRedirect.status),
@@ -1417,7 +1418,7 @@ async function _handleRequest(request) {
       setHeadersContext(null);
       setNavigationContext(null);
 
-      const actionHeaders = { "Content-Type": "text/x-component; charset=utf-8" };
+      const actionHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
       const actionResponse = new Response(rscStream, { headers: actionHeaders });
       if (actionPendingCookies.length > 0 || actionDraftCookie) {
         for (const cookie of actionPendingCookies) {
@@ -1720,7 +1721,7 @@ async function _handleRequest(request) {
         setHeadersContext(null);
         setNavigationContext(null);
         return new Response(interceptStream, {
-          headers: { "Content-Type": "text/x-component; charset=utf-8" },
+          headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
         });
       }
       // If sourceRoute === route, apply intercept opts to the normal render
@@ -1906,7 +1907,7 @@ async function _handleRequest(request) {
     // The RSC stream is consumed lazily - components render when chunks are read.
     // If we clear context now, headers()/cookies() will fail during rendering.
     // Context will be cleared when the next request starts (via runWithHeadersContext).
-    const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8" };
+    const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
     // Include matched route params so the client can hydrate useParams()
     if (params && Object.keys(params).length > 0) {
       responseHeaders["X-Vinext-Params"] = JSON.stringify(params);
@@ -2008,6 +2009,7 @@ async function _handleRequest(request) {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store, must-revalidate",
+        "Vary": "RSC, Accept",
       },
     }));
   }
@@ -2023,6 +2025,7 @@ async function _handleRequest(request) {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
         "X-Vinext-Cache": "STATIC",
+        "Vary": "RSC, Accept",
       },
     }));
   }
@@ -2034,6 +2037,7 @@ async function _handleRequest(request) {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store, must-revalidate",
+        "Vary": "RSC, Accept",
       },
     }));
   }
@@ -2045,12 +2049,13 @@ async function _handleRequest(request) {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+        "Vary": "RSC, Accept",
       },
     }));
   }
 
   return attachMiddlewareContext(new Response(htmlStream, {
-    headers: { "Content-Type": "text/html; charset=utf-8" },
+    headers: { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" },
   }));
 }
 
