@@ -1492,6 +1492,26 @@ ${middlewareExportCode}
 
     const hasApp = fs.existsSync(path.join(pagesDir, "_app.tsx")) || fs.existsSync(path.join(pagesDir, "_app.jsx")) || fs.existsSync(path.join(pagesDir, "_app.ts")) || fs.existsSync(path.join(pagesDir, "_app.js"));
 
+    // Helper to escape characters that could break out of a <script> context
+    // when this generated module is inlined into HTML.
+    const unsafeCharMap: Record<string, string> = {
+      "<": "\\u003C",
+      ">": "\\u003E",
+      "/": "\\u002F",
+      "\\": "\\\\",
+      "\b": "\\b",
+      "\f": "\\f",
+      "\n": "\\n",
+      "\r": "\\r",
+      "\t": "\\t",
+      "\0": "\\0",
+      "\u2028": "\\u2028",
+      "\u2029": "\\u2029",
+    };
+
+    const escapeUnsafeChars = (str: string): string =>
+      str.replace(/[<>/\\\b\f\n\r\t\0\u2028\u2029]/g, (ch) => unsafeCharMap[ch] ?? ch);
+
     // Build a map of route pattern -> dynamic import.
     // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
     // __NEXT_DATA__.page which is set via patternToNextFormat() during SSR.
@@ -1499,9 +1519,9 @@ ${middlewareExportCode}
       const absPath = r.filePath.replace(/\\/g, "/");
       const nextFormatPattern = pagesPatternToNextFormat(r.pattern);
       // JSON.stringify safely escapes quotes, backslashes, and special chars in
-      // both the route pattern and the absolute file path.
-      // lgtm[js/bad-code-sanitization]
-      return `  ${JSON.stringify(nextFormatPattern)}: () => import(${JSON.stringify(absPath)})`;
+      // both the route pattern and the absolute file path. We additionally
+      // escape characters that could break out of a <script> tag context.
+      return `  ${escapeUnsafeChars(JSON.stringify(nextFormatPattern))}: () => import(${escapeUnsafeChars(JSON.stringify(absPath))})`;
     });
 
     const appFileBase = path.join(pagesDir, "_app").replace(/\\/g, "/");
