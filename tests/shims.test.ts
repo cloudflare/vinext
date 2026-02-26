@@ -3080,6 +3080,46 @@ describe("proxyExternalRequest", () => {
     }
   });
 
+  it("strips cookie, authorization, and x-middleware-* headers from proxied requests", async () => {
+    const { proxyExternalRequest } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+
+    const request = new Request("http://localhost:3000/proxy", {
+      method: "GET",
+      headers: {
+        "cookie": "session=secret123",
+        "authorization": "Bearer tok_secret",
+        "x-middleware-rewrite": "/internal",
+        "x-middleware-next": "1",
+        "x-custom-header": "keep-me",
+        "user-agent": "vinext-test",
+      },
+    });
+
+    const originalFetch = globalThis.fetch;
+    let capturedHeaders: Headers | undefined;
+    globalThis.fetch = async (_url: any, init: any) => {
+      capturedHeaders = init.headers;
+      return new Response("ok", { status: 200 });
+    };
+
+    try {
+      await proxyExternalRequest(request, "https://api.example.com/data");
+      expect(capturedHeaders).toBeDefined();
+      // Sensitive headers must be stripped
+      expect(capturedHeaders!.get("cookie")).toBeNull();
+      expect(capturedHeaders!.get("authorization")).toBeNull();
+      expect(capturedHeaders!.get("x-middleware-rewrite")).toBeNull();
+      expect(capturedHeaders!.get("x-middleware-next")).toBeNull();
+      // Non-sensitive headers must be preserved
+      expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
+      expect(capturedHeaders!.get("user-agent")).toBe("vinext-test");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("forwards redirect responses without following them", async () => {
     const { proxyExternalRequest } = await import(
       "../packages/vinext/src/config/config-matchers.js"

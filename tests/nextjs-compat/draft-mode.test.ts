@@ -87,6 +87,43 @@ describe("Next.js compat: draft-mode", () => {
     expect(data).toEqual({ isEnabled: false });
   });
 
+  it("draftMode().enable() cookie includes Secure flag in production", async () => {
+    const {
+      draftMode: draftModeFn,
+      getDraftModeCookieHeader,
+      runWithHeadersContext,
+      headersContextFromRequest,
+    } = await import("../../packages/vinext/src/shims/headers.js");
+
+    const origEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "production";
+    try {
+      const ctx = headersContextFromRequest(
+        new Request("http://localhost/test"),
+      );
+      await runWithHeadersContext(ctx, async () => {
+        const dm = await draftModeFn();
+        dm.enable();
+        const cookieHeader = getDraftModeCookieHeader();
+        expect(cookieHeader).toBeDefined();
+        expect(cookieHeader).toMatch(/;\s*Secure/i);
+      });
+    } finally {
+      process.env.NODE_ENV = origEnv;
+    }
+  });
+
+  it("draftMode().enable() cookie omits Secure flag in development", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/draft-enable`);
+    const setCookies = res.headers.getSetCookie();
+    const bypassCookie = setCookies.find((c) =>
+      c.includes("__prerender_bypass"),
+    );
+    expect(bypassCookie).toBeDefined();
+    // Dev server runs in development — should NOT have Secure flag
+    expect(bypassCookie).not.toMatch(/;\s*Secure/i);
+  });
+
   it("draftMode().isEnabled returns true after enable() round-trip", async () => {
     // Enable draft mode and extract the Set-Cookie value
     const enableRes = await fetch(`${baseUrl}/nextjs-compat/api/draft-enable`);

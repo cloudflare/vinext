@@ -414,8 +414,13 @@ export function createSSRHandler(
         if (result && "redirect" in result) {
           const { redirect } = result;
           const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
+          // Sanitize destination to prevent open redirect via protocol-relative URLs
+          let dest = redirect.destination;
+          if (!dest.startsWith("http://") && !dest.startsWith("https://") && dest.startsWith("//")) {
+            dest = dest.replace(/^\/\/+/, "/");
+          }
           res.writeHead(status, {
-            Location: redirect.destination,
+            Location: dest,
           });
           res.end();
           return;
@@ -514,8 +519,13 @@ export function createSSRHandler(
         if (result && "redirect" in result) {
           const { redirect } = result;
           const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
+          // Sanitize destination to prevent open redirect via protocol-relative URLs
+          let dest = redirect.destination;
+          if (!dest.startsWith("http://") && !dest.startsWith("https://") && dest.startsWith("//")) {
+            dest = dest.replace(/^\/\/+/, "/");
+          }
           res.writeHead(status, {
-            Location: redirect.destination,
+            Location: dest,
           });
           res.end();
           return;

@@ -18,7 +18,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit } from "./init.js";
@@ -316,13 +316,13 @@ async function lint() {
   try {
     if (hasEslint && hasNextLintConfig) {
       console.log("  Using eslint (with existing config)\n");
-      execSync("npx eslint .", { cwd, stdio: "inherit" });
+      execFileSync("npx", ["eslint", "."], { cwd, stdio: "inherit" });
     } else if (hasOxlint) {
       console.log("  Using oxlint\n");
-      execSync("npx oxlint .", { cwd, stdio: "inherit" });
+      execFileSync("npx", ["oxlint", "."], { cwd, stdio: "inherit" });
     } else if (hasEslint) {
       console.log("  Using eslint\n");
-      execSync("npx eslint .", { cwd, stdio: "inherit" });
+      execFileSync("npx", ["eslint", "."], { cwd, stdio: "inherit" });
     } else {
       console.log(
         "  No linter found. Install eslint or oxlint:\n\n" +

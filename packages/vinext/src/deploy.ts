@@ -17,7 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { execFileSync, execSync, type ExecSyncOptions } from "node:child_process";
+import { execFileSync, type ExecSyncOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
 import { createBuilder, build } from "vite";
 import {
@@ -643,11 +643,12 @@ export function getMissingDeps(
 function installDeps(root: string, deps: MissingDep[]): void {
   if (deps.length === 0) return;
 
-  const depsStr = deps.map((d) => `${d.name}@${d.version}`).join(" ");
+  const depSpecs = deps.map((d) => `${d.name}@${d.version}`);
   const installCmd = detectPackageManager(root);
+  const [pm, ...pmArgs] = installCmd.split(" ");
 
   console.log(`  Installing: ${deps.map((d) => d.name).join(", ")}`);
-  execSync(`${installCmd} ${depsStr}`, {
+  execFileSync(pm, [...pmArgs, ...depSpecs], {
     cwd: root,
     stdio: "inherit",
   });
@@ -814,8 +815,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
     const reactUpgrade = getReactUpgradeDeps(root);
     if (reactUpgrade.length > 0) {
       const installCmd = detectPackageManager(root).replace(/ -D$/, "");
+      const [pm, ...pmArgs] = installCmd.split(" ");
       console.log(`  Upgrading ${reactUpgrade.map(d => d.replace(/@latest$/, "")).join(", ")}...`);
-      execSync(`${installCmd} ${reactUpgrade.join(" ")}`, { cwd: root, stdio: "inherit" });
+      execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: root, stdio: "inherit" });
     }
   }
   const missingDeps = getMissingDeps(info);

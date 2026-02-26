@@ -307,15 +307,17 @@ export async function draftMode(): Promise<DraftModeResult> {
       if (state.headersContext) {
         state.headersContext.cookies.set(DRAFT_MODE_COOKIE, secret);
       }
+      const secure = typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
       state.draftModeCookieHeader =
-        `${DRAFT_MODE_COOKIE}=${secret}; Path=/; HttpOnly; SameSite=Lax`;
+        `${DRAFT_MODE_COOKIE}=${secret}; Path=/; HttpOnly; SameSite=Lax${secure}`;
     },
     disable(): void {
       if (state.headersContext) {
         state.headersContext.cookies.delete(DRAFT_MODE_COOKIE);
       }
+      const secure = typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
       state.draftModeCookieHeader =
-        `${DRAFT_MODE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+        `${DRAFT_MODE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`;
     },
   };
 }

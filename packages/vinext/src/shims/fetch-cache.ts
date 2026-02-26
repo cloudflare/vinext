@@ -35,6 +35,12 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * authenticated response from being served to another user.
  *
  * Checked case-insensitively to match HTTP header semantics.
+ *
+ * SECURITY NOTE: Only these three headers are keyed. If your application uses
+ * custom authentication headers (e.g. "X-Session-Token", "X-Auth-Token"),
+ * responses may be incorrectly shared across users. In such cases, use
+ * `cache: 'no-store'` on authenticated fetches or add the header to the URL
+ * as a query parameter to ensure unique cache keys.
  */
 const AUTH_HEADERS = ["authorization", "cookie", "x-api-key"];
 

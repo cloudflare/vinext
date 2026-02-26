@@ -1210,7 +1210,7 @@ export async function renderPage(request, url, manifest) {
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
         var gsspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
-        return new Response(null, { status: gsspStatus, headers: { Location: result.redirect.destination } });
+        return new Response(null, { status: gsspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
       }
       if (result && result.notFound) {
         return new Response("404", { status: 404 });
@@ -1269,7 +1269,7 @@ export async function renderPage(request, url, manifest) {
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
         var gspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
-        return new Response(null, { status: gspStatus, headers: { Location: result.redirect.destination } });
+        return new Response(null, { status: gspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
       }
       if (result && result.notFound) {
         return new Response("404", { status: 404 });

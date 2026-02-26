@@ -2098,6 +2098,14 @@ describe("App Router middleware with NextRequest", () => {
     expect(res.headers.get("x-middleware-pathname")).toBe("/about");
   });
 
+  it("middleware NextRequest.nextUrl.pathname strips .rsc suffix", async () => {
+    // Regression: .rsc is an internal transport detail; middleware should see
+    // the clean pathname (/about), not the raw URL (/about.rsc).
+    const res = await fetch(`${baseUrl}/about.rsc`);
+    expect(res.headers.get("x-middleware-ran")).toBe("true");
+    expect(res.headers.get("x-middleware-pathname")).toBe("/about");
+  });
+
   it("middleware receives NextRequest and can use .cookies", async () => {
     // The middleware checks request.cookies.get() which requires NextRequest
     const res = await fetch(`${baseUrl}/about`, {
