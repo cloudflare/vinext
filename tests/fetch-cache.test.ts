@@ -490,4 +490,192 @@ describe("fetch cache shim", () => {
     // Re-install for afterEach
     cleanup = withFetchCache();
   });
+
+  // ── Auth header isolation in cache keys ─────────────────────────────
+
+  describe("auth header cache isolation", () => {
+    it("different Authorization headers produce separate cache entries", async () => {
+      // Alice fetches with her token — explicitly opt into caching
+      const res1 = await fetch("https://api.example.com/me", {
+        headers: { Authorization: "Bearer alice-token" },
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      // Bob fetches with his token — should NOT get Alice's cached response
+      const res2 = await fetch("https://api.example.com/me", {
+        headers: { Authorization: "Bearer bob-token" },
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different cache entry
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      // Alice fetches again — should get her cached response
+      const res3 = await fetch("https://api.example.com/me", {
+        headers: { Authorization: "Bearer alice-token" },
+        next: { revalidate: 60 },
+      });
+      const data3 = await res3.json();
+      expect(data3.count).toBe(1); // Cached from first request
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("different Cookie headers produce separate cache entries", async () => {
+      const res1 = await fetch("https://api.example.com/profile", {
+        headers: { Cookie: "session=alice" },
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      // Bob's cookie should get a separate cache entry
+      const res2 = await fetch("https://api.example.com/profile", {
+        headers: { Cookie: "session=bob" },
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Fresh fetch, not Alice's data
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("requests without auth headers share cache (public data)", async () => {
+      const res1 = await fetch("https://api.example.com/public", {
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      // No auth headers → same cache entry
+      const res2 = await fetch("https://api.example.com/public", {
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(1); // Cached
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("auth headers with force-cache still produce per-user cache entries", async () => {
+      const res1 = await fetch("https://api.example.com/forced", {
+        headers: { Authorization: "Bearer alice" },
+        cache: "force-cache",
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/forced", {
+        headers: { Authorization: "Bearer bob" },
+        cache: "force-cache",
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Separate cache entry
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("auth headers with tags-only (no explicit revalidate) bypass cache", async () => {
+      // When only tags are specified but no explicit revalidate or force-cache,
+      // auth headers should cause a cache bypass
+      const res1 = await fetch("https://api.example.com/tagged-auth", {
+        headers: { Authorization: "Bearer alice" },
+        next: { tags: ["user-data"] },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      // Same user, same tags — should still bypass (no explicit cache opt-in)
+      const res2 = await fetch("https://api.example.com/tagged-auth", {
+        headers: { Authorization: "Bearer alice" },
+        next: { tags: ["user-data"] },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Not cached — safety bypass
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("X-API-Key header is included in cache key", async () => {
+      const res1 = await fetch("https://api.example.com/api-key", {
+        headers: { "X-API-Key": "key-alice" },
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/api-key", {
+        headers: { "X-API-Key": "key-bob" },
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different key = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("auth headers from Request object are included in cache key", async () => {
+      const req1 = new Request("https://api.example.com/req-auth", {
+        headers: { Authorization: "Bearer alice" },
+      });
+      const res1 = await fetch(req1, { next: { revalidate: 60 } });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const req2 = new Request("https://api.example.com/req-auth", {
+        headers: { Authorization: "Bearer bob" },
+      });
+      const res2 = await fetch(req2, { next: { revalidate: 60 } });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // Different auth = different cache
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // ── cache: 'no-cache' bypass ────────────────────────────────────────
+
+  it("cache: 'no-cache' bypasses cache entirely", async () => {
+    const res1 = await fetch("https://api.example.com/nocache", {
+      cache: "no-cache" as RequestCache,
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/nocache", {
+      cache: "no-cache" as RequestCache,
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2); // Fresh fetch each time
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("cache: 'no-store' with auth headers bypasses cache", async () => {
+    const res1 = await fetch("https://api.example.com/nostore-auth", {
+      cache: "no-store",
+      headers: { Authorization: "Bearer token" },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/nostore-auth", {
+      cache: "no-store",
+      headers: { Authorization: "Bearer token" },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2); // Always fresh
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("cache: 'no-cache' with auth headers bypasses cache", async () => {
+    const res1 = await fetch("https://api.example.com/nocache-auth", {
+      cache: "no-cache" as RequestCache,
+      headers: { Cookie: "session=alice" },
+    });
+    const data1 = await res1.json();
+    expect(data1.count).toBe(1);
+
+    const res2 = await fetch("https://api.example.com/nocache-auth", {
+      cache: "no-cache" as RequestCache,
+      headers: { Cookie: "session=bob" },
+    });
+    const data2 = await res2.json();
+    expect(data2.count).toBe(2); // Always fresh
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
 });
