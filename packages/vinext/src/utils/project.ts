@@ -75,26 +75,60 @@ export function renameCJSConfigs(root: string): Array<[string, string]> {
 
 // ─── Package Manager Detection ───────────────────────────────────────────────
 
+type LockFileMatch = { pm: string; installCmd: string };
+
+/**
+ * Check a single directory for a lock file.
+ * Returns the matched package manager info, or null if none found.
+ */
+function checkLockFiles(dir: string): LockFileMatch | null {
+  if (fs.existsSync(path.join(dir, "pnpm-lock.yaml"))) return { pm: "pnpm", installCmd: "pnpm add -D" };
+  if (fs.existsSync(path.join(dir, "yarn.lock")))       return { pm: "yarn", installCmd: "yarn add -D" };
+  // bun.lock = text format (Bun v1.0+); bun.lockb = legacy binary format
+  if (fs.existsSync(path.join(dir, "bun.lock")))  return { pm: "bun", installCmd: "bun add -D" };
+  if (fs.existsSync(path.join(dir, "bun.lockb"))) return { pm: "bun", installCmd: "bun add -D" };
+  return null;
+}
+
+/**
+ * Walk from `start` up to the filesystem root looking for a lock file.
+ * Stops at the first directory that contains one. Returns null if none found.
+ *
+ * This handles monorepos where the lock file lives at the workspace root
+ * rather than in the individual app directory.
+ */
+function findLockFile(start: string): LockFileMatch | null {
+  let dir = path.resolve(start);
+  const { root: fsRoot } = path.parse(dir);
+
+  while (true) {
+    const match = checkLockFiles(dir);
+    if (match) return match;
+    if (dir === fsRoot) return null;
+    dir = path.dirname(dir);
+  }
+}
+
 /**
  * Detect which package manager is used by looking at lock files.
  * Returns the install command string (e.g. "pnpm add -D").
+ *
+ * Walks up parent directories so that monorepos with a workspace-root
+ * lock file are detected correctly even when called from a sub-package.
  */
 export function detectPackageManager(root: string): string {
-  if (fs.existsSync(path.join(root, "pnpm-lock.yaml"))) return "pnpm add -D";
-  if (fs.existsSync(path.join(root, "yarn.lock"))) return "yarn add -D";
-  if (fs.existsSync(path.join(root, "bun.lockb"))) return "bun add -D";
-  return "npm install -D";
+  return findLockFile(root)?.installCmd ?? "npm install -D";
 }
 
 /**
  * Detect which package manager name is used (without install args).
  * Returns "pnpm", "yarn", "bun", or "npm".
+ *
+ * Walks up parent directories so that monorepos with a workspace-root
+ * lock file are detected correctly even when called from a sub-package.
  */
 export function detectPackageManagerName(root: string): string {
-  if (fs.existsSync(path.join(root, "pnpm-lock.yaml"))) return "pnpm";
-  if (fs.existsSync(path.join(root, "yarn.lock"))) return "yarn";
-  if (fs.existsSync(path.join(root, "bun.lockb"))) return "bun";
-  return "npm";
+  return findLockFile(root)?.pm ?? "npm";
 }
 
 // ─── Vite Config Detection ───────────────────────────────────────────────────

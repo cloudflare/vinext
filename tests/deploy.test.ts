@@ -17,6 +17,10 @@ import {
   parseDeployArgs,
   isPackageResolvable,
 } from "../packages/vinext/src/deploy.js";
+import {
+  detectPackageManager,
+  detectPackageManagerName,
+} from "../packages/vinext/src/utils/project.js";
 import { computeLazyChunks } from "../packages/vinext/src/index.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
@@ -1656,5 +1660,60 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     // Entry and framework are eager
     expect(lazy).not.toContain("assets/entry.js");
     expect(lazy).not.toContain("assets/framework.js");
+  });
+});
+
+// ─── detectPackageManager ────────────────────────────────────────────────────
+
+describe("detectPackageManager", () => {
+  it("detects pnpm from pnpm-lock.yaml", () => {
+    writeFile(tmpDir, "pnpm-lock.yaml", "");
+    expect(detectPackageManager(tmpDir)).toBe("pnpm add -D");
+    expect(detectPackageManagerName(tmpDir)).toBe("pnpm");
+  });
+
+  it("detects yarn from yarn.lock", () => {
+    writeFile(tmpDir, "yarn.lock", "");
+    expect(detectPackageManager(tmpDir)).toBe("yarn add -D");
+    expect(detectPackageManagerName(tmpDir)).toBe("yarn");
+  });
+
+  it("detects bun from bun.lock (text format, Bun v1.0+)", () => {
+    writeFile(tmpDir, "bun.lock", "");
+    expect(detectPackageManager(tmpDir)).toBe("bun add -D");
+    expect(detectPackageManagerName(tmpDir)).toBe("bun");
+  });
+
+  it("detects bun from bun.lockb (legacy binary format)", () => {
+    writeFile(tmpDir, "bun.lockb", "");
+    expect(detectPackageManager(tmpDir)).toBe("bun add -D");
+    expect(detectPackageManagerName(tmpDir)).toBe("bun");
+  });
+
+  it("falls back to npm when no lock file is found", () => {
+    expect(detectPackageManager(tmpDir)).toBe("npm install -D");
+    expect(detectPackageManagerName(tmpDir)).toBe("npm");
+  });
+
+  it("walks up to parent directory to find lock file (monorepo root)", () => {
+    // Simulates: monorepo-root/bun.lock + monorepo-root/apps/web/package.json
+    writeFile(tmpDir, "bun.lock", "");
+    const appDir = path.join(tmpDir, "apps", "web");
+    fs.mkdirSync(appDir, { recursive: true });
+    writeFile(appDir, "package.json", JSON.stringify({ name: "web" }));
+
+    expect(detectPackageManager(appDir)).toBe("bun add -D");
+    expect(detectPackageManagerName(appDir)).toBe("bun");
+  });
+
+  it("prefers the closest lock file when both child and parent have one", () => {
+    // Inner lock file (pnpm) should win over outer (bun)
+    writeFile(tmpDir, "bun.lock", "");
+    const appDir = path.join(tmpDir, "apps", "web");
+    fs.mkdirSync(appDir, { recursive: true });
+    writeFile(appDir, "pnpm-lock.yaml", "");
+
+    expect(detectPackageManager(appDir)).toBe("pnpm add -D");
+    expect(detectPackageManagerName(appDir)).toBe("pnpm");
   });
 });
