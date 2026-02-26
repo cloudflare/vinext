@@ -18,6 +18,8 @@ import {
 } from "./config/next-config.js";
 
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormalizePathCode } from "./server/middleware-codegen.js";
+import { normalizePath } from "./server/normalize-path.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import { safeRegExp, isExternalUrl, proxyExternalRequest } from "./config/config-matchers.js";
@@ -654,103 +656,10 @@ import { NextRequest } from "next/server";`
     // We inline the matching + execution logic so the prod server can call it.
     const middlewareExportCode = middlewarePath
       ? `
-// --- Middleware support ---
-function matchesMiddleware(pathname, matcher) {
-  if (!matcher) {
-    return !pathname.startsWith("/_next") && !pathname.startsWith("/api") && !pathname.includes(".") && pathname !== "/favicon.ico";
-  }
-  var patterns = [];
-  if (typeof matcher === "string") { patterns.push(matcher); }
-  else if (Array.isArray(matcher)) {
-    for (var m of matcher) {
-      if (typeof m === "string") patterns.push(m);
-      else if (m && typeof m === "object" && "source" in m) patterns.push(m.source);
-    }
-  }
-  return patterns.some(function(p) { return matchMiddlewarePattern(pathname, p); });
-}
-
-function __isSafeRegex(pattern) {
-  var quantifierAtDepth = [];
-  var depth = 0;
-  var i = 0;
-  while (i < pattern.length) {
-    var ch = pattern[i];
-    if (ch === "\\\\") { i += 2; continue; }
-    if (ch === "[") {
-      i++;
-      while (i < pattern.length && pattern[i] !== "]") {
-        if (pattern[i] === "\\\\") i++;
-        i++;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "(") {
-      depth++;
-      if (quantifierAtDepth.length <= depth) quantifierAtDepth.push(false);
-      else quantifierAtDepth[depth] = false;
-      i++;
-      continue;
-    }
-    if (ch === ")") {
-      var hadQ = depth > 0 && quantifierAtDepth[depth];
-      if (depth > 0) depth--;
-      var next = pattern[i + 1];
-      if (next === "+" || next === "*" || next === "{") {
-        if (hadQ) return false;
-        if (depth >= 0 && depth < quantifierAtDepth.length) quantifierAtDepth[depth] = true;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "+" || ch === "*") {
-      if (depth > 0) quantifierAtDepth[depth] = true;
-      i++;
-      continue;
-    }
-    if (ch === "?") {
-      var prev = i > 0 ? pattern[i - 1] : "";
-      if (prev !== "+" && prev !== "*" && prev !== "?" && prev !== "}") {
-        if (depth > 0) quantifierAtDepth[depth] = true;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "{") {
-      var j = i + 1;
-      while (j < pattern.length && /[\\d,]/.test(pattern[j])) j++;
-      if (j < pattern.length && pattern[j] === "}" && j > i + 1) {
-        if (depth > 0) quantifierAtDepth[depth] = true;
-        i = j + 1;
-        continue;
-      }
-    }
-    i++;
-  }
-  return true;
-}
-function __safeRegExp(pattern, flags) {
-  if (!__isSafeRegex(pattern)) {
-    console.warn("[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): " + pattern);
-    return null;
-  }
-  try { return new RegExp(pattern, flags); } catch { return null; }
-}
-
-function matchMiddlewarePattern(pathname, pattern) {
-  if (pattern.includes("(") || pattern.includes("\\\\")) {
-    var re = __safeRegExp("^" + pattern + "$");
-    if (re) return re.test(pathname);
-  }
-  var regexStr = pattern
-    .replace(/\\./g, "\\\\.")
-    .replace(/\\/:([\\w]+)\\*/g, "(?:/.*)?")
-    .replace(/\\/:([\\w]+)\\+/g, "(?:/.+)")
-    .replace(/:([\\w]+)/g, "([^/]+)");
-  var re2 = __safeRegExp("^" + regexStr + "$");
-  return re2 ? re2.test(pathname) : pathname === pattern;
-}
+// --- Middleware support (generated from middleware-codegen.ts) ---
+${generateNormalizePathCode("es5")}
+${generateSafeRegExpCode("es5")}
+${generateMiddlewareMatcherCode("es5")}
 
 export async function runMiddleware(request) {
   var middlewareFn = middlewareModule.default || middlewareModule.middleware;
@@ -760,7 +669,11 @@ export async function runMiddleware(request) {
   var matcher = config && config.matcher;
   var url = new URL(request.url);
 
-  if (!matchesMiddleware(url.pathname, matcher)) return { continue: true };
+  // Normalize pathname before matching to prevent path-confusion bypasses
+  // (percent-encoding like /%61dmin, double slashes like /dashboard//settings).
+  var normalizedPathname = __normalizePath(decodeURIComponent(url.pathname));
+
+  if (!matchesMiddleware(normalizedPathname, matcher)) return { continue: true };
 
   var nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
   var response;
@@ -2414,17 +2327,20 @@ hydrate();
               }
 
               // Guard against protocol-relative URL open redirects.
-              // Paths like //example.com/ would be redirected to //example.com
-              // by the trailing-slash normalizer, which browsers interpret as
-              // http://example.com — an open redirect. Normalize backslashes
-              // first: browsers treat /\ as // in URL context. Next.js returns
-              // 404 for double-slash paths.
+              // Normalize backslashes first: browsers treat /\ as // in URL
+              // context. Check the RAW pathname before normalizePath so the
+              // guard fires before normalizePath collapses //.
               pathname = pathname.replaceAll("\\", "/");
               if (pathname.startsWith("//")) {
                 res.writeHead(404);
                 res.end("404 Not Found");
                 return;
               }
+
+              // Normalize the pathname to prevent path-confusion attacks.
+              // decodeURIComponent prevents /%61dmin bypassing /admin matchers.
+              // normalizePath collapses // and resolves . / .. segments.
+              pathname = normalizePath(decodeURIComponent(pathname));
 
               // Strip basePath prefix from URL for route matching.
               // All internal routing uses basePath-free paths.

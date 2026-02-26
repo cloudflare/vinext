@@ -11,6 +11,7 @@ import type { AppRoute } from "../routing/app-router.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { NextRedirect, NextRewrite, NextHeader } from "../config/next-config.js";
 import { generateDevOriginCheckCode } from "./dev-origin-check.js";
+import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormalizePathCode } from "./middleware-codegen.js";
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -836,23 +837,7 @@ async function buildPageElement(route, params, opts, searchParams) {
   return element;
 }
 
-${middlewarePath ? `
-function matchMiddlewarePath(pathname, matcher) {
-  if (!matcher) return true;
-  const patterns = typeof matcher === "string" ? [matcher]
-    : Array.isArray(matcher) ? matcher.map(m => typeof m === "string" ? m : m.source)
-    : [];
-  return patterns.some(pattern => {
-    const reStr = "^" + pattern
-      .replace(/\\./g, "\\\\.")
-      .replace(/:(\\w+)\\*/g, "(?:.*)")
-      .replace(/:(\\w+)\\+/g, "(?:.+)")
-      .replace(/:(\\w+)/g, "([^/]+)") + "$";
-    const re = __safeRegExp(reStr);
-    return re ? re.test(pathname) : false;
-  });
-}
-` : ""}
+${middlewarePath ? generateMiddlewareMatcherCode("modern") : ""}
 
 const __basePath = ${JSON.stringify(bp)};
 const __trailingSlash = ${JSON.stringify(ts)};
@@ -920,73 +905,10 @@ function __validateCsrfOrigin(request) {
 }
 
 // ── ReDoS-safe regex compilation ────────────────────────────────────────
-function __isSafeRegex(pattern) {
-  const quantifierAtDepth = [];
-  let depth = 0;
-  let i = 0;
-  while (i < pattern.length) {
-    const ch = pattern[i];
-    if (ch === "\\\\") { i += 2; continue; }
-    if (ch === "[") {
-      i++;
-      while (i < pattern.length && pattern[i] !== "]") {
-        if (pattern[i] === "\\\\") i++;
-        i++;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "(") {
-      depth++;
-      if (quantifierAtDepth.length <= depth) quantifierAtDepth.push(false);
-      else quantifierAtDepth[depth] = false;
-      i++;
-      continue;
-    }
-    if (ch === ")") {
-      const hadQ = depth > 0 && quantifierAtDepth[depth];
-      if (depth > 0) depth--;
-      const next = pattern[i + 1];
-      if (next === "+" || next === "*" || next === "{") {
-        if (hadQ) return false;
-        if (depth >= 0 && depth < quantifierAtDepth.length) quantifierAtDepth[depth] = true;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "+" || ch === "*") {
-      if (depth > 0) quantifierAtDepth[depth] = true;
-      i++;
-      continue;
-    }
-    if (ch === "?") {
-      const prev = i > 0 ? pattern[i - 1] : "";
-      if (prev !== "+" && prev !== "*" && prev !== "?" && prev !== "}") {
-        if (depth > 0) quantifierAtDepth[depth] = true;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "{") {
-      let j = i + 1;
-      while (j < pattern.length && /[\\d,]/.test(pattern[j])) j++;
-      if (j < pattern.length && pattern[j] === "}" && j > i + 1) {
-        if (depth > 0) quantifierAtDepth[depth] = true;
-        i = j + 1;
-        continue;
-      }
-    }
-    i++;
-  }
-  return true;
-}
-function __safeRegExp(pattern, flags) {
-  if (!__isSafeRegex(pattern)) {
-    console.warn("[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): " + pattern);
-    return null;
-  }
-  try { return new RegExp(pattern, flags); } catch { return null; }
-}
+${generateSafeRegExpCode("modern")}
+
+// ── Path normalization ──────────────────────────────────────────────────
+${generateNormalizePathCode("modern")}
 
 // ── Config pattern matching (redirects, rewrites, headers) ──────────────
 function __matchConfigPattern(pathname, pattern) {
@@ -1270,7 +1192,6 @@ export default async function handler(request) {
 
 async function _handleRequest(request) {
   const url = new URL(request.url);
-  let pathname = url.pathname;
 
   // ── Cross-origin request protection ─────────────────────────────────
   // Block requests from non-localhost origins to prevent data exfiltration.
@@ -1282,12 +1203,16 @@ async function _handleRequest(request) {
   // trailing-slash normalizer, which browsers interpret as http://example.com.
   // Backslashes are equivalent to forward slashes in the URL spec
   // (e.g. /\\evil.com is treated as //evil.com by browsers and the URL constructor).
-  // Next.js returns 404 for these paths. Check the raw pathname before any
-  // basePath stripping so the guard cannot be bypassed with a basePath prefix.
-  pathname = pathname.replaceAll("\\\\", "/");
-  if (pathname.startsWith("//")) {
+  // Next.js returns 404 for these paths. Check the RAW pathname before
+  // normalization so the guard fires before normalizePath collapses //.
+  if (url.pathname.replaceAll("\\\\", "/").startsWith("//")) {
     return new Response("404 Not Found", { status: 404 });
   }
+
+  // Decode percent-encoding and normalize pathname to canonical form.
+  // decodeURIComponent prevents /%61dmin from bypassing /admin matchers.
+  // __normalizePath collapses //foo///bar → /foo/bar, resolves . and .. segments.
+  let pathname = __normalizePath(decodeURIComponent(url.pathname));
 
   ${bp ? `
   // Strip basePath prefix
@@ -1348,7 +1273,7 @@ async function _handleRequest(request) {
    // Run proxy/middleware if present and path matches
   const middlewareFn = middlewareModule.default || middlewareModule.proxy || middlewareModule.middleware;
   const middlewareMatcher = middlewareModule.config?.matcher;
-  if (typeof middlewareFn === "function" && matchMiddlewarePath(cleanPathname, middlewareMatcher)) {
+  if (typeof middlewareFn === "function" && matchesMiddleware(cleanPathname, middlewareMatcher)) {
     try {
       // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
       const nextRequest = request instanceof NextRequest ? request : new NextRequest(request);

@@ -26,6 +26,7 @@ import zlib from "node:zlib";
 import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { IMAGE_OPTIMIZATION_PATH, IMAGE_CONTENT_SECURITY_POLICY, parseImageParams, isSafeImageContentType, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "./image-optimization.js";
+import { normalizePath } from "./normalize-path.js";
 import { computeLazyChunks } from "../index.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
@@ -476,22 +477,18 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
   const server = createServer(async (req, res) => {
     const url = req.url ?? "/";
-    // Normalize backslashes: browsers and the URL constructor treat /\ as //,
-    // allowing bypass of the protocol-relative guard below.
-    let pathname = url.split("?")[0].replaceAll("\\", "/");
+    // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
+    const rawPathname = url.split("?")[0].replaceAll("\\", "/");
+    const pathname = normalizePath(decodeURIComponent(rawPathname));
 
     // Guard against protocol-relative URL open redirect attacks.
-    // See comment in app-dev-server.ts _handleRequest for full explanation.
-    if (pathname.startsWith("//")) {
+    // Check rawPathname before normalizePath collapses //.
+    if (rawPathname.startsWith("//")) {
       res.writeHead(404);
       res.end("404 Not Found");
       return;
     }
 
-    // Serve static assets from client build
-    if (pathname !== "/" && tryServeStatic(req, res, clientDir, pathname, compress)) {
-      return;
-    }
 
     // Image optimization passthrough (Node.js prod server has no Images binding;
     // serves the original file with cache headers and security headers)
@@ -617,13 +614,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
     let url = rawUrl;
-    // Normalize backslashes: browsers and the URL constructor treat /\ as //,
-    // allowing bypass of the protocol-relative guard below.
-    let pathname = url.split("?")[0].replaceAll("\\", "/");
+    // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
+    const rawPagesPathname = url.split("?")[0].replaceAll("\\", "/");
+    let pathname = normalizePath(decodeURIComponent(rawPagesPathname));
 
     // Guard against protocol-relative URL open redirect attacks.
-    // See comment in app-dev-server.ts _handleRequest for full explanation.
-    if (pathname.startsWith("//")) {
+    // Check rawPagesPathname before normalizePath collapses //.
+    if (rawPagesPathname.startsWith("//")) {
       res.writeHead(404);
       res.end("404 Not Found");
       return;

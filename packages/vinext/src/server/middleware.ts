@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { NextRequest } from "../shims/server.js";
 import { safeRegExp } from "../config/config-matchers.js";
+import { normalizePath } from "./normalize-path.js";
 
 /**
  * Possible proxy/middleware file names.
@@ -92,13 +93,9 @@ export function matchesMiddleware(
   matcher: MatcherConfig | undefined,
 ): boolean {
   if (!matcher) {
-    // Default: match all paths except static files, _next, and favicon
-    return (
-      !pathname.startsWith("/_next") &&
-      !pathname.startsWith("/api") &&
-      !pathname.includes(".") &&
-      pathname !== "/favicon.ico"
-    );
+    // Next.js default: middleware runs on ALL paths when no matcher is configured.
+    // Users opt out of specific paths by configuring a matcher pattern.
+    return true;
   }
 
   const patterns: string[] = [];
@@ -197,7 +194,11 @@ export async function runMiddleware(
   const matcher = config?.matcher;
   const url = new URL(request.url);
 
-  if (!matchesMiddleware(url.pathname, matcher)) {
+  // Normalize the pathname before middleware matching to prevent bypasses
+  // via percent-encoding (/%61dmin → /admin) or double slashes (/dashboard//settings).
+  const normalizedPathname = normalizePath(decodeURIComponent(url.pathname));
+
+  if (!matchesMiddleware(normalizedPathname, matcher)) {
     return { continue: true };
   }
 

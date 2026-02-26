@@ -1496,20 +1496,19 @@ describe("middleware matcher patterns", () => {
     expect(matchPattern("/files/dataXjson", "/files/data.json")).toBe(false);
   });
 
-  it("matchesMiddleware: no matcher — default exclusions", async () => {
+  it("matchesMiddleware: no matcher — matches all paths (Next.js default)", async () => {
     const { matchesMiddleware } = await import(
       "../packages/vinext/src/server/middleware.js"
     );
-    // Default: matches most paths
+    // Next.js default: middleware runs on ALL paths when no matcher is configured.
+    // Users opt out of specific paths by configuring a matcher pattern.
     expect(matchesMiddleware("/", undefined)).toBe(true);
     expect(matchesMiddleware("/about", undefined)).toBe(true);
     expect(matchesMiddleware("/dashboard/settings", undefined)).toBe(true);
-
-    // Default: excludes /_next, /api, files with dots, /favicon.ico
-    expect(matchesMiddleware("/_next/static/chunk.js", undefined)).toBe(false);
-    expect(matchesMiddleware("/api/hello", undefined)).toBe(false);
-    expect(matchesMiddleware("/favicon.ico", undefined)).toBe(false);
-    expect(matchesMiddleware("/image.png", undefined)).toBe(false);
+    expect(matchesMiddleware("/_next/static/chunk.js", undefined)).toBe(true);
+    expect(matchesMiddleware("/api/hello", undefined)).toBe(true);
+    expect(matchesMiddleware("/favicon.ico", undefined)).toBe(true);
+    expect(matchesMiddleware("/image.png", undefined)).toBe(true);
   });
 
   it("matchesMiddleware: single string matcher", async () => {
@@ -1562,6 +1561,218 @@ describe("middleware matcher patterns", () => {
     // Pathological pattern: (a+)+ causes catastrophic backtracking
     // matchPattern should return false (no match) instead of hanging
     expect(matchPattern("/aaaaaaaaaaaaaaaaaaaac", "(a+)+b")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizePath unit tests
+
+describe("normalizePath", () => {
+  it("returns root unchanged", async () => {
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    expect(normalizePath("/")).toBe("/");
+  });
+
+  it("returns already-canonical paths unchanged", async () => {
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    expect(normalizePath("/foo/bar")).toBe("/foo/bar");
+    expect(normalizePath("/about")).toBe("/about");
+    expect(normalizePath("/api/users/123")).toBe("/api/users/123");
+  });
+
+  it("collapses double slashes", async () => {
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    expect(normalizePath("//foo")).toBe("/foo");
+    expect(normalizePath("/foo//bar")).toBe("/foo/bar");
+    expect(normalizePath("/dashboard//settings")).toBe("/dashboard/settings");
+    expect(normalizePath("///")).toBe("/");
+    expect(normalizePath("/foo///bar///baz")).toBe("/foo/bar/baz");
+  });
+
+  it("resolves single-dot segments", async () => {
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    expect(normalizePath("/foo/./bar")).toBe("/foo/bar");
+    expect(normalizePath("/./foo")).toBe("/foo");
+    expect(normalizePath("/foo/.")).toBe("/foo");
+  });
+
+  it("resolves double-dot segments", async () => {
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    expect(normalizePath("/foo/../bar")).toBe("/bar");
+    expect(normalizePath("/foo/bar/../baz")).toBe("/foo/baz");
+    expect(normalizePath("/foo/..")).toBe("/");
+  });
+
+  it("clamps traversal above root", async () => {
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    expect(normalizePath("/../../../etc/passwd")).toBe("/etc/passwd");
+    expect(normalizePath("/..")).toBe("/");
+  });
+
+  it("ensures leading slash", async () => {
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    expect(normalizePath("foo/bar")).toBe("/foo/bar");
+    expect(normalizePath("")).toBe("/");
+  });
+
+  it("preserves trailing slash on fast path", async () => {
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    // Fast path: already canonical with trailing slash
+    expect(normalizePath("/foo/bar/")).toBe("/foo/bar/");
+  });
+
+  it("handles complex combined cases", async () => {
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    expect(normalizePath("/foo/./bar/../baz")).toBe("/foo/baz");
+    expect(normalizePath("//foo/./bar//baz/../qux")).toBe("/foo/bar/qux");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codegen parity tests (verify generated code matches runtime behavior)
+
+describe("middleware codegen parity", () => {
+  it("generateMiddlewareMatcherCode('modern') produces working matchesMiddleware", async () => {
+    const { generateSafeRegExpCode, generateMiddlewareMatcherCode } = await import(
+      "../packages/vinext/src/server/middleware-codegen.js"
+    );
+    // Eval the generated code and test it behaves identically to the runtime
+    const code = generateSafeRegExpCode("modern") + generateMiddlewareMatcherCode("modern");
+    const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
+    const { matchMiddlewarePattern, matchesMiddleware } = fn();
+
+    // No matcher → matches all (Next.js default)
+    expect(matchesMiddleware("/", undefined)).toBe(true);
+    expect(matchesMiddleware("/api/hello", undefined)).toBe(true);
+    expect(matchesMiddleware("/_next/static/chunk.js", undefined)).toBe(true);
+    expect(matchesMiddleware("/favicon.ico", undefined)).toBe(true);
+
+    // Exact match
+    expect(matchMiddlewarePattern("/about", "/about")).toBe(true);
+    expect(matchMiddlewarePattern("/other", "/about")).toBe(false);
+
+    // Regex pattern with groups (must NOT corrupt the regex via dot-escaping)
+    expect(matchMiddlewarePattern("/about", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
+    expect(matchMiddlewarePattern("/api/hello", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
+
+    // Named params
+    expect(matchMiddlewarePattern("/user/123", "/user/:id")).toBe(true);
+
+    // Wildcard
+    expect(matchMiddlewarePattern("/dashboard/settings", "/dashboard/:path*")).toBe(true);
+    expect(matchMiddlewarePattern("/dashboard", "/dashboard/:path*")).toBe(true);
+  });
+
+  it("generateMiddlewareMatcherCode('es5') produces working matchesMiddleware", async () => {
+    const { generateSafeRegExpCode, generateMiddlewareMatcherCode } = await import(
+      "../packages/vinext/src/server/middleware-codegen.js"
+    );
+    const code = generateSafeRegExpCode("es5") + generateMiddlewareMatcherCode("es5");
+    const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
+    const { matchMiddlewarePattern, matchesMiddleware } = fn();
+
+    // No matcher → matches all
+    expect(matchesMiddleware("/api/hello", undefined)).toBe(true);
+
+    // Regex guard (must not corrupt regex patterns via dot-escaping)
+    expect(matchMiddlewarePattern("/about", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
+    expect(matchMiddlewarePattern("/api/hello", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
+  });
+
+  it("generateNormalizePathCode produces working __normalizePath", async () => {
+    const { generateNormalizePathCode } = await import(
+      "../packages/vinext/src/server/middleware-codegen.js"
+    );
+    const code = generateNormalizePathCode("modern");
+    const fn = new Function(code + "\nreturn __normalizePath;");
+    const __normalizePath = fn();
+
+    expect(__normalizePath("/")).toBe("/");
+    expect(__normalizePath("/foo/bar")).toBe("/foo/bar");
+    expect(__normalizePath("//foo")).toBe("/foo");
+    expect(__normalizePath("/foo//bar")).toBe("/foo/bar");
+    expect(__normalizePath("/foo/./bar")).toBe("/foo/bar");
+    expect(__normalizePath("/foo/../bar")).toBe("/bar");
+    expect(__normalizePath("/../../../etc/passwd")).toBe("/etc/passwd");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: verify decodeURIComponent + normalizePath applied before matching
+
+describe("middleware bypass prevention", () => {
+  it("percent-encoded path is decoded before matching", async () => {
+    const { matchPattern, matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+
+    // /%61dmin decodes to /admin
+    const encoded = "/%61dmin";
+    const decoded = normalizePath(decodeURIComponent(encoded));
+    expect(decoded).toBe("/admin");
+    expect(matchPattern(decoded, "/admin")).toBe(true);
+    expect(matchesMiddleware(decoded, "/admin")).toBe(true);
+  });
+
+  it("double-slash path is collapsed before matching", async () => {
+    const { matchPattern, matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+
+    // /dashboard//settings collapses to /dashboard/settings
+    const doubleSlash = "/dashboard//settings";
+    const normalized = normalizePath(doubleSlash);
+    expect(normalized).toBe("/dashboard/settings");
+    expect(matchPattern(normalized, "/dashboard/:path*")).toBe(true);
+    expect(matchesMiddleware(normalized, "/dashboard/:path*")).toBe(true);
+  });
+
+  it("default matcher (no config) matches all paths including /api", async () => {
+    const { matchesMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    // When no matcher is configured, middleware must run on ALL paths
+    expect(matchesMiddleware("/api/hello", undefined)).toBe(true);
+    expect(matchesMiddleware("/_next/data/build-id/page.json", undefined)).toBe(true);
+    expect(matchesMiddleware("/favicon.ico", undefined)).toBe(true);
+  });
+
+  it("regex patterns are not corrupted by dot-escaping", async () => {
+    const { matchPattern } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    // The common Next.js regex pattern must work correctly:
+    // /((?!api|_next|favicon\.ico).*) should match /about but NOT /api/hello
+    const pattern = "/((?!api|_next|favicon\\.ico).*)";
+    expect(matchPattern("/about", pattern)).toBe(true);
+    expect(matchPattern("/dashboard/settings", pattern)).toBe(true);
+    expect(matchPattern("/api/hello", pattern)).toBe(false);
+    expect(matchPattern("/_next/static/chunk.js", pattern)).toBe(false);
+    expect(matchPattern("/favicon.ico", pattern)).toBe(false);
   });
 });
 
