@@ -4093,7 +4093,13 @@ async function runMiddleware(request) {
   var config$1 = config;
   var matcher = config$1 && config$1.matcher;
   var url = new URL(request.url);
-  var normalizedPathname = __normalizePath(decodeURIComponent(url.pathname));
+  var decodedPathname;
+  try {
+    decodedPathname = decodeURIComponent(url.pathname);
+  } catch (e) {
+    return { continue: false, response: new Response("Bad Request", { status: 400 }) };
+  }
+  var normalizedPathname = __normalizePath(decodedPathname);
   if (!matchesMiddleware(normalizedPathname, matcher)) return { continue: true };
   var nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
   var response;
