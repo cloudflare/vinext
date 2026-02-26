@@ -1012,7 +1012,7 @@ function __buildRequestContext(request) {
 
 function __sanitizeDestination(dest) {
   if (dest.startsWith("http://") || dest.startsWith("https://")) return dest;
-  if (dest.startsWith("//")) dest = dest.replace(/^\\/\\/+/, "/");
+  dest = dest.replace(/^[\\\\/]+/, "/");
   return dest;
 }
 
