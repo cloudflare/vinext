@@ -30,6 +30,8 @@ function createStaticServer(rootDir: string): Promise<{ server: Server; baseUrl:
     ".svg": "image/svg+xml",
   };
 
+  const rootDirResolved = path.resolve(rootDir);
+
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
       const url = req.url ?? "/";
@@ -37,15 +39,25 @@ function createStaticServer(rootDir: string): Promise<{ server: Server; baseUrl:
 
       // Directory index
       if (pathname.endsWith("/")) pathname += "index.html";
+
+      // Normalize and resolve against root directory
+      let filePath = path.resolve(rootDirResolved, "." + pathname);
+
       // Try .html extension for extensionless paths
-      let filePath = path.join(rootDir, pathname);
       if (!fs.existsSync(filePath) && !path.extname(filePath)) {
-        filePath += ".html";
+        filePath = path.resolve(rootDirResolved, "." + pathname + ".html");
+      }
+
+      // Ensure the resolved path stays within the root directory
+      if (!filePath.startsWith(rootDirResolved + path.sep) && filePath !== rootDirResolved) {
+        res.writeHead(403);
+        res.end("Forbidden");
+        return;
       }
 
       if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
         // Serve 404.html if it exists
-        const notFoundPath = path.join(rootDir, "404.html");
+        const notFoundPath = path.join(rootDirResolved, "404.html");
         if (fs.existsSync(notFoundPath)) {
           const content = fs.readFileSync(notFoundPath);
           res.writeHead(404, { "Content-Type": "text/html" });

@@ -188,6 +188,11 @@ function tryServeStatic(
 ): boolean {
   // Resolve the path and guard against directory traversal (e.g. /../../../etc/passwd)
   const resolvedClient = path.resolve(clientDir);
+  // Do not allow serving from an unsafe or misconfigured root directory.
+  // If clientDir resolves to the filesystem root, bail out to avoid exposing arbitrary files.
+  if (!resolvedClient || resolvedClient === path.parse(resolvedClient).root) {
+    return false;
+  }
   let decodedPathname: string;
   try {
     decodedPathname = decodeURIComponent(pathname);
