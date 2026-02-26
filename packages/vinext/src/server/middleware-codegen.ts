@@ -140,6 +140,7 @@ function __normalizePath(pathname) {
  */
 export function generateMiddlewareMatcherCode(style: "modern" | "es5" = "modern"): string {
   const v = style === "modern" ? "const" : "var";
+  const l = style === "modern" ? "let" : "var";
   const fn = style === "modern"
     ? (params: string, body: string) => `(${params}) => { ${body} }`
     : (params: string, body: string) => `function(${params}) { ${body} }`;
@@ -156,13 +157,18 @@ function matchMiddlewarePattern(pathname, pattern) {
     ${v} re = __safeRegExp("^" + pattern + "$");
     if (re) return re.test(pathname);
   }
-  // Convert Next.js named-param patterns to regex.
-  // Escape dots FIRST (before replacements that produce regex metacharacters).
-  ${v} regexStr = pattern
-    .replace(/\\./g, "\\\\.")
-    .replace(/\\/:([\\w]+)\\*/g, "(?:/.*)?")
-    .replace(/\\/:([\\w]+)\\+/g, "(?:/.+)")
-    .replace(/:([\\w]+)/g, "([^/]+)");
+  // Single-pass tokenizer (avoids chained .replace() flagged by CodeQL as
+  // incomplete sanitization — later passes could re-process earlier outputs).
+  ${l} regexStr = "";
+  ${v} tokenRe = /\\/:([\\w]+)\\*|\\/:([\\w]+)\\+|:([\\w]+)|[.]|[^/:.]+|./g;
+  ${l} tok;
+  while ((tok = tokenRe.exec(pattern)) !== null) {
+    if (tok[1] !== undefined) { regexStr += "(?:/.*)?"; }
+    else if (tok[2] !== undefined) { regexStr += "(?:/.+)"; }
+    else if (tok[3] !== undefined) { regexStr += "([^/]+)"; }
+    else if (tok[0] === ".") { regexStr += "\\\\."; }
+    else { regexStr += tok[0]; }
+  }
   ${v} re2 = __safeRegExp("^" + regexStr + "$");
   return re2 ? re2.test(pathname) : pathname === pattern;
 }

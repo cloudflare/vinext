@@ -156,6 +156,68 @@ export function safeRegExp(pattern: string, flags?: string): RegExp | null {
 }
 
 /**
+ * Convert a Next.js header/rewrite/redirect source pattern into a regex string.
+ *
+ * Regex groups in the source (e.g. `(\d+)`) are extracted first, the remaining
+ * text is escaped/converted in a **single pass** (avoiding chained `.replace()`
+ * which CodeQL flags as incomplete sanitization), then groups are restored.
+ */
+export function escapeHeaderSource(source: string): string {
+  // Sentinel character for group placeholders. Uses a Unicode private-use-area
+  // codepoint that will never appear in real source patterns.
+  const S = "\uE000";
+
+  // Step 1: extract regex groups and replace with numbered placeholders.
+  const groups: string[] = [];
+  const withPlaceholders = source.replace(/\(([^)]+)\)/g, (_m, inner) => {
+    groups.push(inner);
+    return `${S}G${groups.length - 1}${S}`;
+  });
+
+  // Step 2: single-pass conversion of the placeholder-bearing string.
+  // Match named params (:\w+), sentinel group placeholders, metacharacters, and literal text.
+  // The regex uses non-overlapping alternatives to avoid backtracking:
+  //   :\w+  — named parameter (constraint sentinel is checked procedurally)
+  //   sentinel group — standalone regex group placeholder
+  //   [.+?*] — single metachar to escape/convert
+  //   [^.+?*:\uE000]+ — literal text (excludes all chars that start other alternatives)
+  let result = "";
+  const re = new RegExp(
+    `${S}G(\\d+)${S}|:\\w+|[.+?*]|[^.+?*:\\uE000]+`, // lgtm[js/redos] — alternatives are non-overlapping
+    "g",
+  );
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(withPlaceholders)) !== null) {
+    if (m[1] !== undefined) {
+      // Standalone regex group — restore as-is
+      result += `(${groups[Number(m[1])]})`;
+    } else if (m[0].startsWith(":")) {
+      // Named parameter — check if followed by a constraint group placeholder
+      const afterParam = withPlaceholders.slice(re.lastIndex);
+      const constraintMatch = afterParam.match(new RegExp(`^${S}G(\\d+)${S}`));
+      if (constraintMatch) {
+        // :param(constraint) — use the constraint as the capture group
+        re.lastIndex += constraintMatch[0].length;
+        result += `(${groups[Number(constraintMatch[1])]})`;
+      } else {
+        // Plain named parameter → match one segment
+        result += "[^/]+";
+      }
+    } else {
+      switch (m[0]) {
+        case ".": result += "\\."; break;
+        case "+": result += "\\+"; break;
+        case "?": result += "\\?"; break;
+        case "*": result += ".*"; break;
+        default: result += m[0]; break;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
  * Request context needed for evaluating has/missing conditions.
  * Callers extract the relevant parts from the incoming Request.
  */
@@ -270,6 +332,26 @@ export function checkHasConditions(
 }
 
 /**
+ * If the current position in `str` starts with a parenthesized group, consume
+ * it and advance `re.lastIndex` past the closing `)`. Returns the group
+ * contents or null if no group is present.
+ */
+function extractConstraint(str: string, re: RegExp): string | null {
+  if (str[re.lastIndex] !== "(") return null;
+  const start = re.lastIndex + 1;
+  let depth = 1;
+  let i = start;
+  while (i < str.length && depth > 0) {
+    if (str[i] === "(") depth++;
+    else if (str[i] === ")") depth--;
+    i++;
+  }
+  if (depth !== 0) return null;
+  re.lastIndex = i;
+  return str.slice(start, i - 1);
+}
+
+/**
  * Match a Next.js config pattern (from redirects/rewrites sources) against a pathname.
  * Returns matched params or null.
  *
@@ -296,28 +378,40 @@ export function matchConfigPattern(
   ) {
     try {
       const paramNames: string[] = [];
-      const regexStr = pattern
-        .replace(/\./g, "\\.")
-        // :param* with optional constraint
-        .replace(/:(\w+)\*(?:\(([^)]+)\))?/g, (_m, name, constraint) => {
-          paramNames.push(name);
-          return constraint ? `(${constraint})` : "(.*)";
-        })
-        // :param+ with optional constraint
-        .replace(/:(\w+)\+(?:\(([^)]+)\))?/g, (_m, name, constraint) => {
-          paramNames.push(name);
-          return constraint ? `(${constraint})` : "(.+)";
-        })
-        // :param(constraint) - named param with inline regex constraint
-        .replace(/:(\w+)\(([^)]+)\)/g, (_m, name, constraint) => {
-          paramNames.push(name);
-          return `(${constraint})`;
-        })
-        // :param - plain named param
-        .replace(/:(\w+)/g, (_m, name) => {
-          paramNames.push(name);
-          return "([^/]+)";
-        });
+      // Single-pass conversion with procedural suffix handling. The tokenizer
+      // matches only simple, non-overlapping tokens; quantifier/constraint
+      // suffixes after :param are consumed procedurally to avoid polynomial
+      // backtracking in the regex engine.
+      let regexStr = "";
+      const tokenRe = /:(\w+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
+      let tok: RegExpExecArray | null;
+      while ((tok = tokenRe.exec(pattern)) !== null) {
+        if (tok[1] !== undefined) {
+          const name = tok[1];
+          const rest = pattern.slice(tokenRe.lastIndex);
+          // Check for quantifier (* or +) with optional constraint
+          if (rest.startsWith("*") || rest.startsWith("+")) {
+            const quantifier = rest[0];
+            tokenRe.lastIndex += 1;
+            const constraint = extractConstraint(pattern, tokenRe);
+            paramNames.push(name);
+            if (constraint !== null) {
+              regexStr += `(${constraint})`;
+            } else {
+              regexStr += quantifier === "*" ? "(.*)" : "(.+)";
+            }
+          } else {
+            // Check for inline constraint without quantifier
+            const constraint = extractConstraint(pattern, tokenRe);
+            paramNames.push(name);
+            regexStr += constraint !== null ? `(${constraint})` : "([^/]+)";
+          }
+        } else if (tok[0] === ".") {
+          regexStr += "\\.";
+        } else {
+          regexStr += tok[0];
+        }
+      }
       const re = safeRegExp("^" + regexStr + "$");
       if (!re) return null;
       const match = re.exec(pathname);
@@ -553,19 +647,7 @@ export function matchHeaders(
 ): Array<{ key: string; value: string }> {
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
-    // Extract regex groups first, process the rest, then restore groups.
-    const groups: string[] = [];
-    const withPlaceholders = rule.source.replace(/\(([^)]+)\)/g, (_m, inner) => {
-      groups.push(inner);
-      return `___GROUP_${groups.length - 1}___`;
-    });
-    const escaped = withPlaceholders
-      .replace(/\./g, "\\.")
-      .replace(/\+/g, "\\+")
-      .replace(/\?/g, "\\?")
-      .replace(/\*/g, ".*")
-      .replace(/:\w+/g, "[^/]+")
-      .replace(/___GROUP_(\d+)___/g, (_m, idx) => `(${groups[Number(idx)]})`);
+    const escaped = escapeHeaderSource(rule.source);
     const sourceRegex = safeRegExp("^" + escaped + "$");
     if (sourceRegex && sourceRegex.test(pathname)) {
       result.push(...rule.headers);

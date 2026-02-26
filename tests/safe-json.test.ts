@@ -342,7 +342,8 @@ describe("safeJsonStringify", () => {
 
       const scriptContent = `<script>window.__NEXT_DATA__ = ${safeJsonStringify(nextData)}</script>`;
 
-      // Count script tags — there should be exactly one open and one close
+      // Count script tags — there should be exactly one open and one close.
+      // lgtm[js/bad-tag-filter] — counting tags to verify XSS protection, not filtering HTML
       const openTags = scriptContent.match(/<script>/g);
       const closeTags = scriptContent.match(/<\/script>/g);
       expect(openTags).toHaveLength(1);
@@ -357,6 +358,7 @@ describe("safeJsonStringify", () => {
 
       const scriptContent = `<script>self.__VINEXT_RSC__=${safeJsonStringify(embedData)}</script>`;
 
+      // lgtm[js/bad-tag-filter] — counting tags to verify XSS protection, not filtering HTML
       const openTags = scriptContent.match(/<script>/g);
       const closeTags = scriptContent.match(/<\/script>/g);
       expect(openTags).toHaveLength(1);
@@ -369,6 +371,7 @@ describe("safeJsonStringify", () => {
 
       const script = `<script>window.__VINEXT_LOCALE__=${safeJsonStringify(locale)};window.__VINEXT_LOCALES__=${safeJsonStringify(locales)}</script>`;
 
+      // lgtm[js/bad-tag-filter] — counting tags to verify XSS protection, not filtering HTML
       const openTags = script.match(/<script>/g);
       const closeTags = script.match(/<\/script>/g);
       expect(openTags).toHaveLength(1);

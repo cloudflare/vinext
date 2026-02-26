@@ -669,6 +669,7 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     // The raw string "</script>" should NOT appear outside of the proper
     // script tags we control. Count actual <script> and </script> tags —
     // they should be balanced (our tags only, not the malicious payload).
+    // lgtm[js/bad-tag-filter] — counting tags to verify XSS protection, not filtering HTML
     const openScripts = (output.match(/<script>/g) || []).length;
     const closeScripts = (output.match(/<\/script>/g) || []).length;
     expect(openScripts).toBe(closeScripts);

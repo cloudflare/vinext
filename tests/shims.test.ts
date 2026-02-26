@@ -1560,6 +1560,7 @@ describe("middleware matcher patterns", () => {
     );
     // Pathological pattern: (a+)+ causes catastrophic backtracking
     // matchPattern should return false (no match) instead of hanging
+    // lgtm[js/redos] — deliberate pathological regex to test safeRegExp guard
     expect(matchPattern("/aaaaaaaaaaaaaaaaaaaac", "(a+)+b")).toBe(false);
   });
 });
@@ -2553,6 +2554,7 @@ describe("safeRegExp", () => {
     const { safeRegExp } = await import(
       "../packages/vinext/src/config/config-matchers.js"
     );
+    // lgtm[js/redos] — deliberate pathological regex to test safeRegExp guard
     const re = safeRegExp("(a+)+b");
     expect(re).toBeNull();
   });
@@ -2566,6 +2568,72 @@ describe("safeRegExp", () => {
   });
 });
 
+describe("escapeHeaderSource", () => {
+  it("passes through literal paths unchanged", async () => {
+    const { escapeHeaderSource } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(escapeHeaderSource("/api/users")).toBe("/api/users");
+  });
+
+  it("escapes dots", async () => {
+    const { escapeHeaderSource } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(escapeHeaderSource("/file.txt")).toBe("/file\\.txt");
+  });
+
+  it("converts named param to [^/]+", async () => {
+    const { escapeHeaderSource } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(escapeHeaderSource("/user/:id")).toBe("/user/[^/]+");
+  });
+
+  it("converts glob * to .*", async () => {
+    const { escapeHeaderSource } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(escapeHeaderSource("/api/*")).toBe("/api/.*");
+  });
+
+  it("escapes + and ?", async () => {
+    const { escapeHeaderSource } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(escapeHeaderSource("/path+query")).toBe("/path\\+query");
+    expect(escapeHeaderSource("/maybe?")).toBe("/maybe\\?");
+  });
+
+  it("handles constrained param :param(constraint)", async () => {
+    const { escapeHeaderSource } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(escapeHeaderSource("/api/:version(\\d+)/users")).toBe("/api/(\\d+)/users");
+  });
+
+  it("handles constrained param with alternation", async () => {
+    const { escapeHeaderSource } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(escapeHeaderSource("/:lang(en|fr)/page")).toBe("/(en|fr)/page");
+  });
+
+  it("preserves standalone regex groups", async () => {
+    const { escapeHeaderSource } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(escapeHeaderSource("/api/(v1|v2)/users")).toBe("/api/(v1|v2)/users");
+  });
+
+  it("handles multiple groups and params", async () => {
+    const { escapeHeaderSource } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(escapeHeaderSource("/:lang(en|fr)/:id(\\d+)/page")).toBe("/(en|fr)/(\\d+)/page");
+  });
+});
+
 describe("matchConfigPattern rejects ReDoS patterns", () => {
   it("returns null for pathological source patterns", async () => {
     const { matchConfigPattern } = await import(
@@ -2574,6 +2642,7 @@ describe("matchConfigPattern rejects ReDoS patterns", () => {
     // This pattern has nested quantifiers: the compiled regex would be (a+)+b
     // which causes catastrophic backtracking. matchConfigPattern should return
     // null (no match) rather than hanging.
+    // lgtm[js/redos] — deliberate pathological regex to test safeRegExp guard
     const result = matchConfigPattern(
       "/aaaaaaaaaaaaaaaaaaaac",
       "/:id((a+)+b)",
