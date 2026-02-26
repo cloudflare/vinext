@@ -1,5 +1,9 @@
 "use client";
 
+/** @jsxRuntime classic */
+/** @jsx React.createElement */
+/** @jsxFrag React.Fragment */
+
 /**
  * next/link shim
  *

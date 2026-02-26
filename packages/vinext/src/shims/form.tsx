@@ -1,5 +1,9 @@
 "use client";
 
+/** @jsxRuntime classic */
+/** @jsx React.createElement */
+/** @jsxFrag React.Fragment */
+
 /**
  * next/form shim
  *
@@ -18,7 +22,7 @@
  *   </Form>
  */
 
-import {
+import React, {
   forwardRef,
   useActionState,
   type FormHTMLAttributes,

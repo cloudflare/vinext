@@ -1,3 +1,7 @@
+/** @jsxRuntime classic */
+/** @jsx React.createElement */
+/** @jsxFrag React.Fragment */
+
 /**
  * next/image shim
  *
