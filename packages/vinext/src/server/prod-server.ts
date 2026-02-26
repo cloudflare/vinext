@@ -766,8 +766,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // Unpack x-middleware-request-* headers into the actual request so that
       // renderPage / handleApiRoute see the middleware-modified headers.
-      // Strip ALL x-middleware-* headers from middlewareHeaders to prevent
-      // internal routing metadata from leaking to client responses.
+      // Strip ALL x-middleware-* headers from the response — this prefix is
+      // reserved for internal routing signals and must never reach clients.
+      // (Matches Next.js behavior where x-middleware-* headers are internal.)
       const mwReqPrefix = "x-middleware-request-";
       for (const key of Object.keys(middlewareHeaders)) {
         if (key.startsWith(mwReqPrefix)) {

@@ -6,7 +6,7 @@ export function middleware(request: NextRequest) {
 
   // Add a custom header to all matched requests
   const response = NextResponse.next();
-  response.headers.set("x-middleware-test", "active");
+  response.headers.set("x-custom-middleware", "active");
 
   // Redirect /old-page to /about
   if (url.pathname === "/old-page") {

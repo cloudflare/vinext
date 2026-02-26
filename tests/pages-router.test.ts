@@ -320,7 +320,7 @@ describe("Pages Router integration", () => {
   it("middleware adds custom headers to responses", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-middleware-test")).toBe("active");
+    expect(res.headers.get("x-custom-middleware")).toBe("active");
   });
 
   it("middleware redirects /old-page to /about", async () => {
@@ -894,7 +894,7 @@ describe("Production build", () => {
     expect(result.response.status).toBe(403);
   });
 
-  it("runMiddleware sets x-middleware-test header on matched paths", async () => {
+  it("runMiddleware sets x-custom-middleware header on matched paths", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
     const serverEntry = await import(pathToFileURL(serverEntryPath).href);
     // /about matches the middleware but doesn't redirect/rewrite/block
@@ -902,7 +902,7 @@ describe("Production build", () => {
     const result = await serverEntry.runMiddleware(request);
     expect(result.continue).toBe(true);
     expect(result.responseHeaders).toBeDefined();
-    expect(result.responseHeaders.get("x-middleware-test")).toBe("active");
+    expect(result.responseHeaders.get("x-custom-middleware")).toBe("active");
   });
 
   it("runMiddleware returns 500 when middleware throws", async () => {
@@ -996,17 +996,17 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.status).toBe(500);
   });
 
-  it("sets x-middleware-test header on matched requests", async () => {
+  it("sets x-custom-middleware header on matched requests", async () => {
     const res = await fetch(`${prodUrl}/about`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-middleware-test")).toBe("active");
+    expect(res.headers.get("x-custom-middleware")).toBe("active");
   });
 
   it("does not run middleware on /api routes", async () => {
     const res = await fetch(`${prodUrl}/api/hello`);
     expect(res.status).toBe(200);
-    // Middleware matcher excludes /api, so no x-middleware-test header
-    expect(res.headers.get("x-middleware-test")).toBeNull();
+    // Middleware matcher excludes /api, so no x-custom-middleware header
+    expect(res.headers.get("x-custom-middleware")).toBeNull();
   });
 
   it("preserves binary API response bytes", async () => {
