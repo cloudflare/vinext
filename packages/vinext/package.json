@@ -14,7 +14,7 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "vinext": "dist/cli.js"
+    "vinext": "cli.js"
   },
   "exports": {
     ".": {
@@ -43,10 +43,12 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "cli.js"
   ],
   "scripts": {
     "build": "tsc",
+    "prepare": "pnpm run build",
     "prepack": "cp ../../README.md README.md && pnpm run build",
     "dev": "tsc --watch"
   },
