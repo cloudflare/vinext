@@ -1431,38 +1431,65 @@ class NextURL {
   get href() {
     return this._url.href;
   }
+  set href(value) {
+    this._url.href = value;
+  }
   get origin() {
     return this._url.origin;
   }
   get protocol() {
     return this._url.protocol;
   }
+  set protocol(value) {
+    this._url.protocol = value;
+  }
+  get username() {
+    return this._url.username;
+  }
+  set username(value) {
+    this._url.username = value;
+  }
+  get password() {
+    return this._url.password;
+  }
+  set password(value) {
+    this._url.password = value;
+  }
   get host() {
     return this._url.host;
+  }
+  set host(value) {
+    this._url.host = value;
   }
   get hostname() {
     return this._url.hostname;
   }
+  set hostname(value) {
+    this._url.hostname = value;
+  }
   get port() {
     return this._url.port;
+  }
+  set port(value) {
+    this._url.port = value;
   }
   get pathname() {
     return this._url.pathname;
   }
+  set pathname(value) {
+    this._url.pathname = value;
+  }
   get search() {
     return this._url.search;
+  }
+  set search(value) {
+    this._url.search = value;
   }
   get searchParams() {
     return this._url.searchParams;
   }
   get hash() {
     return this._url.hash;
-  }
-  set pathname(value) {
-    this._url.pathname = value;
-  }
-  set search(value) {
-    this._url.search = value;
   }
   set hash(value) {
     this._url.hash = value;
@@ -1967,11 +1994,11 @@ const Link = forwardRef(function Link2({ href, as, replace = false, prefetch: pr
   const { passHref: _p, ...anchorProps } = restWithoutLocale;
   const linkStatusValue = React.useMemo(() => ({ pending }), [pending]);
   return /* @__PURE__ */ jsxDEV(LinkStatusContext.Provider, { value: linkStatusValue, children: /* @__PURE__ */ jsxDEV("a", { ref: setRefs, href: fullHref, onClick: handleClick, ...anchorProps, children }, void 0, false, {
-    fileName: "/home/runner/work/vinext/vinext/packages/vinext/src/shims/link.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/packages/vinext/src/shims/link.tsx",
     lineNumber: 465,
     columnNumber: 7
   }, this) }, void 0, false, {
-    fileName: "/home/runner/work/vinext/vinext/packages/vinext/src/shims/link.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/packages/vinext/src/shims/link.tsx",
     lineNumber: 464,
     columnNumber: 5
   }, this);
@@ -1979,31 +2006,31 @@ const Link = forwardRef(function Link2({ href, as, replace = false, prefetch: pr
 function Home() {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV(Head$1, { children: /* @__PURE__ */ jsxDEV("title", { children: "Hello vinext" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/index.tsx",
       lineNumber: 8,
       columnNumber: 9
     }, this) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/index.tsx",
       lineNumber: 7,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("h1", { children: "Hello, vinext!" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/index.tsx",
       lineNumber: 10,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { children: "This is a Pages Router app running on Vite." }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/index.tsx",
       lineNumber: 11,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV(Link, { href: "/about", children: "Go to About" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/index.tsx",
       lineNumber: 12,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/index.tsx",
     lineNumber: 6,
     columnNumber: 5
   }, this);
@@ -2015,17 +2042,17 @@ const page_0 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
 function Custom404() {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { "data-testid": "error-title", children: "404 - Page Not Found" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/404.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/404.tsx",
       lineNumber: 4,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { "data-testid": "error-message", children: "Sorry, the page you are looking for does not exist." }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/404.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/404.tsx",
       lineNumber: 5,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/404.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/404.tsx",
     lineNumber: 3,
     columnNumber: 5
   }, this);
@@ -2037,31 +2064,31 @@ const page_1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
 function About() {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV(Head$1, { children: /* @__PURE__ */ jsxDEV("title", { children: "About - vinext" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/about.tsx",
       lineNumber: 8,
       columnNumber: 9
     }, this) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/about.tsx",
       lineNumber: 7,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("h1", { children: "About" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/about.tsx",
       lineNumber: 10,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { children: "This is the about page." }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/about.tsx",
       lineNumber: 11,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV(Link, { href: "/", children: "Back to Home" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/about.tsx",
       lineNumber: 12,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/about.tsx",
     lineNumber: 6,
     columnNumber: 5
   }, this);
@@ -2073,17 +2100,17 @@ const page_2 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
 function HeavyComponent$1({ label }) {
   return /* @__PURE__ */ jsxDEV("div", { className: "heavy-component", children: [
     /* @__PURE__ */ jsxDEV("h2", { children: "Heavy Component" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/components/heavy.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/components/heavy.tsx",
       lineNumber: 6,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { children: label ?? "I was dynamically imported!" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/components/heavy.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/components/heavy.tsx",
       lineNumber: 7,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/components/heavy.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/components/heavy.tsx",
     lineNumber: 5,
     columnNumber: 5
   }, this);
@@ -2095,22 +2122,22 @@ const heavy = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePropert
 function AliasTestPage() {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Pages Alias Test" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
       lineNumber: 6,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { children: "This page imports a component via tsconfig path alias @/" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
       lineNumber: 7,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV(HeavyComponent$1, { label: "Loaded via alias" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
       lineNumber: 8,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
     lineNumber: 5,
     columnNumber: 5
   }, this);
@@ -2136,12 +2163,12 @@ function BeforePopStateTest() {
   }, [blocking, router2]);
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Before Pop State Test" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
       lineNumber: 31,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV(Link, { href: "/about", "data-testid": "link-about", children: "Go to About" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
       lineNumber: 32,
       columnNumber: 7
     }, this),
@@ -2155,7 +2182,7 @@ function BeforePopStateTest() {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
         lineNumber: 35,
         columnNumber: 7
       },
@@ -2171,24 +2198,24 @@ function BeforePopStateTest() {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
         lineNumber: 41,
         columnNumber: 7
       },
       this
     ),
     /* @__PURE__ */ jsxDEV("div", { "data-testid": "pop-attempts", children: popAttempts }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
       lineNumber: 47,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("div", { "data-testid": "current-path", children: router2.asPath }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
       lineNumber: 48,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
     lineNumber: 30,
     columnNumber: 5
   }, this);
@@ -2209,7 +2236,7 @@ function ConfigTestPage() {
   const appName = publicRuntimeConfig?.appName ?? "default-app";
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Config Test" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/config-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/config-test.tsx",
       lineNumber: 8,
       columnNumber: 7
     }, this),
@@ -2217,12 +2244,12 @@ function ConfigTestPage() {
       "App: ",
       appName
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/config-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/config-test.tsx",
       lineNumber: 9,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/config-test.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/config-test.tsx",
     lineNumber: 7,
     columnNumber: 5
   }, this);
@@ -2235,16 +2262,16 @@ function CounterPage() {
   const [count, setCount] = useState(0);
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV(Head$1, { children: /* @__PURE__ */ jsxDEV("title", { children: "Counter - vinext" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
       lineNumber: 10,
       columnNumber: 9
     }, this) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
       lineNumber: 9,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("h1", { children: "Counter Page" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
       lineNumber: 12,
       columnNumber: 7
     }, this),
@@ -2252,27 +2279,27 @@ function CounterPage() {
       "Count: ",
       count
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
       lineNumber: 13,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("button", { "data-testid": "increment", onClick: () => setCount((c) => c + 1), children: "Increment" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
       lineNumber: 14,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("button", { "data-testid": "decrement", onClick: () => setCount((c) => c - 1), children: "Decrement" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
       lineNumber: 17,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV(Link, { href: "/", children: "Back to Home" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
       lineNumber: 20,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
     lineNumber: 8,
     columnNumber: 5
   }, this);
@@ -2283,7 +2310,7 @@ const page_6 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
 }, Symbol.toStringTag, { value: "Module" }));
 const HeavyComponent = dynamic(() => Promise.resolve().then(() => heavy), {
   loading: () => /* @__PURE__ */ jsxDEV("p", { children: "Loading heavy component..." }, void 0, false, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
     lineNumber: 5,
     columnNumber: 18
   }, void 0)
@@ -2291,17 +2318,17 @@ const HeavyComponent = dynamic(() => Promise.resolve().then(() => heavy), {
 function DynamicPage() {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Dynamic Import Page" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
       lineNumber: 11,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV(HeavyComponent, { label: "Loaded dynamically" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
       lineNumber: 12,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
     lineNumber: 10,
     columnNumber: 5
   }, this);
@@ -2311,47 +2338,47 @@ const page_7 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
   default: DynamicPage
 }, Symbol.toStringTag, { value: "Module" }));
 const ClientOnly = dynamic(
-  () => import("./assets/client-only-component-GBpKjLOL.js"),
+  () => import("./assets/client-only-component-1JZO5PEA.js"),
   {
     ssr: false,
     loading: () => /* @__PURE__ */ jsxDEV("p", { "data-testid": "loading", children: "Loading client component..." }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
       lineNumber: 7,
       columnNumber: 20
     }, void 0)
   }
 );
 const ClientOnlyNoLoading = dynamic(
-  () => import("./assets/client-only-component-GBpKjLOL.js"),
+  () => import("./assets/client-only-component-1JZO5PEA.js"),
   { ssr: false }
 );
 function DynamicSsrFalsePage() {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Dynamic SSR False Test" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
       lineNumber: 19,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("div", { "data-testid": "with-loading", children: /* @__PURE__ */ jsxDEV(ClientOnly, {}, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
       lineNumber: 21,
       columnNumber: 9
     }, this) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
       lineNumber: 20,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("div", { "data-testid": "without-loading", children: /* @__PURE__ */ jsxDEV(ClientOnlyNoLoading, {}, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
       lineNumber: 24,
       columnNumber: 9
     }, this) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
       lineNumber: 23,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
     lineNumber: 18,
     columnNumber: 5
   }, this);
@@ -2363,22 +2390,22 @@ const page_8 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
 function ISRPage({ timestamp, message }) {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "ISR Page" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
       lineNumber: 9,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { "data-testid": "message", children: message }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
       lineNumber: 10,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { "data-testid": "timestamp", children: timestamp }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
       lineNumber: 11,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
     lineNumber: 8,
     columnNumber: 5
   }, this);
@@ -2403,32 +2430,32 @@ function LinkTestPage() {
   const [preventedNav, setPreventedNav] = useState(false);
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Link Advanced Props Test" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
       lineNumber: 11,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("div", { style: { height: "200vh", background: "linear-gradient(white, #eee)" }, children: /* @__PURE__ */ jsxDEV("p", { children: "Tall content area" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
       lineNumber: 15,
       columnNumber: 9
     }, this) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
       lineNumber: 14,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("div", { "data-testid": "links", style: { marginTop: 20 }, children: [
       /* @__PURE__ */ jsxDEV(Link, { href: "/about", scroll: false, "data-testid": "link-no-scroll", children: "No Scroll Link" }, void 0, false, {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
         lineNumber: 20,
         columnNumber: 9
       }, this),
       /* @__PURE__ */ jsxDEV(Link, { href: "/about", replace: true, "data-testid": "link-replace", children: "Replace Link" }, void 0, false, {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
         lineNumber: 25,
         columnNumber: 9
       }, this),
       /* @__PURE__ */ jsxDEV(Link, { href: "/blog/[slug]", as: "/blog/test-post", "data-testid": "link-as", children: "As Prop Link" }, void 0, false, {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
         lineNumber: 30,
         columnNumber: 9
       }, this),
@@ -2446,34 +2473,34 @@ function LinkTestPage() {
         void 0,
         false,
         {
-          fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+          fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
           lineNumber: 35,
           columnNumber: 9
         },
         this
       ),
       /* @__PURE__ */ jsxDEV(Link, { href: "/about", target: "_blank", "data-testid": "link-blank", children: "Blank Target Link" }, void 0, false, {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
         lineNumber: 47,
         columnNumber: 9
       }, this)
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
       lineNumber: 18,
       columnNumber: 7
     }, this),
     preventedNav && /* @__PURE__ */ jsxDEV("div", { "data-testid": "prevented-message", children: "Navigation was prevented" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
       lineNumber: 53,
       columnNumber: 9
     }, this),
     /* @__PURE__ */ jsxDEV("div", { "data-testid": "current-path", children: router2.asPath }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
       lineNumber: 56,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
     lineNumber: 10,
     columnNumber: 5
   }, this);
@@ -2486,7 +2513,7 @@ function NavTestPage() {
   const router2 = useRouter();
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Navigation Test" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
       lineNumber: 8,
       columnNumber: 7
     }, this),
@@ -2494,7 +2521,7 @@ function NavTestPage() {
       "Current: ",
       router2.pathname
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
       lineNumber: 9,
       columnNumber: 7
     }, this),
@@ -2508,7 +2535,7 @@ function NavTestPage() {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
         lineNumber: 10,
         columnNumber: 7
       },
@@ -2524,7 +2551,7 @@ function NavTestPage() {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
         lineNumber: 16,
         columnNumber: 7
       },
@@ -2540,29 +2567,29 @@ function NavTestPage() {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
         lineNumber: 22,
         columnNumber: 7
       },
       this
     ),
     /* @__PURE__ */ jsxDEV(Link, { href: "/", "data-testid": "link-home", children: "Link to Home" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
       lineNumber: 28,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV(Link, { href: "/about", "data-testid": "link-about", children: "Link to About" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
       lineNumber: 29,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV(Link, { href: "/ssr", "data-testid": "link-ssr", children: "Link to SSR" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
       lineNumber: 30,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
     lineNumber: 7,
     columnNumber: 5
   }, this);
@@ -2573,7 +2600,7 @@ const page_11 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 }, Symbol.toStringTag, { value: "Module" }));
 function MissingPost() {
   return /* @__PURE__ */ jsxDEV("div", { children: "This should never render" }, void 0, false, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/posts/missing.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/posts/missing.tsx",
     lineNumber: 5,
     columnNumber: 10
   }, this);
@@ -2590,7 +2617,7 @@ const page_12 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 }, Symbol.toStringTag, { value: "Module" }));
 function RedirectXss() {
   return /* @__PURE__ */ jsxDEV("div", { children: "Should not render" }, void 0, false, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/redirect-xss.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/redirect-xss.tsx",
     lineNumber: 4,
     columnNumber: 10
   }, this);
@@ -2651,16 +2678,16 @@ function RouterEventsTest() {
   }, [router2]);
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Router Events Test" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
       lineNumber: 58,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV(Link, { href: "/about", children: /* @__PURE__ */ jsxDEV("span", { "data-testid": "link-about", children: "Go to About" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
       lineNumber: 60,
       columnNumber: 9
     }, this) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
       lineNumber: 59,
       columnNumber: 7
     }, this),
@@ -2674,7 +2701,7 @@ function RouterEventsTest() {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
         lineNumber: 62,
         columnNumber: 7
       },
@@ -2690,7 +2717,7 @@ function RouterEventsTest() {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
         lineNumber: 68,
         columnNumber: 7
       },
@@ -2709,24 +2736,24 @@ function RouterEventsTest() {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
         lineNumber: 74,
         columnNumber: 7
       },
       this
     ),
     /* @__PURE__ */ jsxDEV("div", { "data-testid": "event-log", children: events.join("|") }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
       lineNumber: 83,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("div", { "data-testid": "event-count", children: events.length }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
       lineNumber: 84,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
     lineNumber: 57,
     columnNumber: 5
   }, this);
@@ -2829,7 +2856,7 @@ function Script(props) {
 function ScriptTestPage() {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Script Test" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
       lineNumber: 6,
       columnNumber: 7
     }, this),
@@ -2843,19 +2870,19 @@ function ScriptTestPage() {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
         lineNumber: 7,
         columnNumber: 7
       },
       this
     ),
     /* @__PURE__ */ jsxDEV("p", { children: "Page with scripts" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
       lineNumber: 12,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
     lineNumber: 5,
     columnNumber: 5
   }, this);
@@ -2882,7 +2909,7 @@ function ShallowTestPage({ gsspCallId, serverQuery }) {
   const router2 = useRouter();
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Shallow Routing Test" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
       lineNumber: 31,
       columnNumber: 7
     }, this),
@@ -2890,27 +2917,27 @@ function ShallowTestPage({ gsspCallId, serverQuery }) {
       "gssp:",
       gsspCallId
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
       lineNumber: 32,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { "data-testid": "router-query", children: JSON.stringify(router2.query) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
       lineNumber: 33,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { "data-testid": "server-query", children: JSON.stringify(serverQuery) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
       lineNumber: 34,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { "data-testid": "router-pathname", children: router2.pathname }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
       lineNumber: 35,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { "data-testid": "router-asPath", children: router2.asPath }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
       lineNumber: 36,
       columnNumber: 7
     }, this),
@@ -2924,7 +2951,7 @@ function ShallowTestPage({ gsspCallId, serverQuery }) {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
         lineNumber: 37,
         columnNumber: 7
       },
@@ -2940,7 +2967,7 @@ function ShallowTestPage({ gsspCallId, serverQuery }) {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
         lineNumber: 43,
         columnNumber: 7
       },
@@ -2956,14 +2983,14 @@ function ShallowTestPage({ gsspCallId, serverQuery }) {
       void 0,
       false,
       {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
         lineNumber: 49,
         columnNumber: 7
       },
       this
     )
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
     lineNumber: 30,
     columnNumber: 5
   }, this);
@@ -2976,12 +3003,12 @@ const page_16 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 function SSRPage({ timestamp, message }) {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Server-Side Rendered" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
       lineNumber: 9,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("p", { "data-testid": "message", children: message }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
       lineNumber: 10,
       columnNumber: 7
     }, this),
@@ -2989,12 +3016,12 @@ function SSRPage({ timestamp, message }) {
       "Rendered at: ",
       timestamp
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
       lineNumber: 11,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
     lineNumber: 8,
     columnNumber: 5
   }, this);
@@ -3016,7 +3043,7 @@ const LazyGreeting = lazy(
   () => new Promise((resolve) => {
     resolve({
       default: () => /* @__PURE__ */ jsxDEV("div", { "data-testid": "lazy-greeting", children: "Hello from lazy component" }, void 0, false, {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
         lineNumber: 12,
         columnNumber: 11
       }, void 0)
@@ -3026,25 +3053,25 @@ const LazyGreeting = lazy(
 function SuspenseTestPage() {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: "Suspense Test" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
       lineNumber: 21,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV(Suspense, { fallback: /* @__PURE__ */ jsxDEV("div", { "data-testid": "loading", children: "Loading..." }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
       lineNumber: 22,
       columnNumber: 27
     }, this), children: /* @__PURE__ */ jsxDEV(LazyGreeting, {}, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
       lineNumber: 23,
       columnNumber: 9
     }, this) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
       lineNumber: 22,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
     lineNumber: 20,
     columnNumber: 5
   }, this);
@@ -3056,7 +3083,7 @@ const page_18 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 function Article({ id, title }) {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: title }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/articles/[id].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/articles/[id].tsx",
       lineNumber: 11,
       columnNumber: 7
     }, this),
@@ -3064,12 +3091,12 @@ function Article({ id, title }) {
       "Article ID: ",
       id
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/articles/[id].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/articles/[id].tsx",
       lineNumber: 12,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/articles/[id].tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/articles/[id].tsx",
     lineNumber: 10,
     columnNumber: 5
   }, this);
@@ -3104,7 +3131,7 @@ const page_19 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 function BlogPost({ slug, title }) {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { children: title }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx",
       lineNumber: 11,
       columnNumber: 7
     }, this),
@@ -3112,12 +3139,12 @@ function BlogPost({ slug, title }) {
       "Blog post slug: ",
       slug
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx",
       lineNumber: 12,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx",
     lineNumber: 10,
     columnNumber: 5
   }, this);
@@ -3156,7 +3183,7 @@ function Post({ id }) {
       "Post: ",
       id
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
       lineNumber: 12,
       columnNumber: 7
     }, this),
@@ -3164,7 +3191,7 @@ function Post({ id }) {
       "Pathname: ",
       router2.pathname
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
       lineNumber: 13,
       columnNumber: 7
     }, this),
@@ -3172,12 +3199,12 @@ function Post({ id }) {
       "Query ID: ",
       router2.query.id
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
       lineNumber: 14,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
     lineNumber: 11,
     columnNumber: 5
   }, this);
@@ -3198,7 +3225,7 @@ function Product({ pid, name }) {
   const router2 = useRouter();
   if (router2.isFallback) {
     return /* @__PURE__ */ jsxDEV("div", { children: "Loading product..." }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
       lineNumber: 15,
       columnNumber: 12
     }, this);
@@ -3208,7 +3235,7 @@ function Product({ pid, name }) {
       "Product: ",
       name
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
       lineNumber: 20,
       columnNumber: 7
     }, this),
@@ -3216,7 +3243,7 @@ function Product({ pid, name }) {
       "Product ID: ",
       pid
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
       lineNumber: 21,
       columnNumber: 7
     }, this),
@@ -3224,12 +3251,12 @@ function Product({ pid, name }) {
       "isFallback: ",
       String(router2.isFallback)
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
       lineNumber: 22,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
     lineNumber: 19,
     columnNumber: 5
   }, this);
@@ -3264,7 +3291,7 @@ const page_22 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 function DocsPage({ slug }) {
   return /* @__PURE__ */ jsxDEV("div", { children: [
     /* @__PURE__ */ jsxDEV("h1", { "data-testid": "docs-title", children: "Docs" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx",
       lineNumber: 4,
       columnNumber: 7
     }, this),
@@ -3272,12 +3299,12 @@ function DocsPage({ slug }) {
       "Path: ",
       slug.join("/")
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx",
       lineNumber: 5,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx",
     lineNumber: 3,
     columnNumber: 5
   }, this);
@@ -3330,21 +3357,21 @@ const api_3 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePropert
 function MyApp({ Component, pageProps }) {
   return /* @__PURE__ */ jsxDEV("div", { id: "app-wrapper", "data-testid": "app-wrapper", children: [
     /* @__PURE__ */ jsxDEV("nav", { "data-testid": "global-nav", children: /* @__PURE__ */ jsxDEV("span", { children: "My App" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
       lineNumber: 7,
       columnNumber: 9
     }, this) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
       lineNumber: 6,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV(Component, { ...pageProps }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
       lineNumber: 9,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
     lineNumber: 5,
     columnNumber: 5
   }, this);
@@ -3355,7 +3382,7 @@ function Html({
   ...props
 }) {
   return /* @__PURE__ */ jsxDEV("html", { lang, ...props, children }, void 0, false, {
-    fileName: "/home/runner/work/vinext/vinext/packages/vinext/src/shims/document.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/packages/vinext/src/shims/document.tsx",
     lineNumber: 16,
     columnNumber: 5
   }, this);
@@ -3363,32 +3390,32 @@ function Html({
 function Head({ children }) {
   return /* @__PURE__ */ jsxDEV("head", { children: [
     /* @__PURE__ */ jsxDEV("meta", { charSet: "utf-8" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/packages/vinext/src/shims/document.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/packages/vinext/src/shims/document.tsx",
       lineNumber: 29,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("meta", { name: "viewport", content: "width=device-width, initial-scale=1" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/packages/vinext/src/shims/document.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/packages/vinext/src/shims/document.tsx",
       lineNumber: 30,
       columnNumber: 7
     }, this),
     children
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/packages/vinext/src/shims/document.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/packages/vinext/src/shims/document.tsx",
     lineNumber: 28,
     columnNumber: 5
   }, this);
 }
 function Main() {
   return /* @__PURE__ */ jsxDEV("div", { id: "__next", dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" } }, void 0, false, {
-    fileName: "/home/runner/work/vinext/vinext/packages/vinext/src/shims/document.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/packages/vinext/src/shims/document.tsx",
     lineNumber: 40,
     columnNumber: 10
   }, this);
 }
 function NextScript() {
   return /* @__PURE__ */ jsxDEV("span", { dangerouslySetInnerHTML: { __html: "<!-- __NEXT_SCRIPTS__ -->" } }, void 0, false, {
-    fileName: "/home/runner/work/vinext/vinext/packages/vinext/src/shims/document.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/packages/vinext/src/shims/document.tsx",
     lineNumber: 49,
     columnNumber: 10
   }, this);
@@ -3396,32 +3423,32 @@ function NextScript() {
 function Document() {
   return /* @__PURE__ */ jsxDEV(Html, { lang: "en", children: [
     /* @__PURE__ */ jsxDEV(Head, { children: /* @__PURE__ */ jsxDEV("meta", { name: "description", content: "A vinext test app" }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
       lineNumber: 7,
       columnNumber: 9
     }, this) }, void 0, false, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
       lineNumber: 6,
       columnNumber: 7
     }, this),
     /* @__PURE__ */ jsxDEV("body", { className: "custom-body", children: [
       /* @__PURE__ */ jsxDEV(Main, {}, void 0, false, {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
         lineNumber: 10,
         columnNumber: 9
       }, this),
       /* @__PURE__ */ jsxDEV(NextScript, {}, void 0, false, {
-        fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+        fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
         lineNumber: 11,
         columnNumber: 9
       }, this)
     ] }, void 0, true, {
-      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+      fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
       lineNumber: 9,
       columnNumber: 7
     }, this)
   ] }, void 0, true, {
-    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+    fileName: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
     lineNumber: 5,
     columnNumber: 5
   }, this);
@@ -3450,30 +3477,30 @@ async function renderToStringAsync(element) {
   return new Response(stream).text();
 }
 const pageRoutes = [
-  { pattern: "/", isDynamic: false, params: [], module: page_0, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/index.tsx" },
-  { pattern: "/404", isDynamic: false, params: [], module: page_1, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/404.tsx" },
-  { pattern: "/about", isDynamic: false, params: [], module: page_2, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/about.tsx" },
-  { pattern: "/alias-test", isDynamic: false, params: [], module: page_3, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx" },
-  { pattern: "/before-pop-state-test", isDynamic: false, params: [], module: page_4, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx" },
-  { pattern: "/config-test", isDynamic: false, params: [], module: page_5, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/config-test.tsx" },
-  { pattern: "/counter", isDynamic: false, params: [], module: page_6, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/counter.tsx" },
-  { pattern: "/dynamic-page", isDynamic: false, params: [], module: page_7, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx" },
-  { pattern: "/dynamic-ssr-false", isDynamic: false, params: [], module: page_8, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx" },
-  { pattern: "/isr-test", isDynamic: false, params: [], module: page_9, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx" },
-  { pattern: "/link-test", isDynamic: false, params: [], module: page_10, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/link-test.tsx" },
-  { pattern: "/nav-test", isDynamic: false, params: [], module: page_11, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx" },
-  { pattern: "/posts/missing", isDynamic: false, params: [], module: page_12, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/posts/missing.tsx" },
-  { pattern: "/redirect-xss", isDynamic: false, params: [], module: page_13, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/redirect-xss.tsx" },
-  { pattern: "/router-events-test", isDynamic: false, params: [], module: page_14, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx" },
-  { pattern: "/script-test", isDynamic: false, params: [], module: page_15, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/script-test.tsx" },
-  { pattern: "/shallow-test", isDynamic: false, params: [], module: page_16, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx" },
-  { pattern: "/ssr", isDynamic: false, params: [], module: page_17, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/ssr.tsx" },
-  { pattern: "/suspense-test", isDynamic: false, params: [], module: page_18, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx" },
-  { pattern: "/articles/:id", isDynamic: true, params: ["id"], module: page_19, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/articles/[id].tsx" },
-  { pattern: "/blog/:slug", isDynamic: true, params: ["slug"], module: page_20, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx" },
-  { pattern: "/posts/:id", isDynamic: true, params: ["id"], module: page_21, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx" },
-  { pattern: "/products/:pid", isDynamic: true, params: ["pid"], module: page_22, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx" },
-  { pattern: "/docs/:slug+", isDynamic: true, params: ["slug"], module: page_23, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx" }
+  { pattern: "/", isDynamic: false, params: [], module: page_0, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/index.tsx" },
+  { pattern: "/404", isDynamic: false, params: [], module: page_1, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/404.tsx" },
+  { pattern: "/about", isDynamic: false, params: [], module: page_2, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/about.tsx" },
+  { pattern: "/alias-test", isDynamic: false, params: [], module: page_3, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx" },
+  { pattern: "/before-pop-state-test", isDynamic: false, params: [], module: page_4, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx" },
+  { pattern: "/config-test", isDynamic: false, params: [], module: page_5, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/config-test.tsx" },
+  { pattern: "/counter", isDynamic: false, params: [], module: page_6, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/counter.tsx" },
+  { pattern: "/dynamic-page", isDynamic: false, params: [], module: page_7, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx" },
+  { pattern: "/dynamic-ssr-false", isDynamic: false, params: [], module: page_8, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx" },
+  { pattern: "/isr-test", isDynamic: false, params: [], module: page_9, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx" },
+  { pattern: "/link-test", isDynamic: false, params: [], module: page_10, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/link-test.tsx" },
+  { pattern: "/nav-test", isDynamic: false, params: [], module: page_11, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx" },
+  { pattern: "/posts/missing", isDynamic: false, params: [], module: page_12, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/posts/missing.tsx" },
+  { pattern: "/redirect-xss", isDynamic: false, params: [], module: page_13, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/redirect-xss.tsx" },
+  { pattern: "/router-events-test", isDynamic: false, params: [], module: page_14, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx" },
+  { pattern: "/script-test", isDynamic: false, params: [], module: page_15, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/script-test.tsx" },
+  { pattern: "/shallow-test", isDynamic: false, params: [], module: page_16, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx" },
+  { pattern: "/ssr", isDynamic: false, params: [], module: page_17, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/ssr.tsx" },
+  { pattern: "/suspense-test", isDynamic: false, params: [], module: page_18, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx" },
+  { pattern: "/articles/:id", isDynamic: true, params: ["id"], module: page_19, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/articles/[id].tsx" },
+  { pattern: "/blog/:slug", isDynamic: true, params: ["slug"], module: page_20, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx" },
+  { pattern: "/posts/:id", isDynamic: true, params: ["id"], module: page_21, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx" },
+  { pattern: "/products/:pid", isDynamic: true, params: ["pid"], module: page_22, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx" },
+  { pattern: "/docs/:slug+", isDynamic: true, params: ["slug"], module: page_23, filePath: "/Users/harris/workspace/paidskills/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx" }
 ];
 const apiRoutes = [
   { pattern: "/api/binary", isDynamic: false, params: [], module: api_0 },

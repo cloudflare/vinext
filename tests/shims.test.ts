@@ -2151,6 +2151,58 @@ describe("NextRequest API", () => {
     expect(cloned.pathname).toBe("/other");
   });
 
+  it("nextUrl supports all URL setters (port, host, hostname, protocol, href)", async () => {
+    const { NextURL } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const url = new NextURL("http://example.com:8080/path?q=1#hash");
+
+    // port setter
+    url.port = "9090";
+    expect(url.port).toBe("9090");
+
+    // hostname setter
+    url.hostname = "other.com";
+    expect(url.hostname).toBe("other.com");
+
+    // host setter (hostname + port)
+    url.host = "third.com:3000";
+    expect(url.host).toBe("third.com:3000");
+    expect(url.hostname).toBe("third.com");
+    expect(url.port).toBe("3000");
+
+    // protocol setter
+    url.protocol = "https:";
+    expect(url.protocol).toBe("https:");
+
+    // href setter
+    url.href = "http://new.com/new-path";
+    expect(url.href).toBe("http://new.com/new-path");
+    expect(url.hostname).toBe("new.com");
+    expect(url.pathname).toBe("/new-path");
+  });
+
+  it("nextUrl.clone() setters work for next-intl compatibility", async () => {
+    // next-intl's getAlternateLinksHeaderValue does: cloned.port = ""; cloned.host = h
+    // This test ensures those setter operations work without throwing.
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://example.com:8080/en");
+    const cloned = req.nextUrl.clone();
+
+    // Should not throw — next-intl strips port when x-forwarded-host is present
+    cloned.port = "";
+    expect(cloned.port).toBe("");
+
+    // Should not throw — next-intl sets host from x-forwarded-host header
+    cloned.host = "example.com";
+    expect(cloned.hostname).toBe("example.com");
+
+    // Original should be unaffected
+    expect(req.nextUrl.port).toBe("8080");
+  });
+
   it("ip reads x-forwarded-for header", async () => {
     const { NextRequest } = await import(
       "../packages/vinext/src/shims/server.js"
