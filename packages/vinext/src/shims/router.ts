@@ -6,6 +6,7 @@
  * by fetching new page data and re-rendering the React root.
  */
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { isValidModulePath } from "../client/validate-module-path.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -338,6 +339,14 @@ async function navigateClient(url: string): Promise<void> {
       return;
     }
 
+    // Validate the module URL before importing — defense-in-depth against
+    // unexpected __NEXT_DATA__ or malformed HTML responses
+    if (!isValidModulePath(pageModuleUrl)) {
+      console.error("[vinext] Blocked import of invalid page module path:", pageModuleUrl);
+      window.location.href = url;
+      return;
+    }
+
     // Dynamically import the new page module
     const pageModule = await import(/* @vite-ignore */ pageModuleUrl);
     const PageComponent = pageModule.default;
@@ -356,12 +365,16 @@ async function navigateClient(url: string): Promise<void> {
       nextData.__vinext?.appModuleUrl;
 
     if (!AppComponent && appModuleUrl) {
-      try {
-        const appModule = await import(/* @vite-ignore */ appModuleUrl);
-        AppComponent = appModule.default;
-        win.__VINEXT_APP__ = AppComponent;
-      } catch {
-        // _app not available — continue without it
+      if (!isValidModulePath(appModuleUrl)) {
+        console.error("[vinext] Blocked import of invalid app module path:", appModuleUrl);
+      } else {
+        try {
+          const appModule = await import(/* @vite-ignore */ appModuleUrl);
+          AppComponent = appModule.default;
+          win.__VINEXT_APP__ = AppComponent;
+        } catch {
+          // _app not available — continue without it
+        }
       }
     }
 

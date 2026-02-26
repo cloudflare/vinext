@@ -14,24 +14,13 @@ import { hydrateRoot } from "react-dom/client";
 // registered.  Without this, browser back/forward buttons do nothing because
 // navigateClient() is never invoked on history changes.
 import "next/router";
+import { isValidModulePath } from "./validate-module-path.js";
 
 // Read the SSR data injected by the server
 const nextData = (window as any).__NEXT_DATA__;
 const { pageProps } = nextData?.props ?? { pageProps: {} };
 const pageModulePath = nextData?.__pageModule;
 const appModulePath = nextData?.__appModule;
-
-/** Defense-in-depth: validate module paths from __NEXT_DATA__. */
-function isValidModulePath(p: unknown): p is string {
-  if (typeof p !== "string" || p.length === 0) return false;
-  // Must start with / or ./ (relative Vite module paths)
-  if (!p.startsWith("/") && !p.startsWith("./")) return false;
-  // Must not contain protocol (prevents importing from external URLs)
-  if (p.includes("://")) return false;
-  // Must not traverse directories
-  if (p.includes("..")) return false;
-  return true;
-}
 
 async function hydrate() {
   if (!isValidModulePath(pageModulePath)) {

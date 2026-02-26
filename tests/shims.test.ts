@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import path from "node:path";
 import { PAGES_FIXTURE_DIR } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
+import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -5830,5 +5831,66 @@ describe("next/head SSR security", () => {
       expect(html).toContain(`<${tag}`);
       expect(html).toContain('data-vinext-head="true"');
     }
+  });
+});
+
+describe("isValidModulePath", () => {
+  it("accepts valid absolute paths", () => {
+    expect(isValidModulePath("/src/pages/index.tsx")).toBe(true);
+    expect(isValidModulePath("/pages/about.js")).toBe(true);
+    expect(isValidModulePath("/src/pages/posts/[id].tsx")).toBe(true);
+  });
+
+  it("accepts valid relative paths starting with ./", () => {
+    expect(isValidModulePath("./src/pages/index.tsx")).toBe(true);
+    expect(isValidModulePath("./pages/about.js")).toBe(true);
+  });
+
+  it("rejects external https:// URLs", () => {
+    expect(isValidModulePath("https://evil.com/steal-cookies.js")).toBe(false);
+  });
+
+  it("rejects external http:// URLs", () => {
+    expect(isValidModulePath("http://evil.com/steal-cookies.js")).toBe(false);
+  });
+
+  it("rejects protocol-relative URLs (//)", () => {
+    expect(isValidModulePath("//evil.com/steal-cookies.js")).toBe(false);
+    expect(isValidModulePath("//cdn.example.com/script.js")).toBe(false);
+  });
+
+  it("rejects directory traversal", () => {
+    expect(isValidModulePath("/src/../../../etc/passwd")).toBe(false);
+    expect(isValidModulePath("./../../secret.js")).toBe(false);
+    expect(isValidModulePath("/pages/..%2F..%2Fsecret.js")).toBe(false);
+  });
+
+  it("rejects data: URLs", () => {
+    expect(isValidModulePath("data:text/javascript,alert(1)")).toBe(false);
+  });
+
+  it("rejects blob: URLs", () => {
+    expect(isValidModulePath("blob:http://localhost/abc")).toBe(false);
+  });
+
+  it("rejects bare specifiers", () => {
+    expect(isValidModulePath("evil-package")).toBe(false);
+    expect(isValidModulePath("@evil/package")).toBe(false);
+  });
+
+  it("rejects non-string values", () => {
+    expect(isValidModulePath(null)).toBe(false);
+    expect(isValidModulePath(undefined)).toBe(false);
+    expect(isValidModulePath(42)).toBe(false);
+    expect(isValidModulePath({})).toBe(false);
+    expect(isValidModulePath("")).toBe(false);
+  });
+
+  it("rejects javascript: protocol", () => {
+    expect(isValidModulePath("javascript:alert(1)")).toBe(false);
+  });
+
+  it("rejects ftp:// protocol", () => {
+    expect(isValidModulePath("ftp://evil.com/script.js")).toBe(false);
   });
 });
