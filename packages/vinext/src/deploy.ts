@@ -24,6 +24,7 @@ import {
   ensureESModule as _ensureESModule,
   renameCJSConfigs as _renameCJSConfigs,
   detectPackageManager as _detectPackageManager,
+  findInNodeModules as _findInNodeModules,
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
 import { runTPR } from "./cloudflare/tpr.js";
@@ -139,16 +140,12 @@ export function detectProject(root: string): ProjectInfo {
     fs.existsSync(path.join(root, "worker", "index.ts")) ||
     fs.existsSync(path.join(root, "worker", "index.js"));
 
-  // Check node_modules for installed packages
-  const hasCloudflarePlugin = fs.existsSync(
-    path.join(root, "node_modules", "@cloudflare", "vite-plugin"),
-  );
-  const hasRscPlugin = fs.existsSync(
-    path.join(root, "node_modules", "@vitejs", "plugin-rsc"),
-  );
-  const hasWrangler = fs.existsSync(
-    path.join(root, "node_modules", ".bin", "wrangler"),
-  );
+  // Check node_modules for installed packages.
+  // Walk up ancestor directories so that monorepo-hoisted packages are found
+  // even when node_modules lives at the workspace root rather than app root.
+  const hasCloudflarePlugin = _findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
+  const hasRscPlugin        = _findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
+  const hasWrangler         = _findInNodeModules(root, ".bin/wrangler") !== null;
 
   // Derive project name from package.json or directory name
   let projectName = path.basename(root);
@@ -628,10 +625,8 @@ export function getMissingDeps(
     }
   }
   if (info.hasMDX) {
-    // Check if @mdx-js/rollup is already installed
-    const hasMdxRollup = fs.existsSync(
-      path.join(info.root, "node_modules", "@mdx-js", "rollup"),
-    );
+    // Check if @mdx-js/rollup is already installed (walk up for monorepo hoisting)
+    const hasMdxRollup = _findInNodeModules(info.root, "@mdx-js/rollup") !== null;
     if (!hasMdxRollup) {
       missing.push({ name: "@mdx-js/rollup", version: "latest" });
     }
@@ -748,7 +743,10 @@ export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" |
 }
 
 function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string {
-  const wranglerBin = path.join(root, "node_modules", ".bin", "wrangler");
+  // Walk up ancestor directories so the binary is found even when node_modules
+  // is hoisted to the workspace root in a monorepo.
+  const wranglerBin = _findInNodeModules(root, ".bin/wrangler") ??
+    path.join(root, "node_modules", ".bin", "wrangler"); // fallback for error message clarity
 
   const execOpts: ExecSyncOptions = {
     cwd: root,
