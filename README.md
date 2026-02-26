@@ -94,6 +94,38 @@ npm run dev           # Still runs Next.js as before
 
 Use `--force` to overwrite an existing `vite.config.ts`, or `--skip-check` to skip the compatibility report.
 
+### Starting a brand-new project
+
+vinext currently focuses on migrating Next.js apps, so the easiest path is:
+
+```bash
+npm create next-app@latest my-app
+cd my-app
+npx vinext init
+npm run dev:vinext
+```
+
+If you use another package manager, keep it consistent:
+
+```bash
+pnpm create next-app@latest my-app
+cd my-app
+pnpm dlx vinext init
+pnpm run dev:vinext
+```
+
+```bash
+yarn create next-app my-app
+yarn dlx vinext init
+yarn dev:vinext
+```
+
+```bash
+bun create next-app my-app
+bun x vinext init
+bun run dev:vinext
+```
+
 ## Why
 
 Vite has become the default build tool for modern web frameworks — fast HMR, a clean plugin API, native ESM, and a growing ecosystem. With [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-rsc) adding React Server Components support, it's now possible to build a full RSC framework on Vite.
