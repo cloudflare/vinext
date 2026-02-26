@@ -17,6 +17,11 @@ import {
   parseDeployArgs,
   isPackageResolvable,
 } from "../packages/vinext/src/deploy.js";
+import {
+  detectPackageManager,
+  detectPackageManagerName,
+  findInNodeModules,
+} from "../packages/vinext/src/utils/project.js";
 import { computeLazyChunks } from "../packages/vinext/src/index.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
@@ -1787,5 +1792,96 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     // Entry and framework are eager
     expect(lazy).not.toContain("assets/entry.js");
     expect(lazy).not.toContain("assets/framework.js");
+  });
+});
+
+// ─── detectPackageManager ────────────────────────────────────────────────────
+
+describe("detectPackageManager", () => {
+  it("detects pnpm from pnpm-lock.yaml", () => {
+    writeFile(tmpDir, "pnpm-lock.yaml", "");
+    expect(detectPackageManager(tmpDir)).toBe("pnpm add -D");
+    expect(detectPackageManagerName(tmpDir)).toBe("pnpm");
+  });
+
+  it("detects yarn from yarn.lock", () => {
+    writeFile(tmpDir, "yarn.lock", "");
+    expect(detectPackageManager(tmpDir)).toBe("yarn add -D");
+    expect(detectPackageManagerName(tmpDir)).toBe("yarn");
+  });
+
+  it("detects bun from bun.lock (text format, Bun v1.0+)", () => {
+    writeFile(tmpDir, "bun.lock", "");
+    expect(detectPackageManager(tmpDir)).toBe("bun add -D");
+    expect(detectPackageManagerName(tmpDir)).toBe("bun");
+  });
+
+  it("detects bun from bun.lockb (legacy binary format)", () => {
+    writeFile(tmpDir, "bun.lockb", "");
+    expect(detectPackageManager(tmpDir)).toBe("bun add -D");
+    expect(detectPackageManagerName(tmpDir)).toBe("bun");
+  });
+
+  it("falls back to npm when no lock file is found", () => {
+    expect(detectPackageManager(tmpDir)).toBe("npm install -D");
+    expect(detectPackageManagerName(tmpDir)).toBe("npm");
+  });
+
+  it("walks up to parent directory to find lock file (monorepo root)", () => {
+    writeFile(tmpDir, "bun.lock", "");
+    const appDir = path.join(tmpDir, "apps", "web");
+    fs.mkdirSync(appDir, { recursive: true });
+    writeFile(appDir, "package.json", JSON.stringify({ name: "web" }));
+
+    expect(detectPackageManager(appDir)).toBe("bun add -D");
+    expect(detectPackageManagerName(appDir)).toBe("bun");
+  });
+
+  it("prefers the closest lock file when both child and parent have one", () => {
+    writeFile(tmpDir, "bun.lock", "");
+    const appDir = path.join(tmpDir, "apps", "web");
+    fs.mkdirSync(appDir, { recursive: true });
+    writeFile(appDir, "pnpm-lock.yaml", "");
+
+    expect(detectPackageManager(appDir)).toBe("pnpm add -D");
+    expect(detectPackageManagerName(appDir)).toBe("pnpm");
+  });
+});
+
+// ─── findInNodeModules ───────────────────────────────────────────────────────
+
+describe("findInNodeModules", () => {
+  it("finds a package in the immediate node_modules", () => {
+    mkdir(tmpDir, "node_modules/@cloudflare/vite-plugin");
+    const result = findInNodeModules(tmpDir, "@cloudflare/vite-plugin");
+    expect(result).toBe(path.join(tmpDir, "node_modules", "@cloudflare", "vite-plugin"));
+  });
+
+  it("finds a binary in node_modules/.bin", () => {
+    writeFile(tmpDir, "node_modules/.bin/wrangler", "#!/usr/bin/env node");
+    const result = findInNodeModules(tmpDir, ".bin/wrangler");
+    expect(result).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler"));
+  });
+
+  it("returns null when not found anywhere", () => {
+    expect(findInNodeModules(tmpDir, ".bin/wrangler")).toBeNull();
+  });
+
+  it("walks up to find package in monorepo root node_modules", () => {
+    writeFile(tmpDir, "node_modules/.bin/wrangler", "#!/usr/bin/env node");
+    const appDir = path.join(tmpDir, "apps", "web-next");
+    fs.mkdirSync(appDir, { recursive: true });
+
+    const result = findInNodeModules(appDir, ".bin/wrangler");
+    expect(result).toBe(path.join(tmpDir, "node_modules", ".bin", "wrangler"));
+  });
+
+  it("prefers the closest node_modules when both app and root have the package", () => {
+    mkdir(tmpDir, "node_modules/@cloudflare/vite-plugin");
+    const appDir = path.join(tmpDir, "apps", "web-next");
+    mkdir(appDir, "node_modules/@cloudflare/vite-plugin");
+
+    const result = findInNodeModules(appDir, "@cloudflare/vite-plugin");
+    expect(result).toBe(path.join(appDir, "node_modules", "@cloudflare", "vite-plugin"));
   });
 });
