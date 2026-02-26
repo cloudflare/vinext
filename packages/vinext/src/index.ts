@@ -569,6 +569,7 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
   let hasCloudflarePlugin = false;
+  let hasNitroPlugin = false;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
@@ -1831,6 +1832,11 @@ hydrate();
             p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")
           ),
         );
+        hasNitroPlugin = pluginsFlat.some(
+          (p: any) => p && typeof p === "object" && typeof p.name === "string" && (
+            p.name === "nitro" || p.name.startsWith("nitro:")
+          ),
+        );
 
         // Resolve PostCSS string plugin names that Vite can't handle.
         // Next.js projects commonly use array-form plugins like
@@ -1884,7 +1890,7 @@ hydrate();
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
         // environments where it can cause asset resolution issues.
-        const isMultiEnv = hasAppDir || hasCloudflarePlugin;
+        const isMultiEnv = hasAppDir || hasCloudflarePlugin || hasNitroPlugin;
 
         const viteConfig: Record<string, any> = {
           // Disable Vite's default HTML serving - we handle all routing
@@ -1940,8 +1946,8 @@ hydrate();
           server: { cors: { preflightContinue: true } },
           // Externalize React packages from SSR transform — they are CJS and
           // must be loaded natively by Node, not through Vite's ESM evaluator.
-          // Skip when targeting Cloudflare Workers (they bundle everything).
-          ...(hasCloudflarePlugin ? {} : {
+          // Skip when targeting bundled runtimes (Cloudflare/Nitro bundle everything).
+          ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
             ssr: {
               external: ["react", "react-dom", "react-dom/server"],
             },
@@ -1994,14 +2000,14 @@ hydrate();
 
           viteConfig.environments = {
             rsc: {
-              ...(hasCloudflarePlugin ? {} : {
+              ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
                 resolve: {
                   // Externalize native/heavy packages so the RSC environment
                   // loads them natively via Node rather than through Vite's
                   // ESM module evaluator (which can't handle native addons).
                   // Note: Do NOT externalize react/react-dom here — they must
                   // be bundled with the "react-server" condition for RSC.
-                  // Skip when targeting Cloudflare Workers.
+                  // Skip when targeting bundled runtimes (Cloudflare/Nitro).
                   external: [
                     "satori",
                     "@resvg/resvg-js",
