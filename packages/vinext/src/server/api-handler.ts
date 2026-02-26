@@ -179,8 +179,9 @@ export async function handleApiRoute(
     const handler = apiModule.default;
 
     if (typeof handler !== "function") {
+      console.error(`[vinext] API route ${route.filePath} does not export a default function`);
       res.statusCode = 500;
-      res.end(`API route ${route.filePath} does not export a default function`);
+      res.end("API route does not export a default function");
       return true;
     }
 

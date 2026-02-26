@@ -350,8 +350,9 @@ export function createSSRHandler(
       // Get the page component (default export)
       const PageComponent = pageModule.default;
       if (!PageComponent) {
+        console.error(`[vinext] Page ${route.filePath} has no default export`);
         res.statusCode = 500;
-        res.end(`Page ${route.filePath} has no default export`);
+        res.end("Page has no default export");
         return;
       }
 
@@ -763,10 +764,12 @@ hydrate();
       // Try to render custom 500 error page
       try {
         await renderErrorPage(server, req, res, url, pagesDir, 500);
-      } catch {
-        // If error page itself fails, fall back to plain text
+      } catch (fallbackErr) {
+        // If error page itself fails, fall back to plain text.
+        // This is a dev-only code path (prod uses prod-server.ts), so
+        // include the error message for debugging.
         res.statusCode = 500;
-        res.end(`Internal Server Error: ${(e as Error).message}`);
+        res.end(`Internal Server Error: ${(fallbackErr as Error).message}`);
       }
     } finally {
       cleanupFetchCache();

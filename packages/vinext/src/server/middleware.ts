@@ -210,9 +210,13 @@ export async function runMiddleware(
     response = await middlewareFn(nextRequest);
   } catch (e: any) {
     console.error("[vinext] Middleware error:", e);
+    const message =
+      process.env.NODE_ENV === "production"
+        ? "Internal Server Error"
+        : "Middleware Error: " + (e?.message ?? String(e));
     return {
       continue: false,
-      response: new Response("Middleware Error: " + (e?.message ?? String(e)), {
+      response: new Response(message, {
         status: 500,
       }),
     };

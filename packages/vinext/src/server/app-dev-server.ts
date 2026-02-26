@@ -239,14 +239,63 @@ function setNavigationContext(ctx) {
 // based on export const revalidate for testing purposes.
 // Production ISR is handled by prod-server.ts and the Cloudflare worker entry.
 
+// djb2 hash — matches Next.js's stringHash for digest generation.
+// Produces a stable numeric string from error message + stack.
+function __errorDigest(str) {
+  let hash = 5381;
+  for (let i = str.length - 1; i >= 0; i--) {
+    hash = (hash * 33) ^ str.charCodeAt(i);
+  }
+  return (hash >>> 0).toString();
+}
+
+// Sanitize an error for client consumption. In production, replaces the error
+// with a generic Error that only carries a digest hash (matching Next.js
+// behavior). In development, returns the original error for debugging.
+// Navigation errors (redirect, notFound, etc.) are always passed through
+// unchanged since their digests are used for client-side routing.
+function __sanitizeErrorForClient(error) {
+  // Navigation errors must pass through with their digest intact
+  if (error && typeof error === "object" && "digest" in error) {
+    const digest = String(error.digest);
+    if (
+      digest.startsWith("NEXT_REDIRECT;") ||
+      digest === "NEXT_NOT_FOUND" ||
+      digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")
+    ) {
+      return error;
+    }
+  }
+  // In development, pass through the original error for debugging
+  if (process.env.NODE_ENV !== "production") {
+    return error;
+  }
+  // In production, create a sanitized error with only a digest hash
+  const msg = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? (error.stack || "") : "";
+  const sanitized = new Error(
+    "An error occurred in the Server Components render. " +
+    "The specific message is omitted in production builds to avoid leaking sensitive details. " +
+    "A digest property is included on this error instance which may provide additional details about the nature of the error."
+  );
+  sanitized.digest = __errorDigest(msg + stack);
+  return sanitized;
+}
+
 // onError callback for renderToReadableStream — preserves the digest for
 // Next.js navigation errors (redirect, notFound, forbidden, unauthorized)
 // thrown during RSC streaming (e.g. inside Suspense boundaries).
-// Without this, React's default onError returns undefined, the digest is lost,
-// and client-side error boundaries can't identify the error type.
+// For non-navigation errors in production, generates a digest hash so the
+// error can be correlated with server logs without leaking details.
 function rscOnError(error) {
   if (error && typeof error === "object" && "digest" in error) {
     return String(error.digest);
+  }
+  // In production, generate a digest hash for non-navigation errors
+  if (process.env.NODE_ENV === "production" && error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? (error.stack || "") : "";
+    return __errorDigest(msg + stack);
   }
   return undefined;
 }
@@ -406,7 +455,11 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
   ErrorComponent = ErrorComponent${globalErrorVar ? ` ?? ${globalErrorVar}?.default` : ""};
   if (!ErrorComponent) return null;
 
-  const errorObj = error instanceof Error ? error : new Error(String(error));
+  const rawError = error instanceof Error ? error : new Error(String(error));
+  // Sanitize the error in production to avoid leaking internal details
+  // (database errors, file paths, stack traces) through error.tsx to the client.
+  // In development, pass the original error for debugging.
+  const errorObj = __sanitizeErrorForClient(rawError);
   // Only pass error — reset is a client-side concern (re-renders the segment) and
   // can't be serialized through RSC. The error.tsx component will receive reset=undefined
   // during SSR, which is fine — onClick={undefined} is harmless, and the real reset
@@ -1360,10 +1413,16 @@ async function _handleRequest(request) {
             // notFound() / forbidden() / unauthorized() in action — package as error
             returnValue = { ok: false, data: e };
           } else {
-            returnValue = { ok: false, data: e };
+            // Non-navigation digest error — sanitize in production to avoid
+            // leaking internal details (connection strings, paths, etc.)
+            console.error("[vinext] Server action error:", e);
+            returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
           }
         } else {
-          returnValue = { ok: false, data: e };
+          // Unhandled error — sanitize in production to avoid leaking
+          // internal details (database errors, file paths, stack traces, etc.)
+          console.error("[vinext] Server action error:", e);
+          returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
         }
       }
 
@@ -2229,6 +2288,16 @@ export async function handleSsr(rscStream, navContext, fontData) {
     const bootstrapScriptContent =
       await import.meta.viteRsc.loadBootstrapScriptContent("index");
 
+    // djb2 hash for digest generation in the SSR environment.
+    // Matches the RSC environment's __errorDigest function.
+    function ssrErrorDigest(str) {
+      let hash = 5381;
+      for (let i = str.length - 1; i >= 0; i--) {
+        hash = (hash * 33) ^ str.charCodeAt(i);
+      }
+      return (hash >>> 0).toString();
+    }
+
     // Render HTML (streaming SSR)
     // useServerInsertedHTML callbacks are registered during this render.
     // The onError callback preserves the digest for Next.js navigation errors
@@ -2236,11 +2305,19 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // boundaries during RSC streaming. Without this, React's default onError
     // returns undefined and the digest is lost in the $RX() call, preventing
     // client-side error boundaries from identifying the error type.
+    // In production, non-navigation errors also get a digest hash so they
+    // can be correlated with server logs without leaking details to clients.
     const htmlStream = await renderToReadableStream(root, {
       bootstrapScriptContent,
       onError(error) {
         if (error && typeof error === "object" && "digest" in error) {
           return String(error.digest);
+        }
+        // In production, generate a digest hash for non-navigation errors
+        if (process.env.NODE_ENV === "production" && error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          const stack = error instanceof Error ? (error.stack || "") : "";
+          return ssrErrorDigest(msg + stack);
         }
         return undefined;
       },

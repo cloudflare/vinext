@@ -33,10 +33,7 @@ export default {
       return new Response(String(result), { status: 200 });
     } catch (error) {
       console.error("[vinext] Worker error:", error);
-      return new Response(
-        `Internal Server Error: ${error instanceof Error ? error.message : String(error)}`,
-        { status: 500 },
-      );
+      return new Response("Internal Server Error", { status: 500 });
     }
   },
 };
