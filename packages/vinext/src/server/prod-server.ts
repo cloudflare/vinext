@@ -489,6 +489,10 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       return;
     }
 
+    // Serve static assets from client build
+    if (pathname !== "/" && tryServeStatic(req, res, clientDir, pathname, compress)) {
+      return;
+    }
 
     // Image optimization passthrough (Node.js prod server has no Images binding;
     // serves the original file with cache headers and security headers)
