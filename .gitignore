@@ -27,3 +27,6 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+
+# Git worktrees
+.worktrees/
