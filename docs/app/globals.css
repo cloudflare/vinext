@@ -1,0 +1,9 @@
+/* fumadocs-ui provides all layout styles — only keep global resets and custom overrides here */
+
+:root {
+  color-scheme: light dark;
+}
+
+* {
+  box-sizing: border-box;
+}
