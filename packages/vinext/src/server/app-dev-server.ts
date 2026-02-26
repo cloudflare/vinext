@@ -1569,7 +1569,9 @@ async function _handleRequest(request) {
         err instanceof Error ? err : new Error(String(err)),
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      ).catch(() => {});
+      ).catch((reportErr) => {
+        console.error("[vinext] Failed to report server action error:", reportErr);
+      });
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response(
@@ -1733,7 +1735,9 @@ async function _handleRequest(request) {
           err instanceof Error ? err : new Error(String(err)),
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        ).catch(() => {});
+        ).catch((reportErr) => {
+          console.error("[vinext] Failed to report route handler error:", reportErr);
+        });
         return new Response(null, { status: 500 });
       }
     }
@@ -2019,7 +2023,12 @@ async function _handleRequest(request) {
       } else {
         // Suppress unhandled promise rejection — with a loading boundary,
         // redirect/notFound errors are handled by rscOnError during streaming.
-        testResult.catch(() => {});
+        // Log in development for visibility.
+        testResult.catch((err) => {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[vinext] Async component error (handled by loading boundary):", err);
+          }
+        });
       }
     }
   } catch (preRenderErr) {
