@@ -266,6 +266,29 @@ describe("next/headers shim", () => {
     expect(ctx.headers.get("cookie")).toBe("a=1; b=2");
   });
 
+  it("headersContextFromRequest returns mutable headers (not the immutable Request.headers)", async () => {
+    // In Cloudflare Workers, Request.headers is immutable. applyMiddlewareRequestHeaders
+    // needs ctx.headers.set() after middleware runs, so the context must hold a mutable
+    // copy, not the original Headers reference.
+    const { headersContextFromRequest } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    const req = new Request("https://example.com", {
+      headers: { "x-custom": "original" },
+    });
+    const ctx = headersContextFromRequest(req);
+
+    // Must be a separate, mutable copy — not the same reference
+    expect(ctx.headers).not.toBe(req.headers);
+
+    // Must be writable without throwing
+    expect(() => ctx.headers.set("x-custom", "modified")).not.toThrow();
+    expect(ctx.headers.get("x-custom")).toBe("modified");
+
+    // Original request headers must be unaffected
+    expect(req.headers.get("x-custom")).toBe("original");
+  });
+
   it("throws when called outside request context", async () => {
     const { headers, cookies } = await import(
       "../packages/vinext/src/shims/headers.js"
