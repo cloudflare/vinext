@@ -2070,6 +2070,7 @@ export function generateSsrEntry(): string {
   return `
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import { renderToReadableStream } from "react-dom/server.edge";
+import { createElement } from "react";
 import { setNavigationContext } from "next/navigation";
 import { safeJsonStringify } from "vinext/html";
 
@@ -2093,58 +2094,21 @@ async function collectStreamChunks(stream) {
   return chunks;
 }
 
-// Cached production decoder used only in dev-mode fallback.
-let _prodCreateFromReadableStream = null;
-
 /**
- * React 19 dev-mode bug workaround:
+ * React 19 dev-mode workaround:
  *
  * In dev, Flight error decoding in react-server-dom-webpack/client.edge
- * can hit resolveErrorDev() which calls hook internals with a null dispatcher,
- * triggering:
+ * can hit resolveErrorDev() which (via React's dev error stack capture)
+ * expects a non-null hooks dispatcher.
+ *
+ * Vinext previously called createFromReadableStream() outside of any React render.
+ * When an RSC stream contains an error, dev-mode decoding could crash with:
  *   - "Invalid hook call"
  *   - "Cannot read properties of null (reading 'useContext')"
  *
- * We avoid this by using the production Flight decoder for SSR stream decode
- * in dev mode. This preserves real application errors (they still flow through
- * error boundaries), while avoiding the dev-only decoder crash.
+ * Fix: call createFromReadableStream() lazily inside a React component render.
+ * This mirrors Next.js behavior and ensures the dispatcher is set.
  */
-async function getCreateFromReadableStreamForSsr() {
-  if (!import.meta.env.DEV) {
-    return createFromReadableStream;
-  }
-
-  if (_prodCreateFromReadableStream) {
-    return _prodCreateFromReadableStream;
-  }
-
-  try {
-    const [{ createRequire }, pathMod] = await Promise.all([
-      import("node:module"),
-      import("node:path"),
-    ]);
-    const require = createRequire(import.meta.url);
-    const rscPkgJson = require.resolve("react-server-dom-webpack/package.json");
-    const prodClientPath = pathMod.join(
-      pathMod.dirname(rscPkgJson),
-      "cjs",
-      "react-server-dom-webpack-client.edge.production.js",
-    );
-    const prodClient = require(prodClientPath);
-    if (typeof prodClient?.createFromReadableStream !== "function") {
-      throw new Error("createFromReadableStream export missing");
-    }
-    _prodCreateFromReadableStream = prodClient.createFromReadableStream;
-    return _prodCreateFromReadableStream;
-  } catch (err) {
-    // If loading the production decoder fails, fall back to the default
-    // decoder so we don't hide the underlying issue.
-    if (process.env.NODE_ENV !== "production") {
-      console.warn("[vinext] Failed to load production Flight decoder fallback:", err);
-    }
-    return createFromReadableStream;
-  }
-}
 
 /**
  * Create a TransformStream that appends RSC chunks as inline <script> tags
@@ -2276,8 +2240,16 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // immediately in the HTML shell, then stream in resolved content as RSC
     // chunks arrive. Awaiting here would block until all async server components
     // complete, collapsing the streaming behavior.
-    const decodeRscStream = await getCreateFromReadableStreamForSsr();
-    const root = decodeRscStream(ssrStream);
+    // Lazily create the Flight root inside render so React's hook dispatcher is set
+    // (avoids React 19 dev-mode resolveErrorDev() crash).
+    let flightRoot;
+    function VinextFlightRoot() {
+      if (!flightRoot) {
+        flightRoot = createFromReadableStream(ssrStream);
+      }
+      return flightRoot;
+    }
+    const root = createElement(VinextFlightRoot);
 
     // Get the bootstrap script content for the browser entry
     const bootstrapScriptContent =
@@ -2306,7 +2278,7 @@ export async function handleSsr(rscStream, navContext, fontData) {
 
     // Render the inserted elements to HTML strings
     const { renderToStaticMarkup } = await import("react-dom/server.edge");
-    const { createElement, Fragment } = await import("react");
+    const { Fragment } = await import("react");
     let insertedHTML = "";
     for (const el of insertedElements) {
       try {
