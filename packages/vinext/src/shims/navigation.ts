@@ -307,10 +307,10 @@ export function useParams<
 }
 
 /**
- * Check if a href is an external URL.
+ * Check if a href is an external URL (any URL scheme per RFC 3986, or protocol-relative).
  */
 function isExternalUrl(href: string): boolean {
-  return href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//");
+  return /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//");
 }
 
 /**

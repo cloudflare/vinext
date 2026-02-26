@@ -558,11 +558,12 @@ export function sanitizeDestination(dest: string): string {
 }
 
 /**
- * Check if a URL is an external (absolute) URL.
- * Returns true for URLs starting with http:// or https://.
+ * Check if a URL is external (absolute URL or protocol-relative).
+ * Detects any URL scheme (http:, https:, data:, javascript:, blob:, etc.)
+ * per RFC 3986, plus protocol-relative URLs (//).
  */
 export function isExternalUrl(url: string): boolean {
-  return url.startsWith("http://") || url.startsWith("https://");
+  return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
 /**

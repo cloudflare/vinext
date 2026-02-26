@@ -1045,7 +1045,7 @@ function __applyConfigRewrites(pathname, rules, ctx) {
 }
 
 function __isExternalUrl(url) {
-  return url.startsWith("http://") || url.startsWith("https://");
+  return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
 /**

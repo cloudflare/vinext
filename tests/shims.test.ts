@@ -2952,11 +2952,30 @@ describe("isExternalUrl", () => {
     expect(isExternalUrl("/")).toBe(false);
   });
 
-  it("returns false for protocol-relative URLs", async () => {
+  it("returns true for protocol-relative URLs", async () => {
     const { isExternalUrl } = await import(
       "../packages/vinext/src/config/config-matchers.js"
     );
-    expect(isExternalUrl("//example.com")).toBe(false);
+    expect(isExternalUrl("//example.com")).toBe(true);
+    expect(isExternalUrl("//cdn.example.com/image.png")).toBe(true);
+  });
+
+  it("returns true for exotic URL schemes (data:, javascript:, blob:, ftp:)", async () => {
+    const { isExternalUrl } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isExternalUrl("data:text/html,<h1>hi</h1>")).toBe(true);
+    expect(isExternalUrl("javascript:alert(1)")).toBe(true);
+    expect(isExternalUrl("blob:http://localhost/abc")).toBe(true);
+    expect(isExternalUrl("ftp://files.example.com/pub")).toBe(true);
+  });
+
+  it("returns false for hash-only and bare strings", async () => {
+    const { isExternalUrl } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(isExternalUrl("#section")).toBe(false);
+    expect(isExternalUrl("about")).toBe(false);
   });
 });
 

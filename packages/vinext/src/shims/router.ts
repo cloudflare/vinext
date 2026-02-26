@@ -131,9 +131,9 @@ export function applyNavigationLocale(url: string, locale?: string): string {
   return `/${locale}${url.startsWith("/") ? url : `/${url}`}`;
 }
 
-/** Check if a URL is external */
+/** Check if a URL is external (any URL scheme per RFC 3986, or protocol-relative) */
 export function isExternalUrl(url: string): boolean {
-  return url.startsWith("http://") || url.startsWith("https://") || url.startsWith("//");
+  return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
 /** Check if a href is only a hash change relative to the current URL */
