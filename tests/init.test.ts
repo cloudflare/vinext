@@ -551,6 +551,23 @@ describe("init — dependency installation", () => {
     expect(reactUpgradeCall).toBeUndefined();
   });
 
+  function withUserAgent<T>(value: string | undefined, run: () => Promise<T>): Promise<T> {
+    const previous = process.env.npm_config_user_agent;
+    if (value === undefined) {
+      delete process.env.npm_config_user_agent;
+    } else {
+      process.env.npm_config_user_agent = value;
+    }
+
+    return run().finally(() => {
+      if (previous === undefined) {
+        delete process.env.npm_config_user_agent;
+      } else {
+        process.env.npm_config_user_agent = previous;
+      }
+    });
+  }
+
   it("calls exec with correct package manager for pnpm", async () => {
     setupProject(tmpDir, { router: "pages" });
     writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: 5");
@@ -562,10 +579,44 @@ describe("init — dependency installation", () => {
     expect(installCall!.cmd).toMatch(/^pnpm add -D/);
   });
 
-  it("calls exec with npm when no lock file exists", async () => {
+  it("calls exec with bun when bun.lock exists", async () => {
     setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "bun.lock", "# bun lockfile");
 
     const { execCalls } = await runInit(tmpDir);
+
+    const installCall = execCalls.find((c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"));
+    expect(installCall).toBeDefined();
+    expect(installCall!.cmd).toMatch(/^bun add -D/);
+  });
+
+  it("uses package.json#packageManager when lock files are missing", async () => {
+    setupProject(tmpDir, {
+      router: "pages",
+      extraPkg: { packageManager: "bun@1.2.3" },
+    });
+
+    const { execCalls } = await runInit(tmpDir);
+
+    const installCall = execCalls.find((c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"));
+    expect(installCall).toBeDefined();
+    expect(installCall!.cmd).toMatch(/^bun add -D/);
+  });
+
+  it("uses invoking package manager from npm_config_user_agent when project has no PM hints", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    const { execCalls } = await withUserAgent("bun/1.2.3 npm/? node/v22.0.0", () => runInit(tmpDir));
+
+    const installCall = execCalls.find((c) => c.cmd.includes("add -D") || c.cmd.includes("install -D"));
+    expect(installCall).toBeDefined();
+    expect(installCall!.cmd).toMatch(/^bun add -D/);
+  });
+
+  it("falls back to npm when no lock file, no packageManager, and no user-agent hint", async () => {
+    setupProject(tmpDir, { router: "pages" });
+
+    const { execCalls } = await withUserAgent(undefined, () => runInit(tmpDir));
 
     const installCall = execCalls.find((c) => c.cmd.includes("install -D") || c.cmd.includes("add -D"));
     expect(installCall).toBeDefined();
