@@ -18,6 +18,6 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
       - run: pnpm run build
       - run: pnpm dlx pkg-pr-new publish --pnpm './packages/vinext'

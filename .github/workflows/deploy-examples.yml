@@ -48,7 +48,7 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
       - name: Build vinext plugin
         run: pnpm run build
