@@ -810,7 +810,11 @@ import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext } from "next/router";
 import { getCacheHandler } from "next/cache";
-import { withFetchCache } from "vinext/fetch-cache";
+import { runWithFetchCache } from "vinext/fetch-cache";
+import { _runWithCacheState } from "next/cache";
+import { runWithPrivateCache } from "vinext/cache-runtime";
+import { runWithRouterState } from "vinext/router-state";
+import { runWithHeadState } from "vinext/head-state";
 import { safeJsonStringify } from "vinext/html";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
@@ -1221,7 +1225,11 @@ export async function renderPage(request, url, manifest) {
   }
 
   const { route, params } = match;
-  const cleanupFetchCache = withFetchCache();
+  return runWithRouterState(() =>
+    runWithHeadState(() =>
+      _runWithCacheState(() =>
+        runWithPrivateCache(() =>
+          runWithFetchCache(async () => {
   try {
     if (typeof setSSRContext === "function") {
       setSSRContext({
@@ -1480,9 +1488,12 @@ export async function renderPage(request, url, manifest) {
   } catch (e) {
     console.error("[vinext] SSR error:", e);
     return new Response("Internal Server Error", { status: 500 });
-  } finally {
-    cleanupFetchCache();
   }
+          }) // end runWithFetchCache
+        ) // end runWithPrivateCache
+      ) // end _runWithCacheState
+    ) // end runWithHeadState
+  ); // end runWithRouterState
 }
 
 export async function handleApiRoute(request, url) {

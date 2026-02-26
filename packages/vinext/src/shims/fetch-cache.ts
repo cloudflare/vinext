@@ -400,9 +400,8 @@ function _ensurePatchInstalled(): void {
  * Install the patched fetch and reset per-request tag state.
  * Returns a cleanup function that clears tags.
  *
- * In single-threaded contexts (dev server, tests) this is safe because
- * requests are sequential.  For concurrent environments, prefer
- * `runWithFetchCache()` which uses `AsyncLocalStorage.run()`.
+ * @deprecated Prefer `runWithFetchCache()` which uses `AsyncLocalStorage.run()`
+ * for proper per-request isolation in concurrent environments.
  *
  * Usage:
  *   const cleanup = withFetchCache();

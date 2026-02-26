@@ -214,11 +214,11 @@ import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
-import { _consumeRequestScopedCacheLife, _initRequestScopedCacheState } from "next/cache";
+import { _consumeRequestScopedCacheLife, _runWithCacheState } from "next/cache";
 import { runWithFetchCache } from "vinext/fetch-cache";
-import { clearPrivateCache as _clearPrivateCache } from "vinext/cache-runtime";
+import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
-import "vinext/navigation-state";
+import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
@@ -1231,34 +1231,36 @@ function __applyConfigHeaders(pathname) {
 }
 
 export default async function handler(request) {
-  // Wrap the entire request handling in runWithHeadersContext to ensure
-  // headers() and cookies() work throughout the async RSC rendering pipeline.
-  // This uses AsyncLocalStorage.run() which properly propagates through awaits.
+  // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
+  // per-request isolation for all state modules. Each runWith*() creates an
+  // ALS scope that propagates through all async continuations (including RSC
+  // streaming), preventing state leakage between concurrent requests on
+  // Cloudflare Workers and other concurrent runtimes.
   const headersCtx = headersContextFromRequest(request);
-   return runWithHeadersContext(headersCtx, async () => {
-    // Initialize per-request state for cache and private cache isolation.
-    _initRequestScopedCacheState();
-    _clearPrivateCache();
-    // Install patched fetch with Next.js caching semantics for this request.
-    // runWithFetchCache uses AsyncLocalStorage.run() for proper per-request
-    // isolation of collected fetch tags in concurrent environments.
-    return runWithFetchCache(async () => {
-      const response = await _handleRequest(request);
-      // Apply custom headers from next.config.js to non-redirect responses.
-      // Skip redirects (3xx) because Response.redirect() creates immutable headers,
-      // and Next.js doesn't apply custom headers to redirects anyway.
-      if (__configHeaders.length && response && response.headers && !(response.status >= 300 && response.status < 400)) {
-        const url = new URL(request.url);
-        let pathname = url.pathname;
-        ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
-        const extraHeaders = __applyConfigHeaders(pathname);
-        for (const h of extraHeaders) {
-          response.headers.set(h.key, h.value);
-        }
-      }
-      return response;
-    });
-  });
+  return runWithHeadersContext(headersCtx, () =>
+    _runWithNavigationContext(() =>
+      _runWithCacheState(() =>
+        _runWithPrivateCache(() =>
+          runWithFetchCache(async () => {
+            const response = await _handleRequest(request);
+            // Apply custom headers from next.config.js to non-redirect responses.
+            // Skip redirects (3xx) because Response.redirect() creates immutable headers,
+            // and Next.js doesn't apply custom headers to redirects anyway.
+            if (__configHeaders.length && response && response.headers && !(response.status >= 300 && response.status < 400)) {
+              const url = new URL(request.url);
+              let pathname = url.pathname;
+              ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
+              const extraHeaders = __applyConfigHeaders(pathname);
+              for (const h of extraHeaders) {
+                response.headers.set(h.key, h.value);
+              }
+            }
+            return response;
+          })
+        )
+      )
+    )
+  );
 }
 
 async function _handleRequest(request) {
@@ -2238,6 +2240,7 @@ export function generateSsrEntry(): string {
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { setNavigationContext } from "next/navigation";
+import { runWithNavigationContext as _runWithNavCtx } from "vinext/navigation-state";
 import { safeJsonStringify } from "vinext/html";
 
 /**
@@ -2363,6 +2366,10 @@ function createRscEmbedTransform(embedStream) {
  *   and the data needs to be passed to SSR since they're separate module instances.
  */
 export async function handleSsr(rscStream, navContext, fontData) {
+  // Wrap in a navigation ALS scope for per-request isolation in the SSR
+  // environment. The SSR environment has separate module instances from RSC,
+  // so it needs its own ALS scope.
+  return _runWithNavCtx(async () => {
   // Set navigation context so hooks like usePathname() work during SSR
   // of "use client" components
   if (navContext) {
@@ -2606,6 +2613,7 @@ export async function handleSsr(rscStream, navContext, fontData) {
     setNavigationContext(null);
     clearServerInsertedHTML();
   }
+  }); // end _runWithNavCtx
 }
 `;
 }

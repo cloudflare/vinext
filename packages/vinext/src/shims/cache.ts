@@ -389,30 +389,35 @@ const _cacheFallbackState = (_g[_FALLBACK_KEY] ??= {
   requestScopedCacheLife: null,
 } satisfies CacheState) as CacheState;
 
-function _cacheEnterWith(state: CacheState): void {
-  const enterWith = (_cacheAls as any).enterWith;
-  if (typeof enterWith === "function") {
-    try {
-      enterWith.call(_cacheAls, state);
-      return;
-    } catch {
-      // Fall through to best-effort fallback.
-    }
-  }
-  _cacheFallbackState.requestScopedCacheLife = state.requestScopedCacheLife;
-}
-
 function _getCacheState(): CacheState {
   return _cacheAls.getStore() ?? _cacheFallbackState;
 }
 
 /**
+ * Run a function within a cache state ALS scope.
+ * Ensures per-request isolation for request-scoped cacheLife config
+ * on concurrent runtimes.
+ * @internal
+ */
+export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  const state: CacheState = {
+    requestScopedCacheLife: null,
+  };
+  return _cacheAls.run(state, fn);
+}
+
+/**
  * Initialize cache ALS for a new request. Call at request entry.
+ * Only needed when not using _runWithCacheState() (legacy path).
  * @internal
  */
 export function _initRequestScopedCacheState(): void {
-  _cacheEnterWith({ requestScopedCacheLife: null });
-  _cacheFallbackState.requestScopedCacheLife = null;
+  const state = _cacheAls.getStore();
+  if (state) {
+    state.requestScopedCacheLife = null;
+  } else {
+    _cacheFallbackState.requestScopedCacheLife = null;
+  }
 }
 
 /**

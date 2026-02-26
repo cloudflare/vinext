@@ -13,13 +13,13 @@ import {
   getRevalidateDuration,
 } from "./isr-cache.js";
 import type { CachedPagesValue } from "../shims/cache.js";
-import { withFetchCache } from "../shims/fetch-cache.js";
-import { _initRequestScopedCacheState } from "../shims/cache.js";
-import { clearPrivateCache } from "../shims/cache-runtime.js";
+import { runWithFetchCache } from "../shims/fetch-cache.js";
+import { _runWithCacheState } from "../shims/cache.js";
+import { runWithPrivateCache } from "../shims/cache-runtime.js";
 // Import server-only state modules to register ALS-backed accessors.
 // These modules must be imported before any rendering occurs.
-import "../shims/router-state.js";
-import "../shims/head-state.js";
+import { runWithRouterState } from "../shims/router-state.js";
+import { runWithHeadState } from "../shims/head-state.js";
 import { reportRequestError } from "./instrumentation.js";
 import { safeJsonStringify } from "./html.js";
 import { parseQueryString as parseQuery } from "../utils/query.js";
@@ -315,12 +315,13 @@ export function createSSRHandler(
 
     const { route, params } = match;
 
-    // Initialize per-request state for cache isolation
-    _initRequestScopedCacheState();
-    clearPrivateCache();
-    // Install patched fetch with Next.js caching semantics for this request
-    const cleanupFetchCache = withFetchCache();
-
+    // Wrap the entire request in nested AsyncLocalStorage.run() scopes to
+    // ensure per-request isolation for all state modules.
+    return runWithRouterState(() =>
+      runWithHeadState(() =>
+        _runWithCacheState(() =>
+          runWithPrivateCache(() =>
+            runWithFetchCache(async () => {
     try {
       // Set SSR context for the router shim so useRouter() returns
       // the correct URL and params during server-side rendering.
@@ -772,8 +773,14 @@ hydrate();
         res.end(`Internal Server Error: ${(fallbackErr as Error).message}`);
       }
     } finally {
-      cleanupFetchCache();
+      // Cleanup is handled by ALS scope unwinding —
+      // each runWith*() scope is automatically cleaned up when it exits.
     }
+            }) // end runWithFetchCache
+          ) // end runWithPrivateCache
+        ) // end _runWithCacheState
+      ) // end runWithHeadState
+    ); // end runWithRouterState
   };
 }
 
