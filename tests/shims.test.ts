@@ -34,7 +34,25 @@ describe("next/navigation shim", () => {
       expect.unreachable("should have thrown");
     } catch (e: any) {
       expect(e.digest).toContain("NEXT_REDIRECT");
-      expect(e.digest).toContain("/login");
+      // URL is encodeURIComponent-encoded in the digest to prevent delimiter injection
+      expect(e.digest).toContain(encodeURIComponent("/login"));
+    }
+  });
+
+  it("redirect() encodes semicolons in URL to prevent digest injection", async () => {
+    const { redirect } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    try {
+      redirect("http://example.com;301");
+      expect.unreachable("should have thrown");
+    } catch (e: any) {
+      const parts = e.digest.split(";");
+      // The URL field must not leak into the status code position
+      expect(parts).toHaveLength(3); // NEXT_REDIRECT, type, encoded-url
+      expect(parts[0]).toBe("NEXT_REDIRECT");
+      expect(parts[1]).toBe("replace");
+      expect(decodeURIComponent(parts[2])).toBe("http://example.com;301");
     }
   });
 
@@ -2846,6 +2864,100 @@ describe("matchRewrite with external URLs", () => {
     const result = matchRewrite("/posts/hello", rewrites);
     expect(result).toBe("/blog/hello");
     expect(isExternalUrl(result!)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeDestination — protocol-relative URL handling
+
+describe("sanitizeDestination", () => {
+  it("collapses leading // to / for relative URLs", async () => {
+    const { sanitizeDestination } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(sanitizeDestination("//evil.com")).toBe("/evil.com");
+    expect(sanitizeDestination("///evil.com")).toBe("/evil.com");
+    expect(sanitizeDestination("////evil.com/path")).toBe("/evil.com/path");
+  });
+
+  it("preserves external http:// and https:// URLs", async () => {
+    const { sanitizeDestination } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(sanitizeDestination("https://example.com/path")).toBe("https://example.com/path");
+    expect(sanitizeDestination("http://example.com")).toBe("http://example.com");
+  });
+
+  it("preserves normal relative paths", async () => {
+    const { sanitizeDestination } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(sanitizeDestination("/about")).toBe("/about");
+    expect(sanitizeDestination("/blog/hello")).toBe("/blog/hello");
+    expect(sanitizeDestination("/")).toBe("/");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Catch-all redirect destination sanitization
+
+describe("open redirect prevention in catch-all redirects", () => {
+  it("matchRedirect sanitizes decoded %2F that would produce //evil.com", async () => {
+    const { matchRedirect } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    // /old/%2Fevil.com → decoded catch-all captures "/evil.com"
+    // which substituted into /:path* would produce //evil.com
+    // The matchConfigPattern decodes %2F, so we test with already-decoded path
+    // (the guard is on the destination after substitution, not the input)
+    const redirects = [
+      { source: "/old/:path*", destination: "/:path*", permanent: false },
+    ];
+    // When the raw URL has %2F, decodeURIComponent in matchConfigPattern
+    // turns it into /, so the catch-all captures "/evil.com" → restValue = "/evil.com"
+    // After substitution: "/:path*" → "//evil.com" → sanitized to "/evil.com"
+    const result = matchRedirect("/old/%2Fevil.com", redirects);
+    expect(result).not.toBeNull();
+    expect(result!.destination).toBe("/evil.com");
+    // Verify it does NOT start with // (protocol-relative)
+    expect(result!.destination.startsWith("//")).toBe(false);
+  });
+
+  it("matchRedirect sanitizes triple-encoded slashes", async () => {
+    const { matchRedirect } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const redirects = [
+      { source: "/old/:path*", destination: "/:path*", permanent: false },
+    ];
+    const result = matchRedirect("/old/%2F%2Fevil.com", redirects);
+    expect(result).not.toBeNull();
+    expect(result!.destination.startsWith("//")).toBe(false);
+  });
+
+  it("matchRedirect preserves valid external redirect destinations", async () => {
+    const { matchRedirect } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const redirects = [
+      { source: "/go/:path*", destination: "https://example.com/:path*", permanent: false },
+    ];
+    const result = matchRedirect("/go/page", redirects);
+    expect(result).not.toBeNull();
+    expect(result!.destination).toBe("https://example.com/page");
+  });
+
+  it("matchRewrite sanitizes decoded %2F that would produce //evil.com", async () => {
+    const { matchRewrite } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rewrites = [
+      { source: "/old/:path*", destination: "/:path*" },
+    ];
+    const result = matchRewrite("/old/%2Fevil.com", rewrites);
+    expect(result).not.toBeNull();
+    expect(result!).toBe("/evil.com");
+    expect(result!.startsWith("//")).toBe(false);
   });
 });
 

@@ -394,6 +394,8 @@ export function matchRedirect(
         dest = dest.replace(`:${key}+`, value);
         dest = dest.replace(`:${key}`, value);
       }
+      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+      dest = sanitizeDestination(dest);
       return { destination: dest, permanent: redirect.permanent };
     }
   }
@@ -429,10 +431,37 @@ export function matchRewrite(
         dest = dest.replace(`:${key}+`, value);
         dest = dest.replace(`:${key}`, value);
       }
+      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+      dest = sanitizeDestination(dest);
       return dest;
     }
   }
   return null;
+}
+
+/**
+ * Sanitize a redirect/rewrite destination to collapse protocol-relative URLs.
+ *
+ * After parameter substitution, a destination like `/:path*` can become
+ * `//evil.com` if the catch-all captured a decoded `%2F` (`/evil.com`).
+ * Browsers interpret `//evil.com` as a protocol-relative URL, redirecting
+ * users off-site.
+ *
+ * This function collapses any leading double (or more) slashes to a single
+ * slash for non-external (relative) destinations.
+ */
+export function sanitizeDestination(dest: string): string {
+  // External URLs (http://, https://) are intentional — don't touch them
+  if (dest.startsWith("http://") || dest.startsWith("https://")) {
+    return dest;
+  }
+  // Collapse leading double (or more) slashes to a single slash.
+  // This prevents protocol-relative URLs like //evil.com from being emitted
+  // as Location headers.
+  if (dest.startsWith("//")) {
+    dest = dest.replace(/^\/\/+/, "/");
+  }
+  return dest;
 }
 
 /**

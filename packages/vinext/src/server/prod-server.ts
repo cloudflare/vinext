@@ -23,7 +23,7 @@ import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
-import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, isExternalUrl, proxyExternalRequest } from "../config/config-matchers.js";
+import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { IMAGE_OPTIMIZATION_PATH, parseImageParams } from "./image-optimization.js";
 import { computeLazyChunks } from "../index.js";
@@ -729,9 +729,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         if (redirect) {
           // Guard against double-prefixing: only add basePath if destination
           // doesn't already start with it.
-          const dest = basePath && !redirect.destination.startsWith(basePath)
-            ? basePath + redirect.destination
-            : redirect.destination;
+          // Sanitize the final destination to prevent protocol-relative URL open redirects.
+          const dest = sanitizeDestination(
+            basePath && !redirect.destination.startsWith(basePath)
+              ? basePath + redirect.destination
+              : redirect.destination,
+          );
           res.writeHead(redirect.permanent ? 308 : 307, { Location: dest });
           res.end();
           return;

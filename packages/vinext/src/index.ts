@@ -3327,6 +3327,16 @@ export function matchConfigPattern(
 }
 
 /**
+ * Sanitize a redirect/rewrite destination by collapsing leading // to /
+ * for non-external URLs, preventing unintended protocol-relative redirects.
+ */
+function sanitizeDestinationLocal(dest: string): string {
+  if (dest.startsWith("http://") || dest.startsWith("https://")) return dest;
+  if (dest.startsWith("//")) dest = dest.replace(/^\/\/+/, "/");
+  return dest;
+}
+
+/**
  * Apply redirect rules from next.config.js.
  * Returns true if a redirect was applied.
  */
@@ -3344,6 +3354,8 @@ function applyRedirects(
         dest = dest.replace(`:${key}+`, value);
         dest = dest.replace(`:${key}`, value);
       }
+      // Sanitize to prevent open redirect via protocol-relative URLs
+      dest = sanitizeDestinationLocal(dest);
       res.writeHead(redirect.permanent ? 308 : 307, { Location: dest });
       res.end();
       return true;
@@ -3434,6 +3446,8 @@ function applyRewrites(
         dest = dest.replace(`:${key}+`, value);
         dest = dest.replace(`:${key}`, value);
       }
+      // Sanitize to prevent open redirect via protocol-relative URLs
+      dest = sanitizeDestinationLocal(dest);
       return dest;
     }
   }

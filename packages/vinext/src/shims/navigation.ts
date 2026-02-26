@@ -687,7 +687,7 @@ export enum RedirectType {
  */
 export function redirect(url: string, type?: "replace" | "push" | RedirectType): never {
   const error = new Error(`NEXT_REDIRECT:${url}`);
-  (error as any).digest = `NEXT_REDIRECT;${type ?? "replace"};${url}`;
+  (error as any).digest = `NEXT_REDIRECT;${type ?? "replace"};${encodeURIComponent(url)}`;
   throw error;
 }
 
@@ -696,7 +696,7 @@ export function redirect(url: string, type?: "replace" | "push" | RedirectType):
  */
 export function permanentRedirect(url: string): never {
   const error = new Error(`NEXT_REDIRECT:${url}`);
-  (error as any).digest = `NEXT_REDIRECT;replace;${url};308`;
+  (error as any).digest = `NEXT_REDIRECT;replace;${encodeURIComponent(url)};308`;
   throw error;
 }
 

@@ -1026,6 +1026,12 @@ function __buildRequestContext(request) {
   };
 }
 
+function __sanitizeDestination(dest) {
+  if (dest.startsWith("http://") || dest.startsWith("https://")) return dest;
+  if (dest.startsWith("//")) dest = dest.replace(/^\\/\\/+/, "/");
+  return dest;
+}
+
 function __applyConfigRedirects(pathname, ctx) {
   for (const rule of __configRedirects) {
     const params = __matchConfigPattern(pathname, rule.source);
@@ -1033,6 +1039,7 @@ function __applyConfigRedirects(pathname, ctx) {
       if (ctx && (rule.has || rule.missing)) { if (!__checkHasConditions(rule.has, rule.missing, ctx)) continue; }
       let dest = rule.destination;
       for (const [key, value] of Object.entries(params)) { dest = dest.replace(":" + key + "*", value); dest = dest.replace(":" + key + "+", value); dest = dest.replace(":" + key, value); }
+      dest = __sanitizeDestination(dest);
       return { destination: dest, permanent: rule.permanent };
     }
   }
@@ -1046,6 +1053,7 @@ function __applyConfigRewrites(pathname, rules, ctx) {
       if (ctx && (rule.has || rule.missing)) { if (!__checkHasConditions(rule.has, rule.missing, ctx)) continue; }
       let dest = rule.destination;
       for (const [key, value] of Object.entries(params)) { dest = dest.replace(":" + key + "*", value); dest = dest.replace(":" + key + "+", value); dest = dest.replace(":" + key, value); }
+      dest = __sanitizeDestination(dest);
       return dest;
     }
   }
@@ -1166,9 +1174,11 @@ async function _handleRequest(request) {
   if (__configRedirects.length) {
     const __redir = __applyConfigRedirects(pathname, __reqCtx);
     if (__redir) {
-      const __redirDest = __basePath && !__redir.destination.startsWith(__basePath)
-        ? __basePath + __redir.destination
-        : __redir.destination;
+      const __redirDest = __sanitizeDestination(
+        __basePath && !__redir.destination.startsWith(__basePath)
+          ? __basePath + __redir.destination
+          : __redir.destination
+      );
       return new Response(null, {
         status: __redir.permanent ? 308 : 307,
         headers: { Location: __redirDest },
@@ -1346,12 +1356,14 @@ async function _handleRequest(request) {
       } catch (e) {
         // Detect redirect() / permanentRedirect() called inside the action.
         // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
+        // The URL is encodeURIComponent-encoded to prevent semicolons in the URL
+        // from corrupting the delimiter-based digest format.
         if (e && typeof e === "object" && "digest" in e) {
           const digest = String(e.digest);
           if (digest.startsWith("NEXT_REDIRECT;")) {
             const parts = digest.split(";");
             actionRedirect = {
-              url: parts[2],
+              url: decodeURIComponent(parts[2]),
               type: parts[1] || "replace",       // "push" or "replace"
               status: parts[3] ? parseInt(parts[3], 10) : 307,
             };
@@ -1574,7 +1586,7 @@ async function _handleRequest(request) {
           const digest = String(err.digest);
           if (digest.startsWith("NEXT_REDIRECT;")) {
             const parts = digest.split(";");
-            const redirectUrl = parts[2];
+            const redirectUrl = decodeURIComponent(parts[2]);
             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
             setHeadersContext(null);
             setNavigationContext(null);
@@ -1741,7 +1753,7 @@ async function _handleRequest(request) {
       const digest = String(buildErr.digest);
       if (digest.startsWith("NEXT_REDIRECT;")) {
         const parts = digest.split(";");
-        const redirectUrl = parts[2];
+        const redirectUrl = decodeURIComponent(parts[2]);
         const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
         setHeadersContext(null);
         setNavigationContext(null);
@@ -1772,7 +1784,7 @@ async function _handleRequest(request) {
       const digest = String(err.digest);
       if (digest.startsWith("NEXT_REDIRECT;")) {
         const parts = digest.split(";");
-        const redirectUrl = parts[2];
+        const redirectUrl = decodeURIComponent(parts[2]);
         const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
         setHeadersContext(null);
         setNavigationContext(null);
@@ -1814,13 +1826,13 @@ async function _handleRequest(request) {
       } catch (layoutErr) {
         if (layoutErr && typeof layoutErr === "object" && "digest" in layoutErr) {
           const digest = String(layoutErr.digest);
-          if (digest.startsWith("NEXT_REDIRECT;")) {
-            const parts = digest.split(";");
-            const redirectUrl = parts[2];
-            const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
-            setHeadersContext(null);
-            setNavigationContext(null);
-            return Response.redirect(new URL(redirectUrl, request.url), statusCode);
+           if (digest.startsWith("NEXT_REDIRECT;")) {
+             const parts = digest.split(";");
+             const redirectUrl = decodeURIComponent(parts[2]);
+             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
+             setHeadersContext(null);
+             setNavigationContext(null);
+             return Response.redirect(new URL(redirectUrl, request.url), statusCode);
           }
           if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
             const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
