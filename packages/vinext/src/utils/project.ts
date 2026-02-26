@@ -131,6 +131,31 @@ export function detectPackageManagerName(root: string): string {
   return findLockFile(root)?.pm ?? "npm";
 }
 
+// ─── Node Modules Resolution ─────────────────────────────────────────────────
+
+/**
+ * Walk from `start` up to the filesystem root looking for a path inside
+ * node_modules. Returns the first absolute path found, or null.
+ *
+ * This handles monorepos where packages are hoisted to the workspace root's
+ * node_modules rather than installed in each app's own node_modules.
+ *
+ * @param start   - Directory to begin the search (usually the project root)
+ * @param subPath - Path relative to a node_modules dir, e.g. ".bin/wrangler"
+ *                  or "@cloudflare/vite-plugin"
+ */
+export function findInNodeModules(start: string, subPath: string): string | null {
+  let dir = path.resolve(start);
+  const { root: fsRoot } = path.parse(dir);
+
+  while (true) {
+    const candidate = path.join(dir, "node_modules", subPath);
+    if (fs.existsSync(candidate)) return candidate;
+    if (dir === fsRoot) return null;
+    dir = path.dirname(dir);
+  }
+}
+
 // ─── Vite Config Detection ───────────────────────────────────────────────────
 
 /**
