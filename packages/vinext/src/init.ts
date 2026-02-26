@@ -222,7 +222,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const port = options.port ?? 3001;
   const exec = options._exec ?? ((cmd: string, opts: { cwd: string; stdio: string }) => {
     const [program, ...args] = cmd.split(" ");
-    execFileSync(program, args, opts as Parameters<typeof execFileSync>[2]);
+    execFileSync(program, args, { ...opts, shell: true } as Parameters<typeof execFileSync>[2]);
   });
 
   // ── Pre-flight checks ──────────────────────────────────────────────────
