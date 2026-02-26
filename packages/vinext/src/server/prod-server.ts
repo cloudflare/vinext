@@ -473,7 +473,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
   const server = createServer(async (req, res) => {
     const url = req.url ?? "/";
-    const pathname = url.split("?")[0];
+    // Normalize backslashes: browsers and the URL constructor treat /\ as //,
+    // allowing bypass of the protocol-relative guard below.
+    let pathname = url.split("?")[0].replaceAll("\\", "/");
 
     // Guard against protocol-relative URL open redirect attacks.
     // See comment in app-dev-server.ts _handleRequest for full explanation.
@@ -592,7 +594,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
     let url = rawUrl;
-    let pathname = url.split("?")[0];
+    // Normalize backslashes: browsers and the URL constructor treat /\ as //,
+    // allowing bypass of the protocol-relative guard below.
+    let pathname = url.split("?")[0].replaceAll("\\", "/");
 
     // Guard against protocol-relative URL open redirect attacks.
     // See comment in app-dev-server.ts _handleRequest for full explanation.

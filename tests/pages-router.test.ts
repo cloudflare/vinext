@@ -436,6 +436,66 @@ describe("Pages Router integration", () => {
     const nextData = JSON.parse(match![1]);
     expect(nextData.isFallback).toBe(false);
   });
+
+  // ── Cross-origin request protection ─────────────────────────────────
+  it("blocks page requests with cross-origin Origin header", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: {
+        "Origin": "https://evil.com",
+        "Host": new URL(baseUrl).host,
+      },
+    });
+    expect(res.status).toBe(403);
+    const text = await res.text();
+    expect(text).toBe("Forbidden");
+  });
+
+  it("blocks API requests with cross-origin Origin header", async () => {
+    const res = await fetch(`${baseUrl}/api/hello`, {
+      headers: {
+        "Origin": "https://external.io",
+        "Host": new URL(baseUrl).host,
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks requests with cross-site Sec-Fetch headers", async () => {
+    // Node.js fetch overrides Sec-Fetch-* headers (they're forbidden headers
+    // in the Fetch spec). Use raw HTTP to simulate browser behavior.
+    const http = await import("node:http");
+    const url = new URL(baseUrl);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request({
+        hostname: url.hostname,
+        port: url.port,
+        path: "/",
+        method: "GET",
+        headers: {
+          "sec-fetch-site": "cross-site",
+          "sec-fetch-mode": "no-cors",
+        },
+      }, (res) => resolve(res.statusCode ?? 0));
+      req.on("error", reject);
+      req.end();
+    });
+    expect(status).toBe(403);
+  });
+
+  it("allows page requests from localhost origin", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: {
+        "Origin": baseUrl,
+        "Host": new URL(baseUrl).host,
+      },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("allows page requests without Origin header", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+  });
 });
 
 describe("Virtual server entry generation", () => {

@@ -409,7 +409,9 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // Image optimization via Cloudflare Images binding
+    // Image optimization via Cloudflare Images binding.
+    // The parseImageParams validation inside handleImageOptimization
+    // normalizes backslashes and validates the origin hasn't changed.
     if (url.pathname === "/_vinext/image") {
       return handleImageOptimization(request, {
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
@@ -456,13 +458,15 @@ export default {
       const pathname = url.pathname;
       const urlWithQuery = pathname + url.search;
 
-      // Block protocol-relative URL open redirect attacks (//evil.com/).
-      if (pathname.startsWith("//")) {
+      // Block protocol-relative URL open redirects (//evil.com/ or /\\evil.com/).
+      // Normalize backslashes: browsers treat /\\ as // in URL context.
+      const safePath = pathname.replaceAll("\\\\", "/");
+      if (safePath.startsWith("//")) {
         return new Response("404 Not Found", { status: 404 });
       }
 
       // ── Image optimization via Cloudflare Images binding ──────────
-      if (pathname === "/_vinext/image") {
+      if (safePath === "/_vinext/image") {
         return handleImageOptimization(request, {
           fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
           transformImage: async (body, { width, format, quality }) => {

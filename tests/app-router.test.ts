@@ -1113,6 +1113,67 @@ describe("App Router integration", () => {
     const text = await res.text();
     expect(text).toBe("Forbidden");
   });
+
+  // ── Cross-origin request protection (all App Router requests) ───────
+  it("blocks page GET with cross-origin Origin header", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: {
+        "Origin": "https://evil.com",
+        "Host": new URL(baseUrl).host,
+      },
+    });
+    expect(res.status).toBe(403);
+    const text = await res.text();
+    expect(text).toBe("Forbidden");
+  });
+
+  it("blocks RSC stream requests with cross-origin Origin header", async () => {
+    const res = await fetch(`${baseUrl}/about`, {
+      headers: {
+        "Origin": "https://evil.com",
+        "Host": new URL(baseUrl).host,
+        "Accept": "text/x-component",
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks requests with cross-site Sec-Fetch headers", async () => {
+    // Node.js fetch overrides Sec-Fetch-* headers (they're forbidden headers
+    // in the Fetch spec). Use raw HTTP to simulate browser behavior.
+    const http = await import("node:http");
+    const url = new URL(baseUrl);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request({
+        hostname: url.hostname,
+        port: url.port,
+        path: "/",
+        method: "GET",
+        headers: {
+          "sec-fetch-site": "cross-site",
+          "sec-fetch-mode": "no-cors",
+        },
+      }, (res) => resolve(res.statusCode ?? 0));
+      req.on("error", reject);
+      req.end();
+    });
+    expect(status).toBe(403);
+  });
+
+  it("allows page requests from localhost origin", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: {
+        "Origin": baseUrl,
+        "Host": new URL(baseUrl).host,
+      },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("allows page requests without Origin header", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+  });
 });
 
 describe("App Router Production build", () => {
@@ -1989,6 +2050,30 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(csrfFn).not.toContain("x-forwarded-host");
     // It should use the host header only
     expect(csrfFn).toContain('request.headers.get("host")');
+  });
+
+  // ── Dev origin check code generation ────────────────────────────────
+  it("generates dev origin validation code in RSC entry", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+    // Should include the dev origin validation function definition
+    expect(code).toContain("__validateDevRequestOrigin");
+    expect(code).toContain("__safeDevHosts");
+    // Should call dev origin validation inside _handleRequest
+    const callSite = code.indexOf("const __originBlock = __validateDevRequestOrigin(request)");
+    const handleRequestIdx = code.indexOf("async function _handleRequest(request)");
+    expect(callSite).toBeGreaterThan(-1);
+    expect(handleRequestIdx).toBeGreaterThan(-1);
+    // The call should be inside the function body (after the function declaration)
+    expect(callSite).toBeGreaterThan(handleRequestIdx);
+  });
+
+  it("embeds allowedDevOrigins in dev origin check code", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      allowedDevOrigins: ["staging.example.com", "*.preview.dev"],
+    });
+    expect(code).toContain("staging.example.com");
+    expect(code).toContain("*.preview.dev");
+    expect(code).toContain("__allowedDevOrigins");
   });
 });
 

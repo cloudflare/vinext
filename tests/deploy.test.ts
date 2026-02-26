@@ -385,6 +385,13 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("env.ASSETS.fetch");
     expect(content).toContain("env.IMAGES");
   });
+
+  it("documents that parseImageParams handles backslash normalization", () => {
+    const content = generateAppRouterWorkerEntry();
+    // The App Router generated entry delegates to handleImageOptimization
+    // which calls parseImageParams. Verify the comment documents this.
+    expect(content).toContain("parseImageParams");
+  });
 });
 
 describe("generatePagesRouterWorkerEntry", () => {
@@ -431,6 +438,12 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("interface Env");
     expect(content).toContain("IMAGES");
     expect(content).toContain("ASSETS");
+  });
+
+  it("includes backslash normalization in protocol-relative guard", () => {
+    const content = generatePagesRouterWorkerEntry();
+    // The generated code should normalize backslashes before the // check
+    expect(content).toContain('replaceAll("\\\\", "/")');
   });
 
   it("passes image handlers inline to handleImageOptimization", () => {

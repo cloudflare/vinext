@@ -11,8 +11,10 @@ export default {
       const url = new URL(request.url);
       const { pathname } = url;
 
-      // Block protocol-relative URL open redirect attacks.
-      if (pathname.startsWith("//")) {
+      // Block protocol-relative URL open redirects (//evil.com/ or /\evil.com/).
+      // Normalize backslashes: browsers treat /\ as // in URL context.
+      const safePath = pathname.replaceAll("\\", "/");
+      if (safePath.startsWith("//")) {
         return new Response("404 Not Found", { status: 404 });
       }
 

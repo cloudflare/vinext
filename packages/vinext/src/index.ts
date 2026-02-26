@@ -19,6 +19,7 @@ import {
 
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
+import { validateDevRequest } from "./server/dev-origin-check.js";
 import { safeRegExp, isExternalUrl, proxyExternalRequest } from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
@@ -1937,7 +1938,15 @@ hydrate();
           // route handlers so they can set the Allow header and run user-defined
           // OPTIONS handlers. Without this, Vite's CORS middleware responds to
           // OPTIONS with a 204 before the request reaches vinext's handler.
-          server: { cors: { preflightContinue: true } },
+          // Keep Vite's default restrictive origin policy by explicitly
+          // setting it. Without the `origin` field, `preflightContinue: true`
+          // would override Vite's default and allow any origin.
+          server: {
+            cors: {
+              preflightContinue: true,
+              origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/,
+            },
+          },
           // Externalize React packages from SSR transform — they are CJS and
           // must be loaded natively by Node, not through Vite's ESM evaluator.
           // Skip when targeting Cloudflare Workers (they bundle everything).
@@ -2181,6 +2190,7 @@ hydrate();
             rewrites: nextConfig?.rewrites,
             headers: nextConfig?.headers,
             allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
+            allowedDevOrigins: nextConfig?.serverActionsAllowedOrigins,
           });
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
@@ -2316,16 +2326,46 @@ hydrate();
                 return next();
               }
 
+              // ── Cross-origin request protection ─────────────────────────
+              // Block requests from non-localhost origins to prevent
+              // cross-origin data exfiltration from the dev server.
+              const blockReason = validateDevRequest(
+                {
+                  origin: req.headers.origin as string | undefined,
+                  host: req.headers.host,
+                  "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
+                  "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
+                  "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
+                },
+                nextConfig?.serverActionsAllowedOrigins,
+              );
+              if (blockReason) {
+                console.warn(`[vinext] Blocked dev request: ${blockReason} (${url})`);
+                res.writeHead(403, { "Content-Type": "text/plain" });
+                res.end("Forbidden");
+                return;
+              }
+
               // ── Image optimization passthrough (dev mode) ─────────────
               // In dev, redirect to the original asset URL so Vite serves it.
               if (url.split("?")[0] === "/_vinext/image") {
                 const imgParams = new URLSearchParams(url.split("?")[1] ?? "");
-                const imgUrl = imgParams.get("url");
+                const rawImgUrl = imgParams.get("url");
+                // Normalize backslashes: browsers and the URL constructor treat
+                // /\evil.com as //evil.com, bypassing the // check.
+                const imgUrl = rawImgUrl?.replaceAll("\\", "/") ?? null;
                 // Allowlist: must start with "/" but not "//" — blocks absolute
-                // URLs, protocol-relative, and exotic schemes (data:, javascript:, etc.).
+                // URLs, protocol-relative, backslash variants, and exotic schemes.
                 if (!imgUrl || !imgUrl.startsWith("/") || imgUrl.startsWith("//")) {
                   res.writeHead(400);
-                  res.end(!imgUrl ? "Missing url parameter" : "Only relative URLs allowed");
+                  res.end(!rawImgUrl ? "Missing url parameter" : "Only relative URLs allowed");
+                  return;
+                }
+                // Validate the constructed URL's origin hasn't changed (defense in depth).
+                const resolvedImg = new URL(imgUrl, `http://${req.headers.host || "localhost"}`);
+                if (resolvedImg.origin !== `http://${req.headers.host || "localhost"}`) {
+                  res.writeHead(400);
+                  res.end("Only relative URLs allowed");
                   return;
                 }
                 res.writeHead(302, { Location: imgUrl });
@@ -2349,11 +2389,13 @@ hydrate();
                 return next();
               }
 
-              // Guard against protocol-relative URL open redirect attacks.
+              // Guard against protocol-relative URL open redirects.
               // Paths like //example.com/ would be redirected to //example.com
               // by the trailing-slash normalizer, which browsers interpret as
-              // http://example.com — an open redirect. Next.js returns 404 for
-              // double-slash paths.
+              // http://example.com — an open redirect. Normalize backslashes
+              // first: browsers treat /\ as // in URL context. Next.js returns
+              // 404 for double-slash paths.
+              pathname = pathname.replaceAll("\\", "/");
               if (pathname.startsWith("//")) {
                 res.writeHead(404);
                 res.end("404 Not Found");

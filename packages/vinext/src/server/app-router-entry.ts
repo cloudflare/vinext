@@ -19,8 +19,10 @@ export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    // Block protocol-relative URL open redirect attacks (//evil.com/).
-    if (url.pathname.startsWith("//")) {
+    // Block protocol-relative URL open redirects (//evil.com/ or /\evil.com/).
+    // Normalize backslashes: browsers treat /\ as // in URL context.
+    const pathname = url.pathname.replaceAll("\\", "/");
+    if (pathname.startsWith("//")) {
       return new Response("404 Not Found", { status: 404 });
     }
 

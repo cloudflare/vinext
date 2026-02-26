@@ -31,14 +31,28 @@ export function parseImageParams(url: URL): { imageUrl: string; width: number; q
   if (Number.isNaN(q) || q < 1 || q > 100) return null;
 
   // Prevent open redirect / SSRF — only allow path-relative URLs.
-  // Use an allowlist approach: the URL must start with "/" (but not "//")
-  // to be a valid relative path. This blocks absolute URLs (http://, https://),
-  // protocol-relative (//), and exotic schemes (data:, javascript:, ftp:, etc.).
-  if (!imageUrl.startsWith("/") || imageUrl.startsWith("//")) {
+  // Normalize backslashes to forward slashes first: browsers and the URL
+  // constructor treat /\evil.com as protocol-relative (//evil.com).
+  const normalizedUrl = imageUrl.replaceAll("\\", "/");
+  // The URL must start with "/" (but not "//") to be a valid relative path.
+  // This blocks absolute URLs (http://, https://), protocol-relative (//),
+  // backslash variants (/\), and exotic schemes (data:, javascript:, ftp:, etc.).
+  if (!normalizedUrl.startsWith("/") || normalizedUrl.startsWith("//")) {
+    return null;
+  }
+  // Double-check: after URL construction, the origin must not change.
+  // This catches any remaining parser differentials.
+  try {
+    const base = "https://localhost";
+    const resolved = new URL(normalizedUrl, base);
+    if (resolved.origin !== base) {
+      return null;
+    }
+  } catch {
     return null;
   }
 
-  return { imageUrl, width: w, quality: q };
+  return { imageUrl: normalizedUrl, width: w, quality: q };
 }
 
 /**

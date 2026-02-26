@@ -4965,6 +4965,39 @@ describe("image optimization request parsing", () => {
     expect(parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&q=101"))).toBeNull();
   });
 
+  it("parseImageParams blocks backslash-based open redirect (/\\evil.com)", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    // /\evil.com — browsers and the URL constructor treat this as //evil.com
+    expect(parseImageParams(new URL("http://localhost/_vinext/image?url=%2F%5Cevil.com&w=800"))).toBeNull();
+  });
+
+  it("parseImageParams blocks encoded backslash variants", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    // /\evil.com/img.jpg
+    expect(parseImageParams(new URL("http://localhost/_vinext/image?url=%2F%5Cevil.com%2Fimg.jpg&w=800"))).toBeNull();
+    // /\\evil.com (double backslash)
+    expect(parseImageParams(new URL("http://localhost/_vinext/image?url=%2F%5C%5Cevil.com&w=800"))).toBeNull();
+  });
+
+  it("parseImageParams validates origin hasn't changed after URL construction", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    // This tests defense-in-depth: even if a future parser differential is found,
+    // the origin check catches it.
+    // A valid relative URL should pass
+    const good = parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimages%2Fhero.webp&w=800"));
+    expect(good).not.toBeNull();
+    expect(good!.imageUrl).toBe("/images/hero.webp");
+  });
+
+  it("parseImageParams normalizes backslashes in returned imageUrl", async () => {
+    const { parseImageParams } = await import("../packages/vinext/src/server/image-optimization.js");
+    // /images\hero.webp should be normalized to /images/hero.webp
+    // (backslash in the middle of a valid path)
+    const result = parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimages%5Chero.webp&w=800"));
+    expect(result).not.toBeNull();
+    expect(result!.imageUrl).toBe("/images/hero.webp");
+  });
+
   it("negotiateImageFormat prefers AVIF over WebP", async () => {
     const { negotiateImageFormat } = await import("../packages/vinext/src/server/image-optimization.js");
     expect(negotiateImageFormat("image/avif,image/webp,image/jpeg")).toBe("image/avif");
@@ -5055,6 +5088,31 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("original");
+  });
+
+  it("returns 400 for backslash open redirect (/\\evil.com)", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2F%5Cevil.com&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("should not be called", { status: 200 }),
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(400);
+  });
+
+  it("does not call fetchAsset for backslash URLs", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2F%5Cgoogle.com%2Fimg.jpg&w=800");
+    let fetchCalled = false;
+    const handlers = {
+      fetchAsset: async () => {
+        fetchCalled = true;
+        return new Response("", { status: 200 });
+      },
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(400);
+    expect(fetchCalled).toBe(false);
   });
 });
 

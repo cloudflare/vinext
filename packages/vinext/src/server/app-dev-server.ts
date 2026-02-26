@@ -10,6 +10,7 @@ import fs from "node:fs";
 import type { AppRoute } from "../routing/app-router.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { NextRedirect, NextRewrite, NextHeader } from "../config/next-config.js";
+import { generateDevOriginCheckCode } from "./dev-origin-check.js";
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -25,6 +26,8 @@ export interface AppRouterConfig {
   headers?: NextHeader[];
   /** Extra origins allowed for server action CSRF checks (from experimental.serverActions.allowedOrigins). */
   allowedOrigins?: string[];
+  /** Extra origins allowed for dev server access (from serverActionsAllowedOrigins or custom config). */
+  allowedDevOrigins?: string[];
 }
 
 /**
@@ -858,6 +861,8 @@ const __configRewrites = ${JSON.stringify(rewrites)};
 const __configHeaders = ${JSON.stringify(headers)};
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
 
+${generateDevOriginCheckCode(config?.allowedDevOrigins)}
+
 // ── CSRF origin validation for server actions ───────────────────────────
 // Matches Next.js behavior: compare the Origin header against the Host header.
 // If they don't match, the request is rejected with 403 unless the origin is
@@ -1265,11 +1270,19 @@ async function _handleRequest(request) {
   const url = new URL(request.url);
   let pathname = url.pathname;
 
-  // Guard against protocol-relative URL open redirect attacks.
+  // ── Cross-origin request protection ─────────────────────────────────
+  // Block requests from non-localhost origins to prevent data exfiltration.
+  const __originBlock = __validateDevRequestOrigin(request);
+  if (__originBlock) return __originBlock;
+
+  // Guard against protocol-relative URL open redirects.
   // Paths like //example.com/ would be redirected to //example.com by the
   // trailing-slash normalizer, which browsers interpret as http://example.com.
+  // Backslashes are equivalent to forward slashes in the URL spec
+  // (e.g. /\\evil.com is treated as //evil.com by browsers and the URL constructor).
   // Next.js returns 404 for these paths. Check the raw pathname before any
   // basePath stripping so the guard cannot be bypassed with a basePath prefix.
+  pathname = pathname.replaceAll("\\\\", "/");
   if (pathname.startsWith("//")) {
     return new Response("404 Not Found", { status: 404 });
   }
@@ -1397,14 +1410,22 @@ async function _handleRequest(request) {
 
   // ── Image optimization passthrough (dev mode — no transformation) ───────
   if (cleanPathname === "/_vinext/image") {
-    const __imgUrl = url.searchParams.get("url");
+    const __rawImgUrl = url.searchParams.get("url");
+    // Normalize backslashes: browsers and the URL constructor treat
+    // /\\evil.com as protocol-relative (//evil.com), bypassing the // check.
+    const __imgUrl = __rawImgUrl?.replaceAll("\\\\", "/") ?? null;
     // Allowlist: must start with "/" but not "//" — blocks absolute URLs,
-    // protocol-relative, and exotic schemes (data:, javascript:, etc.).
+    // protocol-relative, backslash variants, and exotic schemes.
     if (!__imgUrl || !__imgUrl.startsWith("/") || __imgUrl.startsWith("//")) {
-      return new Response(!__imgUrl ? "Missing url parameter" : "Only relative URLs allowed", { status: 400 });
+      return new Response(!__rawImgUrl ? "Missing url parameter" : "Only relative URLs allowed", { status: 400 });
+    }
+    // Validate the constructed URL's origin hasn't changed (defense in depth).
+    const __resolvedImg = new URL(__imgUrl, request.url);
+    if (__resolvedImg.origin !== url.origin) {
+      return new Response("Only relative URLs allowed", { status: 400 });
     }
     // In dev, redirect to the original asset URL so Vite's static serving handles it.
-    return Response.redirect(new URL(__imgUrl, request.url).href, 302);
+    return Response.redirect(__resolvedImg.href, 302);
   }
 
   // Handle metadata routes (sitemap.xml, robots.txt, manifest.webmanifest, etc.)

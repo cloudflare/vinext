@@ -19,6 +19,12 @@ export default {
       const pathname = url.pathname;
       const urlWithQuery = pathname + url.search;
 
+      // Block protocol-relative URL open redirects (//evil.com/ or /\evil.com/).
+      // Normalize backslashes: browsers treat /\ as // in URL context.
+      if (pathname.replaceAll("\\", "/").startsWith("//")) {
+        return new Response("404 Not Found", { status: 404 });
+      }
+
       // API routes
       if (pathname.startsWith("/api/") || pathname === "/api") {
         return await handleApiRoute(request, urlWithQuery);
