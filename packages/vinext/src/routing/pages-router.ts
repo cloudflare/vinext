@@ -51,7 +51,13 @@ export async function pagesRouter(pagesDir: string): Promise<Route[]> {
 async function scanPageRoutes(pagesDir: string): Promise<Route[]> {
   const routes: Route[] = [];
 
-  for await (const file of glob("**/*.{tsx,ts,jsx,js}", { cwd: pagesDir, exclude: ["api", "**/_*"] })) {
+  // Node.js fs/promises.glob requires `exclude` to be a function, not an array.
+  // Exclude the api/ directory (handled separately) and _-prefixed private files.
+  const excludePagesGlob = (f: string) => {
+    const base = path.basename(f);
+    return base === "api" || base.startsWith("_");
+  };
+  for await (const file of glob("**/*.{tsx,ts,jsx,js}", { cwd: pagesDir, exclude: excludePagesGlob })) {
     const route = fileToRoute(file, pagesDir);
     if (route) routes.push(route);
   }
