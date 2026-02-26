@@ -1697,7 +1697,6 @@ describe("detectPackageManager", () => {
   });
 
   it("walks up to parent directory to find lock file (monorepo root)", () => {
-    // Simulates: monorepo-root/bun.lock + monorepo-root/apps/web/package.json
     writeFile(tmpDir, "bun.lock", "");
     const appDir = path.join(tmpDir, "apps", "web");
     fs.mkdirSync(appDir, { recursive: true });
@@ -1708,7 +1707,6 @@ describe("detectPackageManager", () => {
   });
 
   it("prefers the closest lock file when both child and parent have one", () => {
-    // Inner lock file (pnpm) should win over outer (bun)
     writeFile(tmpDir, "bun.lock", "");
     const appDir = path.join(tmpDir, "apps", "web");
     fs.mkdirSync(appDir, { recursive: true });
@@ -1739,8 +1737,6 @@ describe("findInNodeModules", () => {
   });
 
   it("walks up to find package in monorepo root node_modules", () => {
-    // Simulates: monorepo-root/node_modules/.bin/wrangler
-    //            monorepo-root/apps/web-next/  (no local node_modules/.bin/wrangler)
     writeFile(tmpDir, "node_modules/.bin/wrangler", "#!/usr/bin/env node");
     const appDir = path.join(tmpDir, "apps", "web-next");
     fs.mkdirSync(appDir, { recursive: true });
@@ -1750,7 +1746,6 @@ describe("findInNodeModules", () => {
   });
 
   it("prefers the closest node_modules when both app and root have the package", () => {
-    // App-level wins over root-level
     mkdir(tmpDir, "node_modules/@cloudflare/vite-plugin");
     const appDir = path.join(tmpDir, "apps", "web-next");
     mkdir(appDir, "node_modules/@cloudflare/vite-plugin");

@@ -73,14 +73,32 @@ export function renameCJSConfigs(root: string): Array<[string, string]> {
   return renamed;
 }
 
+// ─── Ancestor Directory Walking ──────────────────────────────────────────────
+
+/**
+ * Walk from `start` up to the filesystem root, calling `check` on each
+ * directory. Returns the first non-null value returned by `check`, or null.
+ *
+ * This is the shared primitive used by both lock-file detection and
+ * node_modules resolution to support monorepo layouts where the relevant
+ * files live at the workspace root rather than inside each app package.
+ */
+function walkUpUntil<T>(start: string, check: (dir: string) => T | null): T | null {
+  let dir = path.resolve(start);
+  const { root: fsRoot } = path.parse(dir);
+
+  while (true) {
+    const result = check(dir);
+    if (result !== null) return result;
+    if (dir === fsRoot) return null;
+    dir = path.dirname(dir);
+  }
+}
+
 // ─── Package Manager Detection ───────────────────────────────────────────────
 
 type LockFileMatch = { pm: string; installCmd: string };
 
-/**
- * Check a single directory for a lock file.
- * Returns the matched package manager info, or null if none found.
- */
 function checkLockFiles(dir: string): LockFileMatch | null {
   if (fs.existsSync(path.join(dir, "pnpm-lock.yaml"))) return { pm: "pnpm", installCmd: "pnpm add -D" };
   if (fs.existsSync(path.join(dir, "yarn.lock")))       return { pm: "yarn", installCmd: "yarn add -D" };
@@ -91,33 +109,16 @@ function checkLockFiles(dir: string): LockFileMatch | null {
 }
 
 /**
- * Walk from `start` up to the filesystem root looking for a lock file.
- * Stops at the first directory that contains one. Returns null if none found.
- *
- * This handles monorepos where the lock file lives at the workspace root
- * rather than in the individual app directory.
- */
-function findLockFile(start: string): LockFileMatch | null {
-  let dir = path.resolve(start);
-  const { root: fsRoot } = path.parse(dir);
-
-  while (true) {
-    const match = checkLockFiles(dir);
-    if (match) return match;
-    if (dir === fsRoot) return null;
-    dir = path.dirname(dir);
-  }
-}
-
-/**
  * Detect which package manager is used by looking at lock files.
  * Returns the install command string (e.g. "pnpm add -D").
  *
  * Walks up parent directories so that monorepos with a workspace-root
  * lock file are detected correctly even when called from a sub-package.
+ * Also recognises bun.lock (text format, Bun v1.0+) in addition to the
+ * legacy binary bun.lockb.
  */
 export function detectPackageManager(root: string): string {
-  return findLockFile(root)?.installCmd ?? "npm install -D";
+  return walkUpUntil(root, checkLockFiles)?.installCmd ?? "npm install -D";
 }
 
 /**
@@ -128,7 +129,7 @@ export function detectPackageManager(root: string): string {
  * lock file are detected correctly even when called from a sub-package.
  */
 export function detectPackageManagerName(root: string): string {
-  return findLockFile(root)?.pm ?? "npm";
+  return walkUpUntil(root, checkLockFiles)?.pm ?? "npm";
 }
 
 // ─── Node Modules Resolution ─────────────────────────────────────────────────
@@ -137,7 +138,7 @@ export function detectPackageManagerName(root: string): string {
  * Walk from `start` up to the filesystem root looking for a path inside
  * node_modules. Returns the first absolute path found, or null.
  *
- * This handles monorepos where packages are hoisted to the workspace root's
+ * Handles monorepos where packages are hoisted to the workspace root's
  * node_modules rather than installed in each app's own node_modules.
  *
  * @param start   - Directory to begin the search (usually the project root)
@@ -145,15 +146,10 @@ export function detectPackageManagerName(root: string): string {
  *                  or "@cloudflare/vite-plugin"
  */
 export function findInNodeModules(start: string, subPath: string): string | null {
-  let dir = path.resolve(start);
-  const { root: fsRoot } = path.parse(dir);
-
-  while (true) {
+  return walkUpUntil(start, (dir) => {
     const candidate = path.join(dir, "node_modules", subPath);
-    if (fs.existsSync(candidate)) return candidate;
-    if (dir === fsRoot) return null;
-    dir = path.dirname(dir);
-  }
+    return fs.existsSync(candidate) ? candidate : null;
+  });
 }
 
 // ─── Vite Config Detection ───────────────────────────────────────────────────
