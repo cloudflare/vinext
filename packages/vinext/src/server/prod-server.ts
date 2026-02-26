@@ -479,7 +479,15 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     const url = req.url ?? "/";
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
     const rawPathname = url.split("?")[0].replaceAll("\\", "/");
-    const pathname = normalizePath(decodeURIComponent(rawPathname));
+    let pathname: string;
+    try {
+      pathname = normalizePath(decodeURIComponent(rawPathname));
+    } catch {
+      // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of crashing.
+      res.writeHead(400);
+      res.end("Bad Request");
+      return;
+    }
 
     // Guard against protocol-relative URL open redirect attacks.
     // Check rawPathname before normalizePath collapses //.
@@ -620,7 +628,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     let url = rawUrl;
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
     const rawPagesPathname = url.split("?")[0].replaceAll("\\", "/");
-    let pathname = normalizePath(decodeURIComponent(rawPagesPathname));
+    let pathname: string;
+    try {
+      pathname = normalizePath(decodeURIComponent(rawPagesPathname));
+    } catch {
+      // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of crashing.
+      res.writeHead(400);
+      res.end("Bad Request");
+      return;
+    }
 
     // Guard against protocol-relative URL open redirect attacks.
     // Check rawPagesPathname before normalizePath collapses //.

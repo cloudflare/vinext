@@ -29,7 +29,13 @@ export default {
     }
 
     // Decode percent-encoding and normalize the path for middleware/route matching.
-    const normalizedPathname = normalizePath(decodeURIComponent(rawPathname));
+    let normalizedPathname: string;
+    try {
+      normalizedPathname = normalizePath(decodeURIComponent(rawPathname));
+    } catch {
+      // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
+      return new Response("Bad Request", { status: 400 });
+    }
 
     // Construct a new Request with normalized pathname so the RSC entry
     // sees the canonical path for middleware and route matching.

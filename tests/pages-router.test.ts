@@ -1026,6 +1026,20 @@ describe("Production server middleware (Pages Router)", () => {
     const html = await res.text();
     expect(html).toContain("Hello, vinext!");
   });
+
+  it("returns 400 for malformed percent-encoded path (not crash)", async () => {
+    const res = await fetch(`${prodUrl}/%E0%A4%A`);
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).toContain("Bad Request");
+  });
+
+  it("returns 400 for bare percent sign in path (not crash)", async () => {
+    const res = await fetch(`${prodUrl}/%`);
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).toContain("Bad Request");
+  });
 });
 
 describe("Production server next.config.js features (Pages Router)", () => {

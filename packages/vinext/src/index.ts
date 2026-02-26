@@ -671,7 +671,11 @@ export async function runMiddleware(request) {
 
   // Normalize pathname before matching to prevent path-confusion bypasses
   // (percent-encoding like /%61dmin, double slashes like /dashboard//settings).
-  var normalizedPathname = __normalizePath(decodeURIComponent(url.pathname));
+  var decodedPathname;
+  try { decodedPathname = decodeURIComponent(url.pathname); } catch (e) {
+    return { continue: false, response: new Response("Bad Request", { status: 400 }) };
+  }
+  var normalizedPathname = __normalizePath(decodedPathname);
 
   if (!matchesMiddleware(normalizedPathname, matcher)) return { continue: true };
 
@@ -991,7 +995,8 @@ function parseCookieLocaleFromHeader(cookieHeader) {
   if (!i18nConfig || !cookieHeader) return null;
   const match = cookieHeader.match(/(?:^|;\\s*)NEXT_LOCALE=([^;]*)/);
   if (!match) return null;
-  const value = decodeURIComponent(match[1].trim());
+  var value;
+  try { value = decodeURIComponent(match[1].trim()); } catch (e) { return null; }
   if (i18nConfig.locales.indexOf(value) !== -1) return value;
   return null;
 }
@@ -2343,7 +2348,14 @@ hydrate();
               // Normalize the pathname to prevent path-confusion attacks.
               // decodeURIComponent prevents /%61dmin bypassing /admin matchers.
               // normalizePath collapses // and resolves . / .. segments.
-              pathname = normalizePath(decodeURIComponent(pathname));
+              try {
+                pathname = normalizePath(decodeURIComponent(pathname));
+              } catch {
+                // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of crashing.
+                res.writeHead(400);
+                res.end("Bad Request");
+                return;
+              }
 
               // Strip basePath prefix from URL for route matching.
               // All internal routing uses basePath-free paths.

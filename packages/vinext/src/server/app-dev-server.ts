@@ -1224,7 +1224,11 @@ async function _handleRequest(request) {
   // Decode percent-encoding and normalize pathname to canonical form.
   // decodeURIComponent prevents /%61dmin from bypassing /admin matchers.
   // __normalizePath collapses //foo///bar → /foo/bar, resolves . and .. segments.
-  let pathname = __normalizePath(decodeURIComponent(url.pathname));
+  let decodedUrlPathname;
+  try { decodedUrlPathname = decodeURIComponent(url.pathname); } catch (e) {
+    return new Response("Bad Request", { status: 400 });
+  }
+  let pathname = __normalizePath(decodedUrlPathname);
 
   ${bp ? `
   // Strip basePath prefix

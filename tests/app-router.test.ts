@@ -1391,6 +1391,53 @@ describe("App Router Production server (startProdServer)", () => {
     const html = await res.text();
     expect(html.length).toBeGreaterThan(0);
   });
+
+  it("returns 400 for malformed percent-encoded path (not crash)", async () => {
+    const res = await fetch(`${baseUrl}/%E0%A4%A`);
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).toContain("Bad Request");
+  });
+
+  it("returns 400 for bare percent sign in path (not crash)", async () => {
+    const res = await fetch(`${baseUrl}/%`);
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).toContain("Bad Request");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Malformed percent-encoded URL regression tests — App Router dev server
+// (covers app-dev-server.ts generated RSC handler decodeURIComponent)
+// ---------------------------------------------------------------------------
+
+describe("App Router dev server malformed URL handling", () => {
+  let devServer: ViteDevServer;
+  let devBaseUrl: string;
+
+  beforeAll(async () => {
+    ({ server: devServer, baseUrl: devBaseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
+  }, 30000);
+
+  afterAll(async () => {
+    await devServer?.close();
+  });
+
+  it("returns 400 for malformed percent-encoded path", async () => {
+    const res = await fetch(`${devBaseUrl}/%E0%A4%A`);
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for truncated percent sequence", async () => {
+    const res = await fetch(`${devBaseUrl}/%E0%A4`);
+    expect(res.status).toBe(400);
+  });
+
+  it("still serves valid pages", async () => {
+    const res = await fetch(`${devBaseUrl}/about`);
+    expect(res.status).toBe(200);
+  });
 });
 
 describe("App Router Static export", () => {

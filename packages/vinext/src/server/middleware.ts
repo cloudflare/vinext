@@ -205,7 +205,14 @@ export async function runMiddleware(
 
   // Normalize the pathname before middleware matching to prevent bypasses
   // via percent-encoding (/%61dmin → /admin) or double slashes (/dashboard//settings).
-  const normalizedPathname = normalizePath(decodeURIComponent(url.pathname));
+  let decodedPathname: string;
+  try {
+    decodedPathname = decodeURIComponent(url.pathname);
+  } catch {
+    // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
+    return { continue: false, response: new Response("Bad Request", { status: 400 }) };
+  }
+  const normalizedPathname = normalizePath(decodedPathname);
 
   if (!matchesMiddleware(normalizedPathname, matcher)) {
     return { continue: true };
