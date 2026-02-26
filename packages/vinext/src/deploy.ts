@@ -406,7 +406,7 @@ interface Env {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
     const url = new URL(request.url);
 
     // Image optimization via Cloudflare Images binding.
@@ -424,7 +424,7 @@ export default {
     }
 
     // Delegate everything else to vinext
-    return handler.fetch(request);
+    return handler.fetch(request, env, ctx);
   },
 };
 `;
@@ -468,7 +468,7 @@ const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: 
 const configHeaders = vinextConfig?.headers ?? [];
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
     try {
       const url = new URL(request.url);
       let pathname = url.pathname;
@@ -537,6 +537,13 @@ export default {
       let middlewareRewriteStatus: number | undefined;
       if (typeof runMiddleware === "function") {
         const result = await runMiddleware(request);
+
+        // Bubble up waitUntil promises (e.g. Clerk telemetry/session sync)
+        if (result.waitUntilPromises?.length) {
+          for (const p of result.waitUntilPromises) {
+            ctx.waitUntil(p);
+          }
+        }
 
         if (!result.continue) {
           if (result.redirectUrl) {
@@ -669,6 +676,14 @@ export default {
 
       if (!response) {
         return new Response("404 - Not found", { status: 404 });
+      }
+
+
+      // Bubble up any background tasks attached by the app-dev-server layer
+      if ("__vinextWaitUntil" in response) {
+        for (const p of (response as any).__vinextWaitUntil) {
+          ctx.waitUntil(p);
+        }
       }
 
       return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);

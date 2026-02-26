@@ -11,7 +11,7 @@ import { NextRequest, NextResponse } from "next/server";
  * - Block with 403
  * - Search params forwarding
  */
-export function middleware(request: NextRequest) {
+export function middleware(request: NextRequest, event: any) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
@@ -60,6 +60,15 @@ export function middleware(request: NextRequest) {
     throw new Error("middleware crash");
   }
 
+  // Test event and event.waitUntil (needed for Clerk etc)
+  if (pathname === "/middleware-event") {
+    if (!event || typeof event.waitUntil !== "function") {
+      return new Response("Missing event.waitUntil", { status: 500 });
+    }
+    event.waitUntil(Promise.resolve());
+    return new Response("Event OK", { status: 200 });
+  }
+
   // Forward search params as a header for RSC testing
   // Ref: opennextjs-cloudflare middleware.ts — search-params header
   const requestHeaders = new Headers(request.headers);
@@ -86,6 +95,7 @@ export const config = {
     "/middleware-rewrite-status",
     "/middleware-blocked",
     "/middleware-throw",
+    "/middleware-event",
     "/search-query",
     "/",
   ],

@@ -375,6 +375,10 @@ export class NextFetchEvent {
   waitUntil(promise: Promise<unknown>): void {
     this._waitUntilPromises.push(promise);
   }
+
+  get waitUntilPromises(): Promise<unknown>[] {
+    return this._waitUntilPromises;
+  }
 }
 
 // ---------------------------------------------------------------------------

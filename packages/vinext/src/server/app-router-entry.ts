@@ -15,8 +15,13 @@
 // @ts-expect-error — virtual module resolved by vinext
 import rscHandler from "virtual:vinext-rsc-entry";
 
+interface ExecutionContext {
+  waitUntil(promise: Promise<any>): void;
+  passThroughOnException(): void;
+}
+
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, env: any, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     // Normalize backslashes (browsers treat /\ as //) before any other checks.
@@ -46,6 +51,13 @@ export default {
 
     // Delegate to RSC handler (which decodes + normalizes the pathname itself)
     const result = await rscHandler(request);
+
+    // If the middleware registered any waitUntil promises, hand them off to the runtime
+    if (result && typeof result === "object" && "__vinextWaitUntil" in result && Array.isArray(result.__vinextWaitUntil)) {
+      for (const p of result.__vinextWaitUntil) {
+        ctx.waitUntil(p);
+      }
+    }
 
     if (result instanceof Response) {
       return result;

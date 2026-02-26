@@ -214,7 +214,7 @@ import {
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext, applyMiddlewareRequestHeaders } from "next/headers";
-import { NextRequest } from "next/server";
+import { NextRequest, NextFetchEvent } from "next/server";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -1180,6 +1180,8 @@ function __applyConfigHeaders(pathname, ctx) {
 }
 
 export default async function handler(request) {
+  let _waitUntilPromises = [];
+
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -1192,7 +1194,7 @@ export default async function handler(request) {
         _runWithPrivateCache(() =>
           runWithFetchCache(async () => {
             const __reqCtx = __buildRequestContext(request);
-            const response = await _handleRequest(request, __reqCtx);
+            const response = await _handleRequest(request, __reqCtx, _waitUntilPromises);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -1206,6 +1208,12 @@ export default async function handler(request) {
                 response.headers.set(h.key, h.value);
               }
             }
+
+            // Expose waitUntil promises to the runtime (like Cloudflare Workers)
+            if (response && _waitUntilPromises && _waitUntilPromises.length > 0) {
+              Object.defineProperty(response, "__vinextWaitUntil", { value: _waitUntilPromises, enumerable: false });
+            }
+
             return response;
           })
         )
@@ -1214,7 +1222,7 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request, __reqCtx) {
+async function _handleRequest(request, __reqCtx, _outerWaitUntilPromises) {
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -1319,7 +1327,15 @@ async function _handleRequest(request, __reqCtx) {
       mwUrl.pathname = cleanPathname;
       const mwRequest = new Request(mwUrl, request);
       const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
-      const mwResponse = await middlewareFn(nextRequest);
+      const mwEvent = new NextFetchEvent({ page: cleanPathname });
+      const mwResponse = await middlewareFn(nextRequest, mwEvent);
+      
+      // If the middleware registered any waitUntil promises, we need to bubble them up
+      // to the runtime (like Cloudflare Workers) so they aren't cancelled.
+      if (mwEvent.waitUntilPromises && mwEvent.waitUntilPromises.length > 0) {
+        _outerWaitUntilPromises.push(...mwEvent.waitUntilPromises);
+      }
+
       if (mwResponse) {
         // Check for x-middleware-next (continue)
         if (mwResponse.headers.get("x-middleware-next") === "1") {

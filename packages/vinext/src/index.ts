@@ -661,7 +661,7 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
     // Generate middleware code if middleware.ts exists
     const middlewareImportCode = middlewarePath
       ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};
-import { NextRequest } from "next/server";`
+import { NextRequest, NextFetchEvent } from "next/server";`
       : "";
 
     // The matcher config is read from the middleware module at import time.
@@ -707,14 +707,15 @@ export async function runMiddleware(request) {
     mwRequest = new Request(mwUrl, request);
   }
   var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
+  var event = new NextFetchEvent({ page: normalizedPathname });
   var response;
-  try { response = await middlewareFn(nextRequest); }
+  try { response = await middlewareFn(nextRequest, event); }
   catch (e) {
     console.error("[vinext] Middleware error:", e);
     return { continue: false, response: new Response("Internal Server Error", { status: 500 }) };
   }
 
-  if (!response) return { continue: true };
+  if (!response) return { continue: true, waitUntilPromises: event.waitUntilPromises };
 
   if (response.headers.get("x-middleware-next") === "1") {
     var rHeaders = new Headers();
@@ -727,12 +728,12 @@ export async function runMiddleware(request) {
         key.startsWith("x-middleware-request-")
       ) rHeaders.append(key, value);
     }
-    return { continue: true, responseHeaders: rHeaders };
+    return { continue: true, responseHeaders: rHeaders, waitUntilPromises: event.waitUntilPromises };
   }
 
   if (response.status >= 300 && response.status < 400) {
     var location = response.headers.get("Location") || response.headers.get("location");
-    if (location) return { continue: false, redirectUrl: location, redirectStatus: response.status };
+    if (location) return { continue: false, redirectUrl: location, redirectStatus: response.status, waitUntilPromises: event.waitUntilPromises };
   }
 
   var rewriteUrl = response.headers.get("x-middleware-rewrite");
@@ -744,10 +745,10 @@ export async function runMiddleware(request) {
     var rewritePath;
     try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
     catch { rewritePath = rewriteUrl; }
-    return { continue: true, rewriteUrl: rewritePath, rewriteStatus: response.status !== 200 ? response.status : undefined, responseHeaders: rwHeaders };
+    return { continue: true, rewriteUrl: rewritePath, rewriteStatus: response.status !== 200 ? response.status : undefined, responseHeaders: rwHeaders, waitUntilPromises: event.waitUntilPromises };
   }
 
-  return { continue: false, response: response };
+  return { continue: false, response: response, waitUntilPromises: event.waitUntilPromises };
 }
 `
       : `

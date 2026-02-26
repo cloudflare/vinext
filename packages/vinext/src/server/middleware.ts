@@ -21,7 +21,7 @@
 import type { ViteDevServer } from "vite";
 import fs from "node:fs";
 import path from "node:path";
-import { NextRequest } from "../shims/server.js";
+import { NextRequest, NextFetchEvent } from "../shims/server.js";
 import { safeRegExp } from "../config/config-matchers.js";
 import { normalizePath } from "./normalize-path.js";
 
@@ -219,6 +219,8 @@ export interface MiddlewareResult {
   responseHeaders?: Headers;
   /** If the middleware returned a full Response, use it directly. */
   response?: Response;
+  /** Promises registered via event.waitUntil() during middleware execution */
+  waitUntilPromises?: Promise<unknown>[];
 }
 
 /**
@@ -273,11 +275,12 @@ export async function runMiddleware(
 
   // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
   const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
+  const event = new NextFetchEvent({ page: normalizedPathname });
 
   // Execute the middleware
   let response: Response | undefined;
   try {
-    response = await middlewareFn(nextRequest);
+    response = await middlewareFn(nextRequest, event);
   } catch (e: any) {
     console.error("[vinext] Middleware error:", e);
     const message =
@@ -294,7 +297,7 @@ export async function runMiddleware(
 
   // No response = continue
   if (!response) {
-    return { continue: true };
+    return { continue: true, waitUntilPromises: event.waitUntilPromises };
   }
 
   // Check for x-middleware-next header (NextResponse.next())
@@ -309,7 +312,7 @@ export async function runMiddleware(
         responseHeaders.append(key, value);
       }
     }
-    return { continue: true, responseHeaders };
+    return { continue: true, responseHeaders, waitUntilPromises: event.waitUntilPromises };
   }
 
   // Check for redirect (3xx status)
@@ -320,6 +323,7 @@ export async function runMiddleware(
         continue: false,
         redirectUrl: location,
         redirectStatus: response.status,
+        waitUntilPromises: event.waitUntilPromises,
       };
     }
   }
@@ -347,9 +351,10 @@ export async function runMiddleware(
       rewriteUrl: rewritePath,
       rewriteStatus: response.status !== 200 ? response.status : undefined,
       responseHeaders,
+      waitUntilPromises: event.waitUntilPromises,
     };
   }
 
   // Middleware returned a full Response (e.g., blocking, custom body)
-  return { continue: false, response };
+  return { continue: false, response, waitUntilPromises: event.waitUntilPromises };
 }
