@@ -364,8 +364,7 @@ async function sendWebResponse(
     nodeHeaders["Content-Encoding"] = encoding!;
     // Merge Accept-Encoding into existing Vary header (e.g. "RSC, Accept") instead
     // of overwriting. This prevents stripping the Vary values that the App Router
-    // sets for content negotiation (RSC stream vs HTML), which would cause CDN
-    // cache poisoning (GHSA-jgqv-mvrh-hv36).
+    // sets for content negotiation (RSC stream vs HTML).
     const existingVary = nodeHeaders["Vary"] ?? nodeHeaders["vary"];
     if (existingVary) {
       const existing = String(existingVary).toLowerCase();
