@@ -1765,6 +1765,19 @@ hydrate();
         defines["process.env.__VINEXT_IMAGE_DOMAINS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.domains ?? []),
         );
+        // Expose allowed image widths (union of deviceSizes + imageSizes) for
+        // server-side validation. Matches Next.js behavior: only configured
+        // sizes are accepted by the image optimization endpoint.
+        {
+          const deviceSizes = nextConfig.images?.deviceSizes ?? [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+          const imageSizes = nextConfig.images?.imageSizes ?? [16, 32, 48, 64, 96, 128, 256, 384];
+          defines["process.env.__VINEXT_IMAGE_DEVICE_SIZES"] = JSON.stringify(
+            JSON.stringify(deviceSizes),
+          );
+          defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(
+            JSON.stringify(imageSizes),
+          );
+        }
         // Draft mode secret — generated once at build time so the
         // __prerender_bypass cookie is consistent across all server
         // instances (e.g. multiple Cloudflare Workers isolates).

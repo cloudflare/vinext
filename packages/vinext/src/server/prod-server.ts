@@ -25,7 +25,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
-import { IMAGE_OPTIMIZATION_PATH, parseImageParams } from "./image-optimization.js";
+import { IMAGE_OPTIMIZATION_PATH, IMAGE_CONTENT_SECURITY_POLICY, parseImageParams, isSafeImageContentType, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "./image-optimization.js";
 import { computeLazyChunks } from "../index.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
@@ -183,6 +183,7 @@ function tryServeStatic(
   clientDir: string,
   pathname: string,
   compress: boolean,
+  extraHeaders?: Record<string, string>,
 ): boolean {
   // Resolve the path and guard against directory traversal (e.g. /../../../etc/passwd)
   const resolvedClient = path.resolve(clientDir);
@@ -211,6 +212,12 @@ function tryServeStatic(
     ? "public, max-age=31536000, immutable"
     : "public, max-age=3600";
 
+  const baseHeaders = {
+    "Content-Type": ct,
+    "Cache-Control": cacheControl,
+    ...extraHeaders,
+  };
+
   const baseType = ct.split(";")[0].trim();
   if (compress && COMPRESSIBLE_TYPES.has(baseType)) {
     const encoding = negotiateEncoding(req);
@@ -218,9 +225,8 @@ function tryServeStatic(
       const fileStream = fs.createReadStream(staticFile);
       const compressor = createCompressor(encoding);
       res.writeHead(200, {
-        "Content-Type": ct,
+        ...baseHeaders,
         "Content-Encoding": encoding,
-        "Cache-Control": cacheControl,
         Vary: "Accept-Encoding",
       });
       pipeline(fileStream, compressor, res, () => { /* ignore */ });
@@ -228,10 +234,7 @@ function tryServeStatic(
     }
   }
 
-  res.writeHead(200, {
-    "Content-Type": ct,
-    "Cache-Control": cacheControl,
-  });
+  res.writeHead(200, baseHeaders);
   fs.createReadStream(staticFile).pipe(res);
   return true;
 }
@@ -491,17 +494,32 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
 
     // Image optimization passthrough (Node.js prod server has no Images binding;
-    // serves the original file with cache headers)
+    // serves the original file with cache headers and security headers)
     if (pathname === IMAGE_OPTIMIZATION_PATH) {
       const parsedUrl = new URL(url, "http://localhost");
-      const params = parseImageParams(parsedUrl);
+      const defaultAllowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
+      const params = parseImageParams(parsedUrl, defaultAllowedWidths);
       if (!params) {
         res.writeHead(400);
         res.end("Bad Request");
         return;
       }
-      // Serve the original image from the client build directory
-      if (tryServeStatic(req, res, clientDir, params.imageUrl, false)) {
+      // Block SVG and other unsafe content types by checking the file extension.
+      // This must happen before serving to prevent XSS via SVG passthrough.
+      const ext = path.extname(params.imageUrl).toLowerCase();
+      const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
+      if (!isSafeImageContentType(ct)) {
+        res.writeHead(400);
+        res.end("The requested resource is not an allowed image type");
+        return;
+      }
+      // Serve the original image with CSP and security headers
+      const imageSecurityHeaders: Record<string, string> = {
+        "Content-Security-Policy": IMAGE_CONTENT_SECURITY_POLICY,
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": "inline",
+      };
+      if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
       }
       res.writeHead(404);
@@ -590,6 +608,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const configRedirects = vinextConfig?.redirects ?? [];
   const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
   const configHeaders = vinextConfig?.headers ?? [];
+  // Compute allowed image widths from config (union of deviceSizes + imageSizes)
+  const allowedImageWidths: number[] = [
+    ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+    ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
+  ];
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
@@ -624,13 +647,26 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     // ── Image optimization passthrough ──────────────────────────────
     if (pathname === IMAGE_OPTIMIZATION_PATH || staticLookupPath === IMAGE_OPTIMIZATION_PATH) {
       const parsedUrl = new URL(rawUrl, "http://localhost");
-      const params = parseImageParams(parsedUrl);
+      const params = parseImageParams(parsedUrl, allowedImageWidths);
       if (!params) {
         res.writeHead(400);
         res.end("Bad Request");
         return;
       }
-      if (tryServeStatic(req, res, clientDir, params.imageUrl, false)) {
+      // Block SVG and other unsafe content types
+      const ext = path.extname(params.imageUrl).toLowerCase();
+      const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
+      if (!isSafeImageContentType(ct)) {
+        res.writeHead(400);
+        res.end("The requested resource is not an allowed image type");
+        return;
+      }
+      const imageSecurityHeaders: Record<string, string> = {
+        "Content-Security-Policy": IMAGE_CONTENT_SECURITY_POLICY,
+        "X-Content-Type-Options": "nosniff",
+        "Content-Disposition": "inline",
+      };
+      if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
       }
       res.writeHead(404);

@@ -96,6 +96,10 @@ export interface NextConfig {
     }>;
     domains?: string[];
     unoptimized?: boolean;
+    /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
+    deviceSizes?: number[];
+    /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [16, 32, 48, 64, 96, 128, 256, 384] */
+    imageSizes?: number[];
   };
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
   output?: "export" | "standalone";
