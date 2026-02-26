@@ -45,6 +45,26 @@ const nextConfig = {
           },
         ],
       },
+      {
+        source: "/about",
+        has: [{ type: "cookie", key: "logged-in" }],
+        headers: [
+          {
+            key: "X-Auth-Only-Header",
+            value: "1",
+          },
+        ],
+      },
+      {
+        source: "/about",
+        missing: [{ type: "cookie", key: "logged-in" }],
+        headers: [
+          {
+            key: "X-Guest-Only-Header",
+            value: "1",
+          },
+        ],
+      },
     ];
   },
 };

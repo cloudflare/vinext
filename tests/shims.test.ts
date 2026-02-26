@@ -2991,6 +2991,36 @@ describe("matchHeaders", () => {
     const matched = matchHeaders("/about", rules, makeCtx());
     expect(matched).toEqual([{ key: "x-guest-header", value: "yes" }]);
   });
+
+  it("skips headers when missing condition does not match", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules = [
+      {
+        source: "/about",
+        missing: [{ type: "cookie" as const, key: "logged-in" }],
+        headers: [{ key: "x-guest-header", value: "yes" }],
+      },
+    ];
+    const matched = matchHeaders("/about", rules, makeCtx({ cookies: { "logged-in": "1" } }));
+    expect(matched).toEqual([]);
+  });
+
+  it("keeps backward-compatible behavior when context is omitted", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules = [
+      {
+        source: "/about",
+        has: [{ type: "cookie" as const, key: "logged-in" }],
+        headers: [{ key: "x-auth-header", value: "yes" }],
+      },
+    ];
+    const matched = matchHeaders("/about", rules);
+    expect(matched).toEqual([{ key: "x-auth-header", value: "yes" }]);
+  });
 });
 
 // ---------------------------------------------------------------------------

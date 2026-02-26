@@ -13,6 +13,7 @@ import {
   loadNextConfig,
   resolveNextConfig,
   type ResolvedNextConfig,
+  type NextHeader,
   type NextRedirect,
   type NextRewrite,
 } from "./config/next-config.js";
@@ -22,7 +23,8 @@ import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormaliz
 import { normalizePath } from "./server/normalize-path.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
-import { safeRegExp, escapeHeaderSource, isExternalUrl, proxyExternalRequest } from "./config/config-matchers.js";
+import { safeRegExp, matchHeaders, requestContextFromRequest, isExternalUrl, proxyExternalRequest } from "./config/config-matchers.js";
+import type { RequestContext } from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -2397,21 +2399,7 @@ hydrate();
 
               // Run middleware.ts if present
               if (middlewarePath) {
-                // Only trust X-Forwarded-Proto when behind a trusted proxy
-                const devTrustProxy = process.env.VINEXT_TRUST_PROXY === "1" || (process.env.VINEXT_TRUSTED_HOSTS ?? "").split(",").some(h => h.trim());
-                const rawProto = devTrustProxy
-                  ? String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim()
-                  : "";
-                const mwProto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
-                const origin = `${mwProto}://${req.headers.host || "localhost"}`;
-                const middlewareRequest = new Request(new URL(url, origin), {
-                  method: req.method,
-                  headers: Object.fromEntries(
-                    Object.entries(req.headers)
-                      .filter(([, v]) => v !== undefined)
-                      .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])
-                  ),
-                });
+                const middlewareRequest = buildWebRequestFromNodeRequest(req, url);
                 const result = await runMiddleware(server, middlewarePath, middlewareRequest);
 
                 if (!result.continue) {
@@ -2451,7 +2439,8 @@ hydrate();
 
               // Apply custom headers from next.config.js
               if (nextConfig?.headers.length) {
-                applyHeaders(pathname, res, nextConfig.headers);
+                const reqCtx = buildRequestContextFromNodeRequest(req, req.url ?? url);
+                applyHeaders(pathname, res, nextConfig.headers, reqCtx);
               }
 
               // Apply redirects from next.config.js
@@ -3489,19 +3478,46 @@ function applyRewrites(
 /**
  * Apply custom header rules from next.config.js.
  */
+function buildWebRequestFromNodeRequest(
+  req: { method?: string; headers: Record<string, string | string[] | undefined> },
+  url: string,
+): Request {
+  // Only trust X-Forwarded-Proto when behind a trusted proxy.
+  const devTrustProxy =
+    process.env.VINEXT_TRUST_PROXY === "1" ||
+    (process.env.VINEXT_TRUSTED_HOSTS ?? "").split(",").some(h => h.trim());
+  const rawProto = devTrustProxy
+    ? String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim()
+    : "";
+  const proto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
+  const origin = `${proto}://${req.headers.host || "localhost"}`;
+
+  return new Request(new URL(url, origin), {
+    method: req.method,
+    headers: Object.fromEntries(
+      Object.entries(req.headers)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
+    ),
+  });
+}
+
+function buildRequestContextFromNodeRequest(
+  req: { method?: string; headers: Record<string, string | string[] | undefined> },
+  url: string,
+): RequestContext {
+  return requestContextFromRequest(buildWebRequestFromNodeRequest(req, url));
+}
+
 function applyHeaders(
   pathname: string,
   res: any,
-  headers: Array<{ source: string; headers: Array<{ key: string; value: string }> }>,
+  headers: NextHeader[],
+  ctx?: RequestContext,
 ): void {
-  for (const rule of headers) {
-    const escaped = escapeHeaderSource(rule.source);
-    const sourceRegex = safeRegExp("^" + escaped + "$");
-    if (sourceRegex && sourceRegex.test(pathname)) {
-      for (const header of rule.headers) {
-        res.setHeader(header.key, header.value);
-      }
-    }
+  const matched = matchHeaders(pathname, headers, ctx);
+  for (const header of matched) {
+    res.setHeader(header.key, header.value);
   }
 }
 

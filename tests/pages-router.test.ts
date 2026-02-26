@@ -212,6 +212,20 @@ describe("Pages Router integration", () => {
     expect(res.headers.get("x-custom-header")).toBe("vinext");
   });
 
+  it("applies has/missing conditions for next.config.js headers", async () => {
+    const guestRes = await fetch(`${baseUrl}/about`);
+    expect(guestRes.status).toBe(200);
+    expect(guestRes.headers.get("x-guest-only-header")).toBe("1");
+    expect(guestRes.headers.get("x-auth-only-header")).toBeNull();
+
+    const authRes = await fetch(`${baseUrl}/about`, {
+      headers: { Cookie: "logged-in=1" },
+    });
+    expect(authRes.status).toBe(200);
+    expect(authRes.headers.get("x-auth-only-header")).toBe("1");
+    expect(authRes.headers.get("x-guest-only-header")).toBeNull();
+  });
+
   it("applies beforeFiles rewrites from next.config.js", async () => {
     const res = await fetch(`${baseUrl}/before-rewrite`);
     expect(res.status).toBe(200);
@@ -1131,6 +1145,20 @@ describe("Production server next.config.js features (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/api/hello`);
     expect(res.status).toBe(200);
     expect(res.headers.get("x-custom-header")).toBe("vinext");
+  });
+
+  it("applies has/missing conditions for next.config.js headers", async () => {
+    const guestRes = await fetch(`${prodUrl}/about`);
+    expect(guestRes.status).toBe(200);
+    expect(guestRes.headers.get("x-guest-only-header")).toBe("1");
+    expect(guestRes.headers.get("x-auth-only-header")).toBeNull();
+
+    const authRes = await fetch(`${prodUrl}/about`, {
+      headers: { Cookie: "logged-in=1" },
+    });
+    expect(authRes.status).toBe(200);
+    expect(authRes.headers.get("x-auth-only-header")).toBe("1");
+    expect(authRes.headers.get("x-guest-only-header")).toBeNull();
   });
 
   it("serves normal pages unaffected by config rules", async () => {
