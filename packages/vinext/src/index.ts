@@ -1595,8 +1595,14 @@ hydrate();
     resolvedRscPath = earlyRequire.resolve("@vitejs/plugin-rsc");
     resolvedRscTransformsPath = earlyRequire.resolve("@vitejs/plugin-rsc/transforms");
   } catch {
-    // @vitejs/plugin-rsc not installed — that's fine for Pages Router
-    // projects. If App Router is detected, the error is thrown below.
+    // Fallback: resolve from vinext's own location (pnpm strict hoisting)
+    try {
+      const vinextRequire = createRequire(import.meta.url);
+      resolvedRscPath = vinextRequire.resolve("@vitejs/plugin-rsc");
+      resolvedRscTransformsPath = vinextRequire.resolve("@vitejs/plugin-rsc/transforms");
+    } catch {
+      // Not installed — fine for Pages Router. App Router throws below.
+    }
   }
 
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
@@ -2065,24 +2071,28 @@ hydrate();
       },
 
       resolveId: {
-        // Hook filter: only invoke JS for next/* imports and virtual:vinext-* modules.
-        // Matches "next/navigation", "next/router.js", "virtual:vinext-rsc-entry",
-        // and \0-prefixed re-imports from @vitejs/plugin-rsc.
+        // Hook filter: next/*, vinext/*, and virtual:vinext-* modules.
         filter: {
-          id: /(?:next\/|virtual:vinext-)/,
+          id: /(?:next\/|virtual:vinext-|vinext\/)/,
         },
         handler(id) {
-          // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
-          // browser entry imports our virtual module using the already-resolved
-          // ID (with \0 prefix). We need to re-resolve it so the client
-          // environment's import-analysis can find it.
+          // Strip \0 prefix — @vitejs/plugin-rsc re-imports with it.
           const cleanId = id.startsWith("\0") ? id.slice(1) : id;
 
-          // Handle next/* imports with .js extension (e.g. "next/navigation.js")
-          // Libraries like nuqs import "next/navigation.js" which doesn't match
-          // our resolve.alias for "next/navigation". Strip the .js and resolve
-          // through our shim map, appending .js to the resolved path.
-          if (cleanId.startsWith("next/") && cleanId.endsWith(".js")) {
+          // vinext/shims/* — Rollup SSR builds can't resolve the package
+          // exports glob through pnpm symlinks, so resolve explicitly.
+          if (cleanId.startsWith("vinext/shims/")) {
+            const shimName = cleanId.slice("vinext/shims/".length).replace(/\.js$/, "");
+            const shimPath = path.resolve(shimsDir, shimName);
+            // Guard against path traversal (e.g. "vinext/shims/../../etc/passwd")
+            if (!shimPath.startsWith(shimsDir + path.sep) && shimPath !== shimsDir) return;
+            return shimPath.endsWith(".js") ? shimPath : shimPath + ".js";
+          }
+
+          // Handle next/* or vinext/* imports with .js extension
+          // (e.g. "next/navigation.js" from nuqs). Strip .js and
+          // resolve through the shim map.
+          if ((cleanId.startsWith("next/") || cleanId.startsWith("vinext/")) && cleanId.endsWith(".js")) {
             const withoutExt = cleanId.slice(0, -3);
             if (nextShimMap[withoutExt]) {
               const shimPath = nextShimMap[withoutExt];
