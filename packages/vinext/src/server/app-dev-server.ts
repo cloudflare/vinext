@@ -1312,10 +1312,10 @@ async function _handleRequest(request) {
           // headers are kept so applyMiddlewareRequestHeaders() can unpack them;
           // the blanket strip loop after that call removes every remaining
           // x-middleware-* header before the set is merged into the response.
-          _middlewareResponseHeaders = new Headers();
+           _middlewareResponseHeaders = new Headers();
           for (const [key, value] of mwResponse.headers) {
             if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
-              _middlewareResponseHeaders.set(key, value);
+              _middlewareResponseHeaders.append(key, value);
             }
           }
         } else {
@@ -1336,7 +1336,7 @@ async function _handleRequest(request) {
             _middlewareResponseHeaders = new Headers();
             for (const [key, value] of mwResponse.headers) {
               if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
-                _middlewareResponseHeaders.set(key, value);
+                _middlewareResponseHeaders.append(key, value);
               }
             }
           } else {
@@ -2124,7 +2124,7 @@ async function _handleRequest(request) {
     // Merge middleware response headers into the final response
     if (_middlewareResponseHeaders) {
       for (const [key, value] of _middlewareResponseHeaders) {
-        response.headers.set(key, value);
+        response.headers.append(key, value);
       }
     }
     // Apply custom status code from middleware rewrite

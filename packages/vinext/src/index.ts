@@ -702,7 +702,7 @@ export async function runMiddleware(request) {
     for (var [key, value] of response.headers) {
       // Strip ALL x-middleware-* headers — they are internal routing signals
       // and must never reach clients.
-      if (!key.startsWith("x-middleware-")) rHeaders.set(key, value);
+      if (!key.startsWith("x-middleware-")) rHeaders.append(key, value);
     }
     return { continue: true, responseHeaders: rHeaders };
   }
@@ -715,7 +715,7 @@ export async function runMiddleware(request) {
   var rewriteUrl = response.headers.get("x-middleware-rewrite");
   if (rewriteUrl) {
     var rwHeaders = new Headers();
-    for (var [k, v] of response.headers) { if (!k.startsWith("x-middleware-")) rwHeaders.set(k, v); }
+    for (var [k, v] of response.headers) { if (!k.startsWith("x-middleware-")) rwHeaders.append(k, v); }
     var rewritePath;
     try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
     catch { rewritePath = rewriteUrl; }
@@ -2438,7 +2438,7 @@ hydrate();
                   if (result.response) {
                     res.statusCode = result.response.status;
                     for (const [key, value] of result.response.headers) {
-                      res.setHeader(key, value);
+                      res.appendHeader(key, value);
                     }
                     const body = await result.response.text();
                     res.end(body);
@@ -2449,7 +2449,7 @@ hydrate();
                 // Apply middleware response headers
                 if (result.responseHeaders) {
                   for (const [key, value] of result.responseHeaders) {
-                    res.setHeader(key, value);
+                    res.appendHeader(key, value);
                   }
                 }
 

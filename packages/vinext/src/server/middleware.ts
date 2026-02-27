@@ -257,13 +257,13 @@ export async function runMiddleware(
   // Check for x-middleware-next header (NextResponse.next())
   if (response.headers.get("x-middleware-next") === "1") {
     // Continue to the route, but apply any headers the middleware set
-    const responseHeaders = new Headers();
+     const responseHeaders = new Headers();
     for (const [key, value] of response.headers) {
       if (
         key !== "x-middleware-next" &&
         key !== "x-middleware-rewrite"
       ) {
-        responseHeaders.set(key, value);
+        responseHeaders.append(key, value);
       }
     }
     return { continue: true, responseHeaders };
@@ -288,7 +288,7 @@ export async function runMiddleware(
     const responseHeaders = new Headers();
     for (const [key, value] of response.headers) {
       if (key !== "x-middleware-rewrite") {
-        responseHeaders.set(key, value);
+        responseHeaders.append(key, value);
       }
     }
     // Parse the rewrite URL — may be absolute or relative

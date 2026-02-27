@@ -761,16 +761,37 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           if (result.response) {
             // Use arrayBuffer() to handle binary response bodies correctly
             const body = Buffer.from(await result.response.arrayBuffer());
-            res.writeHead(result.response.status, Object.fromEntries(result.response.headers));
+            // Preserve multi-value headers (especially Set-Cookie) by
+            // using getSetCookie() for cookies and forEach for the rest.
+            const respHeaders: Record<string, string | string[]> = {};
+            result.response.headers.forEach((value, key) => {
+              if (key.toLowerCase() === "set-cookie") return; // handled below
+              respHeaders[key] = value;
+            });
+            const setCookies = result.response.headers.getSetCookie?.() ?? [];
+            if (setCookies.length > 0) respHeaders["set-cookie"] = setCookies;
+            res.writeHead(result.response.status, respHeaders);
             res.end(body);
             return;
           }
         }
 
-        // Collect middleware response headers to merge into final response
+        // Collect middleware response headers to merge into final response.
+        // Use an array for Set-Cookie to preserve multiple values.
         if (result.responseHeaders) {
           for (const [key, value] of result.responseHeaders) {
-            middlewareHeaders[key] = value;
+            if (key.toLowerCase() === "set-cookie") {
+              const existing = middlewareHeaders[key];
+              if (Array.isArray(existing)) {
+                existing.push(value);
+              } else if (existing) {
+                (middlewareHeaders as any)[key] = [existing, value];
+              } else {
+                (middlewareHeaders as any)[key] = [value];
+              }
+            } else {
+              middlewareHeaders[key] = value;
+            }
           }
         }
 
