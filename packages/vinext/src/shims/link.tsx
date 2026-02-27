@@ -11,6 +11,7 @@ import React, { forwardRef, useRef, useEffect, useCallback, useContext, createCo
 // Import shared RSC prefetch utilities from navigation shim (relative path
 // so this resolves both via the Vite plugin and in direct vitest imports)
 import { toRscUrl, getPrefetchedUrls, storePrefetchResponse } from "./navigation.js";
+import { isDangerousScheme } from "./url-safety.js";
 
 interface NavigateEvent {
   url: URL;
@@ -278,6 +279,18 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
   // where href is a route pattern like "/user/[id]" and as is "/user/1")
   const resolvedHref = as ?? resolveHref(href);
+
+  // Block dangerous URI schemes (javascript:, data:, vbscript:).
+  // Render an inert <a> without href to prevent XSS while preserving
+  // styling and attributes like className, id, aria-*.
+  if (typeof resolvedHref === "string" && isDangerousScheme(resolvedHref)) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(`<Link> blocked dangerous href: ${resolvedHref}`);
+    }
+    const { passHref: _p, ...safeProps } = restWithoutLocale;
+    return <a {...safeProps}>{children}</a>;
+  }
+
   // Apply locale prefix if specified
   const localizedHref = applyLocaleToHref(resolvedHref, locale);
   // Full href with basePath for browser URLs and fetches

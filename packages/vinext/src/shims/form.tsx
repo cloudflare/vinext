@@ -24,9 +24,31 @@ import {
   type FormHTMLAttributes,
   type ForwardedRef,
 } from "react";
+import { isDangerousScheme } from "./url-safety.js";
 
 // Re-export useActionState from React 19 to match Next.js's next/form module
 export { useActionState };
+
+function isSafeAction(action: string): boolean {
+  // Block dangerous URI schemes
+  if (isDangerousScheme(action)) return false;
+  // Block protocol-relative URLs (//evil.com/...)
+  if (action.startsWith("//")) return false;
+  // Block absolute URLs to external origins (client-side: compare origins)
+  if (/^https?:\/\//i.test(action)) {
+    if (typeof window !== "undefined") {
+      try {
+        const actionUrl = new URL(action);
+        return actionUrl.origin === window.location.origin;
+      } catch {
+        return false;
+      }
+    }
+    // Server-side: block all absolute URLs (can't compare origins)
+    return false;
+  }
+  return true;
+}
 
 interface FormProps extends FormHTMLAttributes<HTMLFormElement> {
   /** Target URL for GET forms, or server action for POST forms */
@@ -46,6 +68,15 @@ const Form = forwardRef(function Form(
   // If action is a function (server action), pass it directly to React
   if (typeof action === "function") {
     return <form ref={ref} action={action as any} onSubmit={onSubmit as any} {...rest} />;
+  }
+
+  // Block dangerous action URLs. Render <form> without action attribute
+  // so it submits to the current page (safe default).
+  if (!isSafeAction(action)) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(`<Form> blocked unsafe action: ${action}`);
+    }
+    return <form ref={ref} onSubmit={onSubmit as any} {...rest} />;
   }
 
   async function handleSubmit(e: any) {
