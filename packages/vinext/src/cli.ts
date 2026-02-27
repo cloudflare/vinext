@@ -23,6 +23,8 @@ import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
+import { loadNextConfig, resolveNextConfig, PHASE_PRODUCTION_BUILD } from "./config/next-config.js";
+import { emitStandaloneOutput } from "./build/standalone.js";
 import { detectPackageManager as _detectPackageManager } from "./utils/project.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
@@ -219,6 +221,11 @@ async function buildApp() {
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
   const isApp = hasAppDir();
+  const resolvedNextConfig = await resolveNextConfig(
+    await loadNextConfig(process.cwd(), PHASE_PRODUCTION_BUILD),
+  );
+  const outputMode = resolvedNextConfig.output;
+  const distDir = path.resolve(process.cwd(), "dist");
 
   // For App Router: upgrade React if needed for react-server-dom-webpack compatibility.
   // Without this, builds with react<19.2.4 produce a Worker that crashes at
@@ -268,6 +275,16 @@ async function buildApp() {
         },
       },
     }));
+  }
+
+  if (outputMode === "standalone") {
+    const standalone = emitStandaloneOutput({
+      root: process.cwd(),
+      outDir: distDir,
+    });
+    console.log(`  Generated standalone output in ${path.relative(process.cwd(), standalone.standaloneDir)}/`);
+    console.log("  Start it with: node dist/standalone/server.js\n");
+    return;
   }
 
   console.log("\n  Build complete. Run `vinext start` to start the production server.\n");
@@ -426,6 +443,7 @@ function printHelp(cmd?: string) {
 
   Automatically detects App Router (app/) or Pages Router (pages/) and
   runs the appropriate multi-environment build via Vite.
+  If next.config sets output: "standalone", also emits dist/standalone/server.js.
 
   Options:
     -h, --help    Show this help
@@ -441,6 +459,7 @@ function printHelp(cmd?: string) {
 
   Serves the output from \`vinext build\`. Supports SSR, static files,
   compression, and all middleware.
+  For output: "standalone", you can also run: node dist/standalone/server.js
 
   Options:
     -p, --port <port>        Port to listen on (default: 3000, or PORT env)

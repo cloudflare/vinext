@@ -71,7 +71,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   i18n: { status: "supported", detail: "path-prefix routing (domains not yet supported)" },
   env: { status: "supported" },
   images: { status: "partial", detail: "remotePatterns validated, no local optimization" },
-  output: { status: "supported", detail: "'export' and 'standalone' modes" },
+  output: { status: "supported", detail: "'export' mode and 'standalone' output (dist/standalone/server.js)" },
   transpilePackages: { status: "supported", detail: "Vite handles this natively" },
   webpack: { status: "unsupported", detail: "Vite replaces webpack — custom webpack configs need migration" },
   "experimental.ppr": { status: "unsupported", detail: "partial prerendering not yet implemented" },

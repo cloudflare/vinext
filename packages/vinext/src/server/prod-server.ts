@@ -27,7 +27,7 @@ import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, i
 import type { RequestContext } from "../config/config-matchers.js";
 import { IMAGE_OPTIMIZATION_PATH, IMAGE_CONTENT_SECURITY_POLICY, parseImageParams, isSafeImageContentType, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
-import { computeLazyChunks } from "../index.js";
+import { computeLazyChunks } from "../utils/lazy-chunks.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {

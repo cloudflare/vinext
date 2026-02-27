@@ -68,6 +68,12 @@ Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted
 
 `vinext init` options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
+If your `next.config.*` sets `output: "standalone"`, `vinext build` emits a self-hosting bundle at `dist/standalone/`. Start it with:
+
+```bash
+node dist/standalone/server.js
+```
+
 ### Starting a new vinext project
 
 Run `npm create next-app@latest` to create a new Next.js project, and then follow these instructions to migrate it to vinext.
@@ -88,13 +94,15 @@ This will:
 2. Install `vite` (and `@vitejs/plugin-rsc` for App Router projects) as devDependencies
 3. Rename CJS config files (e.g. `postcss.config.js` -> `.cjs`) to avoid ESM conflicts
 4. Add `"type": "module"` to `package.json`
-5. Add `dev:vinext` and `build:vinext` scripts to `package.json`
+5. Add `dev:vinext`, `build:vinext`, and `start:vinext` scripts to `package.json`
 6. Generate a minimal `vite.config.ts`
 
 The migration is non-destructive -- your existing Next.js setup continues to work alongside vinext. It does not modify `next.config`, `tsconfig.json`, or any source files, and it does not remove Next.js dependencies.
 
 ```bash
 npm run dev:vinext    # Start the vinext dev server (port 3001)
+npm run build:vinext  # Build production output with vinext
+npm run start:vinext  # Start vinext production server
 npm run dev           # Still runs Next.js as before
 ```
 
@@ -311,6 +319,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `generateStaticParams` | ✅ | With `dynamicParams` enforcement |
 | Metadata file routes | ✅ | sitemap.xml, robots.txt, manifest, favicon, OG images (static + dynamic) |
 | Static export (`output: 'export'`) | ✅ | Generates static HTML/JSON for all routes |
+| Standalone output (`output: 'standalone'`) | ✅ | Generates `dist/standalone` with `server.js`, build artifacts, and runtime deps |
 | `connection()` | ✅ | Forces dynamic rendering |
 | `"use cache"` directive | ✅ | File-level and function-level. `cacheLife()` profiles, `cacheTag()`, stale-while-revalidate |
 | `instrumentation.ts` | ✅ | `register()` and `onRequestError()` callbacks |
