@@ -1187,7 +1187,8 @@ export default async function handler(request) {
             // and Next.js doesn't apply custom headers to redirects anyway.
             if (__configHeaders.length && response && response.headers && !(response.status >= 300 && response.status < 400)) {
               const url = new URL(request.url);
-              let pathname = __normalizePath(decodeURIComponent(url.pathname));
+              let pathname;
+              try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
               ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
               const extraHeaders = __applyConfigHeaders(pathname);
               for (const h of extraHeaders) {
