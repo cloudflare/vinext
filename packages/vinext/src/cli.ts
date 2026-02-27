@@ -23,6 +23,7 @@ import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
+import { migrateEnv, parseMigrateEnvArgs } from "./migrate-env.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -390,6 +391,22 @@ async function initCommand() {
   });
 }
 
+async function migrateEnvCommand() {
+  const parsed = parseMigrateEnvArgs(rawArgs);
+  if (parsed.help) return printHelp("migrate-env");
+
+  await migrateEnv({
+    root: process.cwd(),
+    vercelToken: parsed.vercelToken ?? "",
+    project: parsed.project ?? "",
+    teamId: parsed.teamId,
+    target: parsed.target,
+    dryRun: parsed.dryRun,
+    includeSystem: parsed.includeSystem,
+    envFile: parsed.envFile,
+  });
+}
+
 // ─── Help ─────────────────────────────────────────────────────────────────────
 
 function printHelp(cmd?: string) {
@@ -527,6 +544,47 @@ function printHelp(cmd?: string) {
     return;
   }
 
+   if (cmd === "migrate-env") {
+    console.log(`
+  vinext migrate-env - Migrate env vars from Vercel to Cloudflare
+
+  Usage: vinext migrate-env [options]
+
+  Prerequisite:
+    Run \`vinext deploy --dry-run\` first to generate wrangler.jsonc.
+    This command reads the Worker name from that config.
+
+  Pulls environment variables from a Vercel project and securely uploads
+  them to Cloudflare Workers. Secrets are uploaded via \`wrangler secret bulk\`,
+  plain vars are injected into wrangler.jsonc [vars].
+
+  Authentication:
+    Vercel: auto-detected from Vercel CLI login, VERCEL_TOKEN env var,
+    --vercel-token flag, or prompted interactively.
+    Cloudflare: \`wrangler login\` or CLOUDFLARE_API_TOKEN env var.
+
+  Options:
+    --vercel-token <token>   Vercel access token (or set VERCEL_TOKEN)
+    --project <id|name>      Vercel project ID or name (auto-detected from
+                             .vercel/project.json or package.json)
+    --team <id>              Vercel team ID (or set VERCEL_TEAM_ID)
+    --target <env>           Filter by target: production, preview, development
+    --dry-run                Show what would be migrated without making changes
+    --include-system         Include Vercel system vars (VERCEL_*, etc.)
+    --env-file               Also write a .env.cloudflare backup file
+    -h, --help               Show this help
+
+  Examples:
+    vinext deploy --dry-run                     Generate config files first
+    vinext migrate-env                           Auto-detect project, migrate all vars
+    vinext migrate-env --target production       Only production env vars
+    vinext migrate-env --dry-run                 Preview migration without uploading
+    vinext migrate-env --project my-app --team team_xxx  Specify project and team
+    vinext migrate-env --env-file                Also create .env.cloudflare backup
+`);
+    return;
+  }
+
   if (cmd === "lint") {
     console.log(`
   vinext lint - Run linter
@@ -551,8 +609,9 @@ function printHelp(cmd?: string) {
     dev      Start development server
     build    Build for production
     start    Start production server
-    deploy   Deploy to Cloudflare Workers
-    init     Migrate a Next.js project to vinext
+    deploy      Deploy to Cloudflare Workers
+    init        Migrate a Next.js project to vinext
+    migrate-env  Migrate env vars from Vercel to Cloudflare
     check    Scan Next.js app for compatibility
     lint     Run linter
 
@@ -567,6 +626,7 @@ function printHelp(cmd?: string) {
     vinext start                Start production server
     vinext deploy               Deploy to Cloudflare Workers
     vinext init                 Migrate a Next.js project
+    vinext migrate-env           Migrate Vercel env vars to Cloudflare
     vinext check                Check compatibility
     vinext lint                 Run linter
 
@@ -633,6 +693,13 @@ switch (command) {
 
   case "lint":
     lint().catch((e) => {
+      console.error(e);
+      process.exit(1);
+    });
+    break;
+
+  case "migrate-env":
+    migrateEnvCommand().catch((e) => {
       console.error(e);
       process.exit(1);
     });

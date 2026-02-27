@@ -44,6 +44,7 @@ Replace `next` with `vinext` in your scripts:
 vinext dev          # Development server with HMR
 vinext build        # Production build
 vinext deploy       # Build and deploy to Cloudflare Workers
+vinext migrate-env  # Migrate env vars from Vercel to Cloudflare
 ```
 
 vinext auto-detects your `app/` or `pages/` directory, loads `next.config.js`, and configures Vite automatically. No `vite.config.ts` required for basic usage.
@@ -58,6 +59,7 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 | `vinext build` | Production build (multi-environment for App Router: RSC + SSR + client) |
 | `vinext start` | Start local production server for testing |
 | `vinext deploy` | Build and deploy to Cloudflare Workers |
+| `vinext migrate-env` | Migrate environment variables from Vercel to Cloudflare |
 | `vinext init` | Migrate a Next.js project to run under vinext |
 | `vinext check` | Scan your Next.js app for compatibility issues before migrating |
 | `vinext lint` | Delegate to eslint or oxlint |
@@ -65,6 +67,8 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
 `vinext deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
+
+`vinext migrate-env` options: `--vercel-token <token>`, `--project <id|name>`, `--team <id>`, `--target <env>`, `--dry-run`, `--include-system`, `--env-file`.
 
 `vinext init` options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
@@ -99,6 +103,20 @@ npm run dev           # Still runs Next.js as before
 ```
 
 Use `--force` to overwrite an existing `vite.config.ts`, or `--skip-check` to skip the compatibility report.
+
+### Migrating environment variables from Vercel
+
+If your Next.js project uses Vercel environment variables, `vinext migrate-env` pulls them and uploads them to Cloudflare Workers. Secrets are encrypted via `wrangler secret bulk`, and `NEXT_PUBLIC_*` vars are injected into `wrangler.jsonc` as plain variables (needed at build time).
+
+```bash
+vinext deploy --dry-run   # Generate config files first (no build/deploy)
+vinext migrate-env        # Pull from Vercel, upload to Cloudflare
+vinext deploy             # Build and deploy with all env vars in place
+```
+
+Vercel authentication is auto-detected from the Vercel CLI, `VERCEL_TOKEN` env var, or prompted interactively. Cloudflare authentication uses `wrangler login` (launched automatically if needed).
+
+Use `--dry-run` to preview the migration without uploading, or `--target production` to migrate only production variables.
 
 ## Why
 
@@ -448,9 +466,10 @@ Request → RSC entry (Vite rsc environment) → Route match → Build layout/pa
 packages/vinext/
   src/
     index.ts              # Main plugin — resolve aliases, config, virtual modules
-    cli.ts                # vinext CLI (dev/build/start/deploy/init/check/lint)
+    cli.ts                # vinext CLI (dev/build/start/deploy/init/check/lint/migrate-env)
     check.ts              # Compatibility scanner
     deploy.ts             # Cloudflare Workers deployment
+    migrate-env.ts        # Vercel → Cloudflare env var migration
     init.ts               # vinext init — one-command migration for Next.js apps
     client/
       entry.ts            # Client-side hydration entry
