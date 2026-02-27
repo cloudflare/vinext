@@ -1305,7 +1305,11 @@ async function _handleRequest(request) {
       if (mwResponse) {
         // Check for x-middleware-next (continue)
         if (mwResponse.headers.get("x-middleware-next") === "1") {
-          // Middleware wants to continue - save headers to merge into final response
+          // Middleware wants to continue — collect all headers except the two
+          // control headers we've already consumed.  x-middleware-request-*
+          // headers are kept so applyMiddlewareRequestHeaders() can unpack them;
+          // the blanket strip loop after that call removes every remaining
+          // x-middleware-* header before the set is merged into the response.
           _middlewareResponseHeaders = new Headers();
           for (const [key, value] of mwResponse.headers) {
             if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {

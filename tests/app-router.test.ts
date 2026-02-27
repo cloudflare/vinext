@@ -2190,6 +2190,32 @@ describe("App Router middleware with NextRequest", () => {
     const res = await fetch(`${baseUrl}/middleware-throw`);
     expect(res.status).toBe(500);
   });
+
+  it("does not leak x-middleware-next or x-middleware-rewrite headers to the client", async () => {
+    // NextResponse.next() sets x-middleware-next internally.
+    // The dev server must strip it (and all x-middleware-* headers) before
+    // sending the response to the client — they are internal routing signals.
+    const nextRes = await fetch(`${baseUrl}/about`);
+    expect(nextRes.status).toBe(200);
+    // Middleware ran (verified by the custom header it sets)
+    expect(nextRes.headers.get("x-mw-ran")).toBe("true");
+    // Internal headers must NOT be present
+    expect(nextRes.headers.get("x-middleware-next")).toBeNull();
+    expect(nextRes.headers.get("x-middleware-rewrite")).toBeNull();
+    // Check that no x-middleware-* header leaked at all
+    for (const [key] of nextRes.headers) {
+      expect(key.startsWith("x-middleware-")).toBe(false);
+    }
+
+    // NextResponse.rewrite() sets x-middleware-rewrite internally.
+    const rewriteRes = await fetch(`${baseUrl}/middleware-rewrite`);
+    expect(rewriteRes.status).toBe(200);
+    expect(rewriteRes.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(rewriteRes.headers.get("x-middleware-next")).toBeNull();
+    for (const [key] of rewriteRes.headers) {
+      expect(key.startsWith("x-middleware-")).toBe(false);
+    }
+  });
 });
 
 describe("SSR entry CSS preload fix", () => {
