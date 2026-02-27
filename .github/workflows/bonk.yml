@@ -24,7 +24,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 30 # 30 is a balance in providing enough context for the agent vs. pulling down the entire repo history. It is not a scientific number. 27 or 31 or 36 would likely work as well.
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4

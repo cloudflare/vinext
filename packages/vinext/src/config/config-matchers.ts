@@ -156,6 +156,69 @@ export function safeRegExp(pattern: string, flags?: string): RegExp | null {
 }
 
 /**
+ * Convert a Next.js header/rewrite/redirect source pattern into a regex string.
+ *
+ * Regex groups in the source (e.g. `(\d+)`) are extracted first, the remaining
+ * text is escaped/converted in a **single pass** (avoiding chained `.replace()`
+ * which CodeQL flags as incomplete sanitization), then groups are restored.
+ */
+export function escapeHeaderSource(source: string): string {
+  // Sentinel character for group placeholders. Uses a Unicode private-use-area
+  // codepoint that will never appear in real source patterns.
+  const S = "\uE000";
+
+  // Step 1: extract regex groups and replace with numbered placeholders.
+  const groups: string[] = [];
+  const withPlaceholders = source.replace(/\(([^)]+)\)/g, (_m, inner) => {
+    groups.push(inner);
+    return `${S}G${groups.length - 1}${S}`;
+  });
+
+  // Step 2: single-pass conversion of the placeholder-bearing string.
+  // Match named params (:[\w-]+), sentinel group placeholders, metacharacters, and literal text.
+  // The regex uses non-overlapping alternatives to avoid backtracking:
+  //   :[\w-]+  — named parameter (constraint sentinel is checked procedurally;
+  //              param names may contain hyphens, e.g. :auth-method)
+  //   sentinel group — standalone regex group placeholder
+  //   [.+?*] — single metachar to escape/convert
+  //   [^.+?*:\uE000]+ — literal text (excludes all chars that start other alternatives)
+  let result = "";
+  const re = new RegExp(
+    `${S}G(\\d+)${S}|:[\\w-]+|[.+?*]|[^.+?*:\\uE000]+`, // lgtm[js/redos] — alternatives are non-overlapping
+    "g",
+  );
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(withPlaceholders)) !== null) {
+    if (m[1] !== undefined) {
+      // Standalone regex group — restore as-is
+      result += `(${groups[Number(m[1])]})`;
+    } else if (m[0].startsWith(":")) {
+      // Named parameter — check if followed by a constraint group placeholder
+      const afterParam = withPlaceholders.slice(re.lastIndex);
+      const constraintMatch = afterParam.match(new RegExp(`^${S}G(\\d+)${S}`));
+      if (constraintMatch) {
+        // :param(constraint) — use the constraint as the capture group
+        re.lastIndex += constraintMatch[0].length;
+        result += `(${groups[Number(constraintMatch[1])]})`;
+      } else {
+        // Plain named parameter → match one segment
+        result += "[^/]+";
+      }
+    } else {
+      switch (m[0]) {
+        case ".": result += "\\."; break;
+        case "+": result += "\\+"; break;
+        case "?": result += "\\?"; break;
+        case "*": result += ".*"; break;
+        default: result += m[0]; break;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
  * Request context needed for evaluating has/missing conditions.
  * Callers extract the relevant parts from the incoming Request.
  */
@@ -270,6 +333,26 @@ export function checkHasConditions(
 }
 
 /**
+ * If the current position in `str` starts with a parenthesized group, consume
+ * it and advance `re.lastIndex` past the closing `)`. Returns the group
+ * contents or null if no group is present.
+ */
+function extractConstraint(str: string, re: RegExp): string | null {
+  if (str[re.lastIndex] !== "(") return null;
+  const start = re.lastIndex + 1;
+  let depth = 1;
+  let i = start;
+  while (i < str.length && depth > 0) {
+    if (str[i] === "(") depth++;
+    else if (str[i] === ")") depth--;
+    i++;
+  }
+  if (depth !== 0) return null;
+  re.lastIndex = i;
+  return str.slice(start, i - 1);
+}
+
+/**
  * Match a Next.js config pattern (from redirects/rewrites sources) against a pathname.
  * Returns matched params or null.
  *
@@ -292,32 +375,45 @@ export function matchConfigPattern(
   if (
     pattern.includes("(") ||
     pattern.includes("\\") ||
-    /:\w+[*+][^/]/.test(pattern)
+    /:[\w-]+[*+][^/]/.test(pattern)
   ) {
     try {
+      // Param names may contain hyphens (e.g. :auth-method, :sign-in).
       const paramNames: string[] = [];
-      const regexStr = pattern
-        .replace(/\./g, "\\.")
-        // :param* with optional constraint
-        .replace(/:(\w+)\*(?:\(([^)]+)\))?/g, (_m, name, constraint) => {
-          paramNames.push(name);
-          return constraint ? `(${constraint})` : "(.*)";
-        })
-        // :param+ with optional constraint
-        .replace(/:(\w+)\+(?:\(([^)]+)\))?/g, (_m, name, constraint) => {
-          paramNames.push(name);
-          return constraint ? `(${constraint})` : "(.+)";
-        })
-        // :param(constraint) - named param with inline regex constraint
-        .replace(/:(\w+)\(([^)]+)\)/g, (_m, name, constraint) => {
-          paramNames.push(name);
-          return `(${constraint})`;
-        })
-        // :param - plain named param
-        .replace(/:(\w+)/g, (_m, name) => {
-          paramNames.push(name);
-          return "([^/]+)";
-        });
+      // Single-pass conversion with procedural suffix handling. The tokenizer
+      // matches only simple, non-overlapping tokens; quantifier/constraint
+      // suffixes after :param are consumed procedurally to avoid polynomial
+      // backtracking in the regex engine.
+      let regexStr = "";
+      const tokenRe = /:([\w-]+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
+      let tok: RegExpExecArray | null;
+      while ((tok = tokenRe.exec(pattern)) !== null) {
+        if (tok[1] !== undefined) {
+          const name = tok[1];
+          const rest = pattern.slice(tokenRe.lastIndex);
+          // Check for quantifier (* or +) with optional constraint
+          if (rest.startsWith("*") || rest.startsWith("+")) {
+            const quantifier = rest[0];
+            tokenRe.lastIndex += 1;
+            const constraint = extractConstraint(pattern, tokenRe);
+            paramNames.push(name);
+            if (constraint !== null) {
+              regexStr += `(${constraint})`;
+            } else {
+              regexStr += quantifier === "*" ? "(.*)" : "(.+)";
+            }
+          } else {
+            // Check for inline constraint without quantifier
+            const constraint = extractConstraint(pattern, tokenRe);
+            paramNames.push(name);
+            regexStr += constraint !== null ? `(${constraint})` : "([^/]+)";
+          }
+        } else if (tok[0] === ".") {
+          regexStr += "\\.";
+        } else {
+          regexStr += tok[0];
+        }
+      }
       const re = safeRegExp("^" + regexStr + "$");
       if (!re) return null;
       const match = re.exec(pathname);
@@ -333,7 +429,8 @@ export function matchConfigPattern(
   }
 
   // Check for catch-all patterns (:param* or :param+) without regex groups
-  const catchAllMatch = pattern.match(/:(\w+)(\*|\+)$/);
+  // Param names may contain hyphens (e.g. :sign-in*, :sign-up+).
+  const catchAllMatch = pattern.match(/:([\w-]+)(\*|\+)$/);
   if (catchAllMatch) {
     const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
     const paramName = catchAllMatch[1];
@@ -344,7 +441,8 @@ export function matchConfigPattern(
     const rest = pathname.slice(prefix.replace(/\/$/, "").length);
     if (isPlus && (!rest || rest === "/")) return null;
     let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
-    try { restValue = decodeURIComponent(restValue); } catch { /* malformed percent-encoding */ }
+    // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+    // the request entry point. Decoding again would produce incorrect param values.
     return { [paramName]: restValue };
   }
 
@@ -394,6 +492,8 @@ export function matchRedirect(
         dest = dest.replace(`:${key}+`, value);
         dest = dest.replace(`:${key}`, value);
       }
+      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+      dest = sanitizeDestination(dest);
       return { destination: dest, permanent: redirect.permanent };
     }
   }
@@ -429,6 +529,8 @@ export function matchRewrite(
         dest = dest.replace(`:${key}+`, value);
         dest = dest.replace(`:${key}`, value);
       }
+      // Collapse protocol-relative URLs (e.g. //evil.com from decoded %2F in catch-all params).
+      dest = sanitizeDestination(dest);
       return dest;
     }
   }
@@ -436,11 +538,36 @@ export function matchRewrite(
 }
 
 /**
- * Check if a URL is an external (absolute) URL.
- * Returns true for URLs starting with http:// or https://.
+ * Sanitize a redirect/rewrite destination to collapse protocol-relative URLs.
+ *
+ * After parameter substitution, a destination like `/:path*` can become
+ * `//evil.com` if the catch-all captured a decoded `%2F` (`/evil.com`).
+ * Browsers interpret `//evil.com` as a protocol-relative URL, redirecting
+ * users off-site.
+ *
+ * This function collapses any leading double (or more) slashes to a single
+ * slash for non-external (relative) destinations.
+ */
+export function sanitizeDestination(dest: string): string {
+  // External URLs (http://, https://) are intentional — don't touch them
+  if (dest.startsWith("http://") || dest.startsWith("https://")) {
+    return dest;
+  }
+  // Normalize leading backslashes to forward slashes. Browsers interpret
+  // backslash as forward slash in URL contexts, so "\/evil.com" becomes
+  // "//evil.com" (protocol-relative redirect). Replace any mix of leading
+  // slashes and backslashes with a single forward slash.
+  dest = dest.replace(/^[\\/]+/, "/");
+  return dest;
+}
+
+/**
+ * Check if a URL is external (absolute URL or protocol-relative).
+ * Detects any URL scheme (http:, https:, data:, javascript:, blob:, etc.)
+ * per RFC 3986, plus protocol-relative URLs (//).
  */
 export function isExternalUrl(url: string): boolean {
-  return url.startsWith("http://") || url.startsWith("https://");
+  return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
 /**
@@ -475,6 +602,21 @@ export async function proxyExternalRequest(
   headers.set("host", targetUrl.host);
   // Remove headers that should not be forwarded to external services
   headers.delete("connection");
+  // Strip credentials and internal headers to prevent leaking auth tokens,
+  // session cookies, and middleware internals to third-party origins.
+  headers.delete("cookie");
+  headers.delete("authorization");
+  headers.delete("x-api-key");
+  headers.delete("proxy-authorization");
+  const keysToDelete: string[] = [];
+  for (const key of headers.keys()) {
+    if (key.startsWith("x-middleware-")) {
+      keysToDelete.push(key);
+    }
+  }
+  for (const key of keysToDelete) {
+    headers.delete(key);
+  }
 
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";
@@ -490,12 +632,22 @@ export async function proxyExternalRequest(
     init.duplex = "half";
   }
 
+  // Enforce a timeout so slow/unresponsive upstreams don't hold connections
+  // open indefinitely (DoS amplification risk on Node.js dev/prod servers).
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30_000);
   let upstreamResponse: Response;
   try {
-    upstreamResponse = await fetch(targetUrl.href, init);
-  } catch (e) {
+    upstreamResponse = await fetch(targetUrl.href, { ...init, signal: controller.signal });
+  } catch (e: any) {
+    if (e?.name === "AbortError") {
+      console.error("[vinext] External rewrite proxy timeout:", targetUrl.href);
+      return new Response("Gateway Timeout", { status: 504 });
+    }
     console.error("[vinext] External rewrite proxy error:", e);
     return new Response("Bad Gateway", { status: 502 });
+  } finally {
+    clearTimeout(timeout);
   }
 
   // Build the response to return to the client.
@@ -524,19 +676,7 @@ export function matchHeaders(
 ): Array<{ key: string; value: string }> {
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
-    // Extract regex groups first, process the rest, then restore groups.
-    const groups: string[] = [];
-    const withPlaceholders = rule.source.replace(/\(([^)]+)\)/g, (_m, inner) => {
-      groups.push(inner);
-      return `___GROUP_${groups.length - 1}___`;
-    });
-    const escaped = withPlaceholders
-      .replace(/\./g, "\\.")
-      .replace(/\+/g, "\\+")
-      .replace(/\?/g, "\\?")
-      .replace(/\*/g, ".*")
-      .replace(/:\w+/g, "[^/]+")
-      .replace(/___GROUP_(\d+)___/g, (_m, idx) => `(${groups[Number(idx)]})`);
+    const escaped = escapeHeaderSource(rule.source);
     const sourceRegex = safeRegExp("^" + escaped + "$");
     if (sourceRegex && sourceRegex.test(pathname)) {
       result.push(...rule.headers);

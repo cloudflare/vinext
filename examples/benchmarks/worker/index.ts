@@ -139,7 +139,8 @@ async function handleUpload(request: Request, env: Env): Promise<Response> {
 // ─── Results handler ─────────────────────────────────────────────────────────
 
 async function handleResults(url: URL, env: Env): Promise<Response> {
-  const limit = Math.min(parseInt(url.searchParams.get("limit") || "50", 10), 200);
+  const parsedLimit = parseInt(url.searchParams.get("limit") || "50", 10);
+  const limit = Number.isNaN(parsedLimit) ? 50 : Math.max(1, Math.min(parsedLimit, 200));
   const runner = url.searchParams.get("runner"); // optional filter
 
   let query = `

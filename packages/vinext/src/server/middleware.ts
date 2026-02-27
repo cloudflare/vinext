@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { NextRequest } from "../shims/server.js";
 import { safeRegExp } from "../config/config-matchers.js";
+import { normalizePath } from "./normalize-path.js";
 
 /**
  * Possible proxy/middleware file names.
@@ -92,13 +93,9 @@ export function matchesMiddleware(
   matcher: MatcherConfig | undefined,
 ): boolean {
   if (!matcher) {
-    // Default: match all paths except static files, _next, and favicon
-    return (
-      !pathname.startsWith("/_next") &&
-      !pathname.startsWith("/api") &&
-      !pathname.includes(".") &&
-      pathname !== "/favicon.ico"
-    );
+    // Next.js default: middleware runs on ALL paths when no matcher is configured.
+    // Users opt out of specific paths by configuring a matcher pattern.
+    return true;
   }
 
   const patterns: string[] = [];
@@ -133,18 +130,28 @@ export function matchPattern(pathname: string, pattern: string): boolean {
     // Fall through to simple matching
   }
 
-  // Convert Next.js path patterns to regex.
-  // Escape dots FIRST (before replacements that produce regex metacharacters
-  // like .* and .+ which must not be escaped).
-  const regexStr = pattern
-    // Escape dots in the literal path segments
-    .replace(/\./g, "\\.")
-    // /:path* -> optionally match slash + zero or more segments
-    .replace(/\/:(\w+)\*/g, "(?:/.*)?")
-    // /:path+ -> match slash + one or more segments
-    .replace(/\/:(\w+)\+/g, "(?:/.+)")
-    // :param -> match one segment
-    .replace(/:(\w+)/g, "([^/]+)");
+  // Convert Next.js path patterns to regex in a single pass.
+  // Matches /:param*, /:param+, :param, dots, and literal text.
+  // Param names may contain hyphens (e.g. [[...sign-in]]).
+  let regexStr = "";
+  const tokenRe = /\/:([\w-]+)\*|\/:([\w-]+)\+|:([\w-]+)|[.]|[^/:.]+|./g;
+  let tok: RegExpExecArray | null;
+  while ((tok = tokenRe.exec(pattern)) !== null) {
+    if (tok[1] !== undefined) {
+      // /:param* → optionally match slash + zero or more segments
+      regexStr += "(?:/.*)?";
+    } else if (tok[2] !== undefined) {
+      // /:param+ → match slash + one or more segments
+      regexStr += "(?:/.+)";
+    } else if (tok[3] !== undefined) {
+      // :param → match one segment
+      regexStr += "([^/]+)";
+    } else if (tok[0] === ".") {
+      regexStr += "\\.";
+    } else {
+      regexStr += tok[0];
+    }
+  }
 
   const re = safeRegExp("^" + regexStr + "$");
   if (re) return re.test(pathname);
@@ -197,12 +204,32 @@ export async function runMiddleware(
   const matcher = config?.matcher;
   const url = new URL(request.url);
 
-  if (!matchesMiddleware(url.pathname, matcher)) {
+  // Normalize the pathname before middleware matching to prevent bypasses
+  // via percent-encoding (/%61dmin → /admin) or double slashes (/dashboard//settings).
+  let decodedPathname: string;
+  try {
+    decodedPathname = decodeURIComponent(url.pathname);
+  } catch {
+    // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
+    return { continue: false, response: new Response("Bad Request", { status: 400 }) };
+  }
+  const normalizedPathname = normalizePath(decodedPathname);
+
+  if (!matchesMiddleware(normalizedPathname, matcher)) {
     return { continue: true };
   }
 
+   // Construct a new Request with the fully decoded + normalized pathname so
+   // middleware always sees the same canonical path that the router uses.
+  let mwRequest = request;
+  if (normalizedPathname !== url.pathname) {
+    const mwUrl = new URL(url);
+    mwUrl.pathname = normalizedPathname;
+    mwRequest = new Request(mwUrl, request);
+  }
+
   // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
-  const nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+  const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
 
   // Execute the middleware
   let response: Response | undefined;
@@ -210,9 +237,13 @@ export async function runMiddleware(
     response = await middlewareFn(nextRequest);
   } catch (e: any) {
     console.error("[vinext] Middleware error:", e);
+    const message =
+      process.env.NODE_ENV === "production"
+        ? "Internal Server Error"
+        : "Middleware Error: " + (e?.message ?? String(e));
     return {
       continue: false,
-      response: new Response("Middleware Error: " + (e?.message ?? String(e)), {
+      response: new Response(message, {
         status: 500,
       }),
     };

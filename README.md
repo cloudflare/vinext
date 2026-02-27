@@ -64,9 +64,15 @@ Your existing `pages/`, `app/`, `next.config.js`, and `public/` directories work
 
 Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted, no-op).
 
-`vinext deploy` options: `--preview`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
+`vinext deploy` options: `--preview`, `--env <name>`, `--name <name>`, `--skip-build`, `--dry-run`, `--experimental-tpr`.
 
 `vinext init` options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
+
+### Starting a new vinext project
+
+Run `npm create next-app@latest` to create a new Next.js project, and then follow these instructions to migrate it to vinext.
+
+In the future, we will havre a proper `npm create vinext` new project workflow. 
 
 ### Migrating an existing Next.js project
 
@@ -96,14 +102,14 @@ Use `--force` to overwrite an existing `vite.config.ts`, or `--skip-check` to sk
 
 ## Why
 
-Vite has become the default build tool for modern web frameworks — fast HMR, a clean plugin API, native ESM, and a growing ecosystem. With [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-rsc) adding React Server Components support, it's now possible to build a full RSC framework on Vite.
+Vite has become the default build tool for modern web frameworks — fast HMR, a clean plugin API, native ESM, and a growing ecosystem. With [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-rsc) adding React Server Components support, it's now possible to build a full RSC framework on Vite.
 
 vinext is an experiment: can we reimplement the Next.js API surface on Vite, so that existing Next.js applications can run on a completely different toolchain? The answer, so far, is mostly yes — about 94% of the API surface works.
 
 The current deployment target is Cloudflare Workers — zero cold starts, global by default, integrated platform (KV, R2, D1, AI). The `vinext deploy` command handles the full build-and-deploy pipeline. Expanding to other deployment targets is something we'd like to explore.
 
 **Alternatives worth knowing about:**
-- **[OpenNext](https://opennext.js.org/)** — adapts `next build` output for AWS, Cloudflare, and other platforms. More mature and battle-tested than vinext.
+- **[OpenNext](https://opennext.js.org/)** — adapts `next build` output for AWS, Cloudflare, and other platforms. OpenNext has been around much longer than vinext, is more mature, and covers more of the Next.js API surface because it builds on top of Next.js's own output rather than reimplementing it. If you want the safer, more proven option, start there.
 - **[Next.js self-hosting](https://nextjs.org/docs/app/building-your-application/deploying#self-hosting)** — Next.js can be deployed to any Node.js server, Docker container, or as a static export.
 
 ### Design principles
@@ -122,7 +128,7 @@ vinext is a Vite plugin that reimplements the public Next.js API — routing, se
 No. vinext is an alternative implementation of the Next.js API surface built on Vite. It does import some Next.js types and utilities, but the core is written from scratch. The goal is not to create a competing framework or add features beyond what Next.js offers — it's an experiment in how far AI-driven development and Vite's toolchain can go in replicating an existing, well-defined API surface.
 
 **How is this different from OpenNext?**
-[OpenNext](https://opennext.js.org/) adapts the *output* of a standard `next build` to run on various platforms. vinext replaces the build entirely — it reimplements the Next.js APIs on Vite from scratch. OpenNext is a great choice if you need production-ready Next.js on non-Vercel platforms today.
+[OpenNext](https://opennext.js.org/) adapts the *output* of a standard `next build` to run on various platforms. Because it builds on Next.js's own output, it inherits broad API coverage and has been well-tested for much longer. vinext takes a different approach: it reimplements the Next.js APIs on Vite from scratch, which means faster builds and smaller bundles, but less coverage of the long tail of Next.js features. If you need a mature, well-tested way to run Next.js outside Vercel, OpenNext is the safer choice. If you're interested in experimenting with a lighter toolchain and don't need every Next.js API, vinext might be worth a look.
 
 **Can I use this in production?**
 You can, with caution. This is experimental software with known bugs. It works well enough for demos and exploration, but it hasn't been battle-tested with real production traffic.
@@ -137,7 +143,7 @@ The test suite has over 1,700 Vitest tests and 380 Playwright E2E tests. This in
 Mostly nobody. This is an experiment in seeing how far AI-driven development can go. The test suite is the primary quality gate — not human code review. Contributions and code review are welcome.
 
 **Why Vite?**
-Vite is an excellent build tool with a rich plugin ecosystem, first-class ESM support, and fast HMR. The [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-rsc) plugin adds React Server Components support with multi-environment builds. This project is an experiment to see how much of the Next.js developer experience can be replicated on top of Vite's infrastructure.
+Vite is an excellent build tool with a rich plugin ecosystem, first-class ESM support, and fast HMR. The [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-rsc) plugin adds React Server Components support with multi-environment builds. This project is an experiment to see how much of the Next.js developer experience can be replicated on top of Vite's infrastructure.
 
 **Does this support the Pages Router, App Router, or both?**
 Both. File-system routing, SSR, client hydration, and deployment to Cloudflare Workers work for both routers.
@@ -157,7 +163,10 @@ We track the public Next.js API surface and add support for new stable features.
 
 ```bash
 vinext deploy
+vinext deploy --env staging
 ```
+
+Use `--env <name>` to target `wrangler.jsonc` `env.<name>`. `--preview` is shorthand for `--env preview`.
 
 The deploy command also auto-detects and fixes common migration issues:
 - Adds `"type": "module"` to package.json if missing
@@ -313,8 +322,37 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 |---------|---|-------|
 | `next.config.js` / `.ts` / `.mjs` | ✅ | Function configs, phase argument |
 | `rewrites` / `redirects` / `headers` | ✅ | All phases, param interpolation |
-| Environment variables (`NEXT_PUBLIC_*`) | ✅ | Inlined at build time via Vite |
+| Environment variables (`.env*`, `NEXT_PUBLIC_*`) | ✅ | Auto-loads Next.js-style dotenv files; only public vars are inlined |
 | `images` config | 🟡 | Parsed but not used for optimization |
+
+### Environment variable loading (`.env*`)
+
+vinext automatically loads dotenv files for `dev`, `build`, `start`, and `deploy`.
+
+Load order matches Next.js (highest priority first):
+
+1. Existing `process.env` values (shell/CI)
+2. `.env.<mode>.local`
+3. `.env.local` (skipped when mode is `test`)
+4. `.env.<mode>`
+5. `.env`
+
+Modes:
+
+- `vinext dev` uses `development`
+- `vinext build`, `vinext start`, and `vinext deploy` use `production`
+
+Variable expansion (`$VAR` / `${VAR}`) is supported.
+
+Client exposure remains explicit:
+
+- `NEXT_PUBLIC_*` variables are inlined for browser usage
+- `next.config.js` `env` entries are also inlined
+- Other env vars stay server-only unless you explicitly expose them through Vite (for example `VITE_*` + `import.meta.env`)
+
+Override behavior:
+
+- To override any `.env*` value, set it in your shell/CI environment before running vinext. Existing `process.env` always wins.
 
 ### Caching
 

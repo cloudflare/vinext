@@ -41,7 +41,13 @@ const __imageDomains: string[] = (() => {
 })();
 const __hasImageConfig = __imageRemotePatterns.length > 0 || __imageDomains.length > 0;
 const __isDev = process.env.NODE_ENV !== "production";
-
+const __imageDeviceSizes: number[] = (() => {
+  try {
+    return JSON.parse(process.env.__VINEXT_IMAGE_DEVICE_SIZES ?? "[640,750,828,1080,1200,1920,2048,3840]");
+  } catch {
+    return [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+  }
+})();
 /**
  * Validate that a remote URL is allowed by the configured remote patterns.
  * Returns true if the URL is allowed, false otherwise.
@@ -135,10 +141,11 @@ function isRemoteUrl(src: string): boolean {
 }
 
 /**
- * Common responsive image widths matching Next.js's default device sizes + image sizes.
+ * Responsive image widths matching Next.js's device sizes config.
  * These are the breakpoints used for srcSet generation.
+ * Configurable via `images.deviceSizes` in next.config.js.
  */
-const RESPONSIVE_WIDTHS = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+const RESPONSIVE_WIDTHS = __imageDeviceSizes;
 
 /**
  * Build a `/_vinext/image` optimization URL.

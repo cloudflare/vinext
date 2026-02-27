@@ -113,13 +113,13 @@ test.describe("Middleware header/cookie behavior (OpenNext compat)", () => {
     request,
   }) => {
     // Ref: opennextjs-cloudflare headers.test.ts "Headers"
-    // The app-basic middleware sets x-middleware-pathname and x-middleware-ran
+    // The app-basic middleware sets x-mw-pathname and x-mw-ran
     const res = await request.get(`${BASE}/`);
     expect(res.status()).toBe(200);
 
     const headers = res.headers();
-    expect(headers["x-middleware-ran"]).toBe("true");
-    expect(headers["x-middleware-pathname"]).toBe("/");
+    expect(headers["x-mw-ran"]).toBe("true");
+    expect(headers["x-mw-pathname"]).toBe("/");
   });
 
   test("internal x-middleware-next header is NOT in response", async ({
@@ -154,11 +154,11 @@ test.describe("Middleware header/cookie behavior (OpenNext compat)", () => {
     // Ref: opennextjs-cloudflare headers.test.ts — headers should only be
     // set on routes that match the middleware config
     const matchedRes = await request.get(`${BASE}/about`);
-    expect(matchedRes.headers()["x-middleware-ran"]).toBe("true");
+    expect(matchedRes.headers()["x-mw-ran"]).toBe("true");
 
     // API routes are not in the middleware matcher
     const apiRes = await request.get(`${BASE}/api/hello`);
-    expect(apiRes.headers()["x-middleware-ran"]).toBeUndefined();
+    expect(apiRes.headers()["x-mw-ran"]).toBeUndefined();
   });
 
   test("request headers available in server component RSC rendering", async ({

@@ -10,6 +10,7 @@
   "dependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-server-dom-webpack": "^19.2.4",
     "vinext": "workspace:*"
   },
   "devDependencies": {

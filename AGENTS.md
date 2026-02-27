@@ -181,6 +181,23 @@ If you're trying to understand how something works under the hood — route matc
 
 ---
 
+## Code Style & Dependencies
+
+### Prefer Node.js Built-in APIs
+
+Always use Node.js built-in modules and APIs before reaching for third-party packages or hand-rolling your own implementation. Node ships a lot of useful utilities that people forget about or don't know exist. Examples:
+
+- `node:util` `parseEnv` for parsing `.env` file contents (not `dotenv`)
+- `node:crypto` `randomUUID()` for UUIDs (not `uuid`)
+- `node:fs/promises` for async file operations
+- `node:test` patterns when they apply
+- `URL` and `URLSearchParams` for URL manipulation (not string splitting)
+- `structuredClone` for deep cloning (not `lodash.cloneDeep`)
+
+If a Node built-in does the job, use it. Only reach for a dependency when the built-in is genuinely insufficient.
+
+---
+
 ## Git Workflow
 
 - **NEVER push directly to main.** Always create a feature branch and open a PR, even for small fixes. This ensures CI runs before changes are merged and provides a review checkpoint.

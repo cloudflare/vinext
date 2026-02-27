@@ -69,7 +69,7 @@ const Form = forwardRef(function Form(
       }
     }
 
-    const url = `${action}?${params.toString()}`;
+    const url = `${action as string}?${params.toString()}`;
 
     // Navigate client-side
     const win = window as any;

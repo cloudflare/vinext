@@ -1,20 +1,39 @@
 name: Publish to npm
 
 on:
-  workflow_dispatch: # manual trigger only for now
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
 
 concurrency:
   group: npm-publish
   cancel-in-progress: true
 
 permissions:
+  contents: write
   id-token: write
 
 jobs:
+  ci:
+    name: CI Gate
+    uses: ./.github/workflows/ci.yml
+
   publish:
+    name: Publish
+    needs: ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history for changelog generation
 
       - uses: pnpm/action-setup@v4
 
@@ -31,17 +50,122 @@ jobs:
         working-directory: packages/vinext
 
       - name: Bump version
+        id: version
         working-directory: packages/vinext
         run: |
-          # Get the latest published version from npm, default to 0.0.0 if none
           LATEST=$(npm view vinext version 2>/dev/null || echo "0.0.0")
-          # Bump patch: 0.0.0 -> 0.0.1, 0.0.1 -> 0.0.2, etc.
           IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST"
-          NEXT_PATCH=$((PATCH + 1))
-          VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}"
-          npm version "$VERSION" --no-git-tag-version
-          echo "Publishing vinext@${VERSION} (was ${LATEST})"
 
-      - name: Publish
+          case "${{ inputs.bump }}" in
+            major)
+              MAJOR=$((MAJOR + 1))
+              MINOR=0
+              PATCH=0
+              ;;
+            minor)
+              MINOR=$((MINOR + 1))
+              PATCH=0
+              ;;
+            patch)
+              PATCH=$((PATCH + 1))
+              ;;
+          esac
+
+          VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          npm version "$VERSION" --no-git-tag-version
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Publishing vinext@${VERSION} (was ${LATEST})"
+          echo "previous=${LATEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish (OIDC trusted publishing)
         working-directory: packages/vinext
         run: npm publish --access public --provenance
+
+      - name: Tag release
+        run: |
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+
+      - name: Get changes since last version
+        run: |
+          PREV_TAG="v${{ steps.version.outputs.previous }}"
+          if git rev-parse "$PREV_TAG" >/dev/null 2>&1; then
+            git log "$PREV_TAG"..HEAD --oneline --no-merges > /tmp/commits.txt
+          else
+            # No previous tag found, grab recent commits
+            git log --oneline --no-merges -20 > /tmp/commits.txt
+          fi
+
+      - name: Generate release summary
+        id: summary
+        env:
+          CF_ACCOUNT_ID: ${{ secrets.CF_AI_GATEWAY_ACCOUNT_ID }}
+          CF_GATEWAY_NAME: ${{ secrets.CF_AI_GATEWAY_NAME }}
+          CF_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
+        run: |
+          COMMITS=$(cat /tmp/commits.txt)
+          echo "::group::Commits since last release"
+          echo "$COMMITS"
+          echo "::endgroup::"
+
+          RESPONSE=$(curl -s --max-time 30 \
+            "https://gateway.ai.cloudflare.com/v1/${CF_ACCOUNT_ID}/${CF_GATEWAY_NAME}/anthropic/v1/messages" \
+            -H "Content-Type: application/json" \
+            -H "cf-aig-authorization: Bearer ${CF_API_TOKEN}" \
+            -H "anthropic-version: 2023-06-01" \
+            -d "$(jq -n --arg commits "$COMMITS" '{
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 300,
+              messages: [{
+                role: "user",
+                content: ("Here are the commits in a new release of vinext (a Vite plugin that reimplements Next.js for Cloudflare Workers):\n\n" + $commits + "\n\nWrite a 1-3 bullet point TLDR of what changed. Be super concise — focus on what matters to users. No preamble, just the bullet points.")
+              }]
+            }')") || true
+
+          SUMMARY=""
+          if [ -n "$RESPONSE" ]; then
+            # Check for API errors
+            ERROR=$(echo "$RESPONSE" | jq -r '.error.message // empty' 2>/dev/null)
+            if [ -n "$ERROR" ]; then
+              echo "::warning::AI Gateway error: $ERROR"
+            else
+              SUMMARY=$(echo "$RESPONSE" | jq -r '.content[0].text // empty' 2>/dev/null)
+            fi
+          fi
+
+          if [ -z "$SUMMARY" ]; then
+            SUMMARY="See commits: https://github.com/${{ github.repository }}/commits/v${{ steps.version.outputs.version }}"
+          fi
+
+          echo "::group::Release summary"
+          echo "$SUMMARY"
+          echo "::endgroup::"
+
+          {
+            echo "text<<EOFMARKER"
+            echo "$SUMMARY"
+            echo "EOFMARKER"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Notify Google Chat
+        if: success()
+        continue-on-error: true
+        env:
+          GOOGLE_CHAT_WEBHOOK: ${{ secrets.GOOGLE_CHAT_WEBHOOK }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SUMMARY: ${{ steps.summary.outputs.text }}
+        run: |
+          PAYLOAD=$(jq -n \
+            --arg version "$VERSION" \
+            --arg summary "$SUMMARY" \
+            '{"text": ("*vinext v" + $version + " published to npm*\n\n" + $summary + "\n\nnpm: https://www.npmjs.com/package/vinext/v/" + $version)}')
+
+          echo "::group::Webhook payload"
+          echo "$PAYLOAD"
+          echo "::endgroup::"
+
+          RESPONSE=$(curl -sS -w "\nHTTP %{http_code}" -X POST "$GOOGLE_CHAT_WEBHOOK" \
+            -H "Content-Type: application/json; charset=UTF-8" \
+            -d "$PAYLOAD")
+
+          echo "$RESPONSE"

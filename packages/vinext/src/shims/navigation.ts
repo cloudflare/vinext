@@ -210,11 +210,21 @@ function notifyListeners(): void {
   for (const fn of _listeners) fn();
 }
 
-// Cached URLSearchParams for referential stability (useSyncExternalStore
-// compares snapshots with Object.is — new URLSearchParams instances are
-// never equal, which would cause infinite re-renders).
+// Cached URLSearchParams, pathname, etc. for referential stability
+// useSyncExternalStore compares snapshots with Object.is — avoid creating
+// new instances on every render (infinite re-renders).
 let _cachedSearch = !isServer ? window.location.search : "";
 let _cachedSearchParams: URLSearchParams = new URLSearchParams(_cachedSearch);
+let _cachedServerSearchParams: URLSearchParams | null = null;
+let _cachedPathname = !isServer ? stripBasePath(window.location.pathname) : "/";
+
+function getPathnameSnapshot(): string {
+  const current = stripBasePath(window.location.pathname);
+  if (current !== _cachedPathname) {
+    _cachedPathname = current;
+  }
+  return _cachedPathname;
+}
 
 function getSearchParamsSnapshot(): URLSearchParams {
   const current = window.location.search;
@@ -225,15 +235,13 @@ function getSearchParamsSnapshot(): URLSearchParams {
   return _cachedSearchParams;
 }
 
-// Same for pathname — cache the string for referential stability
-let _cachedPathname = !isServer ? stripBasePath(window.location.pathname) : "/";
-
-function getPathnameSnapshot(): string {
-  const current = stripBasePath(window.location.pathname);
-  if (current !== _cachedPathname) {
-    _cachedPathname = current;
+function getServerSearchParamsSnapshot(): URLSearchParams {
+  const ctx = _getServerContext();
+  if (ctx?.searchParams != null) return ctx.searchParams;
+  if (_cachedServerSearchParams === null) {
+    _cachedServerSearchParams = new URLSearchParams();
   }
-  return _cachedPathname;
+  return _cachedServerSearchParams;
 }
 
 // Track client-side params (set during RSC hydration/navigation)
@@ -289,7 +297,7 @@ export function useSearchParams(): URLSearchParams {
    return React.useSyncExternalStore(
     (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
     getSearchParamsSnapshot,
-    () => _getServerContext()?.searchParams ?? new URLSearchParams(),
+    getServerSearchParamsSnapshot,
   );
 }
 
@@ -307,10 +315,10 @@ export function useParams<
 }
 
 /**
- * Check if a href is an external URL.
+ * Check if a href is an external URL (any URL scheme per RFC 3986, or protocol-relative).
  */
 function isExternalUrl(href: string): boolean {
-  return href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//");
+  return /^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//");
 }
 
 /**
@@ -393,12 +401,12 @@ function restoreScrollPosition(state: unknown): void {
     // Defer to allow other popstate listeners (browser entry) to run first
     // and set __VINEXT_RSC_PENDING__. Promise.resolve() schedules a microtask
     // that runs after all synchronous event listeners have completed.
-    Promise.resolve().then(() => {
+    void Promise.resolve().then(() => {
       const pending: Promise<void> | null = (window as any).__VINEXT_RSC_PENDING__ ?? null;
 
       if (pending) {
         // Wait for the RSC navigation to finish rendering, then scroll.
-        pending.then(() => {
+        void pending.then(() => {
           requestAnimationFrame(() => {
             window.scrollTo(x, y);
           });
@@ -488,11 +496,11 @@ export function useRouter() {
   const router = {
     push(href: string, options?: { scroll?: boolean }): void {
       if (isServer) return;
-      navigateImpl(href, "push", options?.scroll !== false);
+      void navigateImpl(href, "push", options?.scroll !== false);
     },
     replace(href: string, options?: { scroll?: boolean }): void {
       if (isServer) return;
-      navigateImpl(href, "replace", options?.scroll !== false);
+      void navigateImpl(href, "replace", options?.scroll !== false);
     },
     back(): void {
       if (isServer) return;
@@ -519,6 +527,7 @@ export function useRouter() {
       prefetched.add(rscUrl);
       fetch(rscUrl, {
         headers: { Accept: "text/x-component" },
+        credentials: "include",
         priority: "low" as RequestInit["priority"],
       }).then((response) => {
         if (response.ok) {
@@ -687,7 +696,7 @@ export enum RedirectType {
  */
 export function redirect(url: string, type?: "replace" | "push" | RedirectType): never {
   const error = new Error(`NEXT_REDIRECT:${url}`);
-  (error as any).digest = `NEXT_REDIRECT;${type ?? "replace"};${url}`;
+  (error as any).digest = `NEXT_REDIRECT;${type ?? "replace"};${encodeURIComponent(url)}`;
   throw error;
 }
 
@@ -696,7 +705,7 @@ export function redirect(url: string, type?: "replace" | "push" | RedirectType):
  */
 export function permanentRedirect(url: string): never {
   const error = new Error(`NEXT_REDIRECT:${url}`);
-  (error as any).digest = `NEXT_REDIRECT;replace;${url};308`;
+  (error as any).digest = `NEXT_REDIRECT;replace;${encodeURIComponent(url)};308`;
   throw error;
 }
 

@@ -36,8 +36,9 @@ export default {
       let pathname = url.pathname;
       let urlWithQuery = pathname + url.search;
 
-      // Block protocol-relative URL open redirect attacks (//evil.com/).
-      if (pathname.startsWith("//")) {
+      // Block protocol-relative URL open redirects (//evil.com/ or /\evil.com/).
+      // Normalize backslashes: browsers treat /\ as // in URL context.
+      if (pathname.replaceAll("\\", "/").startsWith("//")) {
         return new Response("404 Not Found", { status: 404 });
       }
 
@@ -207,10 +208,7 @@ export default {
       return mergeHeaders(response, middlewareHeaders, middlewareRewriteStatus);
     } catch (error) {
       console.error("[vinext] Worker error:", error);
-      return new Response(
-        `Internal Server Error: ${error instanceof Error ? error.message : String(error)}`,
-        { status: 500 },
-      );
+      return new Response("Internal Server Error", { status: 500 });
     }
   },
 };

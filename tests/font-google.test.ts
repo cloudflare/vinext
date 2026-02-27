@@ -359,6 +359,7 @@ describe("vinext:google-fonts plugin", () => {
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain("_selfHostedCSS");
+    // lgtm[js/incomplete-sanitization] — escaping quotes for test assertion, not sanitization
     expect(result.code).toContain(fakeCSS.replace(/"/g, '\\"'));
 
     plugin._fontCache.clear();

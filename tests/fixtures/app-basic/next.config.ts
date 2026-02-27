@@ -62,6 +62,11 @@ const nextConfig: NextConfig = {
       beforeFiles: [
         // Used by Vitest: app-router.test.ts
         { source: "/rewrite-about", destination: "/about" },
+        // Used by Vitest: app-router.test.ts (external proxy credential stripping)
+        // Only active when TEST_EXTERNAL_PROXY_TARGET env var is set.
+        ...(process.env.TEST_EXTERNAL_PROXY_TARGET
+          ? [{ source: "/proxy-external-test/:path*", destination: `${process.env.TEST_EXTERNAL_PROXY_TARGET}/:path*` }]
+          : []),
       ],
       afterFiles: [
         // Used by Vitest: app-router.test.ts
