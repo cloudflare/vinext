@@ -3276,7 +3276,7 @@ export function matchConfigPattern(
   if (
     pattern.includes("(") ||
     pattern.includes("\\") ||
-    /:\w+[*+][^/]/.test(pattern)
+    /:[\w-]+[*+][^/]/.test(pattern)
   ) {
     try {
       // Extract named params and their constraints from the pattern.
@@ -3284,13 +3284,14 @@ export function matchConfigPattern(
       // :param -> ([^/]+)
       // :param* -> (.*)
       // :param+ -> (.+)
+      // Param names may contain hyphens (e.g. :auth-method, :sign-in).
       const paramNames: string[] = [];
       // Single-pass conversion with procedural suffix handling. The tokenizer
       // matches only simple, non-overlapping tokens; quantifier/constraint
       // suffixes after :param are consumed procedurally to avoid polynomial
       // backtracking in the regex engine.
       let regexStr = "";
-      const tokenRe = /:(\w+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
+      const tokenRe = /:([\w-]+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
       let tok: RegExpExecArray | null;
       while ((tok = tokenRe.exec(pattern)) !== null) {
         if (tok[1] !== undefined) {
@@ -3334,7 +3335,8 @@ export function matchConfigPattern(
   }
 
   // Check for catch-all patterns (:param* or :param+) without regex groups
-  const catchAllMatch = pattern.match(/:(\w+)(\*|\+)$/);
+  // Param names may contain hyphens (e.g. :sign-in*, :sign-up+).
+  const catchAllMatch = pattern.match(/:([\w-]+)(\*|\+)$/);
   if (catchAllMatch) {
     const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
     const paramName = catchAllMatch[1];

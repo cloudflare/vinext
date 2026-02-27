@@ -919,10 +919,10 @@ function __matchConfigPattern(pathname, pattern) {
       const paramNames = [];
       const regexStr = pattern
         .replace(/\\./g, "\\\\.")
-        .replace(/:([a-zA-Z_]\\w*)\\*(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.*)"; })
-        .replace(/:([a-zA-Z_]\\w*)\\+(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.+)"; })
-        .replace(/:([a-zA-Z_]\\w*)\\(([^)]+)\\)/g, (_, name, c) => { paramNames.push(name); return "(" + c + ")"; })
-        .replace(/:([a-zA-Z_]\\w*)/g, (_, name) => { paramNames.push(name); return "([^/]+)"; });
+        .replace(/:([\\w-]+)\\*(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.*)"; })
+        .replace(/:([\\w-]+)\\+(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.+)"; })
+        .replace(/:([\\w-]+)\\(([^)]+)\\)/g, (_, name, c) => { paramNames.push(name); return "(" + c + ")"; })
+        .replace(/:([\\w-]+)/g, (_, name) => { paramNames.push(name); return "([^/]+)"; });
       const re = __safeRegExp("^" + regexStr + "$");
       if (!re) return null;
       const match = re.exec(pathname);
@@ -932,7 +932,7 @@ function __matchConfigPattern(pathname, pattern) {
       return params;
     } catch { /* fall through */ }
   }
-  const catchAllMatch = pattern.match(/:([a-zA-Z_]\\w*)(\\*|\\+)$/);
+  const catchAllMatch = pattern.match(/:([\\w-]+)(\\*|\\+)$/);
   if (catchAllMatch) {
     const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
     const paramName = catchAllMatch[1];
@@ -1164,7 +1164,7 @@ function __applyConfigHeaders(pathname) {
       .replace(/\\+/g, "\\\\+")
       .replace(/\\?/g, "\\\\?")
       .replace(/\\*/g, ".*")
-      .replace(/:[a-zA-Z_]\\w*/g, "[^/]+")
+      .replace(/:[\\w-]+/g, "[^/]+")
       .replace(/___GROUP_(\\d+)___/g, (_, idx) => "(" + groups[Number(idx)] + ")");
     const sourceRegex = __safeRegExp("^" + escaped + "$");
     if (sourceRegex && sourceRegex.test(pathname)) result.push(...rule.headers);

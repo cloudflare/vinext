@@ -175,15 +175,16 @@ export function escapeHeaderSource(source: string): string {
   });
 
   // Step 2: single-pass conversion of the placeholder-bearing string.
-  // Match named params (:\w+), sentinel group placeholders, metacharacters, and literal text.
+  // Match named params (:[\w-]+), sentinel group placeholders, metacharacters, and literal text.
   // The regex uses non-overlapping alternatives to avoid backtracking:
-  //   :\w+  — named parameter (constraint sentinel is checked procedurally)
+  //   :[\w-]+  — named parameter (constraint sentinel is checked procedurally;
+  //              param names may contain hyphens, e.g. :auth-method)
   //   sentinel group — standalone regex group placeholder
   //   [.+?*] — single metachar to escape/convert
   //   [^.+?*:\uE000]+ — literal text (excludes all chars that start other alternatives)
   let result = "";
   const re = new RegExp(
-    `${S}G(\\d+)${S}|:\\w+|[.+?*]|[^.+?*:\\uE000]+`, // lgtm[js/redos] — alternatives are non-overlapping
+    `${S}G(\\d+)${S}|:[\\w-]+|[.+?*]|[^.+?*:\\uE000]+`, // lgtm[js/redos] — alternatives are non-overlapping
     "g",
   );
   let m: RegExpExecArray | null;
@@ -374,16 +375,17 @@ export function matchConfigPattern(
   if (
     pattern.includes("(") ||
     pattern.includes("\\") ||
-    /:\w+[*+][^/]/.test(pattern)
+    /:[\w-]+[*+][^/]/.test(pattern)
   ) {
     try {
+      // Param names may contain hyphens (e.g. :auth-method, :sign-in).
       const paramNames: string[] = [];
       // Single-pass conversion with procedural suffix handling. The tokenizer
       // matches only simple, non-overlapping tokens; quantifier/constraint
       // suffixes after :param are consumed procedurally to avoid polynomial
       // backtracking in the regex engine.
       let regexStr = "";
-      const tokenRe = /:(\w+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
+      const tokenRe = /:([\w-]+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
       let tok: RegExpExecArray | null;
       while ((tok = tokenRe.exec(pattern)) !== null) {
         if (tok[1] !== undefined) {
@@ -427,7 +429,8 @@ export function matchConfigPattern(
   }
 
   // Check for catch-all patterns (:param* or :param+) without regex groups
-  const catchAllMatch = pattern.match(/:(\w+)(\*|\+)$/);
+  // Param names may contain hyphens (e.g. :sign-in*, :sign-up+).
+  const catchAllMatch = pattern.match(/:([\w-]+)(\*|\+)$/);
   if (catchAllMatch) {
     const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
     const paramName = catchAllMatch[1];

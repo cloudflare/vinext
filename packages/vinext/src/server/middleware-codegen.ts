@@ -160,7 +160,7 @@ function matchMiddlewarePattern(pathname, pattern) {
   // Single-pass tokenizer (avoids chained .replace() flagged by CodeQL as
   // incomplete sanitization — later passes could re-process earlier outputs).
   ${l} regexStr = "";
-  ${v} tokenRe = /\\/:([\\w]+)\\*|\\/:([\\w]+)\\+|:([\\w]+)|[.]|[^/:.]+|./g;
+  ${v} tokenRe = /\\/:([\\w-]+)\\*|\\/:([\\w-]+)\\+|:([\\w-]+)|[.]|[^/:.]+|./g;
   ${l} tok;
   while ((tok = tokenRe.exec(pattern)) !== null) {
     if (tok[1] !== undefined) { regexStr += "(?:/.*)?"; }
