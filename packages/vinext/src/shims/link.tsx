@@ -166,7 +166,7 @@ function prefetchUrl(href: string): void {
       // App Router: prefetch the RSC payload and store in cache
       fetch(rscUrl, {
         headers: { Accept: "text/x-component" },
-        credentials: "include",
+        credentials: "same-origin",
         priority: "low" as any,
         // @ts-expect-error — purpose is a valid fetch option in some browsers
         purpose: "prefetch",
