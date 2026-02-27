@@ -2023,12 +2023,7 @@ async function _handleRequest(request) {
       } else {
         // Suppress unhandled promise rejection — with a loading boundary,
         // redirect/notFound errors are handled by rscOnError during streaming.
-        // Log in development for visibility.
-        testResult.catch((err) => {
-          if (process.env.NODE_ENV !== "production") {
-            console.warn("[vinext] Async component error (handled by loading boundary):", err);
-          }
-        });
+        testResult.catch(() => {});
       }
     }
   } catch (preRenderErr) {
