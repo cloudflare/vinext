@@ -1,13 +1,23 @@
 import { describe, it, expect } from "vitest";
+import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
 import localFont, { getSSRFontStyles } from "../packages/vinext/src/shims/font-local.js";
 import type { Plugin } from "vite";
 
 // ── Helpers ───────────────────────────────────────────────────
 
-/** Unwrap a Vite plugin hook that may use the object-with-filter format */
-function unwrapHook(hook: any): Function {
-  return typeof hook === "function" ? hook : hook?.handler;
+/**
+ * Unwrap a Vite plugin hook that may use the object-with-filter format.
+ * Vite's ObjectHook<T, O> type is complex (function | { handler, filter, order }),
+ * so we accept unknown and narrow at runtime.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Vite's plugin hook types are too complex for static typing here
+function unwrapHook(hook: unknown): (...args: any[]) => any {
+  if (typeof hook === "function") return hook as (...args: any[]) => any;
+  if (hook && typeof hook === "object" && "handler" in hook && typeof (hook as Record<string, unknown>).handler === "function") {
+    return (hook as Record<string, (...args: any[]) => any>).handler;
+  }
+  throw new Error("Expected a function or { handler } object");
 }
 
 /** Extract the vinext:local-fonts plugin from the plugin array */
@@ -29,64 +39,64 @@ describe("vinext:local-fonts plugin", () => {
 
   // ── Guard clauses ────────────────────────────────────────────
 
-  it("returns null for files without next/font/local", () => {
+  it("returns null for files without next/font/local", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = `import React from 'react';\nconst x = 1;`;
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).toBeNull();
   });
 
-  it("returns null for node_modules files", () => {
+  it("returns null for node_modules files", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = `import localFont from 'next/font/local';\nconst f = localFont({ src: './font.woff2' });`;
-    const result = transform.call(plugin, code, "node_modules/some-pkg/index.ts");
+    const result = await transform.call(plugin, code, "node_modules/some-pkg/index.ts");
     expect(result).toBeNull();
   });
 
-  it("returns null for virtual modules", () => {
+  it("returns null for virtual modules", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = `import localFont from 'next/font/local';\nconst f = localFont({ src: './font.woff2' });`;
-    const result = transform.call(plugin, code, "\0virtual:something");
+    const result = await transform.call(plugin, code, "\0virtual:something");
     expect(result).toBeNull();
   });
 
-  it("returns null for non-script files", () => {
+  it("returns null for non-script files", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = `import localFont from 'next/font/local';\nconst f = localFont({ src: './font.woff2' });`;
-    const result = transform.call(plugin, code, "/app/styles.css");
+    const result = await transform.call(plugin, code, "/app/styles.css");
     expect(result).toBeNull();
   });
 
-  it("returns null when code mentions next/font/local but has no import", () => {
+  it("returns null when code mentions next/font/local but has no import", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = `// This file mentions next/font/local in a comment\nconst x = 1;`;
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).toBeNull();
   });
 
-  it("returns null when import exists but no font file paths", () => {
+  it("returns null when import exists but no font file paths", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = `import localFont from 'next/font/local';\n// no call with font paths`;
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).toBeNull();
   });
 
   // ── Simple string src ────────────────────────────────────────
 
-  it("transforms a simple string src path", () => {
+  it("transforms a simple string src path", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
       `const myFont = localFont({ src: "./my-font.woff2" });`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     // Should add an import for the font file
     expect(result.code).toContain(`import __vinext_local_font_0 from "./my-font.woff2";`);
@@ -97,16 +107,16 @@ describe("vinext:local-fonts plugin", () => {
     expect(result.map).toBeDefined();
   });
 
-  // ── Object src with path property ────────────────────────────
+  // ��─ Object src with path property ────────────────────────────
 
-  it("transforms a single source object with path property", () => {
+  it("transforms a single source object with path property", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
       `const myFont = localFont({ src: { path: "./font.woff2", weight: "400" } });`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain(`import __vinext_local_font_0 from "./font.woff2";`);
     expect(result.code).toContain("path: __vinext_local_font_0");
@@ -115,7 +125,7 @@ describe("vinext:local-fonts plugin", () => {
 
   // ── Array of source objects ──────────────────────────────────
 
-  it("transforms multiple font sources in an array", () => {
+  it("transforms multiple font sources in an array", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
@@ -128,7 +138,7 @@ describe("vinext:local-fonts plugin", () => {
       `  variable: "--font-inter",`,
       `});`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     // Two imports should be added
     expect(result.code).toContain(`import __vinext_local_font_0 from "./fonts/InterVariable.woff2";`);
@@ -143,84 +153,84 @@ describe("vinext:local-fonts plugin", () => {
 
   // ── Font file extensions ─────────────────────────────────────
 
-  it("handles .woff files", () => {
+  it("handles .woff files", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
       `const f = localFont({ src: "./font.woff" });`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain(`import __vinext_local_font_0 from "./font.woff";`);
   });
 
-  it("handles .ttf files", () => {
+  it("handles .ttf files", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
       `const f = localFont({ src: "./font.ttf" });`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain(`import __vinext_local_font_0 from "./font.ttf";`);
   });
 
-  it("handles .otf files", () => {
+  it("handles .otf files", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
       `const f = localFont({ src: "./font.otf" });`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain(`import __vinext_local_font_0 from "./font.otf";`);
   });
 
-  it("handles .eot files", () => {
+  it("handles .eot files", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
       `const f = localFont({ src: "./font.eot" });`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain(`import __vinext_local_font_0 from "./font.eot";`);
   });
 
-  // ── Quote styles ─��───────────────────────────────────────────
+  // ── Quote styles ─────────────────────────────────────────────
 
-  it("handles single-quoted paths", () => {
+  it("handles single-quoted paths", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
       `const f = localFont({ src: './font.woff2' });`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain(`import __vinext_local_font_0 from "./font.woff2";`);
     expect(result.code).toContain("src: __vinext_local_font_0");
   });
 
-  it("handles double-quoted paths", () => {
+  it("handles double-quoted paths", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
       `const f = localFont({ src: "./font.woff2" });`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain("src: __vinext_local_font_0");
   });
 
   // ── Preserves other code ─────────────────────────────────────
 
-  it("preserves non-font code alongside transforms", () => {
+  it("preserves non-font code alongside transforms", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
@@ -232,7 +242,7 @@ describe("vinext:local-fonts plugin", () => {
       ``,
       `export default function Layout() { return null; }`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     // Non-font imports should be preserved
     expect(result.code).toContain(`import React from 'react'`);
@@ -244,7 +254,7 @@ describe("vinext:local-fonts plugin", () => {
     expect(result.code).toContain("export default function Layout");
   });
 
-  it("preserves variable and display options", () => {
+  it("preserves variable and display options", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
@@ -255,7 +265,7 @@ describe("vinext:local-fonts plugin", () => {
       `  display: "swap",`,
       `});`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain('variable: "--font-custom"');
     expect(result.code).toContain('display: "swap"');
@@ -263,26 +273,26 @@ describe("vinext:local-fonts plugin", () => {
 
   // ── Path styles ──────────────────────────────────────────────
 
-  it("handles relative paths with subdirectories", () => {
+  it("handles relative paths with subdirectories", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
       `const f = localFont({ src: "./assets/fonts/my-font.woff2" });`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain(`import __vinext_local_font_0 from "./assets/fonts/my-font.woff2";`);
   });
 
-  it("handles parent-relative paths", () => {
+  it("handles parent-relative paths", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
       `const f = localFont({ src: "../fonts/my-font.woff2" });`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain(`import __vinext_local_font_0 from "../fonts/my-font.woff2";`);
   });
@@ -359,8 +369,8 @@ describe("vinext:local-fonts plugin", () => {
       variable: "--font-custom",
     });
     expect(result.className).toBeDefined();
-    // variable returns a class name, not the variable name
-    expect(result.variable).toMatch(/^__variable_local_\d+$/);
+    // variable returns a class name — deterministic hash format
+    expect(result.variable).toMatch(/^__variable_[0-9a-f]+$/);
   });
 
   it("sanitizes declaration props to prevent injection", () => {
@@ -403,24 +413,153 @@ describe("vinext:local-fonts plugin", () => {
     }
   });
 
+  // ── Build mode: metrics injection ────────────────────────────
+
+  describe("build mode (isBuild=true)", () => {
+    const FONT_DIR = path.resolve(import.meta.dirname, "fixtures/fonts");
+
+    function getBuildPlugin(): Plugin {
+      const plugin = getLocalFontsPlugin();
+      // Simulate configResolved for build mode
+      (plugin as any)._isBuild = true;
+      return plugin;
+    }
+
+    it("injects _selfHostedCSS and _hashedFamily for a real font file", async () => {
+      const plugin = getBuildPlugin();
+      const transform = unwrapHook(plugin.transform);
+      const fontPath = `./fonts/inter-latin-400.woff2`;
+      const code = [
+        `import localFont from 'next/font/local';`,
+        `const myFont = localFont({ src: "${fontPath}" });`,
+      ].join("\n");
+      // Use the fixtures directory as the source file location
+      const result = await transform.call(plugin, code, path.join(FONT_DIR, "..", "layout.tsx"));
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("_selfHostedCSS:");
+      expect(result.code).toContain("_hashedFamily:");
+      expect(result.code).toContain("_className:");
+      expect(result.code).toContain("_variableClassName:");
+    });
+
+    it("injects _fallbackCSS and _fallbackFamily when adjustFontFallback is not false", async () => {
+      const plugin = getBuildPlugin();
+      const transform = unwrapHook(plugin.transform);
+      const fontPath = `./fonts/inter-latin-400.woff2`;
+      const code = [
+        `import localFont from 'next/font/local';`,
+        `const myFont = localFont({ src: "${fontPath}" });`,
+      ].join("\n");
+      const result = await transform.call(plugin, code, path.join(FONT_DIR, "..", "layout.tsx"));
+      expect(result).not.toBeNull();
+      // Should have fallback metrics since adjustFontFallback defaults to true
+      expect(result.code).toContain("_fallbackFamily:");
+      expect(result.code).toContain("_fallbackCSS:");
+      // Fallback CSS should contain size-adjust metrics
+      expect(result.code).toContain("size-adjust:");
+    });
+
+    it("does NOT inject fallback when adjustFontFallback is false", async () => {
+      const plugin = getBuildPlugin();
+      const transform = unwrapHook(plugin.transform);
+      const fontPath = `./fonts/inter-latin-400.woff2`;
+      const code = [
+        `import localFont from 'next/font/local';`,
+        `const myFont = localFont({ src: "${fontPath}", adjustFontFallback: false });`,
+      ].join("\n");
+      const result = await transform.call(plugin, code, path.join(FONT_DIR, "..", "layout.tsx"));
+      expect(result).not.toBeNull();
+      // Should still have self-hosted CSS and hashed family
+      expect(result.code).toContain("_selfHostedCSS:");
+      expect(result.code).toContain("_hashedFamily:");
+      // Should NOT have fallback metrics
+      expect(result.code).not.toContain("_fallbackFamily:");
+      expect(result.code).not.toContain("_fallbackCSS:");
+    });
+
+    it("selfHostedCSS references the hashed font-family name", async () => {
+      const plugin = getBuildPlugin();
+      const transform = unwrapHook(plugin.transform);
+      const fontPath = `./fonts/inter-latin-400.woff2`;
+      const code = [
+        `import localFont from 'next/font/local';`,
+        `const myFont = localFont({ src: "${fontPath}" });`,
+      ].join("\n");
+      const result = await transform.call(plugin, code, path.join(FONT_DIR, "..", "layout.tsx"));
+      expect(result).not.toBeNull();
+
+      // Extract the hashed family from the output
+      const hashedFamilyMatch = result.code.match(/_hashedFamily:\s*"([^"]+)"/);
+      expect(hashedFamilyMatch).not.toBeNull();
+      if (!hashedFamilyMatch) throw new Error("expected _hashedFamily match");
+      const hashedFamily = hashedFamilyMatch[1];
+
+      // The self-hosted CSS should reference the hashed family
+      expect(result.code).toContain(`font-family: '${hashedFamily}'`);
+    });
+
+    it("handles array src with multiple font files in build mode", async () => {
+      const plugin = getBuildPlugin();
+      const transform = unwrapHook(plugin.transform);
+      // We only have one font file, but we can reference it twice with different weights
+      const code = [
+        `import localFont from 'next/font/local';`,
+        `const myFont = localFont({`,
+        `  src: [`,
+        `    { path: "./fonts/inter-latin-400.woff2", weight: "400", style: "normal" },`,
+        `  ],`,
+        `  variable: "--font-inter",`,
+        `});`,
+      ].join("\n");
+      const result = await transform.call(plugin, code, path.join(FONT_DIR, "..", "layout.tsx"));
+      expect(result).not.toBeNull();
+      expect(result.code).toContain("_selfHostedCSS:");
+      expect(result.code).toContain("_hashedFamily:");
+      expect(result.code).toContain("_fallbackCSS:");
+    });
+  });
+
   // ── Sourcemap ────────────────────────────────────────────────
 
-  it("generates a sourcemap", () => {
+  it("generates a sourcemap", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
       `import localFont from 'next/font/local';`,
       `const f = localFont({ src: "./font.woff2" });`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.map).toBeDefined();
     expect(result.map.mappings).toBeDefined();
   });
 
+  // ── Multiple localFont() calls in one file ───────────────────
+
+  it("transforms multiple localFont() calls in a single file", async () => {
+    const plugin = getLocalFontsPlugin();
+    const transform = unwrapHook(plugin.transform);
+    const code = [
+      `import localFont from 'next/font/local';`,
+      `const heading = localFont({ src: "./fonts/heading.woff2", variable: "--font-heading" });`,
+      `const body = localFont({ src: "./fonts/body.woff2", variable: "--font-body" });`,
+    ].join("\n");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
+    expect(result).not.toBeNull();
+    // Both font files should get import statements
+    expect(result.code).toContain(`import __vinext_local_font_0 from "./fonts/heading.woff2"`);
+    expect(result.code).toContain(`import __vinext_local_font_1 from "./fonts/body.woff2"`);
+    // Both src references should be replaced with import identifiers
+    expect(result.code).toContain("src: __vinext_local_font_0");
+    expect(result.code).toContain("src: __vinext_local_font_1");
+    // Both variable declarations should remain
+    expect(result.code).toContain('variable: "--font-heading"');
+    expect(result.code).toContain('variable: "--font-body"');
+  });
+
   // ── Realistic layout example ─────────────────────────────────
 
-  it("transforms a realistic Next.js layout file", () => {
+  it("transforms a realistic Next.js layout file", async () => {
     const plugin = getLocalFontsPlugin();
     const transform = unwrapHook(plugin.transform);
     const code = [
@@ -443,7 +582,7 @@ describe("vinext:local-fonts plugin", () => {
       `  );`,
       `}`,
     ].join("\n");
-    const result = transform.call(plugin, code, "/app/layout.tsx");
+    const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     // Should add two font imports
     expect(result.code).toContain(`import __vinext_local_font_0 from "./fonts/InterVariable.woff2";`);

@@ -3660,11 +3660,11 @@ describe("next/font/google shim", () => {
     );
     const result = Inter({ subsets: ["latin"], weight: ["400", "700"] });
 
-    expect(result.className).toMatch(/^__font_inter_/);
+    expect(result.className).toMatch(/^__className_[0-9a-f]{6}$/);
     expect(result.style.fontFamily).toContain("Inter");
     // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
     // Users apply this class to set the CSS variable on that element.
-    expect(result.variable).toMatch(/^__variable_inter_/);
+    expect(result.variable).toMatch(/^__variable_[0-9a-f]{6}$/);
   });
 
   it("Proxy returns font loaders for any family", async () => {
@@ -3676,7 +3676,7 @@ describe("next/font/google shim", () => {
     expect(typeof loader).toBe("function");
 
     const result = loader({ weight: "400" });
-    expect(result.className).toMatch(/^__font_poppins_/);
+    expect(result.className).toMatch(/^__className_[0-9a-f]{6}$/);
     expect(result.style.fontFamily).toContain("Poppins");
   });
 
@@ -3689,7 +3689,7 @@ describe("next/font/google shim", () => {
 
     expect(result.style.fontFamily).toContain("Roboto Mono");
     // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
-    expect(result.variable).toMatch(/^__variable_roboto_mono_/);
+    expect(result.variable).toMatch(/^__variable_[0-9a-f]{6}$/);
   });
 
   it("uses custom variable name when provided", async () => {
@@ -3699,7 +3699,7 @@ describe("next/font/google shim", () => {
     const result = Inter({ variable: "--custom-font" });
     // When custom variable is provided, the generated class still sets that variable
     // The returned value is still a class name, not the CSS variable name itself
-    expect(result.variable).toMatch(/^__variable_inter_/);
+    expect(result.variable).toMatch(/^__variable_[0-9a-f]{6}$/);
   });
 
   it("uses custom fallback fonts", async () => {
@@ -3748,7 +3748,7 @@ describe("next/font/local shim", () => {
     );
     const result = localFont({ src: "./my-font.woff2" });
 
-    expect(result.className).toMatch(/^__font_local_/);
+    expect(result.className).toMatch(/^__className_[0-9a-f]{6}$/);
     expect(result.style.fontFamily).toMatch(/__local_font_/);
   });
 
@@ -3761,7 +3761,7 @@ describe("next/font/local shim", () => {
       variable: "--font-custom",
     });
     // variable should be a generated class name, not the raw CSS variable
-    expect(result.variable).toMatch(/^__variable_local_/);
+    expect(result.variable).toMatch(/^__variable_[0-9a-f]{6}$/);
     expect(result.variable).not.toBe("--font-custom");
   });
 
@@ -3776,7 +3776,7 @@ describe("next/font/local shim", () => {
       ],
     });
 
-    expect(result.className).toMatch(/^__font_local_/);
+    expect(result.className).toMatch(/^__className_[0-9a-f]{6}$/);
     expect(result.style.fontFamily).toBeTruthy();
   });
 
@@ -3826,8 +3826,8 @@ describe("next/font/local shim", () => {
 
     expect(a.className).not.toBe(b.className);
     expect(a.variable).not.toBe(b.variable);
-    expect(a.variable).toMatch(/^__variable_local_/);
-    expect(b.variable).toMatch(/^__variable_local_/);
+    expect(a.variable).toMatch(/^__variable_[0-9a-f]{6}$/);
+    expect(b.variable).toMatch(/^__variable_[0-9a-f]{6}$/);
   });
 
   it("exports getSSRFontPreloads function", async () => {
@@ -3854,7 +3854,7 @@ describe("next/font/local shim", () => {
     expect(match!.type).toBe("font/woff2");
   });
 
-  it("collects preload data for array font sources with absolute URLs", async () => {
+  it("collects preload data for array font sources — only .woff2", async () => {
     const fontLocal = await import(
       "../packages/vinext/src/shims/font-local.js"
     );
@@ -3876,8 +3876,9 @@ describe("next/font/local shim", () => {
     );
     expect(woff2).toBeDefined();
     expect(woff2!.type).toBe("font/woff2");
-    expect(woff).toBeDefined();
-    expect(woff!.type).toBe("font/woff");
+    // .woff files should NOT be preloaded — browsers that support preloading
+    // also support woff2, making woff preloads wasteful
+    expect(woff).toBeUndefined();
   });
 
   it("does not collect preload data for relative URLs", async () => {

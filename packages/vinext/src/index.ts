@@ -2701,10 +2701,6 @@ hydrate();
       },
 
       transform: {
-        // Hook filter: only invoke JS when code contains 'next/font/google'.
-        // The _isBuild runtime check can't be expressed as a filter, but this
-        // still eliminates nearly all Rust-to-JS calls since very few files
-        // import from next/font/google.
         filter: {
           id: {
             include: /\.(tsx?|jsx?|mjs)$/,
@@ -2714,25 +2710,37 @@ hydrate();
         },
         async handler(code, id) {
           if (!(this as any)._isBuild) return null;
-          // Defensive guard — duplicates filter logic
           if (id.includes("node_modules")) return null;
           if (id.startsWith("\0")) return null;
           if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
           if (!code.includes("next/font/google")) return null;
 
-          // Match font constructor calls: Inter({ weight: ..., subsets: ... })
-          // We look for PascalCase or Name_Name identifiers followed by ({...})
-          // This regex captures the font name and the options object literal
-          const fontCallRe = /\b([A-Z][A-Za-z]*(?:_[A-Z][A-Za-z]*)*)\s*\(\s*(\{[^}]*\})\s*\)/g;
+          // Match font constructor calls with balanced-brace extraction
+          // to handle nested objects in options (e.g. `axes: { wght: [400] }`).
+          const fontCallStartRe = /\b([A-Z][A-Za-z]*(?:_[A-Z][A-Za-z]*)*)\s*\(\s*\{/g;
 
-          // Also need to verify these names came from next/font/google import
           const importRe = /import\s*\{([^}]+)\}\s*from\s*['"]next\/font\/google['"]/;
           const importMatch = code.match(importRe);
           if (!importMatch) return null;
 
-          const importedNames = new Set(
-            importMatch[1].split(",").map((s) => s.trim()).filter(Boolean),
-          );
+          // Handle `import { Inter as MyFont }` renames
+          const importedNames = new Set<string>();
+          const localToOriginal = new Map<string, string>();
+          for (const specifier of importMatch[1].split(",")) {
+            const parts = specifier.trim().split(/\s+as\s+/);
+            if (parts.length === 2) {
+              const original = parts[0].trim();
+              const local = parts[1].trim();
+              if (local) {
+                importedNames.add(local);
+                localToOriginal.set(local, original);
+              }
+            } else if (parts[0]) {
+              const name = parts[0].trim();
+              importedNames.add(name);
+              localToOriginal.set(name, name);
+            }
+          }
 
           const s = new MagicString(code);
           let hasChanges = false;
@@ -2740,33 +2748,71 @@ hydrate();
           const cacheDir = (this as any)._cacheDir as string;
           const fontCache = (this as any)._fontCache as Map<string, string>;
 
+          // Lazy-load font-metrics utilities (build-time only)
+          const {
+            getGoogleFontMetrics,
+            hashFontFamily,
+            hashClassNames,
+            generateFallbackFontFace,
+            rewriteFontFamilyInCSS,
+          } = await import("./font-metrics.js");
+
           let match;
-          while ((match = fontCallRe.exec(code)) !== null) {
-            const [fullMatch, fontName, optionsStr] = match;
+          while ((match = fontCallStartRe.exec(code)) !== null) {
+            const fontName = match[1];
             if (!importedNames.has(fontName)) continue;
 
-            // Convert PascalCase/Underscore to font family
-            const family = fontName.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
+            // Extract the full options object using balanced-brace matching
+            const braceStart = match.index + match[0].length - 1; // position of '{'
+            let depth = 1;
+            let pos = braceStart + 1;
+            while (pos < code.length && depth > 0) {
+              const ch = code[pos];
+              if (ch === "{") depth++;
+              else if (ch === "}") depth--;
+              // Skip string literals to avoid counting braces inside them
+              else if (ch === "'" || ch === '"' || ch === "`") {
+                const quote = ch;
+                pos++;
+                while (pos < code.length && code[pos] !== quote) {
+                  if (code[pos] === "\\") pos++; // skip escaped char
+                  pos++;
+                }
+              }
+              pos++;
+            }
+            if (depth !== 0) continue; // unbalanced braces
 
-            // Parse options safely via AST — no eval/new Function
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            let options: Record<string, any> = {};
+            const optionsStr = code.slice(braceStart, pos);
+
+            // Verify the call ends with `)` after the options object
+            const afterOptions = code.slice(pos).match(/^\s*\)/);
+            if (!afterOptions) continue;
+
+            const fullMatch = code.slice(match.index, pos + (afterOptions[0]?.length ?? 0));
+
+            // Use the original import name (not the local alias) for family conversion
+            const originalName = localToOriginal.get(fontName) ?? fontName;
+            const family = originalName.replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
+
+            let options: Record<string, unknown> = {};
             try {
               const parsed = parseStaticObjectLiteral(optionsStr);
-              if (!parsed) continue; // Contains dynamic expressions, skip
-              options = parsed as Record<string, any>;
+              if (!parsed) continue;
+              options = parsed;
             } catch {
-              continue; // Can't parse options statically, skip
+              continue;
             }
 
             // Build the Google Fonts CSS URL
             const weights = options.weight
-              ? Array.isArray(options.weight) ? options.weight : [options.weight]
+              ? Array.isArray(options.weight) ? options.weight as string[] : [options.weight as string]
               : [];
             const styles = options.style
-              ? Array.isArray(options.style) ? options.style : [options.style]
+              ? Array.isArray(options.style) ? options.style as string[] : [options.style as string]
               : [];
-            const display = options.display ?? "swap";
+            const display = (options.display as string) ?? "swap";
+            const adjustFontFallback = options.adjustFontFallback !== false;
 
             let spec = family.replace(/\s+/g, "+");
             if (weights.length > 0) {
@@ -2779,8 +2825,6 @@ hydrate();
                 spec += `:wght@${weights.join(";")}`;
               }
             } else if (styles.length === 0) {
-              // Request full variable weight range when no weight specified.
-              // Without this, Google Fonts returns only weight 400.
               spec += `:wght@100..900`;
             }
             const params = new URLSearchParams();
@@ -2788,30 +2832,60 @@ hydrate();
             params.set("display", display);
             const cssUrl = `https://fonts.googleapis.com/css2?${params.toString()}`;
 
-            // Check cache
+            // Fetch and cache font CSS + files
             let localCSS = fontCache.get(cssUrl);
             if (!localCSS) {
               try {
                 localCSS = await fetchAndCacheFont(cssUrl, family, cacheDir);
                 fontCache.set(cssUrl, localCSS);
               } catch {
-                // Fetch failed (offline?) — fall back to CDN mode
-                continue;
+                continue; // Fetch failed — fall back to CDN mode
               }
             }
 
-            // Inject _selfHostedCSS into the options object
+            // Hash font-family name: '__Inter_a3b2c1'
+            const hashedFamily = hashFontFamily(family, localCSS);
+            const { className, variable: variableClassName } = hashClassNames(localCSS);
+
+            // Rewrite font-family in @font-face CSS to use hashed name
+            const hashedCSS = rewriteFontFamilyInCSS(localCSS, family, hashedFamily);
+
+            // Generate fallback @font-face with size-adjust metrics
+            let fallbackCSS = "";
+            let fallbackFamily = "";
+            if (adjustFontFallback) {
+              const metrics = await getGoogleFontMetrics(family);
+              if (metrics) {
+                const fallback = await generateFallbackFontFace(metrics, hashedFamily);
+                if (fallback) {
+                  fallbackCSS = fallback.css;
+                  fallbackFamily = fallback.fallbackFamily;
+                }
+              }
+            }
+
+            // Build the injected properties
+            const injectedProps = [
+              `_selfHostedCSS: ${JSON.stringify(hashedCSS)}`,
+              `_hashedFamily: ${JSON.stringify(hashedFamily)}`,
+              `_className: ${JSON.stringify(className)}`,
+              `_variableClassName: ${JSON.stringify(variableClassName)}`,
+            ];
+            if (fallbackFamily) {
+              injectedProps.push(`_fallbackFamily: ${JSON.stringify(fallbackFamily)}`);
+              injectedProps.push(`_fallbackCSS: ${JSON.stringify(fallbackCSS)}`);
+            }
+
             const matchStart = match.index;
             const matchEnd = matchStart + fullMatch.length;
-            const escapedCSS = JSON.stringify(localCSS);
             const closingBrace = optionsStr.lastIndexOf("}");
-            const optionsWithCSS = optionsStr.slice(0, closingBrace) +
-              (optionsStr.slice(0, closingBrace).trim().endsWith("{") ? "" : ", ") +
-              `_selfHostedCSS: ${escapedCSS}` +
+            const needsComma = !optionsStr.slice(0, closingBrace).trim().endsWith("{");
+            const optionsWithMeta = optionsStr.slice(0, closingBrace) +
+              (needsComma ? ", " : "") +
+              injectedProps.join(", ") +
               optionsStr.slice(closingBrace);
 
-            const replacement = `${fontName}(${optionsWithCSS})`;
-            s.overwrite(matchStart, matchEnd, replacement);
+            s.overwrite(matchStart, matchEnd, `${fontName}(${optionsWithMeta})`);
             hasChanges = true;
           }
 
@@ -2823,16 +2897,21 @@ hydrate();
         },
       },
     } as Plugin & { _isBuild: boolean; _fontCache: Map<string, string>; _cacheDir: string },
-    // Local font path resolution:
-    // When a source file calls localFont({ src: "./font.woff2" }) or
-    // localFont({ src: [{ path: "./font.woff2" }] }), the relative paths
-    // won't resolve in the browser because the CSS is injected at runtime.
-    // This plugin rewrites those path strings into Vite asset import
-    // references so that both dev (/@fs/...) and prod (/assets/font-xxx.woff2)
-    // URLs are correct.
+    // Local font handling:
+    // Dev mode: rewrites relative font paths to Vite asset imports so both
+    // dev (/@fs/...) and prod (/assets/font-xxx.woff2) URLs resolve correctly.
+    // Build mode: additionally reads font files to extract metrics via fontkitten,
+    // generates hashed font-family names, fallback @font-face with size-adjust,
+    // and injects all metadata into the localFont() call.
     {
       name: "vinext:local-fonts",
       enforce: "pre",
+
+      _isBuild: false,
+
+      configResolved(config) {
+        (this as any)._isBuild = config.command === "build";
+      },
 
       transform: {
         filter: {
@@ -2842,27 +2921,92 @@ hydrate();
           },
           code: "next/font/local",
         },
-        handler(code, id) {
-          // Defensive guards — duplicate filter logic
+        async handler(code, id) {
           if (id.includes("node_modules")) return null;
           if (id.startsWith("\0")) return null;
           if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
           if (!code.includes("next/font/local")) return null;
-          // Skip vinext's own font-local shim — it contains example paths
-          // in comments that would be incorrectly rewritten.
           if (id.includes("font-local")) return null;
 
-          // Verify there's actually an import from next/font/local
           const importRe = /import\s+\w+\s+from\s*['"]next\/font\/local['"]/;
           if (!importRe.test(code)) return null;
 
+          const isBuild = (this as any)._isBuild as boolean;
+          const sourceDir = path.dirname(id);
+
+          // In build mode, parse options from the ORIGINAL code BEFORE path
+          // rewriting, because the rewrite turns string literals into identifier
+          // references that parseStaticObjectLiteral can't evaluate.
+          interface LocalFontCallMeta {
+            fontSources: Array<{ path: string; weight?: string; style?: string }>;
+            adjustFontFallback: unknown;
+            optionsStr: string;
+            fullMatch: string;
+            matchIndex: number;
+          }
+          const callMetas: LocalFontCallMeta[] = [];
+
+          if (isBuild) {
+            const localImportRe = /import\s+(\w+)\s+from\s*['"]next\/font\/local['"]/;
+            const localImportMatch = code.match(localImportRe);
+            if (localImportMatch) {
+              const localFontName = localImportMatch[1];
+              const callRe = new RegExp(`\\b${localFontName}\\s*\\(\\s*(\\{[\\s\\S]*?\\})\\s*\\)`, "g");
+              let callMatch;
+              while ((callMatch = callRe.exec(code)) !== null) {
+                const [fullCallMatch, optionsStr] = callMatch;
+                let parsedOpts: Record<string, unknown> | undefined;
+                try {
+                  parsedOpts = parseStaticObjectLiteral(optionsStr) ?? undefined;
+                } catch {
+                  // unparseable — skip
+                }
+                if (!parsedOpts) continue;
+
+                const fontSources: Array<{ path: string; weight?: string; style?: string }> = [];
+                const src = parsedOpts.src;
+                if (typeof src === "string") {
+                  fontSources.push({ path: src });
+                } else if (Array.isArray(src)) {
+                  for (const entry of src) {
+                    if (typeof entry === "string") {
+                      fontSources.push({ path: entry });
+                    } else if (entry && typeof entry === "object") {
+                      const e = entry as Record<string, unknown>;
+                      fontSources.push({
+                        path: String(e.path ?? ""),
+                        weight: e.weight != null ? String(e.weight) : undefined,
+                        style: e.style != null ? String(e.style) : undefined,
+                      });
+                    }
+                  }
+                } else if (src && typeof src === "object") {
+                  const e = src as Record<string, unknown>;
+                  fontSources.push({
+                    path: String(e.path ?? ""),
+                    weight: e.weight != null ? String(e.weight) : undefined,
+                    style: e.style != null ? String(e.style) : undefined,
+                  });
+                }
+
+                callMetas.push({
+                  fontSources,
+                  adjustFontFallback: parsedOpts.adjustFontFallback,
+                  optionsStr,
+                  fullMatch: fullCallMatch,
+                  matchIndex: callMatch.index,
+                });
+              }
+            }
+          }
+
+          // Rewrite font file paths to Vite asset imports (both dev + build)
           const s = new MagicString(code);
           let hasChanges = false;
           let fontImportCounter = 0;
           const imports: string[] = [];
 
           // Match font file paths in `path: "..."` or `src: "..."` properties.
-          // Captures: (1) property+colon prefix, (2) quote char, (3) the path.
           const fontPathRe = /((?:path|src)\s*:\s*)(['"])([^'"]+\.(?:woff2?|ttf|otf|eot))\2/g;
 
           let match;
@@ -2870,11 +3014,8 @@ hydrate();
             const [fullMatch, prefix, _quote, fontPath] = match;
             const varName = `__vinext_local_font_${fontImportCounter++}`;
 
-            // Add an import for this font file — Vite resolves it as a static
-            // asset and returns the correct URL for both dev and prod.
             imports.push(`import ${varName} from ${JSON.stringify(fontPath)};`);
 
-            // Replace: path: "./font.woff2" -> path: __vinext_local_font_0
             const matchStart = match.index;
             const matchEnd = matchStart + fullMatch.length;
             s.overwrite(matchStart, matchEnd, `${prefix}${varName}`);
@@ -2883,7 +3024,108 @@ hydrate();
 
           if (!hasChanges) return null;
 
-          // Prepend the asset imports at the top of the file
+          // In build mode, inject font metrics and hashing metadata into the
+          // localFont() call options BEFORE prepending imports (so offsets match
+          // the original code that callMetas were indexed against).
+          if (isBuild && callMetas.length > 0) {
+            const {
+              getLocalFontMetrics,
+              hashFontFamily,
+              hashClassNames,
+              generateFallbackFontFace,
+              pickFontFileForFallbackGeneration,
+            } = await import("./font-metrics.js");
+
+            // Process in reverse order so earlier offsets remain valid
+            for (let i = callMetas.length - 1; i >= 0; i--) {
+              const meta = callMetas[i];
+              const { fontSources, adjustFontFallback, optionsStr, fullMatch, matchIndex } = meta;
+              const shouldGenerateFallback = adjustFontFallback !== false;
+
+              let fallbackCSS = "";
+              let fallbackFamily = "";
+              let hashedFamily = "";
+              let hashedClassName = "";
+              let hashedVariableClassName = "";
+              let selfHostedCSS = "";
+
+              if (fontSources.length > 0) {
+                const bestSource = pickFontFileForFallbackGeneration(fontSources);
+                const fontFilePath = path.resolve(sourceDir, bestSource.path);
+
+                const hashInput = `${fontFilePath}:${JSON.stringify(meta)}`;
+                hashedFamily = hashFontFamily(
+                  path.basename(bestSource.path, path.extname(bestSource.path)).replace(/[^a-zA-Z0-9]/g, "_"),
+                  hashInput,
+                );
+                const classNames = hashClassNames(hashInput);
+                hashedClassName = classNames.className;
+                hashedVariableClassName = classNames.variable;
+
+                // Build self-hosted @font-face CSS with hashed font-family.
+                // The actual URLs will be resolved by Vite's asset pipeline at
+                // runtime via the __vinext_local_font_N imports, so we generate
+                // placeholder CSS here that the shim will inject.
+                const display = "swap"; // default
+                const cssRules: string[] = [];
+                for (const src of fontSources) {
+                  const resolvedPath = path.resolve(sourceDir, src.path);
+                  const ext = path.extname(src.path).slice(1);
+                  const format = ext === "woff2" ? "woff2" : ext === "woff" ? "woff" : ext === "ttf" ? "truetype" : ext === "otf" ? "opentype" : "woff2";
+                  cssRules.push(`@font-face {\n  font-family: '${hashedFamily}';\n  src: url('${resolvedPath}') format('${format}');\n  font-weight: ${src.weight ?? "400"};\n  font-style: ${src.style ?? "normal"};\n  font-display: ${display};\n}`);
+                }
+                selfHostedCSS = cssRules.join("\n");
+
+                // Extract metrics for fallback generation
+                if (shouldGenerateFallback) {
+                  try {
+                    const fontFileBuf = await fs.promises.readFile(fontFilePath);
+                    const metrics = await getLocalFontMetrics(fontFileBuf);
+                    if (metrics) {
+                      const fallbackBase = (typeof adjustFontFallback === "string" &&
+                        (adjustFontFallback === "Arial" || adjustFontFallback === "Times New Roman"))
+                        ? adjustFontFallback
+                        : undefined;
+                      const fallback = await generateFallbackFontFace(metrics, hashedFamily, fallbackBase);
+                      if (fallback) {
+                        fallbackCSS = fallback.css;
+                        fallbackFamily = fallback.fallbackFamily;
+                      }
+                    }
+                  } catch {
+                    // Can't read font file or extract metrics — skip fallback
+                  }
+                }
+              }
+
+              if (hashedFamily) {
+                const localImportRe = /import\s+(\w+)\s+from\s*['"]next\/font\/local['"]/;
+                const localFontName = code.match(localImportRe)?.[1] ?? "localFont";
+
+                const injectedProps = [
+                  `_selfHostedCSS: ${JSON.stringify(selfHostedCSS)}`,
+                  `_hashedFamily: ${JSON.stringify(hashedFamily)}`,
+                  `_className: ${JSON.stringify(hashedClassName)}`,
+                  `_variableClassName: ${JSON.stringify(hashedVariableClassName)}`,
+                ];
+                if (fallbackFamily) {
+                  injectedProps.push(`_fallbackFamily: ${JSON.stringify(fallbackFamily)}`);
+                  injectedProps.push(`_fallbackCSS: ${JSON.stringify(fallbackCSS)}`);
+                }
+
+                const callEnd = matchIndex + fullMatch.length;
+                const closingBrace = optionsStr.lastIndexOf("}");
+                const needsComma = !optionsStr.slice(0, closingBrace).trim().endsWith("{");
+                const optionsWithMeta = optionsStr.slice(0, closingBrace) +
+                  (needsComma ? ", " : "") +
+                  injectedProps.join(", ") +
+                  optionsStr.slice(closingBrace);
+
+                s.overwrite(matchIndex, callEnd, `${localFontName}(${optionsWithMeta})`);
+              }
+            }
+          }
+
           s.prepend(imports.join("\n") + "\n");
 
           return {
@@ -2892,7 +3134,7 @@ hydrate();
           };
         },
       },
-    } as Plugin,
+    } as Plugin & { _isBuild: boolean; _root: string },
     // "use cache" directive transform:
     // Detects "use cache" at file-level or function-level and wraps the
     // exports/functions with registerCachedFunction() from vinext/cache-runtime.

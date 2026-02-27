@@ -6,46 +6,67 @@ import type { Plugin } from "vite";
 
 // ── Helpers ───────────────────────────────────────────────────
 
-/** Unwrap a Vite plugin hook that may use the object-with-filter format */
-function unwrapHook(hook: any): Function {
-  return typeof hook === "function" ? hook : hook?.handler;
+/**
+ * Unwrap a Vite plugin hook that may use the object-with-filter format.
+ * Vite's ObjectHook<T, O> type is complex (function | { handler, filter, order }),
+ * so we accept unknown and narrow at runtime.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Vite's plugin hook types are too complex for static typing here
+function unwrapHook(hook: unknown): (...args: any[]) => any {
+  if (typeof hook === "function") return hook as (...args: any[]) => any;
+  if (hook && typeof hook === "object" && "handler" in hook && typeof (hook as Record<string, unknown>).handler === "function") {
+    return (hook as Record<string, (...args: any[]) => any>).handler;
+  }
+  throw new Error("Expected a function or { handler } object");
 }
 
-/** Extract the vinext:google-fonts plugin from the plugin array */
-function getGoogleFontsPlugin(): Plugin & {
+/** Plugin with font-specific test fields exposed */
+interface GoogleFontsTestPlugin extends Plugin {
   _isBuild: boolean;
   _fontCache: Map<string, string>;
   _cacheDir: string;
-} {
+}
+
+/** Extract the vinext:google-fonts plugin from the plugin array */
+function getGoogleFontsPlugin(): GoogleFontsTestPlugin {
   const plugins = vinext() as Plugin[];
   const plugin = plugins.find((p) => p.name === "vinext:google-fonts");
   if (!plugin) throw new Error("vinext:google-fonts plugin not found");
-  return plugin as any;
+  // The plugin object has these fields at runtime (set in the plugin definition)
+  return plugin as unknown as GoogleFontsTestPlugin;
 }
+
+/** Typed proxy interface for the google fonts default export (Proxy-based). */
+type GoogleFontProxy = Record<string, (options?: Record<string, unknown>) => {
+  className: string;
+  style: { fontFamily: string };
+  variable?: string;
+}>;
 
 // ── Font shim tests ───────────────────────────────────────────
 
 describe("next/font/google shim", () => {
   it("exports a Proxy that creates font loaders for any family", async () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
-    const Inter = (mod.default as any).Inter;
+    const fonts = mod.default as unknown as GoogleFontProxy;
+    const Inter = fonts.Inter;
     expect(typeof Inter).toBe("function");
   });
 
   it("named export Inter returns className, style, variable", async () => {
     const { Inter } = await import("../packages/vinext/src/shims/font-google.js");
     const result = Inter({ weight: ["400", "700"], subsets: ["latin"] });
-    expect(result.className).toMatch(/^__font_inter_\d+$/);
+    expect(result.className).toMatch(/^__className_[0-9a-f]{6}$/);
     expect(result.style.fontFamily).toContain("Inter");
     // variable returns a class name that sets the CSS variable, not the variable name itself
-    expect(result.variable).toMatch(/^__variable_inter_\d+$/);
+    expect(result.variable).toMatch(/^__variable_[0-9a-f]{6}$/);
   });
 
   it("supports custom variable name", async () => {
     const { Inter } = await import("../packages/vinext/src/shims/font-google.js");
     const result = Inter({ weight: ["400"], variable: "--my-font" });
     // variable returns a class name that sets the CSS variable, not the variable name itself
-    expect(result.variable).toMatch(/^__variable_inter_\d+$/);
+    expect(result.variable).toMatch(/^__variable_[0-9a-f]{6}$/);
   });
 
   it("supports custom fallback fonts", async () => {
@@ -64,25 +85,31 @@ describe("next/font/google shim", () => {
 
   it("proxy creates loaders for arbitrary fonts", async () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
-    const fonts = mod.default as any;
+    const fonts = mod.default as unknown as GoogleFontProxy;
     const roboto = fonts.Roboto({ weight: ["400"] });
-    expect(roboto.className).toMatch(/^__font_roboto_\d+$/);
+    expect(roboto.className).toMatch(/^__className_[0-9a-f]{6}$/);
     expect(roboto.style.fontFamily).toContain("Roboto");
   });
 
   it("proxy converts PascalCase to spaced family names", async () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
-    const fonts = mod.default as any;
+    const fonts = mod.default as unknown as GoogleFontProxy;
     const rm = fonts.RobotoMono({ weight: ["400"] });
     expect(rm.style.fontFamily).toContain("Roboto Mono");
   });
 
   it("accepts _selfHostedCSS option for self-hosted mode", async () => {
     const { Inter } = await import("../packages/vinext/src/shims/font-google.js");
-    const fakeCSS = "@font-face { font-family: 'Inter'; src: url(/fonts/inter.woff2); }";
-    const result = Inter({ weight: ["400"], _selfHostedCSS: fakeCSS } as any);
-    expect(result.className).toBeDefined();
-    expect(result.style.fontFamily).toContain("Inter");
+    const fakeCSS = "@font-face { font-family: '__Inter_abc123'; src: url(/fonts/inter.woff2); }";
+    const result = Inter({
+      weight: ["400"],
+      _selfHostedCSS: fakeCSS,
+      _hashedFamily: "__Inter_abc123",
+      _className: "__className_abc123",
+      _variableClassName: "__variable_abc123",
+    } as Record<string, unknown>);
+    expect(result.className).toBe("__className_abc123");
+    expect(result.style.fontFamily).toContain("__Inter_abc123");
   });
 
   it("exports buildGoogleFontsUrl", async () => {
@@ -123,7 +150,7 @@ describe("next/font/google shim", () => {
   it("getSSRFontLinks returns collected URLs without clearing", async () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
     // Force a CDN-mode font load (SSR context: document is undefined)
-    const fonts = mod.default as any;
+    const fonts = mod.default as unknown as GoogleFontProxy;
     fonts.Nunito_Sans({ weight: ["400"] });
     const links = mod.getSSRFontLinks();
     // Should have collected at least one URL
@@ -153,7 +180,7 @@ describe("next/font/google shim", () => {
       "JetBrains_Mono", "Fira_Code",
     ];
     for (const name of names) {
-      expect(typeof (mod as any)[name]).toBe("function");
+      expect(typeof (mod as Record<string, unknown>)[name]).toBe("function");
     }
   });
 
@@ -161,7 +188,7 @@ describe("next/font/google shim", () => {
 
   it("escapes single quotes in font family names", async () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
-    const fonts = mod.default as any;
+    const fonts = mod.default as unknown as GoogleFontProxy;
     // Proxy converts PascalCase to spaced, so a crafted property name
     // could produce a family with special characters
     const result = fonts["Evil']; } body { color: red; } .x { font-family: '"]({
@@ -175,7 +202,7 @@ describe("next/font/google shim", () => {
 
   it("escapes backslashes in font family names", async () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
-    const fonts = mod.default as any;
+    const fonts = mod.default as unknown as GoogleFontProxy;
     const result = fonts["Test\\Font"]({ weight: ["400"] });
     // The backslash should be escaped in the CSS string
     expect(result.style.fontFamily).toContain("\\\\");
@@ -326,12 +353,12 @@ describe("vinext:google-fonts plugin", () => {
     // Verify cache dir was created with font files
     expect(fs.existsSync(cacheDir)).toBe(true);
     const dirs = fs.readdirSync(cacheDir);
-    const interDir = dirs.find((d: string) => d.startsWith("inter-"));
-    expect(interDir).toBeDefined();
+    const interDir = dirs.find((d) => d.startsWith("inter-"));
+    if (!interDir) throw new Error("expected inter- cache directory");
 
-    const files = fs.readdirSync(path.join(cacheDir, interDir!));
+    const files = fs.readdirSync(path.join(cacheDir, interDir));
     expect(files).toContain("style.css");
-    expect(files.some((f: string) => f.endsWith(".woff2"))).toBe(true);
+    expect(files.some((f) => f.endsWith(".woff2"))).toBe(true);
 
     // Clean up
     fs.rmSync(cacheDir, { recursive: true, force: true });
@@ -359,8 +386,14 @@ describe("vinext:google-fonts plugin", () => {
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     expect(result.code).toContain("_selfHostedCSS");
-    // lgtm[js/incomplete-sanitization] — escaping quotes for test assertion, not sanitization
-    expect(result.code).toContain(fakeCSS.replace(/"/g, '\\"'));
+    // The plugin now hashes the font-family name and injects additional metadata
+    expect(result.code).toContain("_hashedFamily");
+    expect(result.code).toContain("__Inter_");
+    expect(result.code).toContain("_className");
+    expect(result.code).toContain("_variableClassName");
+    // Fallback metrics should be generated for Inter (in capsizecss/metrics DB)
+    expect(result.code).toContain("_fallbackCSS");
+    expect(result.code).toContain("_fallbackFamily");
 
     plugin._fontCache.clear();
   });
@@ -454,8 +487,8 @@ describe("fetchAndCacheFont", () => {
     expect(result).not.toBeNull();
 
     // Verify the CSS references local file paths, not googleapis.com
-    const selfHostedCSS = plugin._fontCache.values().next().value;
-    expect(selfHostedCSS).toBeDefined();
+    const [selfHostedCSS] = [...plugin._fontCache.values()];
+    if (!selfHostedCSS) throw new Error("expected font cache entry");
     expect(selfHostedCSS).toContain("@font-face");
     expect(selfHostedCSS).toContain("Inter");
     expect(selfHostedCSS).not.toContain("fonts.gstatic.com");

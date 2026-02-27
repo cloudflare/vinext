@@ -130,7 +130,7 @@ See [references/troubleshooting.md](references/troubleshooting.md) for common mi
 | Feature | Status |
 |---------|--------|
 | `next/image` optimization | Remote images via @unpic; no build-time optimization |
-| `next/font/google` | CDN-loaded, not self-hosted |
+| `next/font/google` | Full support (self-hosted at build time); CDN loading in dev mode only |
 | Domain-based i18n | Not supported; path-prefix i18n works |
 | `next/jest` | Not supported; use Vitest |
 | Turbopack/webpack config | Ignored; use Vite plugins instead |

@@ -45,13 +45,13 @@ describe("scanImports", () => {
     expect(items.find((i) => i.name === "next/image")?.status).toBe("supported");
   });
 
-  it("detects partial imports", () => {
+  it("detects supported font imports", () => {
     writeFile("app/page.tsx", `import { GoogleFont } from "next/font/google";`);
 
     const items = scanImports(tmpDir);
     expect(items).toHaveLength(1);
     expect(items[0].name).toBe("next/font/google");
-    expect(items[0].status).toBe("partial");
+    expect(items[0].status).toBe("supported");
   });
 
   it("reports accurate next/font/local detail", () => {
@@ -60,9 +60,8 @@ describe("scanImports", () => {
     const items = scanImports(tmpDir);
     expect(items).toHaveLength(1);
     expect(items[0].name).toBe("next/font/local");
-    expect(items[0].status).toBe("partial");
-    expect(items[0].detail).toContain("font.className works");
-    expect(items[0].detail).toContain("font.variable mode broken");
+    expect(items[0].status).toBe("supported");
+    expect(items[0].detail).toContain("fallback metrics");
   });
 
   it("detects unsupported imports", () => {
@@ -145,17 +144,15 @@ describe("scanImports", () => {
     expect(items).toHaveLength(0);
   });
 
-  it("sorts unsupported first, then partial, then supported", () => {
+  it("sorts unsupported first, then supported", () => {
     writeFile("app/page.tsx", `
       import Link from "next/link";
-      import { GoogleFont } from "next/font/google";
       import { useAmp } from "next/amp";
     `);
 
     const items = scanImports(tmpDir);
     expect(items[0].status).toBe("unsupported");
-    expect(items[1].status).toBe("partial");
-    expect(items[2].status).toBe("supported");
+    expect(items[1].status).toBe("supported");
   });
 
   it("ignores node_modules and .next directories", () => {
@@ -622,11 +619,11 @@ describe("runCheck", () => {
   });
 
   it("calculates score correctly — partial items count 50%", () => {
-    // 1 supported import (next/link) + 1 partial import (next/font/google) + no-config (supported) + 2 conventions (App Router + 1 page)
+    // Use next-intl (partial) alongside next/link (supported) to test partial scoring
     writeFile("app/page.tsx", `
       import Link from "next/link";
-      import { GoogleFont } from "next/font/google";
     `);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { "next-intl": "^3.0.0" } }));
 
     const result = runCheck(tmpDir);
     expect(result.summary.partial).toBeGreaterThan(0);
@@ -712,14 +709,14 @@ describe("formatReport", () => {
   });
 
   it("shows partial support section when there are partial items", () => {
-    writeFile("app/page.tsx", `import { GoogleFont } from "next/font/google";`);
-    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+    writeFile("app/page.tsx", `import { useTranslations } from "next-intl";`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: { "next-intl": "^3.0.0" } }));
 
     const result = runCheck(tmpDir);
     const report = formatReport(result);
 
     expect(report).toContain("Partial support");
-    expect(report).toContain("next/font/google");
+    expect(report).toContain("next-intl");
   });
 
   it("does not show issues section when everything is supported", () => {

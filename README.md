@@ -263,8 +263,8 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `next/headers` | ✅ | Async `headers()`, `cookies()`, `draftMode()` |
 | `next/dynamic` | ✅ | `ssr: true`, `ssr: false`, `loading` component |
 | `next/script` | ✅ | All 4 strategies (`beforeInteractive`, `afterInteractive`, `lazyOnload`, `worker`) |
-| `next/font/google` | 🟡 | Runtime CDN loading. No self-hosting, font subsetting, or fallback metrics |
-| `next/font/local` | 🟡 | Runtime `@font-face` injection. Not extracted at build time |
+| `next/font/google` | ✅ | Self-hosted at build time with fallback metrics (`size-adjust`, `ascent-override`) and hashed font-family names. CDN loading in dev |
+| `next/font/local` | ✅ | Build-time `@font-face` extraction with fallback metrics and hashed font-family names. Runtime injection in dev |
 | `next/og` | ✅ | OG image generation via `@vercel/og` (Satori + resvg) |
 | `next/cache` | ✅ | `revalidateTag`, `revalidatePath`, `unstable_cache`, pluggable `CacheHandler`, `"use cache"` with `cacheLife()` and `cacheTag()` |
 | `next/form` | ✅ | GET form interception + POST server action delegation |
@@ -380,7 +380,7 @@ These are intentional exclusions:
 ## Known limitations
 
 - **Image optimization doesn't happen at build time.** Remote images work via `@unpic/react` (auto-detects 28 CDN providers). Local images are routed through a `/_vinext/image` endpoint that can resize and transcode on Cloudflare Workers (via the Images binding) in production, but no build-time optimization or static resizing occurs.
-- **Google Fonts are loaded from the CDN, not self-hosted.** No `size-adjust` fallback font metrics. Local fonts work but `@font-face` CSS is injected at runtime, not extracted at build time.
+- **Font fallback metrics are build-time only.** Google Fonts and local fonts generate `size-adjust`/`ascent-override` fallback `@font-face` declarations during production builds to minimize CLS. In dev mode, Google Fonts load from the CDN and local fonts inject `@font-face` at runtime without fallback metrics.
 - **`useSelectedLayoutSegment(s)`** derives segments from the pathname rather than being truly layout-aware. May differ from Next.js in edge cases with parallel routes.
 - **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same environment).
 - **Node.js production server (`vinext start`)** works for testing but is less complete than Workers deployment. Cloudflare Workers is the primary target.
