@@ -37,7 +37,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v1";
+const CACHE_KEY_PREFIX = "v2";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 class BodyTooLargeForCacheKeyError extends Error {
@@ -129,7 +129,13 @@ async function serializeBody(init?: RequestInit): Promise<string[]> {
         if (typeof value === "string") {
           pushBodyChunk(value);
         } else {
-          pushBodyChunk(decoder.decode(value, { stream: true }));
+          // Check raw byte size before the expensive decode to prevent
+          // OOM from a single oversized chunk.
+          totalBodyBytes += value.byteLength;
+          if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
+            throw new BodyTooLargeForCacheKeyError();
+          }
+          bodyChunks.push(decoder.decode(value, { stream: true }));
         }
       }
       const finalChunk = decoder.decode();
@@ -137,8 +143,8 @@ async function serializeBody(init?: RequestInit): Promise<string[]> {
         pushBodyChunk(finalChunk);
       }
     } catch (err) {
+      await reader.cancel();
       if (err instanceof BodyTooLargeForCacheKeyError) {
-        await reader.cancel();
         throw err;
       }
       console.error("[vinext] Problem reading body for cache key", err);
@@ -176,6 +182,11 @@ async function serializeBody(init?: RequestInit): Promise<string[]> {
     const arrayBuffer = await blob.arrayBuffer();
     (init as any)._ogBody = new Blob([arrayBuffer], { type: blob.type });
   } else if (typeof init.body === "string") {
+    // String length is always <= UTF-8 byte length, so this is a
+    // cheap lower-bound check that avoids encoder.encode() for huge strings.
+    if (init.body.length > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
     pushBodyChunk(init.body);
     (init as any)._ogBody = init.body;
   }

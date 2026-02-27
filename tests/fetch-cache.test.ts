@@ -1096,6 +1096,103 @@ describe("fetch cache shim", () => {
       const init = fetchMock.mock.calls[0][1] as RequestInit;
       expect(init.body).toBeInstanceOf(ReadableStream);
     });
+
+    it("oversized Uint8Array body bypasses cache and still fetches", async () => {
+      const largeBuffer = new Uint8Array(1024 * 1024 + 1);
+
+      const res1 = await fetch("https://api.example.com/large-uint8", {
+        method: "POST",
+        body: largeBuffer,
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/large-uint8", {
+        method: "POST",
+        body: largeBuffer,
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // bypassed cache because body is oversized
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("oversized string body bypasses cache and still fetches", async () => {
+      const largeString = "x".repeat(1024 * 1024 + 1);
+
+      const res1 = await fetch("https://api.example.com/large-string", {
+        method: "POST",
+        body: largeString,
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/large-string", {
+        method: "POST",
+        body: largeString,
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // bypassed cache because body is oversized
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("ReadableStream with many small chunks accumulating past limit bypasses cache", async () => {
+      const chunkSize = 64 * 1024; // 64 KiB per chunk
+      const numChunks = 17; // 17 * 64 KiB = 1088 KiB > 1 MiB
+
+      const makeLargeMultiChunkStream = () => new ReadableStream({
+        start(controller) {
+          for (let i = 0; i < numChunks; i++) {
+            controller.enqueue(new Uint8Array(chunkSize));
+          }
+          controller.close();
+        },
+      });
+
+      const res1 = await fetch("https://api.example.com/large-multi-chunk", {
+        method: "POST",
+        body: makeLargeMultiChunkStream(),
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/large-multi-chunk", {
+        method: "POST",
+        body: makeLargeMultiChunkStream(),
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // bypassed cache because cumulative size exceeds limit
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("FormData with large File entry bypasses cache and still fetches", async () => {
+      const largeContent = "x".repeat(1024 * 1024 + 1);
+      const largeFile = new File([largeContent], "big.txt", { type: "text/plain" });
+      const form = new FormData();
+      form.append("file", largeFile);
+
+      const res1 = await fetch("https://api.example.com/large-formdata", {
+        method: "POST",
+        body: form,
+        next: { revalidate: 60 },
+      });
+      const data1 = await res1.json();
+      expect(data1.count).toBe(1);
+
+      const res2 = await fetch("https://api.example.com/large-formdata", {
+        method: "POST",
+        body: form,
+        next: { revalidate: 60 },
+      });
+      const data2 = await res2.json();
+      expect(data2.count).toBe(2); // bypassed cache because file is oversized
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
   });
 
 
