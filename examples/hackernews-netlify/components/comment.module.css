@@ -1,0 +1,39 @@
+.comment {
+  margin-bottom: 15px;
+}
+
+.children {
+  padding-left: 20px;
+}
+
+.meta {
+  font-size: 12px;
+  margin-bottom: 5px;
+}
+
+.toggle {
+  cursor: pointer;
+}
+
+.text {
+  color: #000;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+/* hn styles */
+.text :global(p) {
+  margin-top: 10px;
+}
+
+.text :global(pre) {
+  margin-bottom: 10px;
+  max-width: 900px;
+  overflow: auto;
+  padding: 2px;
+  white-space: pre-wrap;
+}
+
+.text :global(a) {
+  color: #000;
+}

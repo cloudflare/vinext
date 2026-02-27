@@ -1,0 +1,17 @@
+{
+  "name": "vinext-pages-router-netlify",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build && vite build --ssr virtual:vinext-server-entry --outDir dist/server",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "vite": "^7.3.1",
+    "vinext": "workspace:*",
+    "@netlify/vite-plugin": "^2.10.2"
+  }
+}

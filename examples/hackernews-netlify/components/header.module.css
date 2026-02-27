@@ -1,0 +1,101 @@
+.header {
+  background: #ffa52a;
+  display: flex;
+  font-size: 14px;
+}
+
+.logo {
+  margin: 4px 5px 2px 4px;
+  display: inline-block;
+}
+
+.left {
+  display: grid;
+  grid-auto-flow: column;
+  align-items: center;
+}
+
+.right {
+  flex: 1;
+  text-align: right;
+}
+
+.site-title {
+  font-weight: bold;
+  display: inline-block;
+  font-size: 14px;
+  text-decoration: none;
+  padding: 8px 10px 8px 4px;
+  color: #000;
+  vertical-align: top;
+}
+
+a.login {
+  padding: 10px;
+  display: inline-block;
+  font-size: 10pt;
+  text-decoration: none;
+  color: #000;
+}
+
+.login:hover {
+  color: #fff;
+}
+
+.nav {
+  display: inline-block;
+  vertical-align: top;
+}
+
+.n {
+  border: 1px solid #fff;
+  display: inline-block;
+  color: #fff;
+  font-weight: bold;
+  font-size: 11px;
+  padding: 5px 8px;
+}
+
+.nav-ul {
+  list-style-type: none;
+}
+
+.nav-ul li {
+  display: inline-block;
+}
+
+.nav-ul li:not(:last-child):after {
+  content: ' | ';
+  padding-right: 4px;
+}
+
+.nav-ul li a {
+  display: inline-block;
+  font-size: 10pt;
+  text-decoration: none;
+  color: #000;
+}
+
+.nav-ul li a:hover {
+  color: #fff;
+}
+
+@media (max-width: 750px) {
+  .left {
+    grid-auto-flow: row;
+  }
+
+  .site-title {
+    font-size: 16px;
+    padding-bottom: 0;
+  }
+
+  a.login {
+    padding: 24px 10px 23px;
+  }
+
+  .nav {
+    display: block;
+    margin-left: 10px;
+  }
+}

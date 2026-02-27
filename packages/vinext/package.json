@@ -33,6 +33,10 @@
       "import": "./dist/cloudflare/index.js",
       "types": "./dist/cloudflare/index.d.ts"
     },
+    "./netlify": {
+      "import": "./dist/netlify/index.js",
+      "types": "./dist/netlify/index.d.ts"
+    },
     "./server/image-optimization": {
       "import": "./dist/server/image-optimization.js",
       "types": "./dist/server/image-optimization.d.ts"
@@ -60,6 +64,7 @@
     "vite": "^7.0.0"
   },
   "dependencies": {
+    "@netlify/blobs": "^10.7.0",
     "@unpic/react": "^1.0.2",
     "@vercel/og": "^0.8.6",
     "@vitejs/plugin-rsc": "^0.5.19",
