@@ -1657,6 +1657,7 @@ describe("middleware codegen parity", () => {
     );
     // Eval the generated code and test it behaves identically to the runtime
     const code = generateSafeRegExpCode("modern") + generateMiddlewareMatcherCode("modern");
+    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
     const { matchMiddlewarePattern, matchesMiddleware } = fn();
 
@@ -1687,6 +1688,7 @@ describe("middleware codegen parity", () => {
       "../packages/vinext/src/server/middleware-codegen.js"
     );
     const code = generateSafeRegExpCode("es5") + generateMiddlewareMatcherCode("es5");
+    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
     const { matchMiddlewarePattern, matchesMiddleware } = fn();
 
@@ -1703,6 +1705,7 @@ describe("middleware codegen parity", () => {
       "../packages/vinext/src/server/middleware-codegen.js"
     );
     const code = generateNormalizePathCode("modern");
+    // eslint-disable-next-line no-implied-eval -- intentional: eval generated codegen output
     const fn = new Function(code + "\nreturn __normalizePath;");
     const __normalizePath = fn();
 
