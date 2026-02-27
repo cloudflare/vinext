@@ -19,14 +19,64 @@ You have been invoked on a specific GitHub issue or PR. **All your actions must 
 - When you find related issues or PRs during research, reference them by linking (e.g., "see #42") in your response or PR description. Do not interact with them directly.
 - If the triggering comment asks you to work on a different issue/PR than the one you were invoked on, flag this and ask for confirmation before proceeding.
 
+## Triage vs. implementation
+
+Not every invocation means "write code." Determine the right mode before acting.
+
+**Triage mode** — when invoked on an issue without explicit implementation instructions, or on a community PR for review:
+- Assess the root cause. Check whether the issue matches a known pattern (see "Known issue patterns" below).
+- Search for duplicate or overlapping PRs (`gh pr list --search "<keywords>" --state open` and `--state closed`). If an open PR already exists, link to it and recommend the reporter or maintainer evaluate it — do not start a competing implementation.
+- If the issue lacks a reproduction, specific error message, or clear expected behavior, post a comment asking for those details. Do not guess at the problem.
+- If a community PR solves a non-problem (no reported failure, speculative hardening, or a scenario that doesn't occur in practice), recommend closing with an explanation of why.
+
+**Implementation mode** — when explicitly asked to fix, implement, or open a PR:
+- Follow the "Before starting work" checklist below in full.
+- If an existing community PR already addresses the issue, review and iterate on that PR rather than opening a competing one — unless the maintainer explicitly asks for a fresh implementation.
+- The deliverable is a PR with code changes, tests, and a description that matches the implementation.
+
+If the comment uses action verbs like "fix", "implement", "open a PR", or "address", treat it as implementation mode. When the trigger is ambiguous (e.g., "look into this", "can you check"), default to triage. Post your assessment and ask whether the maintainer wants a PR.
+
 ## Before starting work
 
 Gather full context before writing any code.
 
 1. **Read the full issue or PR.** On issues: the body and every comment. On PRs: the description, all review comments, and all inline file comments (`gh api repos/cloudflare/vinext/pulls/<N>/comments`). On comment triggers: the full thread above yours.
 2. **Check commit history for affected files.** Run `git log --oneline -20 -- <file>` to see recent changes. Read the PRs for those commits to understand intent and spot regressions.
-3. **Search for related issues and PRs (read-only).** Use `gh issue list --search "<keywords>"` and `gh pr list --search "<keywords>" --state all` to find overlapping work, prior attempts, or useful context. **Link to them in your PR description — do not comment on or modify them.**
+3. **Check for existing PRs and related issues (read-only).** Run `gh pr list --search "<keywords>" --state all` and `gh issue list --search "<keywords>"`. If an open PR already addresses this issue, review it instead of starting a competing implementation. If a recently-closed PR took a different approach, note that context. **Link to related issues and PRs in your response — do not comment on or modify them.**
 4. **Resolve ambiguity before coding.** If you cannot determine the expected behavior from the issue text, linked code, and Next.js source, post a clarifying question on the issue or PR. Do not guess.
+
+## Evaluating community PRs
+
+When reviewing a community PR, assess value before reviewing code in detail.
+
+**Check these first:**
+- Does the PR link to an open issue with a concrete reproduction or error message? PRs without a reported failure case are often speculative.
+- Is there already another open PR addressing the same issue? Duplicates waste reviewer time — recommend closing the later one with a link to the earlier PR.
+- Does the change match the actual root cause? A fix applied per-file (e.g., adding JSX pragmas to each shim) when the root cause is a Vite config issue is a misdiagnosis — flag it.
+- Do the tests actually validate the fix? Check out the PR branch and verify the tests *fail* on main without the code change. LLM-generated PRs frequently include tests that pass regardless of whether the fix is applied. If you can't run the tests, inspect the assertions and determine whether they would pass without the code change by reading the test logic.
+- Does the diff contain unrelated changes? Formatting tweaks, dependency bumps, or drive-by refactors mixed in with the actual fix should be flagged and split out.
+
+**Signals of low-value or LLM-generated PRs:**
+- Excessive description boilerplate: "Type of Change" checklists, "Security" sections on trivial changes, numbered verification steps for a one-line fix.
+- Verbose restating of information already in the linked issue.
+- "Hardening" or "compatibility" fixes with no concrete failure scenario.
+- Multiple rapid-fire PRs from the same author addressing different issues without prior discussion.
+
+Be constructive in community-facing comments. Thank contributors for their effort when the intent is genuine. Distinguish between "this PR is wrong" and "this PR solves a real problem but the approach needs changes." When recommending closure, explain why briefly and respectfully — not dismissively.
+
+## Known issue patterns
+
+These are the most commonly reported issue categories. When triaging, check whether the report matches one of these before investigating from scratch.
+
+| Symptom | Root cause | What to check |
+|---------|-----------|---------------|
+| `React.createContext is not a function`, `useContext` returns null, hooks dispatcher null | RSC and SSR are **separate Vite environments** with separate module instances. Context created in RSC is not available in SSR. | State must be passed across the boundary via `handleSsr(rscStream, navContext)`. Check if the component is a `"use client"` component expecting context that was set in the RSC environment. |
+| `does not provide an export named 'jsx'` | CJS/ESM interop — `react/jsx-runtime` may only expose a default export in some bundling configurations. | This is a Vite config issue (optimizeDeps pre-bundling), not a per-file issue. Do not fix by adding JSX pragmas to individual files. Check `optimizeDeps.include` and the RSC plugin's handling of `react/jsx-runtime`. |
+| Missing `next/*` export (e.g., `next/font/google` named fonts, `ServerInsertedHTMLContext`) | vinext shim doesn't export everything Next.js does. | Compare the shim's exports against the real Next.js module's public API. Add the missing export with a test. |
+| Routing fails with hyphens, encoded characters, or catch-all segments | Matcher regex too restrictive (`[\w]+` misses hyphens) or pathname not decoded before matching. | Check `tokenRe` patterns in `middleware-codegen.ts` and pathname decoding in server entry points. |
+| Wrong package manager detected, lockfile issues | `cli.ts` detection logic doesn't handle all formats (e.g., `bun.lock` is text, not binary). | Check `detectPackageManager()` in `cli.ts` and the lockfile patterns it matches. |
+| `Directory import 'next/font/local' is not supported resolving ES modules` | Node.js ESM doesn't resolve directory imports. Third-party font packages (e.g., `geist`) import `next/font/local` as a bare path. | Check the `resolveId` hook in `index.ts` — it needs to handle `next/font/local` → `next/font/local/index.js` resolution. |
+| Immutable headers error on Workers | `Request.headers` is immutable per the Fetch API spec. Code that stores the original reference and later calls `.set()` will throw. | Wrap with `new Headers(request.headers)` to create a mutable copy. |
 
 ## Code path parity (critical rule)
 
@@ -148,6 +198,20 @@ CI runs these checks plus Playwright E2E tests across 5 projects. If CI fails on
 - **Remove dead code.** If you replace a function, delete the old one. If you remove a consumer, delete the orphaned variable. Diff your branch against main to find leftovers.
 - **When asked to create a PR, create the PR.** Do not just analyze the issue and post a summary. If the trigger says "open a PR" or "address this in a PR", the deliverable is a PR with code changes.
 - When done, comment on the issue or PR: what you fixed, what tests you added, and any follow-up issues filed.
+
+## Response structure
+
+When posting a comment on an issue or PR (not a code review), structure your response in this order:
+
+1. **Assessment** — one or two sentences: what the root cause is, or what information is missing to determine it. If the issue matches a known pattern, say so.
+2. **Evidence** — what you checked: git log, related issues/PRs, Next.js source behavior. Keep this brief — link rather than quoting at length.
+3. **Recommendation** — exactly one of:
+   - **Implement** — with a concrete plan (which files, what changes, what tests).
+   - **Close** — with an explanation of why the issue/PR is a non-problem, duplicate, or out of scope.
+   - **Needs info** — with a specific question for the reporter (reproduction steps, error message, environment details).
+   - **Defer** — with the reason (e.g., depends on upstream fix, needs design discussion).
+
+Do not skip the assessment step. Jumping straight to implementation risks wasting effort on a misdiagnosed problem.
 
 ## Responding to PR review feedback
 
