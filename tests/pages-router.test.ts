@@ -950,6 +950,22 @@ describe("Production build", () => {
     expect(result.responseHeaders.get("x-custom-middleware")).toBe("active");
   });
 
+  it("runMiddleware preserves x-middleware-request-* headers from NextResponse.next({ request: { headers } })", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
+    // /header-override triggers NextResponse.next({ request: { headers } }) which sets
+    // x-middleware-request-x-custom-injected header. The runMiddleware codegen must
+    // preserve these so the downstream consumer can unpack them into actual request headers.
+    const request = new Request("http://localhost/header-override");
+    const result = await serverEntry.runMiddleware(request);
+    expect(result.continue).toBe(true);
+    expect(result.responseHeaders).toBeDefined();
+    // x-middleware-request-* headers must be preserved (the fix)
+    expect(result.responseHeaders.get("x-middleware-request-x-custom-injected")).toBe("from-middleware");
+    // Other x-middleware-* internal headers must be stripped
+    expect(result.responseHeaders.get("x-middleware-next")).toBeNull();
+  });
+
   it("runMiddleware returns 500 when middleware throws", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
     const serverEntry = await import(pathToFileURL(serverEntryPath).href);

@@ -28,6 +28,14 @@ export function middleware(request: NextRequest) {
     throw new Error("middleware crash");
   }
 
+  // Forward modified request headers via NextResponse.next({ request: { headers } })
+  // to test that x-middleware-request-* headers survive runMiddleware stripping.
+  if (url.pathname === "/header-override") {
+    const headers = new Headers(request.headers);
+    headers.set("x-custom-injected", "from-middleware");
+    return NextResponse.next({ request: { headers } });
+  }
+
   return response;
 }
 
