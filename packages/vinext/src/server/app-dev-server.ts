@@ -2414,7 +2414,6 @@ export async function handleSsr(rscStream, navContext, fontData) {
     const insertedElements = flushServerInsertedHTML();
 
     // Render the inserted elements to HTML strings
-    // renderToStaticMarkup is statically imported at the top of this module.
     const { createElement, Fragment } = await import("react");
     let insertedHTML = "";
     for (const el of insertedElements) {
