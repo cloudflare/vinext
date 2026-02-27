@@ -1,0 +1,151 @@
+name: nuqs E2E
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 7 * * *" # daily at 07:00 UTC (after ecosystem at 06:00)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nuqs-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: nuqs E2E (app router)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout vinext
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install vinext dependencies
+        run: pnpm install
+
+      - name: Build vinext
+        run: pnpm run build
+
+      - name: Read vinext versions
+        id: versions
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const pkg = require('./packages/vinext/package.json');
+          const clean = (v) => v.replace(/^[^0-9]*/, '');
+          const lines = [
+            `vite=${clean(pkg.peerDependencies.vite)}`,
+            `rsc=${clean(pkg.dependencies['@vitejs/plugin-rsc'])}`,
+          ].join('\n');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, lines + '\n');
+          NODE
+
+      - name: Clone nuqs
+        run: git clone --depth 1 --branch next https://github.com/47ng/nuqs.git /tmp/nuqs-e2e
+
+      - name: Install nuqs dependencies
+        working-directory: /tmp/nuqs-e2e
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile=false
+
+      - name: Build nuqs library
+        working-directory: /tmp/nuqs-e2e
+        run: pnpm --filter nuqs build
+
+      - name: Patch e2e-next for vinext
+        working-directory: /tmp/nuqs-e2e/packages/e2e/next
+        run: |
+          # Create vite.config.ts
+          cat > vite.config.ts << 'EOF'
+          import { defineConfig } from "vite";
+          import vinext from "vinext";
+
+          export default defineConfig({
+            plugins: [vinext()],
+            ssr: {
+              noExternal: ["nuqs", "e2e-shared"],
+            },
+          });
+          EOF
+
+          # Patch playwright.config.ts
+          cat > playwright.config.ts << 'EOF'
+          import { configurePlaywright } from 'e2e-shared/playwright.config.ts'
+
+          export default configurePlaywright({
+            startCommand: 'npx vite dev --port 3001',
+            port: 3001,
+          })
+          EOF
+
+          # Only run app router shared tests
+          cat > specs/shared.spec.ts << 'EOF'
+          import { runSharedTests } from 'e2e-shared/shared.spec.ts'
+          runSharedTests('/app', { router: 'next-app' })
+          EOF
+
+          # Strip pages router blocks from shared spec wrappers
+          node -e "
+          const fs = require('fs');
+          const path = require('path');
+          const dir = path.join(process.cwd(), 'specs', 'shared');
+          if (!fs.existsSync(dir)) process.exit(0);
+          for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.spec.ts'))) {
+            const fp = path.join(dir, f);
+            const content = fs.readFileSync(fp, 'utf8');
+            const blocks = content.split(/\n\n+/);
+            const filtered = blocks.filter(b =>
+              !b.includes(\"'next-pages'\") && !b.includes(\"'/pages/\")
+            );
+            fs.writeFileSync(fp, filtered.join('\n\n') + '\n');
+          }
+          "
+
+          # Remove pages directory
+          rm -rf src/pages
+
+      - name: Install vinext into nuqs e2e
+        working-directory: /tmp/nuqs-e2e
+        env:
+          VINEXT_PKG: ${{ github.workspace }}/packages/vinext
+          VITE_VERSION: ${{ steps.versions.outputs.vite }}
+          RSC_VERSION: ${{ steps.versions.outputs.rsc }}
+        run: |
+          pnpm add --filter e2e-next \
+            "vinext@file:$VINEXT_PKG" \
+            "vite@$VITE_VERSION" \
+            "@vitejs/plugin-rsc@$RSC_VERSION" \
+            "react-server-dom-webpack@^19.2.4" \
+            --no-lockfile
+
+      - name: Install Playwright
+        working-directory: /tmp/nuqs-e2e/packages/e2e/next
+        run: npx playwright install chromium
+
+      - name: Run nuqs e2e tests
+        working-directory: /tmp/nuqs-e2e/packages/e2e/next
+        run: npx playwright test --project=chromium --reporter=list
+        continue-on-error: true
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nuqs-e2e-report
+          path: /tmp/nuqs-e2e/packages/e2e/next/.playwright/
+          retention-days: 14

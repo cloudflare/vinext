@@ -8,7 +8,8 @@
     "test:watch": "vitest",
     "typecheck": "tsgo --noEmit",
     "lint": "oxlint --deny-warnings",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:nuqs-e2e": "./scripts/nuqs-e2e.sh"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
