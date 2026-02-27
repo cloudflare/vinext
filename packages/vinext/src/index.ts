@@ -1,5 +1,5 @@
-import type { Plugin, ViteDevServer } from "vite";
-import { defineConfig, parseAst } from "vite";
+import type { Plugin, UserConfig, ViteDevServer } from "vite";
+import { parseAst } from "vite";
 import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, patternToNextFormat as pagesPatternToNextFormat, type Route } from "./routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
@@ -1886,7 +1886,7 @@ hydrate();
         // environments where it can cause asset resolution issues.
         const isMultiEnv = hasAppDir || hasCloudflarePlugin;
 
-        const viteConfig = defineConfig({
+        const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           build: {
@@ -1977,7 +1977,7 @@ hydrate();
           ...(nextConfig.basePath ? { base: nextConfig.basePath + "/" } : {}),
           // Inject resolved PostCSS plugins if string names were found
           ...(postcssOverride ? { css: { postcss: postcssOverride } } : {}),
-        });
+        };
 
         // If app/ directory exists, configure RSC environments
         if (hasAppDir) {
