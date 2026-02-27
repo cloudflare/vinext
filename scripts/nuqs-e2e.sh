@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run the nuqs e2e test suite against vinext (app router only).
+# Run the nuqs e2e test suite against vinext.
 #
 # This script clones the nuqs repo, patches its Next.js e2e test app to use
-# vinext instead of Next.js, then runs their Playwright tests. Only app router
-# tests are run (pages router tests are stripped).
+# vinext instead of Next.js, then runs their Playwright tests. Both app router
+# and pages router tests are included.
 #
 # Usage:
-#   ./scripts/nuqs-e2e.sh              # clone main, run all app router tests
-#   NUQS_REF=v2.8.8 ./scripts/nuqs-e2e.sh   # pin to a specific tag/commit
+#   ./scripts/nuqs-e2e.sh                     # clone next branch, run all tests
+#   NUQS_REF=v2.8.8 ./scripts/nuqs-e2e.sh    # pin to a specific tag/commit
 #   NUQS_DIR=/path/to/nuqs ./scripts/nuqs-e2e.sh  # reuse existing clone
 #
 # Environment variables:
-#   NUQS_REF     Git ref to clone (default: main)
+#   NUQS_REF     Git ref to clone (default: next)
 #   NUQS_DIR     Directory for the nuqs clone (default: /tmp/nuqs-e2e)
 #   PORT         Dev server port (default: 3001)
 #   SKIP_BUILD   Set to 1 to skip building vinext (useful if already built)
@@ -108,44 +108,6 @@ export default configurePlaywright({
 })
 PWCONF
 
-# 5c. Patch shared.spec.ts to only run app router tests
-info "Patching shared.spec.ts (app router only)"
-cat > specs/shared.spec.ts << 'SPECFILE'
-import { runSharedTests } from 'e2e-shared/shared.spec.ts'
-
-// Only run app router tests. Pages router is not yet supported by vinext
-// for the nuqs e2e test suite.
-runSharedTests('/app', { router: 'next-app' })
-SPECFILE
-
-# 5d. Remove pages router test invocations from shared spec wrappers
-info "Stripping pages router tests from specs/shared/"
-node -e "
-const fs = require('fs');
-const path = require('path');
-const dir = path.join(process.cwd(), 'specs', 'shared');
-if (!fs.existsSync(dir)) process.exit(0);
-let stripped = 0;
-for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.spec.ts'))) {
-  const fp = path.join(dir, f);
-  const content = fs.readFileSync(fp, 'utf8');
-  // Split into blocks separated by empty lines.
-  // Each test invocation is a distinct block.
-  const blocks = content.split(/\n\n+/);
-  const before = blocks.length;
-  const filtered = blocks.filter(b =>
-    !b.includes(\"'next-pages'\") && !b.includes(\"'/pages/\")
-  );
-  stripped += before - filtered.length;
-  fs.writeFileSync(fp, filtered.join('\n\n') + '\n');
-}
-console.log('  Removed ' + stripped + ' pages-router test blocks');
-"
-
-# 5e. Remove src/pages/ directory (no pages router support)
-info "Removing src/pages/ directory"
-rm -rf src/pages
-
 # ─── Step 6: Install vinext + deps into nuqs e2e-next ──────────────────────────
 
 log "Installing vinext into e2e-next"
@@ -165,7 +127,7 @@ npx playwright install chromium
 
 # ─── Step 8: Run tests ──────────────────────────────────────────────────────────
 
-log "Running nuqs e2e tests (app router only)"
+log "Running nuqs e2e tests"
 echo ""
 
 # Run tests, capturing exit code. We don't fail the script on test failures

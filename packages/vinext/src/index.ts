@@ -2487,7 +2487,10 @@ hydrate();
                   apiRoutes,
                 );
                 if (handled) return;
-                // No API route matched — fall through to 404
+                // No Pages Router API route matched. If the App Router is
+                // also active, fall through so the RSC plugin can handle
+                // App Router route handlers (app/api/**/route.ts).
+                if (hasAppDir) return next();
                 res.statusCode = 404;
                 res.end("404 - API route not found");
                 return;
@@ -2540,7 +2543,11 @@ hydrate();
                 }
               }
 
-              // No fallback matched — render as-is (will hit 404 handler)
+              // No fallback matched. If the App Router is also active,
+              // fall through so the RSC plugin's middleware can handle it.
+              if (hasAppDir) return next();
+
+              // Pages-only project — render as-is (will hit 404 handler)
               await handler(req, res, resolvedUrl, mwStatus);
             } catch (e) {
               next(e);

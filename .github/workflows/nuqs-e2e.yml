@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   test:
-    name: nuqs E2E (app router)
+    name: nuqs E2E
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -92,32 +92,6 @@ jobs:
             port: 3001,
           })
           EOF
-
-          # Only run app router shared tests
-          cat > specs/shared.spec.ts << 'EOF'
-          import { runSharedTests } from 'e2e-shared/shared.spec.ts'
-          runSharedTests('/app', { router: 'next-app' })
-          EOF
-
-          # Strip pages router blocks from shared spec wrappers
-          node -e "
-          const fs = require('fs');
-          const path = require('path');
-          const dir = path.join(process.cwd(), 'specs', 'shared');
-          if (!fs.existsSync(dir)) process.exit(0);
-          for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.spec.ts'))) {
-            const fp = path.join(dir, f);
-            const content = fs.readFileSync(fp, 'utf8');
-            const blocks = content.split(/\n\n+/);
-            const filtered = blocks.filter(b =>
-              !b.includes(\"'next-pages'\") && !b.includes(\"'/pages/\")
-            );
-            fs.writeFileSync(fp, filtered.join('\n\n') + '\n');
-          }
-          "
-
-          # Remove pages directory
-          rm -rf src/pages
 
       - name: Install vinext into nuqs e2e
         working-directory: /tmp/nuqs-e2e
