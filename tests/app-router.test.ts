@@ -1827,6 +1827,29 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.status).toBe(200);
     expect(res.redirected).toBe(false);
   });
+
+  // ── Percent-encoded paths should be decoded before config matching ──
+
+  it("percent-encoded redirect path is decoded before config matching", async () => {
+    // /%6Fld-%61bout decodes to /old-about → /about (permanent redirect)
+    const res = await fetch(`${baseUrl}/%6Fld-%61bout`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("percent-encoded header path is decoded before config matching", async () => {
+    // /%61bout decodes to /about → X-Page-Header: about-page
+    const res = await fetch(`${baseUrl}/%61bout`);
+    expect(res.headers.get("x-page-header")).toBe("about-page");
+  });
+
+  it("percent-encoded rewrite path is decoded before config matching", async () => {
+    // /rewrite-%61bout decodes to /rewrite-about → /about (beforeFiles rewrite)
+    const res = await fetch(`${baseUrl}/rewrite-%61bout`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
+  });
 });
 
 describe("App Router next.config.js features (generateRscEntry)", () => {

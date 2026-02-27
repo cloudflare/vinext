@@ -1775,6 +1775,95 @@ describe("middleware bypass prevention", () => {
     expect(matchPattern("/_next/static/chunk.js", pattern)).toBe(false);
     expect(matchPattern("/favicon.ico", pattern)).toBe(false);
   });
+
+  // ── Config matcher percent-encoding handling ──
+
+  it("config redirect matcher works with decoded percent-encoded paths", async () => {
+    const { matchRedirect } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    const redirects = [
+      { source: "/admin", destination: "/login", permanent: true },
+      { source: "/old-blog/:slug", destination: "/blog/:slug", permanent: false },
+    ];
+    const reqCtx = { headers: new Headers(), cookies: {}, query: new URLSearchParams(), host: "localhost" };
+    // Decoded path should match
+    const decoded = normalizePath(decodeURIComponent("/%61dmin"));
+    expect(decoded).toBe("/admin");
+    const result = matchRedirect(decoded, redirects, reqCtx);
+    expect(result).toBeTruthy();
+    expect(result!.destination).toBe("/login");
+
+    // Mixed encoding in parameterized route
+    const slugDecoded = normalizePath(decodeURIComponent("/%6Fld-blog/my-p%6Fst"));
+    expect(slugDecoded).toBe("/old-blog/my-post");
+    const slugResult = matchRedirect(slugDecoded, redirects, reqCtx);
+    expect(slugResult).toBeTruthy();
+    expect(slugResult!.destination).toBe("/blog/my-post");
+
+    // Raw encoded path must NOT match (matchers expect decoded paths)
+    const rawResult = matchRedirect("/%61dmin", redirects, reqCtx);
+    expect(rawResult).toBeNull();
+  });
+
+  it("config header matcher works with decoded percent-encoded paths", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    const headers = [
+      { source: "/api/(.*)", headers: [{ key: "X-Custom", value: "true" }] },
+    ];
+    // Decoded path should match
+    const decoded = normalizePath(decodeURIComponent("/%61pi/hello"));
+    expect(decoded).toBe("/api/hello");
+    const result = matchHeaders(decoded, headers);
+    expect(result).toHaveLength(1);
+    expect(result[0].key).toBe("X-Custom");
+
+    // Raw encoded path must NOT match
+    const rawResult = matchHeaders("/%61pi/hello", headers);
+    expect(rawResult).toHaveLength(0);
+  });
+
+  it("config rewrite matcher works with decoded percent-encoded paths", async () => {
+    const { matchRewrite } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    const rewrites = [
+      { source: "/before-rewrite", destination: "/about" },
+    ];
+    const reqCtx = { headers: new Headers(), cookies: {}, query: new URLSearchParams(), host: "localhost" };
+    // Decoded path should match
+    const decoded = normalizePath(decodeURIComponent("/%62efore-rewrite"));
+    expect(decoded).toBe("/before-rewrite");
+    const result = matchRewrite(decoded, rewrites, reqCtx);
+    expect(result).toBe("/about");
+
+    // Raw encoded path must NOT match
+    const rawResult = matchRewrite("/%62efore-rewrite", rewrites, reqCtx);
+    expect(rawResult).toBeNull();
+  });
+
+  it("double-encoded paths are decoded only once", async () => {
+    const { normalizePath } = await import(
+      "../packages/vinext/src/server/normalize-path.js"
+    );
+    // %2561dmin → first decode → %61dmin (literal text, not /admin)
+    const doubleEncoded = "/%2561dmin";
+    const decoded = normalizePath(decodeURIComponent(doubleEncoded));
+    // Should decode to /%61dmin, NOT to /admin
+    expect(decoded).toBe("/%61dmin");
+    expect(decoded).not.toBe("/admin");
+  });
 });
 
 // ---------------------------------------------------------------------------

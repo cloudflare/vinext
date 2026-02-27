@@ -625,9 +625,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
-    let url = rawUrl;
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
-    const rawPagesPathname = url.split("?")[0].replaceAll("\\", "/");
+    // Rebuild `url` from the decoded pathname + original query string so all
+    // downstream consumers (resolvedUrl, resolvedPathname, config matchers)
+    // always work with the decoded, canonical path.
+    const rawPagesPathname = rawUrl.split("?")[0].replaceAll("\\", "/");
+    const rawQs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
     let pathname: string;
     try {
       pathname = normalizePath(decodeURIComponent(rawPagesPathname));
@@ -637,6 +640,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       res.end("Bad Request");
       return;
     }
+    let url = pathname + rawQs;
 
     // Guard against protocol-relative URL open redirect attacks.
     // Check rawPagesPathname before normalizePath collapses //.
