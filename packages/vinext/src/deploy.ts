@@ -160,6 +160,7 @@ export function detectProject(root: string): ProjectInfo {
         // Sanitize: Workers names must be lowercase alphanumeric + hyphens
         projectName = pkg.name
           .replace(/^@[^/]+\//, "") // strip npm scope
+          .toLowerCase()            // lowercase BEFORE stripping invalid chars
           .replace(/[^a-z0-9-]/g, "-")
           .replace(/-+/g, "-")
           .replace(/^-|-$/g, "");
