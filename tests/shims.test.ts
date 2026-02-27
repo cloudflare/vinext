@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import path from "node:path";
+import { runInNewContext } from "node:vm";
 import { PAGES_FIXTURE_DIR } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
 import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
@@ -1657,8 +1658,12 @@ describe("middleware codegen parity", () => {
     );
     // Eval the generated code and test it behaves identically to the runtime
     const code = generateSafeRegExpCode("modern") + generateMiddlewareMatcherCode("modern");
-    const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
-    const { matchMiddlewarePattern, matchesMiddleware } = fn();
+    const { matchMiddlewarePattern, matchesMiddleware } = runInNewContext(
+      `${code}\n({ matchMiddlewarePattern, matchesMiddleware });`,
+    ) as {
+      matchMiddlewarePattern: (pathname: string, matcher: string) => boolean;
+      matchesMiddleware: (pathname: string, matcher: string | string[] | undefined) => boolean;
+    };
 
     // No matcher → matches all (Next.js default)
     expect(matchesMiddleware("/", undefined)).toBe(true);
@@ -1687,8 +1692,12 @@ describe("middleware codegen parity", () => {
       "../packages/vinext/src/server/middleware-codegen.js"
     );
     const code = generateSafeRegExpCode("es5") + generateMiddlewareMatcherCode("es5");
-    const fn = new Function(code + "\nreturn { matchMiddlewarePattern, matchesMiddleware };");
-    const { matchMiddlewarePattern, matchesMiddleware } = fn();
+    const { matchMiddlewarePattern, matchesMiddleware } = runInNewContext(
+      `${code}\n({ matchMiddlewarePattern, matchesMiddleware });`,
+    ) as {
+      matchMiddlewarePattern: (pathname: string, matcher: string) => boolean;
+      matchesMiddleware: (pathname: string, matcher: string | string[] | undefined) => boolean;
+    };
 
     // No matcher → matches all
     expect(matchesMiddleware("/api/hello", undefined)).toBe(true);
@@ -1703,8 +1712,9 @@ describe("middleware codegen parity", () => {
       "../packages/vinext/src/server/middleware-codegen.js"
     );
     const code = generateNormalizePathCode("modern");
-    const fn = new Function(code + "\nreturn __normalizePath;");
-    const __normalizePath = fn();
+    const __normalizePath = runInNewContext(
+      `${code}\n__normalizePath;`,
+    ) as (input: string) => string;
 
     expect(__normalizePath("/")).toBe("/");
     expect(__normalizePath("/foo/bar")).toBe("/foo/bar");
