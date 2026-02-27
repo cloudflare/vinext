@@ -548,6 +548,12 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("response.headers.forEach");
   });
 
+  it("preserves x-middleware-request-* headers for prod request override handling", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain('const mwReqPrefix = "x-middleware-request-"');
+    expect(content).toContain('key.startsWith(mwReqPrefix)');
+  });
+
   it("handles external rewrites via proxyExternalRequest", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("isExternalUrl(rewritten)");

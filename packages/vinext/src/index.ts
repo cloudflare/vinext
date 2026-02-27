@@ -700,9 +700,13 @@ export async function runMiddleware(request) {
   if (response.headers.get("x-middleware-next") === "1") {
     var rHeaders = new Headers();
     for (var [key, value] of response.headers) {
-      // Strip ALL x-middleware-* headers — they are internal routing signals
-      // and must never reach clients.
-      if (!key.startsWith("x-middleware-")) rHeaders.append(key, value);
+      // Keep x-middleware-request-* headers so the production server can
+      // apply middleware-request header overrides before stripping internals
+      // from the final client response.
+      if (
+        !key.startsWith("x-middleware-") ||
+        key.startsWith("x-middleware-request-")
+      ) rHeaders.append(key, value);
     }
     return { continue: true, responseHeaders: rHeaders };
   }
@@ -715,7 +719,9 @@ export async function runMiddleware(request) {
   var rewriteUrl = response.headers.get("x-middleware-rewrite");
   if (rewriteUrl) {
     var rwHeaders = new Headers();
-    for (var [k, v] of response.headers) { if (!k.startsWith("x-middleware-")) rwHeaders.append(k, v); }
+    for (var [k, v] of response.headers) {
+      if (!k.startsWith("x-middleware-") || k.startsWith("x-middleware-request-")) rwHeaders.append(k, v);
+    }
     var rewritePath;
     try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
     catch { rewritePath = rewriteUrl; }
