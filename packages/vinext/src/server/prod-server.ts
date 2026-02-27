@@ -764,7 +764,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             // Preserve multi-value headers (especially Set-Cookie) by
             // using getSetCookie() for cookies and forEach for the rest.
             const respHeaders: Record<string, string | string[]> = {};
-            result.response.headers.forEach((value, key) => {
+            result.response.headers.forEach((value: string, key: string) => {
               if (key.toLowerCase() === "set-cookie") return; // handled below
               respHeaders[key] = value;
             });
