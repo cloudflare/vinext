@@ -218,8 +218,17 @@ export async function runMiddleware(
     return { continue: true };
   }
 
+   // Construct a new Request with the fully decoded + normalized pathname so
+   // middleware always sees the same canonical path that the router uses.
+  let mwRequest = request;
+  if (normalizedPathname !== url.pathname) {
+    const mwUrl = new URL(url);
+    mwUrl.pathname = normalizedPathname;
+    mwRequest = new Request(mwUrl, request);
+  }
+
   // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
-  const nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+  const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
 
   // Execute the middleware
   let response: Response | undefined;

@@ -438,7 +438,8 @@ export function matchConfigPattern(
     const rest = pathname.slice(prefix.replace(/\/$/, "").length);
     if (isPlus && (!rest || rest === "/")) return null;
     let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
-    try { restValue = decodeURIComponent(restValue); } catch { /* malformed percent-encoding */ }
+    // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+    // the request entry point. Decoding again would produce incorrect param values.
     return { [paramName]: restValue };
   }
 

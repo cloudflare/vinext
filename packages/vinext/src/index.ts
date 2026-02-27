@@ -679,7 +679,15 @@ export async function runMiddleware(request) {
 
   if (!matchesMiddleware(normalizedPathname, matcher)) return { continue: true };
 
-  var nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+   // Construct a new Request with the decoded + normalized pathname so middleware
+   // always sees the same canonical path that the router uses.
+  var mwRequest = request;
+  if (normalizedPathname !== url.pathname) {
+    var mwUrl = new URL(url);
+    mwUrl.pathname = normalizedPathname;
+    mwRequest = new Request(mwUrl, request);
+  }
+  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
   var response;
   try { response = await middlewareFn(nextRequest); }
   catch (e) {
@@ -787,7 +795,8 @@ ${apiRouteEntries.join(",\n")}
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch {}
+  // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+  // the entry point. Decoding again would create a double-decode vector.
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
     if (params !== null) return { route, params };
@@ -3336,7 +3345,8 @@ export function matchConfigPattern(
     if (isPlus && (!rest || rest === "/")) return null;
     // For :path* zero segments is fine
     let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
-    try { restValue = decodeURIComponent(restValue); } catch { /* malformed percent-encoding */ }
+    // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+    // the entry point. Decoding again would create a double-decode vector.
     return { [paramName]: restValue };
   }
 

@@ -533,7 +533,9 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch {}
+   // NOTE: Do NOT decodeURIComponent here. The caller is responsible for decoding
+   // the pathname exactly once at the request entry point. Decoding again here
+   // would cause inconsistent path matching between middleware and routing.
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
     if (params !== null) return { route, params };
@@ -939,7 +941,8 @@ function __matchConfigPattern(pathname, pattern) {
     const rest = pathname.slice(prefix.replace(/\\/$/, "").length);
     if (isPlus && (!rest || rest === "/")) return null;
     let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
-    try { restValue = decodeURIComponent(restValue); } catch {}
+     // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+     // the request entry point. Decoding again would produce incorrect param values.
     return { [paramName]: restValue };
   }
   const parts = pattern.split("/");
@@ -1286,20 +1289,17 @@ async function _handleRequest(request) {
   let _middlewareRewriteStatus = null;
 
   ${middlewarePath ? `
-   // Run proxy/middleware if present and path matches
+     // Run proxy/middleware if present and path matches
   const middlewareFn = middlewareModule.default || middlewareModule.proxy || middlewareModule.middleware;
   const middlewareMatcher = middlewareModule.config?.matcher;
   if (typeof middlewareFn === "function" && matchesMiddleware(cleanPathname, middlewareMatcher)) {
     try {
       // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
-      // Strip .rsc suffix from the URL — it's an internal transport detail that
-      // middleware should never see (matches Next.js behavior).
-      let mwRequest = request;
-      if (isRscRequest && pathname.endsWith(".rsc")) {
-        const mwUrl = new URL(request.url);
-        mwUrl.pathname = cleanPathname;
-        mwRequest = new Request(mwUrl, request);
-      }
+       // Always construct a new Request with the fully decoded + normalized pathname
+       // so middleware and the router see the same canonical path.
+      const mwUrl = new URL(request.url);
+      mwUrl.pathname = cleanPathname;
+      const mwRequest = new Request(mwUrl, request);
       const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
       const mwResponse = await middlewareFn(nextRequest);
       if (mwResponse) {

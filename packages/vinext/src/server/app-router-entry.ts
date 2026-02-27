@@ -14,40 +14,38 @@
 
 // @ts-expect-error — virtual module resolved by vinext
 import rscHandler from "virtual:vinext-rsc-entry";
-import { normalizePath } from "./normalize-path.js";
 
 export default {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
 
-    // Normalize backslashes (browsers treat /\ as //) then decode and normalize path.
+    // Normalize backslashes (browsers treat /\ as //) before any other checks.
     const rawPathname = url.pathname.replaceAll("\\", "/");
 
     // Block protocol-relative URL open redirects (//evil.com/ or /\evil.com/).
+    // Check rawPathname BEFORE decode so the guard fires before normalization.
     if (rawPathname.startsWith("//")) {
       return new Response("404 Not Found", { status: 404 });
     }
 
-    // Decode percent-encoding and normalize the path for middleware/route matching.
-    let normalizedPathname: string;
+    // Validate that percent-encoding is well-formed. The RSC handler performs
+    // the actual decode + normalize; we only check here to return a clean 400
+    // instead of letting a malformed sequence crash downstream.
     try {
-      normalizedPathname = normalizePath(decodeURIComponent(rawPathname));
+      decodeURIComponent(rawPathname);
     } catch {
       // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
       return new Response("Bad Request", { status: 400 });
     }
 
-    // Construct a new Request with normalized pathname so the RSC entry
-    // sees the canonical path for middleware and route matching.
-    let normalizedRequest = request;
-    if (normalizedPathname !== url.pathname) {
-      const normalizedUrl = new URL(url);
-      normalizedUrl.pathname = normalizedPathname;
-      normalizedRequest = new Request(normalizedUrl, request);
-    }
+     // Do NOT decode/normalize the pathname here. The RSC handler
+     // (virtual:vinext-rsc-entry) is the single point of decoding — it calls
+     // decodeURIComponent + normalizePath on the incoming URL. Decoding here
+     // AND in the handler would double-decode, causing inconsistent path
+     // matching between middleware and routing.
 
-    // Delegate to RSC handler
-    const result = await rscHandler(normalizedRequest);
+    // Delegate to RSC handler (which decodes + normalizes the pathname itself)
+    const result = await rscHandler(request);
 
     if (result instanceof Response) {
       return result;
