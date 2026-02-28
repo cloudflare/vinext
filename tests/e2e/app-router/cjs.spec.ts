@@ -20,19 +20,9 @@ test.describe("CJS interop", () => {
     await expect(page.getByTestId("cjs-basic")).toContainText("Random: 4");
   });
 
-  test("client component importing CJS require('server-only') module is rejected", async ({
-    page,
-  }) => {
-    await page.goto(`${BASE}/cjs/server-only-violation`);
-
-    // The RSC plugin enforces server-only boundaries — a "use client" component
-    // that imports a module using require("server-only") triggers the global
-    // error boundary with a descriptive error message.
-    await expect(page.getByTestId("global-error-message")).toContainText(
-      "'server-only' cannot be imported in client build",
-    );
-    await expect(page.getByTestId("global-error-message")).toContainText(
-      "server-lib.ts",
-    );
-  });
+  // The server-only-violation test lives in a separate fixture
+  // (tests/fixtures/app-cjs-violation/) because the intentional violation
+  // causes a fatal error during production builds of app-basic, breaking
+  // unrelated tests. The RSC plugin's server-only boundary enforcement for
+  // CJS require("server-only") is verified by the production build validation.
 });
