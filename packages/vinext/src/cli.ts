@@ -21,8 +21,9 @@ import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
-import { init as runInit } from "./init.js";
+import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
+import { detectPackageManager as _detectPackageManager } from "./utils/project.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -218,6 +219,19 @@ async function buildApp() {
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
   const isApp = hasAppDir();
+
+  // For App Router: upgrade React if needed for react-server-dom-webpack compatibility.
+  // Without this, builds with react<19.2.4 produce a Worker that crashes at
+  // runtime with "Cannot read properties of undefined (reading 'moduleMap')".
+  if (isApp) {
+    const reactUpgrade = getReactUpgradeDeps(process.cwd());
+    if (reactUpgrade.length > 0) {
+      const installCmd = _detectPackageManager(process.cwd()).replace(/ -D$/, "");
+      const [pm, ...pmArgs] = installCmd.split(" ");
+      console.log("  Upgrading React for RSC compatibility...");
+      execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: process.cwd(), stdio: "inherit" });
+    }
+  }
 
   if (isApp) {
     // App Router: use createBuilder for multi-environment RSC builds
