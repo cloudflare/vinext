@@ -35,6 +35,7 @@ import {
 } from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
+import { detectPackageManager } from "./utils/project.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import MagicString from "magic-string";
 import path from "node:path";
@@ -1650,7 +1651,7 @@ hydrate();
     if (!resolvedRscPath) {
       throw new Error(
         "vinext: App Router detected but @vitejs/plugin-rsc is not installed.\n" +
-        "Run: npm install -D @vitejs/plugin-rsc",
+        "Run: " + detectPackageManager(process.cwd()) + " @vitejs/plugin-rsc",
       );
     }
     const rscImport = import(pathToFileURL(resolvedRscPath).href);
@@ -1890,7 +1891,7 @@ hydrate();
             // @mdx-js/rollup not installed — warn but don't fail
             console.warn(
               "[vinext] MDX files detected but @mdx-js/rollup is not installed. " +
-              "Install it with: npm install -D @mdx-js/rollup"
+              "Install it with: " + detectPackageManager(process.cwd()) + " @mdx-js/rollup"
             );
           }
         }
@@ -3020,7 +3021,7 @@ hydrate();
           if (!resolvedRscTransformsPath) {
             throw new Error(
               "vinext: 'use cache' requires @vitejs/plugin-rsc to be installed.\n" +
-              "Run: npm install -D @vitejs/plugin-rsc",
+              "Run: " + detectPackageManager(process.cwd()) + " @vitejs/plugin-rsc",
             );
           }
           const { transformWrapExport, transformHoistInlineDirective } = await import(pathToFileURL(resolvedRscTransformsPath).href);

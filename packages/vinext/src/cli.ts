@@ -19,6 +19,7 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
+import { detectPackageManagerName } from "./utils/project.js";
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
@@ -336,9 +337,9 @@ async function lint() {
     } else {
       console.log(
         "  No linter found. Install eslint or oxlint:\n\n" +
-          "    npm install -D eslint eslint-config-next\n" +
+          "    " + detectPackageManagerName(process.cwd()) + " add -D eslint eslint-config-next\n" +
           "    # or\n" +
-          "    npm install -D oxlint\n",
+          "    " + detectPackageManagerName(process.cwd()) + " add -D oxlint\n",
       );
       process.exit(1);
     }
