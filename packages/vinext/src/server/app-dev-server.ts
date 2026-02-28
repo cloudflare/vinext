@@ -13,6 +13,7 @@ import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { NextRedirect, NextRewrite, NextHeader } from "../config/next-config.js";
 import { generateDevOriginCheckCode } from "./dev-origin-check.js";
 import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormalizePathCode } from "./middleware-codegen.js";
+import { isProxyFile } from "./middleware.js";
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -1296,10 +1297,20 @@ async function _handleRequest(request, __reqCtx) {
   let _middlewareRewriteStatus = null;
 
   ${middlewarePath ? `
-     // Run proxy/middleware if present and path matches
-  const middlewareFn = middlewareModule.default || middlewareModule.proxy || middlewareModule.middleware;
+   // Run proxy/middleware if present and path matches.
+   // Validate exports match the file type (proxy.ts vs middleware.ts), matching Next.js behavior.
+   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+  const _isProxy = ${JSON.stringify(isProxyFile(middlewarePath))};
+  const middlewareFn = _isProxy
+    ? (middlewareModule.proxy || middlewareModule.default)
+    : (middlewareModule.middleware || middlewareModule.default);
+  if (typeof middlewareFn !== "function") {
+    const _fileType = _isProxy ? "Proxy" : "Middleware";
+    const _expectedExport = _isProxy ? "proxy" : "middleware";
+    throw new Error("The " + _fileType + " file must export a function named \`" + _expectedExport + "\` or a \`default\` function.");
+  }
   const middlewareMatcher = middlewareModule.config?.matcher;
-  if (typeof middlewareFn === "function" && matchesMiddleware(cleanPathname, middlewareMatcher)) {
+  if (matchesMiddleware(cleanPathname, middlewareMatcher)) {
     try {
       // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
        // Always construct a new Request with the fully decoded + normalized pathname

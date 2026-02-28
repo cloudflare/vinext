@@ -61,10 +61,34 @@ examples/               # User-facing demo apps
 ### Adding a New Feature
 
 1. **Check if Next.js has it** — look at Next.js source to understand expected behavior
-2. **Add tests first** — put test cases in the appropriate `tests/*.test.ts` file
-3. **Implement in shims or server** — most features are either a shim (`next/*` module) or server-side logic
-4. **Add fixture pages if needed** — `tests/fixtures/` has test apps for integration testing
-5. **Run the full test suite** before committing
+2. **Search the Next.js test suite** — before writing code, search `test/e2e/` and `test/unit/` in the Next.js repo for related test files (see below)
+3. **Add tests first** — put test cases in the appropriate `tests/*.test.ts` file
+4. **Implement in shims or server** — most features are either a shim (`next/*` module) or server-side logic
+5. **Add fixture pages if needed** — `tests/fixtures/` has test apps for integration testing
+6. **Run the full test suite** before committing
+
+### Searching the Next.js Test Suite
+
+**This is a required step for all feature work and bug fixes.** Before writing code, search the Next.js repo's `test/e2e/` and `test/unit/` directories for tests related to whatever you're working on. Search broadly, not just for exact feature names.
+
+For example, when working on middleware:
+- Search for `middleware` and `proxy` in test directory names
+- Search for error messages like `"must export"` to find validation tests
+- Check for edge cases like missing exports, misspelled names, invalid configs
+
+**Why this matters:** vinext aims to match Next.js behavior exactly. If Next.js has a test for it, we should have an equivalent test. Missing this step has caused silent behavioral differences, like middleware failing open on invalid exports instead of throwing an error (which Next.js tests explicitly).
+
+When you find relevant Next.js tests, port the test cases to our test suite and include a comment linking back to the original Next.js test file:
+```ts
+// Ported from Next.js: test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+```
+
+**Use `gh search code` for efficient searching:**
+```bash
+gh search code "middleware" --repo vercel/next.js --filename "*.test.*" --limit 20
+gh search code "must export" --repo vercel/next.js --filename "*.test.*" --limit 10
+```
 
 ### Fixing Bugs
 
