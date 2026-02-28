@@ -2010,11 +2010,12 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain(":path*");
   });
 
-  it("supports named proxy export in generated middleware dispatch", () => {
+  it("validates proxy.ts exports in generated middleware dispatch (matching Next.js)", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, "/tmp/proxy.ts", [], null, "", false);
-    expect(code).toContain(
-      "middlewareModule.default || middlewareModule.proxy || middlewareModule.middleware",
-    );
+    // For proxy.ts files, named proxy export is preferred over default
+    expect(code).toContain("middlewareModule.proxy ?? middlewareModule.default");
+    // Should throw if no valid export found
+    expect(code).toContain('must export a function named');
   });
 
   it("applies redirects before middleware in the handler", () => {
