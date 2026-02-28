@@ -2010,6 +2010,13 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain(":path*");
   });
 
+  it("supports named proxy export in generated middleware dispatch", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, "/tmp/proxy.ts", [], null, "", false);
+    expect(code).toContain(
+      "middlewareModule.default || middlewareModule.proxy || middlewareModule.middleware",
+    );
+  });
+
   it("applies redirects before middleware in the handler", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
@@ -2617,4 +2624,3 @@ describe("App Router external rewrite proxy credential stripping", () => {
     expect(capturedHeaders!["x-custom-safe"]).toBe("keep-me");
   });
 });
-

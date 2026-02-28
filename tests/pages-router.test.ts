@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { createServer, build, type ViteDevServer } from "vite";
 import path from "node:path";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
 import { pathToFileURL } from "node:url";
 import vinext from "../packages/vinext/src/index.js";
 import { PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
@@ -727,6 +729,132 @@ describe("Production build", () => {
     // Should contain route patterns from our fixture pages
     expect(entryContent).toContain("/about");
     expect(entryContent).toContain("/ssr");
+  });
+
+  it("runMiddleware in generated pages prod entry executes named proxy export", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-proxy-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Page() { return <div>ok</div>; }\n",
+      );
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "proxy.js"),
+        `import { NextResponse } from "next/server";
+export function proxy(request) {
+  const url = new URL(request.url);
+  if (url.pathname === "/protected") {
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
+  return NextResponse.next();
+}
+export const config = { matcher: ["/protected"] };
+`,
+      );
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: {
+            output: {
+              entryFileNames: "entry.js",
+            },
+          },
+        },
+      });
+
+      const entryPath = path.join(fixtureOutDir, "server", "entry.js");
+      const entryModule = await import(pathToFileURL(entryPath).href);
+      const result = await entryModule.runMiddleware(new Request("http://localhost/protected"));
+
+      expect(result.continue).toBe(false);
+      expect(result.redirectStatus).toBe(307);
+      expect(result.redirectUrl).toContain("/login");
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("runMiddleware in generated pages prod entry preserves export precedence (default > proxy > middleware)", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-proxy-precedence-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Page() { return <div>ok</div>; }\n",
+      );
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "proxy.js"),
+        `import { NextResponse } from "next/server";
+export default function defaultProxy(request) {
+  const url = new URL(request.url);
+  if (url.pathname === "/protected") {
+    return NextResponse.redirect(new URL("/from-default", request.url));
+  }
+  return NextResponse.next();
+}
+export function proxy(request) {
+  const url = new URL(request.url);
+  if (url.pathname === "/protected") {
+    return NextResponse.redirect(new URL("/from-proxy", request.url));
+  }
+  return NextResponse.next();
+}
+export function middleware(request) {
+  const url = new URL(request.url);
+  if (url.pathname === "/protected") {
+    return NextResponse.redirect(new URL("/from-middleware", request.url));
+  }
+  return NextResponse.next();
+}
+export const config = { matcher: ["/protected"] };
+`,
+      );
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: {
+            output: {
+              entryFileNames: "entry.js",
+            },
+          },
+        },
+      });
+
+      const entryPath = path.join(fixtureOutDir, "server", "entry.js");
+      const entryModule = await import(pathToFileURL(entryPath).href);
+      const result = await entryModule.runMiddleware(new Request("http://localhost/protected"));
+
+      expect(result.continue).toBe(false);
+      expect(result.redirectStatus).toBe(307);
+      expect(result.redirectUrl).toContain("/from-default");
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
   });
 
   it("produces client bundle with page chunks and SSR manifest", async () => {

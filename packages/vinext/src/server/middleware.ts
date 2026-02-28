@@ -5,7 +5,7 @@
  * before routing. Runs in Node (not Edge Runtime), per the vinext design.
  *
  * In Next.js 16, proxy.ts replaces middleware.ts:
- * - proxy.ts: default export function, runs on Node.js runtime
+ * - proxy.ts: default export OR named `proxy` function, runs on Node.js runtime
  * - middleware.ts: deprecated but still supported for Edge runtime use cases
  *
  * The proxy/middleware receives a NextRequest and can:
@@ -69,7 +69,7 @@ export function findMiddlewareFile(root: string): string | null {
     if (fs.existsSync(fullPath)) {
       console.warn(
         "[vinext] middleware.ts is deprecated in Next.js 16. " +
-          "Rename to proxy.ts and export a default function.",
+          "Rename to proxy.ts and export a default or named proxy function.",
       );
       return fullPath;
     }

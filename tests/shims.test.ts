@@ -2015,6 +2015,30 @@ describe("double-encoded path handling in middleware", () => {
     expect(mwPathname).not.toBe("/dashboard");
   });
 
+  it("runMiddleware accepts named proxy export", async () => {
+    const { runMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+
+    const mockServer = {
+      ssrLoadModule: async () => ({
+        proxy: () => {
+          const response = new Response(null, { status: 307 });
+          response.headers.set("location", "/login");
+          return response;
+        },
+        config: { matcher: ["/protected"] },
+      }),
+    };
+
+    const request = new Request("http://localhost/protected");
+    const result = await runMiddleware(mockServer as any, "/tmp/proxy.js", request);
+
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).toContain("/login");
+    expect(result.redirectStatus).toBe(307);
+  });
+
   it("app-router-entry.ts does not double-decode (delegates to RSC handler)", async () => {
     // Verify the Cloudflare Worker entry does not decode the pathname itself,
     // leaving that responsibility to the RSC handler.
