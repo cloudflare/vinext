@@ -25,11 +25,12 @@ import { findInstrumentationFile, runInstrumentation } from "./server/instrument
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import {
   safeRegExp,
-  escapeHeaderSource,
   isExternalUrl,
   proxyExternalRequest,
   parseCookies,
   matchHeaders,
+  matchRedirect,
+  matchRewrite,
   type RequestContext,
 } from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
@@ -2481,22 +2482,25 @@ hydrate();
                 }
               }
 
+              // Build request context once for has/missing condition checks
+              // across headers, redirects, and rewrites.
+              const reqUrl = new URL(url, `http://${req.headers.host || "localhost"}`);
+              const reqCtxHeaders = new Headers(
+                Object.fromEntries(
+                  Object.entries(req.headers)
+                    .filter(([, v]) => v !== undefined)
+                    .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])
+                ),
+              );
+              const reqCtx: RequestContext = {
+                headers: reqCtxHeaders,
+                cookies: parseCookies(reqCtxHeaders.get("cookie")),
+                query: reqUrl.searchParams,
+                host: reqCtxHeaders.get("host") ?? reqUrl.host,
+              };
+
               // Apply custom headers from next.config.js
               if (nextConfig?.headers.length) {
-                const reqUrl = new URL(url, `http://${req.headers.host || "localhost"}`);
-                const reqCtxHeaders = new Headers(
-                  Object.fromEntries(
-                    Object.entries(req.headers)
-                      .filter(([, v]) => v !== undefined)
-                      .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])
-                  ),
-                );
-                const reqCtx: RequestContext = {
-                  headers: reqCtxHeaders,
-                  cookies: parseCookies(reqCtxHeaders.get("cookie")),
-                  query: reqUrl.searchParams,
-                  host: reqCtxHeaders.get("host") ?? reqUrl.host,
-                };
                 applyHeaders(pathname, res, nextConfig.headers, reqCtx);
               }
 
@@ -2506,6 +2510,7 @@ hydrate();
                   pathname,
                   res,
                   nextConfig.redirects,
+                  reqCtx,
                 );
                 if (redirected) return;
               }
@@ -2514,7 +2519,7 @@ hydrate();
               let resolvedUrl = url;
               if (nextConfig?.rewrites.beforeFiles.length) {
                 resolvedUrl =
-                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles) ??
+                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles, reqCtx) ??
                   url;
               }
 
@@ -2555,6 +2560,7 @@ hydrate();
                 const afterRewrite = applyRewrites(
                   resolvedUrl.split("?")[0],
                   nextConfig.rewrites.afterFiles,
+                  reqCtx,
                 );
                 if (afterRewrite) resolvedUrl = afterRewrite;
               }
@@ -2580,6 +2586,7 @@ hydrate();
                 const fallbackRewrite = applyRewrites(
                   resolvedUrl.split("?")[0],
                   nextConfig.rewrites.fallback,
+                  reqCtx,
                 );
                 if (fallbackRewrite) {
                   // External fallback rewrite — proxy to external URL
@@ -3425,22 +3432,15 @@ function applyRedirects(
   pathname: string,
   res: any,
   redirects: NextRedirect[],
+  ctx?: RequestContext,
 ): boolean {
-  for (const redirect of redirects) {
-    const params = matchConfigPattern(pathname, redirect.source);
-    if (params) {
-      let dest = redirect.destination;
-      for (const [key, value] of Object.entries(params)) {
-        dest = dest.replace(`:${key}*`, value);
-        dest = dest.replace(`:${key}+`, value);
-        dest = dest.replace(`:${key}`, value);
-      }
-      // Sanitize to prevent open redirect via protocol-relative URLs
-      dest = sanitizeDestinationLocal(dest);
-      res.writeHead(redirect.permanent ? 308 : 307, { Location: dest });
-      res.end();
-      return true;
-    }
+  const result = matchRedirect(pathname, redirects, ctx);
+  if (result) {
+    // Sanitize to prevent open redirect via protocol-relative URLs
+    const dest = sanitizeDestinationLocal(result.destination);
+    res.writeHead(result.permanent ? 308 : 307, { Location: dest });
+    res.end();
+    return true;
   }
   return false;
 }
@@ -3517,20 +3517,12 @@ async function proxyExternalRewriteNode(
 function applyRewrites(
   pathname: string,
   rewrites: NextRewrite[],
+  ctx?: RequestContext,
 ): string | null {
-  for (const rewrite of rewrites) {
-    const params = matchConfigPattern(pathname, rewrite.source);
-    if (params) {
-      let dest = rewrite.destination;
-      for (const [key, value] of Object.entries(params)) {
-        dest = dest.replace(`:${key}*`, value);
-        dest = dest.replace(`:${key}+`, value);
-        dest = dest.replace(`:${key}`, value);
-      }
-      // Sanitize to prevent open redirect via protocol-relative URLs
-      dest = sanitizeDestinationLocal(dest);
-      return dest;
-    }
+  const dest = matchRewrite(pathname, rewrites, ctx);
+  if (dest) {
+    // Sanitize to prevent open redirect via protocol-relative URLs
+    return sanitizeDestinationLocal(dest);
   }
   return null;
 }
