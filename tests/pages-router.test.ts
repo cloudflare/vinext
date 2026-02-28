@@ -787,7 +787,7 @@ export const config = { matcher: ["/protected"] };
     }
   });
 
-  it("runMiddleware in generated pages prod entry preserves export precedence (default > proxy > middleware)", async () => {
+  it("runMiddleware in generated pages prod entry prefers named proxy export over default (matching Next.js)", async () => {
     const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-proxy-precedence-"));
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
     const fixtureOutDir = path.join(tmpRoot, "dist");
@@ -851,7 +851,7 @@ export const config = { matcher: ["/protected"] };
 
       expect(result.continue).toBe(false);
       expect(result.redirectStatus).toBe(307);
-      expect(result.redirectUrl).toContain("/from-default");
+      expect(result.redirectUrl).toContain("/from-proxy");
     } finally {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
