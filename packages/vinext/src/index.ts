@@ -15,6 +15,7 @@ import {
   type ResolvedNextConfig,
   type NextRedirect,
   type NextRewrite,
+  type NextHeader,
 } from "./config/next-config.js";
 
 import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
@@ -22,7 +23,15 @@ import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormaliz
 import { normalizePath } from "./server/normalize-path.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
-import { safeRegExp, escapeHeaderSource, isExternalUrl, proxyExternalRequest } from "./config/config-matchers.js";
+import {
+  safeRegExp,
+  escapeHeaderSource,
+  isExternalUrl,
+  proxyExternalRequest,
+  parseCookies,
+  matchHeaders,
+  type RequestContext,
+} from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -2474,7 +2483,21 @@ hydrate();
 
               // Apply custom headers from next.config.js
               if (nextConfig?.headers.length) {
-                applyHeaders(pathname, res, nextConfig.headers);
+                const reqUrl = new URL(url, `http://${req.headers.host || "localhost"}`);
+                const reqCtxHeaders = new Headers(
+                  Object.fromEntries(
+                    Object.entries(req.headers)
+                      .filter(([, v]) => v !== undefined)
+                      .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])
+                  ),
+                );
+                const reqCtx: RequestContext = {
+                  headers: reqCtxHeaders,
+                  cookies: parseCookies(reqCtxHeaders.get("cookie")),
+                  query: reqUrl.searchParams,
+                  host: reqCtxHeaders.get("host") ?? reqUrl.host,
+                };
+                applyHeaders(pathname, res, nextConfig.headers, reqCtx);
               }
 
               // Apply redirects from next.config.js
@@ -3518,16 +3541,12 @@ function applyRewrites(
 function applyHeaders(
   pathname: string,
   res: any,
-  headers: Array<{ source: string; headers: Array<{ key: string; value: string }> }>,
+  headers: NextHeader[],
+  ctx?: RequestContext,
 ): void {
-  for (const rule of headers) {
-    const escaped = escapeHeaderSource(rule.source);
-    const sourceRegex = safeRegExp("^" + escaped + "$");
-    if (sourceRegex && sourceRegex.test(pathname)) {
-      for (const header of rule.headers) {
-        res.setHeader(header.key, header.value);
-      }
-    }
+  const matched = matchHeaders(pathname, headers, ctx);
+  for (const header of matched) {
+    res.setHeader(header.key, header.value);
   }
 }
 

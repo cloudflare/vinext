@@ -3180,6 +3180,91 @@ describe("checkHasConditions", () => {
   });
 });
 
+describe("matchHeaders", () => {
+  function makeCtx(overrides: Partial<{
+    headers: Record<string, string>;
+    cookies: Record<string, string>;
+    query: Record<string, string>;
+    host: string;
+  }> = {}) {
+    const headers = new Headers(overrides.headers ?? {});
+    if (overrides.cookies) {
+      headers.set("cookie", Object.entries(overrides.cookies).map(([k, v]) => `${k}=${v}`).join("; "));
+    }
+    const query = new URLSearchParams(overrides.query ?? {});
+    return {
+      headers,
+      cookies: overrides.cookies ?? {},
+      query,
+      host: overrides.host ?? "localhost",
+    };
+  }
+
+  it("applies headers when has header condition is satisfied", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules: any[] = [
+      {
+        source: "/about",
+        has: [{ type: "header", key: "x-user-tier", value: "pro" }],
+        headers: [{ key: "x-conditional-header", value: "enabled" }],
+      },
+    ];
+
+    const matched = matchHeaders("/about", rules, makeCtx({ headers: { "x-user-tier": "pro" } }));
+    expect(matched).toEqual([{ key: "x-conditional-header", value: "enabled" }]);
+  });
+
+  it("does not apply headers when missing cookie condition fails", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules: any[] = [
+      {
+        source: "/about",
+        missing: [{ type: "cookie", key: "no-config-header" }],
+        headers: [{ key: "x-conditional-header", value: "enabled" }],
+      },
+    ];
+
+    const matched = matchHeaders("/about", rules, makeCtx({ cookies: { "no-config-header": "1" } }));
+    expect(matched).toEqual([]);
+  });
+
+  it("applies headers when has query condition is satisfied", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules: any[] = [
+      {
+        source: "/about",
+        has: [{ type: "query", key: "preview", value: "1" }],
+        headers: [{ key: "x-preview-header", value: "true" }],
+      },
+    ];
+
+    const matched = matchHeaders("/about", rules, makeCtx({ query: { preview: "1" } }));
+    expect(matched).toEqual([{ key: "x-preview-header", value: "true" }]);
+  });
+
+  it("keeps backward-compatible behavior when ctx is omitted", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules: any[] = [
+      {
+        source: "/about",
+        has: [{ type: "header", key: "x-user-tier", value: "pro" }],
+        headers: [{ key: "x-conditional-header", value: "enabled" }],
+      },
+    ];
+
+    const matched = matchHeaders("/about", rules);
+    expect(matched).toEqual([{ key: "x-conditional-header", value: "enabled" }]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // isExternalUrl unit tests (external rewrite detection)
 

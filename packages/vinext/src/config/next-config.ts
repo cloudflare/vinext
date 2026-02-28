@@ -32,6 +32,8 @@ export interface NextRewrite {
 
 export interface NextHeader {
   source: string;
+  has?: HasCondition[];
+  missing?: HasCondition[];
   headers: Array<{ key: string; value: string }>;
 }
 

@@ -1152,7 +1152,7 @@ async function __proxyExternalRequest(request, externalUrl) {
   return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: respHeaders });
 }
 
-function __applyConfigHeaders(pathname) {
+function __applyConfigHeaders(pathname, ctx) {
   const result = [];
   for (const rule of __configHeaders) {
     const groups = [];
@@ -1168,7 +1168,12 @@ function __applyConfigHeaders(pathname) {
       .replace(/:[\\w-]+/g, "[^/]+")
       .replace(/___GROUP_(\\d+)___/g, (_, idx) => "(" + groups[Number(idx)] + ")");
     const sourceRegex = __safeRegExp("^" + escaped + "$");
-    if (sourceRegex && sourceRegex.test(pathname)) result.push(...rule.headers);
+    if (sourceRegex && sourceRegex.test(pathname)) {
+      if (ctx && (rule.has || rule.missing)) {
+        if (!__checkHasConditions(rule.has, rule.missing, ctx)) continue;
+      }
+      result.push(...rule.headers);
+    }
   }
   return result;
 }
@@ -1185,7 +1190,8 @@ export default async function handler(request) {
       _runWithCacheState(() =>
         _runWithPrivateCache(() =>
           runWithFetchCache(async () => {
-            const response = await _handleRequest(request);
+            const __reqCtx = __buildRequestContext(request);
+            const response = await _handleRequest(request, __reqCtx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -1194,7 +1200,7 @@ export default async function handler(request) {
               let pathname;
               try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
               ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
-              const extraHeaders = __applyConfigHeaders(pathname);
+              const extraHeaders = __applyConfigHeaders(pathname, __reqCtx);
               for (const h of extraHeaders) {
                 response.headers.set(h.key, h.value);
               }
@@ -1207,7 +1213,7 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request) {
+async function _handleRequest(request, __reqCtx) {
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -1253,7 +1259,6 @@ async function _handleRequest(request) {
   }
 
   // ── Apply redirects from next.config.js ───────────────────────────────
-  const __reqCtx = __buildRequestContext(request);
   if (__configRedirects.length) {
     const __redir = __applyConfigRedirects(pathname, __reqCtx);
     if (__redir) {
