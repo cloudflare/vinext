@@ -31,6 +31,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import commonjs from "vite-plugin-commonjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -3222,6 +3223,7 @@ hydrate();
         },
       },
     },
+    commonjs(),
   ];
 
   // Append auto-injected RSC plugins if applicable
