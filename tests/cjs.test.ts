@@ -23,8 +23,9 @@ describe("CJS interop (App Router)", () => {
     const { res, html } = await fetchHtml(baseUrl, "/cjs/basic");
     expect(res.status).toBe(200);
     expect(html).toContain("cjs-basic");
-    expect(html).toContain("Random:");
-    expect(html).toContain("4");
+    // React SSR may insert comment nodes between text and expressions
+    // (e.g. "Random: <!-- -->4"), so use a regex.
+    expect(html).toMatch(/Random:.*4/);
   });
 
   it("renders page that uses CJS require('server-only')", async () => {
@@ -51,7 +52,8 @@ describe("CJS interop (Pages Router)", () => {
     const { res, html } = await fetchHtml(baseUrl, "/cjs/basic");
     expect(res.status).toBe(200);
     expect(html).toContain("cjs-basic");
-    expect(html).toContain("Random:");
-    expect(html).toContain("4");
+    // Pages Router SSR inserts React comment nodes between text and
+    // expressions (e.g. "Random: <!-- -->4"), so use a regex.
+    expect(html).toMatch(/Random:.*4/);
   });
 });

@@ -1648,6 +1648,9 @@ hydrate();
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     tsconfigPaths(),
+    // Transform CJS require()/module.exports to ESM before other plugins
+    // analyze imports (RSC directive scanning, shim resolution, etc.)
+    commonjs(),
     {
       name: "vinext:config",
       enforce: "pre",
@@ -3223,7 +3226,6 @@ hydrate();
         },
       },
     },
-    commonjs(),
   ];
 
   // Append auto-injected RSC plugins if applicable
