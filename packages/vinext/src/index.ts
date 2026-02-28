@@ -675,8 +675,8 @@ ${generateMiddlewareMatcherCode("es5")}
 export async function runMiddleware(request) {
   var isProxy = ${middlewarePath ? JSON.stringify(isProxyFile(middlewarePath)) : "false"};
   var middlewareFn = isProxy
-    ? (middlewareModule.proxy || middlewareModule.default)
-    : (middlewareModule.middleware || middlewareModule.default);
+    ? (middlewareModule.proxy ?? middlewareModule.default)
+    : (middlewareModule.middleware ?? middlewareModule.default);
   if (typeof middlewareFn !== "function") {
     var fileType = isProxy ? "Proxy" : "Middleware";
     var expectedExport = isProxy ? "proxy" : "middleware";

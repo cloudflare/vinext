@@ -1302,8 +1302,8 @@ async function _handleRequest(request, __reqCtx) {
    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
   const _isProxy = ${JSON.stringify(isProxyFile(middlewarePath))};
   const middlewareFn = _isProxy
-    ? (middlewareModule.proxy || middlewareModule.default)
-    : (middlewareModule.middleware || middlewareModule.default);
+    ? (middlewareModule.proxy ?? middlewareModule.default)
+    : (middlewareModule.middleware ?? middlewareModule.default);
   if (typeof middlewareFn !== "function") {
     const _fileType = _isProxy ? "Proxy" : "Middleware";
     const _expectedExport = _isProxy ? "proxy" : "middleware";
