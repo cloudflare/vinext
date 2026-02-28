@@ -202,14 +202,13 @@ If you're trying to understand how something works under the hood — route matc
 
 CI is split into safe checks (no secrets) and deploy previews (requires secrets). This lets external contributors get feedback on their PRs without exposing credentials.
 
-**Safe CI (`ci.yml`)** runs automatically for all PRs, including forks:
+**Safe CI (`ci.yml`)** runs for all PRs after first-time contributor approval:
 - Lint, Typecheck, Vitest, Playwright E2E
-- Uses `pull_request_target` so it runs without requiring approval for fork PRs
-- Checks out the PR's code via explicit `ref: github.event.pull_request.head.sha`
 - Uses zero secrets and read-only permissions
+- First-time contributors need one manual approval, then subsequent PRs run automatically
 
 **Deploy previews (`deploy-examples.yml`)** run automatically only for same-repo branches:
-- The deploy steps check `github.event.pull_request.head.repo.full_name == github.repository`
+- The entire workflow is skipped for fork PRs via a job-level `if` condition
 - Cloudflare employees should push branches to the main repo (not fork), so previews deploy automatically
 - For fork PRs, a maintainer can comment `/deploy-preview` to trigger the deploy (see `deploy-preview-command.yml`)
 
@@ -220,8 +219,8 @@ CI is split into safe checks (no secrets) and deploy previews (requires secrets)
 
 When modifying CI workflows, keep these rules in mind:
 - `ci.yml` must never use secrets. It runs untrusted code from forks.
-- Deploy workflows gate secret usage behind the fork check or the `author_association` check.
-- The `pull_request_target` trigger uses the workflow definition from the base branch, not the PR. Changes to the workflow file itself require merging to main before they take effect on future PRs.
+- `deploy-examples.yml` must skip entirely for fork PRs. Don't remove the job-level `if` guard.
+- The `/deploy-preview` slash command gates secret usage behind the `author_association` check.
 
 ---
 
