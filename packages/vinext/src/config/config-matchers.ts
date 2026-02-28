@@ -372,10 +372,14 @@ export function matchConfigPattern(
   // followed by a literal suffix (e.g. "/:path*.md"). Without this, the suffix
   // pattern falls through to the simple segment matcher which incorrectly treats
   // the whole segment (":path*.md") as a named parameter and matches everything.
+  // The last condition catches simple params with literal suffixes (e.g. "/:slug.md")
+  // where the param name is followed by a dot — the simple matcher would treat
+  // "slug.md" as the param name and match any single segment regardless of suffix.
   if (
     pattern.includes("(") ||
     pattern.includes("\\") ||
-    /:[\w-]+[*+][^/]/.test(pattern)
+    /:[\w-]+[*+][^/]/.test(pattern) ||
+    /:[\w-]+\./.test(pattern)
   ) {
     try {
       // Param names may contain hyphens (e.g. :auth-method, :sign-in).

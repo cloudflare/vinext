@@ -2646,6 +2646,30 @@ describe("matchConfigPattern", () => {
     expect(matchConfigPattern("/blog/intro.md", "/docs/:path*.md")).toBeNull();
   });
 
+  it("matches :param with literal suffix (e.g. /:slug.md)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    // Should match URLs with the .md suffix and extract the param
+    expect(matchConfigPattern("/hello-world.md", "/:slug.md")).toEqual({ slug: "hello-world" });
+    expect(matchConfigPattern("/my-post.md", "/:slug.md")).toEqual({ slug: "my-post" });
+    // Should NOT match URLs without .md suffix
+    expect(matchConfigPattern("/", "/:slug.md")).toBeNull();
+    expect(matchConfigPattern("/hello-world", "/:slug.md")).toBeNull();
+    expect(matchConfigPattern("/hello-world.txt", "/:slug.md")).toBeNull();
+    // Should NOT match paths with extra segments
+    expect(matchConfigPattern("/blog/hello-world.md", "/:slug.md")).toBeNull();
+  });
+
+  it("matches :param with literal suffix via config-matchers module", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(matchConfigPattern("/hello-world.md", "/:slug.md")).toEqual({ slug: "hello-world" });
+    expect(matchConfigPattern("/", "/:slug.md")).toBeNull();
+    expect(matchConfigPattern("/hello-world", "/:slug.md")).toBeNull();
+  });
+
   it("still matches plain :path* catch-all (no suffix) correctly", async () => {
     const { matchConfigPattern } = await import(
       "../packages/vinext/src/index.js"
