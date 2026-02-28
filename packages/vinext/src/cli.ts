@@ -225,13 +225,11 @@ async function buildApp() {
     const builder = await vite.createBuilder(config);
     await builder.buildApp();
   } else {
-    // Pages Router: client + SSR builds
-    const appRoot = process.cwd();
-
+    // Pages Router: client + SSR builds.
+    // Use buildViteConfig() so that when a vite.config exists we don't
+    // duplicate the vinext() plugin.
     console.log("  Building client...");
-    await vite.build({
-      root: appRoot,
-      plugins: [vinext()],
+    await vite.build(buildViteConfig({
       build: {
         outDir: "dist/client",
         manifest: true,
@@ -242,12 +240,10 @@ async function buildApp() {
           treeshake: clientTreeshakeConfig,
         },
       },
-    });
+    }));
 
     console.log("  Building server...");
-    await vite.build({
-      root: appRoot,
-      plugins: [vinext()],
+    await vite.build(buildViteConfig({
       build: {
         outDir: "dist/server",
         ssr: "virtual:vinext-server-entry",
@@ -257,7 +253,7 @@ async function buildApp() {
           },
         },
       },
-    });
+    }));
   }
 
   console.log("\n  Build complete. Run `vinext start` to start the production server.\n");
