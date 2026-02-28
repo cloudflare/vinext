@@ -683,6 +683,8 @@ export function matchHeaders(
     const escaped = escapeHeaderSource(rule.source);
     const sourceRegex = safeRegExp("^" + escaped + "$");
     if (sourceRegex && sourceRegex.test(pathname)) {
+      // When no request context is available, skip has/missing checks
+      // and apply all path-matched rules unconditionally (backward compat).
       if (ctx && (rule.has || rule.missing)) {
         if (!checkHasConditions(rule.has, rule.missing, ctx)) {
           continue;
