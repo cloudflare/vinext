@@ -5437,6 +5437,19 @@ describe("next/image enhancements", () => {
     expect(result.props.src).toBe("/photo.jpg");
     expect(result.props.src).not.toContain("/_vinext/image");
   });
+
+  it("SVG src bypasses /_vinext/image endpoint", async () => {
+    const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+    const result = getImageProps({
+      src: "/icons/my.svg",
+      alt: "Icon",
+      width: 64,
+      height: 64,
+    });
+    // SVGs are served as-is; they are not resized, so use raw path
+    expect(result.props.src).toBe("/icons/my.svg");
+    expect(result.props.src).not.toContain("/_vinext/image");
+  });
 });
 
 describe("next/image component rendering", () => {
@@ -5945,9 +5958,9 @@ describe("isSafeImageContentType", () => {
     expect(isSafeImageContentType("image/tiff")).toBe(true);
   });
 
-  it("rejects SVG content type", async () => {
+  it("allows SVG content type (passthrough with CSP)", async () => {
     const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
-    expect(isSafeImageContentType("image/svg+xml")).toBe(false);
+    expect(isSafeImageContentType("image/svg+xml")).toBe(true);
   });
 
   it("rejects non-image content types", async () => {
@@ -5966,13 +5979,13 @@ describe("isSafeImageContentType", () => {
   it("handles content type with parameters (charset, etc.)", async () => {
     const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
     expect(isSafeImageContentType("image/jpeg; charset=utf-8")).toBe(true);
-    expect(isSafeImageContentType("image/svg+xml; charset=utf-8")).toBe(false);
+    expect(isSafeImageContentType("image/svg+xml; charset=utf-8")).toBe(true);
   });
 
   it("is case-insensitive", async () => {
     const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
     expect(isSafeImageContentType("Image/JPEG")).toBe(true);
-    expect(isSafeImageContentType("IMAGE/SVG+XML")).toBe(false);
+    expect(isSafeImageContentType("IMAGE/SVG+XML")).toBe(true);
   });
 });
 
@@ -6077,18 +6090,21 @@ describe("handleImageOptimization", () => {
     expect(fetchCalled).toBe(false);
   });
 
-  it("blocks SVG content type", async () => {
-    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fmalicious.svg&w=100&q=75");
+  it("allows SVG and serves as passthrough with CSP", async () => {
+    const { handleImageOptimization, IMAGE_CONTENT_SECURITY_POLICY } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Ficons%2Fmy.svg&w=100&q=75");
+    const svgBody = "<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"10\"/></svg>";
     const handlers = {
-      fetchAsset: async () => new Response('<svg><script>alert(1)</script></svg>', {
+      fetchAsset: async () => new Response(svgBody, {
         status: 200,
         headers: { "Content-Type": "image/svg+xml" },
       }),
     };
     const response = await handleImageOptimization(request, handlers);
-    expect(response.status).toBe(400);
-    expect(await response.text()).toBe("The requested resource is not an allowed image type");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toBe("image/svg+xml");
+    expect(response.headers.get("Content-Security-Policy")).toBe(IMAGE_CONTENT_SECURITY_POLICY);
+    expect(await response.text()).toBe(svgBody);
   });
 
   it("blocks text/html content type", async () => {

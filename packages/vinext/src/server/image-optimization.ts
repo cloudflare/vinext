@@ -11,8 +11,8 @@
  * or JPEG depending on client support.
  *
  * Security: All image responses include Content-Security-Policy and
- * X-Content-Type-Options headers to prevent XSS via SVG or Content-Type
- * spoofing. SVG content is blocked by default (following Next.js behavior).
+ * X-Content-Type-Options headers to prevent XSS. SVG is allowed and served
+ * as passthrough with these headers to mitigate script execution.
  */
 
 /** The pathname that triggers image optimization. */
@@ -113,8 +113,8 @@ export const IMAGE_CONTENT_SECURITY_POLICY = "script-src 'none'; frame-src 'none
 
 /**
  * Allowlist of Content-Types that are safe to serve from the image endpoint.
- * SVG is intentionally excluded — it can contain embedded JavaScript and is
- * essentially an XML document, not a safe raster image format.
+ * SVG is allowed as passthrough only (no resize/transcode). Responses still
+ * get Content-Security-Policy to mitigate script execution in SVGs.
  */
 const SAFE_IMAGE_CONTENT_TYPES = new Set([
   "image/jpeg",
@@ -122,6 +122,7 @@ const SAFE_IMAGE_CONTENT_TYPES = new Set([
   "image/gif",
   "image/webp",
   "image/avif",
+  "image/svg+xml",
   "image/x-icon",
   "image/vnd.microsoft.icon",
   "image/bmp",
@@ -194,16 +195,17 @@ export async function handleImageOptimization(
   // Negotiate output format from Accept header
   const format = negotiateImageFormat(request.headers.get("Accept"));
 
-  // Block unsafe Content-Types (e.g., SVG which can contain embedded scripts).
-  // Check the source Content-Type before any processing — if the source is
-  // an SVG or other non-image type, reject it regardless of transformation.
+  // Block unsafe Content-Types (e.g. HTML, script). SVG is allowed as passthrough.
   const sourceContentType = source.headers.get("Content-Type");
   if (!isSafeImageContentType(sourceContentType)) {
     return new Response("The requested resource is not an allowed image type", { status: 400 });
   }
 
-  // Transform if handler provided, otherwise serve original
-  if (handlers.transformImage) {
+  // SVG is served as passthrough with security headers only (no resize/transcode).
+  const isSvg = sourceContentType?.toLowerCase().includes("image/svg+xml");
+
+  // Transform if handler provided and not SVG, otherwise serve original
+  if (!isSvg && handlers.transformImage) {
     try {
       const transformed = await handlers.transformImage(source.body, {
         width,
