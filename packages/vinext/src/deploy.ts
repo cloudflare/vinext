@@ -598,7 +598,7 @@ export default {
 
       // ── 4. Apply custom headers from next.config.js ───────────────
       if (configHeaders.length) {
-        const matched = matchHeaders(resolvedPathname, configHeaders);
+        const matched = matchHeaders(resolvedPathname, configHeaders, reqCtx);
         for (const h of matched) {
           middlewareHeaders[h.key.toLowerCase()] = h.value;
         }

@@ -3443,7 +3443,7 @@ function applyRedirects(
   pathname: string,
   res: any,
   redirects: NextRedirect[],
-  ctx?: RequestContext,
+  ctx: RequestContext,
 ): boolean {
   const result = matchRedirect(pathname, redirects, ctx);
   if (result) {
@@ -3528,7 +3528,7 @@ async function proxyExternalRewriteNode(
 function applyRewrites(
   pathname: string,
   rewrites: NextRewrite[],
-  ctx?: RequestContext,
+  ctx: RequestContext,
 ): string | null {
   const dest = matchRewrite(pathname, rewrites, ctx);
   if (dest) {
@@ -3545,7 +3545,7 @@ function applyHeaders(
   pathname: string,
   res: any,
   headers: NextHeader[],
-  ctx?: RequestContext,
+  ctx: RequestContext,
 ): void {
   const matched = matchHeaders(pathname, headers, ctx);
   for (const header of matched) {

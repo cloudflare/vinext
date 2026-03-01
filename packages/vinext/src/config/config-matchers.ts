@@ -467,19 +467,19 @@ export function matchConfigPattern(
  * Apply redirect rules from next.config.js.
  * Returns the redirect info if a redirect was matched, or null.
  *
- * When `ctx` is provided, has/missing conditions on the redirect rules
- * are evaluated against the request context (cookies, headers, query, host).
+ * `ctx` provides the request context (cookies, headers, query, host) used
+ * to evaluate has/missing conditions. Next.js always has request context
+ * when evaluating redirects, so this parameter is required.
  */
 export function matchRedirect(
   pathname: string,
   redirects: NextRedirect[],
-  ctx?: RequestContext,
+  ctx: RequestContext,
 ): { destination: string; permanent: boolean } | null {
   for (const redirect of redirects) {
     const params = matchConfigPattern(pathname, redirect.source);
     if (params) {
-      // Check has/missing conditions if present and context is available
-      if (ctx && (redirect.has || redirect.missing)) {
+      if (redirect.has || redirect.missing) {
         if (!checkHasConditions(redirect.has, redirect.missing, ctx)) {
           continue;
         }
@@ -504,19 +504,19 @@ export function matchRedirect(
  * Apply rewrite rules from next.config.js.
  * Returns the rewritten URL or null if no rewrite matched.
  *
- * When `ctx` is provided, has/missing conditions on the rewrite rules
- * are evaluated against the request context (cookies, headers, query, host).
+ * `ctx` provides the request context (cookies, headers, query, host) used
+ * to evaluate has/missing conditions. Next.js always has request context
+ * when evaluating rewrites, so this parameter is required.
  */
 export function matchRewrite(
   pathname: string,
   rewrites: NextRewrite[],
-  ctx?: RequestContext,
+  ctx: RequestContext,
 ): string | null {
   for (const rewrite of rewrites) {
     const params = matchConfigPattern(pathname, rewrite.source);
     if (params) {
-      // Check has/missing conditions if present and context is available
-      if (ctx && (rewrite.has || rewrite.missing)) {
+      if (rewrite.has || rewrite.missing) {
         if (!checkHasConditions(rewrite.has, rewrite.missing, ctx)) {
           continue;
         }
@@ -670,22 +670,21 @@ export async function proxyExternalRequest(
  * Apply custom header rules from next.config.js.
  * Returns an array of { key, value } pairs to set on the response.
  *
- * `ctx` is optional for backward compatibility with existing callers.
- * When omitted, `has`/`missing` conditions are not evaluated.
+ * `ctx` provides the request context (cookies, headers, query, host) used
+ * to evaluate has/missing conditions. Next.js always has request context
+ * when evaluating headers, so this parameter is required.
  */
 export function matchHeaders(
   pathname: string,
   headers: NextHeader[],
-  ctx?: RequestContext,
+  ctx: RequestContext,
 ): Array<{ key: string; value: string }> {
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
     const escaped = escapeHeaderSource(rule.source);
     const sourceRegex = safeRegExp("^" + escaped + "$");
     if (sourceRegex && sourceRegex.test(pathname)) {
-      // When no request context is available, skip has/missing checks
-      // and apply all path-matched rules unconditionally (backward compat).
-      if (ctx && (rule.has || rule.missing)) {
+      if (rule.has || rule.missing) {
         if (!checkHasConditions(rule.has, rule.missing, ctx)) {
           continue;
         }

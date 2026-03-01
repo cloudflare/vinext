@@ -1961,15 +1961,16 @@ describe("middleware bypass prevention", () => {
     const headers = [
       { source: "/api/(.*)", headers: [{ key: "X-Custom", value: "true" }] },
     ];
+    const reqCtx = { headers: new Headers(), cookies: {}, query: new URLSearchParams(), host: "localhost" };
     // Decoded path should match
     const decoded = normalizePath(decodeURIComponent("/%61pi/hello"));
     expect(decoded).toBe("/api/hello");
-    const result = matchHeaders(decoded, headers);
+    const result = matchHeaders(decoded, headers, reqCtx);
     expect(result).toHaveLength(1);
     expect(result[0].key).toBe("X-Custom");
 
     // Raw encoded path must NOT match
-    const rawResult = matchHeaders("/%61pi/hello", headers);
+    const rawResult = matchHeaders("/%61pi/hello", headers, reqCtx);
     expect(rawResult).toHaveLength(0);
   });
 
@@ -3411,7 +3412,7 @@ describe("matchHeaders", () => {
     expect(matched).toEqual([{ key: "x-preview-header", value: "true" }]);
   });
 
-  it("keeps backward-compatible behavior when ctx is omitted", async () => {
+  it("skips conditional header rule when has condition is not met", async () => {
     const { matchHeaders } = await import(
       "../packages/vinext/src/config/config-matchers.js"
     );
@@ -3423,8 +3424,9 @@ describe("matchHeaders", () => {
       },
     ];
 
-    const matched = matchHeaders("/about", rules);
-    expect(matched).toEqual([{ key: "x-conditional-header", value: "enabled" }]);
+    // Request without the required header should not match
+    const matched = matchHeaders("/about", rules, makeCtx());
+    expect(matched).toEqual([]);
   });
 });
 
@@ -3678,6 +3680,8 @@ describe("proxyExternalRequest", () => {
 // matchRewrite + isExternalUrl integration (config-matchers)
 
 describe("matchRewrite with external URLs", () => {
+  const emptyCtx = { headers: new Headers(), cookies: {}, query: new URLSearchParams(), host: "localhost" };
+
   it("returns full external URL when destination is external", async () => {
     const { matchRewrite, isExternalUrl } = await import(
       "../packages/vinext/src/config/config-matchers.js"
@@ -3685,7 +3689,7 @@ describe("matchRewrite with external URLs", () => {
     const rewrites = [
       { source: "/ph/:path*", destination: "https://us.i.posthog.com/:path*" },
     ];
-    const result = matchRewrite("/ph/decide", rewrites);
+    const result = matchRewrite("/ph/decide", rewrites, emptyCtx);
     expect(result).toBe("https://us.i.posthog.com/decide");
     expect(isExternalUrl(result!)).toBe(true);
   });
@@ -3697,7 +3701,7 @@ describe("matchRewrite with external URLs", () => {
     const rewrites = [
       { source: "/ph/static/:path*", destination: "https://us-assets.i.posthog.com/static/:path*" },
     ];
-    const result = matchRewrite("/ph/static/array.js", rewrites);
+    const result = matchRewrite("/ph/static/array.js", rewrites, emptyCtx);
     expect(result).toBe("https://us-assets.i.posthog.com/static/array.js");
     expect(isExternalUrl(result!)).toBe(true);
   });
@@ -3709,7 +3713,7 @@ describe("matchRewrite with external URLs", () => {
     const rewrites = [
       { source: "/posts/:id", destination: "/blog/:id" },
     ];
-    const result = matchRewrite("/posts/hello", rewrites);
+    const result = matchRewrite("/posts/hello", rewrites, emptyCtx);
     expect(result).toBe("/blog/hello");
     expect(isExternalUrl(result!)).toBe(false);
   });
@@ -3760,6 +3764,8 @@ describe("sanitizeDestination", () => {
 // Catch-all redirect destination sanitization
 
 describe("open redirect prevention in catch-all redirects", () => {
+  const emptyCtx = { headers: new Headers(), cookies: {}, query: new URLSearchParams(), host: "localhost" };
+
   it("matchRedirect sanitizes decoded %2F that would produce //evil.com", async () => {
     const { matchRedirect } = await import(
       "../packages/vinext/src/config/config-matchers.js"
@@ -3771,7 +3777,7 @@ describe("open redirect prevention in catch-all redirects", () => {
     const redirects = [
       { source: "/old/:path*", destination: "/:path*", permanent: false },
     ];
-    const result = matchRedirect("/old/evil.com", redirects);
+    const result = matchRedirect("/old/evil.com", redirects, emptyCtx);
     expect(result).not.toBeNull();
     expect(result!.destination).toBe("/evil.com");
     // Verify it does NOT start with // (protocol-relative)
@@ -3786,7 +3792,7 @@ describe("open redirect prevention in catch-all redirects", () => {
       { source: "/old/:path*", destination: "/:path*", permanent: false },
     ];
     // Even if an already-decoded path somehow contains //, the sanitizer should handle it
-    const result = matchRedirect("/old//evil.com", redirects);
+    const result = matchRedirect("/old//evil.com", redirects, emptyCtx);
     expect(result).not.toBeNull();
     expect(result!.destination.startsWith("//")).toBe(false);
   });
@@ -3798,7 +3804,7 @@ describe("open redirect prevention in catch-all redirects", () => {
     const redirects = [
       { source: "/go/:path*", destination: "https://example.com/:path*", permanent: false },
     ];
-    const result = matchRedirect("/go/page", redirects);
+    const result = matchRedirect("/go/page", redirects, emptyCtx);
     expect(result).not.toBeNull();
     expect(result!.destination).toBe("https://example.com/page");
   });
@@ -3812,7 +3818,7 @@ describe("open redirect prevention in catch-all redirects", () => {
     ];
     // In the real request flow, the entry point decodes and normalizePath
     // collapses //. Test with already-decoded path.
-    const result = matchRewrite("/old/evil.com", rewrites);
+    const result = matchRewrite("/old/evil.com", rewrites, emptyCtx);
     expect(result).not.toBeNull();
     expect(result!).toBe("/evil.com");
     expect(result!.startsWith("//")).toBe(false);
