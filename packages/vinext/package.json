@@ -40,6 +40,10 @@
     "./server/app-router-entry": {
       "import": "./dist/server/app-router-entry.js",
       "types": "./dist/server/app-router-entry.d.ts"
+    },
+    "./config/config-matchers": {
+      "import": "./dist/config/config-matchers.js",
+      "types": "./dist/config/config-matchers.d.ts"
     }
   },
   "files": [
@@ -62,6 +66,7 @@
     "magic-string": "^0.30.21",
     "react-server-dom-webpack": "^19.2.4",
     "rsc-html-stream": "^0.0.7",
+    "vite-plugin-commonjs": "^0.10.4",
     "vite-tsconfig-paths": "^6.1.1"
   },
   "devDependencies": {

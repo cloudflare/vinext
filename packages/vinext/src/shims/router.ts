@@ -6,6 +6,7 @@
  * by fetching new page data and re-rendering the React root.
  */
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { isValidModulePath } from "../client/validate-module-path.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -130,9 +131,9 @@ export function applyNavigationLocale(url: string, locale?: string): string {
   return `/${locale}${url.startsWith("/") ? url : `/${url}`}`;
 }
 
-/** Check if a URL is external */
+/** Check if a URL is external (any URL scheme per RFC 3986, or protocol-relative) */
 export function isExternalUrl(url: string): boolean {
-  return url.startsWith("http://") || url.startsWith("https://") || url.startsWith("//");
+  return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
 /** Check if a href is only a hash change relative to the current URL */
@@ -338,6 +339,14 @@ async function navigateClient(url: string): Promise<void> {
       return;
     }
 
+    // Validate the module URL before importing — defense-in-depth against
+    // unexpected __NEXT_DATA__ or malformed HTML responses
+    if (!isValidModulePath(pageModuleUrl)) {
+      console.error("[vinext] Blocked import of invalid page module path:", pageModuleUrl);
+      window.location.href = url;
+      return;
+    }
+
     // Dynamically import the new page module
     const pageModule = await import(/* @vite-ignore */ pageModuleUrl);
     const PageComponent = pageModule.default;
@@ -356,12 +365,16 @@ async function navigateClient(url: string): Promise<void> {
       nextData.__vinext?.appModuleUrl;
 
     if (!AppComponent && appModuleUrl) {
-      try {
-        const appModule = await import(/* @vite-ignore */ appModuleUrl);
-        AppComponent = appModule.default;
-        win.__VINEXT_APP__ = AppComponent;
-      } catch {
-        // _app not available — continue without it
+      if (!isValidModulePath(appModuleUrl)) {
+        console.error("[vinext] Blocked import of invalid app module path:", appModuleUrl);
+      } else {
+        try {
+          const appModule = await import(/* @vite-ignore */ appModuleUrl);
+          AppComponent = appModule.default;
+          win.__VINEXT_APP__ = AppComponent;
+        } catch {
+          // _app not available — continue without it
+        }
       }
     }
 
@@ -395,7 +408,7 @@ export function useRouter(): NextRouter {
     const onPopState = (e: PopStateEvent) => {
       setState(getPathnameAndQuery());
       // Re-render with the new page on back/forward navigation
-      navigateClient(window.location.pathname + window.location.search).then(() => {
+      void navigateClient(window.location.pathname + window.location.search).then(() => {
         restoreScrollPosition(e.state);
       });
     };
@@ -579,7 +592,7 @@ if (typeof window !== "undefined") {
     }
 
     routerEvents.emit("routeChangeStart", appUrl);
-    navigateClient(browserUrl).then(() => {
+    void navigateClient(browserUrl).then(() => {
       routerEvents.emit("routeChangeComplete", appUrl);
       restoreScrollPosition(e.state);
       window.dispatchEvent(new CustomEvent("vinext:navigate"));

@@ -68,6 +68,12 @@ Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted
 
 `vinext init` options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 
+### Starting a new vinext project
+
+Run `npm create next-app@latest` to create a new Next.js project, and then follow these instructions to migrate it to vinext.
+
+In the future, we will havre a proper `npm create vinext` new project workflow. 
+
 ### Migrating an existing Next.js project
 
 `vinext init` automates the migration in one command:
@@ -103,7 +109,7 @@ vinext is an experiment: can we reimplement the Next.js API surface on Vite, so 
 The current deployment target is Cloudflare Workers — zero cold starts, global by default, integrated platform (KV, R2, D1, AI). The `vinext deploy` command handles the full build-and-deploy pipeline. Expanding to other deployment targets is something we'd like to explore.
 
 **Alternatives worth knowing about:**
-- **[OpenNext](https://opennext.js.org/)** — adapts `next build` output for AWS, Cloudflare, and other platforms. More mature and battle-tested than vinext.
+- **[OpenNext](https://opennext.js.org/)** — adapts `next build` output for AWS, Cloudflare, and other platforms. OpenNext has been around much longer than vinext, is more mature, and covers more of the Next.js API surface because it builds on top of Next.js's own output rather than reimplementing it. If you want the safer, more proven option, start there.
 - **[Next.js self-hosting](https://nextjs.org/docs/app/building-your-application/deploying#self-hosting)** — Next.js can be deployed to any Node.js server, Docker container, or as a static export.
 
 ### Design principles
@@ -122,7 +128,7 @@ vinext is a Vite plugin that reimplements the public Next.js API — routing, se
 No. vinext is an alternative implementation of the Next.js API surface built on Vite. It does import some Next.js types and utilities, but the core is written from scratch. The goal is not to create a competing framework or add features beyond what Next.js offers — it's an experiment in how far AI-driven development and Vite's toolchain can go in replicating an existing, well-defined API surface.
 
 **How is this different from OpenNext?**
-[OpenNext](https://opennext.js.org/) adapts the *output* of a standard `next build` to run on various platforms. vinext replaces the build entirely — it reimplements the Next.js APIs on Vite from scratch. OpenNext is a great choice if you need production-ready Next.js on non-Vercel platforms today.
+[OpenNext](https://opennext.js.org/) adapts the *output* of a standard `next build` to run on various platforms. Because it builds on Next.js's own output, it inherits broad API coverage and has been well-tested for much longer. vinext takes a different approach: it reimplements the Next.js APIs on Vite from scratch, which means faster builds and smaller bundles, but less coverage of the long tail of Next.js features. If you need a mature, well-tested way to run Next.js outside Vercel, OpenNext is the safer choice. If you're interested in experimenting with a lighter toolchain and don't need every Next.js API, vinext might be worth a look.
 
 **Can I use this in production?**
 You can, with caution. This is experimental software with known bugs. It works well enough for demos and exploration, but it hasn't been battle-tested with real production traffic.
@@ -528,6 +534,12 @@ vinext has peer dependencies on `react ^19.2.4`, `react-dom ^19.2.4`, and `vite 
 ## Contributing
 
 This project is experimental and under active development. Issues and PRs are welcome.
+
+### CI
+
+When you open a PR, CI (lint, typecheck, Vitest, Playwright E2E) runs automatically. First-time contributors need one manual approval from a maintainer, then subsequent PRs run without intervention.
+
+Deploy previews (building and deploying examples to Cloudflare Workers) only run for branches pushed to the main repo. If you're a Cloudflare employee, push your branch to the main repo instead of forking, and previews deploy automatically. For fork PRs, a maintainer can comment `/deploy-preview` to trigger the deploy and post preview URLs.
 
 ### Reporting bugs
 

@@ -18,7 +18,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { runCheck, formatReport } from "./check.js";
 import {
   ensureESModule,
@@ -221,7 +221,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const root = path.resolve(options.root);
   const port = options.port ?? 3001;
   const exec = options._exec ?? ((cmd: string, opts: { cwd: string; stdio: string }) => {
-    execSync(cmd, opts as Parameters<typeof execSync>[1]);
+    const [program, ...args] = cmd.split(" ");
+    execFileSync(program, args, { ...opts, shell: true } as Parameters<typeof execFileSync>[2]);
   });
 
   // ── Pre-flight checks ──────────────────────────────────────────────────

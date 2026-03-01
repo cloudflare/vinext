@@ -18,11 +18,12 @@ import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
-import { init as runInit } from "./init.js";
+import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
+import { detectPackageManager as _detectPackageManager } from "./utils/project.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -219,19 +220,30 @@ async function buildApp() {
 
   const isApp = hasAppDir();
 
+  // For App Router: upgrade React if needed for react-server-dom-webpack compatibility.
+  // Without this, builds with react<19.2.4 produce a Worker that crashes at
+  // runtime with "Cannot read properties of undefined (reading 'moduleMap')".
+  if (isApp) {
+    const reactUpgrade = getReactUpgradeDeps(process.cwd());
+    if (reactUpgrade.length > 0) {
+      const installCmd = _detectPackageManager(process.cwd()).replace(/ -D$/, "");
+      const [pm, ...pmArgs] = installCmd.split(" ");
+      console.log("  Upgrading React for RSC compatibility...");
+      execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: process.cwd(), stdio: "inherit" });
+    }
+  }
+
   if (isApp) {
     // App Router: use createBuilder for multi-environment RSC builds
     const config = buildViteConfig();
     const builder = await vite.createBuilder(config);
     await builder.buildApp();
   } else {
-    // Pages Router: client + SSR builds
-    const appRoot = process.cwd();
-
+    // Pages Router: client + SSR builds.
+    // Use buildViteConfig() so that when a vite.config exists we don't
+    // duplicate the vinext() plugin.
     console.log("  Building client...");
-    await vite.build({
-      root: appRoot,
-      plugins: [vinext()],
+    await vite.build(buildViteConfig({
       build: {
         outDir: "dist/client",
         manifest: true,
@@ -242,12 +254,10 @@ async function buildApp() {
           treeshake: clientTreeshakeConfig,
         },
       },
-    });
+    }));
 
     console.log("  Building server...");
-    await vite.build({
-      root: appRoot,
-      plugins: [vinext()],
+    await vite.build(buildViteConfig({
       build: {
         outDir: "dist/server",
         ssr: "virtual:vinext-server-entry",
@@ -257,7 +267,7 @@ async function buildApp() {
           },
         },
       },
-    });
+    }));
   }
 
   console.log("\n  Build complete. Run `vinext start` to start the production server.\n");
@@ -316,13 +326,13 @@ async function lint() {
   try {
     if (hasEslint && hasNextLintConfig) {
       console.log("  Using eslint (with existing config)\n");
-      execSync("npx eslint .", { cwd, stdio: "inherit" });
+      execFileSync("npx", ["eslint", "."], { cwd, stdio: "inherit" });
     } else if (hasOxlint) {
       console.log("  Using oxlint\n");
-      execSync("npx oxlint .", { cwd, stdio: "inherit" });
+      execFileSync("npx", ["oxlint", "."], { cwd, stdio: "inherit" });
     } else if (hasEslint) {
       console.log("  Using eslint\n");
-      execSync("npx eslint .", { cwd, stdio: "inherit" });
+      execFileSync("npx", ["eslint", "."], { cwd, stdio: "inherit" });
     } else {
       console.log(
         "  No linter found. Install eslint or oxlint:\n\n" +

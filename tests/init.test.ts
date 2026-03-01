@@ -469,6 +469,24 @@ describe("init — dependency installation", () => {
     expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
   });
 
+  it("treats src/app projects as App Router", async () => {
+    setupProject(tmpDir);
+    fs.rmSync(path.join(tmpDir, "app"), { recursive: true, force: true });
+    
+    mkdir(tmpDir, "src/app");
+    writeFile(tmpDir, "src/app/page.tsx", 'export default function Home() { return <div>hi</div> }');
+    writeFile(
+      tmpDir,
+      "src/app/layout.tsx",
+      "export default function Layout({ children }) { return <html><body>{children}</body></html> }",
+    );
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
+    expect(result.installedDeps).toContain("react-server-dom-webpack");
+  });
+
   it("detects missing react-server-dom-webpack for App Router", async () => {
     setupProject(tmpDir, { router: "app" });
 

@@ -123,13 +123,14 @@ export async function appRouter(appDir: string): Promise<AppRoute[]> {
   const routes: AppRoute[] = [];
 
   // Process page files in a single pass
-  for await (const file of glob("**/page.{tsx,ts,jsx,js}", { cwd: appDir, exclude: ["**/@*"] })) {
+  // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
+  for await (const file of glob("**/page.{tsx,ts,jsx,js}", { cwd: appDir, exclude: (name: string) => name.startsWith("@") })) {
     const route = fileToAppRoute(file, appDir, "page");
     if (route) routes.push(route);
   }
 
   // Process route handler files (API routes) in a single pass
-  for await (const file of glob("**/route.{tsx,ts,jsx,js}", { cwd: appDir, exclude: ["**/@*"] })) {
+  for await (const file of glob("**/route.{tsx,ts,jsx,js}", { cwd: appDir, exclude: (name: string) => name.startsWith("@") })) {
     const route = fileToAppRoute(file, appDir, "route");
     if (route) routes.push(route);
   }
@@ -209,21 +210,21 @@ function discoverSlotSubRoutes(
         // Route groups are transparent
         if (seg.startsWith("(") && seg.endsWith(")")) continue;
 
-        const catchAllMatch = seg.match(/^\[\.\.\.(\w+)\]$/);
+        const catchAllMatch = seg.match(/^\[\.\.\.([\w-]+)\]$/);
         if (catchAllMatch) {
           subIsDynamic = true;
           subParams.push(catchAllMatch[1]);
           urlParts.push(`:${catchAllMatch[1]}+`);
           continue;
         }
-        const optionalCatchAllMatch = seg.match(/^\[\[\.\.\.(\w+)\]\]$/);
+        const optionalCatchAllMatch = seg.match(/^\[\[\.\.\.([\w-]+)\]\]$/);
         if (optionalCatchAllMatch) {
           subIsDynamic = true;
           subParams.push(optionalCatchAllMatch[1]);
           urlParts.push(`:${optionalCatchAllMatch[1]}*`);
           continue;
         }
-        const dynamicMatch = seg.match(/^\[(\w+)\]$/);
+        const dynamicMatch = seg.match(/^\[([\w-]+)\]$/);
         if (dynamicMatch) {
           subIsDynamic = true;
           subParams.push(dynamicMatch[1]);
@@ -341,8 +342,8 @@ function fileToAppRoute(
       continue;
     }
 
-    // Catch-all: [...slug]
-    const catchAllMatch = segment.match(/^\[\.\.\.(\w+)\]$/);
+    // Catch-all: [...slug] (param names may contain hyphens, e.g. [...sign-in])
+    const catchAllMatch = segment.match(/^\[\.\.\.([\w-]+)\]$/);
     if (catchAllMatch) {
       isDynamic = true;
       params.push(catchAllMatch[1]);
@@ -350,8 +351,8 @@ function fileToAppRoute(
       continue;
     }
 
-    // Optional catch-all: [[...slug]]
-    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.(\w+)\]\]$/);
+    // Optional catch-all: [[...slug]] (param names may contain hyphens, e.g. [[...sign-in]])
+    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.([\w-]+)\]\]$/);
     if (optionalCatchAllMatch) {
       isDynamic = true;
       params.push(optionalCatchAllMatch[1]);
@@ -359,8 +360,8 @@ function fileToAppRoute(
       continue;
     }
 
-    // Dynamic segment: [id]
-    const dynamicMatch = segment.match(/^\[(\w+)\]$/);
+    // Dynamic segment: [id] (param names may contain hyphens, e.g. [my-param])
+    const dynamicMatch = segment.match(/^\[([\w-]+)\]$/);
     if (dynamicMatch) {
       isDynamic = true;
       params.push(dynamicMatch[1]);
@@ -921,19 +922,19 @@ function computeInterceptTarget(
     if (segment.startsWith("@")) continue;
 
     // Dynamic segments
-    const catchAllMatch = segment.match(/^\[\.\.\.(\w+)\]$/);
+    const catchAllMatch = segment.match(/^\[\.\.\.([\w-]+)\]$/);
     if (catchAllMatch) {
       params.push(catchAllMatch[1]);
       urlSegments.push(`:${catchAllMatch[1]}+`);
       continue;
     }
-    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.(\w+)\]\]$/);
+    const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.([\w-]+)\]\]$/);
     if (optionalCatchAllMatch) {
       params.push(optionalCatchAllMatch[1]);
       urlSegments.push(`:${optionalCatchAllMatch[1]}*`);
       continue;
     }
-    const dynamicMatch = segment.match(/^\[(\w+)\]$/);
+    const dynamicMatch = segment.match(/^\[([\w-]+)\]$/);
     if (dynamicMatch) {
       params.push(dynamicMatch[1]);
       urlSegments.push(`:${dynamicMatch[1]}`);
