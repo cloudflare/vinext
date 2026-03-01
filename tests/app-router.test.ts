@@ -1440,6 +1440,48 @@ describe("App Router Production server (startProdServer)", () => {
   });
 });
 
+describe("startProdServer accepts Workers-style RSC entry ({ fetch })", () => {
+  let server: import("node:http").Server;
+  let baseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = path.join(os.tmpdir(), `vinext-test-${Date.now()}`);
+    const serverDir = path.join(tmpDir, "server");
+    const clientDir = path.join(tmpDir, "client");
+    fs.mkdirSync(serverDir, { recursive: true });
+    fs.mkdirSync(clientDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(serverDir, "index.js"),
+      "export default { async fetch(request) { return new Response('workers-entry-ok'); } };\n",
+      "utf-8",
+    );
+    const { startProdServer } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    server = await startProdServer({ port: 0, outDir: tmpDir, noCompression: true });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+    baseUrl = `http://localhost:${port}`;
+  }, 10000);
+
+  afterAll(() => {
+    server?.close();
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it("uses default.fetch when entry exports { fetch } instead of a function", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toBe("workers-entry-ok");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Malformed percent-encoded URL regression tests — App Router dev server
 // (covers app-dev-server.ts generated RSC handler decodeURIComponent)

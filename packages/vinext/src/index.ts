@@ -1957,8 +1957,18 @@ hydrate();
           // Exclude vinext from dependency optimization so esbuild doesn't
           // scan dist files containing virtual module imports (virtual:vinext-*)
           // that only resolve at Vite plugin time, not during pre-bundling.
+          // Include React and jsx-runtime so the automatic JSX transform always
+          // resolves to a copy that exports "jsx" (React 17+). Avoids "doesn't
+          // provide an export named: 'jsx'" when a dependency or resolution
+          // would otherwise use an older or duplicate React.
           optimizeDeps: {
             exclude: ["vinext"],
+            include: [
+              "react",
+              "react-dom",
+              "react/jsx-runtime",
+              "react/jsx-dev-runtime",
+            ],
           },
           // Enable JSX in .tsx/.jsx files
           // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`

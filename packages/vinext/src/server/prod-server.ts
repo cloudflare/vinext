@@ -466,12 +466,19 @@ interface AppRouterServerOptions {
 async function startAppRouterServer(options: AppRouterServerOptions) {
   const { port, host, clientDir, rscEntryPath, compress } = options;
 
-  // Import the RSC handler (use file:// URL for reliable dynamic import)
+  // Import the RSC handler (use file:// URL for reliable dynamic import).
+  // Accept both shapes: default function (raw RSC entry) or default { fetch } (Workers entry).
   const rscModule = await import(pathToFileURL(rscEntryPath).href);
-  const rscHandler: (request: Request) => Promise<Response> = rscModule.default;
+  const d = rscModule.default;
+  const rscHandler: (request: Request) => Promise<Response> =
+    typeof d === "function"
+      ? d
+      : d && typeof (d as { fetch?: (req: Request) => Promise<Response> }).fetch === "function"
+        ? (req: Request) => (d as { fetch: (req: Request) => Promise<Response> }).fetch(req)
+        : null;
 
-  if (typeof rscHandler !== "function") {
-    console.error("[vinext] RSC entry does not export a default handler function");
+  if (!rscHandler) {
+    console.error("[vinext] RSC entry does not export a default handler function or { fetch }");
     process.exit(1);
   }
 

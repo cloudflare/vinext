@@ -386,6 +386,8 @@ These are intentional exclusions:
 - **Node.js production server (`vinext start`)** works for testing but is less complete than Workers deployment. Cloudflare Workers is the primary target.
 - **Native Node modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas)** crash Vite's RSC dev environment. Dynamic OG image/icon routes using these work in production builds but not in dev mode. These are auto-stubbed during `vinext deploy`.
 
+**If you see** `The requested module 'react/jsx-runtime.js' doesn't provide an export named: 'jsx'` **in dev:** the automatic JSX transform requires React 17+. vinext targets React 19. Ensure one copy of React (e.g. `react@^19.2.4`, `react-dom@^19.2.4`) and run `pnpm install` or `npm install` so `react/jsx-runtime` resolves from that copy. Deleting `node_modules/.vite` and restarting the dev server can clear a bad pre-bundle cache.
+
 ## Benchmarks
 
 > **Caveat:** Benchmarks are hard to get right and these are early results. Take them as directional, not definitive.
