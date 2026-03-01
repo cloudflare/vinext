@@ -25,7 +25,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
-import { IMAGE_OPTIMIZATION_PATH, IMAGE_CONTENT_SECURITY_POLICY, parseImageParams, isSafeImageContentType, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "./image-optimization.js";
+import { IMAGE_OPTIMIZATION_PATH, IMAGE_CONTENT_SECURITY_POLICY, parseImageParams, isSafeImageContentType, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, type ImageConfig } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
 import { computeLazyChunks } from "../index.js";
 
@@ -466,6 +466,15 @@ interface AppRouterServerOptions {
 async function startAppRouterServer(options: AppRouterServerOptions) {
   const { port, host, clientDir, rscEntryPath, compress } = options;
 
+  // Load image config written at build time by vinext:image-config plugin
+  let imageConfig: ImageConfig | undefined;
+  const imageConfigPath = path.join(path.dirname(rscEntryPath), "image-config.json");
+  if (fs.existsSync(imageConfigPath)) {
+    try {
+      imageConfig = JSON.parse(fs.readFileSync(imageConfigPath, "utf-8"));
+    } catch { /* ignore parse errors */ }
+  }
+
   // Import the RSC handler (use file:// URL for reliable dynamic import)
   const rscModule = await import(pathToFileURL(rscEntryPath).href);
   const rscHandler: (request: Request) => Promise<Response> = rscModule.default;
@@ -517,16 +526,16 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // This must happen before serving to prevent XSS via SVG passthrough.
       const ext = path.extname(params.imageUrl).toLowerCase();
       const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
-      if (!isSafeImageContentType(ct)) {
+      if (!isSafeImageContentType(ct, imageConfig?.dangerouslyAllowSVG)) {
         res.writeHead(400);
         res.end("The requested resource is not an allowed image type");
         return;
       }
       // Serve the original image with CSP and security headers
       const imageSecurityHeaders: Record<string, string> = {
-        "Content-Security-Policy": IMAGE_CONTENT_SECURITY_POLICY,
+        "Content-Security-Policy": imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": "inline",
+        "Content-Disposition": imageConfig?.contentDispositionType ?? "inline",
       };
       if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
@@ -622,6 +631,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
     ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
   ];
+  // Extract image security config for SVG handling and security headers
+  const pagesImageConfig: ImageConfig | undefined = vinextConfig?.images ? {
+    dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
+    contentDispositionType: vinextConfig.images.contentDispositionType,
+    contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
+  } : undefined;
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
@@ -677,15 +692,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Block SVG and other unsafe content types
       const ext = path.extname(params.imageUrl).toLowerCase();
       const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
-      if (!isSafeImageContentType(ct)) {
+      if (!isSafeImageContentType(ct, pagesImageConfig?.dangerouslyAllowSVG)) {
         res.writeHead(400);
         res.end("The requested resource is not an allowed image type");
         return;
       }
       const imageSecurityHeaders: Record<string, string> = {
-        "Content-Security-Policy": IMAGE_CONTENT_SECURITY_POLICY,
+        "Content-Security-Policy": pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": "inline",
+        "Content-Disposition": pagesImageConfig?.contentDispositionType ?? "inline",
       };
       if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;

@@ -412,6 +412,11 @@ export default {
     // Image optimization via Cloudflare Images binding.
     // The parseImageParams validation inside handleImageOptimization
     // normalizes backslashes and validates the origin hasn't changed.
+    // To enable SVG support, pass a 4th argument with your image config:
+    //   handleImageOptimization(request, handlers, allowedWidths, {
+    //     dangerouslyAllowSVG: true,
+    //     contentSecurityPolicy: "script-src 'none'; frame-src 'none'; sandbox;",
+    //   })
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
       return handleImageOptimization(request, {
@@ -437,6 +442,7 @@ export function generatePagesRouterWorkerEntry(): string {
  * Edit freely or delete to regenerate on next deploy.
  */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
+import type { ImageConfig } from "vinext/server/image-optimization";
 import {
   matchRedirect,
   matchRewrite,
@@ -466,6 +472,11 @@ const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
 const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
 const configHeaders = vinextConfig?.headers ?? [];
+const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
+  dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
+  contentDispositionType: vinextConfig.images.contentDispositionType,
+  contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
+} : undefined;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -498,7 +509,7 @@ export default {
             const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
             return result.response();
           },
-        }, allowedWidths);
+        }, allowedWidths, imageConfig);
       }
 
       // ── 2. Trailing slash normalization ────────────────────────────

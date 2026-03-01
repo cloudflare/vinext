@@ -19,6 +19,16 @@
 export const IMAGE_OPTIMIZATION_PATH = "/_vinext/image";
 
 /**
+ * Image security configuration from next.config.js.
+ * Controls SVG handling and security headers for the image endpoint.
+ */
+export interface ImageConfig {
+  dangerouslyAllowSVG?: boolean;
+  contentDispositionType?: 'inline' | 'attachment';
+  contentSecurityPolicy?: string;
+}
+
+/**
  * Next.js default device sizes and image sizes.
  * These are the allowed widths for image optimization when no custom
  * config is provided. Matches Next.js defaults exactly.
@@ -131,12 +141,15 @@ const SAFE_IMAGE_CONTENT_TYPES = new Set([
 /**
  * Check if a Content-Type header value is a safe image type.
  * Returns false for SVG, HTML, or any non-image type.
+ * When `dangerouslyAllowSVG` is true, also accepts "image/svg+xml".
  */
-export function isSafeImageContentType(contentType: string | null): boolean {
+export function isSafeImageContentType(contentType: string | null, dangerouslyAllowSVG = false): boolean {
   if (!contentType) return false;
   // Extract the media type, ignoring parameters (e.g., charset)
   const mediaType = contentType.split(";")[0].trim().toLowerCase();
-  return SAFE_IMAGE_CONTENT_TYPES.has(mediaType);
+  if (SAFE_IMAGE_CONTENT_TYPES.has(mediaType)) return true;
+  if (dangerouslyAllowSVG && mediaType === "image/svg+xml") return true;
+  return false;
 }
 
 /**
@@ -144,10 +157,10 @@ export function isSafeImageContentType(contentType: string | null): boolean {
  * These headers are set on every response from the image endpoint,
  * regardless of whether the image was transformed or served as-is.
  */
-function setImageSecurityHeaders(headers: Headers): void {
-  headers.set("Content-Security-Policy", IMAGE_CONTENT_SECURITY_POLICY);
+function setImageSecurityHeaders(headers: Headers, config?: ImageConfig): void {
+  headers.set("Content-Security-Policy", config?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY);
   headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("Content-Disposition", "inline");
+  headers.set("Content-Disposition", config?.contentDispositionType ?? "inline");
 }
 
 /**
@@ -175,6 +188,7 @@ export async function handleImageOptimization(
   request: Request,
   handlers: ImageHandlers,
   allowedWidths?: number[],
+  imageConfig?: ImageConfig,
 ): Promise<Response> {
   const url = new URL(request.url);
   const params = parseImageParams(url, allowedWidths);
@@ -198,8 +212,19 @@ export async function handleImageOptimization(
   // Check the source Content-Type before any processing — if the source is
   // an SVG or other non-image type, reject it regardless of transformation.
   const sourceContentType = source.headers.get("Content-Type");
-  if (!isSafeImageContentType(sourceContentType)) {
+  if (!isSafeImageContentType(sourceContentType, imageConfig?.dangerouslyAllowSVG)) {
     return new Response("The requested resource is not an allowed image type", { status: 400 });
+  }
+
+  // SVG passthrough: SVG is a vector format, transformation provides no benefit.
+  // Serve as-is with security headers (matches Next.js behavior).
+  const sourceMediaType = sourceContentType?.split(";")[0].trim().toLowerCase();
+  if (sourceMediaType === "image/svg+xml") {
+    const headers = new Headers(source.headers);
+    headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
+    headers.set("Vary", "Accept");
+    setImageSecurityHeaders(headers, imageConfig);
+    return new Response(source.body, { status: 200, headers });
   }
 
   // Transform if handler provided, otherwise serve original
@@ -213,11 +238,11 @@ export async function handleImageOptimization(
       const headers = new Headers(transformed.headers);
       headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
       headers.set("Vary", "Accept");
-      setImageSecurityHeaders(headers);
+      setImageSecurityHeaders(headers, imageConfig);
 
       // Verify the transformed response also has a safe Content-Type.
       // A malicious or buggy transform handler could return HTML.
-      if (!isSafeImageContentType(headers.get("Content-Type"))) {
+      if (!isSafeImageContentType(headers.get("Content-Type"), imageConfig?.dangerouslyAllowSVG)) {
         headers.set("Content-Type", format);
       }
 
@@ -232,6 +257,6 @@ export async function handleImageOptimization(
   const headers = new Headers(source.headers);
   headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
   headers.set("Vary", "Accept");
-  setImageSecurityHeaders(headers);
+  setImageSecurityHeaders(headers, imageConfig);
   return new Response(source.body, { status: 200, headers });
 }

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">
+  <rect width="200" height="200" rx="20" fill="#1a1a2e"/>
+  <text x="100" y="115" font-family="system-ui, sans-serif" font-size="72" font-weight="bold" fill="#e94560" text-anchor="middle">V</text>
+  <text x="100" y="170" font-family="system-ui, sans-serif" font-size="20" fill="#0f3460" text-anchor="middle">vinext</text>
+</svg>

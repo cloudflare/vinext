@@ -281,7 +281,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // the Images binding. In dev, it serves the original file as a passthrough.
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
   const imgQuality = quality ?? 75;
-  const skipOptimization = _unoptimized === true;
+  const skipOptimization = _unoptimized === true || src.endsWith(".svg");
 
   // Build srcSet for responsive local images (common breakpoints).
   // Each entry points to /_vinext/image with the appropriate width.
@@ -393,7 +393,7 @@ export function getImageProps(props: ImageProps): {
 
   // For local images (no loader, not remote), route through optimization endpoint.
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
-  const skipOpt = _unoptimized === true || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
+  const skipOpt = _unoptimized === true || resolvedSrc.endsWith(".svg") || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
   const optimizedSrc = skipOpt
     ? resolvedSrc
     : imgWidth
