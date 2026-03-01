@@ -9,6 +9,7 @@ import {
   getInitDeps,
   isDepInstalled,
   getReactUpgradeDeps,
+  updateGitignore,
   type InitOptions,
 } from "../packages/vinext/src/init.js";
 
@@ -664,5 +665,96 @@ describe("init — non-destructive", () => {
     await runInit(tmpDir);
 
     expect(readFile(tmpDir, "next.config.mjs")).toBe(originalConfig);
+  });
+});
+
+// ─── Unit Tests: updateGitignore ─────────────────────────────────────────────
+
+describe("updateGitignore", () => {
+  it("creates .gitignore with /dist/ when file does not exist", () => {
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(true);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("/dist/\n");
+  });
+
+  it("appends /dist/ to existing .gitignore", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\n.env\n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(true);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\n.env\n/dist/\n");
+  });
+
+  it("does not duplicate /dist/ when already present", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(false);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\n/dist/\n");
+  });
+
+  it("handles .gitignore without trailing newline", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(true);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\n/dist/\n");
+  });
+
+  it("handles /dist/ with surrounding whitespace in existing file", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\n  /dist/  \n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(false);
+  });
+});
+
+// ─── Integration: init updates .gitignore ────────────────────────────────────
+
+describe("init — .gitignore", () => {
+  it("adds /dist/ to .gitignore during init", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.updatedGitignore).toBe(true);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toContain("/dist/");
+  });
+
+  it("does not duplicate /dist/ if already in .gitignore", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, ".gitignore", "node_modules/\n/dist/\n");
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.updatedGitignore).toBe(false);
+    // Ensure no duplication
+    const content = readFile(tmpDir, ".gitignore");
+    const matches = content.split("\n").filter((l: string) => l.trim() === "/dist/");
+    expect(matches.length).toBe(1);
+  });
+
+  it("preserves existing .gitignore entries when adding /dist/", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, ".gitignore", "node_modules/\n.env\n.next/\n");
+
+    const { result } = await runInit(tmpDir);
+
+    expect(result.updatedGitignore).toBe(true);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toContain("node_modules/");
+    expect(content).toContain(".env");
+    expect(content).toContain(".next/");
+    expect(content).toContain("/dist/");
   });
 });
