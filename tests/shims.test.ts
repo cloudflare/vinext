@@ -5945,9 +5945,9 @@ describe("isSafeImageContentType", () => {
     expect(isSafeImageContentType("image/tiff")).toBe(true);
   });
 
-  it("rejects SVG content type", async () => {
+  it("allows SVG content type (CSP mitigates XSS)", async () => {
     const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
-    expect(isSafeImageContentType("image/svg+xml")).toBe(false);
+    expect(isSafeImageContentType("image/svg+xml")).toBe(true);
   });
 
   it("rejects non-image content types", async () => {
@@ -5966,13 +5966,13 @@ describe("isSafeImageContentType", () => {
   it("handles content type with parameters (charset, etc.)", async () => {
     const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
     expect(isSafeImageContentType("image/jpeg; charset=utf-8")).toBe(true);
-    expect(isSafeImageContentType("image/svg+xml; charset=utf-8")).toBe(false);
+    expect(isSafeImageContentType("image/svg+xml; charset=utf-8")).toBe(true);
   });
 
   it("is case-insensitive", async () => {
     const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
     expect(isSafeImageContentType("Image/JPEG")).toBe(true);
-    expect(isSafeImageContentType("IMAGE/SVG+XML")).toBe(false);
+    expect(isSafeImageContentType("IMAGE/SVG+XML")).toBe(true);
   });
 });
 
@@ -6077,18 +6077,21 @@ describe("handleImageOptimization", () => {
     expect(fetchCalled).toBe(false);
   });
 
-  it("blocks SVG content type", async () => {
+  it("allows SVG content type with CSP so embedded scripts do not run", async () => {
     const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fmalicious.svg&w=100&q=75");
+    const request = new Request("http://localhost/_vinext/image?url=%2Ficon.svg&w=100&q=75");
+    const svgBody = '<svg><script>alert(1)</script></svg>';
     const handlers = {
-      fetchAsset: async () => new Response('<svg><script>alert(1)</script></svg>', {
+      fetchAsset: async () => new Response(svgBody, {
         status: 200,
         headers: { "Content-Type": "image/svg+xml" },
       }),
     };
     const response = await handleImageOptimization(request, handlers);
-    expect(response.status).toBe(400);
-    expect(await response.text()).toBe("The requested resource is not an allowed image type");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Security-Policy")).toBe("script-src 'none'; frame-src 'none'; sandbox;");
+    expect(response.headers.get("Content-Type")).toBe("image/svg+xml");
+    expect(await response.text()).toBe(svgBody);
   });
 
   it("blocks text/html content type", async () => {

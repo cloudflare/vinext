@@ -12,7 +12,8 @@
  *
  * Security: All image responses include Content-Security-Policy and
  * X-Content-Type-Options headers to prevent XSS via SVG or Content-Type
- * spoofing. SVG content is blocked by default (following Next.js behavior).
+ * spoofing. SVG is served with script-src 'none' and sandbox so embedded
+ * scripts do not run.
  */
 
 /** The pathname that triggers image optimization. */
@@ -113,8 +114,8 @@ export const IMAGE_CONTENT_SECURITY_POLICY = "script-src 'none'; frame-src 'none
 
 /**
  * Allowlist of Content-Types that are safe to serve from the image endpoint.
- * SVG is intentionally excluded — it can contain embedded JavaScript and is
- * essentially an XML document, not a safe raster image format.
+ * SVG is allowed; script execution is prevented by Content-Security-Policy
+ * and sandbox headers on the response.
  */
 const SAFE_IMAGE_CONTENT_TYPES = new Set([
   "image/jpeg",
@@ -122,6 +123,7 @@ const SAFE_IMAGE_CONTENT_TYPES = new Set([
   "image/gif",
   "image/webp",
   "image/avif",
+  "image/svg+xml",
   "image/x-icon",
   "image/vnd.microsoft.icon",
   "image/bmp",
@@ -130,7 +132,7 @@ const SAFE_IMAGE_CONTENT_TYPES = new Set([
 
 /**
  * Check if a Content-Type header value is a safe image type.
- * Returns false for SVG, HTML, or any non-image type.
+ * Returns false for HTML or any non-image type. SVG is allowed (CSP mitigates XSS).
  */
 export function isSafeImageContentType(contentType: string | null): boolean {
   if (!contentType) return false;

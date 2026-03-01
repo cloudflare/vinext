@@ -44,6 +44,21 @@ describe("Image SSR rendering", () => {
     expect(html).toContain('data-nimg="1"');
   });
 
+  it("routes local SVG through /_vinext/image (SVG allowed by image optimization)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "icon",
+        src: "/icons/my.svg",
+        width: 64,
+        height: 64,
+      }),
+    );
+    expect(html).toContain('alt="icon"');
+    expect(html).toContain(optUrlHtml("/icons/my.svg", 64));
+    expect(html).toContain('width="64"');
+    expect(html).toContain('height="64"');
+  });
+
   it("renders with priority (eager loading + fetchpriority)", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
