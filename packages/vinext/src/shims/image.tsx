@@ -141,6 +141,17 @@ function isRemoteUrl(src: string): boolean {
 }
 
 /**
+ * Determine if a local src is an SVG (path ends with .svg).
+ * SVGs are served as-is; they are not resized or transcoded, so we bypass
+ * the /_vinext/image endpoint and use the raw path.
+ */
+function isLocalSvg(src: string): boolean {
+  if (isRemoteUrl(src)) return false;
+  const pathname = src.split("?")[0];
+  return pathname.toLowerCase().endsWith(".svg");
+}
+
+/**
  * Responsive image widths matching Next.js's device sizes config.
  * These are the breakpoints used for srcSet generation.
  * Configurable via `images.deviceSizes` in next.config.js.
@@ -279,9 +290,9 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // Route local images through the /_vinext/image optimization endpoint.
   // In production on Cloudflare Workers, this resizes and transcodes via
   // the Images binding. In dev, it serves the original file as a passthrough.
-  // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
+  // When `unoptimized` is true or src is an SVG, bypass the endpoint (Next.js compat; SVGs are not resized).
   const imgQuality = quality ?? 75;
-  const skipOptimization = _unoptimized === true;
+  const skipOptimization = _unoptimized === true || isLocalSvg(src);
 
   // Build srcSet for responsive local images (common breakpoints).
   // Each entry points to /_vinext/image with the appropriate width.
@@ -392,8 +403,8 @@ export function getImageProps(props: ImageProps): {
       : src;
 
   // For local images (no loader, not remote), route through optimization endpoint.
-  // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
-  const skipOpt = _unoptimized === true || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
+  // When `unoptimized` is true or src is an SVG, bypass the endpoint (Next.js compat; SVGs are not resized).
+  const skipOpt = _unoptimized === true || blockedInProd || !!loader || isRemoteUrl(resolvedSrc) || isLocalSvg(resolvedSrc);
   const optimizedSrc = skipOpt
     ? resolvedSrc
     : imgWidth
