@@ -1668,7 +1668,16 @@ hydrate();
     tsconfigPaths(),
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
-    commonjs(),
+    commonjs({
+      // vite-plugin-commonjs excludes node_modules by default, but there's
+      // nothing preventing a dependency from using CJS, so we need to include
+      // node_modules here.
+      filter(id) {
+        if (getPackageName(id) !== null) {
+          return true
+        }
+      },
+    }),
     {
       name: "vinext:config",
       enforce: "pre",
