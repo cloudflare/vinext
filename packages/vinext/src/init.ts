@@ -226,22 +226,22 @@ function installDeps(
  */
 export function updateGitignore(root: string): boolean {
   const gitignorePath = path.join(root, ".gitignore");
-  const entry = "/dist/";
+  const exactEntry = "/dist/";
 
   let content = "";
   if (fs.existsSync(gitignorePath)) {
     content = fs.readFileSync(gitignorePath, "utf-8");
 
-    // Check if /dist/ is already listed (as its own line, ignoring whitespace)
+    // Check if dist is already covered — match /dist/, dist/, or dist (all common variants)
     const lines = content.split("\n").map((l) => l.trim());
-    if (lines.includes(entry)) {
+    if (lines.includes(exactEntry) || lines.includes("dist/") || lines.includes("dist")) {
       return false;
     }
   }
 
   // Append /dist/ with a trailing newline, ensuring we don't merge with an existing last line
   const separator = content.length > 0 && !content.endsWith("\n") ? "\n" : "";
-  fs.writeFileSync(gitignorePath, content + separator + entry + "\n", "utf-8");
+  fs.writeFileSync(gitignorePath, content + separator + exactEntry + "\n", "utf-8");
   return true;
 }
 

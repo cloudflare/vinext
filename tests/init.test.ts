@@ -716,6 +716,26 @@ describe("updateGitignore", () => {
 
     expect(result).toBe(false);
   });
+
+  it("does not add /dist/ when dist/ (without leading slash) is already present", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\ndist/\n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(false);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\ndist/\n");
+  });
+
+  it("does not add /dist/ when bare dist is already present", () => {
+    writeFile(tmpDir, ".gitignore", "node_modules/\ndist\n");
+
+    const result = updateGitignore(tmpDir);
+
+    expect(result).toBe(false);
+    const content = readFile(tmpDir, ".gitignore");
+    expect(content).toBe("node_modules/\ndist\n");
+  });
 });
 
 // ─── Integration: init updates .gitignore ────────────────────────────────────
