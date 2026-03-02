@@ -249,27 +249,7 @@ declare module "next/font/google" {
   }
 
   type FontLoader = (options?: FontOptions) => FontResult;
-
-  export const Inter: FontLoader;
-  export const Roboto: FontLoader;
-  export const Roboto_Mono: FontLoader;
-  export const Open_Sans: FontLoader;
-  export const Lato: FontLoader;
-  export const Poppins: FontLoader;
-  export const Montserrat: FontLoader;
-  export const Source_Code_Pro: FontLoader;
-  export const Noto_Sans: FontLoader;
-  export const Raleway: FontLoader;
-  export const Ubuntu: FontLoader;
-  export const Nunito: FontLoader;
-  export const Playfair_Display: FontLoader;
-  export const Merriweather: FontLoader;
-  export const PT_Sans: FontLoader;
-  export const Fira_Code: FontLoader;
-  export const JetBrains_Mono: FontLoader;
-  export const Geist: FontLoader;
-  export const Geist_Mono: FontLoader;
-  // Any other Google Font can be imported via the Proxy
+  // Named exports are generated in next-shims-font-google.generated.d.ts
   const googleFonts: Record<string, FontLoader>;
   export default googleFonts;
 }

@@ -82,6 +82,7 @@ export function renameCJSConfigs(root: string): Array<[string, string]> {
 export function detectPackageManager(root: string): string {
   if (fs.existsSync(path.join(root, "pnpm-lock.yaml"))) return "pnpm add -D";
   if (fs.existsSync(path.join(root, "yarn.lock"))) return "yarn add -D";
+  if (fs.existsSync(path.join(root, "bun.lock"))) return "bun add -D";
   if (fs.existsSync(path.join(root, "bun.lockb"))) return "bun add -D";
   return "npm install -D";
 }
@@ -93,6 +94,7 @@ export function detectPackageManager(root: string): string {
 export function detectPackageManagerName(root: string): string {
   if (fs.existsSync(path.join(root, "pnpm-lock.yaml"))) return "pnpm";
   if (fs.existsSync(path.join(root, "yarn.lock"))) return "yarn";
+  if (fs.existsSync(path.join(root, "bun.lock"))) return "bun";
   if (fs.existsSync(path.join(root, "bun.lockb"))) return "bun";
   return "npm";
 }
@@ -114,5 +116,8 @@ export function hasViteConfig(root: string): boolean {
  * Check if the project uses App Router (has an app/ directory).
  */
 export function hasAppDir(root: string): boolean {
-  return fs.existsSync(path.join(root, "app"));
+  return (
+    fs.existsSync(path.join(root, "app")) ||
+    fs.existsSync(path.join(root, "src", "app"))
+  );
 }

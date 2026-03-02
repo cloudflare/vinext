@@ -78,7 +78,10 @@ function reactElementToHTML(child: React.ReactElement): string {
         innerHTML = escapeHTML(value);
       }
     } else if (key === "dangerouslySetInnerHTML") {
-      // Intentionally raw — developer explicitly opted in
+      // Intentionally raw — developer explicitly opted in.
+      // SECURITY NOTE: This injects raw HTML during SSR. The client-side
+      // path (line ~148) skips dangerouslySetInnerHTML for safety. Developers
+      // must never pass unsanitized user input here — it is a stored XSS vector.
       const html = value as { __html: string };
       if (html?.__html) innerHTML = html.__html;
     } else if (key === "className") {

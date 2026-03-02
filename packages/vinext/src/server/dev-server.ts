@@ -13,13 +13,13 @@ import {
   getRevalidateDuration,
 } from "./isr-cache.js";
 import type { CachedPagesValue } from "../shims/cache.js";
-import { withFetchCache } from "../shims/fetch-cache.js";
-import { _initRequestScopedCacheState } from "../shims/cache.js";
-import { clearPrivateCache } from "../shims/cache-runtime.js";
+import { runWithFetchCache } from "../shims/fetch-cache.js";
+import { _runWithCacheState } from "../shims/cache.js";
+import { runWithPrivateCache } from "../shims/cache-runtime.js";
 // Import server-only state modules to register ALS-backed accessors.
 // These modules must be imported before any rendering occurs.
-import "../shims/router-state.js";
-import "../shims/head-state.js";
+import { runWithRouterState } from "../shims/router-state.js";
+import { runWithHeadState } from "../shims/head-state.js";
 import { reportRequestError } from "./instrumentation.js";
 import { safeJsonStringify } from "./html.js";
 import { parseQueryString as parseQuery } from "../utils/query.js";
@@ -315,12 +315,13 @@ export function createSSRHandler(
 
     const { route, params } = match;
 
-    // Initialize per-request state for cache isolation
-    _initRequestScopedCacheState();
-    clearPrivateCache();
-    // Install patched fetch with Next.js caching semantics for this request
-    const cleanupFetchCache = withFetchCache();
-
+    // Wrap the entire request in nested AsyncLocalStorage.run() scopes to
+    // ensure per-request isolation for all state modules.
+    return runWithRouterState(() =>
+      runWithHeadState(() =>
+        _runWithCacheState(() =>
+          runWithPrivateCache(() =>
+            runWithFetchCache(async () => {
     try {
       // Set SSR context for the router shim so useRouter() returns
       // the correct URL and params during server-side rendering.
@@ -350,8 +351,9 @@ export function createSSRHandler(
       // Get the page component (default export)
       const PageComponent = pageModule.default;
       if (!PageComponent) {
+        console.error(`[vinext] Page ${route.filePath} has no default export`);
         res.statusCode = 500;
-        res.end(`Page ${route.filePath} has no default export`);
+        res.end("Page has no default export");
         return;
       }
 
@@ -412,8 +414,14 @@ export function createSSRHandler(
         if (result && "redirect" in result) {
           const { redirect } = result;
           const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
+          // Sanitize destination to prevent open redirect via protocol-relative URLs.
+          // Also normalize backslashes — browsers treat \ as / in URL contexts.
+          let dest = redirect.destination;
+          if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
+            dest = dest.replace(/^[\\/]+/, "/");
+          }
           res.writeHead(status, {
-            Location: redirect.destination,
+            Location: dest,
           });
           res.end();
           return;
@@ -512,8 +520,14 @@ export function createSSRHandler(
         if (result && "redirect" in result) {
           const { redirect } = result;
           const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
+          // Sanitize destination to prevent open redirect via protocol-relative URLs.
+          // Also normalize backslashes — browsers treat \ as / in URL contexts.
+          let dest = redirect.destination;
+          if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
+            dest = dest.replace(/^[\\/]+/, "/");
+          }
           res.writeHead(status, {
-            Location: redirect.destination,
+            Location: dest,
           });
           res.end();
           return;
@@ -763,14 +777,22 @@ hydrate();
       // Try to render custom 500 error page
       try {
         await renderErrorPage(server, req, res, url, pagesDir, 500);
-      } catch {
-        // If error page itself fails, fall back to plain text
+      } catch (fallbackErr) {
+        // If error page itself fails, fall back to plain text.
+        // This is a dev-only code path (prod uses prod-server.ts), so
+        // include the error message for debugging.
         res.statusCode = 500;
-        res.end(`Internal Server Error: ${(e as Error).message}`);
+        res.end(`Internal Server Error: ${(fallbackErr as Error).message}`);
       }
     } finally {
-      cleanupFetchCache();
+      // Cleanup is handled by ALS scope unwinding —
+      // each runWith*() scope is automatically cleaned up when it exits.
     }
+            }) // end runWithFetchCache
+          ) // end runWithPrivateCache
+        ) // end _runWithCacheState
+      ) // end runWithHeadState
+    ); // end runWithRouterState
   };
 }
 

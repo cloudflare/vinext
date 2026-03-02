@@ -13,6 +13,9 @@ import {
   getFilesToGenerate,
   ensureESModule,
   renameCJSConfigs,
+  buildWranglerDeployArgs,
+  parseDeployArgs,
+  isPackageResolvable,
 } from "../packages/vinext/src/deploy.js";
 import { computeLazyChunks } from "../packages/vinext/src/index.js";
 
@@ -41,6 +44,100 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+// ─── Wrangler deploy args ───────────────────────────────────────────────────
+
+describe("buildWranglerDeployArgs", () => {
+  it("uses plain deploy for production by default", () => {
+    expect(buildWranglerDeployArgs({})).toEqual({ args: ["deploy"], env: undefined });
+  });
+
+  it("maps --preview to wrangler --env preview", () => {
+    expect(buildWranglerDeployArgs({ preview: true })).toEqual({
+      args: ["deploy", "--env", "preview"],
+      env: "preview",
+    });
+  });
+
+  it("passes through explicit env names", () => {
+    expect(buildWranglerDeployArgs({ env: "staging" })).toEqual({
+      args: ["deploy", "--env", "staging"],
+      env: "staging",
+    });
+  });
+
+  it("prefers explicit env over --preview shorthand", () => {
+    expect(buildWranglerDeployArgs({ preview: true, env: "qa" })).toEqual({
+      args: ["deploy", "--env", "qa"],
+      env: "qa",
+    });
+  });
+
+  it("treats empty string env as production", () => {
+    expect(buildWranglerDeployArgs({ env: "" })).toEqual({ args: ["deploy"], env: undefined });
+  });
+});
+
+// ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
+
+describe("parseDeployArgs", () => {
+  it("defaults to production deploy with no flags", () => {
+    const parsed = parseDeployArgs([]);
+    expect(parsed.preview).toBe(false);
+    expect(parsed.env).toBeUndefined();
+    expect(parsed.name).toBeUndefined();
+    expect(parsed.skipBuild).toBe(false);
+    expect(parsed.dryRun).toBe(false);
+  });
+
+  it("parses --env with space-separated value", () => {
+    expect(parseDeployArgs(["--env", "staging"]).env).toBe("staging");
+  });
+
+  it("parses --env=value form", () => {
+    expect(parseDeployArgs(["--env=staging"]).env).toBe("staging");
+  });
+
+  it("parses --name with space-separated value", () => {
+    expect(parseDeployArgs(["--name", "my-app"]).name).toBe("my-app");
+  });
+
+  it("parses --name=value form", () => {
+    expect(parseDeployArgs(["--name=my-app"]).name).toBe("my-app");
+  });
+
+  it("parses boolean flags", () => {
+    const parsed = parseDeployArgs(["--preview", "--skip-build", "--dry-run"]);
+    expect(parsed.preview).toBe(true);
+    expect(parsed.skipBuild).toBe(true);
+    expect(parsed.dryRun).toBe(true);
+  });
+
+  it("parses numeric TPR flags from string values", () => {
+    const parsed = parseDeployArgs([
+      "--experimental-tpr",
+      "--tpr-coverage", "95",
+      "--tpr-limit", "500",
+      "--tpr-window", "48",
+    ]);
+    expect(parsed.experimentalTPR).toBe(true);
+    expect(parsed.tprCoverage).toBe(95);
+    expect(parsed.tprLimit).toBe(500);
+    expect(parsed.tprWindow).toBe(48);
+  });
+
+  it("trims whitespace from --env value", () => {
+    expect(parseDeployArgs(["--env", "  staging  "]).env).toBe("staging");
+  });
+
+  it("treats whitespace-only --env as undefined", () => {
+    expect(parseDeployArgs(["--env", "   "]).env).toBeUndefined();
+  });
+
+  it("throws on unknown flags (strict mode)", () => {
+    expect(() => parseDeployArgs(["--bogus"])).toThrow();
+  });
 });
 
 // ─── detectProject ──────────────────────────────────────────────────────────
@@ -288,6 +385,13 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("env.ASSETS.fetch");
     expect(content).toContain("env.IMAGES");
   });
+
+  it("documents that parseImageParams handles backslash normalization", () => {
+    const content = generateAppRouterWorkerEntry();
+    // The App Router generated entry delegates to handleImageOptimization
+    // which calls parseImageParams. Verify the comment documents this.
+    expect(content).toContain("parseImageParams");
+  });
 });
 
 describe("generatePagesRouterWorkerEntry", () => {
@@ -305,10 +409,94 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("handleApiRoute");
   });
 
-  it("routes /api/ to handleApiRoute", () => {
+  it("imports runMiddleware and vinextConfig from virtual:vinext-server-entry", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain('pathname.startsWith("/api/")');
-    expect(content).toContain("handleApiRoute");
+    expect(content).toContain("runMiddleware");
+    expect(content).toContain("vinextConfig");
+    // Both should come from the same virtual import
+    expect(content).toMatch(/import\s*\{[^}]*runMiddleware[^}]*\}\s*from\s*"virtual:vinext-server-entry"/);
+    expect(content).toMatch(/import\s*\{[^}]*vinextConfig[^}]*\}\s*from\s*"virtual:vinext-server-entry"/);
+  });
+
+  it("imports config matchers from vinext/config/config-matchers", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain('from "vinext/config/config-matchers"');
+    expect(content).toContain("matchRedirect");
+    expect(content).toContain("matchRewrite");
+    expect(content).toContain("matchHeaders");
+    expect(content).toContain("requestContextFromRequest");
+    expect(content).toContain("isExternalUrl");
+    expect(content).toContain("proxyExternalRequest");
+  });
+
+  it("runs middleware before routing", () => {
+    const content = generatePagesRouterWorkerEntry();
+    // Middleware should appear before API route check
+    const middlewarePos = content.indexOf("runMiddleware(request)");
+    const apiRoutePos = content.indexOf('resolvedPathname.startsWith("/api/")');
+    expect(middlewarePos).toBeGreaterThan(-1);
+    expect(apiRoutePos).toBeGreaterThan(-1);
+    expect(middlewarePos).toBeLessThan(apiRoutePos);
+  });
+
+  it("handles middleware redirects", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("result.redirectUrl");
+    expect(content).toContain("result.redirectStatus");
+  });
+
+  it("handles middleware rewrites", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("result.rewriteUrl");
+    expect(content).toContain("resolvedUrl = result.rewriteUrl");
+  });
+
+  it("handles middleware access control responses", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("result.response");
+    expect(content).toContain("!result.continue");
+  });
+
+  it("applies next.config.js redirects", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("configRedirects");
+    expect(content).toContain("matchRedirect(resolvedPathname");
+  });
+
+  it("applies next.config.js rewrites (beforeFiles, afterFiles, fallback)", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("configRewrites.beforeFiles");
+    expect(content).toContain("configRewrites.afterFiles");
+    expect(content).toContain("configRewrites.fallback");
+    expect(content).toContain("matchRewrite(resolvedPathname");
+  });
+
+  it("applies next.config.js custom headers", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("configHeaders");
+    expect(content).toContain("matchHeaders(resolvedPathname");
+  });
+
+  it("handles basePath stripping and creates a new request with stripped URL for middleware", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("basePath");
+    expect(content).toContain("pathname.startsWith(basePath)");
+    // After stripping, a new request with the stripped URL must be created
+    // so middleware matchers see the basePath-free pathname (matching prod-server)
+    expect(content).toContain("strippedUrl.pathname = pathname");
+    expect(content).toContain("new Request(strippedUrl, request)");
+  });
+
+  it("handles trailing slash normalization", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("trailingSlash");
+    expect(content).toContain("hasTrailing");
+  });
+
+  it("routes /api/ to handleApiRoute using resolved URL", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain('resolvedPathname.startsWith("/api/")');
+    expect(content).toContain("handleApiRoute(request, resolvedUrl)");
   });
 
   it("includes error handling", () => {
@@ -336,12 +524,66 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("ASSETS");
   });
 
+  it("includes backslash normalization in protocol-relative guard", () => {
+    const content = generatePagesRouterWorkerEntry();
+    // The generated code should normalize backslashes before the // check
+    expect(content).toContain('replaceAll("\\\\", "/")');
+  });
+
   it("passes image handlers inline to handleImageOptimization", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("fetchAsset:");
     expect(content).toContain("transformImage:");
     expect(content).toContain("env.ASSETS.fetch");
     expect(content).toContain("env.IMAGES");
+  });
+
+  it("merges middleware and config headers into responses with correct precedence", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("mergeHeaders");
+    expect(content).toContain("middlewareHeaders");
+    // Response headers must override middleware headers (matching prod-server).
+    // mergeHeaders should spread extraHeaders first, then overlay response headers.
+    expect(content).toContain("{ ...extraHeaders }");
+    expect(content).toContain("response.headers.forEach");
+  });
+
+  it("preserves x-middleware-request-* headers for prod request override handling", () => {
+    const content = generatePagesRouterWorkerEntry();
+    // Worker entry must unpack x-middleware-request-* into the actual request
+    expect(content).toContain('const mwReqPrefix = "x-middleware-request-"');
+    expect(content).toContain('key.startsWith(mwReqPrefix)');
+    // Worker entry must also strip remaining x-middleware-* headers (defense-in-depth)
+    expect(content).toContain('key.startsWith("x-middleware-")');
+  });
+
+  it("handles external rewrites via proxyExternalRequest", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("isExternalUrl(rewritten)");
+    expect(content).toContain("proxyExternalRequest(request, rewritten)");
+  });
+
+  it("guards renderPage with typeof check", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain('typeof renderPage === "function"');
+  });
+
+  it("builds reqCtx before middleware runs", () => {
+    const content = generatePagesRouterWorkerEntry();
+    const reqCtxPos = content.indexOf("requestContextFromRequest(request)");
+    const middlewarePos = content.indexOf("runMiddleware(request)");
+    expect(reqCtxPos).toBeGreaterThan(-1);
+    expect(middlewarePos).toBeGreaterThan(-1);
+    expect(reqCtxPos).toBeLessThan(middlewarePos);
+  });
+
+  it("checks image optimization after basePath stripping", () => {
+    const content = generatePagesRouterWorkerEntry();
+    const basePathPos = content.indexOf("pathname.startsWith(basePath)");
+    const imagePos = content.indexOf('pathname === "/_vinext/image"');
+    expect(basePathPos).toBeGreaterThan(-1);
+    expect(imagePos).toBeGreaterThan(-1);
+    expect(basePathPos).toBeLessThan(imagePos);
   });
 });
 
@@ -430,6 +672,36 @@ describe("getMissingDeps", () => {
     );
   });
 
+  it("reports missing react-server-dom-webpack for App Router", () => {
+    mkdir(tmpDir, "app");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+
+    // Pass a resolver that always returns false to simulate rsdw not being installed.
+    // (Vitest's createRequire finds rsdw via the monorepo root, so we can't rely
+    // on filesystem isolation in tmpdir.)
+    const notResolvable = () => false;
+    const missing = getMissingDeps(info, notResolvable);
+    expect(missing).toContainEqual(
+      expect.objectContaining({ name: "react-server-dom-webpack" }),
+    );
+  });
+
+  it("does not require react-server-dom-webpack for Pages Router", () => {
+    mkdir(tmpDir, "pages");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = false;
+
+    const missing = getMissingDeps(info);
+    expect(missing).not.toContainEqual(
+      expect.objectContaining({ name: "react-server-dom-webpack" }),
+    );
+  });
+
   it("returns empty array when everything is installed", () => {
     mkdir(tmpDir, "app");
     const info = detectProject(tmpDir);
@@ -437,8 +709,40 @@ describe("getMissingDeps", () => {
     info.hasWrangler = true;
     info.hasRscPlugin = true;
 
-    const missing = getMissingDeps(info);
+    // Pass a resolver that always returns true to simulate all packages installed.
+    const allResolvable = () => true;
+    const missing = getMissingDeps(info, allResolvable);
     expect(missing).toHaveLength(0);
+  });
+});
+
+// ─── isPackageResolvable ─────────────────────────────────────────────────────
+
+describe("isPackageResolvable", () => {
+  it("returns true when package exists in node_modules", () => {
+    // Create a proper resolvable package in the tmpdir
+    const pkgDir = path.join(tmpDir, "node_modules", "fake-pkg");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name: "fake-pkg", version: "1.0.0", main: "index.js" }),
+    );
+    fs.writeFileSync(path.join(pkgDir, "index.js"), "");
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test", version: "1.0.0" }),
+    );
+
+    expect(isPackageResolvable(tmpDir, "fake-pkg")).toBe(true);
+  });
+
+  it("returns false when package does not exist", () => {
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test", version: "1.0.0" }),
+    );
+    // no-such-package-xyz123 should never exist in any node_modules
+    expect(isPackageResolvable(tmpDir, "no-such-package-xyz123")).toBe(false);
   });
 });
 

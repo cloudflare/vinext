@@ -28,21 +28,20 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   ssrHeadElements: [],
 } satisfies HeadState) as HeadState;
 
-function _enterWith(state: HeadState): void {
-  const enterWith = (_als as any).enterWith;
-  if (typeof enterWith === "function") {
-    try {
-      enterWith.call(_als, state);
-      return;
-    } catch {
-      // Fall through to best-effort fallback.
-    }
-  }
-  _fallbackState.ssrHeadElements = state.ssrHeadElements;
-}
-
 function _getState(): HeadState {
   return _als.getStore() ?? _fallbackState;
+}
+
+/**
+ * Run a function within a head state ALS scope.
+ * Ensures per-request isolation for Pages Router <Head> elements
+ * on concurrent runtimes.
+ */
+export function runWithHeadState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  const state: HeadState = {
+    ssrHeadElements: [],
+  };
+  return _als.run(state, fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -55,7 +54,11 @@ _registerHeadStateAccessors({
   },
 
   resetSSRHead(): void {
-    _enterWith({ ssrHeadElements: [] });
-    _fallbackState.ssrHeadElements = [];
+    const state = _als.getStore();
+    if (state) {
+      state.ssrHeadElements = [];
+    } else {
+      _fallbackState.ssrHeadElements = [];
+    }
   },
 });

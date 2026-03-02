@@ -7,9 +7,13 @@
  * the SSR entry for HTML generation.
  */
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { AppRoute } from "../routing/app-router.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { NextRedirect, NextRewrite, NextHeader } from "../config/next-config.js";
+import { generateDevOriginCheckCode } from "./dev-origin-check.js";
+import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormalizePathCode } from "./middleware-codegen.js";
+import { isProxyFile } from "./middleware.js";
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -25,6 +29,8 @@ export interface AppRouterConfig {
   headers?: NextHeader[];
   /** Extra origins allowed for server action CSRF checks (from experimental.serverActions.allowedOrigins). */
   allowedOrigins?: string[];
+  /** Extra origins allowed for dev server access (from serverActionsAllowedOrigins or custom config). */
+  allowedDevOrigins?: string[];
 }
 
 /**
@@ -213,12 +219,12 @@ import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
-${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
-import { _consumeRequestScopedCacheLife, _initRequestScopedCacheState } from "next/cache";
+${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("./metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
+import { _consumeRequestScopedCacheLife, _runWithCacheState } from "next/cache";
 import { runWithFetchCache } from "vinext/fetch-cache";
-import { clearPrivateCache as _clearPrivateCache } from "vinext/cache-runtime";
+import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
-import "vinext/navigation-state";
+import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
@@ -239,14 +245,63 @@ function setNavigationContext(ctx) {
 // based on export const revalidate for testing purposes.
 // Production ISR is handled by prod-server.ts and the Cloudflare worker entry.
 
+// djb2 hash — matches Next.js's stringHash for digest generation.
+// Produces a stable numeric string from error message + stack.
+function __errorDigest(str) {
+  let hash = 5381;
+  for (let i = str.length - 1; i >= 0; i--) {
+    hash = (hash * 33) ^ str.charCodeAt(i);
+  }
+  return (hash >>> 0).toString();
+}
+
+// Sanitize an error for client consumption. In production, replaces the error
+// with a generic Error that only carries a digest hash (matching Next.js
+// behavior). In development, returns the original error for debugging.
+// Navigation errors (redirect, notFound, etc.) are always passed through
+// unchanged since their digests are used for client-side routing.
+function __sanitizeErrorForClient(error) {
+  // Navigation errors must pass through with their digest intact
+  if (error && typeof error === "object" && "digest" in error) {
+    const digest = String(error.digest);
+    if (
+      digest.startsWith("NEXT_REDIRECT;") ||
+      digest === "NEXT_NOT_FOUND" ||
+      digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")
+    ) {
+      return error;
+    }
+  }
+  // In development, pass through the original error for debugging
+  if (process.env.NODE_ENV !== "production") {
+    return error;
+  }
+  // In production, create a sanitized error with only a digest hash
+  const msg = error instanceof Error ? error.message : String(error);
+  const stack = error instanceof Error ? (error.stack || "") : "";
+  const sanitized = new Error(
+    "An error occurred in the Server Components render. " +
+    "The specific message is omitted in production builds to avoid leaking sensitive details. " +
+    "A digest property is included on this error instance which may provide additional details about the nature of the error."
+  );
+  sanitized.digest = __errorDigest(msg + stack);
+  return sanitized;
+}
+
 // onError callback for renderToReadableStream — preserves the digest for
 // Next.js navigation errors (redirect, notFound, forbidden, unauthorized)
 // thrown during RSC streaming (e.g. inside Suspense boundaries).
-// Without this, React's default onError returns undefined, the digest is lost,
-// and client-side error boundaries can't identify the error type.
+// For non-navigation errors in production, generates a digest hash so the
+// error can be correlated with server logs without leaking details.
 function rscOnError(error) {
   if (error && typeof error === "object" && "digest" in error) {
     return String(error.digest);
+  }
+  // In production, generate a digest hash for non-navigation errors
+  if (process.env.NODE_ENV === "production" && error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    const stack = error instanceof Error ? (error.stack || "") : "";
+    return __errorDigest(msg + stack);
   }
   return undefined;
 }
@@ -348,7 +403,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     setNavigationContext(null);
     return new Response(rscStream, {
       status: statusCode,
-      headers: { "Content-Type": "text/x-component; charset=utf-8" },
+      headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
     });
   }
   // For HTML (full page load) responses, wrap with layouts only (no client-side
@@ -370,7 +425,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
   setHeadersContext(null);
   setNavigationContext(null);
-  const _respHeaders = { "Content-Type": "text/html; charset=utf-8" };
+  const _respHeaders = { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" };
   const _linkParts = (fontData.preloads || []).map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; });
   if (_linkParts.length > 0) _respHeaders["Link"] = _linkParts.join(", ");
   return new Response(htmlStream, {
@@ -406,7 +461,11 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
   ErrorComponent = ErrorComponent${globalErrorVar ? ` ?? ${globalErrorVar}?.default` : ""};
   if (!ErrorComponent) return null;
 
-  const errorObj = error instanceof Error ? error : new Error(String(error));
+  const rawError = error instanceof Error ? error : new Error(String(error));
+  // Sanitize the error in production to avoid leaking internal details
+  // (database errors, file paths, stack traces) through error.tsx to the client.
+  // In development, pass the original error for debugging.
+  const errorObj = __sanitizeErrorForClient(rawError);
   // Only pass error — reset is a client-side concern (re-renders the segment) and
   // can't be serialized through RSC. The error.tsx component will receive reset=undefined
   // during SSR, which is fine — onClick={undefined} is harmless, and the real reset
@@ -443,7 +502,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
     setNavigationContext(null);
     return new Response(rscStream, {
       status: 200,
-      headers: { "Content-Type": "text/x-component; charset=utf-8" },
+      headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
     });
   }
   // For HTML (full page load) responses, wrap with layouts only.
@@ -464,7 +523,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
   const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
   setHeadersContext(null);
   setNavigationContext(null);
-  const _errHeaders = { "Content-Type": "text/html; charset=utf-8" };
+  const _errHeaders = { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" };
   const _errLinkParts = (fontData.preloads || []).map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; });
   if (_errLinkParts.length > 0) _errHeaders["Link"] = _errLinkParts.join(", ");
   return new Response(htmlStream, {
@@ -476,7 +535,9 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch {}
+   // NOTE: Do NOT decodeURIComponent here. The caller is responsible for decoding
+   // the pathname exactly once at the request entry point. Decoding again here
+   // would cause inconsistent path matching between middleware and routing.
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
     if (params !== null) return { route, params };
@@ -780,23 +841,7 @@ async function buildPageElement(route, params, opts, searchParams) {
   return element;
 }
 
-${middlewarePath ? `
-function matchMiddlewarePath(pathname, matcher) {
-  if (!matcher) return true;
-  const patterns = typeof matcher === "string" ? [matcher]
-    : Array.isArray(matcher) ? matcher.map(m => typeof m === "string" ? m : m.source)
-    : [];
-  return patterns.some(pattern => {
-    const reStr = "^" + pattern
-      .replace(/\\./g, "\\\\.")
-      .replace(/:(\\w+)\\*/g, "(?:.*)")
-      .replace(/:(\\w+)\\+/g, "(?:.+)")
-      .replace(/:(\\w+)/g, "([^/]+)") + "$";
-    const re = __safeRegExp(reStr);
-    return re ? re.test(pathname) : false;
-  });
-}
-` : ""}
+${middlewarePath ? generateMiddlewareMatcherCode("modern") : ""}
 
 const __basePath = ${JSON.stringify(bp)};
 const __trailingSlash = ${JSON.stringify(ts)};
@@ -804,6 +849,8 @@ const __configRedirects = ${JSON.stringify(redirects)};
 const __configRewrites = ${JSON.stringify(rewrites)};
 const __configHeaders = ${JSON.stringify(headers)};
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
+
+${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 
 // ── CSRF origin validation for server actions ───────────────────────────
 // Matches Next.js behavior: compare the Origin header against the Host header.
@@ -837,8 +884,12 @@ function __validateCsrfOrigin(request) {
     return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
   }
 
+  // Only use the Host header for origin comparison — never trust
+  // X-Forwarded-Host here, since it can be freely set by the client
+  // and would allow the check to be bypassed if it matched a spoofed
+  // Origin. The prod server's resolveHost() handles trusted proxy
+  // scenarios separately.
   const hostHeader = (
-    request.headers.get("x-forwarded-host") ||
     request.headers.get("host") ||
     ""
   ).split(",")[0].trim().toLowerCase();
@@ -858,85 +909,22 @@ function __validateCsrfOrigin(request) {
 }
 
 // ── ReDoS-safe regex compilation ────────────────────────────────────────
-function __isSafeRegex(pattern) {
-  const quantifierAtDepth = [];
-  let depth = 0;
-  let i = 0;
-  while (i < pattern.length) {
-    const ch = pattern[i];
-    if (ch === "\\\\") { i += 2; continue; }
-    if (ch === "[") {
-      i++;
-      while (i < pattern.length && pattern[i] !== "]") {
-        if (pattern[i] === "\\\\") i++;
-        i++;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "(") {
-      depth++;
-      if (quantifierAtDepth.length <= depth) quantifierAtDepth.push(false);
-      else quantifierAtDepth[depth] = false;
-      i++;
-      continue;
-    }
-    if (ch === ")") {
-      const hadQ = depth > 0 && quantifierAtDepth[depth];
-      if (depth > 0) depth--;
-      const next = pattern[i + 1];
-      if (next === "+" || next === "*" || next === "{") {
-        if (hadQ) return false;
-        if (depth >= 0 && depth < quantifierAtDepth.length) quantifierAtDepth[depth] = true;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "+" || ch === "*") {
-      if (depth > 0) quantifierAtDepth[depth] = true;
-      i++;
-      continue;
-    }
-    if (ch === "?") {
-      const prev = i > 0 ? pattern[i - 1] : "";
-      if (prev !== "+" && prev !== "*" && prev !== "?" && prev !== "}") {
-        if (depth > 0) quantifierAtDepth[depth] = true;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "{") {
-      let j = i + 1;
-      while (j < pattern.length && /[\\d,]/.test(pattern[j])) j++;
-      if (j < pattern.length && pattern[j] === "}" && j > i + 1) {
-        if (depth > 0) quantifierAtDepth[depth] = true;
-        i = j + 1;
-        continue;
-      }
-    }
-    i++;
-  }
-  return true;
-}
-function __safeRegExp(pattern, flags) {
-  if (!__isSafeRegex(pattern)) {
-    console.warn("[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): " + pattern);
-    return null;
-  }
-  try { return new RegExp(pattern, flags); } catch { return null; }
-}
+${generateSafeRegExpCode("modern")}
+
+// ── Path normalization ──────────────────────────────────────────────────
+${generateNormalizePathCode("modern")}
 
 // ── Config pattern matching (redirects, rewrites, headers) ──────────────
 function __matchConfigPattern(pathname, pattern) {
-  if (pattern.includes("(") || pattern.includes("\\\\") || /:\\w+[*+][^/]/.test(pattern)) {
+  if (pattern.includes("(") || pattern.includes("\\\\") || /:[\\w-]+[*+][^/]/.test(pattern) || /:[\\w-]+\\./.test(pattern)) {
     try {
       const paramNames = [];
       const regexStr = pattern
         .replace(/\\./g, "\\\\.")
-        .replace(/:([a-zA-Z_]\\w*)\\*(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.*)"; })
-        .replace(/:([a-zA-Z_]\\w*)\\+(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.+)"; })
-        .replace(/:([a-zA-Z_]\\w*)\\(([^)]+)\\)/g, (_, name, c) => { paramNames.push(name); return "(" + c + ")"; })
-        .replace(/:([a-zA-Z_]\\w*)/g, (_, name) => { paramNames.push(name); return "([^/]+)"; });
+        .replace(/:([\\w-]+)\\*(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.*)"; })
+        .replace(/:([\\w-]+)\\+(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.+)"; })
+        .replace(/:([\\w-]+)\\(([^)]+)\\)/g, (_, name, c) => { paramNames.push(name); return "(" + c + ")"; })
+        .replace(/:([\\w-]+)/g, (_, name) => { paramNames.push(name); return "([^/]+)"; });
       const re = __safeRegExp("^" + regexStr + "$");
       if (!re) return null;
       const match = re.exec(pathname);
@@ -946,7 +934,7 @@ function __matchConfigPattern(pathname, pattern) {
       return params;
     } catch { /* fall through */ }
   }
-  const catchAllMatch = pattern.match(/:([a-zA-Z_]\\w*)(\\*|\\+)$/);
+  const catchAllMatch = pattern.match(/:([\\w-]+)(\\*|\\+)$/);
   if (catchAllMatch) {
     const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
     const paramName = catchAllMatch[1];
@@ -955,7 +943,8 @@ function __matchConfigPattern(pathname, pattern) {
     const rest = pathname.slice(prefix.replace(/\\/$/, "").length);
     if (isPlus && (!rest || rest === "/")) return null;
     let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
-    try { restValue = decodeURIComponent(restValue); } catch {}
+     // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+     // the request entry point. Decoding again would produce incorrect param values.
     return { [paramName]: restValue };
   }
   const parts = pattern.split("/");
@@ -1026,6 +1015,12 @@ function __buildRequestContext(request) {
   };
 }
 
+function __sanitizeDestination(dest) {
+  if (dest.startsWith("http://") || dest.startsWith("https://")) return dest;
+  dest = dest.replace(/^[\\\\/]+/, "/");
+  return dest;
+}
+
 function __applyConfigRedirects(pathname, ctx) {
   for (const rule of __configRedirects) {
     const params = __matchConfigPattern(pathname, rule.source);
@@ -1033,6 +1028,7 @@ function __applyConfigRedirects(pathname, ctx) {
       if (ctx && (rule.has || rule.missing)) { if (!__checkHasConditions(rule.has, rule.missing, ctx)) continue; }
       let dest = rule.destination;
       for (const [key, value] of Object.entries(params)) { dest = dest.replace(":" + key + "*", value); dest = dest.replace(":" + key + "+", value); dest = dest.replace(":" + key, value); }
+      dest = __sanitizeDestination(dest);
       return { destination: dest, permanent: rule.permanent };
     }
   }
@@ -1046,6 +1042,7 @@ function __applyConfigRewrites(pathname, rules, ctx) {
       if (ctx && (rule.has || rule.missing)) { if (!__checkHasConditions(rule.has, rule.missing, ctx)) continue; }
       let dest = rule.destination;
       for (const [key, value] of Object.entries(params)) { dest = dest.replace(":" + key + "*", value); dest = dest.replace(":" + key + "+", value); dest = dest.replace(":" + key, value); }
+      dest = __sanitizeDestination(dest);
       return dest;
     }
   }
@@ -1053,7 +1050,72 @@ function __applyConfigRewrites(pathname, rules, ctx) {
 }
 
 function __isExternalUrl(url) {
-  return url.startsWith("http://") || url.startsWith("https://");
+  return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
+}
+
+/**
+ * Maximum server-action request body size (1 MB).
+ * Matches the Next.js default for serverActions.bodySizeLimit.
+ * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/serverActions#bodysizelimit
+ * Prevents unbounded request body buffering.
+ */
+var __MAX_ACTION_BODY_SIZE = 1 * 1024 * 1024;
+
+/**
+ * Read a request body as text with a size limit.
+ * Enforces the limit on the actual byte stream to prevent bypasses
+ * via chunked transfer-encoding where Content-Length is absent or spoofed.
+ */
+async function __readBodyWithLimit(request, maxBytes) {
+  if (!request.body) return "";
+  var reader = request.body.getReader();
+  var decoder = new TextDecoder();
+  var chunks = [];
+  var totalSize = 0;
+  for (;;) {
+    var result = await reader.read();
+    if (result.done) break;
+    totalSize += result.value.byteLength;
+    if (totalSize > maxBytes) {
+      reader.cancel();
+      throw new Error("Request body too large");
+    }
+    chunks.push(decoder.decode(result.value, { stream: true }));
+  }
+  chunks.push(decoder.decode());
+  return chunks.join("");
+}
+
+/**
+ * Read a request body as FormData with a size limit.
+ * Consumes the body stream with a byte counter and then parses the
+ * collected bytes as multipart form data via the Response constructor.
+ */
+async function __readFormDataWithLimit(request, maxBytes) {
+  if (!request.body) return new FormData();
+  var reader = request.body.getReader();
+  var chunks = [];
+  var totalSize = 0;
+  for (;;) {
+    var result = await reader.read();
+    if (result.done) break;
+    totalSize += result.value.byteLength;
+    if (totalSize > maxBytes) {
+      reader.cancel();
+      throw new Error("Request body too large");
+    }
+    chunks.push(result.value);
+  }
+  // Reconstruct a Response with the original Content-Type so that
+  // the FormData parser can handle multipart boundaries correctly.
+  var combined = new Uint8Array(totalSize);
+  var offset = 0;
+  for (var chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  var contentType = request.headers.get("content-type") || "";
+  return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
 const __hopByHopHeaders = new Set(["connection","keep-alive","proxy-authenticate","proxy-authorization","te","trailers","transfer-encoding","upgrade"]);
@@ -1067,19 +1129,31 @@ async function __proxyExternalRequest(request, externalUrl) {
   const headers = new Headers(request.headers);
   headers.set("host", targetUrl.host);
   headers.delete("connection");
+  // Strip credentials and internal headers to prevent leaking auth tokens,
+  // session cookies, and middleware internals to third-party origins.
+  headers.delete("cookie");
+  headers.delete("authorization");
+  headers.delete("x-api-key");
+  headers.delete("proxy-authorization");
+  for (const key of [...headers.keys()]) {
+    if (key.startsWith("x-middleware-")) headers.delete(key);
+  }
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";
-  const init = { method, headers, redirect: "manual" };
+  const init = { method, headers, redirect: "manual", signal: AbortSignal.timeout(30000) };
   if (hasBody && request.body) { init.body = request.body; init.duplex = "half"; }
   let upstream;
   try { upstream = await fetch(targetUrl.href, init); }
-  catch (e) { console.error("[vinext] External rewrite proxy error:", e); return new Response("Bad Gateway", { status: 502 }); }
+  catch (e) {
+    if (e && e.name === "TimeoutError") return new Response("Gateway Timeout", { status: 504 });
+    console.error("[vinext] External rewrite proxy error:", e); return new Response("Bad Gateway", { status: 502 });
+  }
   const respHeaders = new Headers();
   upstream.headers.forEach(function(value, key) { if (!__hopByHopHeaders.has(key.toLowerCase())) respHeaders.append(key, value); });
   return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: respHeaders });
 }
 
-function __applyConfigHeaders(pathname) {
+function __applyConfigHeaders(pathname, ctx) {
   const result = [];
   for (const rule of __configHeaders) {
     const groups = [];
@@ -1092,57 +1166,81 @@ function __applyConfigHeaders(pathname) {
       .replace(/\\+/g, "\\\\+")
       .replace(/\\?/g, "\\\\?")
       .replace(/\\*/g, ".*")
-      .replace(/:[a-zA-Z_]\\w*/g, "[^/]+")
+      .replace(/:[\\w-]+/g, "[^/]+")
       .replace(/___GROUP_(\\d+)___/g, (_, idx) => "(" + groups[Number(idx)] + ")");
     const sourceRegex = __safeRegExp("^" + escaped + "$");
-    if (sourceRegex && sourceRegex.test(pathname)) result.push(...rule.headers);
+    if (sourceRegex && sourceRegex.test(pathname)) {
+      if (ctx && (rule.has || rule.missing)) {
+        if (!__checkHasConditions(rule.has, rule.missing, ctx)) continue;
+      }
+      result.push(...rule.headers);
+    }
   }
   return result;
 }
 
 export default async function handler(request) {
-  // Wrap the entire request handling in runWithHeadersContext to ensure
-  // headers() and cookies() work throughout the async RSC rendering pipeline.
-  // This uses AsyncLocalStorage.run() which properly propagates through awaits.
+  // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
+  // per-request isolation for all state modules. Each runWith*() creates an
+  // ALS scope that propagates through all async continuations (including RSC
+  // streaming), preventing state leakage between concurrent requests on
+  // Cloudflare Workers and other concurrent runtimes.
   const headersCtx = headersContextFromRequest(request);
-   return runWithHeadersContext(headersCtx, async () => {
-    // Initialize per-request state for cache and private cache isolation.
-    _initRequestScopedCacheState();
-    _clearPrivateCache();
-    // Install patched fetch with Next.js caching semantics for this request.
-    // runWithFetchCache uses AsyncLocalStorage.run() for proper per-request
-    // isolation of collected fetch tags in concurrent environments.
-    return runWithFetchCache(async () => {
-      const response = await _handleRequest(request);
-      // Apply custom headers from next.config.js to non-redirect responses.
-      // Skip redirects (3xx) because Response.redirect() creates immutable headers,
-      // and Next.js doesn't apply custom headers to redirects anyway.
-      if (__configHeaders.length && response && response.headers && !(response.status >= 300 && response.status < 400)) {
-        const url = new URL(request.url);
-        let pathname = url.pathname;
-        ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
-        const extraHeaders = __applyConfigHeaders(pathname);
-        for (const h of extraHeaders) {
-          response.headers.set(h.key, h.value);
-        }
-      }
-      return response;
-    });
-  });
+  return runWithHeadersContext(headersCtx, () =>
+    _runWithNavigationContext(() =>
+      _runWithCacheState(() =>
+        _runWithPrivateCache(() =>
+          runWithFetchCache(async () => {
+            const __reqCtx = __buildRequestContext(request);
+            const response = await _handleRequest(request, __reqCtx);
+            // Apply custom headers from next.config.js to non-redirect responses.
+            // Skip redirects (3xx) because Response.redirect() creates immutable headers,
+            // and Next.js doesn't apply custom headers to redirects anyway.
+            if (__configHeaders.length && response && response.headers && !(response.status >= 300 && response.status < 400)) {
+              const url = new URL(request.url);
+              let pathname;
+              try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
+              ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
+              const extraHeaders = __applyConfigHeaders(pathname, __reqCtx);
+              for (const h of extraHeaders) {
+                response.headers.set(h.key, h.value);
+              }
+            }
+            return response;
+          })
+        )
+      )
+    )
+  );
 }
 
-async function _handleRequest(request) {
+async function _handleRequest(request, __reqCtx) {
   const url = new URL(request.url);
-  let pathname = url.pathname;
 
-  // Guard against protocol-relative URL open redirect attacks.
+  // ── Cross-origin request protection ─────────────────────────────────
+  // Block requests from non-localhost origins to prevent data exfiltration.
+  const __originBlock = __validateDevRequestOrigin(request);
+  if (__originBlock) return __originBlock;
+
+  // Guard against protocol-relative URL open redirects.
   // Paths like //example.com/ would be redirected to //example.com by the
   // trailing-slash normalizer, which browsers interpret as http://example.com.
-  // Next.js returns 404 for these paths. Check the raw pathname before any
-  // basePath stripping so the guard cannot be bypassed with a basePath prefix.
-  if (pathname.startsWith("//")) {
+  // Backslashes are equivalent to forward slashes in the URL spec
+  // (e.g. /\\evil.com is treated as //evil.com by browsers and the URL constructor).
+  // Next.js returns 404 for these paths. Check the RAW pathname before
+  // normalization so the guard fires before normalizePath collapses //.
+  if (url.pathname.replaceAll("\\\\", "/").startsWith("//")) {
     return new Response("404 Not Found", { status: 404 });
   }
+
+  // Decode percent-encoding and normalize pathname to canonical form.
+  // decodeURIComponent prevents /%61dmin from bypassing /admin matchers.
+  // __normalizePath collapses //foo///bar → /foo/bar, resolves . and .. segments.
+  let decodedUrlPathname;
+  try { decodedUrlPathname = decodeURIComponent(url.pathname); } catch (e) {
+    return new Response("Bad Request", { status: 400 });
+  }
+  let pathname = __normalizePath(decodedUrlPathname);
 
   ${bp ? `
   // Strip basePath prefix
@@ -1162,13 +1260,14 @@ async function _handleRequest(request) {
   }
 
   // ── Apply redirects from next.config.js ───────────────────────────────
-  const __reqCtx = __buildRequestContext(request);
   if (__configRedirects.length) {
     const __redir = __applyConfigRedirects(pathname, __reqCtx);
     if (__redir) {
-      const __redirDest = __basePath && !__redir.destination.startsWith(__basePath)
-        ? __basePath + __redir.destination
-        : __redir.destination;
+      const __redirDest = __sanitizeDestination(
+        __basePath && !__redir.destination.startsWith(__basePath)
+          ? __basePath + __redir.destination
+          : __redir.destination
+      );
       return new Response(null, {
         status: __redir.permanent ? 308 : 307,
         headers: { Location: __redirDest },
@@ -1198,22 +1297,41 @@ async function _handleRequest(request) {
   let _middlewareRewriteStatus = null;
 
   ${middlewarePath ? `
-   // Run proxy/middleware if present and path matches
-  const middlewareFn = middlewareModule.default || middlewareModule.proxy || middlewareModule.middleware;
+   // Run proxy/middleware if present and path matches.
+   // Validate exports match the file type (proxy.ts vs middleware.ts), matching Next.js behavior.
+   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+  const _isProxy = ${JSON.stringify(isProxyFile(middlewarePath))};
+  const middlewareFn = _isProxy
+    ? (middlewareModule.proxy ?? middlewareModule.default)
+    : (middlewareModule.middleware ?? middlewareModule.default);
+  if (typeof middlewareFn !== "function") {
+    const _fileType = _isProxy ? "Proxy" : "Middleware";
+    const _expectedExport = _isProxy ? "proxy" : "middleware";
+    throw new Error("The " + _fileType + " file must export a function named \`" + _expectedExport + "\` or a \`default\` function.");
+  }
   const middlewareMatcher = middlewareModule.config?.matcher;
-  if (typeof middlewareFn === "function" && matchMiddlewarePath(cleanPathname, middlewareMatcher)) {
+  if (matchesMiddleware(cleanPathname, middlewareMatcher)) {
     try {
       // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
-      const nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+       // Always construct a new Request with the fully decoded + normalized pathname
+       // so middleware and the router see the same canonical path.
+      const mwUrl = new URL(request.url);
+      mwUrl.pathname = cleanPathname;
+      const mwRequest = new Request(mwUrl, request);
+      const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
       const mwResponse = await middlewareFn(nextRequest);
       if (mwResponse) {
         // Check for x-middleware-next (continue)
         if (mwResponse.headers.get("x-middleware-next") === "1") {
-          // Middleware wants to continue - save headers to merge into final response
-          _middlewareResponseHeaders = new Headers();
+          // Middleware wants to continue — collect all headers except the two
+          // control headers we've already consumed.  x-middleware-request-*
+          // headers are kept so applyMiddlewareRequestHeaders() can unpack them;
+          // the blanket strip loop after that call removes every remaining
+          // x-middleware-* header before the set is merged into the response.
+           _middlewareResponseHeaders = new Headers();
           for (const [key, value] of mwResponse.headers) {
             if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
-              _middlewareResponseHeaders.set(key, value);
+              _middlewareResponseHeaders.append(key, value);
             }
           }
         } else {
@@ -1234,7 +1352,7 @@ async function _handleRequest(request) {
             _middlewareResponseHeaders = new Headers();
             for (const [key, value] of mwResponse.headers) {
               if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
-                _middlewareResponseHeaders.set(key, value);
+                _middlewareResponseHeaders.append(key, value);
               }
             }
           } else {
@@ -1251,12 +1369,13 @@ async function _handleRequest(request) {
 
   // Unpack x-middleware-request-* headers into the request context so that
   // headers() returns the middleware-modified headers instead of the original
-  // request headers. Also strip those internal headers from the set that will
-  // be merged into the outgoing HTTP response.
+  // request headers. Strip ALL x-middleware-* headers from the set that will
+  // be merged into the outgoing HTTP response — this prefix is reserved for
+  // internal routing signals and must never reach clients.
   if (_middlewareResponseHeaders) {
     applyMiddlewareRequestHeaders(_middlewareResponseHeaders);
     for (const key of [..._middlewareResponseHeaders.keys()]) {
-      if (key.startsWith("x-middleware-request-")) {
+      if (key.startsWith("x-middleware-")) {
         _middlewareResponseHeaders.delete(key);
       }
     }
@@ -1265,14 +1384,22 @@ async function _handleRequest(request) {
 
   // ── Image optimization passthrough (dev mode — no transformation) ───────
   if (cleanPathname === "/_vinext/image") {
-    const __imgUrl = url.searchParams.get("url");
+    const __rawImgUrl = url.searchParams.get("url");
+    // Normalize backslashes: browsers and the URL constructor treat
+    // /\\evil.com as protocol-relative (//evil.com), bypassing the // check.
+    const __imgUrl = __rawImgUrl?.replaceAll("\\\\", "/") ?? null;
     // Allowlist: must start with "/" but not "//" — blocks absolute URLs,
-    // protocol-relative, and exotic schemes (data:, javascript:, etc.).
+    // protocol-relative, backslash variants, and exotic schemes.
     if (!__imgUrl || !__imgUrl.startsWith("/") || __imgUrl.startsWith("//")) {
-      return new Response(!__imgUrl ? "Missing url parameter" : "Only relative URLs allowed", { status: 400 });
+      return new Response(!__rawImgUrl ? "Missing url parameter" : "Only relative URLs allowed", { status: 400 });
+    }
+    // Validate the constructed URL's origin hasn't changed (defense in depth).
+    const __resolvedImg = new URL(__imgUrl, request.url);
+    if (__resolvedImg.origin !== url.origin) {
+      return new Response("Only relative URLs allowed", { status: 400 });
     }
     // In dev, redirect to the original asset URL so Vite's static serving handles it.
-    return Response.redirect(new URL(__imgUrl, request.url).href, 302);
+    return Response.redirect(__resolvedImg.href, 302);
   }
 
   // Handle metadata routes (sitemap.xml, robots.txt, manifest.webmanifest, etc.)
@@ -1330,11 +1457,33 @@ async function _handleRequest(request) {
     // cross-site request forgery, matching Next.js server action behavior.
     const csrfResponse = __validateCsrfOrigin(request);
     if (csrfResponse) return csrfResponse;
+
+    // ── Body size limit ─────────────────────────────────────────────────
+    // Reject payloads larger than the configured limit.
+    // Check Content-Length as a fast path, then enforce on the actual
+    // stream to prevent bypasses via chunked transfer-encoding.
+    const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
+    if (contentLength > __MAX_ACTION_BODY_SIZE) {
+      setHeadersContext(null);
+      setNavigationContext(null);
+      return new Response("Payload Too Large", { status: 413 });
+    }
+
     try {
       const contentType = request.headers.get("content-type") || "";
-      const body = contentType.startsWith("multipart/form-data")
-        ? await request.formData()
-        : await request.text();
+      let body;
+      try {
+        body = contentType.startsWith("multipart/form-data")
+          ? await __readFormDataWithLimit(request, __MAX_ACTION_BODY_SIZE)
+          : await __readBodyWithLimit(request, __MAX_ACTION_BODY_SIZE);
+      } catch (sizeErr) {
+        if (sizeErr && sizeErr.message === "Request body too large") {
+          setHeadersContext(null);
+          setNavigationContext(null);
+          return new Response("Payload Too Large", { status: 413 });
+        }
+        throw sizeErr;
+      }
       const temporaryReferences = createTemporaryReferenceSet();
       const args = await decodeReply(body, { temporaryReferences });
       const action = await loadServerAction(actionId);
@@ -1346,12 +1495,14 @@ async function _handleRequest(request) {
       } catch (e) {
         // Detect redirect() / permanentRedirect() called inside the action.
         // These throw errors with digest "NEXT_REDIRECT;replace;url[;status]".
+        // The URL is encodeURIComponent-encoded to prevent semicolons in the URL
+        // from corrupting the delimiter-based digest format.
         if (e && typeof e === "object" && "digest" in e) {
           const digest = String(e.digest);
           if (digest.startsWith("NEXT_REDIRECT;")) {
             const parts = digest.split(";");
             actionRedirect = {
-              url: parts[2],
+              url: decodeURIComponent(parts[2]),
               type: parts[1] || "replace",       // "push" or "replace"
               status: parts[3] ? parseInt(parts[3], 10) : 307,
             };
@@ -1360,10 +1511,16 @@ async function _handleRequest(request) {
             // notFound() / forbidden() / unauthorized() in action — package as error
             returnValue = { ok: false, data: e };
           } else {
-            returnValue = { ok: false, data: e };
+            // Non-navigation digest error — sanitize in production to avoid
+            // leaking internal details (connection strings, paths, etc.)
+            console.error("[vinext] Server action error:", e);
+            returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
           }
         } else {
-          returnValue = { ok: false, data: e };
+          // Unhandled error — sanitize in production to avoid leaking
+          // internal details (database errors, file paths, stack traces, etc.)
+          console.error("[vinext] Server action error:", e);
+          returnValue = { ok: false, data: __sanitizeErrorForClient(e) };
         }
       }
 
@@ -1378,6 +1535,7 @@ async function _handleRequest(request) {
         setNavigationContext(null);
         const redirectHeaders = new Headers({
           "Content-Type": "text/x-component; charset=utf-8",
+          "Vary": "RSC, Accept",
           "x-action-redirect": actionRedirect.url,
           "x-action-redirect-type": actionRedirect.type,
           "x-action-redirect-status": String(actionRedirect.status),
@@ -1417,7 +1575,7 @@ async function _handleRequest(request) {
       setHeadersContext(null);
       setNavigationContext(null);
 
-      const actionHeaders = { "Content-Type": "text/x-component; charset=utf-8" };
+      const actionHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
       const actionResponse = new Response(rscStream, { headers: actionHeaders });
       if (actionPendingCookies.length > 0 || actionDraftCookie) {
         for (const cookie of actionPendingCookies) {
@@ -1433,7 +1591,9 @@ async function _handleRequest(request) {
         err instanceof Error ? err : new Error(String(err)),
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      ).catch(() => {});
+      ).catch((reportErr) => {
+        console.error("[vinext] Failed to report server action error:", reportErr);
+      });
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response(
@@ -1574,7 +1734,7 @@ async function _handleRequest(request) {
           const digest = String(err.digest);
           if (digest.startsWith("NEXT_REDIRECT;")) {
             const parts = digest.split(";");
-            const redirectUrl = parts[2];
+            const redirectUrl = decodeURIComponent(parts[2]);
             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
             setHeadersContext(null);
             setNavigationContext(null);
@@ -1597,7 +1757,9 @@ async function _handleRequest(request) {
           err instanceof Error ? err : new Error(String(err)),
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        ).catch(() => {});
+        ).catch((reportErr) => {
+          console.error("[vinext] Failed to report route handler error:", reportErr);
+        });
         return new Response(null, { status: 500 });
       }
     }
@@ -1720,7 +1882,7 @@ async function _handleRequest(request) {
         setHeadersContext(null);
         setNavigationContext(null);
         return new Response(interceptStream, {
-          headers: { "Content-Type": "text/x-component; charset=utf-8" },
+          headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
         });
       }
       // If sourceRoute === route, apply intercept opts to the normal render
@@ -1741,7 +1903,7 @@ async function _handleRequest(request) {
       const digest = String(buildErr.digest);
       if (digest.startsWith("NEXT_REDIRECT;")) {
         const parts = digest.split(";");
-        const redirectUrl = parts[2];
+        const redirectUrl = decodeURIComponent(parts[2]);
         const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
         setHeadersContext(null);
         setNavigationContext(null);
@@ -1772,7 +1934,7 @@ async function _handleRequest(request) {
       const digest = String(err.digest);
       if (digest.startsWith("NEXT_REDIRECT;")) {
         const parts = digest.split(";");
-        const redirectUrl = parts[2];
+        const redirectUrl = decodeURIComponent(parts[2]);
         const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
         setHeadersContext(null);
         setNavigationContext(null);
@@ -1814,13 +1976,13 @@ async function _handleRequest(request) {
       } catch (layoutErr) {
         if (layoutErr && typeof layoutErr === "object" && "digest" in layoutErr) {
           const digest = String(layoutErr.digest);
-          if (digest.startsWith("NEXT_REDIRECT;")) {
-            const parts = digest.split(";");
-            const redirectUrl = parts[2];
-            const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
-            setHeadersContext(null);
-            setNavigationContext(null);
-            return Response.redirect(new URL(redirectUrl, request.url), statusCode);
+           if (digest.startsWith("NEXT_REDIRECT;")) {
+             const parts = digest.split(";");
+             const redirectUrl = decodeURIComponent(parts[2]);
+             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
+             setHeadersContext(null);
+             setNavigationContext(null);
+             return Response.redirect(new URL(redirectUrl, request.url), statusCode);
           }
           if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
             const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
@@ -1906,7 +2068,7 @@ async function _handleRequest(request) {
     // The RSC stream is consumed lazily - components render when chunks are read.
     // If we clear context now, headers()/cookies() will fail during rendering.
     // Context will be cleared when the next request starts (via runWithHeadersContext).
-    const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8" };
+    const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
     // Include matched route params so the client can hydrate useParams()
     if (params && Object.keys(params).length > 0) {
       responseHeaders["X-Vinext-Params"] = JSON.stringify(params);
@@ -1978,7 +2140,7 @@ async function _handleRequest(request) {
     // Merge middleware response headers into the final response
     if (_middlewareResponseHeaders) {
       for (const [key, value] of _middlewareResponseHeaders) {
-        response.headers.set(key, value);
+        response.headers.append(key, value);
       }
     }
     // Apply custom status code from middleware rewrite
@@ -2008,6 +2170,7 @@ async function _handleRequest(request) {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store, must-revalidate",
+        "Vary": "RSC, Accept",
       },
     }));
   }
@@ -2023,6 +2186,7 @@ async function _handleRequest(request) {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
         "X-Vinext-Cache": "STATIC",
+        "Vary": "RSC, Accept",
       },
     }));
   }
@@ -2034,6 +2198,7 @@ async function _handleRequest(request) {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "no-store, must-revalidate",
+        "Vary": "RSC, Accept",
       },
     }));
   }
@@ -2045,12 +2210,13 @@ async function _handleRequest(request) {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+        "Vary": "RSC, Accept",
       },
     }));
   }
 
   return attachMiddlewareContext(new Response(htmlStream, {
-    headers: { "Content-Type": "text/html; charset=utf-8" },
+    headers: { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" },
   }));
 }
 
@@ -2069,8 +2235,9 @@ if (import.meta.hot) {
 export function generateSsrEntry(): string {
   return `
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
-import { renderToReadableStream } from "react-dom/server.edge";
+import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import { setNavigationContext } from "next/navigation";
+import { runWithNavigationContext as _runWithNavCtx } from "vinext/navigation-state";
 import { safeJsonStringify } from "vinext/html";
 
 /**
@@ -2196,6 +2363,10 @@ function createRscEmbedTransform(embedStream) {
  *   and the data needs to be passed to SSR since they're separate module instances.
  */
 export async function handleSsr(rscStream, navContext, fontData) {
+  // Wrap in a navigation ALS scope for per-request isolation in the SSR
+  // environment. The SSR environment has separate module instances from RSC,
+  // so it needs its own ALS scope.
+  return _runWithNavCtx(async () => {
   // Set navigation context so hooks like usePathname() work during SSR
   // of "use client" components
   if (navContext) {
@@ -2229,6 +2400,16 @@ export async function handleSsr(rscStream, navContext, fontData) {
     const bootstrapScriptContent =
       await import.meta.viteRsc.loadBootstrapScriptContent("index");
 
+    // djb2 hash for digest generation in the SSR environment.
+    // Matches the RSC environment's __errorDigest function.
+    function ssrErrorDigest(str) {
+      let hash = 5381;
+      for (let i = str.length - 1; i >= 0; i--) {
+        hash = (hash * 33) ^ str.charCodeAt(i);
+      }
+      return (hash >>> 0).toString();
+    }
+
     // Render HTML (streaming SSR)
     // useServerInsertedHTML callbacks are registered during this render.
     // The onError callback preserves the digest for Next.js navigation errors
@@ -2236,11 +2417,19 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // boundaries during RSC streaming. Without this, React's default onError
     // returns undefined and the digest is lost in the $RX() call, preventing
     // client-side error boundaries from identifying the error type.
+    // In production, non-navigation errors also get a digest hash so they
+    // can be correlated with server logs without leaking details to clients.
     const htmlStream = await renderToReadableStream(root, {
       bootstrapScriptContent,
       onError(error) {
         if (error && typeof error === "object" && "digest" in error) {
           return String(error.digest);
+        }
+        // In production, generate a digest hash for non-navigation errors
+        if (process.env.NODE_ENV === "production" && error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          const stack = error instanceof Error ? (error.stack || "") : "";
+          return ssrErrorDigest(msg + stack);
         }
         return undefined;
       },
@@ -2251,7 +2440,6 @@ export async function handleSsr(rscStream, navContext, fontData) {
     const insertedElements = flushServerInsertedHTML();
 
     // Render the inserted elements to HTML strings
-    const { renderToStaticMarkup } = await import("react-dom/server.edge");
     const { createElement, Fragment } = await import("react");
     let insertedHTML = "";
     for (const el of insertedElements) {
@@ -2421,7 +2609,26 @@ export async function handleSsr(rscStream, navContext, fontData) {
     setNavigationContext(null);
     clearServerInsertedHTML();
   }
+  }); // end _runWithNavCtx
 }
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith("//")) {
+      return new Response("404 Not Found", { status: 404 });
+    }
+    const rscModule = await import.meta.viteRsc.loadModule("rsc", "index");
+    const result = await rscModule.default(request);
+    if (result instanceof Response) {
+      return result;
+    }
+    if (result === null || result === undefined) {
+      return new Response("Not Found", { status: 404 });
+    }
+    return new Response(String(result), { status: 200 });
+  },
+};
 `;
 }
 
@@ -2675,6 +2882,7 @@ async function main() {
       if (!navResponse) {
         navResponse = await fetch(rscUrl, {
           headers: { Accept: "text/x-component" },
+          credentials: "include",
         });
       }
 

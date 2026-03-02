@@ -2891,6 +2891,51 @@ describe("X-Forwarded-Proto trust proxy gating", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Malformed percent-encoded URL regression tests (HackerOne #3575154)
+// ---------------------------------------------------------------------------
+
+describe("malformed percent-encoded URLs return 400 instead of crashing", () => {
+  // Dev server test: uses the Pages Router fixture
+  let malformedServer: ViteDevServer;
+  let malformedBaseUrl: string;
+
+  beforeAll(async () => {
+    ({ server: malformedServer, baseUrl: malformedBaseUrl } = await startFixtureServer(FIXTURE_DIR));
+  }, 30000);
+
+  afterAll(async () => {
+    await malformedServer?.close();
+  });
+
+  it("dev server returns 400 for malformed percent-encoded path", async () => {
+    const res = await fetch(`${malformedBaseUrl}/%E0%A4%A`);
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).toContain("Bad Request");
+  });
+
+  it("dev server returns 400 for truncated percent sequence", async () => {
+    const res = await fetch(`${malformedBaseUrl}/%E0%A4`);
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).toContain("Bad Request");
+  });
+
+  it("dev server returns 400 for bare percent sign", async () => {
+    const res = await fetch(`${malformedBaseUrl}/%`);
+    expect(res.status).toBe(400);
+    const body = await res.text();
+    expect(body).toContain("Bad Request");
+  });
+
+  it("dev server still serves valid percent-encoded paths", async () => {
+    // %2F is a valid encoding for "/"
+    const res = await fetch(`${malformedBaseUrl}/about`);
+    expect(res.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Edge cases from Next.js test suite
 // ---------------------------------------------------------------------------
 

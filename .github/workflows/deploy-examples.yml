@@ -8,6 +8,9 @@ on:
 
 jobs:
   deploy:
+    # Skip entirely for fork PRs — they don't have access to deploy secrets.
+    # Use /deploy-preview slash command for fork PRs instead.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     name: Deploy ${{ matrix.example.name }}
     runs-on: ubuntu-latest
     permissions:
@@ -48,7 +51,7 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
       - name: Build vinext plugin
         run: pnpm run build

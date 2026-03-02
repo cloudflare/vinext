@@ -13,6 +13,7 @@
     "vite": "^7.3.1",
     "vinext": "workspace:*",
     "@vitejs/plugin-rsc": "^0.5.19",
+    "react-server-dom-webpack": "^19.2.4",
     "@cloudflare/vite-plugin": "^1.25.0",
     "@cloudflare/kumo": "^1.6.0",
     "@phosphor-icons/react": "^2.1.7",

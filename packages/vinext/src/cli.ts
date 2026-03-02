@@ -16,11 +16,14 @@
 import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
 import path from "node:path";
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
-import { execSync } from "node:child_process";
-import { deploy as runDeploy } from "./deploy.js";
+import { execFileSync } from "node:child_process";
+import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
-import { init as runInit } from "./init.js";
+import { init as runInit, getReactUpgradeDeps } from "./init.js";
+import { loadDotenv } from "./config/dotenv.js";
+import { detectPackageManager as _detectPackageManager } from "./utils/project.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -60,7 +63,10 @@ async function loadVite(): Promise<ViteModule> {
     vitePath = "vite";
   }
 
-  const vite = (await import(/* @vite-ignore */ vitePath)) as ViteModule;
+  // On Windows, absolute paths must be file:// URLs for ESM import().
+  // The fallback ("vite") is a bare specifier and works as-is.
+  const viteUrl = vitePath === "vite" ? vitePath : pathToFileURL(vitePath).href;
+  const vite = (await import(/* @vite-ignore */ viteUrl)) as ViteModule;
   _viteModule = vite;
   return vite;
 }
@@ -72,7 +78,9 @@ function getViteVersion(): string {
   return _viteModule?.version ?? "unknown";
 }
 
-const VERSION = "0.0.1";
+const VERSION = JSON.parse(
+  fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
+).version as string;
 
 // ─── CLI Argument Parsing ──────────────────────────────────────────────────────
 
@@ -108,21 +116,6 @@ function parseArgs(args: string[]): ParsedArgs {
     }
   }
   return result;
-}
-
-/** Parse a numeric flag like --tpr-coverage 95 or --tpr-coverage=95. */
-function parseNumericFlag(args: string[], flag: string): number | undefined {
-  const idx = args.indexOf(flag);
-  if (idx !== -1 && args[idx + 1]) {
-    const val = parseInt(args[idx + 1], 10);
-    if (!isNaN(val)) return val;
-  }
-  const eq = args.find((a) => a.startsWith(`${flag}=`));
-  if (eq) {
-    const val = parseInt(eq.split("=")[1], 10);
-    if (!isNaN(val)) return val;
-  }
-  return undefined;
 }
 
 // ─── Auto-configuration ───────────────────────────────────────────────────────
@@ -191,6 +184,11 @@ async function dev() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("dev");
 
+  loadDotenv({
+    root: process.cwd(),
+    mode: "development",
+  });
+
   const vite = await loadVite();
 
   const port = parsed.port ?? 3000;
@@ -211,11 +209,29 @@ async function buildApp() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("build");
 
+  loadDotenv({
+    root: process.cwd(),
+    mode: "production",
+  });
+
   const vite = await loadVite();
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
   const isApp = hasAppDir();
+
+  // For App Router: upgrade React if needed for react-server-dom-webpack compatibility.
+  // Without this, builds with react<19.2.4 produce a Worker that crashes at
+  // runtime with "Cannot read properties of undefined (reading 'moduleMap')".
+  if (isApp) {
+    const reactUpgrade = getReactUpgradeDeps(process.cwd());
+    if (reactUpgrade.length > 0) {
+      const installCmd = _detectPackageManager(process.cwd()).replace(/ -D$/, "");
+      const [pm, ...pmArgs] = installCmd.split(" ");
+      console.log("  Upgrading React for RSC compatibility...");
+      execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: process.cwd(), stdio: "inherit" });
+    }
+  }
 
   if (isApp) {
     // App Router: use createBuilder for multi-environment RSC builds
@@ -223,13 +239,11 @@ async function buildApp() {
     const builder = await vite.createBuilder(config);
     await builder.buildApp();
   } else {
-    // Pages Router: client + SSR builds
-    const appRoot = process.cwd();
-
+    // Pages Router: client + SSR builds.
+    // Use buildViteConfig() so that when a vite.config exists we don't
+    // duplicate the vinext() plugin.
     console.log("  Building client...");
-    await vite.build({
-      root: appRoot,
-      plugins: [vinext()],
+    await vite.build(buildViteConfig({
       build: {
         outDir: "dist/client",
         manifest: true,
@@ -240,12 +254,10 @@ async function buildApp() {
           treeshake: clientTreeshakeConfig,
         },
       },
-    });
+    }));
 
     console.log("  Building server...");
-    await vite.build({
-      root: appRoot,
-      plugins: [vinext()],
+    await vite.build(buildViteConfig({
       build: {
         outDir: "dist/server",
         ssr: "virtual:vinext-server-entry",
@@ -255,7 +267,7 @@ async function buildApp() {
           },
         },
       },
-    });
+    }));
   }
 
   console.log("\n  Build complete. Run `vinext start` to start the production server.\n");
@@ -264,6 +276,11 @@ async function buildApp() {
 async function start() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("start");
+
+  loadDotenv({
+    root: process.cwd(),
+    mode: "production",
+  });
 
   const port = parsed.port ?? parseInt(process.env.PORT ?? "3000", 10);
   const host = parsed.hostname ?? "0.0.0.0";
@@ -309,13 +326,13 @@ async function lint() {
   try {
     if (hasEslint && hasNextLintConfig) {
       console.log("  Using eslint (with existing config)\n");
-      execSync("npx eslint .", { cwd, stdio: "inherit" });
+      execFileSync("npx", ["eslint", "."], { cwd, stdio: "inherit" });
     } else if (hasOxlint) {
       console.log("  Using oxlint\n");
-      execSync("npx oxlint .", { cwd, stdio: "inherit" });
+      execFileSync("npx", ["oxlint", "."], { cwd, stdio: "inherit" });
     } else if (hasEslint) {
       console.log("  Using eslint\n");
-      execSync("npx eslint .", { cwd, stdio: "inherit" });
+      execFileSync("npx", ["eslint", "."], { cwd, stdio: "inherit" });
     } else {
       console.log(
         "  No linter found. Install eslint or oxlint:\n\n" +
@@ -332,43 +349,23 @@ async function lint() {
 }
 
 async function deployCommand() {
-  const parsed = parseArgs(rawArgs);
+  const parsed = parseDeployArgs(rawArgs);
   if (parsed.help) return printHelp("deploy");
 
   await loadVite();
   console.log(`\n  vinext deploy  (Vite ${getViteVersion()})\n`);
 
-  // Parse deploy-specific flags
-  const preview = rawArgs.includes("--preview");
-  const skipBuild = rawArgs.includes("--skip-build");
-  const dryRun = rawArgs.includes("--dry-run");
-  const experimentalTPR = rawArgs.includes("--experimental-tpr");
-
-  // Parse --name flag
-  let name: string | undefined;
-  const nameIdx = rawArgs.indexOf("--name");
-  if (nameIdx !== -1 && rawArgs[nameIdx + 1]) {
-    name = rawArgs[nameIdx + 1];
-  } else {
-    const nameEq = rawArgs.find((a) => a.startsWith("--name="));
-    if (nameEq) name = nameEq.split("=")[1];
-  }
-
-  // Parse TPR flags
-  const tprCoverage = parseNumericFlag(rawArgs, "--tpr-coverage");
-  const tprLimit = parseNumericFlag(rawArgs, "--tpr-limit");
-  const tprWindow = parseNumericFlag(rawArgs, "--tpr-window");
-
   await runDeploy({
     root: process.cwd(),
-    preview,
-    skipBuild,
-    dryRun,
-    name,
-    experimentalTPR,
-    tprCoverage,
-    tprLimit,
-    tprWindow,
+    preview: parsed.preview,
+    env: parsed.env,
+    skipBuild: parsed.skipBuild,
+    dryRun: parsed.dryRun,
+    name: parsed.name,
+    experimentalTPR: parsed.experimentalTPR,
+    tprCoverage: parsed.tprCoverage,
+    tprLimit: parsed.tprLimit,
+    tprWindow: parsed.tprWindow,
   });
 }
 
@@ -467,7 +464,8 @@ function printHelp(cmd?: string) {
     - Deploys via wrangler
 
   Options:
-    --preview                Deploy to a preview environment
+    --preview                Deploy to preview environment (same as --env preview)
+    --env <name>             Deploy using wrangler env.<name>
     --name <name>            Custom Worker name (default: from package.json)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Generate config files without building or deploying
@@ -488,6 +486,7 @@ function printHelp(cmd?: string) {
   Examples:
     vinext deploy                              Build and deploy to production
     vinext deploy --preview                    Deploy to a preview URL
+    vinext deploy --env staging                Deploy using wrangler env.staging
     vinext deploy --dry-run                    See what files would be generated
     vinext deploy --name my-app                Deploy with a custom Worker name
     vinext deploy --experimental-tpr           Enable TPR during deploy
