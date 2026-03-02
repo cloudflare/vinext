@@ -1753,6 +1753,7 @@ hydrate();
           "next/link": path.join(shimsDir, "link"),
           "next/head": path.join(shimsDir, "head"),
           "next/router": path.join(shimsDir, "router"),
+          "next/compat/router": path.join(shimsDir, "compat-router"),
           "next/image": path.join(shimsDir, "image"),
           "next/legacy/image": path.join(shimsDir, "legacy-image"),
           "next/dynamic": path.join(shimsDir, "dynamic"),

@@ -5210,6 +5210,18 @@ describe("next/amp shim", () => {
   });
 });
 
+describe("next/compat/router shim", () => {
+  it("exports useRouter as a function", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/compat-router.js"
+    );
+    // useRouter should be a named export, not a default export (unlike next/router).
+    // Returns null in App Router context instead of throwing.
+    expect(typeof mod.useRouter).toBe("function");
+    expect(mod.default).toBeUndefined();
+  });
+});
+
 describe("Pages Router router helpers", () => {
   describe("isExternalUrl", () => {
     it("detects https:// as external", () => {
