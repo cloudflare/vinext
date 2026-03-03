@@ -1,5 +1,5 @@
 import type { Plugin, UserConfig, ViteDevServer } from "vite";
-import { parseAst } from "vite";
+import { loadEnv, parseAst } from "vite";
 import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, patternToNextFormat as pagesPatternToNextFormat, type Route } from "./routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
@@ -1673,8 +1673,22 @@ hydrate();
       name: "vinext:config",
       enforce: "pre",
 
-      async config(config) {
+      async config(config, env) {
         root = config.root ?? process.cwd();
+
+        // Load .env files into process.env before anything else.
+        // Next.js loads .env files before evaluating next.config.js, so
+        // env vars are available in config, server-side code, and as
+        // NEXT_PUBLIC_* defines for the client bundle.
+        // Pass '' as prefix to load ALL vars, not just VITE_-prefixed ones.
+        const mode = env?.mode ?? "development";
+        const envDir = config.envDir ?? root;
+        const dotenvVars = loadEnv(mode, envDir, "");
+        for (const [key, value] of Object.entries(dotenvVars)) {
+          if (process.env[key] === undefined) {
+            process.env[key] = value;
+          }
+        }
 
         // Resolve the base directory for app/pages detection.
         // If appDir is provided, resolve it (supports both relative and absolute paths).

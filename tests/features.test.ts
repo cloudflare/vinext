@@ -3968,3 +3968,130 @@ export default function NestedProps({ user }) {
     expect(html).toContain("Custom 404 - Not Found");
   });
 });
+
+// ---------------------------------------------------------------------------
+// .env file loading (Issue #228)
+// ---------------------------------------------------------------------------
+
+describe(".env file loading (Issue #228)", () => {
+  let envServer: ViteDevServer;
+  let envBaseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-env-"));
+
+    // Symlink node_modules
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    // .env file with NEXT_PUBLIC_ and server-only vars
+    await fsp.writeFile(
+      path.join(tmpDir, ".env"),
+      `NEXT_PUBLIC_APP_NAME=vinext-test-app
+SERVER_ONLY_SECRET=super-secret-123
+BETTER_AUTH_URL=http://localhost:9999
+`,
+    );
+
+    // pages directory with a page that renders env vars
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export function getServerSideProps() {
+  return {
+    props: {
+      publicVar: process.env.NEXT_PUBLIC_APP_NAME ?? "NOT_LOADED",
+      serverVar: process.env.SERVER_ONLY_SECRET ?? "NOT_LOADED",
+      authUrl: process.env.BETTER_AUTH_URL ?? "NOT_LOADED",
+    },
+  };
+}
+
+export default function Home({ publicVar, serverVar, authUrl }) {
+  return (
+    <div>
+      <p id="public">PUBLIC:{publicVar}</p>
+      <p id="server">SERVER:{serverVar}</p>
+      <p id="auth">AUTH:{authUrl}</p>
+    </div>
+  );
+}
+`,
+    );
+
+    // Start server
+    const plugins: any[] = [vinext()];
+    envServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins,
+      server: { port: 0 },
+      logLevel: "silent",
+    });
+
+    await envServer.listen();
+    const addr = envServer.httpServer?.address();
+    if (addr && typeof addr === "object") {
+      envBaseUrl = `http://localhost:${addr.port}`;
+    }
+  }, 30000);
+
+  afterAll(async () => {
+    // Clean up env vars loaded from .env to avoid polluting other tests
+    delete process.env.NEXT_PUBLIC_APP_NAME;
+    delete process.env.SERVER_ONLY_SECRET;
+    delete process.env.BETTER_AUTH_URL;
+
+    try {
+      (envServer?.httpServer as any)?.closeAllConnections?.();
+      await Promise.race([
+        envServer?.close(),
+        new Promise((r) => setTimeout(r, 3000)),
+      ]);
+    } catch {}
+
+    if (tmpDir) {
+      const fsp = await import("node:fs/promises");
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("NEXT_PUBLIC_ vars from .env are available via process.env", () => {
+    // Check the Vite define config — NEXT_PUBLIC_ vars from .env should
+    // be registered as define entries for client-side inlining.
+    const defineKey = "process.env.NEXT_PUBLIC_APP_NAME";
+    const defineValue = envServer.config.define?.[defineKey];
+    expect(defineValue).toBe(JSON.stringify("vinext-test-app"));
+  });
+
+  it("server-only vars from .env are NOT exposed in client defines", () => {
+    // Only NEXT_PUBLIC_* vars should be inlined into the client bundle.
+    // Server-only secrets must never appear in config.define, or they
+    // would be embedded in client JavaScript and sent to the browser.
+    const defines = envServer.config.define ?? {};
+    expect(defines["process.env.SERVER_ONLY_SECRET"]).toBeUndefined();
+    expect(defines["process.env.BETTER_AUTH_URL"]).toBeUndefined();
+
+    // Also verify no define key contains the secret value itself
+    const allDefineValues = Object.values(defines).join(" ");
+    expect(allDefineValues).not.toContain("super-secret-123");
+    expect(allDefineValues).not.toContain("localhost:9999");
+  });
+
+  it("server-side code can read .env vars via process.env", async () => {
+    // getServerSideProps reads process.env at runtime.
+    // If .env is loaded, these should have the values from .env.
+    const res = await fetch(`${envBaseUrl}/`);
+    const html = await res.text();
+    // React SSR inserts <!-- --> comments between adjacent text nodes,
+    // so check __NEXT_DATA__ which has the raw props.
+    expect(html).toContain('"publicVar":"vinext-test-app"');
+    expect(html).toContain('"serverVar":"super-secret-123"');
+    expect(html).toContain('"authUrl":"http://localhost:9999"');
+  });
+});
