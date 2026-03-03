@@ -115,19 +115,29 @@ function detectPackageManagerFromPackageJson(root: string): PackageManagerName |
  * 3) invoking CLI user agent (npm_config_user_agent)
  * 4) npm fallback
  */
-export function detectPackageManagerName(root: string): PackageManagerName {
+export function detectPackageManagerName(
+  root: string,
+  env: Record<string, string | undefined> = process.env,
+): PackageManagerName {
   if (fs.existsSync(path.join(root, "pnpm-lock.yaml"))) return "pnpm";
   if (fs.existsSync(path.join(root, "yarn.lock"))) return "yarn";
-  if (fs.existsSync(path.join(root, "bun.lock"))) return "bun";
-  if (fs.existsSync(path.join(root, "bun.lockb"))) return "bun";
-  if (fs.existsSync(path.join(root, "package-lock.json")) || fs.existsSync(path.join(root, "npm-shrinkwrap.json"))) {
+  if (
+    fs.existsSync(path.join(root, "bun.lock")) ||
+    fs.existsSync(path.join(root, "bun.lockb"))
+  ) {
+    return "bun";
+  }
+  if (
+    fs.existsSync(path.join(root, "package-lock.json")) ||
+    fs.existsSync(path.join(root, "npm-shrinkwrap.json"))
+  ) {
     return "npm";
   }
 
   const fromPkg = detectPackageManagerFromPackageJson(root);
   if (fromPkg) return fromPkg;
 
-  const fromUA = parsePackageManagerName(process.env.npm_config_user_agent);
+  const fromUA = parsePackageManagerName(env.npm_config_user_agent);
   if (fromUA) return fromUA;
 
   return "npm";
