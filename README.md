@@ -106,7 +106,7 @@ Vite has become the default build tool for modern web frameworks — fast HMR, a
 
 vinext is an experiment: can we reimplement the Next.js API surface on Vite, so that existing Next.js applications can run on a completely different toolchain? The answer, so far, is mostly yes — about 94% of the API surface works.
 
-The current deployment target is Cloudflare Workers — zero cold starts, global by default, integrated platform (KV, R2, D1, AI). The `vinext deploy` command handles the full build-and-deploy pipeline. Expanding to other deployment targets is something we'd like to explore.
+vinext works everywhere. It natively supports Cloudflare Workers (with `vinext deploy`, bindings, KV caching), and can be deployed to Vercel, Netlify, AWS, Deno Deploy, and more via the [Nitro](https://v3.nitro.build/) Vite plugin. Native support for additional platforms is [planned](https://github.com/cloudflare/vinext/issues/80).
 
 **Alternatives worth knowing about:**
 - **[OpenNext](https://opennext.js.org/)** — adapts `next build` output for AWS, Cloudflare, and other platforms. OpenNext has been around much longer than vinext, is more mature, and covers more of the Next.js API surface because it builds on top of Next.js's own output rather than reimplementing it. If you want the safer, more proven option, start there.
@@ -114,7 +114,7 @@ The current deployment target is Cloudflare Workers — zero cold starts, global
 
 ### Design principles
 
-- **Start with Cloudflare, expand later.** Workers is the current deployment target. Every feature is built and tested for Workers. We're interested in supporting other platforms and welcome contributions.
+- **Deploy anywhere.** Natively supports Cloudflare Workers, with other platforms available via Nitro. Native adapters for more platforms are [planned](https://github.com/cloudflare/vinext/issues/80).
 - **Pragmatic compatibility, not bug-for-bug parity.** Targets 95%+ of real-world Next.js apps. Edge cases that depend on undocumented Vercel behavior are intentionally not supported.
 - **Latest Next.js only.** Targets Next.js 16.x. No support for deprecated APIs from older versions.
 - **Incremental adoption.** Drop in the plugin, fix what breaks, deploy.
@@ -122,7 +122,7 @@ The current deployment target is Cloudflare Workers — zero cold starts, global
 ## FAQ
 
 **What is this?**
-vinext is a Vite plugin that reimplements the public Next.js API — routing, server rendering, `next/*` module imports, the CLI — so you can run Next.js applications on Vite instead of the Next.js compiler toolchain. Cloudflare Workers is the current deployment target.
+vinext is a Vite plugin that reimplements the public Next.js API — routing, server rendering, `next/*` module imports, the CLI — so you can run Next.js applications on Vite instead of the Next.js compiler toolchain. It can be deployed anywhere: Cloudflare Workers is the first natively supported target, with other platforms available via Nitro. Native adapters for more platforms are [planned](https://github.com/cloudflare/vinext/issues/80).
 
 **Is this a fork of Next.js?**
 No. vinext is an alternative implementation of the Next.js API surface built on Vite. It does import some Next.js types and utilities, but the core is written from scratch. The goal is not to create a competing framework or add features beyond what Next.js offers — it's an experiment in how far AI-driven development and Vite's toolchain can go in replicating an existing, well-defined API surface.
@@ -152,14 +152,18 @@ Both. File-system routing, SSR, client hydration, and deployment to Cloudflare W
 Next.js 16.x. No support for deprecated APIs from older versions.
 
 **Can I deploy to AWS/Netlify/other platforms?**
-Currently only Cloudflare Workers is supported and tested. We're interested in exploring other deployment targets in the future and welcome contributions in that direction.
+Yes. Add the [Nitro](https://v3.nitro.build/) Vite plugin alongside vinext, and you can deploy to Vercel, Netlify, AWS Amplify, Deno Deploy, Azure, and [many more](https://v3.nitro.build/deploy). See [Other platforms (via Nitro)](#other-platforms-via-nitro) for setup. For Cloudflare Workers, the native integration (`vinext deploy`) gives you the smoothest experience. Native adapters for more platforms are [planned](https://github.com/cloudflare/vinext/issues/80).
 
 **What happens when Next.js releases a new feature?**
 We track the public Next.js API surface and add support for new stable features. Experimental or unstable Next.js features are lower priority. The plan is to add commit-level tracking of the Next.js repo so we can stay current as new versions are released.
 
-## Deploying to Cloudflare Workers
+## Deployment
 
-`vinext deploy` is the simplest path. It auto-generates the necessary configuration files (`vite.config.ts`, `wrangler.jsonc`, `worker/index.ts`) if they don't exist, builds the application, and deploys to Workers.
+### Cloudflare Workers
+
+vinext has native integration with Cloudflare Workers through `@cloudflare/vite-plugin`, including bindings access via `cloudflare:workers`, KV caching, image optimization, and the `vinext deploy` one-command workflow.
+
+`vinext deploy` auto-generates the necessary configuration files (`vite.config.ts`, `wrangler.jsonc`, `worker/index.ts`) if they don't exist, builds the application, and deploys to Workers.
 
 ```bash
 vinext deploy
@@ -175,9 +179,40 @@ The deploy command also auto-detects and fixes common migration issues:
 - Renames CJS config files (postcss.config.js, etc.) to `.cjs` when needed
 - Detects native Node.js modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas) and auto-stubs them for Workers. If you encounter others that need stubbing, PRs are welcome.
 
-Both App Router and Pages Router work on Workers with full client-side hydration — interactive components, client-side navigation, and React state all work.
+Both App Router and Pages Router work on Workers with full client-side hydration.
 
-### Traffic-aware Pre-Rendering (experimental)
+#### Cloudflare Bindings (D1, R2, KV, AI, etc.)
+
+Use `import { env } from "cloudflare:workers"` to access bindings in any server component, route handler, or server action. No custom worker entry or special configuration required.
+
+```tsx
+import { env } from "cloudflare:workers";
+
+export default async function Page() {
+  const result = await env.DB.prepare("SELECT * FROM posts").all();
+  return <div>{JSON.stringify(result)}</div>;
+}
+```
+
+This works because `@cloudflare/vite-plugin` runs the RSC environment in workerd, where `cloudflare:workers` is a native module. In production builds, the import is externalized so workerd resolves it at runtime. All binding types are supported: D1, R2, KV, Durable Objects, AI, Queues, Vectorize, Browser Rendering, etc.
+
+Define your bindings in `wrangler.jsonc` as usual:
+
+```jsonc
+{
+  "name": "my-app",
+  "compatibility_date": "2026-02-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [{ "binding": "DB", "database_name": "my-db", "database_id": "..." }],
+  "kv_namespaces": [{ "binding": "CACHE", "id": "..." }]
+}
+```
+
+For TypeScript types, generate them with `wrangler types` and the `env` import will be fully typed.
+
+> **Note:** You do not need `getPlatformProxy()`, a custom worker entry with `fetch(request, env)`, or any other workaround. `cloudflare:workers` is the recommended way to access bindings in vinext.
+
+#### Traffic-aware Pre-Rendering (experimental)
 
 TPR queries Cloudflare zone analytics at deploy time to find which pages actually get traffic, pre-renders only those, and uploads them to KV cache. The result is SSG-level latency for popular pages without pre-rendering your entire site.
 
@@ -199,7 +234,7 @@ import { setCacheHandler } from "next/cache";
 setCacheHandler(new KVCacheHandler(env.MY_KV_NAMESPACE));
 ```
 
-### Custom Vite configuration
+#### Custom Vite configuration
 
 If you need to customize the Vite config, create a `vite.config.ts`. vinext will merge its config with yours. This is required for Cloudflare Workers deployment with the App Router (RSC needs explicit plugin configuration):
 
@@ -228,6 +263,98 @@ export default defineConfig({
 
 See the [examples](#live-examples) for complete working configurations.
 
+### Other platforms (via Nitro)
+
+For deploying to platforms other than Cloudflare, vinext works with [Nitro](https://v3.nitro.build/) as a Vite plugin. Add `nitro` alongside `vinext` in your Vite config and deploy to any [Nitro-supported platform](https://v3.nitro.build/deploy).
+
+```ts
+import { defineConfig } from "vite";
+import vinext from "vinext";
+import { nitro } from "nitro/vite";
+
+export default defineConfig({
+  plugins: [vinext(), nitro()],
+});
+```
+
+```bash
+npm install nitro
+```
+
+Nitro auto-detects the deployment platform in most CI/CD environments (Vercel, Netlify, AWS Amplify, Azure, and others), so you typically don't need to set a preset. For local builds, set the `NITRO_PRESET` environment variable:
+
+```bash
+NITRO_PRESET=vercel npx vite build
+NITRO_PRESET=netlify npx vite build
+NITRO_PRESET=deno_deploy npx vite build
+```
+
+> **Deploying to Cloudflare?** You can use Nitro, but the native integration (`vinext deploy` / `@cloudflare/vite-plugin`) is recommended. It provides the best developer experience with `cloudflare:workers` bindings, KV caching, image optimization, and one-command deploys.
+
+<details>
+<summary>Vercel</summary>
+
+Nitro auto-detects Vercel in CI. For local builds:
+
+```bash
+NITRO_PRESET=vercel npx vite build
+```
+
+Deploy with the [Vercel CLI](https://vercel.com/docs/cli) or connect your Git repo in the Vercel dashboard. Set the build command to `vite build` and the output directory to `.output`.
+
+</details>
+
+<details>
+<summary>Netlify</summary>
+
+Nitro auto-detects Netlify in CI. For local builds:
+
+```bash
+NITRO_PRESET=netlify npx vite build
+```
+
+Deploy with the [Netlify CLI](https://docs.netlify.com/cli/get-started/) or connect your Git repo. Set the build command to `vite build`.
+
+</details>
+
+<details>
+<summary>AWS (Amplify)</summary>
+
+Nitro auto-detects AWS Amplify in CI. For local builds:
+
+```bash
+NITRO_PRESET=aws_amplify npx vite build
+```
+
+Connect your Git repo in the AWS Amplify console. Set the build command to `vite build`.
+
+</details>
+
+<details>
+<summary>Deno Deploy</summary>
+
+```bash
+NITRO_PRESET=deno_deploy npx vite build
+cd .output
+deployctl deploy --project=my-project server/index.ts
+```
+
+</details>
+
+<details>
+<summary>Node.js server</summary>
+
+```bash
+NITRO_PRESET=node npx vite build
+node .output/server/index.mjs
+```
+
+This produces a standalone Node.js server. Suitable for Docker, VMs, or any environment that can run Node.
+
+</details>
+
+See the [Nitro deployment docs](https://v3.nitro.build/deploy) for the full list of supported platforms and provider-specific configuration.
+
 ## Live examples
 
 These are deployed to Cloudflare Workers and updated on every push to `main`:
@@ -241,6 +368,7 @@ These are deployed to Cloudflare Workers and updated on every push to `main`:
 | Pages Router (minimal) | Minimal Pages Router on Workers | [pages-router-cloudflare.vinext.workers.dev](https://pages-router-cloudflare.vinext.workers.dev) |
 | RealWorld API | REST API routes example | [realworld-api-rest.vinext.workers.dev](https://realworld-api-rest.vinext.workers.dev) |
 | Benchmarks Dashboard | Build performance tracking over time (D1-backed) | [benchmarks.vinext.workers.dev](https://benchmarks.vinext.workers.dev) |
+| App Router + Nitro | App Router deployed via Nitro (multi-platform) | [examples/app-router-nitro](examples/app-router-nitro) |
 
 ## API coverage
 
