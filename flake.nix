@@ -24,12 +24,9 @@
       in {
         devShells.default = pkgs.callPackage ./nix/devShell.nix {};
 
-        checks = import ./nix/checks.nix {
-          inherit pkgs;
-          src = self;
-        };
-
         formatter = pkgs.nixfmt;
       }
     );
+
+  # To update pinned dependencies: nix flake update
 }

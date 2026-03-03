@@ -32,3 +32,4 @@ coverage/
 result
 result-*
 .direnv/
+.corepack/
