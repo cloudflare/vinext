@@ -324,3 +324,57 @@ describe("better-auth", () => {
     expect(html).toContain("Logged in as protected-test@example.com");
   });
 });
+
+// ─── shadcn (radix-ui) ───────────────────────────────────────────────────────
+describe("shadcn", () => {
+  let proc: ChildProcess | null = null;
+  let fetchPage: (path: string) => Promise<{ html: string; status: number }>;
+
+  beforeAll(async () => {
+    const fixture = await startFixture("shadcn", 4404);
+    proc = fixture.process;
+    fetchPage = fixture.fetchPage;
+  }, 30000);
+
+  afterAll(() => killProcess(proc));
+
+  it("renders SSR content", async () => {
+    const { html, status } = await fetchPage("/");
+    expect(status).toBe(200);
+    expect(html).toContain("shadcn test");
+    expect(html).toContain('data-testid="ssr-content"');
+    expect(html).toContain("Server-rendered content");
+  });
+
+  it("renders Button component with variants", async () => {
+    const { html } = await fetchPage("/");
+    expect(html).toContain('data-testid="default-button"');
+    expect(html).toContain('data-testid="destructive-button"');
+    expect(html).toContain('data-testid="outline-button"');
+    expect(html).toContain('data-testid="secondary-button"');
+    expect(html).toContain('data-testid="ghost-button"');
+    expect(html).toContain('data-testid="link-button"');
+  });
+
+  it("renders Button as server component with @radix-ui/react-slot", async () => {
+    const { html } = await fetchPage("/");
+    // Button without "use client" renders directly as a <button> element
+    // (not a client reference), proving @radix-ui/react-slot works in RSC
+    expect(html).toContain("<button");
+    expect(html).toContain("Default Button");
+  });
+
+  it("renders Dialog trigger from @radix-ui/react-dialog", async () => {
+    const { html } = await fetchPage("/");
+    expect(html).toContain('data-testid="dialog-trigger"');
+    expect(html).toContain('aria-haspopup="dialog"');
+    expect(html).toContain("Open Dialog");
+  });
+
+  it("renders DropdownMenu trigger from @radix-ui/react-dropdown-menu", async () => {
+    const { html } = await fetchPage("/");
+    expect(html).toContain('data-testid="dropdown-trigger"');
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).toContain("Open Menu");
+  });
+});

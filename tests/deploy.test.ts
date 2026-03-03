@@ -409,10 +409,94 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("handleApiRoute");
   });
 
-  it("routes /api/ to handleApiRoute", () => {
+  it("imports runMiddleware and vinextConfig from virtual:vinext-server-entry", () => {
     const content = generatePagesRouterWorkerEntry();
-    expect(content).toContain('pathname.startsWith("/api/")');
-    expect(content).toContain("handleApiRoute");
+    expect(content).toContain("runMiddleware");
+    expect(content).toContain("vinextConfig");
+    // Both should come from the same virtual import
+    expect(content).toMatch(/import\s*\{[^}]*runMiddleware[^}]*\}\s*from\s*"virtual:vinext-server-entry"/);
+    expect(content).toMatch(/import\s*\{[^}]*vinextConfig[^}]*\}\s*from\s*"virtual:vinext-server-entry"/);
+  });
+
+  it("imports config matchers from vinext/config/config-matchers", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain('from "vinext/config/config-matchers"');
+    expect(content).toContain("matchRedirect");
+    expect(content).toContain("matchRewrite");
+    expect(content).toContain("matchHeaders");
+    expect(content).toContain("requestContextFromRequest");
+    expect(content).toContain("isExternalUrl");
+    expect(content).toContain("proxyExternalRequest");
+  });
+
+  it("runs middleware before routing", () => {
+    const content = generatePagesRouterWorkerEntry();
+    // Middleware should appear before API route check
+    const middlewarePos = content.indexOf("runMiddleware(request)");
+    const apiRoutePos = content.indexOf('resolvedPathname.startsWith("/api/")');
+    expect(middlewarePos).toBeGreaterThan(-1);
+    expect(apiRoutePos).toBeGreaterThan(-1);
+    expect(middlewarePos).toBeLessThan(apiRoutePos);
+  });
+
+  it("handles middleware redirects", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("result.redirectUrl");
+    expect(content).toContain("result.redirectStatus");
+  });
+
+  it("handles middleware rewrites", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("result.rewriteUrl");
+    expect(content).toContain("resolvedUrl = result.rewriteUrl");
+  });
+
+  it("handles middleware access control responses", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("result.response");
+    expect(content).toContain("!result.continue");
+  });
+
+  it("applies next.config.js redirects", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("configRedirects");
+    expect(content).toContain("matchRedirect(resolvedPathname");
+  });
+
+  it("applies next.config.js rewrites (beforeFiles, afterFiles, fallback)", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("configRewrites.beforeFiles");
+    expect(content).toContain("configRewrites.afterFiles");
+    expect(content).toContain("configRewrites.fallback");
+    expect(content).toContain("matchRewrite(resolvedPathname");
+  });
+
+  it("applies next.config.js custom headers", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("configHeaders");
+    expect(content).toContain("matchHeaders(resolvedPathname");
+  });
+
+  it("handles basePath stripping and creates a new request with stripped URL for middleware", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("basePath");
+    expect(content).toContain("pathname.startsWith(basePath)");
+    // After stripping, a new request with the stripped URL must be created
+    // so middleware matchers see the basePath-free pathname (matching prod-server)
+    expect(content).toContain("strippedUrl.pathname = pathname");
+    expect(content).toContain("new Request(strippedUrl, request)");
+  });
+
+  it("handles trailing slash normalization", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("trailingSlash");
+    expect(content).toContain("hasTrailing");
+  });
+
+  it("routes /api/ to handleApiRoute using resolved URL", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain('resolvedPathname.startsWith("/api/")');
+    expect(content).toContain("handleApiRoute(request, resolvedUrl)");
   });
 
   it("includes error handling", () => {
@@ -452,6 +536,54 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("transformImage:");
     expect(content).toContain("env.ASSETS.fetch");
     expect(content).toContain("env.IMAGES");
+  });
+
+  it("merges middleware and config headers into responses with correct precedence", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("mergeHeaders");
+    expect(content).toContain("middlewareHeaders");
+    // Response headers must override middleware headers (matching prod-server).
+    // mergeHeaders should spread extraHeaders first, then overlay response headers.
+    expect(content).toContain("{ ...extraHeaders }");
+    expect(content).toContain("response.headers.forEach");
+  });
+
+  it("preserves x-middleware-request-* headers for prod request override handling", () => {
+    const content = generatePagesRouterWorkerEntry();
+    // Worker entry must unpack x-middleware-request-* into the actual request
+    expect(content).toContain('const mwReqPrefix = "x-middleware-request-"');
+    expect(content).toContain('key.startsWith(mwReqPrefix)');
+    // Worker entry must also strip remaining x-middleware-* headers (defense-in-depth)
+    expect(content).toContain('key.startsWith("x-middleware-")');
+  });
+
+  it("handles external rewrites via proxyExternalRequest", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain("isExternalUrl(rewritten)");
+    expect(content).toContain("proxyExternalRequest(request, rewritten)");
+  });
+
+  it("guards renderPage with typeof check", () => {
+    const content = generatePagesRouterWorkerEntry();
+    expect(content).toContain('typeof renderPage === "function"');
+  });
+
+  it("builds reqCtx before middleware runs", () => {
+    const content = generatePagesRouterWorkerEntry();
+    const reqCtxPos = content.indexOf("requestContextFromRequest(request)");
+    const middlewarePos = content.indexOf("runMiddleware(request)");
+    expect(reqCtxPos).toBeGreaterThan(-1);
+    expect(middlewarePos).toBeGreaterThan(-1);
+    expect(reqCtxPos).toBeLessThan(middlewarePos);
+  });
+
+  it("checks image optimization after basePath stripping", () => {
+    const content = generatePagesRouterWorkerEntry();
+    const basePathPos = content.indexOf("pathname.startsWith(basePath)");
+    const imagePos = content.indexOf('pathname === "/_vinext/image"');
+    expect(basePathPos).toBeGreaterThan(-1);
+    expect(imagePos).toBeGreaterThan(-1);
+    expect(basePathPos).toBeLessThan(imagePos);
   });
 });
 

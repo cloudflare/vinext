@@ -5,7 +5,7 @@
  * before routing. Runs in Node (not Edge Runtime), per the vinext design.
  *
  * In Next.js 16, proxy.ts replaces middleware.ts:
- * - proxy.ts: default export function, runs on Node.js runtime
+ * - proxy.ts: default export OR named `proxy` function, runs on Node.js runtime
  * - middleware.ts: deprecated but still supported for Edge runtime use cases
  *
  * The proxy/middleware receives a NextRequest and can:
@@ -24,6 +24,51 @@ import path from "node:path";
 import { NextRequest } from "../shims/server.js";
 import { safeRegExp } from "../config/config-matchers.js";
 import { normalizePath } from "./normalize-path.js";
+
+/**
+ * Determine whether a middleware/proxy file path refers to a proxy file.
+ * proxy.ts files accept `proxy` or `default` exports.
+ * middleware.ts files accept `middleware` or `default` exports.
+ *
+ * Matches Next.js behavior where each file type only accepts its own
+ * named export or a default export:
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/middleware.ts
+ */
+export function isProxyFile(filePath: string): boolean {
+  const base = path.basename(filePath).replace(/\.\w+$/, "");
+  return base === "proxy";
+}
+
+/**
+ * Resolve the middleware/proxy handler function from a module's exports.
+ * Matches Next.js behavior: for proxy files, check `proxy` then `default`;
+ * for middleware files, check `middleware` then `default`.
+ *
+ * Throws if the file exists but doesn't export a valid function, matching
+ * Next.js's ProxyMissingExportError behavior.
+ *
+ * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/middleware.ts
+ * @see https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+ */
+export function resolveMiddlewareHandler(
+  mod: Record<string, unknown>,
+  filePath: string,
+): Function {
+  const isProxy = isProxyFile(filePath);
+  const handler = isProxy
+    ? (mod.proxy ?? mod.default)
+    : (mod.middleware ?? mod.default);
+
+  if (typeof handler !== "function") {
+    const fileType = isProxy ? "Proxy" : "Middleware";
+    const expectedExport = isProxy ? "proxy" : "middleware";
+    throw new Error(
+      `The ${fileType} file "${filePath}" must export a function named \`${expectedExport}\` or a \`default\` function.`,
+    );
+  }
+
+  return handler as Function;
+}
 
 /**
  * Possible proxy/middleware file names.
@@ -69,7 +114,7 @@ export function findMiddlewareFile(root: string): string | null {
     if (fs.existsSync(fullPath)) {
       console.warn(
         "[vinext] middleware.ts is deprecated in Next.js 16. " +
-          "Rename to proxy.ts and export a default function.",
+          "Rename to proxy.ts and export a default or named proxy function.",
       );
       return fullPath;
     }
@@ -192,12 +237,10 @@ export async function runMiddleware(
   // Load the middleware module via Vite's SSR module loader
   const mod = await server.ssrLoadModule(middlewarePath);
 
-  // Accept: default export, named "proxy" (Next.js 16), or named "middleware"
-  const middlewareFn = mod.default ?? mod.proxy ?? mod.middleware;
-  if (typeof middlewareFn !== "function") {
-    // No proxy/middleware function exported — continue as normal
-    return { continue: true };
-  }
+  // Resolve the handler based on file type (proxy.ts vs middleware.ts).
+  // Throws if the file doesn't export a valid function, matching Next.js behavior.
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+  const middlewareFn = resolveMiddlewareHandler(mod, middlewarePath);
 
   // Check matcher config
   const config = mod.config;
@@ -257,13 +300,13 @@ export async function runMiddleware(
   // Check for x-middleware-next header (NextResponse.next())
   if (response.headers.get("x-middleware-next") === "1") {
     // Continue to the route, but apply any headers the middleware set
-    const responseHeaders = new Headers();
+     const responseHeaders = new Headers();
     for (const [key, value] of response.headers) {
       if (
         key !== "x-middleware-next" &&
         key !== "x-middleware-rewrite"
       ) {
-        responseHeaders.set(key, value);
+        responseHeaders.append(key, value);
       }
     }
     return { continue: true, responseHeaders };
@@ -288,7 +331,7 @@ export async function runMiddleware(
     const responseHeaders = new Headers();
     for (const [key, value] of response.headers) {
       if (key !== "x-middleware-rewrite") {
-        responseHeaders.set(key, value);
+        responseHeaders.append(key, value);
       }
     }
     // Parse the rewrite URL — may be absolute or relative

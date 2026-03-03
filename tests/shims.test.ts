@@ -266,6 +266,29 @@ describe("next/headers shim", () => {
     expect(ctx.headers.get("cookie")).toBe("a=1; b=2");
   });
 
+  it("headersContextFromRequest returns mutable headers (not the immutable Request.headers)", async () => {
+    // In Cloudflare Workers, Request.headers is immutable. applyMiddlewareRequestHeaders
+    // needs ctx.headers.set() after middleware runs, so the context must hold a mutable
+    // copy, not the original Headers reference.
+    const { headersContextFromRequest } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+    const req = new Request("https://example.com", {
+      headers: { "x-custom": "original" },
+    });
+    const ctx = headersContextFromRequest(req);
+
+    // Must be a separate, mutable copy — not the same reference
+    expect(ctx.headers).not.toBe(req.headers);
+
+    // Must be writable without throwing
+    expect(() => ctx.headers.set("x-custom", "modified")).not.toThrow();
+    expect(ctx.headers.get("x-custom")).toBe("modified");
+
+    // Original request headers must be unaffected
+    expect(req.headers.get("x-custom")).toBe("original");
+  });
+
   it("throws when called outside request context", async () => {
     const { headers, cookies } = await import(
       "../packages/vinext/src/shims/headers.js"
@@ -1434,6 +1457,145 @@ describe("middleware runner", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Middleware/proxy export validation tests
+// Ported from Next.js: test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+
+describe("middleware/proxy export validation", () => {
+  it("isProxyFile returns true for proxy files", async () => {
+    const { isProxyFile } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(isProxyFile("/app/proxy.ts")).toBe(true);
+    expect(isProxyFile("/app/proxy.js")).toBe(true);
+    expect(isProxyFile("/app/proxy.mjs")).toBe(true);
+    expect(isProxyFile("/app/src/proxy.ts")).toBe(true);
+  });
+
+  it("isProxyFile returns false for middleware files", async () => {
+    const { isProxyFile } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(isProxyFile("/app/middleware.ts")).toBe(false);
+    expect(isProxyFile("/app/middleware.js")).toBe(false);
+    expect(isProxyFile("/app/middleware.mjs")).toBe(false);
+    expect(isProxyFile("/app/src/middleware.ts")).toBe(false);
+  });
+
+  it("resolveMiddlewareHandler: proxy.ts with named proxy export", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const fn = () => {};
+    const handler = resolveMiddlewareHandler({ proxy: fn }, "/app/proxy.ts");
+    expect(handler).toBe(fn);
+  });
+
+  it("resolveMiddlewareHandler: proxy.ts with default export", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const fn = () => {};
+    const handler = resolveMiddlewareHandler({ default: fn }, "/app/proxy.ts");
+    expect(handler).toBe(fn);
+  });
+
+  it("resolveMiddlewareHandler: proxy.ts prefers named proxy over default", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const proxyFn = () => {};
+    const defaultFn = () => {};
+    const handler = resolveMiddlewareHandler(
+      { proxy: proxyFn, default: defaultFn },
+      "/app/proxy.ts",
+    );
+    expect(handler).toBe(proxyFn);
+  });
+
+  it("resolveMiddlewareHandler: proxy.ts with default arrow function export", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const fn = () => {};
+    const handler = resolveMiddlewareHandler({ default: fn }, "/app/proxy.ts");
+    expect(handler).toBe(fn);
+  });
+
+  it("resolveMiddlewareHandler: proxy.ts throws when only 'middleware' is exported (wrong name)", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(() =>
+      resolveMiddlewareHandler({ middleware: () => {} }, "/app/proxy.ts"),
+    ).toThrow('must export a function named `proxy` or a `default` function');
+  });
+
+  it("resolveMiddlewareHandler: proxy.ts throws when export is aliased to wrong name", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(() =>
+      resolveMiddlewareHandler({ handler: () => {} }, "/app/proxy.ts"),
+    ).toThrow('must export a function named `proxy` or a `default` function');
+  });
+
+  it("resolveMiddlewareHandler: proxy.ts throws when no exports", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(() =>
+      resolveMiddlewareHandler({}, "/app/proxy.ts"),
+    ).toThrow('must export a function named `proxy` or a `default` function');
+  });
+
+  it("resolveMiddlewareHandler: proxy.ts throws when export is not a function", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(() =>
+      resolveMiddlewareHandler({ proxy: "not a function" }, "/app/proxy.ts"),
+    ).toThrow('must export a function named `proxy` or a `default` function');
+  });
+
+  it("resolveMiddlewareHandler: middleware.ts with named middleware export", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const fn = () => {};
+    const handler = resolveMiddlewareHandler({ middleware: fn }, "/app/middleware.ts");
+    expect(handler).toBe(fn);
+  });
+
+  it("resolveMiddlewareHandler: middleware.ts with default export", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    const fn = () => {};
+    const handler = resolveMiddlewareHandler({ default: fn }, "/app/middleware.ts");
+    expect(handler).toBe(fn);
+  });
+
+  it("resolveMiddlewareHandler: middleware.ts throws when only 'proxy' is exported (wrong name)", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(() =>
+      resolveMiddlewareHandler({ proxy: () => {} }, "/app/middleware.ts"),
+    ).toThrow('must export a function named `middleware` or a `default` function');
+  });
+
+  it("resolveMiddlewareHandler: middleware.ts throws when no exports", async () => {
+    const { resolveMiddlewareHandler } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+    expect(() =>
+      resolveMiddlewareHandler({}, "/app/middleware.ts"),
+    ).toThrow('must export a function named `middleware` or a `default` function');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // matchPattern / matchesMiddleware unit tests
 
 describe("middleware matcher patterns", () => {
@@ -1822,15 +1984,16 @@ describe("middleware bypass prevention", () => {
     const headers = [
       { source: "/api/(.*)", headers: [{ key: "X-Custom", value: "true" }] },
     ];
+    const reqCtx = { headers: new Headers(), cookies: {}, query: new URLSearchParams(), host: "localhost" };
     // Decoded path should match
     const decoded = normalizePath(decodeURIComponent("/%61pi/hello"));
     expect(decoded).toBe("/api/hello");
-    const result = matchHeaders(decoded, headers);
+    const result = matchHeaders(decoded, headers, reqCtx);
     expect(result).toHaveLength(1);
     expect(result[0].key).toBe("X-Custom");
 
     // Raw encoded path must NOT match
-    const rawResult = matchHeaders("/%61pi/hello", headers);
+    const rawResult = matchHeaders("/%61pi/hello", headers, reqCtx);
     expect(rawResult).toHaveLength(0);
   });
 
@@ -2013,6 +2176,30 @@ describe("double-encoded path handling in middleware", () => {
     expect(mwPathname).not.toBe("/%2564ashboard");
     // It must NOT be double-decoded to /dashboard
     expect(mwPathname).not.toBe("/dashboard");
+  });
+
+  it("runMiddleware accepts named proxy export", async () => {
+    const { runMiddleware } = await import(
+      "../packages/vinext/src/server/middleware.js"
+    );
+
+    const mockServer = {
+      ssrLoadModule: async () => ({
+        proxy: () => {
+          const response = new Response(null, { status: 307 });
+          response.headers.set("location", "/login");
+          return response;
+        },
+        config: { matcher: ["/protected"] },
+      }),
+    };
+
+    const request = new Request("http://localhost/protected");
+    const result = await runMiddleware(mockServer as any, "/tmp/proxy.js", request);
+
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).toContain("/login");
+    expect(result.redirectStatus).toBe(307);
   });
 
   it("app-router-entry.ts does not double-decode (delegates to RSC handler)", async () => {
@@ -2646,6 +2833,30 @@ describe("matchConfigPattern", () => {
     expect(matchConfigPattern("/blog/intro.md", "/docs/:path*.md")).toBeNull();
   });
 
+  it("matches :param with literal suffix (e.g. /:slug.md)", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/index.js"
+    );
+    // Should match URLs with the .md suffix and extract the param
+    expect(matchConfigPattern("/hello-world.md", "/:slug.md")).toEqual({ slug: "hello-world" });
+    expect(matchConfigPattern("/my-post.md", "/:slug.md")).toEqual({ slug: "my-post" });
+    // Should NOT match URLs without .md suffix
+    expect(matchConfigPattern("/", "/:slug.md")).toBeNull();
+    expect(matchConfigPattern("/hello-world", "/:slug.md")).toBeNull();
+    expect(matchConfigPattern("/hello-world.txt", "/:slug.md")).toBeNull();
+    // Should NOT match paths with extra segments
+    expect(matchConfigPattern("/blog/hello-world.md", "/:slug.md")).toBeNull();
+  });
+
+  it("matches :param with literal suffix via config-matchers module", async () => {
+    const { matchConfigPattern } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    expect(matchConfigPattern("/hello-world.md", "/:slug.md")).toEqual({ slug: "hello-world" });
+    expect(matchConfigPattern("/", "/:slug.md")).toBeNull();
+    expect(matchConfigPattern("/hello-world", "/:slug.md")).toBeNull();
+  });
+
   it("still matches plain :path* catch-all (no suffix) correctly", async () => {
     const { matchConfigPattern } = await import(
       "../packages/vinext/src/index.js"
@@ -3180,6 +3391,92 @@ describe("checkHasConditions", () => {
   });
 });
 
+describe("matchHeaders", () => {
+  function makeCtx(overrides: Partial<{
+    headers: Record<string, string>;
+    cookies: Record<string, string>;
+    query: Record<string, string>;
+    host: string;
+  }> = {}) {
+    const headers = new Headers(overrides.headers ?? {});
+    if (overrides.cookies) {
+      headers.set("cookie", Object.entries(overrides.cookies).map(([k, v]) => `${k}=${v}`).join("; "));
+    }
+    const query = new URLSearchParams(overrides.query ?? {});
+    return {
+      headers,
+      cookies: overrides.cookies ?? {},
+      query,
+      host: overrides.host ?? "localhost",
+    };
+  }
+
+  it("applies headers when has header condition is satisfied", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules: any[] = [
+      {
+        source: "/about",
+        has: [{ type: "header", key: "x-user-tier", value: "pro" }],
+        headers: [{ key: "x-conditional-header", value: "enabled" }],
+      },
+    ];
+
+    const matched = matchHeaders("/about", rules, makeCtx({ headers: { "x-user-tier": "pro" } }));
+    expect(matched).toEqual([{ key: "x-conditional-header", value: "enabled" }]);
+  });
+
+  it("does not apply headers when missing cookie condition fails", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules: any[] = [
+      {
+        source: "/about",
+        missing: [{ type: "cookie", key: "no-config-header" }],
+        headers: [{ key: "x-conditional-header", value: "enabled" }],
+      },
+    ];
+
+    const matched = matchHeaders("/about", rules, makeCtx({ cookies: { "no-config-header": "1" } }));
+    expect(matched).toEqual([]);
+  });
+
+  it("applies headers when has query condition is satisfied", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules: any[] = [
+      {
+        source: "/about",
+        has: [{ type: "query", key: "preview", value: "1" }],
+        headers: [{ key: "x-preview-header", value: "true" }],
+      },
+    ];
+
+    const matched = matchHeaders("/about", rules, makeCtx({ query: { preview: "1" } }));
+    expect(matched).toEqual([{ key: "x-preview-header", value: "true" }]);
+  });
+
+  it("skips conditional header rule when has condition is not met", async () => {
+    const { matchHeaders } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+    const rules: any[] = [
+      {
+        source: "/about",
+        has: [{ type: "header", key: "x-user-tier", value: "pro" }],
+        headers: [{ key: "x-conditional-header", value: "enabled" }],
+      },
+    ];
+
+    // Request without the required header should not match
+    const matched = matchHeaders("/about", rules, makeCtx());
+    expect(matched).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // isExternalUrl unit tests (external rewrite detection)
 
@@ -3430,6 +3727,8 @@ describe("proxyExternalRequest", () => {
 // matchRewrite + isExternalUrl integration (config-matchers)
 
 describe("matchRewrite with external URLs", () => {
+  const emptyCtx = { headers: new Headers(), cookies: {}, query: new URLSearchParams(), host: "localhost" };
+
   it("returns full external URL when destination is external", async () => {
     const { matchRewrite, isExternalUrl } = await import(
       "../packages/vinext/src/config/config-matchers.js"
@@ -3437,7 +3736,7 @@ describe("matchRewrite with external URLs", () => {
     const rewrites = [
       { source: "/ph/:path*", destination: "https://us.i.posthog.com/:path*" },
     ];
-    const result = matchRewrite("/ph/decide", rewrites);
+    const result = matchRewrite("/ph/decide", rewrites, emptyCtx);
     expect(result).toBe("https://us.i.posthog.com/decide");
     expect(isExternalUrl(result!)).toBe(true);
   });
@@ -3449,7 +3748,7 @@ describe("matchRewrite with external URLs", () => {
     const rewrites = [
       { source: "/ph/static/:path*", destination: "https://us-assets.i.posthog.com/static/:path*" },
     ];
-    const result = matchRewrite("/ph/static/array.js", rewrites);
+    const result = matchRewrite("/ph/static/array.js", rewrites, emptyCtx);
     expect(result).toBe("https://us-assets.i.posthog.com/static/array.js");
     expect(isExternalUrl(result!)).toBe(true);
   });
@@ -3461,7 +3760,7 @@ describe("matchRewrite with external URLs", () => {
     const rewrites = [
       { source: "/posts/:id", destination: "/blog/:id" },
     ];
-    const result = matchRewrite("/posts/hello", rewrites);
+    const result = matchRewrite("/posts/hello", rewrites, emptyCtx);
     expect(result).toBe("/blog/hello");
     expect(isExternalUrl(result!)).toBe(false);
   });
@@ -3512,6 +3811,8 @@ describe("sanitizeDestination", () => {
 // Catch-all redirect destination sanitization
 
 describe("open redirect prevention in catch-all redirects", () => {
+  const emptyCtx = { headers: new Headers(), cookies: {}, query: new URLSearchParams(), host: "localhost" };
+
   it("matchRedirect sanitizes decoded %2F that would produce //evil.com", async () => {
     const { matchRedirect } = await import(
       "../packages/vinext/src/config/config-matchers.js"
@@ -3523,7 +3824,7 @@ describe("open redirect prevention in catch-all redirects", () => {
     const redirects = [
       { source: "/old/:path*", destination: "/:path*", permanent: false },
     ];
-    const result = matchRedirect("/old/evil.com", redirects);
+    const result = matchRedirect("/old/evil.com", redirects, emptyCtx);
     expect(result).not.toBeNull();
     expect(result!.destination).toBe("/evil.com");
     // Verify it does NOT start with // (protocol-relative)
@@ -3538,7 +3839,7 @@ describe("open redirect prevention in catch-all redirects", () => {
       { source: "/old/:path*", destination: "/:path*", permanent: false },
     ];
     // Even if an already-decoded path somehow contains //, the sanitizer should handle it
-    const result = matchRedirect("/old//evil.com", redirects);
+    const result = matchRedirect("/old//evil.com", redirects, emptyCtx);
     expect(result).not.toBeNull();
     expect(result!.destination.startsWith("//")).toBe(false);
   });
@@ -3550,7 +3851,7 @@ describe("open redirect prevention in catch-all redirects", () => {
     const redirects = [
       { source: "/go/:path*", destination: "https://example.com/:path*", permanent: false },
     ];
-    const result = matchRedirect("/go/page", redirects);
+    const result = matchRedirect("/go/page", redirects, emptyCtx);
     expect(result).not.toBeNull();
     expect(result!.destination).toBe("https://example.com/page");
   });
@@ -3564,7 +3865,7 @@ describe("open redirect prevention in catch-all redirects", () => {
     ];
     // In the real request flow, the entry point decodes and normalizePath
     // collapses //. Test with already-decoded path.
-    const result = matchRewrite("/old/evil.com", rewrites);
+    const result = matchRewrite("/old/evil.com", rewrites, emptyCtx);
     expect(result).not.toBeNull();
     expect(result!).toBe("/evil.com");
     expect(result!.startsWith("//")).toBe(false);
@@ -4909,6 +5210,18 @@ describe("next/amp shim", () => {
   });
 });
 
+describe("next/compat/router shim", () => {
+  it("exports useRouter as a function", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/compat-router.js"
+    );
+    // useRouter should be a named export, not a default export (unlike next/router).
+    // Returns null in App Router context instead of throwing.
+    expect(typeof mod.useRouter).toBe("function");
+    expect((mod as Record<string, unknown>).default).toBeUndefined();
+  });
+});
+
 describe("Pages Router router helpers", () => {
   describe("isExternalUrl", () => {
     it("detects https:// as external", () => {
@@ -5188,6 +5501,30 @@ describe("next/image enhancements", () => {
     // unoptimized=true should serve the raw src, not the optimization endpoint
     expect(result.props.src).toBe("/photo.jpg");
     expect(result.props.src).not.toContain("/_vinext/image");
+  });
+
+  it("SVG src auto-skips optimization endpoint (default behavior)", async () => {
+    const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+    const result = getImageProps({
+      src: "/logo.svg",
+      alt: "SVG logo",
+      width: 200,
+      height: 200,
+    });
+    // By default (dangerouslyAllowSVG not set), .svg sources bypass the optimizer
+    expect(result.props.src).toBe("/logo.svg");
+    expect(result.props.src).not.toContain("/_vinext/image");
+  });
+
+  it("non-SVG src still uses optimization endpoint", async () => {
+    const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+    const result = getImageProps({
+      src: "/photo.png",
+      alt: "PNG photo",
+      width: 256,
+      height: 256,
+    });
+    expect(result.props.src).toContain("/_vinext/image");
   });
 });
 
@@ -5726,6 +6063,23 @@ describe("isSafeImageContentType", () => {
     expect(isSafeImageContentType("Image/JPEG")).toBe(true);
     expect(isSafeImageContentType("IMAGE/SVG+XML")).toBe(false);
   });
+
+  it("allows SVG when dangerouslyAllowSVG is true", async () => {
+    const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(isSafeImageContentType("image/svg+xml", true)).toBe(true);
+  });
+
+  it("allows SVG with parameters when dangerouslyAllowSVG is true", async () => {
+    const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(isSafeImageContentType("image/svg+xml; charset=utf-8", true)).toBe(true);
+  });
+
+  it("still rejects non-image types when dangerouslyAllowSVG is true", async () => {
+    const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(isSafeImageContentType("text/html", true)).toBe(false);
+    expect(isSafeImageContentType("application/javascript", true)).toBe(false);
+    expect(isSafeImageContentType(null, true)).toBe(false);
+  });
 });
 
 describe("handleImageOptimization", () => {
@@ -5922,6 +6276,114 @@ describe("handleImageOptimization", () => {
     expect(response.status).toBe(200);
     // Should override to the negotiated format, not pass through text/html
     expect(response.headers.get("Content-Type")).toBe("image/webp");
+  });
+
+  it("allows SVG passthrough with dangerouslyAllowSVG: true", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const handlers = {
+      fetchAsset: async () => new Response('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>', {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: true });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>');
+    expect(response.headers.get("Content-Type")).toBe("image/svg+xml");
+  });
+
+  it("still blocks SVG when dangerouslyAllowSVG is false", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const handlers = {
+      fetchAsset: async () => new Response("<svg></svg>", {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: false });
+    expect(response.status).toBe(400);
+  });
+
+  it("SVG passthrough skips transformImage", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    let transformCalled = false;
+    const handlers = {
+      fetchAsset: async () => new Response("<svg></svg>", {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+      transformImage: async () => {
+        transformCalled = true;
+        return new Response("transformed");
+      },
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: true });
+    expect(response.status).toBe(200);
+    expect(transformCalled).toBe(false);
+    expect(await response.text()).toBe("<svg></svg>");
+  });
+
+  it("applies security headers on SVG passthrough", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const handlers = {
+      fetchAsset: async () => new Response("<svg></svg>", {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: true });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Security-Policy")).toBe("script-src 'none'; frame-src 'none'; sandbox;");
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(response.headers.get("Content-Disposition")).toBe("inline");
+  });
+
+  it("applies custom contentDispositionType", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { contentDispositionType: "attachment" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Disposition")).toBe("attachment");
+  });
+
+  it("applies custom contentSecurityPolicy", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      }),
+    };
+    const customCSP = "default-src 'self'; script-src 'none';";
+    const response = await handleImageOptimization(request, handlers, undefined, { contentSecurityPolicy: customCSP });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Security-Policy")).toBe(customCSP);
+  });
+
+  it("default behavior unchanged when no imageConfig provided", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Security-Policy")).toBe("script-src 'none'; frame-src 'none'; sandbox;");
+    expect(response.headers.get("Content-Disposition")).toBe("inline");
   });
 });
 

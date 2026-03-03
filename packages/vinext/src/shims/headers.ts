@@ -190,7 +190,10 @@ export function headersContextFromRequest(request: Request): HeadersContext {
     }
   }
   return {
-    headers: request.headers,
+    // Copy into a mutable Headers instance. In Cloudflare Workers the original
+    // Request.headers is immutable; applyMiddlewareRequestHeaders() needs to
+    // call .set() on this object after middleware runs.
+    headers: new Headers(request.headers),
     cookies,
   };
 }

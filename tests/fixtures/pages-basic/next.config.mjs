@@ -45,6 +45,18 @@ const nextConfig = {
           },
         ],
       },
+      // Used by Vitest: pages-router.test.ts — has/missing conditions on headers
+      // Ported from PR #47 by @ibruno
+      {
+        source: "/about",
+        has: [{ type: "cookie", key: "logged-in" }],
+        headers: [{ key: "X-Auth-Only-Header", value: "1" }],
+      },
+      {
+        source: "/about",
+        missing: [{ type: "cookie", key: "logged-in" }],
+        headers: [{ key: "X-Guest-Only-Header", value: "1" }],
+      },
     ];
   },
 };

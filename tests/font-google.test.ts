@@ -157,6 +157,34 @@ describe("next/font/google shim", () => {
     }
   });
 
+  it("exports all Google Fonts as named exports", async () => {
+    const mod = await import("../packages/vinext/src/shims/font-google.js");
+    const fixturePath = path.join(process.cwd(), "tests/fixtures/google-fonts.json");
+    const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf-8")) as {
+      families: string[];
+    };
+    const toExportName = (family: string): string =>
+      family
+        .replace(/[^0-9A-Za-z]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .replace(/_+/g, "_");
+    const expected = fixture.families.map(toExportName).sort();
+    const nonFontExports = new Set([
+      "default",
+      "buildGoogleFontsUrl",
+      "getSSRFontLinks",
+      "getSSRFontStyles",
+      "getSSRFontPreloads",
+    ]);
+    const actual = Object.keys(mod)
+      .filter((name) => !nonFontExports.has(name))
+      .sort();
+    expect(actual).toEqual(expected);
+    for (const name of actual) {
+      expect(typeof (mod as any)[name]).toBe("function");
+    }
+  });
+
   // ── Security: CSS injection via font family names ──
 
   it("escapes single quotes in font family names", async () => {

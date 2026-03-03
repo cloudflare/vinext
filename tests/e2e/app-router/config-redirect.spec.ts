@@ -150,14 +150,37 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
   );
 
   // Ref: opennextjs-cloudflare headers.test.ts — has/missing conditions
-  // vinext matchHeaders() in config-matchers.ts only checks source pattern.
-  // Tests: ON-15 #6 in TRACKING.md
-  test.fixme(
-    "config headers with has/missing conditions",
-    async () => {
-      // Would test: header rule with has: [{ type: "cookie", key: "logged-in" }]
-      // only applies when the cookie is present in the request.
-      // Needs: has/missing support in matchHeaders(), matchRedirect(), matchRewrite()
-    },
-  );
+  test("config headers with has/missing conditions", async ({ request }) => {
+    const baseline = await request.get(`${BASE}/about`);
+    expect(baseline.status()).toBe(200);
+    expect(baseline.headers()["x-conditional-header"]).toBeUndefined();
+    expect(baseline.headers()["x-preview-header"]).toBeUndefined();
+
+    // has(header) + missing(cookie) => header should be applied
+    const withRequiredHeader = await request.get(`${BASE}/about`, {
+      headers: { "x-user-tier": "pro" },
+    });
+    expect(withRequiredHeader.status()).toBe(200);
+    expect(withRequiredHeader.headers()["x-conditional-header"]).toBe("enabled");
+
+    // same request + cookie that must be missing => header should not be applied
+    const blockedByMissingCondition = await request.get(`${BASE}/about`, {
+      headers: {
+        "x-user-tier": "pro",
+        "cookie": "no-config-header=1",
+      },
+    });
+    expect(blockedByMissingCondition.status()).toBe(200);
+    expect(blockedByMissingCondition.headers()["x-conditional-header"]).toBeUndefined();
+
+    // has(query) => header should be applied
+    const withPreviewQuery = await request.get(`${BASE}/about?preview=1`);
+    expect(withPreviewQuery.status()).toBe(200);
+    expect(withPreviewQuery.headers()["x-preview-header"]).toBe("true");
+
+    // unmatched query => header should not be applied
+    const withoutPreviewQuery = await request.get(`${BASE}/about?preview=0`);
+    expect(withoutPreviewQuery.status()).toBe(200);
+    expect(withoutPreviewQuery.headers()["x-preview-header"]).toBeUndefined();
+  });
 });

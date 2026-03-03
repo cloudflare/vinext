@@ -51,7 +51,8 @@ export async function pagesRouter(pagesDir: string): Promise<Route[]> {
 async function scanPageRoutes(pagesDir: string): Promise<Route[]> {
   const routes: Route[] = [];
 
-  for await (const file of glob("**/*.{tsx,ts,jsx,js}", { cwd: pagesDir, exclude: ["api", "**/_*"] })) {
+  // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
+  for await (const file of glob("**/*.{tsx,ts,jsx,js}", { cwd: pagesDir, exclude: (name: string) => name === "api" || name.startsWith("_") })) {
     const route = fileToRoute(file, pagesDir);
     if (route) routes.push(route);
   }

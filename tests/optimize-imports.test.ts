@@ -370,13 +370,15 @@ export { default as Icon } from "./icon";`,
       return `export { Button } from "./button";`;
     };
 
+    const cache = new Map();
+
     // First call — should parse the file
-    const map1 = _buildBarrelExportMap("cache-pkg", () => entryPath, readFile);
+    const map1 = _buildBarrelExportMap("cache-pkg", () => entryPath, readFile, cache);
     expect(map1).not.toBeNull();
     expect(callCount).toBe(1);
 
     // Second call with same entry path — should use cache, not read again
-    const map2 = _buildBarrelExportMap("cache-pkg", () => entryPath, readFile);
+    const map2 = _buildBarrelExportMap("cache-pkg", () => entryPath, readFile, cache);
     expect(map2).toBe(map1); // Same reference (cached)
     expect(callCount).toBe(1); // readFile not called again
   });

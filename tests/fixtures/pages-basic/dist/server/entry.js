@@ -432,7 +432,7 @@ function useRouter() {
   useEffect(() => {
     const onPopState = (e) => {
       setState(getPathnameAndQuery());
-      navigateClient(window.location.pathname + window.location.search).then(() => {
+      void navigateClient(window.location.pathname + window.location.search).then(() => {
         restoreScrollPosition$1(e.state);
       });
     };
@@ -572,7 +572,7 @@ if (typeof window !== "undefined") {
       if (!shouldContinue) return;
     }
     routerEvents.emit("routeChangeStart", appUrl);
-    navigateClient(browserUrl).then(() => {
+    void navigateClient(browserUrl).then(() => {
       routerEvents.emit("routeChangeComplete", appUrl);
       restoreScrollPosition$1(e.state);
       window.dispatchEvent(new CustomEvent("vinext:navigate"));
@@ -1620,6 +1620,11 @@ function middleware(request) {
   if (url.pathname === "/middleware-throw") {
     throw new Error("middleware crash");
   }
+  if (url.pathname === "/header-override") {
+    const headers = new Headers(request.headers);
+    headers.set("x-custom-injected", "from-middleware");
+    return NextResponse.next({ request: { headers } });
+  }
   return response;
 }
 const config = {
@@ -1669,10 +1674,10 @@ new URLSearchParams(_cachedSearch);
 function restoreScrollPosition(state) {
   if (state && typeof state === "object" && "__vinext_scrollY" in state) {
     const { __vinext_scrollX: x, __vinext_scrollY: y } = state;
-    Promise.resolve().then(() => {
+    void Promise.resolve().then(() => {
       const pending = window.__VINEXT_RSC_PENDING__ ?? null;
       if (pending) {
-        pending.then(() => {
+        void pending.then(() => {
           requestAnimationFrame(() => {
             window.scrollTo(x, y);
           });
@@ -1700,6 +1705,10 @@ if (!isServer) {
     originalReplaceState(data, unused, url);
     notifyListeners();
   };
+}
+const DANGEROUS_SCHEME_RE = /^[\s\u200B\uFEFF]*(javascript|data|vbscript)\s*:/i;
+function isDangerousScheme(url) {
+  return DANGEROUS_SCHEME_RE.test(url);
 }
 const LinkStatusContext = createContext({ pending: false });
 function resolveHref(href) {
@@ -1763,6 +1772,7 @@ function prefetchUrl(href) {
     if (typeof win.__VINEXT_RSC_NAVIGATE__ === "function") {
       fetch(rscUrl, {
         headers: { Accept: "text/x-component" },
+        credentials: "include",
         priority: "low",
         // @ts-expect-error — purpose is a valid fetch option in some browsers
         purpose: "prefetch"
@@ -1835,6 +1845,17 @@ function applyLocaleToHref(href, locale) {
 const Link = forwardRef(function Link2({ href, as, replace = false, prefetch: prefetchProp, scroll = true, children, onClick, onNavigate, ...rest }, forwardedRef) {
   const { locale, ...restWithoutLocale } = rest;
   const resolvedHref = as ?? resolveHref(href);
+  if (typeof resolvedHref === "string" && isDangerousScheme(resolvedHref)) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(`<Link> blocked dangerous href: ${resolvedHref}`);
+    }
+    const { passHref: _p2, ...safeProps } = restWithoutLocale;
+    return /* @__PURE__ */ jsxDEV("a", { ...safeProps, children }, void 0, false, {
+      fileName: "/home/runner/work/vinext/vinext/packages/vinext/src/shims/link.tsx",
+      lineNumber: 291,
+      columnNumber: 12
+    }, this);
+  }
   const localizedHref = applyLocaleToHref(resolvedHref, locale);
   const fullHref = withBasePath(localizedHref);
   const [pending, setPending] = useState(false);
@@ -1968,11 +1989,11 @@ const Link = forwardRef(function Link2({ href, as, replace = false, prefetch: pr
   const linkStatusValue = React.useMemo(() => ({ pending }), [pending]);
   return /* @__PURE__ */ jsxDEV(LinkStatusContext.Provider, { value: linkStatusValue, children: /* @__PURE__ */ jsxDEV("a", { ref: setRefs, href: fullHref, onClick: handleClick, ...anchorProps, children }, void 0, false, {
     fileName: "/home/runner/work/vinext/vinext/packages/vinext/src/shims/link.tsx",
-    lineNumber: 465,
+    lineNumber: 479,
     columnNumber: 7
   }, this) }, void 0, false, {
     fileName: "/home/runner/work/vinext/vinext/packages/vinext/src/shims/link.tsx",
-    lineNumber: 464,
+    lineNumber: 478,
     columnNumber: 5
   }, this);
 });
@@ -2311,7 +2332,7 @@ const page_7 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
   default: DynamicPage
 }, Symbol.toStringTag, { value: "Module" }));
 const ClientOnly = dynamic(
-  () => import("./assets/client-only-component-GBpKjLOL.js"),
+  () => import("./assets/client-only-component-C2Nk0WSE.js"),
   {
     ssr: false,
     loading: () => /* @__PURE__ */ jsxDEV("p", { "data-testid": "loading", children: "Loading client component..." }, void 0, false, {
@@ -2322,7 +2343,7 @@ const ClientOnly = dynamic(
   }
 );
 const ClientOnlyNoLoading = dynamic(
-  () => import("./assets/client-only-component-GBpKjLOL.js"),
+  () => import("./assets/client-only-component-C2Nk0WSE.js"),
   { ssr: false }
 );
 function DynamicSsrFalsePage() {
@@ -2578,7 +2599,7 @@ function MissingPost() {
     columnNumber: 10
   }, this);
 }
-async function getServerSideProps$4() {
+async function getServerSideProps$5() {
   return {
     notFound: true
   };
@@ -2586,7 +2607,7 @@ async function getServerSideProps$4() {
 const page_12 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: MissingPost,
-  getServerSideProps: getServerSideProps$4
+  getServerSideProps: getServerSideProps$5
 }, Symbol.toStringTag, { value: "Module" }));
 function RedirectXss() {
   return /* @__PURE__ */ jsxDEV("div", { children: "Should not render" }, void 0, false, {
@@ -2865,7 +2886,7 @@ const page_15 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
   default: ScriptTestPage
 }, Symbol.toStringTag, { value: "Module" }));
 let gsspCallCount = 0;
-async function getServerSideProps$3(ctx) {
+async function getServerSideProps$4(ctx) {
   gsspCallCount++;
   const serverQuery = {};
   for (const [k, v] of Object.entries(ctx.query)) {
@@ -2971,7 +2992,7 @@ function ShallowTestPage({ gsspCallId, serverQuery }) {
 const page_16 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: ShallowTestPage,
-  getServerSideProps: getServerSideProps$3
+  getServerSideProps: getServerSideProps$4
 }, Symbol.toStringTag, { value: "Module" }));
 function SSRPage({ timestamp, message }) {
   return /* @__PURE__ */ jsxDEV("div", { children: [
@@ -2999,7 +3020,7 @@ function SSRPage({ timestamp, message }) {
     columnNumber: 5
   }, this);
 }
-async function getServerSideProps$2() {
+async function getServerSideProps$3() {
   return {
     props: {
       timestamp: (/* @__PURE__ */ new Date()).toISOString(),
@@ -3010,7 +3031,7 @@ async function getServerSideProps$2() {
 const page_17 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: SSRPage,
-  getServerSideProps: getServerSideProps$2
+  getServerSideProps: getServerSideProps$3
 }, Symbol.toStringTag, { value: "Module" }));
 const LazyGreeting = lazy(
   () => new Promise((resolve) => {
@@ -3182,7 +3203,7 @@ function Post({ id }) {
     columnNumber: 5
   }, this);
 }
-async function getServerSideProps$1({ params }) {
+async function getServerSideProps$2({ params }) {
   return {
     props: {
       id: params.id
@@ -3192,7 +3213,7 @@ async function getServerSideProps$1({ params }) {
 const page_21 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Post,
-  getServerSideProps: getServerSideProps$1
+  getServerSideProps: getServerSideProps$2
 }, Symbol.toStringTag, { value: "Module" }));
 function Product({ pid, name }) {
   const router2 = useRouter();
@@ -3282,7 +3303,7 @@ function DocsPage({ slug }) {
     columnNumber: 5
   }, this);
 }
-async function getServerSideProps({
+async function getServerSideProps$1({
   params
 }) {
   return {
@@ -3294,6 +3315,49 @@ async function getServerSideProps({
 const page_23 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: DocsPage,
+  getServerSideProps: getServerSideProps$1
+}, Symbol.toStringTag, { value: "Module" }));
+function SignUpPage({ segments }) {
+  return /* @__PURE__ */ jsxDEV("main", { "data-testid": "sign-up-page", children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Sign Up" }, void 0, false, {
+      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx",
+      lineNumber: 4,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "sign-up-segments", children: [
+      "Segments: ",
+      segments.length
+    ] }, void 0, true, {
+      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx",
+      lineNumber: 5,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "sign-up-path", children: [
+      "Path: ",
+      segments.length > 0 ? segments.join("/") : "(root)"
+    ] }, void 0, true, {
+      fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx",
+      lineNumber: 6,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx",
+    lineNumber: 3,
+    columnNumber: 5
+  }, this);
+}
+async function getServerSideProps({
+  params
+}) {
+  return {
+    props: {
+      segments: params["sign-up"] ?? []
+    }
+  };
+}
+const page_24 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
+  __proto__: null,
+  default: SignUpPage,
   getServerSideProps
 }, Symbol.toStringTag, { value: "Module" }));
 function handler$3(_req, res) {
@@ -3473,7 +3537,8 @@ const pageRoutes = [
   { pattern: "/blog/:slug", isDynamic: true, params: ["slug"], module: page_20, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx" },
   { pattern: "/posts/:id", isDynamic: true, params: ["id"], module: page_21, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx" },
   { pattern: "/products/:pid", isDynamic: true, params: ["pid"], module: page_22, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx" },
-  { pattern: "/docs/:slug+", isDynamic: true, params: ["slug"], module: page_23, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx" }
+  { pattern: "/docs/:slug+", isDynamic: true, params: ["slug"], module: page_23, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx" },
+  { pattern: "/sign-up/:sign-up*", isDynamic: true, params: ["sign-up"], module: page_24, filePath: "/home/runner/work/vinext/vinext/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx" }
 ];
 const apiRoutes = [
   { pattern: "/api/binary", isDynamic: false, params: [], module: api_0 },
@@ -3484,10 +3549,6 @@ const apiRoutes = [
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  try {
-    normalizedUrl = decodeURIComponent(normalizedUrl);
-  } catch {
-  }
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
     if (params !== null) return { route, params };
@@ -4144,7 +4205,7 @@ function matchMiddlewarePattern(pathname, pattern) {
     if (re) return re.test(pathname);
   }
   var regexStr = "";
-  var tokenRe = /\/:([\w]+)\*|\/:([\w]+)\+|:([\w]+)|[.]|[^/:.]+|./g;
+  var tokenRe = /\/:([\w-]+)\*|\/:([\w-]+)\+|:([\w-]+)|[.]|[^/:.]+|./g;
   var tok;
   while ((tok = tokenRe.exec(pattern)) !== null) {
     if (tok[1] !== void 0) {
@@ -4193,7 +4254,13 @@ async function runMiddleware(request) {
   }
   var normalizedPathname = __normalizePath(decodedPathname);
   if (!matchesMiddleware(normalizedPathname, matcher)) return { continue: true };
-  var nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+  var mwRequest = request;
+  if (normalizedPathname !== url.pathname) {
+    var mwUrl = new URL(url);
+    mwUrl.pathname = normalizedPathname;
+    mwRequest = new Request(mwUrl, request);
+  }
+  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
   var response;
   try {
     response = await middlewareFn(nextRequest);
@@ -4205,7 +4272,7 @@ async function runMiddleware(request) {
   if (response.headers.get("x-middleware-next") === "1") {
     var rHeaders = new Headers();
     for (var [key, value] of response.headers) {
-      if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") rHeaders.set(key, value);
+      if (!key.startsWith("x-middleware-") || key.startsWith("x-middleware-request-")) rHeaders.append(key, value);
     }
     return { continue: true, responseHeaders: rHeaders };
   }
@@ -4217,7 +4284,7 @@ async function runMiddleware(request) {
   if (rewriteUrl) {
     var rwHeaders = new Headers();
     for (var [k, v] of response.headers) {
-      if (k !== "x-middleware-rewrite") rwHeaders.set(k, v);
+      if (!k.startsWith("x-middleware-") || k.startsWith("x-middleware-request-")) rwHeaders.append(k, v);
     }
     var rewritePath;
     try {

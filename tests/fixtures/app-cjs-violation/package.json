@@ -1,0 +1,13 @@
+{
+  "name": "app-cjs-violation-fixture",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "vite": "^7.3.1",
+    "vinext": "workspace:*",
+    "@vitejs/plugin-rsc": "^0.5.19",
+    "react-server-dom-webpack": "^19.2.4"
+  }
+}
