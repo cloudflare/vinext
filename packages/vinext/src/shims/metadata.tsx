@@ -11,20 +11,12 @@ import React from "react";
 // ---------------------------------------------------------------------------
 
 /**
- * Create a plain-object thenable. Same as the one in app-dev-server.ts.
- * Avoids Object.assign(Promise.resolve(obj), obj) which creates a Promise
- * instance that RSC production serializer rejects.
+ * Return a Promise resolving to a plain-object copy of params.
+ * See app-dev-server.ts for the full explanation — must be a real Promise
+ * (for React.use()) wrapping a spread copy (for RSC serializer).
  */
-function makeThenableParams<T extends Record<string, unknown>>(obj: T): T & PromiseLike<T> {
-  const resolved = Promise.resolve(obj);
-  const thenable = { ...obj };
-  Object.defineProperty(thenable, 'then', {
-    value: resolved.then.bind(resolved),
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-  return thenable as T & PromiseLike<T>;
+function makeThenableParams<T extends Record<string, unknown>>(obj: T): Promise<T> {
+  return Promise.resolve({ ...obj } as T);
 }
 
 export interface Viewport {

@@ -27,3 +27,4 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+*.tgz

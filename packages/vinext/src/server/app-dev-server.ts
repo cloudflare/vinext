@@ -245,24 +245,19 @@ function setNavigationContext(ctx) {
 // based on export const revalidate for testing purposes.
 // Production ISR is handled by prod-server.ts and the Cloudflare worker entry.
 
-// Create a plain-object thenable from a params/searchParams object.
-// Next.js 15+ passes params as Promises (\`await params\`), but pre-15 code
-// accesses them synchronously (\`params.id\`). We need an object that supports
-// both patterns. Using \`Object.assign(Promise.resolve(obj), obj)\` creates an
-// actual Promise instance, which the RSC production serializer rejects with
-// "Classes or null prototypes are not supported". Instead, we create a plain
-// object with a \`then\` method — \`await\` checks for \`.then()\`, so this works
-// as a thenable while remaining a plain object that RSC can serialize.
+// Return a Promise that resolves to a plain-object copy of params/searchParams.
+//
+// Two constraints must be satisfied simultaneously:
+// 1. matchPattern() returns Object.create(null) (null prototype).  The RSC
+//    serializer rejects null-prototype objects, so we spread to normalise.
+// 2. Next.js 15+ page components receive params as a Promise and unwrap it
+//    with React.use(params) or await params.  A plain object breaks use().
+//
+// Promise.resolve({...obj}) satisfies both: the RSC serializer handles
+// Promises via serializeThenable (creates an async $@ reference), and the
+// resolved value ({...obj}) has Object.prototype so serialization succeeds.
 function makeThenableParams(obj) {
-  const resolved = Promise.resolve(obj);
-  const thenable = { ...obj };
-  Object.defineProperty(thenable, 'then', {
-    value: resolved.then.bind(resolved),
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-  return thenable;
+  return Promise.resolve({ ...obj });
 }
 
 // djb2 hash — matches Next.js's stringHash for digest generation.
