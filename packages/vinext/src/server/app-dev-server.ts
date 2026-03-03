@@ -245,6 +245,20 @@ function setNavigationContext(ctx) {
 // based on export const revalidate for testing purposes.
 // Production ISR is handled by prod-server.ts and the Cloudflare worker entry.
 
+// Normalize null-prototype objects from matchPattern() into thenable objects
+// that work both as Promises (for Next.js 15+ async params) and as plain
+// objects with synchronous property access (for pre-15 code like params.id).
+//
+// matchPattern() uses Object.create(null), producing objects without
+// Object.prototype. The RSC serializer rejects these. Spreading ({...obj})
+// restores a normal prototype. Object.assign onto the Promise preserves
+// synchronous property access (params.id, params.slug) that existing
+// components and test fixtures rely on.
+function makeThenableParams(obj) {
+  const plain = { ...obj };
+  return Object.assign(Promise.resolve(plain), plain);
+}
+
 // djb2 hash — matches Next.js's stringHash for digest generation.
 // Produces a stable numeric string from error message + stack.
 function __errorDigest(str) {
@@ -637,8 +651,8 @@ async function buildPageElement(route, params, opts, searchParams) {
   // Build nested layout tree from outermost to innermost.
   // Next.js 16 passes params/searchParams as Promises (async pattern)
   // but pre-16 code accesses them as plain objects (params.id).
-  // We create a "thenable object" that works both ways.
-  const asyncParams = Object.assign(Promise.resolve(params), params);
+  // makeThenableParams() normalises null-prototype + preserves both patterns.
+  const asyncParams = makeThenableParams(params);
   const pageProps = { params: asyncParams };
   if (searchParams) {
     const spObj = {};
@@ -661,7 +675,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // approximation: pages with query params in the URL are almost always
     // dynamic, and this avoids false positives from React internals.
     if (hasSearchParams) markDynamicUsage();
-    pageProps.searchParams = Object.assign(Promise.resolve(spObj), spObj);
+    pageProps.searchParams = makeThenableParams(spObj);
   }
   let element = createElement(PageComponent, pageProps);
 
@@ -762,7 +776,7 @@ async function buildPageElement(route, params, opts, searchParams) {
         }
       }
 
-      const layoutProps = { children: element, params: Object.assign(Promise.resolve(params), params) };
+      const layoutProps = { children: element, params: makeThenableParams(params) };
 
       // Add parallel slot elements to the layout that defines them.
       // Each slot has a layoutIndex indicating which layout it belongs to.
@@ -784,7 +798,7 @@ async function buildPageElement(route, params, opts, searchParams) {
           }
 
           if (SlotPage) {
-            let slotElement = createElement(SlotPage, { params: Object.assign(Promise.resolve(slotParams), slotParams) });
+            let slotElement = createElement(SlotPage, { params: makeThenableParams(slotParams) });
             // Wrap with slot-specific layout if present.
             // In Next.js, @slot/layout.tsx wraps the slot's page content
             // before it is passed as a prop to the parent layout.
@@ -792,7 +806,7 @@ async function buildPageElement(route, params, opts, searchParams) {
             if (SlotLayout) {
               slotElement = createElement(SlotLayout, {
                 children: slotElement,
-                params: Object.assign(Promise.resolve(slotParams), slotParams),
+                params: makeThenableParams(slotParams),
               });
             }
             // Wrap with slot-specific loading if present
@@ -1966,7 +1980,7 @@ async function _handleRequest(request, __reqCtx) {
   // triggers renderHTTPAccessFallbackPage with ALL route layouts, but one of those
   // layouts itself throws notFound() during the fallback rendering (causing a 500).
   if (route.layouts && route.layouts.length > 0) {
-    const asyncParams = Object.assign(Promise.resolve(params), params);
+    const asyncParams = makeThenableParams(params);
     for (let li = route.layouts.length - 1; li >= 0; li--) {
       const LayoutComp = route.layouts[li]?.default;
       if (!LayoutComp) continue;
