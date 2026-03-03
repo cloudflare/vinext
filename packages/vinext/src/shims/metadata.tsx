@@ -10,6 +10,23 @@ import React from "react";
 // Viewport types and resolution
 // ---------------------------------------------------------------------------
 
+/**
+ * Create a plain-object thenable. Same as the one in app-dev-server.ts.
+ * Avoids Object.assign(Promise.resolve(obj), obj) which creates a Promise
+ * instance that RSC production serializer rejects.
+ */
+function makeThenableParams<T extends Record<string, unknown>>(obj: T): T & PromiseLike<T> {
+  const resolved = Promise.resolve(obj);
+  const thenable = { ...obj };
+  Object.defineProperty(thenable, 'then', {
+    value: resolved.then.bind(resolved),
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
+  return thenable as T & PromiseLike<T>;
+}
+
 export interface Viewport {
   /** Viewport width (default: "device-width") */
   width?: string | number;
@@ -40,7 +57,7 @@ export async function resolveModuleViewport(
   params: Record<string, string | string[]>,
 ): Promise<Viewport | null> {
   if (typeof mod.generateViewport === "function") {
-    const asyncParams = Object.assign(Promise.resolve(params), params);
+    const asyncParams = makeThenableParams(params);
     return await mod.generateViewport({ params: asyncParams });
   }
   if (mod.viewport && typeof mod.viewport === "object") {
@@ -267,9 +284,9 @@ export async function resolveModuleMetadata(
   if (typeof mod.generateMetadata === "function") {
     // Next.js 16 passes params/searchParams as Promises (async pattern).
     // Create thenable objects that work both as Promises and plain objects.
-    const asyncParams = Object.assign(Promise.resolve(params), params);
+    const asyncParams = makeThenableParams(params);
     const sp = searchParams ?? {};
-    const asyncSp = Object.assign(Promise.resolve(sp), sp);
+    const asyncSp = makeThenableParams(sp);
     return await mod.generateMetadata({ params: asyncParams, searchParams: asyncSp });
   }
   if (mod.metadata && typeof mod.metadata === "object") {

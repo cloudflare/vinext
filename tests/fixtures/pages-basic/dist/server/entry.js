@@ -1,7 +1,7 @@
 import React, { Children, isValidElement, useEffect, lazy, useState, Suspense, useCallback, useMemo, createContext, forwardRef, useRef } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { jsx, jsxs } from "react/jsx-runtime";
+import { jsxDEV } from "react/jsx-dev-runtime";
 let _ssrHeadElements = [];
 let _getSSRHeadElements = () => _ssrHeadElements;
 let _resetSSRHeadImpl = () => {
@@ -30,7 +30,9 @@ function reactElementToHTML(child) {
   const tag = child.type;
   if (!ALLOWED_HEAD_TAGS.has(tag)) {
     if (process.env.NODE_ENV !== "production") {
-      console.warn(`[vinext] <Head> ignoring disallowed tag <${tag}>. Only ${[...ALLOWED_HEAD_TAGS].join(", ")} are allowed.`);
+      console.warn(
+        `[vinext] <Head> ignoring disallowed tag <${tag}>. Only ${[...ALLOWED_HEAD_TAGS].join(", ")} are allowed.`
+      );
     }
     return "";
   }
@@ -44,8 +46,7 @@ function reactElementToHTML(child) {
       }
     } else if (key === "dangerouslySetInnerHTML") {
       const html = value;
-      if (html?.__html)
-        innerHTML = html.__html;
+      if (html?.__html) innerHTML = html.__html;
     } else if (key === "className") {
       attrs.push(`class="${escapeAttr(String(value))}"`);
     } else if (typeof value === "string") {
@@ -70,13 +71,10 @@ function escapeAttr(s) {
 function Head$1({ children }) {
   if (typeof window === "undefined") {
     Children.forEach(children, (child) => {
-      if (!isValidElement(child))
-        return;
-      if (typeof child.type !== "string")
-        return;
+      if (!isValidElement(child)) return;
+      if (typeof child.type !== "string") return;
       const html = reactElementToHTML(child);
-      if (html)
-        _getSSRHeadElements().push(html);
+      if (html) _getSSRHeadElements().push(html);
     });
     return null;
   }
@@ -84,12 +82,9 @@ function Head$1({ children }) {
     const elements = [];
     document.querySelectorAll("[data-vinext-head]").forEach((el) => el.remove());
     Children.forEach(children, (child) => {
-      if (!isValidElement(child))
-        return;
-      if (typeof child.type !== "string")
-        return;
-      if (!ALLOWED_HEAD_TAGS.has(child.type))
-        return;
+      if (!isValidElement(child)) return;
+      if (typeof child.type !== "string") return;
+      if (!ALLOWED_HEAD_TAGS.has(child.type)) return;
       const domEl = document.createElement(child.type);
       const props = child.props;
       for (const [key, value] of Object.entries(props)) {
@@ -114,10 +109,8 @@ function Head$1({ children }) {
 }
 let DynamicErrorBoundary;
 function getDynamicErrorBoundary() {
-  if (DynamicErrorBoundary)
-    return DynamicErrorBoundary;
-  if (!React.Component)
-    return null;
+  if (DynamicErrorBoundary) return DynamicErrorBoundary;
+  if (!React.Component) return null;
   DynamicErrorBoundary = class extends React.Component {
     constructor(props) {
       super(props);
@@ -157,8 +150,7 @@ function dynamic(loader, options) {
     }
     const LazyComponent2 = lazy(async () => {
       const mod = await loader();
-      if ("default" in mod)
-        return mod;
+      if ("default" in mod) return mod;
       return { default: mod };
     });
     const ClientSSRFalse = (props) => {
@@ -168,7 +160,11 @@ function dynamic(loader, options) {
         return LoadingComponent ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null }) : null;
       }
       const fallback = LoadingComponent ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null }) : null;
-      return React.createElement(Suspense, { fallback }, React.createElement(LazyComponent2, props));
+      return React.createElement(
+        Suspense,
+        { fallback },
+        React.createElement(LazyComponent2, props)
+      );
     };
     ClientSSRFalse.displayName = "DynamicClientSSRFalse";
     return ClientSSRFalse;
@@ -176,8 +172,7 @@ function dynamic(loader, options) {
   if (isServer$1) {
     const LazyServer = lazy(async () => {
       const mod = await loader();
-      if ("default" in mod)
-        return mod;
+      if ("default" in mod) return mod;
       return { default: mod };
     });
     const ServerDynamic = (props) => {
@@ -192,28 +187,26 @@ function dynamic(loader, options) {
   }
   const LazyComponent = lazy(async () => {
     const mod = await loader();
-    if ("default" in mod)
-      return mod;
+    if ("default" in mod) return mod;
     return { default: mod };
   });
   const ClientDynamic = (props) => {
     const fallback = LoadingComponent ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null }) : null;
-    return React.createElement(Suspense, { fallback }, React.createElement(LazyComponent, props));
+    return React.createElement(
+      Suspense,
+      { fallback },
+      React.createElement(LazyComponent, props)
+    );
   };
   ClientDynamic.displayName = "DynamicClient";
   return ClientDynamic;
 }
 function isValidModulePath(p) {
-  if (typeof p !== "string" || p.length === 0)
-    return false;
-  if (!p.startsWith("/") && !p.startsWith("./"))
-    return false;
-  if (p.startsWith("//"))
-    return false;
-  if (p.includes("://"))
-    return false;
-  if (p.includes(".."))
-    return false;
+  if (typeof p !== "string" || p.length === 0) return false;
+  if (!p.startsWith("/") && !p.startsWith("./")) return false;
+  if (p.startsWith("//")) return false;
+  if (p.includes("://")) return false;
+  if (p.includes("..")) return false;
   return true;
 }
 const __basePath = "";
@@ -227,8 +220,7 @@ function createRouterEvents() {
   const listeners = /* @__PURE__ */ new Map();
   return {
     on(event, handler2) {
-      if (!listeners.has(event))
-        listeners.set(event, /* @__PURE__ */ new Set());
+      if (!listeners.has(event)) listeners.set(event, /* @__PURE__ */ new Set());
       listeners.get(event).add(handler2);
     },
     off(event, handler2) {
@@ -241,8 +233,7 @@ function createRouterEvents() {
 }
 const routerEvents = createRouterEvents();
 function resolveUrl(url) {
-  if (typeof url === "string")
-    return url;
+  if (typeof url === "string") return url;
   let result = url.pathname ?? "/";
   if (url.query) {
     const params = new URLSearchParams(url.query);
@@ -251,23 +242,18 @@ function resolveUrl(url) {
   return result;
 }
 function applyNavigationLocale(url, locale) {
-  if (!locale || typeof window === "undefined")
-    return url;
+  if (!locale || typeof window === "undefined") return url;
   const defaultLocale = window.__VINEXT_DEFAULT_LOCALE__;
-  if (locale === defaultLocale)
-    return url;
-  if (url.startsWith(`/${locale}/`) || url === `/${locale}`)
-    return url;
+  if (locale === defaultLocale) return url;
+  if (url.startsWith(`/${locale}/`) || url === `/${locale}`) return url;
   return `/${locale}${url.startsWith("/") ? url : `/${url}`}`;
 }
 function isExternalUrl(url) {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 function isHashOnlyChange$1(href) {
-  if (href.startsWith("#"))
-    return true;
-  if (typeof window === "undefined")
-    return false;
+  if (href.startsWith("#")) return true;
+  if (typeof window === "undefined") return false;
   try {
     const current = new URL(window.location.href);
     const next = new URL(href, window.location.href);
@@ -282,12 +268,14 @@ function scrollToHash$1(hash) {
     return;
   }
   const el = document.getElementById(hash.slice(1));
-  if (el)
-    el.scrollIntoView({ behavior: "auto" });
+  if (el) el.scrollIntoView({ behavior: "auto" });
 }
 function saveScrollPosition() {
   const state = window.history.state ?? {};
-  window.history.replaceState({ ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY }, "");
+  window.history.replaceState(
+    { ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY },
+    ""
+  );
 }
 function restoreScrollPosition$1(state) {
   if (state && typeof state === "object" && "__vinext_scrollY" in state) {
@@ -313,8 +301,7 @@ function extractRouteParamNames(pattern) {
   for (const m of bracketMatches) {
     names.push(m[1]);
   }
-  if (names.length > 0)
-    return names;
+  if (names.length > 0) return names;
   const colonMatches = pattern.matchAll(/:([\w-]+)[+*]?/g);
   for (const m of colonMatches) {
     names.push(m[1]);
@@ -356,16 +343,14 @@ function getPathnameAndQuery() {
 }
 let _navInProgress = false;
 async function navigateClient(url) {
-  if (typeof window === "undefined")
-    return;
+  if (typeof window === "undefined") return;
   const win = window;
   const root = win.__VINEXT_ROOT__;
   if (!root) {
     window.location.href = url;
     return;
   }
-  if (_navInProgress)
-    return;
+  if (_navInProgress) return;
   _navInProgress = true;
   try {
     const res = await fetch(url, { headers: { Accept: "text/html" } });
@@ -461,69 +446,75 @@ function useRouter() {
     window.addEventListener("vinext:navigate", onNavigate);
     return () => window.removeEventListener("vinext:navigate", onNavigate);
   }, []);
-  const push = useCallback(async (url, _as, options) => {
-    const resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
-    if (isExternalUrl(resolved)) {
-      window.location.assign(resolved);
-      return true;
-    }
-    if (isHashOnlyChange$1(resolved)) {
-      const hash2 = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-      window.history.pushState({}, "", resolved.startsWith("#") ? resolved : withBasePath$1(resolved));
-      scrollToHash$1(hash2);
+  const push = useCallback(
+    async (url, _as, options) => {
+      const resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
+      if (isExternalUrl(resolved)) {
+        window.location.assign(resolved);
+        return true;
+      }
+      if (isHashOnlyChange$1(resolved)) {
+        const hash2 = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+        window.history.pushState({}, "", resolved.startsWith("#") ? resolved : withBasePath$1(resolved));
+        scrollToHash$1(hash2);
+        setState(getPathnameAndQuery());
+        window.dispatchEvent(new CustomEvent("vinext:navigate"));
+        return true;
+      }
+      saveScrollPosition();
+      const full = withBasePath$1(resolved);
+      routerEvents.emit("routeChangeStart", resolved);
+      window.history.pushState({}, "", full);
+      if (!options?.shallow) {
+        await navigateClient(full);
+      }
       setState(getPathnameAndQuery());
+      routerEvents.emit("routeChangeComplete", resolved);
+      const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+      if (hash) {
+        scrollToHash$1(hash);
+      } else if (options?.scroll !== false) {
+        window.scrollTo(0, 0);
+      }
       window.dispatchEvent(new CustomEvent("vinext:navigate"));
       return true;
-    }
-    saveScrollPosition();
-    const full = withBasePath$1(resolved);
-    routerEvents.emit("routeChangeStart", resolved);
-    window.history.pushState({}, "", full);
-    if (!options?.shallow) {
-      await navigateClient(full);
-    }
-    setState(getPathnameAndQuery());
-    routerEvents.emit("routeChangeComplete", resolved);
-    const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-    if (hash) {
-      scrollToHash$1(hash);
-    } else if (options?.scroll !== false) {
-      window.scrollTo(0, 0);
-    }
-    window.dispatchEvent(new CustomEvent("vinext:navigate"));
-    return true;
-  }, []);
-  const replace = useCallback(async (url, _as, options) => {
-    const resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
-    if (isExternalUrl(resolved)) {
-      window.location.replace(resolved);
-      return true;
-    }
-    if (isHashOnlyChange$1(resolved)) {
-      const hash2 = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-      window.history.replaceState({}, "", resolved.startsWith("#") ? resolved : withBasePath$1(resolved));
-      scrollToHash$1(hash2);
+    },
+    []
+  );
+  const replace = useCallback(
+    async (url, _as, options) => {
+      const resolved = applyNavigationLocale(resolveUrl(url), options?.locale);
+      if (isExternalUrl(resolved)) {
+        window.location.replace(resolved);
+        return true;
+      }
+      if (isHashOnlyChange$1(resolved)) {
+        const hash2 = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+        window.history.replaceState({}, "", resolved.startsWith("#") ? resolved : withBasePath$1(resolved));
+        scrollToHash$1(hash2);
+        setState(getPathnameAndQuery());
+        window.dispatchEvent(new CustomEvent("vinext:navigate"));
+        return true;
+      }
+      const full = withBasePath$1(resolved);
+      routerEvents.emit("routeChangeStart", resolved);
+      window.history.replaceState({}, "", full);
+      if (!options?.shallow) {
+        await navigateClient(full);
+      }
       setState(getPathnameAndQuery());
+      routerEvents.emit("routeChangeComplete", resolved);
+      const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
+      if (hash) {
+        scrollToHash$1(hash);
+      } else if (options?.scroll !== false) {
+        window.scrollTo(0, 0);
+      }
       window.dispatchEvent(new CustomEvent("vinext:navigate"));
       return true;
-    }
-    const full = withBasePath$1(resolved);
-    routerEvents.emit("routeChangeStart", resolved);
-    window.history.replaceState({}, "", full);
-    if (!options?.shallow) {
-      await navigateClient(full);
-    }
-    setState(getPathnameAndQuery());
-    routerEvents.emit("routeChangeComplete", resolved);
-    const hash = resolved.includes("#") ? resolved.slice(resolved.indexOf("#")) : "";
-    if (hash) {
-      scrollToHash$1(hash);
-    } else if (options?.scroll !== false) {
-      window.scrollTo(0, 0);
-    }
-    window.dispatchEvent(new CustomEvent("vinext:navigate"));
-    return true;
-  }, []);
+    },
+    []
+  );
   const back = useCallback(() => {
     window.history.back();
   }, []);
@@ -544,28 +535,31 @@ function useRouter() {
   const locales = typeof window === "undefined" ? _ssrState?.locales : window.__VINEXT_LOCALES__;
   const defaultLocale = typeof window === "undefined" ? _ssrState?.defaultLocale : window.__VINEXT_DEFAULT_LOCALE__;
   const route = typeof window !== "undefined" ? window.__NEXT_DATA__?.page ?? pathname : pathname;
-  const router2 = useMemo(() => ({
-    pathname,
-    route,
-    query,
-    asPath,
-    basePath: __basePath,
-    locale,
-    locales,
-    defaultLocale,
-    isReady: true,
-    isPreview: false,
-    isFallback: typeof window !== "undefined" && window.__NEXT_DATA__?.isFallback === true,
-    push,
-    replace,
-    back,
-    reload,
-    prefetch,
-    beforePopState: (cb) => {
-      _beforePopStateCb = cb;
-    },
-    events: routerEvents
-  }), [pathname, query, asPath, locale, locales, defaultLocale, push, replace, back, reload, prefetch, route]);
+  const router2 = useMemo(
+    () => ({
+      pathname,
+      route,
+      query,
+      asPath,
+      basePath: __basePath,
+      locale,
+      locales,
+      defaultLocale,
+      isReady: true,
+      isPreview: false,
+      isFallback: typeof window !== "undefined" && window.__NEXT_DATA__?.isFallback === true,
+      push,
+      replace,
+      back,
+      reload,
+      prefetch,
+      beforePopState: (cb) => {
+        _beforePopStateCb = cb;
+      },
+      events: routerEvents
+    }),
+    [pathname, query, asPath, locale, locales, defaultLocale, push, replace, back, reload, prefetch, route]
+  );
   return router2;
 }
 let _beforePopStateCb;
@@ -575,8 +569,7 @@ if (typeof window !== "undefined") {
     const appUrl = stripBasePath(window.location.pathname) + window.location.search;
     if (_beforePopStateCb !== void 0) {
       const shouldContinue = _beforePopStateCb({ url: appUrl, as: appUrl, options: { shallow: false } });
-      if (!shouldContinue)
-        return;
+      if (!shouldContinue) return;
     }
     routerEvents.emit("routeChangeStart", appUrl);
     void navigateClient(browserUrl).then(() => {
@@ -687,8 +680,7 @@ class MemoryCacheHandler {
   tagRevalidatedAt = /* @__PURE__ */ new Map();
   async get(key, _ctx) {
     const entry = this.store.get(key);
-    if (!entry)
-      return null;
+    if (!entry) return null;
     for (const tag of entry.tags) {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
       if (revalidatedAt && revalidatedAt >= entry.lastModified) {
@@ -792,8 +784,7 @@ function hasAuthHeaders(input, init) {
   return AUTH_HEADERS.some((name) => name in headers);
 }
 async function serializeBody(init) {
-  if (!init?.body)
-    return [];
+  if (!init?.body) return [];
   const bodyChunks = [];
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
@@ -819,8 +810,7 @@ async function serializeBody(init) {
     try {
       while (true) {
         const { done, value } = await reader.read();
-        if (done)
-          break;
+        if (done) break;
         if (typeof value === "string") {
           pushBodyChunk(value);
         } else {
@@ -850,14 +840,15 @@ async function serializeBody(init) {
     init._ogBody = init.body;
     for (const key of new Set(formData.keys())) {
       const values = formData.getAll(key);
-      const serializedValues = await Promise.all(values.map(async (val) => {
-        if (typeof val === "string")
-          return val;
-        if (val.size > MAX_CACHE_KEY_BODY_BYTES || totalBodyBytes + val.size > MAX_CACHE_KEY_BODY_BYTES) {
-          throw new BodyTooLargeForCacheKeyError();
-        }
-        return await val.text();
-      }));
+      const serializedValues = await Promise.all(
+        values.map(async (val) => {
+          if (typeof val === "string") return val;
+          if (val.size > MAX_CACHE_KEY_BODY_BYTES || totalBodyBytes + val.size > MAX_CACHE_KEY_BODY_BYTES) {
+            throw new BodyTooLargeForCacheKeyError();
+          }
+          return await val.text();
+        })
+      );
       pushBodyChunk(`${key}=${serializedValues.join(",")}`);
     }
   } else if (typeof init.body.arrayBuffer === "function") {
@@ -888,8 +879,7 @@ async function buildFetchCacheKey(input, init) {
     url = input.url;
     method = input.method || "GET";
   }
-  if (init?.method)
-    method = init.method;
+  if (init?.method) method = init.method;
   const headers = collectHeaders(input, init);
   const bodyChunks = await serializeBody(init);
   const cacheString = JSON.stringify([
@@ -1050,8 +1040,7 @@ function createPatchedFetch() {
   };
 }
 function stripNextFromInit(init) {
-  if (!init)
-    return init;
+  if (!init) return init;
   const castInit = init;
   const { next: _next, _ogBody, ...rest } = castInit;
   if (_ogBody !== void 0) {
@@ -1061,8 +1050,7 @@ function stripNextFromInit(init) {
 }
 const _PATCH_KEY = /* @__PURE__ */ Symbol.for("vinext.fetchCache.patchInstalled");
 function _ensurePatchInstalled() {
-  if (_g$3[_PATCH_KEY])
-    return;
+  if (_g$3[_PATCH_KEY]) return;
   _g$3[_PATCH_KEY] = true;
   globalThis.fetch = createPatchedFetch();
 }
@@ -1149,8 +1137,7 @@ function escapeCSSString(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, "\\a ").replace(/\r/g, "\\d ");
 }
 function sanitizeCSSVarName(name) {
-  if (/^--[a-zA-Z0-9_-]+$/.test(name))
-    return name;
+  if (/^--[a-zA-Z0-9_-]+$/.test(name)) return name;
   return void 0;
 }
 function sanitizeFallback(name) {
@@ -1170,8 +1157,7 @@ function sanitizeFallback(name) {
     "fangsong"
   ]);
   const trimmed = name.trim();
-  if (generics.has(trimmed))
-    return trimmed;
+  if (generics.has(trimmed)) return trimmed;
   return `'${escapeCSSString(trimmed)}'`;
 }
 let classCounter = 0;
@@ -1206,8 +1192,7 @@ function buildGoogleFontsUrl(family, options) {
   return `https://fonts.googleapis.com/css2?${params.toString()}`;
 }
 function injectFontStylesheet(url) {
-  if (injectedFonts.has(url))
-    return;
+  if (injectedFonts.has(url)) return;
   injectedFonts.add(url);
   if (typeof document !== "undefined") {
     const link = document.createElement("link");
@@ -1218,8 +1203,7 @@ function injectFontStylesheet(url) {
 }
 const injectedClassRules = /* @__PURE__ */ new Set();
 function injectClassNameRule(className, fontFamily) {
-  if (injectedClassRules.has(className))
-    return;
+  if (injectedClassRules.has(className)) return;
   injectedClassRules.add(className);
   const css = `.${className} { font-family: ${fontFamily}; }
 `;
@@ -1235,8 +1219,7 @@ function injectClassNameRule(className, fontFamily) {
 const injectedVariableRules = /* @__PURE__ */ new Set();
 const injectedRootVariables = /* @__PURE__ */ new Set();
 function injectVariableClassRule(variableClassName, cssVarName, fontFamily) {
-  if (injectedVariableRules.has(variableClassName))
-    return;
+  if (injectedVariableRules.has(variableClassName)) return;
   injectedVariableRules.add(variableClassName);
   let css = `.${variableClassName} { ${cssVarName}: ${fontFamily}; }
 `;
@@ -1268,14 +1251,10 @@ function getSSRFontPreloads$1() {
   return [...ssrFontPreloads$1];
 }
 function getFontMimeType(pathOrUrl) {
-  if (pathOrUrl.endsWith(".woff2"))
-    return "font/woff2";
-  if (pathOrUrl.endsWith(".woff"))
-    return "font/woff";
-  if (pathOrUrl.endsWith(".ttf"))
-    return "font/ttf";
-  if (pathOrUrl.endsWith(".otf"))
-    return "font/opentype";
+  if (pathOrUrl.endsWith(".woff2")) return "font/woff2";
+  if (pathOrUrl.endsWith(".woff")) return "font/woff";
+  if (pathOrUrl.endsWith(".ttf")) return "font/ttf";
+  if (pathOrUrl.endsWith(".otf")) return "font/opentype";
   return "font/woff2";
 }
 function extractFontUrlsFromCSS(css) {
@@ -1291,8 +1270,7 @@ function extractFontUrlsFromCSS(css) {
   return urls;
 }
 function collectFontPreloadsFromCSS(css) {
-  if (typeof document !== "undefined")
-    return;
+  if (typeof document !== "undefined") return;
   const urls = extractFontUrlsFromCSS(css);
   for (const href of urls) {
     if (!ssrFontPreloadHrefs.has(href)) {
@@ -1303,8 +1281,7 @@ function collectFontPreloadsFromCSS(css) {
 }
 const injectedSelfHosted = /* @__PURE__ */ new Set();
 function injectSelfHostedCSS(css) {
-  if (injectedSelfHosted.has(css))
-    return;
+  if (injectedSelfHosted.has(css)) return;
   injectedSelfHosted.add(css);
   collectFontPreloadsFromCSS(css);
   if (typeof document === "undefined") {
@@ -1345,16 +1322,17 @@ function createFontLoader(family) {
     };
   };
 }
-const googleFonts = new Proxy({}, {
-  get(_target, prop) {
-    if (prop === "__esModule")
-      return true;
-    if (prop === "default")
-      return googleFonts;
-    const family = prop.replace(/([a-z])([A-Z])/g, "$1 $2");
-    return createFontLoader(family);
+const googleFonts = new Proxy(
+  {},
+  {
+    get(_target, prop) {
+      if (prop === "__esModule") return true;
+      if (prop === "default") return googleFonts;
+      const family = prop.replace(/([a-z])([A-Z])/g, "$1 $2");
+      return createFontLoader(family);
+    }
   }
-});
+);
 const ssrFontStyles = [];
 const ssrFontPreloads = [];
 function getSSRFontStyles() {
@@ -1403,8 +1381,7 @@ class NextRequest extends Request {
    */
   get geo() {
     const country = this.headers.get("cf-ipcountry") ?? this.headers.get("x-vercel-ip-country") ?? void 0;
-    if (!country)
-      return void 0;
+    if (!country) return void 0;
     return {
       country,
       city: this.headers.get("cf-ipcity") ?? this.headers.get("x-vercel-ip-city") ?? void 0,
@@ -1532,8 +1509,7 @@ class RequestCookies {
     const cookie = this._headers.get("cookie") ?? "";
     for (const part of cookie.split(";")) {
       const eq = part.indexOf("=");
-      if (eq === -1)
-        continue;
+      if (eq === -1) continue;
       const name = part.slice(0, eq).trim();
       const value = part.slice(eq + 1).trim();
       map.set(name, value);
@@ -1585,24 +1561,18 @@ class ResponseCookies {
       validateCookieAttributeValue(options.domain, "Domain");
       parts.push(`Domain=${options.domain}`);
     }
-    if (options?.maxAge !== void 0)
-      parts.push(`Max-Age=${options.maxAge}`);
-    if (options?.expires)
-      parts.push(`Expires=${options.expires.toUTCString()}`);
-    if (options?.httpOnly)
-      parts.push("HttpOnly");
-    if (options?.secure)
-      parts.push("Secure");
-    if (options?.sameSite)
-      parts.push(`SameSite=${options.sameSite}`);
+    if (options?.maxAge !== void 0) parts.push(`Max-Age=${options.maxAge}`);
+    if (options?.expires) parts.push(`Expires=${options.expires.toUTCString()}`);
+    if (options?.httpOnly) parts.push("HttpOnly");
+    if (options?.secure) parts.push("Secure");
+    if (options?.sameSite) parts.push(`SameSite=${options.sameSite}`);
     this._headers.append("Set-Cookie", parts.join("; "));
     return this;
   }
   get(name) {
     for (const header of this._headers.getSetCookie()) {
       const eq = header.indexOf("=");
-      if (eq === -1)
-        continue;
+      if (eq === -1) continue;
       const cookieName = header.slice(0, eq);
       if (cookieName === name) {
         const semi = header.indexOf(";", eq);
@@ -1622,8 +1592,7 @@ class ResponseCookies {
     const entries = [];
     for (const header of this._headers.getSetCookie()) {
       const eq = header.indexOf("=");
-      if (eq === -1)
-        continue;
+      if (eq === -1) continue;
       const cookieName = header.slice(0, eq);
       const semi = header.indexOf(";", eq);
       const raw = header.slice(eq + 1, semi === -1 ? void 0 : semi);
@@ -1645,8 +1614,7 @@ class ResponseCookies {
     const entries = [];
     for (const header of this._headers.getSetCookie()) {
       const eq = header.indexOf("=");
-      if (eq === -1)
-        continue;
+      if (eq === -1) continue;
       const cookieName = header.slice(0, eq);
       const semi = header.indexOf(";", eq);
       const raw = header.slice(eq + 1, semi === -1 ? void 0 : semi);
@@ -1698,8 +1666,7 @@ function toRscUrl(href) {
   return normalizedPath + ".rsc" + query;
 }
 function getPrefetchCache() {
-  if (isServer)
-    return /* @__PURE__ */ new Map();
+  if (isServer) return /* @__PURE__ */ new Map();
   const win = window;
   if (!win.__VINEXT_RSC_PREFETCH_CACHE__) {
     win.__VINEXT_RSC_PREFETCH_CACHE__ = /* @__PURE__ */ new Map();
@@ -1707,8 +1674,7 @@ function getPrefetchCache() {
   return win.__VINEXT_RSC_PREFETCH_CACHE__;
 }
 function getPrefetchedUrls() {
-  if (isServer)
-    return /* @__PURE__ */ new Set();
+  if (isServer) return /* @__PURE__ */ new Set();
   const win = window;
   if (!win.__VINEXT_RSC_PREFETCHED_URLS__) {
     win.__VINEXT_RSC_PREFETCHED_URLS__ = /* @__PURE__ */ new Set();
@@ -1719,15 +1685,13 @@ function storePrefetchResponse(rscUrl, response) {
   const cache = getPrefetchCache();
   if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
     const oldest = cache.keys().next().value;
-    if (oldest !== void 0)
-      cache.delete(oldest);
+    if (oldest !== void 0) cache.delete(oldest);
   }
   cache.set(rscUrl, { response, timestamp: Date.now() });
 }
 const _listeners = /* @__PURE__ */ new Set();
 function notifyListeners() {
-  for (const fn of _listeners)
-    fn();
+  for (const fn of _listeners) fn();
 }
 let _cachedSearch = !isServer ? window.location.search : "";
 new URLSearchParams(_cachedSearch);
@@ -1751,11 +1715,6 @@ function restoreScrollPosition(state) {
     });
   }
 }
-var RedirectType;
-(function(RedirectType2) {
-  RedirectType2["push"] = "push";
-  RedirectType2["replace"] = "replace";
-})(RedirectType || (RedirectType = {}));
 if (!isServer) {
   window.addEventListener("popstate", (event) => {
     notifyListeners();
@@ -1778,8 +1737,7 @@ function isDangerousScheme(url) {
 }
 const LinkStatusContext = createContext({ pending: false });
 function resolveHref(href) {
-  if (typeof href === "string")
-    return href;
+  if (typeof href === "string") return href;
   let url = href.pathname ?? "/";
   if (href.query) {
     const params = new URLSearchParams(href.query);
@@ -1793,8 +1751,7 @@ function withBasePath(path) {
   }
 }
 function isHashOnlyChange(href) {
-  if (href.startsWith("#"))
-    return true;
+  if (href.startsWith("#")) return true;
   try {
     const current = new URL(window.location.href);
     const next = new URL(href, window.location.href);
@@ -1804,8 +1761,7 @@ function isHashOnlyChange(href) {
   }
 }
 function resolveRelativeHref(href) {
-  if (typeof window === "undefined")
-    return href;
+  if (typeof window === "undefined") return href;
   if (href.startsWith("/") || href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//")) {
     return href;
   }
@@ -1828,15 +1784,12 @@ function scrollToHash(hash) {
   }
 }
 function prefetchUrl(href) {
-  if (typeof window === "undefined")
-    return;
+  if (typeof window === "undefined") return;
   const fullHref = withBasePath(href);
-  if (fullHref.startsWith("http://") || fullHref.startsWith("https://") || fullHref.startsWith("//"))
-    return;
+  if (fullHref.startsWith("http://") || fullHref.startsWith("https://") || fullHref.startsWith("//")) return;
   const rscUrl = toRscUrl(fullHref);
   const prefetched = getPrefetchedUrls();
-  if (prefetched.has(rscUrl))
-    return;
+  if (prefetched.has(rscUrl)) return;
   prefetched.add(rscUrl);
   const schedule = window.requestIdleCallback ?? ((fn) => setTimeout(fn, 100));
   schedule(() => {
@@ -1869,26 +1822,27 @@ function prefetchUrl(href) {
 let sharedObserver = null;
 const observerCallbacks = /* @__PURE__ */ new WeakMap();
 function getSharedObserver() {
-  if (typeof window === "undefined" || typeof IntersectionObserver === "undefined")
-    return null;
-  if (sharedObserver)
-    return sharedObserver;
-  sharedObserver = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-      if (entry.isIntersecting) {
-        const callback = observerCallbacks.get(entry.target);
-        if (callback) {
-          callback();
-          sharedObserver?.unobserve(entry.target);
-          observerCallbacks.delete(entry.target);
+  if (typeof window === "undefined" || typeof IntersectionObserver === "undefined") return null;
+  if (sharedObserver) return sharedObserver;
+  sharedObserver = new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) {
+          const callback = observerCallbacks.get(entry.target);
+          if (callback) {
+            callback();
+            sharedObserver?.unobserve(entry.target);
+            observerCallbacks.delete(entry.target);
+          }
         }
       }
+    },
+    {
+      // Start prefetching when the link is within 250px of the viewport.
+      // This gives the browser a head start before the user scrolls to it.
+      rootMargin: "250px"
     }
-  }, {
-    // Start prefetching when the link is within 250px of the viewport.
-    // This gives the browser a head start before the user scrolls to it.
-    rootMargin: "250px"
-  });
+  );
   return sharedObserver;
 }
 function getDefaultLocale() {
@@ -1921,7 +1875,11 @@ const Link = forwardRef(function Link2({ href, as, replace = false, prefetch: pr
       console.warn(`<Link> blocked dangerous href: ${resolvedHref}`);
     }
     const { passHref: _p2, ...safeProps } = restWithoutLocale;
-    return jsx("a", { ...safeProps, children });
+    return /* @__PURE__ */ jsxDEV("a", { ...safeProps, children }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/packages/vinext/src/shims/link.tsx",
+      lineNumber: 291,
+      columnNumber: 12
+    }, this);
   }
   const localizedHref = applyLocaleToHref(resolvedHref, locale);
   const fullHref = withBasePath(localizedHref);
@@ -1935,24 +1893,21 @@ const Link = forwardRef(function Link2({ href, as, replace = false, prefetch: pr
   }, []);
   const internalRef = useRef(null);
   const shouldPrefetch = prefetchProp !== false;
-  const setRefs = useCallback((node) => {
-    internalRef.current = node;
-    if (typeof forwardedRef === "function")
-      forwardedRef(node);
-    else if (forwardedRef)
-      forwardedRef.current = node;
-  }, [forwardedRef]);
+  const setRefs = useCallback(
+    (node) => {
+      internalRef.current = node;
+      if (typeof forwardedRef === "function") forwardedRef(node);
+      else if (forwardedRef) forwardedRef.current = node;
+    },
+    [forwardedRef]
+  );
   useEffect(() => {
-    if (!shouldPrefetch || typeof window === "undefined")
-      return;
+    if (!shouldPrefetch || typeof window === "undefined") return;
     const node = internalRef.current;
-    if (!node)
-      return;
-    if (localizedHref.startsWith("http://") || localizedHref.startsWith("https://") || localizedHref.startsWith("//"))
-      return;
+    if (!node) return;
+    if (localizedHref.startsWith("http://") || localizedHref.startsWith("https://") || localizedHref.startsWith("//")) return;
     const observer = getSharedObserver();
-    if (!observer)
-      return;
+    if (!observer) return;
     observerCallbacks.set(node, () => prefetchUrl(localizedHref));
     observer.observe(node);
     return () => {
@@ -1961,10 +1916,8 @@ const Link = forwardRef(function Link2({ href, as, replace = false, prefetch: pr
     };
   }, [shouldPrefetch, localizedHref]);
   const handleClick = async (e) => {
-    if (onClick)
-      onClick(e);
-    if (e.defaultPrevented)
-      return;
+    if (onClick) onClick(e);
+    if (e.defaultPrevented) return;
     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
       return;
     }
@@ -1997,7 +1950,10 @@ const Link = forwardRef(function Link2({ href, as, replace = false, prefetch: pr
     }
     if (!replace) {
       const state = window.history.state ?? {};
-      window.history.replaceState({ ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY }, "");
+      window.history.replaceState(
+        { ...state, __vinext_scrollX: window.scrollX, __vinext_scrollY: window.scrollY },
+        ""
+      );
     }
     const absoluteHref = resolveRelativeHref(resolvedHref);
     const absoluteFullHref = withBasePath(absoluteHref);
@@ -2026,8 +1982,7 @@ const Link = forwardRef(function Link2({ href, as, replace = false, prefetch: pr
       try {
         await win.__VINEXT_RSC_NAVIGATE__(absoluteFullHref);
       } finally {
-        if (mountedRef.current)
-          setPending(false);
+        if (mountedRef.current) setPending(false);
       }
     } else {
       try {
@@ -2057,58 +2012,154 @@ const Link = forwardRef(function Link2({ href, as, replace = false, prefetch: pr
   };
   const { passHref: _p, ...anchorProps } = restWithoutLocale;
   const linkStatusValue = React.useMemo(() => ({ pending }), [pending]);
-  return jsx(LinkStatusContext.Provider, { value: linkStatusValue, children: jsx("a", { ref: setRefs, href: fullHref, onClick: handleClick, ...anchorProps, children }) });
+  return /* @__PURE__ */ jsxDEV(LinkStatusContext.Provider, { value: linkStatusValue, children: /* @__PURE__ */ jsxDEV("a", { ref: setRefs, href: fullHref, onClick: handleClick, ...anchorProps, children }, void 0, false, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/packages/vinext/src/shims/link.tsx",
+    lineNumber: 479,
+    columnNumber: 7
+  }, this) }, void 0, false, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/packages/vinext/src/shims/link.tsx",
+    lineNumber: 478,
+    columnNumber: 5
+  }, this);
 });
 function Home() {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx(Head$1, { children: /* @__PURE__ */ jsx("title", { children: "Hello vinext" }) }),
-    /* @__PURE__ */ jsx("h1", { children: "Hello, vinext!" }),
-    /* @__PURE__ */ jsx("p", { children: "This is a Pages Router app running on Vite." }),
-    /* @__PURE__ */ jsx(Link, { href: "/about", children: "Go to About" })
-  ] });
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV(Head$1, { children: /* @__PURE__ */ jsxDEV("title", { children: "Hello vinext" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+      lineNumber: 8,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+      lineNumber: 7,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("h1", { children: "Hello, vinext!" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+      lineNumber: 10,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { children: "This is a Pages Router app running on Vite." }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+      lineNumber: 11,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Link, { href: "/about", children: "Go to About" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+      lineNumber: 12,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/index.tsx",
+    lineNumber: 6,
+    columnNumber: 5
+  }, this);
 }
 const page_0 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Home
 }, Symbol.toStringTag, { value: "Module" }));
 function Custom404() {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { "data-testid": "error-title", children: "404 - Page Not Found" }),
-    /* @__PURE__ */ jsx("p", { "data-testid": "error-message", children: "Sorry, the page you are looking for does not exist." })
-  ] });
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { "data-testid": "error-title", children: "404 - Page Not Found" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/404.tsx",
+      lineNumber: 4,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "error-message", children: "Sorry, the page you are looking for does not exist." }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/404.tsx",
+      lineNumber: 5,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/404.tsx",
+    lineNumber: 3,
+    columnNumber: 5
+  }, this);
 }
 const page_1 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: Custom404
 }, Symbol.toStringTag, { value: "Module" }));
 function About() {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx(Head$1, { children: /* @__PURE__ */ jsx("title", { children: "About - vinext" }) }),
-    /* @__PURE__ */ jsx("h1", { children: "About" }),
-    /* @__PURE__ */ jsx("p", { children: "This is the about page." }),
-    /* @__PURE__ */ jsx(Link, { href: "/", children: "Back to Home" })
-  ] });
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV(Head$1, { children: /* @__PURE__ */ jsxDEV("title", { children: "About - vinext" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+      lineNumber: 8,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+      lineNumber: 7,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("h1", { children: "About" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+      lineNumber: 10,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { children: "This is the about page." }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+      lineNumber: 11,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Link, { href: "/", children: "Back to Home" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+      lineNumber: 12,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/about.tsx",
+    lineNumber: 6,
+    columnNumber: 5
+  }, this);
 }
 const page_2 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: About
 }, Symbol.toStringTag, { value: "Module" }));
 function HeavyComponent$1({ label }) {
-  return /* @__PURE__ */ jsxs("div", { className: "heavy-component", children: [
-    /* @__PURE__ */ jsx("h2", { children: "Heavy Component" }),
-    /* @__PURE__ */ jsx("p", { children: label ?? "I was dynamically imported!" })
-  ] });
+  return /* @__PURE__ */ jsxDEV("div", { className: "heavy-component", children: [
+    /* @__PURE__ */ jsxDEV("h2", { children: "Heavy Component" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/components/heavy.tsx",
+      lineNumber: 6,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { children: label ?? "I was dynamically imported!" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/components/heavy.tsx",
+      lineNumber: 7,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/components/heavy.tsx",
+    lineNumber: 5,
+    columnNumber: 5
+  }, this);
 }
 const heavy = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: HeavyComponent$1
 }, Symbol.toStringTag, { value: "Module" }));
 function AliasTestPage() {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Pages Alias Test" }),
-    /* @__PURE__ */ jsx("p", { children: "This page imports a component via tsconfig path alias @/" }),
-    /* @__PURE__ */ jsx(HeavyComponent$1, { label: "Loaded via alias" })
-  ] });
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Pages Alias Test" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
+      lineNumber: 6,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { children: "This page imports a component via tsconfig path alias @/" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
+      lineNumber: 7,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(HeavyComponent$1, { label: "Loaded via alias" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
+      lineNumber: 8,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/alias-test.tsx",
+    lineNumber: 5,
+    columnNumber: 5
+  }, this);
 }
 const page_3 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
@@ -2129,28 +2180,64 @@ function BeforePopStateTest() {
       router2.beforePopState(() => true);
     }
   }, [blocking, router2]);
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Before Pop State Test" }),
-    /* @__PURE__ */ jsx(Link, { href: "/about", "data-testid": "link-about", children: "Go to About" }),
-    /* @__PURE__ */ jsx(
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Before Pop State Test" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+      lineNumber: 31,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Link, { href: "/about", "data-testid": "link-about", children: "Go to About" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+      lineNumber: 32,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(
       "button",
       {
         "data-testid": "toggle-blocking",
         onClick: () => setBlocking(!blocking),
         children: blocking ? "Blocking: ON" : "Blocking: OFF"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+        lineNumber: 35,
+        columnNumber: 7
+      },
+      this
     ),
-    /* @__PURE__ */ jsx(
+    /* @__PURE__ */ jsxDEV(
       "button",
       {
         "data-testid": "enable-blocking",
         onClick: () => setBlocking(true),
         children: "Enable Blocking"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+        lineNumber: 41,
+        columnNumber: 7
+      },
+      this
     ),
-    /* @__PURE__ */ jsx("div", { "data-testid": "pop-attempts", children: popAttempts }),
-    /* @__PURE__ */ jsx("div", { "data-testid": "current-path", children: router2.asPath })
-  ] });
+    /* @__PURE__ */ jsxDEV("div", { "data-testid": "pop-attempts", children: popAttempts }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+      lineNumber: 47,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { "data-testid": "current-path", children: router2.asPath }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+      lineNumber: 48,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/before-pop-state-test.tsx",
+    lineNumber: 30,
+    columnNumber: 5
+  }, this);
 }
 const page_4 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
@@ -2167,10 +2254,14 @@ const page_6 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
 }, Symbol.toStringTag, { value: "Module" }));
 const { random } = __CJS__export_default__ || page_6;
 function Page() {
-  return /* @__PURE__ */ jsxs("div", { "data-testid": "cjs-basic", children: [
+  return /* @__PURE__ */ jsxDEV("div", { "data-testid": "cjs-basic", children: [
     "Random: ",
     random()
-  ] });
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/cjs/basic.tsx",
+    lineNumber: 4,
+    columnNumber: 10
+  }, this);
 }
 const page_5 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
@@ -2186,13 +2277,25 @@ function getConfig() {
 function ConfigTestPage() {
   const { publicRuntimeConfig } = getConfig();
   const appName = publicRuntimeConfig?.appName ?? "default-app";
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Config Test" }),
-    /* @__PURE__ */ jsxs("p", { id: "app-name", children: [
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Config Test" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/config-test.tsx",
+      lineNumber: 8,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { id: "app-name", children: [
       "App: ",
       appName
-    ] })
-  ] });
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/config-test.tsx",
+      lineNumber: 9,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/config-test.tsx",
+    lineNumber: 7,
+    columnNumber: 5
+  }, this);
 }
 const page_7 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
@@ -2200,63 +2303,155 @@ const page_7 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProper
 }, Symbol.toStringTag, { value: "Module" }));
 function CounterPage() {
   const [count, setCount] = useState(0);
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx(Head$1, { children: /* @__PURE__ */ jsx("title", { children: "Counter - vinext" }) }),
-    /* @__PURE__ */ jsx("h1", { children: "Counter Page" }),
-    /* @__PURE__ */ jsxs("p", { "data-testid": "count", children: [
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV(Head$1, { children: /* @__PURE__ */ jsxDEV("title", { children: "Counter - vinext" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      lineNumber: 10,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      lineNumber: 9,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("h1", { children: "Counter Page" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      lineNumber: 12,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "count", children: [
       "Count: ",
       count
-    ] }),
-    /* @__PURE__ */ jsx("button", { "data-testid": "increment", onClick: () => setCount((c) => c + 1), children: "Increment" }),
-    /* @__PURE__ */ jsx("button", { "data-testid": "decrement", onClick: () => setCount((c) => c - 1), children: "Decrement" }),
-    /* @__PURE__ */ jsx(Link, { href: "/", children: "Back to Home" })
-  ] });
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      lineNumber: 13,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("button", { "data-testid": "increment", onClick: () => setCount((c) => c + 1), children: "Increment" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      lineNumber: 14,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("button", { "data-testid": "decrement", onClick: () => setCount((c) => c - 1), children: "Decrement" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      lineNumber: 17,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Link, { href: "/", children: "Back to Home" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+      lineNumber: 20,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/counter.tsx",
+    lineNumber: 8,
+    columnNumber: 5
+  }, this);
 }
 const page_8 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: CounterPage
 }, Symbol.toStringTag, { value: "Module" }));
 const HeavyComponent = dynamic(() => Promise.resolve().then(() => heavy), {
-  loading: () => /* @__PURE__ */ jsx("p", { children: "Loading heavy component..." })
+  loading: () => /* @__PURE__ */ jsxDEV("p", { children: "Loading heavy component..." }, void 0, false, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
+    lineNumber: 5,
+    columnNumber: 18
+  }, void 0)
 });
 function DynamicPage() {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Dynamic Import Page" }),
-    /* @__PURE__ */ jsx(HeavyComponent, { label: "Loaded dynamically" })
-  ] });
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Dynamic Import Page" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
+      lineNumber: 11,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(HeavyComponent, { label: "Loaded dynamically" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
+      lineNumber: 12,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/dynamic-page.tsx",
+    lineNumber: 10,
+    columnNumber: 5
+  }, this);
 }
 const page_9 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: DynamicPage
 }, Symbol.toStringTag, { value: "Module" }));
 const ClientOnly = dynamic(
-  () => import("./assets/client-only-component-DtbWXUVq.js"),
+  () => import("./assets/client-only-component-Fmo1XpUe.js"),
   {
     ssr: false,
-    loading: () => /* @__PURE__ */ jsx("p", { "data-testid": "loading", children: "Loading client component..." })
+    loading: () => /* @__PURE__ */ jsxDEV("p", { "data-testid": "loading", children: "Loading client component..." }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      lineNumber: 7,
+      columnNumber: 20
+    }, void 0)
   }
 );
 const ClientOnlyNoLoading = dynamic(
-  () => import("./assets/client-only-component-DtbWXUVq.js"),
+  () => import("./assets/client-only-component-Fmo1XpUe.js"),
   { ssr: false }
 );
 function DynamicSsrFalsePage() {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Dynamic SSR False Test" }),
-    /* @__PURE__ */ jsx("div", { "data-testid": "with-loading", children: /* @__PURE__ */ jsx(ClientOnly, {}) }),
-    /* @__PURE__ */ jsx("div", { "data-testid": "without-loading", children: /* @__PURE__ */ jsx(ClientOnlyNoLoading, {}) })
-  ] });
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Dynamic SSR False Test" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      lineNumber: 19,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { "data-testid": "with-loading", children: /* @__PURE__ */ jsxDEV(ClientOnly, {}, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      lineNumber: 21,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      lineNumber: 20,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { "data-testid": "without-loading", children: /* @__PURE__ */ jsxDEV(ClientOnlyNoLoading, {}, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      lineNumber: 24,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+      lineNumber: 23,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/dynamic-ssr-false.tsx",
+    lineNumber: 18,
+    columnNumber: 5
+  }, this);
 }
 const page_10 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: DynamicSsrFalsePage
 }, Symbol.toStringTag, { value: "Module" }));
 function ISRPage({ timestamp, message }) {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "ISR Page" }),
-    /* @__PURE__ */ jsx("p", { "data-testid": "message", children: message }),
-    /* @__PURE__ */ jsx("p", { "data-testid": "timestamp", children: timestamp })
-  ] });
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "ISR Page" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
+      lineNumber: 9,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "message", children: message }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
+      lineNumber: 10,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "timestamp", children: timestamp }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
+      lineNumber: 11,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/isr-test.tsx",
+    lineNumber: 8,
+    columnNumber: 5
+  }, this);
 }
 async function getStaticProps$4() {
   return {
@@ -2276,14 +2471,38 @@ const page_11 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 function LinkTestPage() {
   const router2 = useRouter();
   const [preventedNav, setPreventedNav] = useState(false);
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Link Advanced Props Test" }),
-    /* @__PURE__ */ jsx("div", { style: { height: "200vh", background: "linear-gradient(white, #eee)" }, children: /* @__PURE__ */ jsx("p", { children: "Tall content area" }) }),
-    /* @__PURE__ */ jsxs("div", { "data-testid": "links", style: { marginTop: 20 }, children: [
-      /* @__PURE__ */ jsx(Link, { href: "/about", scroll: false, "data-testid": "link-no-scroll", children: "No Scroll Link" }),
-      /* @__PURE__ */ jsx(Link, { href: "/about", replace: true, "data-testid": "link-replace", children: "Replace Link" }),
-      /* @__PURE__ */ jsx(Link, { href: "/blog/[slug]", as: "/blog/test-post", "data-testid": "link-as", children: "As Prop Link" }),
-      /* @__PURE__ */ jsx(
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Link Advanced Props Test" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      lineNumber: 11,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { style: { height: "200vh", background: "linear-gradient(white, #eee)" }, children: /* @__PURE__ */ jsxDEV("p", { children: "Tall content area" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      lineNumber: 15,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      lineNumber: 14,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { "data-testid": "links", style: { marginTop: 20 }, children: [
+      /* @__PURE__ */ jsxDEV(Link, { href: "/about", scroll: false, "data-testid": "link-no-scroll", children: "No Scroll Link" }, void 0, false, {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+        lineNumber: 20,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV(Link, { href: "/about", replace: true, "data-testid": "link-replace", children: "Replace Link" }, void 0, false, {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+        lineNumber: 25,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV(Link, { href: "/blog/[slug]", as: "/blog/test-post", "data-testid": "link-as", children: "As Prop Link" }, void 0, false, {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+        lineNumber: 30,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV(
         Link,
         {
           href: "/about",
@@ -2293,13 +2512,41 @@ function LinkTestPage() {
             setPreventedNav(true);
           },
           children: "Prevented Link"
-        }
+        },
+        void 0,
+        false,
+        {
+          fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+          lineNumber: 35,
+          columnNumber: 9
+        },
+        this
       ),
-      /* @__PURE__ */ jsx(Link, { href: "/about", target: "_blank", "data-testid": "link-blank", children: "Blank Target Link" })
-    ] }),
-    preventedNav && /* @__PURE__ */ jsx("div", { "data-testid": "prevented-message", children: "Navigation was prevented" }),
-    /* @__PURE__ */ jsx("div", { "data-testid": "current-path", children: router2.asPath })
-  ] });
+      /* @__PURE__ */ jsxDEV(Link, { href: "/about", target: "_blank", "data-testid": "link-blank", children: "Blank Target Link" }, void 0, false, {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+        lineNumber: 47,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      lineNumber: 18,
+      columnNumber: 7
+    }, this),
+    preventedNav && /* @__PURE__ */ jsxDEV("div", { "data-testid": "prevented-message", children: "Navigation was prevented" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      lineNumber: 53,
+      columnNumber: 9
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { "data-testid": "current-path", children: router2.asPath }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+      lineNumber: 56,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/link-test.tsx",
+    lineNumber: 10,
+    columnNumber: 5
+  }, this);
 }
 const page_12 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
@@ -2307,47 +2554,99 @@ const page_12 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 }, Symbol.toStringTag, { value: "Module" }));
 function NavTestPage() {
   const router2 = useRouter();
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Navigation Test" }),
-    /* @__PURE__ */ jsxs("p", { "data-testid": "pathname", children: [
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Navigation Test" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+      lineNumber: 8,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "pathname", children: [
       "Current: ",
       router2.pathname
-    ] }),
-    /* @__PURE__ */ jsx(
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+      lineNumber: 9,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(
       "button",
       {
         "data-testid": "push-about",
         onClick: () => router2.push("/about"),
         children: "Push to About"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+        lineNumber: 10,
+        columnNumber: 7
+      },
+      this
     ),
-    /* @__PURE__ */ jsx(
+    /* @__PURE__ */ jsxDEV(
       "button",
       {
         "data-testid": "replace-ssr",
         onClick: () => router2.replace("/ssr"),
         children: "Replace to SSR"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+        lineNumber: 16,
+        columnNumber: 7
+      },
+      this
     ),
-    /* @__PURE__ */ jsx(
+    /* @__PURE__ */ jsxDEV(
       "button",
       {
         "data-testid": "push-counter",
         onClick: () => router2.push("/counter"),
         children: "Push to Counter"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+        lineNumber: 22,
+        columnNumber: 7
+      },
+      this
     ),
-    /* @__PURE__ */ jsx(Link, { href: "/", "data-testid": "link-home", children: "Link to Home" }),
-    /* @__PURE__ */ jsx(Link, { href: "/about", "data-testid": "link-about", children: "Link to About" }),
-    /* @__PURE__ */ jsx(Link, { href: "/ssr", "data-testid": "link-ssr", children: "Link to SSR" })
-  ] });
+    /* @__PURE__ */ jsxDEV(Link, { href: "/", "data-testid": "link-home", children: "Link to Home" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+      lineNumber: 28,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Link, { href: "/about", "data-testid": "link-about", children: "Link to About" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+      lineNumber: 29,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Link, { href: "/ssr", "data-testid": "link-ssr", children: "Link to SSR" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+      lineNumber: 30,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/nav-test.tsx",
+    lineNumber: 7,
+    columnNumber: 5
+  }, this);
 }
 const page_13 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: NavTestPage
 }, Symbol.toStringTag, { value: "Module" }));
 function MissingPost() {
-  return /* @__PURE__ */ jsx("div", { children: "This should never render" });
+  return /* @__PURE__ */ jsxDEV("div", { children: "This should never render" }, void 0, false, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/posts/missing.tsx",
+    lineNumber: 5,
+    columnNumber: 10
+  }, this);
 }
 async function getServerSideProps$5() {
   return {
@@ -2360,7 +2659,11 @@ const page_14 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
   getServerSideProps: getServerSideProps$5
 }, Symbol.toStringTag, { value: "Module" }));
 function RedirectXss() {
-  return /* @__PURE__ */ jsx("div", { children: "Should not render" });
+  return /* @__PURE__ */ jsxDEV("div", { children: "Should not render" }, void 0, false, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/redirect-xss.tsx",
+    lineNumber: 4,
+    columnNumber: 10
+  }, this);
 }
 function getStaticProps$3() {
   return {
@@ -2416,26 +2719,54 @@ function RouterEventsTest() {
       router2.events.off("routeChangeError", onError);
     };
   }, [router2]);
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Router Events Test" }),
-    /* @__PURE__ */ jsx(Link, { href: "/about", children: /* @__PURE__ */ jsx("span", { "data-testid": "link-about", children: "Go to About" }) }),
-    /* @__PURE__ */ jsx(
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Router Events Test" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+      lineNumber: 58,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Link, { href: "/about", children: /* @__PURE__ */ jsxDEV("span", { "data-testid": "link-about", children: "Go to About" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+      lineNumber: 60,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+      lineNumber: 59,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(
       "button",
       {
         "data-testid": "push-about",
         onClick: () => router2.push("/about"),
         children: "Push About"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+        lineNumber: 62,
+        columnNumber: 7
+      },
+      this
     ),
-    /* @__PURE__ */ jsx(
+    /* @__PURE__ */ jsxDEV(
       "button",
       {
         "data-testid": "push-ssr",
         onClick: () => router2.push("/ssr"),
         children: "Push SSR"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+        lineNumber: 68,
+        columnNumber: 7
+      },
+      this
     ),
-    /* @__PURE__ */ jsx(
+    /* @__PURE__ */ jsxDEV(
       "button",
       {
         "data-testid": "clear-events",
@@ -2444,11 +2775,31 @@ function RouterEventsTest() {
           setEvents([]);
         },
         children: "Clear Events"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+        lineNumber: 74,
+        columnNumber: 7
+      },
+      this
     ),
-    /* @__PURE__ */ jsx("div", { "data-testid": "event-log", children: events.join("|") }),
-    /* @__PURE__ */ jsx("div", { "data-testid": "event-count", children: events.length })
-  ] });
+    /* @__PURE__ */ jsxDEV("div", { "data-testid": "event-log", children: events.join("|") }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+      lineNumber: 83,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { "data-testid": "event-count", children: events.length }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+      lineNumber: 84,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/router-events-test.tsx",
+    lineNumber: 57,
+    columnNumber: 5
+  }, this);
 }
 const page_16 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
@@ -2456,15 +2807,23 @@ const page_16 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 }, Symbol.toStringTag, { value: "Module" }));
 const loadedScripts = /* @__PURE__ */ new Set();
 function Script(props) {
-  const { src, id, strategy = "afterInteractive", onLoad, onReady, onError, children, dangerouslySetInnerHTML, ...rest } = props;
+  const {
+    src,
+    id,
+    strategy = "afterInteractive",
+    onLoad,
+    onReady,
+    onError,
+    children,
+    dangerouslySetInnerHTML,
+    ...rest
+  } = props;
   const hasMounted = useRef(false);
   if (typeof window === "undefined") {
     if (strategy === "beforeInteractive") {
       const scriptProps = { ...rest };
-      if (src)
-        scriptProps.src = src;
-      if (id)
-        scriptProps.id = id;
+      if (src) scriptProps.src = src;
+      if (id) scriptProps.id = id;
       if (dangerouslySetInnerHTML) {
         scriptProps.dangerouslySetInnerHTML = dangerouslySetInnerHTML;
       }
@@ -2474,8 +2833,7 @@ function Script(props) {
   }
   const key = id ?? src ?? "";
   useEffect(() => {
-    if (hasMounted.current)
-      return;
+    if (hasMounted.current) return;
     hasMounted.current = true;
     if (key && loadedScripts.has(key)) {
       onReady?.();
@@ -2487,10 +2845,8 @@ function Script(props) {
         return;
       }
       const el = document.createElement("script");
-      if (src)
-        el.src = src;
-      if (id)
-        el.id = id;
+      if (src) el.src = src;
+      if (id) el.id = id;
       for (const [attr, value] of Object.entries(rest)) {
         if (attr === "className") {
           el.setAttribute("class", String(value));
@@ -2509,8 +2865,7 @@ function Script(props) {
         el.textContent = children;
       }
       el.addEventListener("load", (e) => {
-        if (key)
-          loadedScripts.add(key);
+        if (key) loadedScripts.add(key);
         onLoad?.(e);
         onReady?.();
       });
@@ -2542,18 +2897,38 @@ function Script(props) {
   return null;
 }
 function ScriptTestPage() {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Script Test" }),
-    /* @__PURE__ */ jsx(
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Script Test" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
+      lineNumber: 6,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(
       Script,
       {
         id: "test-analytics",
         strategy: "beforeInteractive",
         src: "https://example.com/analytics.js"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
+        lineNumber: 7,
+        columnNumber: 7
+      },
+      this
     ),
-    /* @__PURE__ */ jsx("p", { children: "Page with scripts" })
-  ] });
+    /* @__PURE__ */ jsxDEV("p", { children: "Page with scripts" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
+      lineNumber: 12,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/script-test.tsx",
+    lineNumber: 5,
+    columnNumber: 5
+  }, this);
 }
 const page_17 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
@@ -2575,41 +2950,93 @@ async function getServerSideProps$4(ctx) {
 }
 function ShallowTestPage({ gsspCallId, serverQuery }) {
   const router2 = useRouter();
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Shallow Routing Test" }),
-    /* @__PURE__ */ jsxs("p", { "data-testid": "gssp-call-id", children: [
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Shallow Routing Test" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      lineNumber: 31,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "gssp-call-id", children: [
       "gssp:",
       gsspCallId
-    ] }),
-    /* @__PURE__ */ jsx("p", { "data-testid": "router-query", children: JSON.stringify(router2.query) }),
-    /* @__PURE__ */ jsx("p", { "data-testid": "server-query", children: JSON.stringify(serverQuery) }),
-    /* @__PURE__ */ jsx("p", { "data-testid": "router-pathname", children: router2.pathname }),
-    /* @__PURE__ */ jsx("p", { "data-testid": "router-asPath", children: router2.asPath }),
-    /* @__PURE__ */ jsx(
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      lineNumber: 32,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "router-query", children: JSON.stringify(router2.query) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      lineNumber: 33,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "server-query", children: JSON.stringify(serverQuery) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      lineNumber: 34,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "router-pathname", children: router2.pathname }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      lineNumber: 35,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "router-asPath", children: router2.asPath }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+      lineNumber: 36,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(
       "button",
       {
         "data-testid": "shallow-push",
         onClick: () => router2.push("/shallow-test?tab=settings", void 0, { shallow: true }),
         children: "Shallow Push"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+        lineNumber: 37,
+        columnNumber: 7
+      },
+      this
     ),
-    /* @__PURE__ */ jsx(
+    /* @__PURE__ */ jsxDEV(
       "button",
       {
         "data-testid": "deep-push",
         onClick: () => router2.push("/shallow-test?tab=profile"),
         children: "Deep Push"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+        lineNumber: 43,
+        columnNumber: 7
+      },
+      this
     ),
-    /* @__PURE__ */ jsx(
+    /* @__PURE__ */ jsxDEV(
       "button",
       {
         "data-testid": "shallow-replace",
         onClick: () => router2.replace("/shallow-test?view=grid", void 0, { shallow: true }),
         children: "Shallow Replace"
-      }
+      },
+      void 0,
+      false,
+      {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+        lineNumber: 49,
+        columnNumber: 7
+      },
+      this
     )
-  ] });
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/shallow-test.tsx",
+    lineNumber: 30,
+    columnNumber: 5
+  }, this);
 }
 const page_18 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
@@ -2617,14 +3044,30 @@ const page_18 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
   getServerSideProps: getServerSideProps$4
 }, Symbol.toStringTag, { value: "Module" }));
 function SSRPage({ timestamp, message }) {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Server-Side Rendered" }),
-    /* @__PURE__ */ jsx("p", { "data-testid": "message", children: message }),
-    /* @__PURE__ */ jsxs("p", { "data-testid": "timestamp", children: [
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Server-Side Rendered" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
+      lineNumber: 9,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "message", children: message }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
+      lineNumber: 10,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "timestamp", children: [
       "Rendered at: ",
       timestamp
-    ] })
-  ] });
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
+      lineNumber: 11,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/ssr.tsx",
+    lineNumber: 8,
+    columnNumber: 5
+  }, this);
 }
 async function getServerSideProps$3() {
   return {
@@ -2642,28 +3085,64 @@ const page_19 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 const LazyGreeting = lazy(
   () => new Promise((resolve) => {
     resolve({
-      default: () => /* @__PURE__ */ jsx("div", { "data-testid": "lazy-greeting", children: "Hello from lazy component" })
+      default: () => /* @__PURE__ */ jsxDEV("div", { "data-testid": "lazy-greeting", children: "Hello from lazy component" }, void 0, false, {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+        lineNumber: 12,
+        columnNumber: 11
+      }, void 0)
     });
   })
 );
 function SuspenseTestPage() {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: "Suspense Test" }),
-    /* @__PURE__ */ jsx(Suspense, { fallback: /* @__PURE__ */ jsx("div", { "data-testid": "loading", children: "Loading..." }), children: /* @__PURE__ */ jsx(LazyGreeting, {}) })
-  ] });
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Suspense Test" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+      lineNumber: 21,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Suspense, { fallback: /* @__PURE__ */ jsxDEV("div", { "data-testid": "loading", children: "Loading..." }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+      lineNumber: 22,
+      columnNumber: 27
+    }, this), children: /* @__PURE__ */ jsxDEV(LazyGreeting, {}, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+      lineNumber: 23,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+      lineNumber: 22,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/suspense-test.tsx",
+    lineNumber: 20,
+    columnNumber: 5
+  }, this);
 }
 const page_20 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.defineProperty({
   __proto__: null,
   default: SuspenseTestPage
 }, Symbol.toStringTag, { value: "Module" }));
 function Article({ id, title }) {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: title }),
-    /* @__PURE__ */ jsxs("p", { children: [
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: title }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/articles/[id].tsx",
+      lineNumber: 11,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { children: [
       "Article ID: ",
       id
-    ] })
-  ] });
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/articles/[id].tsx",
+      lineNumber: 12,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/articles/[id].tsx",
+    lineNumber: 10,
+    columnNumber: 5
+  }, this);
 }
 async function getStaticPaths$2() {
   return {
@@ -2693,13 +3172,25 @@ const page_21 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
   getStaticProps: getStaticProps$2
 }, Symbol.toStringTag, { value: "Module" }));
 function BlogPost({ slug, title }) {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { children: title }),
-    /* @__PURE__ */ jsxs("p", { children: [
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: title }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx",
+      lineNumber: 11,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { children: [
       "Blog post slug: ",
       slug
-    ] })
-  ] });
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx",
+      lineNumber: 12,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/blog/[slug].tsx",
+    lineNumber: 10,
+    columnNumber: 5
+  }, this);
 }
 async function getStaticPaths$1() {
   return {
@@ -2730,20 +3221,36 @@ const page_22 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 }, Symbol.toStringTag, { value: "Module" }));
 function Post({ id }) {
   const router2 = useRouter();
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsxs("h1", { "data-testid": "post-title", children: [
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { "data-testid": "post-title", children: [
       "Post: ",
       id
-    ] }),
-    /* @__PURE__ */ jsxs("p", { "data-testid": "pathname", children: [
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
+      lineNumber: 12,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "pathname", children: [
       "Pathname: ",
       router2.pathname
-    ] }),
-    /* @__PURE__ */ jsxs("p", { "data-testid": "query", children: [
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
+      lineNumber: 13,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "query", children: [
       "Query ID: ",
       router2.query.id
-    ] })
-  ] });
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
+      lineNumber: 14,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/posts/[id].tsx",
+    lineNumber: 11,
+    columnNumber: 5
+  }, this);
 }
 async function getServerSideProps$2({ params }) {
   return {
@@ -2760,22 +3267,42 @@ const page_23 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
 function Product({ pid, name }) {
   const router2 = useRouter();
   if (router2.isFallback) {
-    return /* @__PURE__ */ jsx("div", { children: "Loading product..." });
+    return /* @__PURE__ */ jsxDEV("div", { children: "Loading product..." }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
+      lineNumber: 15,
+      columnNumber: 12
+    }, this);
   }
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsxs("h1", { children: [
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: [
       "Product: ",
       name
-    ] }),
-    /* @__PURE__ */ jsxs("p", { children: [
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
+      lineNumber: 20,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { children: [
       "Product ID: ",
       pid
-    ] }),
-    /* @__PURE__ */ jsxs("p", { "data-testid": "is-fallback", children: [
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
+      lineNumber: 21,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "is-fallback", children: [
       "isFallback: ",
       String(router2.isFallback)
-    ] })
-  ] });
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
+      lineNumber: 22,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/products/[pid].tsx",
+    lineNumber: 19,
+    columnNumber: 5
+  }, this);
 }
 async function getStaticPaths() {
   return {
@@ -2805,13 +3332,25 @@ const page_24 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
   getStaticProps
 }, Symbol.toStringTag, { value: "Module" }));
 function DocsPage({ slug }) {
-  return /* @__PURE__ */ jsxs("div", { children: [
-    /* @__PURE__ */ jsx("h1", { "data-testid": "docs-title", children: "Docs" }),
-    /* @__PURE__ */ jsxs("p", { "data-testid": "docs-slug", children: [
+  return /* @__PURE__ */ jsxDEV("div", { children: [
+    /* @__PURE__ */ jsxDEV("h1", { "data-testid": "docs-title", children: "Docs" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx",
+      lineNumber: 4,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "docs-slug", children: [
       "Path: ",
       slug.join("/")
-    ] })
-  ] });
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx",
+      lineNumber: 5,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/docs/[...slug].tsx",
+    lineNumber: 3,
+    columnNumber: 5
+  }, this);
 }
 async function getServerSideProps$1({
   params
@@ -2828,17 +3367,33 @@ const page_25 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePrope
   getServerSideProps: getServerSideProps$1
 }, Symbol.toStringTag, { value: "Module" }));
 function SignUpPage({ segments }) {
-  return /* @__PURE__ */ jsxs("main", { "data-testid": "sign-up-page", children: [
-    /* @__PURE__ */ jsx("h1", { children: "Sign Up" }),
-    /* @__PURE__ */ jsxs("p", { "data-testid": "sign-up-segments", children: [
+  return /* @__PURE__ */ jsxDEV("main", { "data-testid": "sign-up-page", children: [
+    /* @__PURE__ */ jsxDEV("h1", { children: "Sign Up" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx",
+      lineNumber: 4,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "sign-up-segments", children: [
       "Segments: ",
       segments.length
-    ] }),
-    /* @__PURE__ */ jsxs("p", { "data-testid": "sign-up-path", children: [
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx",
+      lineNumber: 5,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("p", { "data-testid": "sign-up-path", children: [
       "Path: ",
       segments.length > 0 ? segments.join("/") : "(root)"
-    ] })
-  ] });
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx",
+      lineNumber: 6,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx",
+    lineNumber: 3,
+    columnNumber: 5
+  }, this);
 }
 async function getServerSideProps({
   params
@@ -2886,31 +3441,103 @@ const api_3 = /* @__PURE__ */ Object.freeze(/* @__PURE__ */ Object.definePropert
   default: handler
 }, Symbol.toStringTag, { value: "Module" }));
 function MyApp({ Component, pageProps }) {
-  return /* @__PURE__ */ jsxs("div", { id: "app-wrapper", "data-testid": "app-wrapper", children: [
-    /* @__PURE__ */ jsx("nav", { "data-testid": "global-nav", children: /* @__PURE__ */ jsx("span", { children: "My App" }) }),
-    /* @__PURE__ */ jsx(Component, { ...pageProps })
-  ] });
+  return /* @__PURE__ */ jsxDEV("div", { id: "app-wrapper", "data-testid": "app-wrapper", children: [
+    /* @__PURE__ */ jsxDEV("nav", { "data-testid": "global-nav", children: /* @__PURE__ */ jsxDEV("span", { children: "My App" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
+      lineNumber: 7,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
+      lineNumber: 6,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV(Component, { ...pageProps }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
+      lineNumber: 9,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/_app.tsx",
+    lineNumber: 5,
+    columnNumber: 5
+  }, this);
 }
-function Html({ children, lang, ...props }) {
-  return jsx("html", { lang, ...props, children });
+function Html({
+  children,
+  lang,
+  ...props
+}) {
+  return /* @__PURE__ */ jsxDEV("html", { lang, ...props, children }, void 0, false, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/packages/vinext/src/shims/document.tsx",
+    lineNumber: 16,
+    columnNumber: 5
+  }, this);
 }
 function Head({ children }) {
-  return jsxs("head", { children: [jsx("meta", { charSet: "utf-8" }), jsx("meta", { name: "viewport", content: "width=device-width, initial-scale=1" }), children] });
+  return /* @__PURE__ */ jsxDEV("head", { children: [
+    /* @__PURE__ */ jsxDEV("meta", { charSet: "utf-8" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/packages/vinext/src/shims/document.tsx",
+      lineNumber: 29,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("meta", { name: "viewport", content: "width=device-width, initial-scale=1" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/packages/vinext/src/shims/document.tsx",
+      lineNumber: 30,
+      columnNumber: 7
+    }, this),
+    children
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/packages/vinext/src/shims/document.tsx",
+    lineNumber: 28,
+    columnNumber: 5
+  }, this);
 }
 function Main() {
-  return jsx("div", { id: "__next", dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" } });
+  return /* @__PURE__ */ jsxDEV("div", { id: "__next", dangerouslySetInnerHTML: { __html: "__NEXT_MAIN__" } }, void 0, false, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/packages/vinext/src/shims/document.tsx",
+    lineNumber: 40,
+    columnNumber: 10
+  }, this);
 }
 function NextScript() {
-  return jsx("span", { dangerouslySetInnerHTML: { __html: "<!-- __NEXT_SCRIPTS__ -->" } });
+  return /* @__PURE__ */ jsxDEV("span", { dangerouslySetInnerHTML: { __html: "<!-- __NEXT_SCRIPTS__ -->" } }, void 0, false, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/packages/vinext/src/shims/document.tsx",
+    lineNumber: 49,
+    columnNumber: 10
+  }, this);
 }
 function Document() {
-  return /* @__PURE__ */ jsxs(Html, { lang: "en", children: [
-    /* @__PURE__ */ jsx(Head, { children: /* @__PURE__ */ jsx("meta", { name: "description", content: "A vinext test app" }) }),
-    /* @__PURE__ */ jsxs("body", { className: "custom-body", children: [
-      /* @__PURE__ */ jsx(Main, {}),
-      /* @__PURE__ */ jsx(NextScript, {})
-    ] })
-  ] });
+  return /* @__PURE__ */ jsxDEV(Html, { lang: "en", children: [
+    /* @__PURE__ */ jsxDEV(Head, { children: /* @__PURE__ */ jsxDEV("meta", { name: "description", content: "A vinext test app" }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+      lineNumber: 7,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+      lineNumber: 6,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("body", { className: "custom-body", children: [
+      /* @__PURE__ */ jsxDEV(Main, {}, void 0, false, {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+        lineNumber: 10,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV(NextScript, {}, void 0, false, {
+        fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+        lineNumber: 11,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+      lineNumber: 9,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "/root/DASH/POCDASH/VINEXT/vinext/tests/fixtures/pages-basic/pages/_document.tsx",
+    lineNumber: 5,
+    columnNumber: 5
+  }, this);
 }
 const i18nConfig = null;
 const vinextConfig = { "basePath": "", "trailingSlash": false, "redirects": [{ "source": "/old-about", "destination": "/about", "permanent": true }], "rewrites": { "beforeFiles": [{ "source": "/before-rewrite", "destination": "/about" }], "afterFiles": [{ "source": "/after-rewrite", "destination": "/about" }], "fallback": [{ "source": "/fallback-rewrite", "destination": "/about" }] }, "headers": [{ "source": "/api/(.*)", "headers": [{ "key": "X-Custom-Header", "value": "vinext" }] }, { "source": "/about", "has": [{ "type": "cookie", "key": "logged-in" }], "headers": [{ "key": "X-Auth-Only-Header", "value": "1" }] }, { "source": "/about", "missing": [{ "type": "cookie", "key": "logged-in" }], "headers": [{ "key": "X-Guest-Only-Header", "value": "1" }] }], "i18n": null };
