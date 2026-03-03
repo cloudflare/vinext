@@ -303,7 +303,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Prefetching: observe the element when it enters the viewport.
   // prefetch={false} disables, prefetch={true} or undefined/null (default) enables.
   const internalRef = useRef<HTMLAnchorElement | null>(null);
-  const shouldPrefetch = prefetchProp !== false;
+  const shouldPrefetch = prefetchProp !== false && !isDangerous;
 
   const setRefs = useCallback(
     (node: HTMLAnchorElement | null) => {
