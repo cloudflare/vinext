@@ -5490,6 +5490,30 @@ describe("next/image enhancements", () => {
     expect(result.props.src).toBe("/photo.jpg");
     expect(result.props.src).not.toContain("/_vinext/image");
   });
+
+  it("SVG src auto-skips optimization endpoint (default behavior)", async () => {
+    const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+    const result = getImageProps({
+      src: "/logo.svg",
+      alt: "SVG logo",
+      width: 200,
+      height: 200,
+    });
+    // By default (dangerouslyAllowSVG not set), .svg sources bypass the optimizer
+    expect(result.props.src).toBe("/logo.svg");
+    expect(result.props.src).not.toContain("/_vinext/image");
+  });
+
+  it("non-SVG src still uses optimization endpoint", async () => {
+    const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+    const result = getImageProps({
+      src: "/photo.png",
+      alt: "PNG photo",
+      width: 256,
+      height: 256,
+    });
+    expect(result.props.src).toContain("/_vinext/image");
+  });
 });
 
 describe("next/image component rendering", () => {
@@ -6027,6 +6051,23 @@ describe("isSafeImageContentType", () => {
     expect(isSafeImageContentType("Image/JPEG")).toBe(true);
     expect(isSafeImageContentType("IMAGE/SVG+XML")).toBe(false);
   });
+
+  it("allows SVG when dangerouslyAllowSVG is true", async () => {
+    const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(isSafeImageContentType("image/svg+xml", true)).toBe(true);
+  });
+
+  it("allows SVG with parameters when dangerouslyAllowSVG is true", async () => {
+    const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(isSafeImageContentType("image/svg+xml; charset=utf-8", true)).toBe(true);
+  });
+
+  it("still rejects non-image types when dangerouslyAllowSVG is true", async () => {
+    const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(isSafeImageContentType("text/html", true)).toBe(false);
+    expect(isSafeImageContentType("application/javascript", true)).toBe(false);
+    expect(isSafeImageContentType(null, true)).toBe(false);
+  });
 });
 
 describe("handleImageOptimization", () => {
@@ -6223,6 +6264,114 @@ describe("handleImageOptimization", () => {
     expect(response.status).toBe(200);
     // Should override to the negotiated format, not pass through text/html
     expect(response.headers.get("Content-Type")).toBe("image/webp");
+  });
+
+  it("allows SVG passthrough with dangerouslyAllowSVG: true", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const handlers = {
+      fetchAsset: async () => new Response('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>', {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: true });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>');
+    expect(response.headers.get("Content-Type")).toBe("image/svg+xml");
+  });
+
+  it("still blocks SVG when dangerouslyAllowSVG is false", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const handlers = {
+      fetchAsset: async () => new Response("<svg></svg>", {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: false });
+    expect(response.status).toBe(400);
+  });
+
+  it("SVG passthrough skips transformImage", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    let transformCalled = false;
+    const handlers = {
+      fetchAsset: async () => new Response("<svg></svg>", {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+      transformImage: async () => {
+        transformCalled = true;
+        return new Response("transformed");
+      },
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: true });
+    expect(response.status).toBe(200);
+    expect(transformCalled).toBe(false);
+    expect(await response.text()).toBe("<svg></svg>");
+  });
+
+  it("applies security headers on SVG passthrough", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const handlers = {
+      fetchAsset: async () => new Response("<svg></svg>", {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: true });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Security-Policy")).toBe("script-src 'none'; frame-src 'none'; sandbox;");
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(response.headers.get("Content-Disposition")).toBe("inline");
+  });
+
+  it("applies custom contentDispositionType", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { contentDispositionType: "attachment" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Disposition")).toBe("attachment");
+  });
+
+  it("applies custom contentSecurityPolicy", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      }),
+    };
+    const customCSP = "default-src 'self'; script-src 'none';";
+    const response = await handleImageOptimization(request, handlers, undefined, { contentSecurityPolicy: customCSP });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Security-Policy")).toBe(customCSP);
+  });
+
+  it("default behavior unchanged when no imageConfig provided", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Security-Policy")).toBe("script-src 'none'; frame-src 'none'; sandbox;");
+    expect(response.headers.get("Content-Disposition")).toBe("inline");
   });
 });
 

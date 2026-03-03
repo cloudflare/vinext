@@ -49,6 +49,14 @@ const __imageDeviceSizes: number[] = (() => {
   }
 })();
 /**
+ * Whether dangerouslyAllowSVG is enabled in next.config.js.
+ * When false (default), .svg sources auto-skip the optimization endpoint
+ * and are served directly, matching Next.js behavior.
+ * When true, .svg sources are routed through the optimizer (served as-is
+ * with security headers).
+ */
+const __dangerouslyAllowSVG = process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG === "true";
+/**
  * Validate that a remote URL is allowed by the configured remote patterns.
  * Returns true if the URL is allowed, false otherwise.
  *
@@ -280,8 +288,11 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // In production on Cloudflare Workers, this resizes and transcodes via
   // the Images binding. In dev, it serves the original file as a passthrough.
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
+  // SVG sources auto-skip unless dangerouslyAllowSVG is enabled, matching
+  // Next.js behavior where .svg triggers unoptimized=true by default.
   const imgQuality = quality ?? 75;
-  const skipOptimization = _unoptimized === true;
+  const isSvg = src.endsWith(".svg");
+  const skipOptimization = _unoptimized === true || (isSvg && !__dangerouslyAllowSVG);
 
   // Build srcSet for responsive local images (common breakpoints).
   // Each entry points to /_vinext/image with the appropriate width.
@@ -393,7 +404,9 @@ export function getImageProps(props: ImageProps): {
 
   // For local images (no loader, not remote), route through optimization endpoint.
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
-  const skipOpt = _unoptimized === true || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
+  // SVG sources auto-skip unless dangerouslyAllowSVG is enabled.
+  const isSvg = resolvedSrc.endsWith(".svg");
+  const skipOpt = _unoptimized === true || (isSvg && !__dangerouslyAllowSVG) || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
   const optimizedSrc = skipOpt
     ? resolvedSrc
     : imgWidth
@@ -401,7 +414,7 @@ export function getImageProps(props: ImageProps): {
       : imageOptimizationUrl(resolvedSrc, RESPONSIVE_WIDTHS[0], imgQuality);
 
   // Build srcSet for local images — each width points to /_vinext/image
-  const srcSet = imgWidth && !fill && !isRemoteUrl(resolvedSrc) && !loader && !_unoptimized
+  const srcSet = imgWidth && !fill && !isRemoteUrl(resolvedSrc) && !loader && !skipOpt
     ? generateSrcSet(resolvedSrc, imgWidth, imgQuality)
     : undefined;
 

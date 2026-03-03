@@ -656,6 +656,13 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
       rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: nextConfig?.headers ?? [],
       i18n: nextConfig?.i18n ?? null,
+      images: {
+        deviceSizes: nextConfig?.images?.deviceSizes,
+        imageSizes: nextConfig?.images?.imageSizes,
+        dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
+        contentDispositionType: nextConfig?.images?.contentDispositionType,
+        contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+      },
     });
 
     // Generate middleware code if middleware.ts exists
@@ -1740,6 +1747,11 @@ hydrate();
             JSON.stringify(imageSizes),
           );
         }
+        // Expose dangerouslyAllowSVG flag for the image shim's auto-skip logic.
+        // When false (default), .svg sources bypass the optimization endpoint.
+        defines["process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG"] = JSON.stringify(
+          String(nextConfig.images?.dangerouslyAllowSVG ?? false),
+        );
         // Draft mode secret — generated once at build time so the
         // __prerender_bypass cookie is consistent across all server
         // instances (e.g. multiple Cloudflare Workers isolates).
@@ -3119,6 +3131,37 @@ hydrate();
           } catch {
             // @vercel/og not installed — nothing to copy
           }
+        },
+      },
+    },
+    // Write image config JSON for the App Router production server.
+    // The App Router RSC entry doesn't export vinextConfig (that's a Pages
+    // Router pattern), so we write a separate JSON file at build time that
+    // prod-server.ts reads at startup for SVG/security header config.
+    {
+      name: "vinext:image-config",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(options) {
+          const envName = this.environment?.name;
+          if (envName !== "rsc") return;
+
+          const outDir = options.dir;
+          if (!outDir) return;
+
+          const imageConfig = {
+            dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
+            contentDispositionType: nextConfig?.images?.contentDispositionType,
+            contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+          };
+
+          fs.writeFileSync(
+            path.join(outDir, "image-config.json"),
+            JSON.stringify(imageConfig),
+          );
         },
       },
     },

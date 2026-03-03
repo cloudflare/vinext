@@ -102,6 +102,12 @@ export interface NextConfig {
     deviceSizes?: number[];
     /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [16, 32, 48, 64, 96, 128, 256, 384] */
     imageSizes?: number[];
+    /** Allow SVG images through the image optimization endpoint. SVG can contain scripts, so only enable if you trust all image sources. */
+    dangerouslyAllowSVG?: boolean;
+    /** Content-Disposition header for image responses. Defaults to "inline". */
+    contentDispositionType?: "inline" | "attachment";
+    /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
+    contentSecurityPolicy?: string;
   };
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
   output?: "export" | "standalone";

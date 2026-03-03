@@ -392,6 +392,7 @@ export function generateAppRouterWorkerEntry(): string {
  * directly in wrangler.jsonc: "main": "vinext/server/app-router-entry"
  */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
+import type { ImageConfig } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 
 interface Env {
@@ -404,6 +405,12 @@ interface Env {
     };
   };
 }
+
+// Image security config. SVG sources with .svg extension auto-skip the
+// optimization endpoint on the client side (served directly, no proxy).
+// To route SVGs through the optimizer (with security headers), set
+// dangerouslyAllowSVG: true in next.config.js and uncomment below:
+// const imageConfig: ImageConfig = { dangerouslyAllowSVG: true };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -437,6 +444,7 @@ export function generatePagesRouterWorkerEntry(): string {
  * Edit freely or delete to regenerate on next deploy.
  */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
+import type { ImageConfig } from "vinext/server/image-optimization";
 import {
   matchRedirect,
   matchRewrite,
@@ -466,6 +474,11 @@ const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
 const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
 const configHeaders = vinextConfig?.headers ?? [];
+const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
+  dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
+  contentDispositionType: vinextConfig.images.contentDispositionType,
+  contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
+} : undefined;
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -498,7 +511,7 @@ export default {
             const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
             return result.response();
           },
-        }, allowedWidths);
+        }, allowedWidths, imageConfig);
       }
 
       // ── 2. Trailing slash normalization ────────────────────────────
