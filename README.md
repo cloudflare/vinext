@@ -386,6 +386,15 @@ These are intentional exclusions:
 - **Node.js production server (`vinext start`)** works for testing but is less complete than Workers deployment. Cloudflare Workers is the primary target.
 - **Native Node modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas)** crash Vite's RSC dev environment. Dynamic OG image/icon routes using these work in production builds but not in dev mode. These are auto-stubbed during `vinext deploy`.
 
+## Security hardening
+
+vinext handles URL normalization, path traversal prevention, and internal header stripping automatically. For production deployments, we recommend adding a `proxy.ts` (Next.js 16) or `middleware.ts` (Next.js 15) with:
+
+1. **Security response headers** — `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`
+2. **Explicit route matcher** — ensures the proxy runs on all paths including `/api/*`
+
+See [`examples/app-router-cloudflare/proxy.ts`](examples/app-router-cloudflare/proxy.ts) for a ready-to-use template.
+
 ## Benchmarks
 
 > **Caveat:** Benchmarks are hard to get right and these are early results. Take them as directional, not definitive.
