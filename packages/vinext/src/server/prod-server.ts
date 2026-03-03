@@ -47,6 +47,8 @@ export interface ProdServerOptions {
   host?: string;
   /** Path to the build output directory */
   outDir?: string;
+  /** Custom server entry path (overrides outDir/server/index.js or entry.js detection) */
+  entry?: string;
   /** Disable compression (default: false) */
   noCompression?: boolean;
 }
@@ -411,15 +413,33 @@ export async function startProdServer(options: ProdServerOptions = {}) {
     port = process.env.PORT ? parseInt(process.env.PORT) : 3000,
     host = "0.0.0.0",
     outDir = path.resolve("dist"),
+    entry: customEntry,
     noCompression = false,
   } = options;
 
   const compress = !noCompression;
-  // Always resolve outDir to absolute to ensure dynamic import() works
   const resolvedOutDir = path.resolve(outDir);
   const clientDir = path.join(resolvedOutDir, "client");
 
-  // Detect build type
+  if (customEntry) {
+    const entryPath = path.resolve(customEntry);
+    if (!fs.existsSync(entryPath)) {
+      console.error(`[vinext] Entry not found: ${entryPath}`);
+      process.exit(1);
+    }
+    const entryClientDir = path.join(path.dirname(entryPath), "..", "client");
+    const mod = await import(pathToFileURL(entryPath).href);
+    const d = mod.default;
+    if (typeof d === "function" || (d && typeof (d as { fetch?: unknown }).fetch === "function")) {
+      return startAppRouterServer({ port, host, clientDir: entryClientDir, rscEntryPath: entryPath, compress });
+    }
+    if (d && typeof (d as { renderPage?: unknown }).renderPage === "function") {
+      return startPagesRouterServer({ port, host, clientDir: entryClientDir, serverEntryPath: entryPath, compress });
+    }
+    console.error("[vinext] Entry must export default function, default.fetch, or default.renderPage");
+    process.exit(1);
+  }
+
   const rscEntryPath = path.join(resolvedOutDir, "server", "index.js");
   const serverEntryPath = path.join(resolvedOutDir, "server", "entry.js");
   const isAppRouter = fs.existsSync(rscEntryPath);
@@ -466,12 +486,19 @@ interface AppRouterServerOptions {
 async function startAppRouterServer(options: AppRouterServerOptions) {
   const { port, host, clientDir, rscEntryPath, compress } = options;
 
-  // Import the RSC handler (use file:// URL for reliable dynamic import)
+  // Import the RSC handler (use file:// URL for reliable dynamic import).
+  // Accept both shapes: default function (raw RSC entry) or default { fetch } (Workers entry).
   const rscModule = await import(pathToFileURL(rscEntryPath).href);
-  const rscHandler: (request: Request) => Promise<Response> = rscModule.default;
+  const d = rscModule.default;
+  const rscHandler: (request: Request) => Promise<Response> =
+    typeof d === "function"
+      ? d
+      : d && typeof (d as { fetch?: (req: Request) => Promise<Response> }).fetch === "function"
+        ? (req: Request) => (d as { fetch: (req: Request) => Promise<Response> }).fetch(req)
+        : null;
 
-  if (typeof rscHandler !== "function") {
-    console.error("[vinext] RSC entry does not export a default handler function");
+  if (!rscHandler) {
+    console.error("[vinext] RSC entry does not export a default handler function or { fetch }");
     process.exit(1);
   }
 

@@ -93,6 +93,7 @@ interface ParsedArgs {
   help?: boolean;
   turbopack?: boolean; // accepted for compat, always ignored
   experimental?: boolean; // accepted for compat, always ignored
+  entry?: string; // vinext start: custom server entry path
 }
 
 function parseArgs(args: string[]): ParsedArgs {
@@ -113,6 +114,10 @@ function parseArgs(args: string[]): ParsedArgs {
       result.hostname = args[++i];
     } else if (arg.startsWith("--hostname=")) {
       result.hostname = arg.split("=")[1];
+    } else if (arg === "--entry" || arg === "-e") {
+      result.entry = args[++i];
+    } else if (arg.startsWith("--entry=")) {
+      result.entry = arg.slice("--entry=".length);
     }
   }
   return result;
@@ -294,13 +299,16 @@ async function start() {
       port: number;
       host: string;
       outDir: string;
+      entry?: string;
     }) => Promise<unknown>;
   };
 
+  const outDir = path.resolve(process.cwd(), "dist");
   await startProdServer({
     port,
     host,
-    outDir: path.resolve(process.cwd(), "dist"),
+    outDir,
+    ...(parsed.entry ? { entry: path.resolve(process.cwd(), parsed.entry) } : {}),
   });
 }
 
@@ -445,6 +453,7 @@ function printHelp(cmd?: string) {
   Options:
     -p, --port <port>        Port to listen on (default: 3000, or PORT env)
     -H, --hostname <host>    Hostname to bind to (default: 0.0.0.0)
+    -e, --entry <path>       Custom server entry (default: dist/server/index.js or dist/server/entry.js)
     -h, --help               Show this help
 `);
     return;

@@ -1037,22 +1037,31 @@ describe("App Router integration", () => {
     // explicitly included to prevent late discovery, re-optimisation
     // cascades and "Invalid hook call" errors during dev.
     //
-    // SSR: react-dom/server.edge is used for both renderToReadableStream
-    // (static import) and renderToStaticMarkup (dynamic import) in the
-    // SSR entry. It's included by @vitejs/plugin-rsc, so vinext doesn't
-    // need to add it explicitly.
+    // RSC and SSR: react, react-dom, react/jsx-runtime, react/jsx-dev-runtime
+    // so the automatic JSX transform always resolves to a copy that exports
+    // "jsx" (avoids "doesn't provide an export named: 'jsx'").
     //
-    // Client: react, react-dom, and react-dom/client are framework deps
-    // used for hydration that aren't in user source files.
+    // SSR: react-dom/server.edge is used in the SSR entry (added by @vitejs/plugin-rsc).
+    //
+    // Client: react, react-dom, react-dom/client, react/jsx-runtime, react/jsx-dev-runtime
+    // for hydration and JSX runtime.
+    const rscInclude = server.config.environments.rsc?.optimizeDeps?.include;
     const ssrInclude = server.config.environments.ssr?.optimizeDeps?.include;
     const clientInclude = server.config.environments.client?.optimizeDeps?.include;
 
+    const jsxRuntimeDeps = ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"];
+    for (const dep of jsxRuntimeDeps) {
+      expect(rscInclude).toContain(dep);
+      expect(ssrInclude).toContain(dep);
+    }
     // react-dom/server.edge should be present (added by @vitejs/plugin-rsc)
     expect(ssrInclude).toContain("react-dom/server.edge");
 
     expect(clientInclude).toContain("react");
     expect(clientInclude).toContain("react-dom");
     expect(clientInclude).toContain("react-dom/client");
+    expect(clientInclude).toContain("react/jsx-runtime");
+    expect(clientInclude).toContain("react/jsx-dev-runtime");
   });
 
   // ── CSRF protection for server actions ───────────────────────────────
@@ -1437,6 +1446,95 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(400);
     const body = await res.text();
     expect(body).toContain("Bad Request");
+  });
+});
+
+describe("startProdServer accepts Workers-style RSC entry ({ fetch })", () => {
+  let server: import("node:http").Server;
+  let baseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = path.join(os.tmpdir(), `vinext-test-${Date.now()}`);
+    const serverDir = path.join(tmpDir, "server");
+    const clientDir = path.join(tmpDir, "client");
+    fs.mkdirSync(serverDir, { recursive: true });
+    fs.mkdirSync(clientDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(serverDir, "index.js"),
+      "export default { async fetch(request) { return new Response('workers-entry-ok'); } };\n",
+      "utf-8",
+    );
+    const { startProdServer } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    server = await startProdServer({ port: 0, outDir: tmpDir, noCompression: true });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+    baseUrl = `http://localhost:${port}`;
+  }, 10000);
+
+  afterAll(() => {
+    server?.close();
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it("uses default.fetch when entry exports { fetch } instead of a function", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toBe("workers-entry-ok");
+  });
+});
+
+describe("startProdServer with custom entry path (--entry)", () => {
+  let server: import("node:http").Server;
+  let baseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = path.join(os.tmpdir(), `vinext-test-entry-${Date.now()}`);
+    const serverDir = path.join(tmpDir, "server");
+    const clientDir = path.join(tmpDir, "client");
+    fs.mkdirSync(serverDir, { recursive: true });
+    fs.mkdirSync(clientDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(serverDir, "index.js"),
+      "export default { async fetch(request) { return new Response('custom-entry-ok'); } };\n",
+      "utf-8",
+    );
+    const { startProdServer } = await import(
+      "../packages/vinext/src/server/prod-server.js"
+    );
+    server = await startProdServer({
+      port: 0,
+      outDir: tmpDir,
+      entry: path.join(serverDir, "index.js"),
+      noCompression: true,
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr ? addr.port : 0;
+    baseUrl = `http://localhost:${port}`;
+  }, 10000);
+
+  afterAll(() => {
+    server?.close();
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it("uses custom entry when options.entry is set", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toBe("custom-entry-ok");
   });
 });
 
