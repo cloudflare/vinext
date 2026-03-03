@@ -5218,7 +5218,7 @@ describe("next/compat/router shim", () => {
     // useRouter should be a named export, not a default export (unlike next/router).
     // Returns null in App Router context instead of throwing.
     expect(typeof mod.useRouter).toBe("function");
-    expect(mod.default).toBeUndefined();
+    expect((mod as Record<string, unknown>).default).toBeUndefined();
   });
 });
 
