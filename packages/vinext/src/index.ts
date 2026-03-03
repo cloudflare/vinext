@@ -2268,12 +2268,33 @@ hydrate();
       configureServer(server: ViteDevServer) {
         // Watch pages directory for file additions/removals to invalidate route cache.
         const pageExtensions = /\.(tsx?|jsx?|mdx)$/;
+
+        /**
+         * Invalidate the virtual RSC entry module in Vite's module graph.
+         *
+         * The App Router route table is baked into the virtual RSC entry
+         * at generation time. When routes are added or removed, clearing
+         * the route cache alone is not enough: the virtual module must
+         * also be invalidated so Vite re-calls the load() hook to
+         * regenerate the entry with the updated route table.
+         */
+        function invalidateRscEntryModule() {
+          const rscEnv = server.environments["rsc"];
+          if (!rscEnv) return;
+          const mod = rscEnv.moduleGraph.getModuleById(RESOLVED_RSC_ENTRY);
+          if (mod) {
+            rscEnv.moduleGraph.invalidateModule(mod);
+            rscEnv.hot.send({ type: "full-reload" });
+          }
+        }
+
         server.watcher.on("add", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
           }
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
             invalidateAppRouteCache();
+            invalidateRscEntryModule();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
@@ -2282,6 +2303,7 @@ hydrate();
           }
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
             invalidateAppRouteCache();
+            invalidateRscEntryModule();
           }
         });
 
