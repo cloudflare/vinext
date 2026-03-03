@@ -11,6 +11,9 @@
 | `vinext: command not found` | vinext not installed or not in PATH | Install vinext: `npm install vinext`, then run via `npx vinext` or package.json scripts |
 | RSC environment crash on dev start | Native Node module (sharp, satori) loaded in RSC env | vinext auto-stubs these in production; in dev, ensure these are only imported in server code behind dynamic `import()` |
 | `ASSETS binding not found` | wrangler.jsonc missing assets config | Add `"assets": { "not_found_handling": "none" }` to wrangler.jsonc |
+| `NEXT_REDIRECT` during/after server action | Mutation implemented as server action triggers RSC replay + auth-protected layout re-exec | Move high-volume mutations to route handlers (`/api/...`) and batch writes in one request |
+| `The requested module '/node_modules/react/jsx-runtime.js' does not provide an export named 'jsx'` | Dependency optimization/shim mismatch (often after `optimizeDeps.exclude` changes) | Remove broad `optimizeDeps.exclude` entries and restart dev with fresh Vite cache |
+| Public pages lose CSS/JS when logged out | Request guard redirects vinext assets | Treat `/assets/*` as internal/static in auth guard matcher and bypass auth redirects |
 
 ## ESM Conversion Issues
 
@@ -33,6 +36,15 @@ Alternatively, convert these files to ESM (`export default` syntax) and keep the
 **Symptom:** `getServerSideProps` / `getStaticProps` not executing.
 **Cause:** These are Pages Router APIs. They only work in `pages/`, not `app/`.
 **Fix:** This is expected Next.js behavior, not a vinext issue.
+
+## Auth + Session Stability (App Router)
+
+- If using `proxy.ts` auth gating, include vinext assets (`/assets/*`) in the internal/public bypass list.
+- In server-side auth helpers, merge cookie-store cookies into request headers before calling auth session APIs.
+- For Better Auth with SIWE:
+  - use persistent/shared DB storage
+  - ensure schema bootstrap includes Better Auth tables (especially `verification`)
+  - avoid running migration introspection on every request; run explicit bootstrap migrations instead
 
 ## Cloudflare Deployment Issues
 

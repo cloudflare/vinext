@@ -1,6 +1,6 @@
 ---
 name: migrate-to-vinext
-description: Migrates Next.js projects to vinext (Vite-based Next.js reimplementation). Load when asked to migrate, convert, or switch from Next.js to vinext. Handles compatibility scanning, package replacement, Vite config generation, ESM conversion, and deployment setup (Cloudflare Workers natively, other platforms via Nitro).
+description: Migrates Next.js projects to vinext (Vite-based Next.js reimplementation for Cloudflare Workers). Load when asked to migrate, convert, or switch from Next.js to vinext. Handles compatibility scanning, package replacement, Vite config generation, ESM conversion, and Cloudflare deployment setup.
 ---
 
 # Migrate Next.js to vinext
@@ -110,64 +110,11 @@ export default defineConfig({ plugins: [vinext()] });
 
 vinext auto-registers `@vitejs/plugin-rsc` for App Router when the `rsc` option is not explicitly `false`. No manual RSC plugin config needed for local development.
 
-## Phase 4: Deployment (Optional)
+## Phase 4: Cloudflare Deployment (Optional)
 
-### Option A: Cloudflare Workers (recommended for Cloudflare)
-
-If the user wants to deploy to Cloudflare Workers, use `vinext deploy`. It auto-generates `wrangler.jsonc`, worker entry, and Vite config if missing, installs `@cloudflare/vite-plugin` and `wrangler`, then builds and deploys.
+If the user wants to deploy to Cloudflare Workers, the simplest path is `vinext deploy` — it auto-generates `wrangler.jsonc`, worker entry, and Vite config if missing, installs `@cloudflare/vite-plugin` and `wrangler`, then builds and deploys.
 
 For manual setup or custom worker entries, see [references/config-examples.md](references/config-examples.md).
-
-#### Cloudflare Bindings (D1, R2, KV, AI, etc.)
-
-To access Cloudflare bindings (D1, R2, KV, AI, Queues, Durable Objects, etc.), use `import { env } from "cloudflare:workers"` in any server component, route handler, or server action:
-
-```tsx
-import { env } from "cloudflare:workers";
-
-export default async function Page() {
-  const result = await env.DB.prepare("SELECT * FROM posts").all();
-  return <div>{JSON.stringify(result)}</div>;
-}
-```
-
-This works because `@cloudflare/vite-plugin` runs server environments in workerd, where `cloudflare:workers` is a native module. No custom worker entry, no `getPlatformProxy()`, no special configuration needed. Just import and use.
-
-Bindings must be defined in `wrangler.jsonc`. For TypeScript types, run `wrangler types`.
-
-**IMPORTANT:** Do not use `getPlatformProxy()`, `getRequestContext()`, or custom worker entries with `fetch(request, env)` to access bindings. These are older patterns. `cloudflare:workers` is the recommended approach and works out of the box with vinext.
-
-### Option B: Other platforms (via Nitro)
-
-For deploying to Vercel, Netlify, AWS, Deno Deploy, or any other [Nitro-supported platform](https://v3.nitro.build/deploy), add the Nitro Vite plugin:
-
-```bash
-npm install nitro
-```
-
-```ts
-// vite.config.ts
-import { defineConfig } from "vite";
-import vinext from "vinext";
-import { nitro } from "nitro/vite";
-
-export default defineConfig({
-  plugins: [vinext(), nitro()],
-});
-```
-
-Build and deploy:
-
-```bash
-NITRO_PRESET=vercel npx vite build    # Vercel
-NITRO_PRESET=netlify npx vite build   # Netlify
-NITRO_PRESET=deno_deploy npx vite build  # Deno Deploy
-NITRO_PRESET=node npx vite build      # Node.js server
-```
-
-Nitro auto-detects the platform in most CI/CD environments, so the preset is often unnecessary.
-
-**Note:** For Cloudflare Workers, Nitro works but the native integration (`vinext deploy` / `@cloudflare/vite-plugin`) is recommended for the best developer experience with `cloudflare:workers` bindings, KV caching, and one-command deploys.
 
 ## Phase 5: Verify
 
@@ -190,6 +137,23 @@ See [references/troubleshooting.md](references/troubleshooting.md) for common mi
 | `runtime` / `preferredRegion` | Route segment configs ignored |
 | PPR (Partial Prerendering) | Use `"use cache"` directive instead (Next.js 16 approach) |
 
+## Field Learnings (From Real Migrations)
+
+1. Auth/session behavior can regress even when pages appear to load.
+   - In request-wide auth guards (`proxy.ts` / middleware equivalents), treat vinext static asset paths (`/assets/*`) as internal like `/_next/*`. Redirecting these to sign-in breaks anonymous/public rendering.
+   - When calling auth APIs server-side, do not rely only on `headers()`. Merge cookie-store cookies into the request headers so RSC/server-action paths consistently see session cookies.
+   - For any DB-backed auth stack, use persistent/shared storage (not in-memory) and ensure required schema exists before first request. Keep stack-specific details in troubleshooting docs.
+2. Avoid server actions for high-frequency client mutations.
+   - If a UI action creates many records (for example AI parsing into many day/category entries), use one route handler (`/api/...`) batch request instead of looped server actions.
+   - Reason: server actions trigger RSC replay and layout re-execution; with auth-protected layouts this can surface `NEXT_REDIRECT` noise and UX churn. This pattern also applies to Next.js generally, but often becomes more visible during migration.
+3. Be careful with `optimizeDeps.exclude`.
+   - Excluding broad component libraries can cause ESM/CJS runtime mismatches (for example `react/jsx-runtime` named export errors in dev).
+   - Prefer default optimization unless there is a proven incompatibility.
+4. Route segment `error.tsx` can expose shim/runtime gaps.
+   - If adding segment error boundaries triggers runtime import errors from vinext shims, remove that segment `error.tsx` and rely on the nearest parent or root error boundary until upstream fix is available.
+5. Some dev warnings are plugin/internal noise.
+   - Example: `<link rel=preload> must have a valid as value` can be emitted by current RSC tooling and may be non-blocking.
+
 ## Anti-patterns
 
 - **Do not modify `app/`, `pages/`, or application code.** vinext shims all `next/*` imports — no import rewrites needed.
@@ -197,5 +161,3 @@ See [references/troubleshooting.md](references/troubleshooting.md) for common mi
 - **Do not copy webpack/Turbopack config** into Vite config. Use Vite-native plugins instead.
 - **Do not skip the compatibility check.** Run `vinext check` before migration to surface issues early.
 - **Do not remove `next.config.js`** unless replacing it with `next.config.ts` or `.mjs`. vinext reads it for redirects, rewrites, headers, basePath, i18n, images, and env config.
-- **Do not use `getPlatformProxy()` or custom worker entries for bindings.** Use `import { env } from "cloudflare:workers"` instead. This is the modern pattern and works out of the box with vinext and `@cloudflare/vite-plugin`.
-- **For Cloudflare Workers, prefer the native integration over Nitro.** `vinext deploy` / `@cloudflare/vite-plugin` provides the best experience with `cloudflare:workers` bindings, KV caching, and image optimization. Nitro works for Cloudflare but the native setup is recommended.
