@@ -1,5 +1,5 @@
-import type { Plugin, ViteDevServer } from "vite";
-import { parseAst } from "vite";
+import type { Plugin, UserConfig, ViteDevServer } from "vite";
+import { loadEnv, parseAst } from "vite";
 import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, patternToNextFormat as pagesPatternToNextFormat, type Route } from "./routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
@@ -15,22 +15,34 @@ import {
   type ResolvedNextConfig,
   type NextRedirect,
   type NextRewrite,
+  type NextHeader,
 } from "./config/next-config.js";
 
-import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
 import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormalizePathCode } from "./server/middleware-codegen.js";
 import { normalizePath } from "./server/normalize-path.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
-import { safeRegExp, escapeHeaderSource, isExternalUrl, proxyExternalRequest } from "./config/config-matchers.js";
+import {
+  safeRegExp,
+  isExternalUrl,
+  proxyExternalRequest,
+  parseCookies,
+  matchHeaders,
+  matchRedirect,
+  matchRewrite,
+  type RequestContext,
+} from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
+import { detectPackageManager } from "./utils/project.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import MagicString from "magic-string";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import commonjs from "vite-plugin-commonjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -572,6 +584,7 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
   let hasCloudflarePlugin = false;
+  let hasNitroPlugin = false;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
@@ -644,6 +657,13 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
       rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: nextConfig?.headers ?? [],
       i18n: nextConfig?.i18n ?? null,
+      images: {
+        deviceSizes: nextConfig?.images?.deviceSizes,
+        imageSizes: nextConfig?.images?.imageSizes,
+        dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
+        contentDispositionType: nextConfig?.images?.contentDispositionType,
+        contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+      },
     });
 
     // Generate middleware code if middleware.ts exists
@@ -662,8 +682,15 @@ ${generateSafeRegExpCode("es5")}
 ${generateMiddlewareMatcherCode("es5")}
 
 export async function runMiddleware(request) {
-  var middlewareFn = middlewareModule.default || middlewareModule.middleware;
-  if (typeof middlewareFn !== "function") return { continue: true };
+  var isProxy = ${middlewarePath ? JSON.stringify(isProxyFile(middlewarePath)) : "false"};
+  var middlewareFn = isProxy
+    ? (middlewareModule.proxy ?? middlewareModule.default)
+    : (middlewareModule.middleware ?? middlewareModule.default);
+  if (typeof middlewareFn !== "function") {
+    var fileType = isProxy ? "Proxy" : "Middleware";
+    var expectedExport = isProxy ? "proxy" : "middleware";
+    throw new Error("The " + fileType + " file must export a function named \`" + expectedExport + "\` or a \`default\` function.");
+  }
 
   var config = middlewareModule.config;
   var matcher = config && config.matcher;
@@ -679,7 +706,15 @@ export async function runMiddleware(request) {
 
   if (!matchesMiddleware(normalizedPathname, matcher)) return { continue: true };
 
-  var nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+   // Construct a new Request with the decoded + normalized pathname so middleware
+   // always sees the same canonical path that the router uses.
+  var mwRequest = request;
+  if (normalizedPathname !== url.pathname) {
+    var mwUrl = new URL(url);
+    mwUrl.pathname = normalizedPathname;
+    mwRequest = new Request(mwUrl, request);
+  }
+  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
   var response;
   try { response = await middlewareFn(nextRequest); }
   catch (e) {
@@ -692,7 +727,13 @@ export async function runMiddleware(request) {
   if (response.headers.get("x-middleware-next") === "1") {
     var rHeaders = new Headers();
     for (var [key, value] of response.headers) {
-      if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") rHeaders.set(key, value);
+      // Keep x-middleware-request-* headers so the production server can
+      // apply middleware-request header overrides before stripping internals
+      // from the final client response.
+      if (
+        !key.startsWith("x-middleware-") ||
+        key.startsWith("x-middleware-request-")
+      ) rHeaders.append(key, value);
     }
     return { continue: true, responseHeaders: rHeaders };
   }
@@ -705,7 +746,9 @@ export async function runMiddleware(request) {
   var rewriteUrl = response.headers.get("x-middleware-rewrite");
   if (rewriteUrl) {
     var rwHeaders = new Headers();
-    for (var [k, v] of response.headers) { if (k !== "x-middleware-rewrite") rwHeaders.set(k, v); }
+    for (var [k, v] of response.headers) {
+      if (!k.startsWith("x-middleware-") || k.startsWith("x-middleware-request-")) rwHeaders.append(k, v);
+    }
     var rewritePath;
     try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
     catch { rewritePath = rewriteUrl; }
@@ -787,7 +830,8 @@ ${apiRouteEntries.join(",\n")}
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch {}
+  // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+  // the entry point. Decoding again would create a double-decode vector.
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
     if (params !== null) return { route, params };
@@ -1607,7 +1651,7 @@ hydrate();
     if (!resolvedRscPath) {
       throw new Error(
         "vinext: App Router detected but @vitejs/plugin-rsc is not installed.\n" +
-        "Run: npm install -D @vitejs/plugin-rsc",
+        "Run: " + detectPackageManager(process.cwd()) + " @vitejs/plugin-rsc",
       );
     }
     const rscImport = import(pathToFileURL(resolvedRscPath).href);
@@ -1624,16 +1668,35 @@ hydrate();
       });
   }
 
+  const imageImportDimCache = new Map<string, { width: number; height: number }>();
+
   const plugins: (Plugin | Promise<Plugin[]>)[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     tsconfigPaths(),
+    // Transform CJS require()/module.exports to ESM before other plugins
+    // analyze imports (RSC directive scanning, shim resolution, etc.)
+    commonjs(),
     {
       name: "vinext:config",
       enforce: "pre",
 
-      async config(config) {
+      async config(config, env) {
         root = config.root ?? process.cwd();
+
+        // Load .env files into process.env before anything else.
+        // Next.js loads .env files before evaluating next.config.js, so
+        // env vars are available in config, server-side code, and as
+        // NEXT_PUBLIC_* defines for the client bundle.
+        // Pass '' as prefix to load ALL vars, not just VITE_-prefixed ones.
+        const mode = env?.mode ?? "development";
+        const envDir = config.envDir ?? root;
+        const dotenvVars = loadEnv(mode, envDir, "");
+        for (const [key, value] of Object.entries(dotenvVars)) {
+          if (process.env[key] === undefined) {
+            process.env[key] = value;
+          }
+        }
 
         // Resolve the base directory for app/pages detection.
         // If appDir is provided, resolve it (supports both relative and absolute paths).
@@ -1699,6 +1762,11 @@ hydrate();
             JSON.stringify(imageSizes),
           );
         }
+        // Expose dangerouslyAllowSVG flag for the image shim's auto-skip logic.
+        // When false (default), .svg sources bypass the optimization endpoint.
+        defines["process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG"] = JSON.stringify(
+          String(nextConfig.images?.dangerouslyAllowSVG ?? false),
+        );
         // Draft mode secret — generated once at build time so the
         // __prerender_bypass cookie is consistent across all server
         // instances (e.g. multiple Cloudflare Workers isolates).
@@ -1712,6 +1780,7 @@ hydrate();
           "next/link": path.join(shimsDir, "link"),
           "next/head": path.join(shimsDir, "head"),
           "next/router": path.join(shimsDir, "router"),
+          "next/compat/router": path.join(shimsDir, "compat-router"),
           "next/image": path.join(shimsDir, "image"),
           "next/legacy/image": path.join(shimsDir, "legacy-image"),
           "next/dynamic": path.join(shimsDir, "dynamic"),
@@ -1777,6 +1846,11 @@ hydrate();
             p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")
           ),
         );
+        hasNitroPlugin = pluginsFlat.some(
+          (p: any) => p && typeof p === "object" && typeof p.name === "string" && (
+            p.name === "nitro" || p.name.startsWith("nitro:")
+          ),
+        );
 
         // Resolve PostCSS string plugin names that Vite can't handle.
         // Next.js projects commonly use array-form plugins like
@@ -1817,7 +1891,7 @@ hydrate();
             // @mdx-js/rollup not installed — warn but don't fail
             console.warn(
               "[vinext] MDX files detected but @mdx-js/rollup is not installed. " +
-              "Install it with: npm install -D @mdx-js/rollup"
+              "Install it with: " + detectPackageManager(process.cwd()) + " @mdx-js/rollup"
             );
           }
         }
@@ -1830,9 +1904,9 @@ hydrate();
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
         // environments where it can cause asset resolution issues.
-        const isMultiEnv = hasAppDir || hasCloudflarePlugin;
+        const isMultiEnv = hasAppDir || hasCloudflarePlugin || hasNitroPlugin;
 
-        const viteConfig: Record<string, any> = {
+        const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           build: {
@@ -1845,7 +1919,7 @@ hydrate();
               // warning handling is not lost.
               onwarn: (() => {
                 const userOnwarn = config.build?.rollupOptions?.onwarn;
-                return (warning: any, defaultHandler: any) => {
+                return (warning, defaultHandler) => {
                   if (
                     warning.code === "MODULE_LEVEL_DIRECTIVE" &&
                     (warning.message?.includes('"use client"') ||
@@ -1894,8 +1968,8 @@ hydrate();
           },
           // Externalize React packages from SSR transform — they are CJS and
           // must be loaded natively by Node, not through Vite's ESM evaluator.
-          // Skip when targeting Cloudflare Workers (they bundle everything).
-          ...(hasCloudflarePlugin ? {} : {
+          // Skip when targeting bundled runtimes (Cloudflare/Nitro bundle everything).
+          ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
             ssr: {
               external: ["react", "react-dom", "react-dom/server"],
             },
@@ -1948,14 +2022,14 @@ hydrate();
 
           viteConfig.environments = {
             rsc: {
-              ...(hasCloudflarePlugin ? {} : {
+              ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
                 resolve: {
                   // Externalize native/heavy packages so the RSC environment
                   // loads them natively via Node rather than through Vite's
                   // ESM module evaluator (which can't handle native addons).
                   // Note: Do NOT externalize react/react-dom here — they must
                   // be bundled with the "react-server" condition for RSC.
-                  // Skip when targeting Cloudflare Workers.
+                  // Skip when targeting bundled runtimes (Cloudflare/Nitro).
                   external: [
                     "satori",
                     "@resvg/resvg-js",
@@ -1989,11 +2063,15 @@ hydrate();
             client: {
               optimizeDeps: {
                 exclude: ["vinext"],
-                // react and react-dom are framework dependencies used for
-                // hydration. They aren't crawled from app/ source files so
-                // must be pre-included to prevent late discovery and page
-                // reloads during development.
-                include: ["react", "react-dom", "react-dom/client"],
+                // React packages aren't crawled from app/ source files,
+                // so must be pre-included to avoid late discovery (#25).
+                include: [
+                  "react",
+                  "react-dom",
+                  "react-dom/client",
+                  "react/jsx-runtime",
+                  "react/jsx-dev-runtime",
+                ],
               },
               build: {
                 // When targeting Cloudflare Workers, enable manifest generation
@@ -2223,12 +2301,33 @@ hydrate();
       configureServer(server: ViteDevServer) {
         // Watch pages directory for file additions/removals to invalidate route cache.
         const pageExtensions = /\.(tsx?|jsx?|mdx)$/;
+
+        /**
+         * Invalidate the virtual RSC entry module in Vite's module graph.
+         *
+         * The App Router route table is baked into the virtual RSC entry
+         * at generation time. When routes are added or removed, clearing
+         * the route cache alone is not enough: the virtual module must
+         * also be invalidated so Vite re-calls the load() hook to
+         * regenerate the entry with the updated route table.
+         */
+        function invalidateRscEntryModule() {
+          const rscEnv = server.environments["rsc"];
+          if (!rscEnv) return;
+          const mod = rscEnv.moduleGraph.getModuleById(RESOLVED_RSC_ENTRY);
+          if (mod) {
+            rscEnv.moduleGraph.invalidateModule(mod);
+            rscEnv.hot.send({ type: "full-reload" });
+          }
+        }
+
         server.watcher.on("add", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
           }
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
             invalidateAppRouteCache();
+            invalidateRscEntryModule();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
@@ -2237,6 +2336,7 @@ hydrate();
           }
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
             invalidateAppRouteCache();
+            invalidateRscEntryModule();
           }
         });
 
@@ -2249,7 +2349,7 @@ hydrate();
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
-          server.middlewares.use(async (req: any, res: any, next: any) => {
+          server.middlewares.use(async (req, res, next) => {
             try {
               let url: string = req.url ?? "/";
 
@@ -2425,7 +2525,7 @@ hydrate();
                   if (result.response) {
                     res.statusCode = result.response.status;
                     for (const [key, value] of result.response.headers) {
-                      res.setHeader(key, value);
+                      res.appendHeader(key, value);
                     }
                     const body = await result.response.text();
                     res.end(body);
@@ -2436,7 +2536,7 @@ hydrate();
                 // Apply middleware response headers
                 if (result.responseHeaders) {
                   for (const [key, value] of result.responseHeaders) {
-                    res.setHeader(key, value);
+                    res.appendHeader(key, value);
                   }
                 }
 
@@ -2449,9 +2549,26 @@ hydrate();
                 }
               }
 
+              // Build request context once for has/missing condition checks
+              // across headers, redirects, and rewrites.
+              const reqUrl = new URL(url, `http://${req.headers.host || "localhost"}`);
+              const reqCtxHeaders = new Headers(
+                Object.fromEntries(
+                  Object.entries(req.headers)
+                    .filter(([, v]) => v !== undefined)
+                    .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])
+                ),
+              );
+              const reqCtx: RequestContext = {
+                headers: reqCtxHeaders,
+                cookies: parseCookies(reqCtxHeaders.get("cookie")),
+                query: reqUrl.searchParams,
+                host: reqCtxHeaders.get("host") ?? reqUrl.host,
+              };
+
               // Apply custom headers from next.config.js
               if (nextConfig?.headers.length) {
-                applyHeaders(pathname, res, nextConfig.headers);
+                applyHeaders(pathname, res, nextConfig.headers, reqCtx);
               }
 
               // Apply redirects from next.config.js
@@ -2460,6 +2577,7 @@ hydrate();
                   pathname,
                   res,
                   nextConfig.redirects,
+                  reqCtx,
                 );
                 if (redirected) return;
               }
@@ -2468,7 +2586,7 @@ hydrate();
               let resolvedUrl = url;
               if (nextConfig?.rewrites.beforeFiles.length) {
                 resolvedUrl =
-                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles) ??
+                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles, reqCtx) ??
                   url;
               }
 
@@ -2509,6 +2627,7 @@ hydrate();
                 const afterRewrite = applyRewrites(
                   resolvedUrl.split("?")[0],
                   nextConfig.rewrites.afterFiles,
+                  reqCtx,
                 );
                 if (afterRewrite) resolvedUrl = afterRewrite;
               }
@@ -2534,6 +2653,7 @@ hydrate();
                 const fallbackRewrite = applyRewrites(
                   resolvedUrl.split("?")[0],
                   nextConfig.rewrites.fallback,
+                  reqCtx,
                 );
                 if (fallbackRewrite) {
                   // External fallback rewrite — proxy to external URL
@@ -2569,7 +2689,7 @@ hydrate();
       enforce: "pre",
 
       // Cache of image dimensions to avoid re-reading files
-      _dimCache: new Map<string, { width: number; height: number }>(),
+      _dimCache: imageImportDimCache,
 
       resolveId: {
         filter: { id: /\?vinext-meta$/ },
@@ -2586,7 +2706,7 @@ hydrate();
         const imagePath = id.replace("\0vinext-image-meta:", "");
 
         // Read from cache first
-        const cache = (this as any)._dimCache as Map<string, { width: number; height: number }>;
+        const cache = imageImportDimCache;
         let dims = cache.get(imagePath);
         if (!dims) {
           try {
@@ -2901,7 +3021,7 @@ hydrate();
           if (!resolvedRscTransformsPath) {
             throw new Error(
               "vinext: 'use cache' requires @vitejs/plugin-rsc to be installed.\n" +
-              "Run: npm install -D @vitejs/plugin-rsc",
+              "Run: " + detectPackageManager(process.cwd()) + " @vitejs/plugin-rsc",
             );
           }
           const { transformWrapExport, transformHoistInlineDirective } = await import(pathToFileURL(resolvedRscTransformsPath).href);
@@ -3013,7 +3133,7 @@ hydrate();
         sequential: true,
         order: "post",
         async handler(options) {
-          const envName = (this as any).environment?.name as string | undefined;
+          const envName = this.environment?.name;
           if (envName !== "rsc") return;
 
           const outDir = options.dir;
@@ -3052,6 +3172,37 @@ hydrate();
         },
       },
     },
+    // Write image config JSON for the App Router production server.
+    // The App Router RSC entry doesn't export vinextConfig (that's a Pages
+    // Router pattern), so we write a separate JSON file at build time that
+    // prod-server.ts reads at startup for SVG/security header config.
+    {
+      name: "vinext:image-config",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(options) {
+          const envName = this.environment?.name;
+          if (envName !== "rsc") return;
+
+          const outDir = options.dir;
+          if (!outDir) return;
+
+          const imageConfig = {
+            dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
+            contentDispositionType: nextConfig?.images?.contentDispositionType,
+            contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+          };
+
+          fs.writeFileSync(
+            path.join(outDir, "image-config.json"),
+            JSON.stringify(imageConfig),
+          );
+        },
+      },
+    },
     // Cloudflare Workers production build integration:
     // After all environments are built, compute lazy chunks from the client
     // build manifest and inject globals into the worker entry.
@@ -3070,11 +3221,11 @@ hydrate();
         sequential: true,
         order: "post",
         async handler() {
-          const envName = (this as any).environment?.name as string | undefined;
+          const envName = this.environment?.name
           if (!envName || !hasCloudflarePlugin) return;
           if (envName !== "client") return;
 
-          const envConfig = (this as any).environment?.config;
+          const envConfig = this.environment?.config;
           if (!envConfig) return;
           const buildRoot = envConfig.root ?? process.cwd();
           const distDir = path.resolve(buildRoot, "dist");
@@ -3265,7 +3416,8 @@ export function matchConfigPattern(
   if (
     pattern.includes("(") ||
     pattern.includes("\\") ||
-    /:\w+[*+][^/]/.test(pattern)
+    /:[\w-]+[*+][^/]/.test(pattern) ||
+    /:[\w-]+\./.test(pattern)
   ) {
     try {
       // Extract named params and their constraints from the pattern.
@@ -3273,13 +3425,14 @@ export function matchConfigPattern(
       // :param -> ([^/]+)
       // :param* -> (.*)
       // :param+ -> (.+)
+      // Param names may contain hyphens (e.g. :auth-method, :sign-in).
       const paramNames: string[] = [];
       // Single-pass conversion with procedural suffix handling. The tokenizer
       // matches only simple, non-overlapping tokens; quantifier/constraint
       // suffixes after :param are consumed procedurally to avoid polynomial
       // backtracking in the regex engine.
       let regexStr = "";
-      const tokenRe = /:(\w+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
+      const tokenRe = /:([\w-]+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
       let tok: RegExpExecArray | null;
       while ((tok = tokenRe.exec(pattern)) !== null) {
         if (tok[1] !== undefined) {
@@ -3323,7 +3476,8 @@ export function matchConfigPattern(
   }
 
   // Check for catch-all patterns (:param* or :param+) without regex groups
-  const catchAllMatch = pattern.match(/:(\w+)(\*|\+)$/);
+  // Param names may contain hyphens (e.g. :sign-in*, :sign-up+).
+  const catchAllMatch = pattern.match(/:([\w-]+)(\*|\+)$/);
   if (catchAllMatch) {
     const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
     const paramName = catchAllMatch[1];
@@ -3336,7 +3490,8 @@ export function matchConfigPattern(
     if (isPlus && (!rest || rest === "/")) return null;
     // For :path* zero segments is fine
     let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
-    try { restValue = decodeURIComponent(restValue); } catch { /* malformed percent-encoding */ }
+    // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+    // the entry point. Decoding again would create a double-decode vector.
     return { [paramName]: restValue };
   }
 
@@ -3376,22 +3531,15 @@ function applyRedirects(
   pathname: string,
   res: any,
   redirects: NextRedirect[],
+  ctx: RequestContext,
 ): boolean {
-  for (const redirect of redirects) {
-    const params = matchConfigPattern(pathname, redirect.source);
-    if (params) {
-      let dest = redirect.destination;
-      for (const [key, value] of Object.entries(params)) {
-        dest = dest.replace(`:${key}*`, value);
-        dest = dest.replace(`:${key}+`, value);
-        dest = dest.replace(`:${key}`, value);
-      }
-      // Sanitize to prevent open redirect via protocol-relative URLs
-      dest = sanitizeDestinationLocal(dest);
-      res.writeHead(redirect.permanent ? 308 : 307, { Location: dest });
-      res.end();
-      return true;
-    }
+  const result = matchRedirect(pathname, redirects, ctx);
+  if (result) {
+    // Sanitize to prevent open redirect via protocol-relative URLs
+    const dest = sanitizeDestinationLocal(result.destination);
+    res.writeHead(result.permanent ? 308 : 307, { Location: dest });
+    res.end();
+    return true;
   }
   return false;
 }
@@ -3468,20 +3616,12 @@ async function proxyExternalRewriteNode(
 function applyRewrites(
   pathname: string,
   rewrites: NextRewrite[],
+  ctx: RequestContext,
 ): string | null {
-  for (const rewrite of rewrites) {
-    const params = matchConfigPattern(pathname, rewrite.source);
-    if (params) {
-      let dest = rewrite.destination;
-      for (const [key, value] of Object.entries(params)) {
-        dest = dest.replace(`:${key}*`, value);
-        dest = dest.replace(`:${key}+`, value);
-        dest = dest.replace(`:${key}`, value);
-      }
-      // Sanitize to prevent open redirect via protocol-relative URLs
-      dest = sanitizeDestinationLocal(dest);
-      return dest;
-    }
+  const dest = matchRewrite(pathname, rewrites, ctx);
+  if (dest) {
+    // Sanitize to prevent open redirect via protocol-relative URLs
+    return sanitizeDestinationLocal(dest);
   }
   return null;
 }
@@ -3492,16 +3632,12 @@ function applyRewrites(
 function applyHeaders(
   pathname: string,
   res: any,
-  headers: Array<{ source: string; headers: Array<{ key: string; value: string }> }>,
+  headers: NextHeader[],
+  ctx: RequestContext,
 ): void {
-  for (const rule of headers) {
-    const escaped = escapeHeaderSource(rule.source);
-    const sourceRegex = safeRegExp("^" + escaped + "$");
-    if (sourceRegex && sourceRegex.test(pathname)) {
-      for (const header of rule.headers) {
-        res.setHeader(header.key, header.value);
-      }
-    }
+  const matched = matchHeaders(pathname, headers, ctx);
+  for (const header of matched) {
+    res.setHeader(header.key, header.value);
   }
 }
 

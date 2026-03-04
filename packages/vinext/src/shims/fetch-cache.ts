@@ -37,7 +37,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v1";
+const CACHE_KEY_PREFIX = "v2";
+const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
+
+class BodyTooLargeForCacheKeyError extends Error {
+  constructor() {
+    super("Fetch body too large for cache key generation");
+  }
+}
 
 /**
  * Collect all headers from the request, excluding the blocklist.
@@ -92,86 +99,95 @@ async function serializeBody(init?: RequestInit): Promise<string[]> {
   const bodyChunks: string[] = [];
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
+  let totalBodyBytes = 0;
+
+  const pushBodyChunk = (chunk: string): void => {
+    totalBodyBytes += encoder.encode(chunk).byteLength;
+    if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
+    bodyChunks.push(chunk);
+  };
 
   if (init.body instanceof Uint8Array) {
-    bodyChunks.push(decoder.decode(init.body));
+    if (init.body.byteLength > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
+    pushBodyChunk(decoder.decode(init.body));
     (init as any)._ogBody = init.body;
   } else if (typeof (init.body as any).getReader === "function") {
     // ReadableStream
     const readableBody = init.body as ReadableStream<Uint8Array | string>;
-    const chunks: Uint8Array[] = [];
+    const [bodyForHashing, bodyForFetch] = readableBody.tee();
+    (init as any)._ogBody = bodyForFetch;
+    const reader = bodyForHashing.getReader();
 
     try {
-      await readableBody.pipeTo(
-        new WritableStream({
-          write(chunk) {
-            if (typeof chunk === "string") {
-              chunks.push(encoder.encode(chunk));
-              bodyChunks.push(chunk);
-            } else {
-              chunks.push(chunk);
-              bodyChunks.push(decoder.decode(chunk, { stream: true }));
-            }
-          },
-        })
-      );
-      // Flush the decoder
-      bodyChunks.push(decoder.decode());
-
-      // Reconstruct the body so it can still be sent
-      const length = chunks.reduce((total, arr) => total + arr.length, 0);
-      const arrayBuffer = new Uint8Array(length);
-      let offset = 0;
-      for (const chunk of chunks) {
-        arrayBuffer.set(chunk, offset);
-        offset += chunk.length;
-      }
-      (init as any)._ogBody = arrayBuffer;
-    } catch (err) {
-      console.error("[vinext] Problem reading body for cache key", err);
-      // Still reconstruct what we have so originalFetch doesn't get a spent stream
-      if (chunks.length > 0) {
-        const length = chunks.reduce((total, arr) => total + arr.length, 0);
-        const partial = new Uint8Array(length);
-        let offset = 0;
-        for (const chunk of chunks) {
-          partial.set(chunk, offset);
-          offset += chunk.length;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (typeof value === "string") {
+          pushBodyChunk(value);
+        } else {
+          // Check raw byte size before the expensive decode to prevent
+          // OOM from a single oversized chunk.
+          totalBodyBytes += value.byteLength;
+          if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
+            throw new BodyTooLargeForCacheKeyError();
+          }
+          bodyChunks.push(decoder.decode(value, { stream: true }));
         }
-        (init as any)._ogBody = partial;
       }
+      const finalChunk = decoder.decode();
+      if (finalChunk) {
+        pushBodyChunk(finalChunk);
+      }
+    } catch (err) {
+      await reader.cancel();
+      if (err instanceof BodyTooLargeForCacheKeyError) {
+        throw err;
+      }
+      console.error("[vinext] Problem reading body for cache key", err);
     }
   } else if (init.body instanceof URLSearchParams) {
     // URLSearchParams — .toString() gives a stable serialization
     (init as any)._ogBody = init.body;
-    bodyChunks.push(init.body.toString());
+    pushBodyChunk(init.body.toString());
   } else if (typeof (init.body as any).keys === "function") {
     // FormData
     const formData = init.body as FormData;
     (init as any)._ogBody = init.body;
     for (const key of new Set(formData.keys())) {
       const values = formData.getAll(key);
-      bodyChunks.push(
-        `${key}=${(
-          await Promise.all(
-            values.map(async (val) => {
-              if (typeof val === "string") return val;
-              // Note: File name/type/lastModified are not included — only content.
-              // Two Files with identical content but different names produce the same key.
-              return await val.text();
-            })
-          )
-        ).join(",")}`
+      const serializedValues = await Promise.all(
+        values.map(async (val) => {
+          if (typeof val === "string") return val;
+          if (val.size > MAX_CACHE_KEY_BODY_BYTES || totalBodyBytes + val.size > MAX_CACHE_KEY_BODY_BYTES) {
+            throw new BodyTooLargeForCacheKeyError();
+          }
+          // Note: File name/type/lastModified are not included — only content.
+          // Two Files with identical content but different names produce the same key.
+          return await val.text();
+        })
       );
+      pushBodyChunk(`${key}=${serializedValues.join(",")}`);
     }
   } else if (typeof (init.body as any).arrayBuffer === "function") {
     // Blob
     const blob = init.body as Blob;
-    bodyChunks.push(await blob.text());
+    if (blob.size > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
+    pushBodyChunk(await blob.text());
     const arrayBuffer = await blob.arrayBuffer();
     (init as any)._ogBody = new Blob([arrayBuffer], { type: blob.type });
   } else if (typeof init.body === "string") {
-    bodyChunks.push(init.body);
+    // String length is always <= UTF-8 byte length, so this is a
+    // cheap lower-bound check that avoids encoder.encode() for huge strings.
+    if (init.body.length > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
+    pushBodyChunk(init.body);
     (init as any)._ogBody = init.body;
   }
 
@@ -366,7 +382,16 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     const tags = nextOpts?.tags ?? [];
-    const cacheKey = await buildFetchCacheKey(input, init);
+    let cacheKey: string;
+    try {
+      cacheKey = await buildFetchCacheKey(input, init);
+    } catch (err) {
+      if (err instanceof BodyTooLargeForCacheKeyError) {
+        const cleanInit = stripNextFromInit(init);
+        return originalFetch(input, cleanInit);
+      }
+      throw err;
+    }
     const handler = getCacheHandler();
 
     // Collect tags for this render pass

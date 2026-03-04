@@ -408,7 +408,7 @@ export function useRouter(): NextRouter {
     const onPopState = (e: PopStateEvent) => {
       setState(getPathnameAndQuery());
       // Re-render with the new page on back/forward navigation
-      navigateClient(window.location.pathname + window.location.search).then(() => {
+      void navigateClient(window.location.pathname + window.location.search).then(() => {
         restoreScrollPosition(e.state);
       });
     };
@@ -592,7 +592,7 @@ if (typeof window !== "undefined") {
     }
 
     routerEvents.emit("routeChangeStart", appUrl);
-    navigateClient(browserUrl).then(() => {
+    void navigateClient(browserUrl).then(() => {
       routerEvents.emit("routeChangeComplete", appUrl);
       restoreScrollPosition(e.state);
       window.dispatchEvent(new CustomEvent("vinext:navigate"));

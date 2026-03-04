@@ -7,11 +7,13 @@
  * the SSR entry for HTML generation.
  */
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import type { AppRoute } from "../routing/app-router.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { NextRedirect, NextRewrite, NextHeader } from "../config/next-config.js";
 import { generateDevOriginCheckCode } from "./dev-origin-check.js";
 import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormalizePathCode } from "./middleware-codegen.js";
+import { isProxyFile } from "./middleware.js";
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -217,7 +219,7 @@ import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
-${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(new URL("./metadata-routes.js", import.meta.url).pathname.replace(/\\/g, "/"))};` : ""}
+${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("./metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
 import { _consumeRequestScopedCacheLife, _runWithCacheState } from "next/cache";
 import { runWithFetchCache } from "vinext/fetch-cache";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
@@ -533,7 +535,9 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch {}
+   // NOTE: Do NOT decodeURIComponent here. The caller is responsible for decoding
+   // the pathname exactly once at the request entry point. Decoding again here
+   // would cause inconsistent path matching between middleware and routing.
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
     if (params !== null) return { route, params };
@@ -912,15 +916,15 @@ ${generateNormalizePathCode("modern")}
 
 // ── Config pattern matching (redirects, rewrites, headers) ──────────────
 function __matchConfigPattern(pathname, pattern) {
-  if (pattern.includes("(") || pattern.includes("\\\\") || /:\\w+[*+][^/]/.test(pattern)) {
+  if (pattern.includes("(") || pattern.includes("\\\\") || /:[\\w-]+[*+][^/]/.test(pattern) || /:[\\w-]+\\./.test(pattern)) {
     try {
       const paramNames = [];
       const regexStr = pattern
         .replace(/\\./g, "\\\\.")
-        .replace(/:([a-zA-Z_]\\w*)\\*(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.*)"; })
-        .replace(/:([a-zA-Z_]\\w*)\\+(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.+)"; })
-        .replace(/:([a-zA-Z_]\\w*)\\(([^)]+)\\)/g, (_, name, c) => { paramNames.push(name); return "(" + c + ")"; })
-        .replace(/:([a-zA-Z_]\\w*)/g, (_, name) => { paramNames.push(name); return "([^/]+)"; });
+        .replace(/:([\\w-]+)\\*(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.*)"; })
+        .replace(/:([\\w-]+)\\+(?:\\(([^)]+)\\))?/g, (_, name, c) => { paramNames.push(name); return c ? "(" + c + ")" : "(.+)"; })
+        .replace(/:([\\w-]+)\\(([^)]+)\\)/g, (_, name, c) => { paramNames.push(name); return "(" + c + ")"; })
+        .replace(/:([\\w-]+)/g, (_, name) => { paramNames.push(name); return "([^/]+)"; });
       const re = __safeRegExp("^" + regexStr + "$");
       if (!re) return null;
       const match = re.exec(pathname);
@@ -930,7 +934,7 @@ function __matchConfigPattern(pathname, pattern) {
       return params;
     } catch { /* fall through */ }
   }
-  const catchAllMatch = pattern.match(/:([a-zA-Z_]\\w*)(\\*|\\+)$/);
+  const catchAllMatch = pattern.match(/:([\\w-]+)(\\*|\\+)$/);
   if (catchAllMatch) {
     const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
     const paramName = catchAllMatch[1];
@@ -939,7 +943,8 @@ function __matchConfigPattern(pathname, pattern) {
     const rest = pathname.slice(prefix.replace(/\\/$/, "").length);
     if (isPlus && (!rest || rest === "/")) return null;
     let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
-    try { restValue = decodeURIComponent(restValue); } catch {}
+     // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+     // the request entry point. Decoding again would produce incorrect param values.
     return { [paramName]: restValue };
   }
   const parts = pattern.split("/");
@@ -1148,7 +1153,7 @@ async function __proxyExternalRequest(request, externalUrl) {
   return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: respHeaders });
 }
 
-function __applyConfigHeaders(pathname) {
+function __applyConfigHeaders(pathname, ctx) {
   const result = [];
   for (const rule of __configHeaders) {
     const groups = [];
@@ -1161,10 +1166,15 @@ function __applyConfigHeaders(pathname) {
       .replace(/\\+/g, "\\\\+")
       .replace(/\\?/g, "\\\\?")
       .replace(/\\*/g, ".*")
-      .replace(/:[a-zA-Z_]\\w*/g, "[^/]+")
+      .replace(/:[\\w-]+/g, "[^/]+")
       .replace(/___GROUP_(\\d+)___/g, (_, idx) => "(" + groups[Number(idx)] + ")");
     const sourceRegex = __safeRegExp("^" + escaped + "$");
-    if (sourceRegex && sourceRegex.test(pathname)) result.push(...rule.headers);
+    if (sourceRegex && sourceRegex.test(pathname)) {
+      if (ctx && (rule.has || rule.missing)) {
+        if (!__checkHasConditions(rule.has, rule.missing, ctx)) continue;
+      }
+      result.push(...rule.headers);
+    }
   }
   return result;
 }
@@ -1181,15 +1191,17 @@ export default async function handler(request) {
       _runWithCacheState(() =>
         _runWithPrivateCache(() =>
           runWithFetchCache(async () => {
-            const response = await _handleRequest(request);
+            const __reqCtx = __buildRequestContext(request);
+            const response = await _handleRequest(request, __reqCtx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
             if (__configHeaders.length && response && response.headers && !(response.status >= 300 && response.status < 400)) {
               const url = new URL(request.url);
-              let pathname = url.pathname;
+              let pathname;
+              try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
               ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
-              const extraHeaders = __applyConfigHeaders(pathname);
+              const extraHeaders = __applyConfigHeaders(pathname, __reqCtx);
               for (const h of extraHeaders) {
                 response.headers.set(h.key, h.value);
               }
@@ -1202,7 +1214,7 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request) {
+async function _handleRequest(request, __reqCtx) {
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -1248,7 +1260,6 @@ async function _handleRequest(request) {
   }
 
   // ── Apply redirects from next.config.js ───────────────────────────────
-  const __reqCtx = __buildRequestContext(request);
   if (__configRedirects.length) {
     const __redir = __applyConfigRedirects(pathname, __reqCtx);
     if (__redir) {
@@ -1286,30 +1297,41 @@ async function _handleRequest(request) {
   let _middlewareRewriteStatus = null;
 
   ${middlewarePath ? `
-   // Run proxy/middleware if present and path matches
-  const middlewareFn = middlewareModule.default || middlewareModule.proxy || middlewareModule.middleware;
+   // Run proxy/middleware if present and path matches.
+   // Validate exports match the file type (proxy.ts vs middleware.ts), matching Next.js behavior.
+   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+  const _isProxy = ${JSON.stringify(isProxyFile(middlewarePath))};
+  const middlewareFn = _isProxy
+    ? (middlewareModule.proxy ?? middlewareModule.default)
+    : (middlewareModule.middleware ?? middlewareModule.default);
+  if (typeof middlewareFn !== "function") {
+    const _fileType = _isProxy ? "Proxy" : "Middleware";
+    const _expectedExport = _isProxy ? "proxy" : "middleware";
+    throw new Error("The " + _fileType + " file must export a function named \`" + _expectedExport + "\` or a \`default\` function.");
+  }
   const middlewareMatcher = middlewareModule.config?.matcher;
-  if (typeof middlewareFn === "function" && matchesMiddleware(cleanPathname, middlewareMatcher)) {
+  if (matchesMiddleware(cleanPathname, middlewareMatcher)) {
     try {
       // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
-      // Strip .rsc suffix from the URL — it's an internal transport detail that
-      // middleware should never see (matches Next.js behavior).
-      let mwRequest = request;
-      if (isRscRequest && pathname.endsWith(".rsc")) {
-        const mwUrl = new URL(request.url);
-        mwUrl.pathname = cleanPathname;
-        mwRequest = new Request(mwUrl, request);
-      }
+       // Always construct a new Request with the fully decoded + normalized pathname
+       // so middleware and the router see the same canonical path.
+      const mwUrl = new URL(request.url);
+      mwUrl.pathname = cleanPathname;
+      const mwRequest = new Request(mwUrl, request);
       const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
       const mwResponse = await middlewareFn(nextRequest);
       if (mwResponse) {
         // Check for x-middleware-next (continue)
         if (mwResponse.headers.get("x-middleware-next") === "1") {
-          // Middleware wants to continue - save headers to merge into final response
-          _middlewareResponseHeaders = new Headers();
+          // Middleware wants to continue — collect all headers except the two
+          // control headers we've already consumed.  x-middleware-request-*
+          // headers are kept so applyMiddlewareRequestHeaders() can unpack them;
+          // the blanket strip loop after that call removes every remaining
+          // x-middleware-* header before the set is merged into the response.
+           _middlewareResponseHeaders = new Headers();
           for (const [key, value] of mwResponse.headers) {
             if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
-              _middlewareResponseHeaders.set(key, value);
+              _middlewareResponseHeaders.append(key, value);
             }
           }
         } else {
@@ -1330,7 +1352,7 @@ async function _handleRequest(request) {
             _middlewareResponseHeaders = new Headers();
             for (const [key, value] of mwResponse.headers) {
               if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
-                _middlewareResponseHeaders.set(key, value);
+                _middlewareResponseHeaders.append(key, value);
               }
             }
           } else {
@@ -1569,7 +1591,9 @@ async function _handleRequest(request) {
         err instanceof Error ? err : new Error(String(err)),
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      ).catch(() => {});
+      ).catch((reportErr) => {
+        console.error("[vinext] Failed to report server action error:", reportErr);
+      });
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response(
@@ -1733,7 +1757,9 @@ async function _handleRequest(request) {
           err instanceof Error ? err : new Error(String(err)),
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        ).catch(() => {});
+        ).catch((reportErr) => {
+          console.error("[vinext] Failed to report route handler error:", reportErr);
+        });
         return new Response(null, { status: 500 });
       }
     }
@@ -2114,7 +2140,7 @@ async function _handleRequest(request) {
     // Merge middleware response headers into the final response
     if (_middlewareResponseHeaders) {
       for (const [key, value] of _middlewareResponseHeaders) {
-        response.headers.set(key, value);
+        response.headers.append(key, value);
       }
     }
     // Apply custom status code from middleware rewrite
@@ -2209,7 +2235,7 @@ if (import.meta.hot) {
 export function generateSsrEntry(): string {
   return `
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
-import { renderToReadableStream } from "react-dom/server.edge";
+import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
 import { setNavigationContext } from "next/navigation";
 import { runWithNavigationContext as _runWithNavCtx } from "vinext/navigation-state";
 import { safeJsonStringify } from "vinext/html";
@@ -2414,7 +2440,6 @@ export async function handleSsr(rscStream, navContext, fontData) {
     const insertedElements = flushServerInsertedHTML();
 
     // Render the inserted elements to HTML strings
-    const { renderToStaticMarkup } = await import("react-dom/server.edge");
     const { createElement, Fragment } = await import("react");
     let insertedHTML = "";
     for (const el of insertedElements) {
@@ -2586,6 +2611,24 @@ export async function handleSsr(rscStream, navContext, fontData) {
   }
   }); // end _runWithNavCtx
 }
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith("//")) {
+      return new Response("404 Not Found", { status: 404 });
+    }
+    const rscModule = await import.meta.viteRsc.loadModule("rsc", "index");
+    const result = await rscModule.default(request);
+    if (result instanceof Response) {
+      return result;
+    }
+    if (result === null || result === undefined) {
+      return new Response("Not Found", { status: 404 });
+    }
+    return new Response(String(result), { status: 200 });
+  },
+};
 `;
 }
 
@@ -2839,6 +2882,7 @@ async function main() {
       if (!navResponse) {
         navResponse = await fetch(rscUrl, {
           headers: { Accept: "text/x-component" },
+          credentials: "include",
         });
       }
 

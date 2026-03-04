@@ -25,7 +25,7 @@ import path from "node:path";
 import zlib from "node:zlib";
 import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
-import { IMAGE_OPTIMIZATION_PATH, IMAGE_CONTENT_SECURITY_POLICY, parseImageParams, isSafeImageContentType, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "./image-optimization.js";
+import { IMAGE_OPTIMIZATION_PATH, IMAGE_CONTENT_SECURITY_POLICY, parseImageParams, isSafeImageContentType, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, type ImageConfig } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
 import { computeLazyChunks } from "../index.js";
 
@@ -466,6 +466,16 @@ interface AppRouterServerOptions {
 async function startAppRouterServer(options: AppRouterServerOptions) {
   const { port, host, clientDir, rscEntryPath, compress } = options;
 
+  // Load image config written at build time by vinext:image-config plugin.
+  // This provides SVG/security header settings for the image optimization endpoint.
+  let imageConfig: ImageConfig | undefined;
+  const imageConfigPath = path.join(path.dirname(rscEntryPath), "image-config.json");
+  if (fs.existsSync(imageConfigPath)) {
+    try {
+      imageConfig = JSON.parse(fs.readFileSync(imageConfigPath, "utf-8"));
+    } catch { /* ignore parse errors */ }
+  }
+
   // Import the RSC handler (use file:// URL for reliable dynamic import)
   const rscModule = await import(pathToFileURL(rscEntryPath).href);
   const rscHandler: (request: Request) => Promise<Response> = rscModule.default;
@@ -514,19 +524,19 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         return;
       }
       // Block SVG and other unsafe content types by checking the file extension.
-      // This must happen before serving to prevent XSS via SVG passthrough.
+      // SVG is only allowed when dangerouslyAllowSVG is enabled in next.config.js.
       const ext = path.extname(params.imageUrl).toLowerCase();
       const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
-      if (!isSafeImageContentType(ct)) {
+      if (!isSafeImageContentType(ct, imageConfig?.dangerouslyAllowSVG)) {
         res.writeHead(400);
         res.end("The requested resource is not an allowed image type");
         return;
       }
       // Serve the original image with CSP and security headers
       const imageSecurityHeaders: Record<string, string> = {
-        "Content-Security-Policy": IMAGE_CONTENT_SECURITY_POLICY,
+        "Content-Security-Policy": imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": "inline",
+        "Content-Disposition": imageConfig?.contentDispositionType ?? "inline",
       };
       if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
@@ -622,12 +632,21 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     ...(vinextConfig?.images?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
     ...(vinextConfig?.images?.imageSizes ?? DEFAULT_IMAGE_SIZES),
   ];
+  // Extract image security config for SVG handling and security headers
+  const pagesImageConfig: ImageConfig | undefined = vinextConfig?.images ? {
+    dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
+    contentDispositionType: vinextConfig.images.contentDispositionType,
+    contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
+  } : undefined;
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
-    let url = rawUrl;
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
-    const rawPagesPathname = url.split("?")[0].replaceAll("\\", "/");
+    // Rebuild `url` from the decoded pathname + original query string so all
+    // downstream consumers (resolvedUrl, resolvedPathname, config matchers)
+    // always work with the decoded, canonical path.
+    const rawPagesPathname = rawUrl.split("?")[0].replaceAll("\\", "/");
+    const rawQs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
     let pathname: string;
     try {
       pathname = normalizePath(decodeURIComponent(rawPagesPathname));
@@ -637,6 +656,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       res.end("Bad Request");
       return;
     }
+    let url = pathname + rawQs;
 
     // Guard against protocol-relative URL open redirect attacks.
     // Check rawPagesPathname before normalizePath collapses //.
@@ -670,18 +690,19 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         res.end("Bad Request");
         return;
       }
-      // Block SVG and other unsafe content types
+      // Block SVG and other unsafe content types.
+      // SVG is only allowed when dangerouslyAllowSVG is enabled.
       const ext = path.extname(params.imageUrl).toLowerCase();
       const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
-      if (!isSafeImageContentType(ct)) {
+      if (!isSafeImageContentType(ct, pagesImageConfig?.dangerouslyAllowSVG)) {
         res.writeHead(400);
         res.end("The requested resource is not an allowed image type");
         return;
       }
       const imageSecurityHeaders: Record<string, string> = {
-        "Content-Security-Policy": IMAGE_CONTENT_SECURITY_POLICY,
+        "Content-Security-Policy": pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": "inline",
+        "Content-Disposition": pagesImageConfig?.contentDispositionType ?? "inline",
       };
       if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
@@ -757,16 +778,37 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           if (result.response) {
             // Use arrayBuffer() to handle binary response bodies correctly
             const body = Buffer.from(await result.response.arrayBuffer());
-            res.writeHead(result.response.status, Object.fromEntries(result.response.headers));
+            // Preserve multi-value headers (especially Set-Cookie) by
+            // using getSetCookie() for cookies and forEach for the rest.
+            const respHeaders: Record<string, string | string[]> = {};
+            result.response.headers.forEach((value: string, key: string) => {
+              if (key.toLowerCase() === "set-cookie") return; // handled below
+              respHeaders[key] = value;
+            });
+            const setCookies = result.response.headers.getSetCookie?.() ?? [];
+            if (setCookies.length > 0) respHeaders["set-cookie"] = setCookies;
+            res.writeHead(result.response.status, respHeaders);
             res.end(body);
             return;
           }
         }
 
-        // Collect middleware response headers to merge into final response
+        // Collect middleware response headers to merge into final response.
+        // Use an array for Set-Cookie to preserve multiple values.
         if (result.responseHeaders) {
           for (const [key, value] of result.responseHeaders) {
-            middlewareHeaders[key] = value;
+            if (key.toLowerCase() === "set-cookie") {
+              const existing = middlewareHeaders[key];
+              if (Array.isArray(existing)) {
+                existing.push(value);
+              } else if (existing) {
+                (middlewareHeaders as any)[key] = [existing, value];
+              } else {
+                (middlewareHeaders as any)[key] = [value];
+              }
+            } else {
+              middlewareHeaders[key] = value;
+            }
           }
         }
 
@@ -800,7 +842,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // ── 5. Apply custom headers from next.config.js ───────────────
       if (configHeaders.length) {
-        const matched = matchHeaders(resolvedPathname, configHeaders);
+        const matched = matchHeaders(resolvedPathname, configHeaders, reqCtx);
         for (const h of matched) {
           middlewareHeaders[h.key.toLowerCase()] = h.value;
         }

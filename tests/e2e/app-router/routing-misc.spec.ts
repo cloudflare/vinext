@@ -44,7 +44,7 @@ test.describe("Trailing Slash (OpenNext compat)", () => {
 });
 
 test.describe("Catch-all API Route with Hyphen (OpenNext compat)", () => {
-  // Ref: opennextjs-cloudflare dynamic.catch-all.hypen.test.ts
+  // Ref: opennextjs-cloudflare dynamic.catch-all.hyphen.test.ts
   // https://github.com/opennextjs/opennextjs-cloudflare/issues/942
   test("catch-all API route captures multiple segments including hyphens", async ({
     request,

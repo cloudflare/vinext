@@ -18,6 +18,7 @@
     "react-dom": "^19.0.0",
     "use-count-up": "3.0.1",
     "vinext": "workspace:*",
+    "react-server-dom-webpack": "^19.2.4",
     "zod": "3.24.3"
   },
   "devDependencies": {

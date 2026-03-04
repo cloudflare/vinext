@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { createServer, build, type ViteDevServer } from "vite";
 import path from "node:path";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
 import { pathToFileURL } from "node:url";
 import vinext from "../packages/vinext/src/index.js";
 import { PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
@@ -197,6 +199,28 @@ describe("Pages Router integration", () => {
     expect(html).toMatch(/Path:\s*(<!--\s*-->)?\s*intro/);
   });
 
+  // --- Hyphenated param names (issue #71) ---
+
+  it("renders optional catch-all with hyphenated param name [[...sign-up]]", async () => {
+    const res = await fetch(`${baseUrl}/sign-up`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Sign Up");
+    expect(html).toContain('data-testid="sign-up-page"');
+    expect(html).toMatch(/Segments:.*0/);
+    expect(html).toContain("(root)");
+  });
+
+  it("renders hyphenated optional catch-all with segments", async () => {
+    const res = await fetch(`${baseUrl}/sign-up/step/2`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toContain("Sign Up");
+    expect(html).toMatch(/Segments:.*2/);
+  });
+
   // --- Hydration ---
 
   // --- next.config.js ---
@@ -210,6 +234,21 @@ describe("Pages Router integration", () => {
   it("applies custom headers from next.config.js", async () => {
     const res = await fetch(`${baseUrl}/api/hello`);
     expect(res.headers.get("x-custom-header")).toBe("vinext");
+  });
+
+  // Ported from PR #47 by @ibruno
+  it("applies has/missing conditions for next.config.js headers", async () => {
+    const guestRes = await fetch(`${baseUrl}/about`);
+    expect(guestRes.status).toBe(200);
+    expect(guestRes.headers.get("x-guest-only-header")).toBe("1");
+    expect(guestRes.headers.get("x-auth-only-header")).toBeNull();
+
+    const authRes = await fetch(`${baseUrl}/about`, {
+      headers: { Cookie: "logged-in=1" },
+    });
+    expect(authRes.status).toBe(200);
+    expect(authRes.headers.get("x-auth-only-header")).toBe("1");
+    expect(authRes.headers.get("x-guest-only-header")).toBeNull();
   });
 
   it("applies beforeFiles rewrites from next.config.js", async () => {
@@ -228,6 +267,29 @@ describe("Pages Router integration", () => {
 
   it("applies fallback rewrites from next.config.js", async () => {
     const res = await fetch(`${baseUrl}/fallback-rewrite`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
+  });
+
+  // ── Percent-encoded paths should be decoded before config matching ──
+
+  it("percent-encoded redirect path is decoded before config matching (dev)", async () => {
+    // /%6Fld-%61bout decodes to /old-about → /about (permanent redirect)
+    const res = await fetch(`${baseUrl}/%6Fld-%61bout`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/about");
+  });
+
+  it("percent-encoded header path is decoded before config matching (dev)", async () => {
+    // /%61pi/hello decodes to /api/hello → X-Custom-Header: vinext
+    const res = await fetch(`${baseUrl}/%61pi/hello`);
+    expect(res.headers.get("x-custom-header")).toBe("vinext");
+  });
+
+  it("percent-encoded rewrite path is decoded before config matching (dev)", async () => {
+    // /%62efore-rewrite decodes to /before-rewrite → /about
+    const res = await fetch(`${baseUrl}/%62efore-rewrite`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("About");
@@ -684,6 +746,132 @@ describe("Production build", () => {
     expect(entryContent).toContain("/ssr");
   });
 
+  it("runMiddleware in generated pages prod entry executes named proxy export", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-proxy-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Page() { return <div>ok</div>; }\n",
+      );
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "proxy.js"),
+        `import { NextResponse } from "next/server";
+export function proxy(request) {
+  const url = new URL(request.url);
+  if (url.pathname === "/protected") {
+    return NextResponse.redirect(new URL("/login", request.url));
+  }
+  return NextResponse.next();
+}
+export const config = { matcher: ["/protected"] };
+`,
+      );
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: {
+            output: {
+              entryFileNames: "entry.js",
+            },
+          },
+        },
+      });
+
+      const entryPath = path.join(fixtureOutDir, "server", "entry.js");
+      const entryModule = await import(pathToFileURL(entryPath).href);
+      const result = await entryModule.runMiddleware(new Request("http://localhost/protected"));
+
+      expect(result.continue).toBe(false);
+      expect(result.redirectStatus).toBe(307);
+      expect(result.redirectUrl).toContain("/login");
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("runMiddleware in generated pages prod entry prefers named proxy export over default (matching Next.js)", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-proxy-precedence-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "index.tsx"),
+        "export default function Page() { return <div>ok</div>; }\n",
+      );
+
+      await fsp.writeFile(
+        path.join(tmpRoot, "proxy.js"),
+        `import { NextResponse } from "next/server";
+export default function defaultProxy(request) {
+  const url = new URL(request.url);
+  if (url.pathname === "/protected") {
+    return NextResponse.redirect(new URL("/from-default", request.url));
+  }
+  return NextResponse.next();
+}
+export function proxy(request) {
+  const url = new URL(request.url);
+  if (url.pathname === "/protected") {
+    return NextResponse.redirect(new URL("/from-proxy", request.url));
+  }
+  return NextResponse.next();
+}
+export function middleware(request) {
+  const url = new URL(request.url);
+  if (url.pathname === "/protected") {
+    return NextResponse.redirect(new URL("/from-middleware", request.url));
+  }
+  return NextResponse.next();
+}
+export const config = { matcher: ["/protected"] };
+`,
+      );
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: {
+            output: {
+              entryFileNames: "entry.js",
+            },
+          },
+        },
+      });
+
+      const entryPath = path.join(fixtureOutDir, "server", "entry.js");
+      const entryModule = await import(pathToFileURL(entryPath).href);
+      const result = await entryModule.runMiddleware(new Request("http://localhost/protected"));
+
+      expect(result.continue).toBe(false);
+      expect(result.redirectStatus).toBe(307);
+      expect(result.redirectUrl).toContain("/from-proxy");
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it("produces client bundle with page chunks and SSR manifest", async () => {
     // Build the client bundle
     await build({
@@ -903,6 +1091,22 @@ describe("Production build", () => {
     expect(result.continue).toBe(true);
     expect(result.responseHeaders).toBeDefined();
     expect(result.responseHeaders.get("x-custom-middleware")).toBe("active");
+  });
+
+  it("runMiddleware preserves x-middleware-request-* headers from NextResponse.next({ request: { headers } })", async () => {
+    const serverEntryPath = path.join(outDir, "server", "entry.js");
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
+    // /header-override triggers NextResponse.next({ request: { headers } }) which sets
+    // x-middleware-request-x-custom-injected header. The runMiddleware codegen must
+    // preserve these so the downstream consumer can unpack them into actual request headers.
+    const request = new Request("http://localhost/header-override");
+    const result = await serverEntry.runMiddleware(request);
+    expect(result.continue).toBe(true);
+    expect(result.responseHeaders).toBeDefined();
+    // x-middleware-request-* headers must be preserved (the fix)
+    expect(result.responseHeaders.get("x-middleware-request-x-custom-injected")).toBe("from-middleware");
+    // Other x-middleware-* internal headers must be stripped
+    expect(result.responseHeaders.get("x-middleware-next")).toBeNull();
   });
 
   it("runMiddleware returns 500 when middleware throws", async () => {
@@ -1133,11 +1337,53 @@ describe("Production server next.config.js features (Pages Router)", () => {
     expect(res.headers.get("x-custom-header")).toBe("vinext");
   });
 
+  // Ported from PR #47 by @ibruno
+  it("applies has/missing conditions for next.config.js headers", async () => {
+    const guestRes = await fetch(`${prodUrl}/about`);
+    expect(guestRes.status).toBe(200);
+    expect(guestRes.headers.get("x-guest-only-header")).toBe("1");
+    expect(guestRes.headers.get("x-auth-only-header")).toBeNull();
+
+    const authRes = await fetch(`${prodUrl}/about`, {
+      headers: { Cookie: "logged-in=1" },
+    });
+    expect(authRes.status).toBe(200);
+    expect(authRes.headers.get("x-auth-only-header")).toBe("1");
+    expect(authRes.headers.get("x-guest-only-header")).toBeNull();
+  });
+
   it("serves normal pages unaffected by config rules", async () => {
     const res = await fetch(`${prodUrl}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("Hello, vinext!");
+  });
+
+  // ── Percent-encoded paths should be decoded before config matching ──
+  // Config matchers must receive decoded paths so that encoded variants
+  // like /%6Fld-%61bout still match the /old-about redirect rule.
+
+  it("percent-encoded redirect path is decoded before config matching (prod)", async () => {
+    // /old-about → /about (permanent redirect). /%6Fld-%61bout decodes to /old-about.
+    const res = await fetch(`${prodUrl}/%6Fld-%61bout`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("percent-encoded header path is decoded before config matching (prod)", async () => {
+    // /api/(.*) should receive X-Custom-Header: vinext.
+    // /%61pi/hello decodes to /api/hello.
+    const res = await fetch(`${prodUrl}/%61pi/hello`);
+    expect(res.headers.get("x-custom-header")).toBe("vinext");
+  });
+
+  it("percent-encoded rewrite path is decoded before config matching (prod)", async () => {
+    // /before-rewrite → /about (beforeFiles rewrite).
+    // /%62efore-rewrite decodes to /before-rewrite.
+    const res = await fetch(`${prodUrl}/%62efore-rewrite`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("About");
   });
 });
 

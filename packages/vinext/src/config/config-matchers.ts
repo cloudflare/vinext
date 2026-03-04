@@ -175,15 +175,16 @@ export function escapeHeaderSource(source: string): string {
   });
 
   // Step 2: single-pass conversion of the placeholder-bearing string.
-  // Match named params (:\w+), sentinel group placeholders, metacharacters, and literal text.
+  // Match named params (:[\w-]+), sentinel group placeholders, metacharacters, and literal text.
   // The regex uses non-overlapping alternatives to avoid backtracking:
-  //   :\w+  — named parameter (constraint sentinel is checked procedurally)
+  //   :[\w-]+  — named parameter (constraint sentinel is checked procedurally;
+  //              param names may contain hyphens, e.g. :auth-method)
   //   sentinel group — standalone regex group placeholder
   //   [.+?*] — single metachar to escape/convert
   //   [^.+?*:\uE000]+ — literal text (excludes all chars that start other alternatives)
   let result = "";
   const re = new RegExp(
-    `${S}G(\\d+)${S}|:\\w+|[.+?*]|[^.+?*:\\uE000]+`, // lgtm[js/redos] — alternatives are non-overlapping
+    `${S}G(\\d+)${S}|:[\\w-]+|[.+?*]|[^.+?*:\\uE000]+`, // lgtm[js/redos] — alternatives are non-overlapping
     "g",
   );
   let m: RegExpExecArray | null;
@@ -371,19 +372,24 @@ export function matchConfigPattern(
   // followed by a literal suffix (e.g. "/:path*.md"). Without this, the suffix
   // pattern falls through to the simple segment matcher which incorrectly treats
   // the whole segment (":path*.md") as a named parameter and matches everything.
+  // The last condition catches simple params with literal suffixes (e.g. "/:slug.md")
+  // where the param name is followed by a dot — the simple matcher would treat
+  // "slug.md" as the param name and match any single segment regardless of suffix.
   if (
     pattern.includes("(") ||
     pattern.includes("\\") ||
-    /:\w+[*+][^/]/.test(pattern)
+    /:[\w-]+[*+][^/]/.test(pattern) ||
+    /:[\w-]+\./.test(pattern)
   ) {
     try {
+      // Param names may contain hyphens (e.g. :auth-method, :sign-in).
       const paramNames: string[] = [];
       // Single-pass conversion with procedural suffix handling. The tokenizer
       // matches only simple, non-overlapping tokens; quantifier/constraint
       // suffixes after :param are consumed procedurally to avoid polynomial
       // backtracking in the regex engine.
       let regexStr = "";
-      const tokenRe = /:(\w+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
+      const tokenRe = /:([\w-]+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
       let tok: RegExpExecArray | null;
       while ((tok = tokenRe.exec(pattern)) !== null) {
         if (tok[1] !== undefined) {
@@ -427,7 +433,8 @@ export function matchConfigPattern(
   }
 
   // Check for catch-all patterns (:param* or :param+) without regex groups
-  const catchAllMatch = pattern.match(/:(\w+)(\*|\+)$/);
+  // Param names may contain hyphens (e.g. :sign-in*, :sign-up+).
+  const catchAllMatch = pattern.match(/:([\w-]+)(\*|\+)$/);
   if (catchAllMatch) {
     const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
     const paramName = catchAllMatch[1];
@@ -438,7 +445,8 @@ export function matchConfigPattern(
     const rest = pathname.slice(prefix.replace(/\/$/, "").length);
     if (isPlus && (!rest || rest === "/")) return null;
     let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
-    try { restValue = decodeURIComponent(restValue); } catch { /* malformed percent-encoding */ }
+    // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+    // the request entry point. Decoding again would produce incorrect param values.
     return { [paramName]: restValue };
   }
 
@@ -463,19 +471,19 @@ export function matchConfigPattern(
  * Apply redirect rules from next.config.js.
  * Returns the redirect info if a redirect was matched, or null.
  *
- * When `ctx` is provided, has/missing conditions on the redirect rules
- * are evaluated against the request context (cookies, headers, query, host).
+ * `ctx` provides the request context (cookies, headers, query, host) used
+ * to evaluate has/missing conditions. Next.js always has request context
+ * when evaluating redirects, so this parameter is required.
  */
 export function matchRedirect(
   pathname: string,
   redirects: NextRedirect[],
-  ctx?: RequestContext,
+  ctx: RequestContext,
 ): { destination: string; permanent: boolean } | null {
   for (const redirect of redirects) {
     const params = matchConfigPattern(pathname, redirect.source);
     if (params) {
-      // Check has/missing conditions if present and context is available
-      if (ctx && (redirect.has || redirect.missing)) {
+      if (redirect.has || redirect.missing) {
         if (!checkHasConditions(redirect.has, redirect.missing, ctx)) {
           continue;
         }
@@ -500,19 +508,19 @@ export function matchRedirect(
  * Apply rewrite rules from next.config.js.
  * Returns the rewritten URL or null if no rewrite matched.
  *
- * When `ctx` is provided, has/missing conditions on the rewrite rules
- * are evaluated against the request context (cookies, headers, query, host).
+ * `ctx` provides the request context (cookies, headers, query, host) used
+ * to evaluate has/missing conditions. Next.js always has request context
+ * when evaluating rewrites, so this parameter is required.
  */
 export function matchRewrite(
   pathname: string,
   rewrites: NextRewrite[],
-  ctx?: RequestContext,
+  ctx: RequestContext,
 ): string | null {
   for (const rewrite of rewrites) {
     const params = matchConfigPattern(pathname, rewrite.source);
     if (params) {
-      // Check has/missing conditions if present and context is available
-      if (ctx && (rewrite.has || rewrite.missing)) {
+      if (rewrite.has || rewrite.missing) {
         if (!checkHasConditions(rewrite.has, rewrite.missing, ctx)) {
           continue;
         }
@@ -665,16 +673,26 @@ export async function proxyExternalRequest(
 /**
  * Apply custom header rules from next.config.js.
  * Returns an array of { key, value } pairs to set on the response.
+ *
+ * `ctx` provides the request context (cookies, headers, query, host) used
+ * to evaluate has/missing conditions. Next.js always has request context
+ * when evaluating headers, so this parameter is required.
  */
 export function matchHeaders(
   pathname: string,
   headers: NextHeader[],
+  ctx: RequestContext,
 ): Array<{ key: string; value: string }> {
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
     const escaped = escapeHeaderSource(rule.source);
     const sourceRegex = safeRegExp("^" + escaped + "$");
     if (sourceRegex && sourceRegex.test(pathname)) {
+      if (rule.has || rule.missing) {
+        if (!checkHasConditions(rule.has, rule.missing, ctx)) {
+          continue;
+        }
+      }
       result.push(...rule.headers);
     }
   }
