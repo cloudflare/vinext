@@ -72,7 +72,7 @@ Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted
 
 Run `npm create next-app@latest` to create a new Next.js project, and then follow these instructions to migrate it to vinext.
 
-In the future, we will havre a proper `npm create vinext` new project workflow. 
+In the future, we will have a proper `npm create vinext` new project workflow. 
 
 ### Migrating an existing Next.js project
 
