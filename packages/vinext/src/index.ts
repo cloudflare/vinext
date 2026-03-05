@@ -2391,9 +2391,19 @@ hydrate();
           }
         });
 
-        // Run instrumentation.ts register() if present (once at server startup)
+        // Run instrumentation.ts register() if present (once at server startup).
+        // Prefer loading via the RSC environment runner so the user's instrumentation
+        // file and its imports (including vinext/instrumentation) are resolved in the
+        // same RSC module graph as the generated RSC entry. If we used server.ssrLoadModule
+        // instead, _onRequestError would be set on a different module instance than the
+        // one the RSC entry calls reportRequestError() on.
         if (instrumentationPath) {
-          runInstrumentation(server, instrumentationPath).catch((err) => {
+          const rscEnv = server.environments["rsc"] as any;
+          const loader =
+            rscEnv && typeof rscEnv.runner?.import === "function"
+              ? rscEnv.runner
+              : server;
+          runInstrumentation(loader, instrumentationPath).catch((err) => {
             console.error("[vinext] Instrumentation error:", err);
           });
         }

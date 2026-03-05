@@ -2574,21 +2574,48 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // client-side error boundaries from identifying the error type.
     // In production, non-navigation errors also get a digest hash so they
     // can be correlated with server logs without leaking details to clients.
-    const htmlStream = await renderToReadableStream(ssrRoot, {
-      bootstrapScriptContent,
-      onError(error) {
-        if (error && typeof error === "object" && "digest" in error) {
-          return String(error.digest);
-        }
-        // In production, generate a digest hash for non-navigation errors
-        if (process.env.NODE_ENV === "production" && error) {
-          const msg = error instanceof Error ? error.message : String(error);
-          const stack = error instanceof Error ? (error.stack || "") : "";
-          return ssrErrorDigest(msg + stack);
-        }
-        return undefined;
-      },
-    });
+    //
+    // We also track the last digest seen in onError so that if React aborts
+    // the SSR render (throw null / status ABORTING = 12) we can rethrow a
+    // proper Error with the digest attached.  Without this, React's internal
+    // 'throw null' escapes all the way to Vite which logs it as
+    // "Internal server error: undefined" with no stack or context.
+    let _lastSsrDigest = null;
+    let htmlStream;
+    try {
+      htmlStream = await renderToReadableStream(ssrRoot, {
+        bootstrapScriptContent,
+        onError(error) {
+          if (error && typeof error === "object" && "digest" in error) {
+            const d = String(error.digest);
+            _lastSsrDigest = d;
+            return d;
+          }
+          // In production, generate a digest hash for non-navigation errors
+          if (process.env.NODE_ENV === "production" && error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            const stack = error instanceof Error ? (error.stack || "") : "";
+            return ssrErrorDigest(msg + stack);
+          }
+          return undefined;
+        },
+      });
+    } catch (ssrRenderErr) {
+      // React throws \`null\` (status ABORTING = 12) when it aborts the SSR
+      // render -- e.g. when a digest error (notFound / redirect) is received
+      // from the RSC stream and React cannot recover the shell.
+      // Wrap any non-Error thrown value into a real Error so:
+      //   1. Vite logs something useful instead of "Internal server error: undefined"
+      //   2. The digest-based error handlers (handleRenderError) can fire
+      if (ssrRenderErr == null || !(ssrRenderErr instanceof Error)) {
+        const wrapped = new Error(
+          _lastSsrDigest ?? (ssrRenderErr == null ? "SSR render aborted" : String(ssrRenderErr))
+        );
+        if (_lastSsrDigest) wrapped.digest = _lastSsrDigest;
+        throw wrapped;
+      }
+      throw ssrRenderErr;
+    }
 
 
     // Flush useServerInsertedHTML callbacks (CSS-in-JS style injection)
@@ -2652,7 +2679,7 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // value during hydration. Without this, getServerSnapshot returns "/" and
     // React detects a mismatch against the SSR-rendered HTML.
     const __navPayload = { pathname: navContext?.pathname ?? '/', searchParams: navContext?.searchParams ? Object.fromEntries(navContext.searchParams.entries()) : {} };
-    const navScript = '<script>self.__VINEXT_RSC_NAV__=' + safeJsonStringify(__navPayload) + '<\/script>';
+    const navScript = '<script>self.__VINEXT_RSC_NAV__=' + safeJsonStringify(__navPayload) + '</script>';
     const injectHTML = paramsScript + navScript + modulePreloadHTML + insertedHTML + fontHTML;
 
     // Inject the collected HTML before </head> and progressively embed RSC

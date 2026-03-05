@@ -96,3 +96,43 @@ test.describe("Middleware Block (OpenNext compat)", () => {
     expect(body).toContain("Blocked by middleware");
   });
 });
+
+test.describe("Middleware execution count", () => {
+  test.beforeEach(async ({ request }) => {
+    // Reset the invocation counter before each test.
+    const res = await request.delete(`${BASE}/api/instrumentation-test`);
+    expect(res.status()).toBe(200);
+  });
+
+  // Known issue: in a hybrid app+pages fixture (hasPagesDir && hasAppDir) the
+  // Vite connect handler runs middleware via ssrLoadModule (SSR env) before
+  // routing, and the RSC entry also runs it inline (RSC env) for App Router
+  // requests that fall through to next(). A single App Router request therefore
+  // produces 2 invocations instead of 1.
+  //
+  // The fix requires either:
+  //   (a) skipping the connect-handler middleware for requests that will be
+  //       handled by the RSC plugin — but this can't be known before matching, or
+  //   (b) passing a "middleware already ran" signal from the connect handler to
+  //       the RSC entry that also carries the rewrite URL so the RSC entry can
+  //       apply the rewrite without re-running the function.
+  //
+  // Pure App Router apps (no pages/) are not affected — they skip the connect
+  // handler entirely (hasPagesDir is false) and only run middleware in the RSC
+  // entry. Pure Pages Router apps are also not affected — there is no RSC entry.
+  test.fixme(
+    "middleware runs exactly once per App Router request in hybrid app+pages fixture",
+    async ({ request }) => {
+      // /about is an App Router route that is in the middleware matcher.
+      const res = await request.get(`${BASE}/about`);
+      expect(res.status()).toBe(200);
+      expect(res.headers()["x-mw-ran"]).toBe("true");
+
+      const stateRes = await request.get(`${BASE}/api/instrumentation-test`);
+      const data = await stateRes.json();
+
+      expect(data.middlewareInvocationCount).toBe(1);
+      expect(data.middlewareInvokedPaths).toEqual(["/about"]);
+    },
+  );
+});
