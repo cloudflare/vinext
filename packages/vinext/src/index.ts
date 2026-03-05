@@ -2661,7 +2661,11 @@ hydrate();
                   apiRoutes,
                 );
                 if (handled) return;
-                // No API route matched — fall through to 404
+
+                // No API route matched — if app dir exists, let the RSC plugin handle it
+                // (app/api/* route handlers live there). Otherwise hard-404.
+                if (hasAppDir) return next();
+
                 res.statusCode = 404;
                 res.end("404 - API route not found");
                 return;
