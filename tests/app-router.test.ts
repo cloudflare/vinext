@@ -88,6 +88,18 @@ describe("App Router integration", () => {
     expect(res.status).toBe(404);
   });
 
+  // Dual-router coexistence: the app-basic fixture has both app/ and pages/
+  // (pages/old-school.tsx activates hasPagesDir). This verifies the Pages Router
+  // still renders its own pages correctly when both routers are active — the
+  // other direction from the fix that stops pages-router middleware from
+  // hard-404ing app/api/* routes that belong to the App Router.
+  it("renders pages-router page when both app/ and pages/ directories exist", async () => {
+    const res = await fetch(`${baseUrl}/old-school`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Old School Pages Directory");
+  });
+
   it("returns RSC stream for .rsc requests", async () => {
     const res = await fetch(`${baseUrl}/.rsc`);
     expect(res.status).toBe(200);
