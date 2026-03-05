@@ -12,6 +12,9 @@ import { setNavigationContext, ServerInsertedHTMLContext } from "next/navigation
 import { runWithNavigationContext as _runWithNavCtx } from "vinext/navigation-state";
 import { safeJsonStringify } from "vinext/html";
 import { createElement as _ssrCE } from "react";
+import * as _clientRefs from "virtual:vite-rsc/client-references";
+
+let _clientRefsPreloaded = false;
 
 /**
  * Collect all chunks from a ReadableStream into an array of text strings.
@@ -150,6 +153,29 @@ function createRscEmbedTransform(embedStream) {
  *   and the data needs to be passed to SSR since they're separate module instances.
  */
 export async function handleSsr(rscStream, navContext, fontData) {
+  // Eagerly preload all client reference modules before SSR rendering.
+  // On the first request after server start, client component modules are
+  // loaded lazily via async import(). Without this preload, React's
+  // renderToReadableStream rejects because the shell can't resolve client
+  // components synchronously (there is no Suspense boundary wrapping the
+  // root). The memoized require cache ensures this is only async on the
+  // very first call; subsequent requests resolve from cache immediately.
+  // See: https://github.com/cloudflare/vinext/issues/256
+  // _clientRefs.default is the default export from the virtual:vite-rsc/client-references
+  // namespace import — a map of client component IDs to their async import functions.
+  if (!_clientRefsPreloaded && _clientRefs.default && globalThis.__vite_rsc_client_require__) {
+    await Promise.all(
+      Object.keys(_clientRefs.default).map((id) =>
+        globalThis.__vite_rsc_client_require__(id).catch((err) => {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[vinext] failed to preload client ref:", id, err);
+          }
+        })
+      )
+    );
+    _clientRefsPreloaded = true;
+  }
+
   // Wrap in a navigation ALS scope for per-request isolation in the SSR
   // environment. The SSR environment has separate module instances from RSC,
   // so it needs its own ALS scope.
