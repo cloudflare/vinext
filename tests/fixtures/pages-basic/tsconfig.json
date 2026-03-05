@@ -1,14 +1,14 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "bundler",
-    "jsx": "react-jsx",
-    "strict": true,
-    "skipLibCheck": true,
-    "paths": {
-      "@/*": ["./*"]
-    }
-  },
-  "include": ["pages", "components", "*.ts"]
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"jsx": "react-jsx",
+		"strict": true,
+		"skipLibCheck": true,
+		"paths": {
+			"@/*": ["./*"],
+		},
+	},
+	"include": ["pages", "components", "lib", "*.ts"],
 }

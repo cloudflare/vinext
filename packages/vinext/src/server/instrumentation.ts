@@ -28,6 +28,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { ModuleRunner, ESModulesEvaluator, createNodeImportMeta } from "vite/module-runner";
 
 /** Symbol used to store the handler on globalThis (avoids collisions). */
 const ON_REQUEST_ERROR_KEY = "__vinext_onRequestError__";
@@ -90,14 +91,68 @@ export function getOnRequestErrorHandler(): OnRequestErrorHandler | null {
 }
 
 /**
+ * A Vite DevEnvironment (duck-typed) — has fetchModule() but no usable hot
+ * channel or runner at configureServer() time when third-party plugins like
+ * @cloudflare/vite-plugin replace the SSR environment's transport.
+ */
+export interface DevEnvironmentLike {
+  fetchModule: (
+    id: string,
+    importer?: string,
+    options?: { cached?: boolean; startOffset?: number },
+  ) => Promise<Record<string, unknown>>;
+}
+
+/**
+ * Build a ModuleRunner that calls environment.fetchModule() directly,
+ * bypassing the hot channel entirely. This is safe to construct and use
+ * at any time — including during configureServer() — because it never
+ * touches environment.hot.api.
+ */
+function createDirectRunner(environment: DevEnvironmentLike): ModuleRunner {
+  return new ModuleRunner(
+    {
+      transport: {
+        // ModuleRunnerTransport.invoke receives a raw HotPayload shaped as:
+        //   { type: "custom", event: "vite:invoke", data: { id, name, data: args } }
+        // normalizeModuleRunnerTransport() unpacks this before calling our impl.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        invoke: async (payload: any) => {
+          const { name, data: args } = payload.data;
+          if (name === "fetchModule") {
+            const [id, importer, options] = args as [
+              string,
+              string | undefined,
+              { cached?: boolean; startOffset?: number } | undefined,
+            ];
+            return { result: await environment.fetchModule(id, importer, options) };
+          }
+          if (name === "getBuiltins") {
+            // Return empty builtins list — we don't need Node built-in shimming
+            // for instrumentation.ts which runs in the host Node.js process.
+            return { result: [] };
+          }
+          return { error: { name: "Error", message: `[vinext] Unexpected runner invoke: ${name}` } };
+        },
+      },
+      createImportMeta: createNodeImportMeta,
+      sourcemapInterceptor: false,
+      hmr: false,
+    },
+    new ESModulesEvaluator(),
+  );
+}
+
+/**
  * Load and execute the instrumentation file.
  *
  * This should be called once during server startup. It:
- * 1. Loads the instrumentation module via the RSC environment runner (preferred)
- *    or falls back to Vite's SSR module loader
- * 2. Calls the `register()` function if exported
+ * 1. Loads the instrumentation module via the RSC environment runner (preferred),
+ *    a direct-call ModuleRunner built on any available DevEnvironment,
+ *    or falls back to Vite's SSR module loader as a last resort.
+ * 2. Calls the `register()` function if exported.
  * 3. Stores the `onRequestError()` handler on `globalThis` so it is visible
- *    to all Vite environment module graphs (RSC, SSR, and the host process)
+ *    to all Vite environment module graphs (RSC, SSR, and the host process).
  *
  * We use globalThis rather than a module-level variable because Vite runs the
  * RSC and SSR environments as separate module graphs: each environment gets its
@@ -106,23 +161,35 @@ export function getOnRequestErrorHandler(): OnRequestErrorHandler | null {
  * is invoked from the RSC environment copy. Both copies share the same
  * Node.js globalThis, so storing the handler there is the correct bridge.
  *
- * @param loader - RSC environment runner ({ import }) or Vite dev server ({ ssrLoadModule })
+ * @param loader - RSC environment runner ({ import }), a DevEnvironment
+ *   ({ fetchModule }), or a Vite dev server ({ ssrLoadModule })
  * @param instrumentationPath - Absolute path to the instrumentation file
  */
 export async function runInstrumentation(
   loader:
     | { import: (id: string) => Promise<Record<string, unknown>> }
+    | DevEnvironmentLike
     | { ssrLoadModule: (id: string) => Promise<Record<string, unknown>> },
   instrumentationPath: string,
 ): Promise<void> {
   try {
-    const mod = await ("import" in loader
-      ? loader.import(instrumentationPath)
-      : loader.ssrLoadModule(instrumentationPath));
+    let mod: Record<string, unknown>;
+    if ("import" in loader) {
+      mod = await loader.import(instrumentationPath);
+    } else if ("fetchModule" in loader) {
+      const runner = createDirectRunner(loader);
+      try {
+        mod = await runner.import(instrumentationPath);
+      } finally {
+        await runner.close();
+      }
+    } else {
+      mod = await loader.ssrLoadModule(instrumentationPath);
+    }
 
     // Call register() if exported
     if (typeof mod.register === "function") {
-      await mod.register();
+      await (mod.register as () => Promise<void>)();
     }
 
     // Store onRequestError handler on globalThis so all Vite environments

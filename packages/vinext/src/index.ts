@@ -2394,15 +2394,42 @@ hydrate();
         // Run instrumentation.ts register() if present (once at server startup).
         // Prefer loading via the RSC environment runner so the user's instrumentation
         // file and its imports (including vinext/instrumentation) are resolved in the
-        // same RSC module graph as the generated RSC entry. If we used server.ssrLoadModule
-        // instead, _onRequestError would be set on a different module instance than the
-        // one the RSC entry calls reportRequestError() on.
+        // same RSC module graph as the generated RSC entry.
+        //
+        // We must NOT use server.ssrLoadModule() or access any env.runner here.
+        // Vite 7's SSRCompatModuleRunner (used by ssrLoadModule) and the lazy
+        // RunnableDevEnvironment.runner getter both call:
+        //   createServerModuleRunnerTransport({ channel: environment.hot })
+        // which immediately calls connect() and reads environment.hot.api.outsideEmitter.
+        // That property is only set once DevEnvironment.listen() runs — which happens
+        // when the server starts listening, after configureServer() returns:
+        //   TypeError: Cannot read properties of undefined (reading 'outsideEmitter')
+        //
+        // This is triggered specifically when @cloudflare/vite-plugin is present: it
+        // registers a Vite environment named "rsc" (a CloudflareDevEnvironment, not a
+        // RunnableDevEnvironment), so server.environments["rsc"] exists but has no
+        // .runner.import. The old code fell through to server (ssrLoadModule) and
+        // crashed before the server ever started listening.
+        //
+        // Fix: build a direct-call ModuleRunner on the SSR DevEnvironment that invokes
+        // environment.fetchModule() directly, bypassing the hot channel entirely.
+        // environment.fetchModule() is a plain async method on DevEnvironment — safe
+        // at any time, including during configureServer(). This lets register() run
+        // immediately on startup as Next.js specifies.
+        //
+        // Environment preference:
+        //   1. "rsc" runner if it exposes .runner.import (@vitejs/plugin-rsc case) —
+        //      keeps instrumentation in the same RSC module graph as the RSC entry.
+        //   2. SSR DevEnvironment via a direct-call ModuleRunner — safe in all setups
+        //      including @cloudflare/vite-plugin where the rsc env has no runner.
+        //   3. Any other available DevEnvironment as a further fallback.
+        //   4. server (ssrLoadModule) as a last resort for plain Vite setups.
         if (instrumentationPath) {
           const rscEnv = server.environments["rsc"] as any;
-          const loader =
+          const loader: Parameters<typeof runInstrumentation>[0] =
             rscEnv && typeof rscEnv.runner?.import === "function"
               ? rscEnv.runner
-              : server;
+              : (server.environments["ssr"] ?? server.environments["rsc"] ?? server);
           runInstrumentation(loader, instrumentationPath).catch((err) => {
             console.error("[vinext] Instrumentation error:", err);
           });
