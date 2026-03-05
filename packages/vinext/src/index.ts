@@ -2566,9 +2566,20 @@ hydrate();
 
                 if (!result.continue) {
                   if (result.redirectUrl) {
-                    res.writeHead(result.redirectStatus ?? 307, {
-                      Location: result.redirectUrl,
-                    });
+                    const redirectHeaders: Record<string, string | string[]> = { Location: result.redirectUrl };
+                    if (result.responseHeaders) {
+                      for (const [key, value] of result.responseHeaders) {
+                        const existing = redirectHeaders[key];
+                        if (existing === undefined) {
+                          redirectHeaders[key] = value;
+                        } else if (Array.isArray(existing)) {
+                          existing.push(value);
+                        } else {
+                          redirectHeaders[key] = [existing, value];
+                        }
+                      }
+                    }
+                    res.writeHead(result.redirectStatus ?? 307, redirectHeaders);
                     res.end();
                     return;
                   }

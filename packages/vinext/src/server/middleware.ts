@@ -299,13 +299,12 @@ export async function runMiddleware(
 
   // Check for x-middleware-next header (NextResponse.next())
   if (response.headers.get("x-middleware-next") === "1") {
-    // Continue to the route, but apply any headers the middleware set
-     const responseHeaders = new Headers();
+    // Continue to the route, but apply any headers the middleware set.
+    // Strip ALL x-middleware-* headers (including x-middleware-request-*)
+    // so they never leak to the client — they are internal routing signals.
+    const responseHeaders = new Headers();
     for (const [key, value] of response.headers) {
-      if (
-        key !== "x-middleware-next" &&
-        key !== "x-middleware-rewrite"
-      ) {
+      if (!key.startsWith("x-middleware-")) {
         responseHeaders.append(key, value);
       }
     }
@@ -316,10 +315,18 @@ export async function runMiddleware(
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? response.headers.get("location");
     if (location) {
+      // Collect non-internal headers (e.g. Set-Cookie) to forward with the redirect.
+      const responseHeaders = new Headers();
+      for (const [key, value] of response.headers) {
+        if (!key.startsWith("x-middleware-") && key.toLowerCase() !== "location") {
+          responseHeaders.append(key, value);
+        }
+      }
       return {
         continue: false,
         redirectUrl: location,
         redirectStatus: response.status,
+        responseHeaders,
       };
     }
   }
@@ -330,7 +337,7 @@ export async function runMiddleware(
     // Continue to the route but with a rewritten URL
     const responseHeaders = new Headers();
     for (const [key, value] of response.headers) {
-      if (key !== "x-middleware-rewrite") {
+      if (!key.startsWith("x-middleware-")) {
         responseHeaders.append(key, value);
       }
     }
