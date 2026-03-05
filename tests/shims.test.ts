@@ -4829,6 +4829,36 @@ describe("basePath config validation", () => {
   });
 });
 
+describe("pageExtensions config", () => {
+  it("resolveNextConfig defaults pageExtensions to Next.js defaults", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({});
+    expect(config.pageExtensions).toEqual(["tsx", "ts", "jsx", "js"]);
+  });
+
+  it("resolveNextConfig reads pageExtensions from config", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({
+      pageExtensions: ["js", "jsx", "ts", "tsx", "mdx"],
+    });
+    expect(config.pageExtensions).toEqual(["js", "jsx", "ts", "tsx", "mdx"]);
+  });
+
+  it("resolveNextConfig preserves configured pageExtensions entries", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({
+      pageExtensions: [".tsx", " ts ", "tsx", "", ".mdx"],
+    });
+    expect(config.pageExtensions).toEqual([".tsx", " ts ", "tsx", ".mdx"]);
+  });
+});
+
 describe("cacheComponents config (Next.js 16)", () => {
   it("resolveNextConfig defaults cacheComponents to false", async () => {
     const { resolveNextConfig } = await import(

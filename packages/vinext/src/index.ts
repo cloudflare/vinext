@@ -2,6 +2,7 @@ import type { Plugin, UserConfig, ViteDevServer } from "vite";
 import { loadEnv, parseAst } from "vite";
 import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, patternToNextFormat as pagesPatternToNextFormat, type Route } from "./routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
+import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import {
@@ -598,8 +599,9 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
    * This is the entry point for `vite build --ssr`.
    */
   async function generateServerEntry(): Promise<string> {
-    const pageRoutes = await pagesRouter(pagesDir);
-    const apiRoutes = await apiRouter(pagesDir);
+    const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions);
+    const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions);
+    const fileMatcher = createValidFileMatcher(nextConfig?.pageExtensions);
 
     // Generate import statements using absolute paths since virtual
     // modules don't have a real file location for relative resolution.
@@ -624,19 +626,17 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
     });
 
     // Check for _app and _document
-    const hasApp = fs.existsSync(path.join(pagesDir, "_app.tsx")) || fs.existsSync(path.join(pagesDir, "_app.jsx")) || fs.existsSync(path.join(pagesDir, "_app.ts")) || fs.existsSync(path.join(pagesDir, "_app.js"));
-    const hasDoc = fs.existsSync(path.join(pagesDir, "_document.tsx")) || fs.existsSync(path.join(pagesDir, "_document.jsx")) || fs.existsSync(path.join(pagesDir, "_document.ts")) || fs.existsSync(path.join(pagesDir, "_document.js"));
-
-    // Use absolute paths for _app and _document too
-    const appFileBase = path.join(pagesDir, "_app").replace(/\\/g, "/");
-    const docFileBase = path.join(pagesDir, "_document").replace(/\\/g, "/");
+    const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+    const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
+    const hasApp = appFilePath !== null;
+    const hasDoc = docFilePath !== null;
 
     const appImportCode = hasApp
-      ? `import { default as AppComponent } from ${JSON.stringify(appFileBase)};`
+      ? `import { default as AppComponent } from ${JSON.stringify(appFilePath!.replace(/\\/g, "/"))};`
       : `const AppComponent = null;`;
 
     const docImportCode = hasDoc
-      ? `import { default as DocumentComponent } from ${JSON.stringify(docFileBase)};`
+      ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath!.replace(/\\/g, "/"))};`
       : `const DocumentComponent = null;`;
 
     // Serialize i18n config for embedding in the server entry
@@ -1566,9 +1566,11 @@ ${middlewareExportCode}
    * __NEXT_DATA__ to determine which page to hydrate.
    */
   async function generateClientEntry(): Promise<string> {
-    const pageRoutes = await pagesRouter(pagesDir);
+    const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions);
+    const fileMatcher = createValidFileMatcher(nextConfig?.pageExtensions);
 
-    const hasApp = fs.existsSync(path.join(pagesDir, "_app.tsx")) || fs.existsSync(path.join(pagesDir, "_app.jsx")) || fs.existsSync(path.join(pagesDir, "_app.ts")) || fs.existsSync(path.join(pagesDir, "_app.js"));
+    const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+    const hasApp = appFilePath !== null;
 
     // Build a map of route pattern -> dynamic import.
     // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
@@ -1582,7 +1584,7 @@ ${middlewareExportCode}
       return `  ${JSON.stringify(nextFormatPattern)}: () => import(${JSON.stringify(absPath)})`;
     });
 
-    const appFileBase = path.join(pagesDir, "_app").replace(/\\/g, "/");
+    const appFileBase = appFilePath?.replace(/\\/g, "/");
 
     return `
 import React from "react";
@@ -1620,7 +1622,7 @@ async function hydrate() {
   let element;
   ${hasApp ? `
   try {
-    const appModule = await import(${JSON.stringify(appFileBase)});
+    const appModule = await import(${JSON.stringify(appFileBase!)});
     const AppComponent = appModule.default;
     window.__VINEXT_APP__ = AppComponent;
     element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
@@ -2263,10 +2265,14 @@ hydrate();
         }
         // App Router virtual modules
         if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
-          const routes = await appRouter(appDir);
+          const routes = await appRouter(appDir, nextConfig?.pageExtensions);
           const metaRoutes = scanMetadataFiles(appDir);
           // Check for global-error.tsx at app root
-          const globalErrorPath = findFileWithExts(appDir, "global-error");
+          const globalErrorPath = findFileWithExts(
+            appDir,
+            "global-error",
+            createValidFileMatcher(nextConfig?.pageExtensions),
+          );
           return generateRscEntry(appDir, routes, middlewarePath, metaRoutes, globalErrorPath, nextConfig?.basePath, nextConfig?.trailingSlash, {
             redirects: nextConfig?.redirects,
             rewrites: nextConfig?.rewrites,
@@ -2373,7 +2379,7 @@ hydrate();
       // ensures changes are always reflected in the browser.
       hotUpdate(options: { file: string; server: ViteDevServer; modules: any[] }) {
         if (!hasPagesDir || hasAppDir) return;
-        const ext = /\.(tsx?|jsx?|mdx)$/;
+        const ext = createValidFileMatcher(nextConfig?.pageExtensions).extensionRegex;
         if (options.file.startsWith(pagesDir) && ext.test(options.file)) {
           options.server.environments.client.hot.send({ type: "full-reload" });
           return [];
@@ -2382,7 +2388,7 @@ hydrate();
 
       configureServer(server: ViteDevServer) {
         // Watch pages directory for file additions/removals to invalidate route cache.
-        const pageExtensions = /\.(tsx?|jsx?|mdx)$/;
+        const pageExtensions = createValidFileMatcher(nextConfig?.pageExtensions).extensionRegex;
 
         /**
          * Invalidate the virtual RSC entry module in Vite's module graph.
@@ -2851,7 +2857,7 @@ hydrate();
                 resolvedPathname.startsWith("/api/") ||
                 resolvedPathname === "/api"
               ) {
-                const apiRoutes = await apiRouter(pagesDir);
+                const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions);
                 const handled = await handleApiRoute(
                   server,
                   req,
@@ -2870,7 +2876,7 @@ hydrate();
                 return;
               }
 
-              const routes = await pagesRouter(pagesDir);
+              const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions);
 
               // Apply afterFiles rewrites — these run after initial route matching
               // If beforeFiles already rewrote the URL, afterFiles still run on the
@@ -3899,11 +3905,14 @@ function applyHeaders(
 
 /**
  * Find a file by name (without extension) in a directory.
- * Checks .tsx, .ts, .jsx, .js extensions.
+ * Checks the configured page extensions.
  */
-function findFileWithExts(dir: string, name: string): string | null {
-  const extensions = [".tsx", ".ts", ".jsx", ".js"];
-  for (const ext of extensions) {
+function findFileWithExts(
+  dir: string,
+  name: string,
+  matcher: ReturnType<typeof createValidFileMatcher>,
+): string | null {
+  for (const ext of matcher.dottedExtensions) {
     const filePath = path.join(dir, name + ext);
     if (fs.existsSync(filePath)) return filePath;
   }

@@ -8,6 +8,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import { normalizePageExtensions } from "../routing/file-matcher.js";
 
 export interface HasCondition {
   type: "header" | "cookie" | "query" | "host";
@@ -111,6 +112,8 @@ export interface NextConfig {
   };
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
   output?: "export" | "standalone";
+  /** File extensions treated as routable pages/routes (Next.js pageExtensions) */
+  pageExtensions?: string[];
   /**
    * Enable Cache Components (Next.js 16).
    * When true, enables the "use cache" directive for pages, components, and functions.
@@ -133,6 +136,7 @@ export interface ResolvedNextConfig {
   basePath: string;
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
+  pageExtensions: string[];
   cacheComponents: boolean;
   redirects: NextRedirect[];
   rewrites: {
@@ -246,6 +250,7 @@ export async function resolveNextConfig(
       basePath: "",
       trailingSlash: false,
       output: "",
+      pageExtensions: normalizePageExtensions(),
       cacheComponents: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -310,6 +315,8 @@ export async function resolveNextConfig(
     console.warn(`[vinext] Unknown output mode "${output as string}", ignoring`);
   }
 
+  const pageExtensions = normalizePageExtensions(config.pageExtensions);
+
   // Parse i18n config
   let i18n: NextI18nConfig | null = null;
   if (config.i18n) {
@@ -326,6 +333,7 @@ export async function resolveNextConfig(
     basePath: config.basePath ?? "",
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
+    pageExtensions,
     cacheComponents: config.cacheComponents ?? false,
     redirects,
     rewrites,
