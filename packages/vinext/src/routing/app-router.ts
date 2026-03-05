@@ -1070,7 +1070,10 @@ function routePrecedence(pattern: string): number {
     } else if (p.startsWith(":")) {
       score += 100 + i; // dynamic: small penalty by position
     }
-    // static segments after first dynamic don't contribute extra
+    // static segments after first dynamic boost priority (more specific route)
+    else if (i >= staticPrefixCount) {
+      score -= 500; // static literal after dynamic = more specific than a bare catch-all
+    }
   }
   return score;
 }
