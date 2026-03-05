@@ -8,6 +8,7 @@
  * Next.js extensions: req.query, req.body, res.json(), res.status(), etc.
  */
 import type { ViteDevServer } from "vite";
+import type { ModuleRunner } from "vite/module-runner";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { type Route, matchRoute } from "../routing/pages-router.js";
 import { addQueryParam } from "../utils/query.js";
@@ -162,6 +163,7 @@ function enhanceApiObjects(
  * Returns true if the request was handled, false if no API route matched.
  */
 export async function handleApiRoute(
+  runner: ModuleRunner,
   server: ViteDevServer,
   req: IncomingMessage,
   res: ServerResponse,
@@ -175,7 +177,7 @@ export async function handleApiRoute(
 
   try {
     // Load the API route module through Vite
-    const apiModule = await server.ssrLoadModule(route.filePath);
+    const apiModule = await runner.import(route.filePath) as any;
     const handler = apiModule.default;
 
     if (typeof handler !== "function") {
@@ -205,7 +207,7 @@ export async function handleApiRoute(
     await handler(apiReq, apiRes);
     return true;
   } catch (e) {
-    server.ssrFixStacktrace(e as Error);
+    server.ssrFixStacktrace?.(e as Error);
     console.error(e);
     if ((e as Error).message === "Request body too large") {
       res.statusCode = 413;

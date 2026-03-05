@@ -4,6 +4,7 @@ import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, patternToNext
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
+import { createDirectRunner } from "./server/dev-module-runner.js";
 import {
   generateRscEntry,
   generateSsrEntry,
@@ -2270,6 +2271,9 @@ hydrate();
       },
       transform(code, id, options) {
         if (!mdxDelegate?.transform) return;
+        // Skip ?raw and other query imports — @mdx-js/rollup ignores the query
+        // and would compile the file as MDX instead of returning raw text.
+        if (id.includes('?')) return;
         const hook = mdxDelegate.transform;
         const fn = typeof hook === "function" ? hook : hook.handler;
         return fn.call(this, code, id, options);
@@ -2352,6 +2356,34 @@ hydrate();
       configureServer(server: ViteDevServer) {
         // Watch pages directory for file additions/removals to invalidate route cache.
         const pageExtensions = /\.(tsx?|jsx?|mdx)$/;
+
+        // Build a long-lived ModuleRunner for loading all Pages Router modules
+        // (middleware, API routes, SSR page rendering) on every request.
+        //
+        // We must NOT use server.ssrLoadModule() here: when @cloudflare/vite-plugin
+        // is present its environments replace the SSR transport, causing
+        // SSRCompatModuleRunner to crash with:
+        //   TypeError: Cannot read properties of undefined (reading 'outsideEmitter')
+        // on the very first request.
+        //
+        // createDirectRunner() builds a runner on environment.fetchModule() which
+        // is a plain async method — safe with all plugin combinations, including
+        // @cloudflare/vite-plugin.
+        //
+        // The runner is created lazily on first use so that all environments are
+        // fully registered before we inspect them. We prefer "ssr", then any
+        // non-"rsc" environment, then whatever is available.
+        let pagesRunner: import("vite/module-runner").ModuleRunner | null = null;
+        function getPagesRunner() {
+          if (!pagesRunner) {
+            const env =
+              server.environments["ssr"] ??
+              Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
+              Object.values(server.environments)[0];
+            pagesRunner = createDirectRunner(env);
+          }
+          return pagesRunner;
+        }
 
         /**
          * Invalidate the virtual RSC entry module in Vite's module graph.
@@ -2695,7 +2727,7 @@ hydrate();
                       .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])
                   ),
                 });
-                const result = await runMiddleware(server, middlewarePath, middlewareRequest);
+                const result = await runMiddleware(getPagesRunner(), middlewarePath, middlewareRequest);
 
                 if (!result.continue) {
                   if (result.redirectUrl) {
@@ -2737,11 +2769,35 @@ hydrate();
                 // Apply middleware rewrite (URL and optional status code)
                 if (result.rewriteUrl) {
                   url = result.rewriteUrl;
+                  // Propagate the rewritten URL back onto req so the Cloudflare
+                  // plugin's handler (which reads req.url) sees the correct path.
+                  req.url = url;
                 }
                 if (result.rewriteStatus) {
                   (req as any).__vinextRewriteStatus = result.rewriteStatus;
                 }
               }
+
+              // ── Cloudflare Workers dev mode ────────────────────────────
+              // When @cloudflare/vite-plugin is present, ALL rendering runs
+              // inside the miniflare Worker subprocess — both App Router (via
+              // virtual:vinext-rsc-entry) and Pages Router (via
+              // virtual:vinext-server-entry → renderPage/handleApiRoute).
+              //
+              // The Worker entry already handles config redirects, rewrites,
+              // headers, and all routing internally. Running them here too
+              // would duplicate that logic and produce incorrect behaviour
+              // (double redirects, headers set on the wrong object, etc.).
+              //
+              // Middleware.ts is the only thing that belongs in the host connect
+              // handler — it has already run above. Any terminal middleware
+              // result (redirect, block response) has already been sent.
+              // Any rewrite has been written back to req.url above so the
+              // Cloudflare plugin's handler sees the correct path.
+              //
+              // Call next() to hand off to the Cloudflare plugin's connect
+              // handler, which dispatches the request to miniflare.
+              if (hasCloudflarePlugin) return next();
 
               // Build request context once for has/missing condition checks
               // across headers, redirects, and rewrites.
@@ -2798,6 +2854,7 @@ hydrate();
               ) {
                 const apiRoutes = await apiRouter(pagesDir);
                 const handled = await handleApiRoute(
+                  getPagesRunner(),
                   server,
                   req,
                   res,
@@ -2836,7 +2893,7 @@ hydrate();
                 return;
               }
 
-              const handler = createSSRHandler(server, routes, pagesDir, nextConfig?.i18n);
+              const handler = createSSRHandler(getPagesRunner(), server, routes, pagesDir, nextConfig?.i18n);
               const mwStatus = (req as any).__vinextRewriteStatus as number | undefined;
 
               // Try rendering the resolved URL

@@ -62,6 +62,16 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "cloudflare-pages-router-dev": {
+    testDir: "./tests/e2e/cloudflare-pages-router-dev",
+    server: {
+      command: "npx vite --port 4179",
+      cwd: "./examples/pages-router-cloudflare",
+      port: 4179,
+      reuseExistingServer: false,
+      timeout: 30_000,
+    },
+  },
   "cloudflare-dev": {
     testDir: "./tests/e2e/cloudflare-dev",
     server: {

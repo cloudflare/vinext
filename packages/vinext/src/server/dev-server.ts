@@ -1,4 +1,5 @@
 import type { ViteDevServer } from "vite";
+import type { ModuleRunner } from "vite/module-runner";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute, patternToNextFormat } from "../routing/pages-router.js";
@@ -65,7 +66,7 @@ async function streamPageToResponse(
   element: React.ReactElement,
   options: {
     url: string;
-    server: ViteDevServer;
+    server: ViteDevServer; // needed only for transformIndexHtml
     fontHeadHTML: string;
     scripts: string;
     DocumentComponent: React.ComponentType | null;
@@ -262,6 +263,7 @@ export function parseCookieLocale(
  * 5. Wrap in _document shell and send response
  */
 export function createSSRHandler(
+  runner: ModuleRunner,
   server: ViteDevServer,
   routes: Route[],
   pagesDir: string,
@@ -332,7 +334,7 @@ export function createSSRHandler(
 
     if (!match) {
       // No route matched — try to render custom 404 page
-      await renderErrorPage(server, req, res, url, pagesDir, 404);
+      await renderErrorPage(runner, server, req, res, url, pagesDir, 404);
       return;
     }
 
@@ -348,7 +350,7 @@ export function createSSRHandler(
     try {
       // Set SSR context for the router shim so useRouter() returns
       // the correct URL and params during server-side rendering.
-      const routerShim = await server.ssrLoadModule("next/router");
+      const routerShim = await runner.import("next/router") as any;
       if (typeof routerShim.setSSRContext === "function") {
         routerShim.setSSRContext({
           pathname: localeStrippedUrl.split("?")[0],
@@ -369,7 +371,7 @@ export function createSSRHandler(
 
       // Load the page module through Vite's SSR pipeline
       // This gives us HMR and transform support for free
-      const pageModule = await server.ssrLoadModule(route.filePath);
+      const pageModule = await runner.import(route.filePath) as any;
       // Mark end of compile phase: everything from here is rendering.
       _compileEnd = now();
 
@@ -410,7 +412,7 @@ export function createSSRHandler(
           });
 
           if (!isValidPath) {
-            await renderErrorPage(server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext);
+            await renderErrorPage(runner, server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext as ((el: React.ReactElement) => React.ReactElement) | undefined);
             return;
           }
         }
@@ -452,7 +454,7 @@ export function createSSRHandler(
           return;
         }
         if (result && "notFound" in result && result.notFound) {
-          await renderErrorPage(server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext);
+          await renderErrorPage(runner, server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext as ((el: React.ReactElement) => React.ReactElement) | undefined);
           return;
         }
       }
@@ -462,11 +464,11 @@ export function createSSRHandler(
       let earlyFontLinkHeader = "";
       try {
         const earlyPreloads: Array<{ href: string; type: string }> = [];
-        const fontGoogleEarly = await server.ssrLoadModule("next/font/google");
+        const fontGoogleEarly = await runner.import("next/font/google") as any;
         if (typeof fontGoogleEarly.getSSRFontPreloads === "function") {
           earlyPreloads.push(...fontGoogleEarly.getSSRFontPreloads());
         }
-        const fontLocalEarly = await server.ssrLoadModule("next/font/local");
+        const fontLocalEarly = await runner.import("next/font/local") as any;
         if (typeof fontLocalEarly.getSSRFontPreloads === "function") {
           earlyPreloads.push(...fontLocalEarly.getSSRFontPreloads());
         }
@@ -558,7 +560,7 @@ export function createSSRHandler(
           return;
         }
         if (result && "notFound" in result && result.notFound) {
-          await renderErrorPage(server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext);
+          await renderErrorPage(runner, server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext as ((el: React.ReactElement) => React.ReactElement) | undefined);
           return;
         }
 
@@ -574,7 +576,7 @@ export function createSSRHandler(
       const appPath = path.join(pagesDir, "_app");
       if (findFileWithExtensions(appPath)) {
         try {
-          const appModule = await server.ssrLoadModule(appPath);
+          const appModule = await runner.import(appPath) as any;
           AppComponent = appModule.default ?? null;
         } catch {
           // _app exists but failed to load
@@ -605,13 +607,13 @@ export function createSSRHandler(
       }
 
       // Reset SSR head collector before rendering so <Head> tags are captured
-      const headShim = await server.ssrLoadModule("next/head");
+      const headShim = await runner.import("next/head") as any;
       if (typeof headShim.resetSSRHead === "function") {
         headShim.resetSSRHead();
       }
 
       // Flush any pending dynamic() preloads so components are ready
-      const dynamicShim = await server.ssrLoadModule("next/dynamic");
+      const dynamicShim = await runner.import("next/dynamic") as any;
       if (typeof dynamicShim.flushPreloads === "function") {
         await dynamicShim.flushPreloads();
       }
@@ -625,7 +627,7 @@ export function createSSRHandler(
       const allFontStyles: string[] = [];
       const allFontPreloads: Array<{ href: string; type: string }> = [];
       try {
-        const fontGoogle = await server.ssrLoadModule("next/font/google");
+        const fontGoogle = await runner.import("next/font/google") as any;
         if (typeof fontGoogle.getSSRFontLinks === "function") {
           const fontUrls = fontGoogle.getSSRFontLinks();
           for (const fontUrl of fontUrls) {
@@ -644,7 +646,7 @@ export function createSSRHandler(
         // next/font/google not used — skip
       }
       try {
-        const fontLocal = await server.ssrLoadModule("next/font/local");
+        const fontLocal = await runner.import("next/font/local") as any;
         if (typeof fontLocal.getSSRFontStyles === "function") {
           allFontStyles.push(...fontLocal.getSSRFontStyles());
         }
@@ -728,7 +730,7 @@ hydrate();
       let DocumentComponent: any = null;
       if (findFileWithExtensions(docPath)) {
         try {
-          const docModule = await server.ssrLoadModule(docPath);
+          const docModule = await runner.import(docPath) as any;
           DocumentComponent = docModule.default ?? null;
         } catch {
           // _document exists but failed to load
@@ -737,8 +739,17 @@ hydrate();
 
       const allScripts = `${nextDataScript}\n  ${hydrationScript}`;
 
-      // Build cache headers for ISR responses
+      // Build cache headers for ISR responses.
+      // Seed from any headers already set on res (e.g. x-middleware-ran from
+      // the Pages Router connect handler) so they survive the writeHead call
+      // inside streamPageToResponse, which would otherwise discard them.
+      const existingHeaders = res.getHeaders();
       const extraHeaders: Record<string, string> = {};
+      for (const [key, value] of Object.entries(existingHeaders)) {
+        if (value !== undefined) {
+          extraHeaders[key] = Array.isArray(value) ? value.join(", ") : String(value);
+        }
+      }
       if (isrRevalidateSeconds) {
         extraHeaders["Cache-Control"] = `s-maxage=${isrRevalidateSeconds}, stale-while-revalidate`;
         extraHeaders["X-Vinext-Cache"] = "MISS";
@@ -815,7 +826,7 @@ hydrate();
       ).catch(() => { /* ignore reporting errors */ });
       // Try to render custom 500 error page
       try {
-        await renderErrorPage(server, req, res, url, pagesDir, 500);
+        await renderErrorPage(runner, server, req, res, url, pagesDir, 500);
       } catch (fallbackErr) {
         // If error page itself fails, fall back to plain text.
         // This is a dev-only code path (prod uses prod-server.ts), so
@@ -844,6 +855,7 @@ hydrate();
  * - other: pages/_error.tsx -> default
  */
 async function renderErrorPage(
+  runner: ModuleRunner,
   server: ViteDevServer,
   _req: IncomingMessage,
   res: ServerResponse,
@@ -865,7 +877,7 @@ async function renderErrorPage(
       const candidatePath = path.join(pagesDir, candidate);
       if (!findFileWithExtensions(candidatePath)) continue;
 
-      const errorModule = await server.ssrLoadModule(candidatePath);
+      const errorModule = await runner.import(candidatePath) as any;
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
@@ -874,7 +886,7 @@ async function renderErrorPage(
       const appPathErr = path.join(pagesDir, "_app");
       if (findFileWithExtensions(appPathErr)) {
         try {
-          const appModule = await server.ssrLoadModule(appPathErr);
+          const appModule = await runner.import(appPathErr) as any;
           AppComponent = appModule.default ?? null;
         } catch {
           // _app exists but failed to load
@@ -889,7 +901,7 @@ async function renderErrorPage(
       let wrapFn = wrapWithRouterContext;
       if (!wrapFn) {
         try {
-          const errRouterShim = await server.ssrLoadModule("next/router");
+          const errRouterShim = await runner.import("next/router") as any;
           wrapFn = errRouterShim.wrapWithRouterContext;
         } catch {
           // router shim not available — continue without it
@@ -918,7 +930,7 @@ async function renderErrorPage(
       const docPathErr = path.join(pagesDir, "_document");
       if (findFileWithExtensions(docPathErr)) {
         try {
-          const docModule = await server.ssrLoadModule(docPathErr);
+          const docModule = await runner.import(docPathErr) as any;
           DocumentComponent = docModule.default ?? null;
         } catch {
           // _document exists but failed to load
@@ -958,5 +970,3 @@ async function renderErrorPage(
   res.writeHead(statusCode, { "Content-Type": "text/plain" });
   res.end(`${statusCode} - ${statusCode === 404 ? "Page not found" : "Internal Server Error"}`);
 }
-
-
