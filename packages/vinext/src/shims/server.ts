@@ -162,18 +162,37 @@ export class NextURL {
   }
 
   get href(): string { return this._url.href; }
-  get origin(): string { return this._url.origin; }
-  get protocol(): string { return this._url.protocol; }
-  get host(): string { return this._url.host; }
-  get hostname(): string { return this._url.hostname; }
-  get port(): string { return this._url.port; }
-  get pathname(): string { return this._url.pathname; }
-  get search(): string { return this._url.search; }
-  get searchParams(): URLSearchParams { return this._url.searchParams; }
-  get hash(): string { return this._url.hash; }
+  set href(value: string) { this._url.href = value; }
 
+  get origin(): string { return this._url.origin; }
+
+  get protocol(): string { return this._url.protocol; }
+  set protocol(value: string) { this._url.protocol = value; }
+
+  get username(): string { return this._url.username; }
+  set username(value: string) { this._url.username = value; }
+
+  get password(): string { return this._url.password; }
+  set password(value: string) { this._url.password = value; }
+
+  get host(): string { return this._url.host; }
+  set host(value: string) { this._url.host = value; }
+
+  get hostname(): string { return this._url.hostname; }
+  set hostname(value: string) { this._url.hostname = value; }
+
+  get port(): string { return this._url.port; }
+  set port(value: string) { this._url.port = value; }
+
+  get pathname(): string { return this._url.pathname; }
   set pathname(value: string) { this._url.pathname = value; }
+
+  get search(): string { return this._url.search; }
   set search(value: string) { this._url.search = value; }
+
+  get searchParams(): URLSearchParams { return this._url.searchParams; }
+
+  get hash(): string { return this._url.hash; }
   set hash(value: string) { this._url.hash = value; }
 
   clone(): NextURL {

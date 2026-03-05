@@ -13,13 +13,13 @@ import {
   getRevalidateDuration,
 } from "./isr-cache.js";
 import type { CachedPagesValue } from "../shims/cache.js";
-import { withFetchCache } from "../shims/fetch-cache.js";
-import { _initRequestScopedCacheState } from "../shims/cache.js";
-import { clearPrivateCache } from "../shims/cache-runtime.js";
+import { runWithFetchCache } from "../shims/fetch-cache.js";
+import { _runWithCacheState } from "../shims/cache.js";
+import { runWithPrivateCache } from "../shims/cache-runtime.js";
 // Import server-only state modules to register ALS-backed accessors.
 // These modules must be imported before any rendering occurs.
-import "../shims/router-state.js";
-import "../shims/head-state.js";
+import { runWithRouterState } from "../shims/router-state.js";
+import { runWithHeadState } from "../shims/head-state.js";
 import { reportRequestError } from "./instrumentation.js";
 import { safeJsonStringify } from "./html.js";
 import { parseQueryString as parseQuery } from "../utils/query.js";
@@ -315,12 +315,13 @@ export function createSSRHandler(
 
     const { route, params } = match;
 
-    // Initialize per-request state for cache isolation
-    _initRequestScopedCacheState();
-    clearPrivateCache();
-    // Install patched fetch with Next.js caching semantics for this request
-    const cleanupFetchCache = withFetchCache();
-
+    // Wrap the entire request in nested AsyncLocalStorage.run() scopes to
+    // ensure per-request isolation for all state modules.
+    return runWithRouterState(() =>
+      runWithHeadState(() =>
+        _runWithCacheState(() =>
+          runWithPrivateCache(() =>
+            runWithFetchCache(async () => {
     try {
       // Set SSR context for the router shim so useRouter() returns
       // the correct URL and params during server-side rendering.
@@ -350,8 +351,9 @@ export function createSSRHandler(
       // Get the page component (default export)
       const PageComponent = pageModule.default;
       if (!PageComponent) {
+        console.error(`[vinext] Page ${route.filePath} has no default export`);
         res.statusCode = 500;
-        res.end(`Page ${route.filePath} has no default export`);
+        res.end("Page has no default export");
         return;
       }
 
@@ -383,7 +385,7 @@ export function createSSRHandler(
           });
 
           if (!isValidPath) {
-            await renderErrorPage(server, req, res, url, pagesDir, 404);
+            await renderErrorPage(server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext);
             return;
           }
         }
@@ -412,14 +414,20 @@ export function createSSRHandler(
         if (result && "redirect" in result) {
           const { redirect } = result;
           const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
+          // Sanitize destination to prevent open redirect via protocol-relative URLs.
+          // Also normalize backslashes — browsers treat \ as / in URL contexts.
+          let dest = redirect.destination;
+          if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
+            dest = dest.replace(/^[\\/]+/, "/");
+          }
           res.writeHead(status, {
-            Location: redirect.destination,
+            Location: dest,
           });
           res.end();
           return;
         }
         if (result && "notFound" in result && result.notFound) {
-          await renderErrorPage(server, req, res, url, pagesDir, 404);
+          await renderErrorPage(server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext);
           return;
         }
       }
@@ -512,14 +520,20 @@ export function createSSRHandler(
         if (result && "redirect" in result) {
           const { redirect } = result;
           const status = redirect.statusCode ?? (redirect.permanent ? 308 : 307);
+          // Sanitize destination to prevent open redirect via protocol-relative URLs.
+          // Also normalize backslashes — browsers treat \ as / in URL contexts.
+          let dest = redirect.destination;
+          if (!dest.startsWith("http://") && !dest.startsWith("https://")) {
+            dest = dest.replace(/^[\\/]+/, "/");
+          }
           res.writeHead(status, {
-            Location: redirect.destination,
+            Location: dest,
           });
           res.end();
           return;
         }
         if (result && "notFound" in result && result.notFound) {
-          await renderErrorPage(server, req, res, url, pagesDir, 404);
+          await renderErrorPage(server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext);
           return;
         }
 
@@ -548,6 +562,10 @@ export function createSSRHandler(
       const createElement = React.createElement;
       let element: React.ReactElement;
 
+      // wrapWithRouterContext wraps the element in RouterContext.Provider so that
+      // next/compat/router's useRouter() returns the real router.
+      const wrapWithRouterContext = routerShim.wrapWithRouterContext;
+
       if (AppComponent) {
         element = createElement(AppComponent, {
           Component: PageComponent,
@@ -555,6 +573,10 @@ export function createSSRHandler(
         });
       } else {
         element = createElement(PageComponent, pageProps);
+      }
+
+      if (wrapWithRouterContext) {
+        element = wrapWithRouterContext(element);
       }
 
       // Reset SSR head collector before rendering so <Head> tags are captured
@@ -633,6 +655,7 @@ export function createSSRHandler(
 <script type="module">
 import React from "react";
 import { hydrateRoot } from "react-dom/client";
+import { wrapWithRouterContext } from "next/router";
 
 const nextData = window.__NEXT_DATA__;
 const { pageProps } = nextData.props;
@@ -653,6 +676,7 @@ async function hydrate() {
   element = React.createElement(PageComponent, pageProps);
   `
   }
+  element = wrapWithRouterContext(element);
   const root = hydrateRoot(document.getElementById("__next"), element);
   window.__VINEXT_ROOT__ = root;
 }
@@ -731,9 +755,12 @@ hydrate();
       // For ISR, re-render synchronously to get the complete HTML string.
       // This runs after the stream is already sent, so it doesn't affect TTFB.
       if (isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
-        const isrElement = AppComponent
+        let isrElement = AppComponent
           ? createElement(AppComponent, { Component: pageModule.default, pageProps })
           : createElement(pageModule.default, pageProps);
+        if (wrapWithRouterContext) {
+          isrElement = wrapWithRouterContext(isrElement);
+        }
         const isrBodyHtml = await renderToStringAsync(isrElement);
         const isrHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
         const cacheKey = isrCacheKey("pages", url.split("?")[0]);
@@ -763,14 +790,22 @@ hydrate();
       // Try to render custom 500 error page
       try {
         await renderErrorPage(server, req, res, url, pagesDir, 500);
-      } catch {
-        // If error page itself fails, fall back to plain text
+      } catch (fallbackErr) {
+        // If error page itself fails, fall back to plain text.
+        // This is a dev-only code path (prod uses prod-server.ts), so
+        // include the error message for debugging.
         res.statusCode = 500;
-        res.end(`Internal Server Error: ${(e as Error).message}`);
+        res.end(`Internal Server Error: ${(fallbackErr as Error).message}`);
       }
     } finally {
-      cleanupFetchCache();
+      // Cleanup is handled by ALS scope unwinding —
+      // each runWith*() scope is automatically cleaned up when it exits.
     }
+            }) // end runWithFetchCache
+          ) // end runWithPrivateCache
+        ) // end _runWithCacheState
+      ) // end runWithHeadState
+    ); // end runWithRouterState
   };
 }
 
@@ -789,6 +824,7 @@ async function renderErrorPage(
   url: string,
   pagesDir: string,
   statusCode: number,
+  wrapWithRouterContext?: ((el: React.ReactElement) => React.ReactElement) | null,
 ): Promise<void> {
   // Try specific status page first, then _error, then fallback
   const candidates =
@@ -822,6 +858,18 @@ async function renderErrorPage(
       const createElement = React.createElement;
       const errorProps = { statusCode };
 
+      // If the caller didn't supply wrapWithRouterContext, load it now.
+      // ssrLoadModule caches internally so the cost is negligible.
+      let wrapFn = wrapWithRouterContext;
+      if (!wrapFn) {
+        try {
+          const errRouterShim = await server.ssrLoadModule("next/router");
+          wrapFn = errRouterShim.wrapWithRouterContext;
+        } catch {
+          // router shim not available — continue without it
+        }
+      }
+
       let element: React.ReactElement;
       if (AppComponent) {
         element = createElement(AppComponent, {
@@ -830,6 +878,10 @@ async function renderErrorPage(
         });
       } else {
         element = createElement(ErrorComponent, errorProps);
+      }
+
+      if (wrapFn) {
+        element = wrapFn(element);
       }
 
       const bodyHtml = await renderToStringAsync(element);

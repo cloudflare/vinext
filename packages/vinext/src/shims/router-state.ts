@@ -37,21 +37,20 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   ssrContext: null,
 } satisfies RouterState) as RouterState;
 
-function _enterWith(state: RouterState): void {
-  const enterWith = (_als as any).enterWith;
-  if (typeof enterWith === "function") {
-    try {
-      enterWith.call(_als, state);
-      return;
-    } catch {
-      // Fall through to best-effort fallback.
-    }
-  }
-  _fallbackState.ssrContext = state.ssrContext;
-}
-
 function _getState(): RouterState {
   return _als.getStore() ?? _fallbackState;
+}
+
+/**
+ * Run a function within a router state ALS scope.
+ * Ensures per-request isolation for Pages Router SSR context
+ * on concurrent runtimes.
+ */
+export function runWithRouterState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  const state: RouterState = {
+    ssrContext: null,
+  };
+  return _als.run(state, fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -64,16 +63,12 @@ _registerRouterStateAccessors({
   },
 
   setSSRContext(ctx: SSRContext | null): void {
-    if (ctx !== null) {
-      _enterWith({ ssrContext: ctx });
-      _fallbackState.ssrContext = ctx;
-      return;
-    }
-    // Clear in both ALS store and fallback to prevent leaks.
     const state = _als.getStore();
     if (state) {
-      state.ssrContext = null;
+      state.ssrContext = ctx;
+    } else {
+      // No ALS scope — fallback for environments without als.run() wrapping.
+      _fallbackState.ssrContext = ctx;
     }
-    _fallbackState.ssrContext = null;
   },
 });

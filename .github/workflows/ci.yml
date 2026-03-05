@@ -25,7 +25,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
 
   typecheck:
@@ -38,7 +38,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck
 
   test:
@@ -51,7 +51,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
       - name: Build plugin (needed by ecosystem fixtures)
         run: pnpm run build
       - run: pnpm test
@@ -70,7 +70,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
       - name: Build plugin
         run: pnpm run build
       - name: Pack vinext for local install
@@ -146,7 +146,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
       - name: Build plugin
         run: pnpm run build
       - run: pnpm exec playwright install chromium

@@ -1,5 +1,5 @@
-import type { Plugin, ViteDevServer } from "vite";
-import { parseAst } from "vite";
+import type { Plugin, UserConfig, ViteDevServer } from "vite";
+import { loadEnv, parseAst } from "vite";
 import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, patternToNextFormat as pagesPatternToNextFormat, type Route } from "./routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import { createSSRHandler } from "./server/dev-server.js";
@@ -15,19 +15,34 @@ import {
   type ResolvedNextConfig,
   type NextRedirect,
   type NextRewrite,
+  type NextHeader,
 } from "./config/next-config.js";
 
-import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
+import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormalizePathCode } from "./server/middleware-codegen.js";
+import { normalizePath } from "./server/normalize-path.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
-import { safeRegExp, isExternalUrl, proxyExternalRequest } from "./config/config-matchers.js";
+import { validateDevRequest } from "./server/dev-origin-check.js";
+import {
+  safeRegExp,
+  isExternalUrl,
+  proxyExternalRequest,
+  parseCookies,
+  matchHeaders,
+  matchRedirect,
+  matchRewrite,
+  type RequestContext,
+} from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
+import { detectPackageManager } from "./utils/project.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import MagicString from "magic-string";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import commonjs from "vite-plugin-commonjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -569,6 +584,7 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
   let hasCloudflarePlugin = false;
+  let hasNitroPlugin = false;
 
   // Resolve shim paths - works both from source (.ts) and built (.js)
   const shimsDir = path.resolve(__dirname, "shims");
@@ -641,6 +657,13 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
       rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: nextConfig?.headers ?? [],
       i18n: nextConfig?.i18n ?? null,
+      images: {
+        deviceSizes: nextConfig?.images?.deviceSizes,
+        imageSizes: nextConfig?.images?.imageSizes,
+        dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
+        contentDispositionType: nextConfig?.images?.contentDispositionType,
+        contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+      },
     });
 
     // Generate middleware code if middleware.ts exists
@@ -653,115 +676,45 @@ import { NextRequest } from "next/server";`
     // We inline the matching + execution logic so the prod server can call it.
     const middlewareExportCode = middlewarePath
       ? `
-// --- Middleware support ---
-function matchesMiddleware(pathname, matcher) {
-  if (!matcher) {
-    return !pathname.startsWith("/_next") && !pathname.startsWith("/api") && !pathname.includes(".") && pathname !== "/favicon.ico";
-  }
-  var patterns = [];
-  if (typeof matcher === "string") { patterns.push(matcher); }
-  else if (Array.isArray(matcher)) {
-    for (var m of matcher) {
-      if (typeof m === "string") patterns.push(m);
-      else if (m && typeof m === "object" && "source" in m) patterns.push(m.source);
-    }
-  }
-  return patterns.some(function(p) { return matchMiddlewarePattern(pathname, p); });
-}
-
-function __isSafeRegex(pattern) {
-  var quantifierAtDepth = [];
-  var depth = 0;
-  var i = 0;
-  while (i < pattern.length) {
-    var ch = pattern[i];
-    if (ch === "\\\\") { i += 2; continue; }
-    if (ch === "[") {
-      i++;
-      while (i < pattern.length && pattern[i] !== "]") {
-        if (pattern[i] === "\\\\") i++;
-        i++;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "(") {
-      depth++;
-      if (quantifierAtDepth.length <= depth) quantifierAtDepth.push(false);
-      else quantifierAtDepth[depth] = false;
-      i++;
-      continue;
-    }
-    if (ch === ")") {
-      var hadQ = depth > 0 && quantifierAtDepth[depth];
-      if (depth > 0) depth--;
-      var next = pattern[i + 1];
-      if (next === "+" || next === "*" || next === "{") {
-        if (hadQ) return false;
-        if (depth >= 0 && depth < quantifierAtDepth.length) quantifierAtDepth[depth] = true;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "+" || ch === "*") {
-      if (depth > 0) quantifierAtDepth[depth] = true;
-      i++;
-      continue;
-    }
-    if (ch === "?") {
-      var prev = i > 0 ? pattern[i - 1] : "";
-      if (prev !== "+" && prev !== "*" && prev !== "?" && prev !== "}") {
-        if (depth > 0) quantifierAtDepth[depth] = true;
-      }
-      i++;
-      continue;
-    }
-    if (ch === "{") {
-      var j = i + 1;
-      while (j < pattern.length && /[\\d,]/.test(pattern[j])) j++;
-      if (j < pattern.length && pattern[j] === "}" && j > i + 1) {
-        if (depth > 0) quantifierAtDepth[depth] = true;
-        i = j + 1;
-        continue;
-      }
-    }
-    i++;
-  }
-  return true;
-}
-function __safeRegExp(pattern, flags) {
-  if (!__isSafeRegex(pattern)) {
-    console.warn("[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): " + pattern);
-    return null;
-  }
-  try { return new RegExp(pattern, flags); } catch { return null; }
-}
-
-function matchMiddlewarePattern(pathname, pattern) {
-  if (pattern.includes("(") || pattern.includes("\\\\")) {
-    var re = __safeRegExp("^" + pattern + "$");
-    if (re) return re.test(pathname);
-  }
-  var regexStr = pattern
-    .replace(/\\./g, "\\\\.")
-    .replace(/\\/:([\\w]+)\\*/g, "(?:/.*)?")
-    .replace(/\\/:([\\w]+)\\+/g, "(?:/.+)")
-    .replace(/:([\\w]+)/g, "([^/]+)");
-  var re2 = __safeRegExp("^" + regexStr + "$");
-  return re2 ? re2.test(pathname) : pathname === pattern;
-}
+// --- Middleware support (generated from middleware-codegen.ts) ---
+${generateNormalizePathCode("es5")}
+${generateSafeRegExpCode("es5")}
+${generateMiddlewareMatcherCode("es5")}
 
 export async function runMiddleware(request) {
-  var middlewareFn = middlewareModule.default || middlewareModule.middleware;
-  if (typeof middlewareFn !== "function") return { continue: true };
+  var isProxy = ${middlewarePath ? JSON.stringify(isProxyFile(middlewarePath)) : "false"};
+  var middlewareFn = isProxy
+    ? (middlewareModule.proxy ?? middlewareModule.default)
+    : (middlewareModule.middleware ?? middlewareModule.default);
+  if (typeof middlewareFn !== "function") {
+    var fileType = isProxy ? "Proxy" : "Middleware";
+    var expectedExport = isProxy ? "proxy" : "middleware";
+    throw new Error("The " + fileType + " file must export a function named \`" + expectedExport + "\` or a \`default\` function.");
+  }
 
   var config = middlewareModule.config;
   var matcher = config && config.matcher;
   var url = new URL(request.url);
 
-  if (!matchesMiddleware(url.pathname, matcher)) return { continue: true };
+  // Normalize pathname before matching to prevent path-confusion bypasses
+  // (percent-encoding like /%61dmin, double slashes like /dashboard//settings).
+  var decodedPathname;
+  try { decodedPathname = decodeURIComponent(url.pathname); } catch (e) {
+    return { continue: false, response: new Response("Bad Request", { status: 400 }) };
+  }
+  var normalizedPathname = __normalizePath(decodedPathname);
 
-  var nextRequest = request instanceof NextRequest ? request : new NextRequest(request);
+  if (!matchesMiddleware(normalizedPathname, matcher)) return { continue: true };
+
+   // Construct a new Request with the decoded + normalized pathname so middleware
+   // always sees the same canonical path that the router uses.
+  var mwRequest = request;
+  if (normalizedPathname !== url.pathname) {
+    var mwUrl = new URL(url);
+    mwUrl.pathname = normalizedPathname;
+    mwRequest = new Request(mwUrl, request);
+  }
+  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
   var response;
   try { response = await middlewareFn(nextRequest); }
   catch (e) {
@@ -774,7 +727,13 @@ export async function runMiddleware(request) {
   if (response.headers.get("x-middleware-next") === "1") {
     var rHeaders = new Headers();
     for (var [key, value] of response.headers) {
-      if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") rHeaders.set(key, value);
+      // Keep x-middleware-request-* headers so the production server can
+      // apply middleware-request header overrides before stripping internals
+      // from the final client response.
+      if (
+        !key.startsWith("x-middleware-") ||
+        key.startsWith("x-middleware-request-")
+      ) rHeaders.append(key, value);
     }
     return { continue: true, responseHeaders: rHeaders };
   }
@@ -787,7 +746,9 @@ export async function runMiddleware(request) {
   var rewriteUrl = response.headers.get("x-middleware-rewrite");
   if (rewriteUrl) {
     var rwHeaders = new Headers();
-    for (var [k, v] of response.headers) { if (k !== "x-middleware-rewrite") rwHeaders.set(k, v); }
+    for (var [k, v] of response.headers) {
+      if (!k.startsWith("x-middleware-") || k.startsWith("x-middleware-request-")) rwHeaders.append(k, v);
+    }
     var rewritePath;
     try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
     catch { rewritePath = rewriteUrl; }
@@ -808,9 +769,13 @@ import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
-import { setSSRContext } from "next/router";
+import { setSSRContext, wrapWithRouterContext } from "next/router";
 import { getCacheHandler } from "next/cache";
-import { withFetchCache } from "vinext/fetch-cache";
+import { runWithFetchCache } from "vinext/fetch-cache";
+import { _runWithCacheState } from "next/cache";
+import { runWithPrivateCache } from "vinext/cache-runtime";
+import { runWithRouterState } from "vinext/router-state";
+import { runWithHeadState } from "vinext/head-state";
 import { safeJsonStringify } from "vinext/html";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
@@ -865,7 +830,8 @@ ${apiRouteEntries.join(",\n")}
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch {}
+  // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+  // the entry point. Decoding again would create a double-decode vector.
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
     if (params !== null) return { route, params };
@@ -1073,7 +1039,8 @@ function parseCookieLocaleFromHeader(cookieHeader) {
   if (!i18nConfig || !cookieHeader) return null;
   const match = cookieHeader.match(/(?:^|;\\s*)NEXT_LOCALE=([^;]*)/);
   if (!match) return null;
-  const value = decodeURIComponent(match[1].trim());
+  var value;
+  try { value = decodeURIComponent(match[1].trim()); } catch (e) { return null; }
   if (i18nConfig.locales.indexOf(value) !== -1) return value;
   return null;
 }
@@ -1221,7 +1188,11 @@ export async function renderPage(request, url, manifest) {
   }
 
   const { route, params } = match;
-  const cleanupFetchCache = withFetchCache();
+  return runWithRouterState(() =>
+    runWithHeadState(() =>
+      _runWithCacheState(() =>
+        runWithPrivateCache(() =>
+          runWithFetchCache(async () => {
   try {
     if (typeof setSSRContext === "function") {
       setSSRContext({
@@ -1288,7 +1259,7 @@ export async function renderPage(request, url, manifest) {
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
         var gsspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
-        return new Response(null, { status: gsspStatus, headers: { Location: result.redirect.destination } });
+        return new Response(null, { status: gsspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
       }
       if (result && result.notFound) {
         return new Response("404", { status: 404 });
@@ -1347,7 +1318,7 @@ export async function renderPage(request, url, manifest) {
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
         var gspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
-        return new Response(null, { status: gspStatus, headers: { Location: result.redirect.destination } });
+        return new Response(null, { status: gspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
       }
       if (result && result.notFound) {
         return new Response("404", { status: 404 });
@@ -1363,6 +1334,7 @@ export async function renderPage(request, url, manifest) {
     } else {
       element = React.createElement(PageComponent, pageProps);
     }
+    element = wrapWithRouterContext(element);
 
     if (typeof resetSSRHead === "function") resetSSRHead();
     if (typeof flushPreloads === "function") await flushPreloads();
@@ -1460,6 +1432,7 @@ export async function renderPage(request, url, manifest) {
       } else {
         isrElement = React.createElement(PageComponent, pageProps);
       }
+      isrElement = wrapWithRouterContext(isrElement);
       var isrHtml = await renderToStringAsync(isrElement);
       var fullHtml = shellPrefix + isrHtml + shellSuffix;
       var isrPathname = url.split("?")[0];
@@ -1480,9 +1453,12 @@ export async function renderPage(request, url, manifest) {
   } catch (e) {
     console.error("[vinext] SSR error:", e);
     return new Response("Internal Server Error", { status: 500 });
-  } finally {
-    cleanupFetchCache();
   }
+          }) // end runWithFetchCache
+        ) // end runWithPrivateCache
+      ) // end _runWithCacheState
+    ) // end runWithHeadState
+  ); // end runWithRouterState
 }
 
 export async function handleApiRoute(request, url) {
@@ -1568,6 +1544,9 @@ ${middlewareExportCode}
     const loaderEntries = pageRoutes.map((r: Route) => {
       const absPath = r.filePath.replace(/\\/g, "/");
       const nextFormatPattern = pagesPatternToNextFormat(r.pattern);
+      // JSON.stringify safely escapes quotes, backslashes, and special chars in
+      // both the route pattern and the absolute file path.
+      // lgtm[js/bad-code-sanitization]
       return `  ${JSON.stringify(nextFormatPattern)}: () => import(${JSON.stringify(absPath)})`;
     });
 
@@ -1619,6 +1598,10 @@ async function hydrate() {
   ` : `
   element = React.createElement(PageComponent, pageProps);
   `}
+
+  // Wrap with RouterContext.Provider so next/compat/router works during hydration
+  const { wrapWithRouterContext } = await import("next/router");
+  element = wrapWithRouterContext(element);
 
   const container = document.getElementById("__next");
   if (!container) {
@@ -1674,7 +1657,7 @@ hydrate();
     if (!resolvedRscPath) {
       throw new Error(
         "vinext: App Router detected but @vitejs/plugin-rsc is not installed.\n" +
-        "Run: npm install -D @vitejs/plugin-rsc",
+        "Run: " + detectPackageManager(process.cwd()) + " @vitejs/plugin-rsc",
       );
     }
     const rscImport = import(pathToFileURL(resolvedRscPath).href);
@@ -1691,16 +1674,52 @@ hydrate();
       });
   }
 
+  const imageImportDimCache = new Map<string, { width: number; height: number }>();
+
+  // Shared state for the MDX proxy plugin. Populated during config() if MDX
+  // files are detected and @mdx-js/rollup is installed.
+  let mdxDelegate: Plugin | null = null;
+
   const plugins: (Plugin | Promise<Plugin[]>)[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     tsconfigPaths(),
+    // Transform CJS require()/module.exports to ESM before other plugins
+    // analyze imports (RSC directive scanning, shim resolution, etc.)
+    commonjs(),
     {
       name: "vinext:config",
       enforce: "pre",
 
-      async config(config) {
+      async config(config, env) {
         root = config.root ?? process.cwd();
+
+        // Load .env files into process.env before anything else.
+        // Next.js loads .env files before evaluating next.config.js, so
+        // env vars are available in config, server-side code, and as
+        // NEXT_PUBLIC_* defines for the client bundle.
+        // Pass '' as prefix to load ALL vars, not just VITE_-prefixed ones.
+        const mode = env?.mode ?? "development";
+        const envDir = config.envDir ?? root;
+        const dotenvVars = loadEnv(mode, envDir, "");
+        for (const [key, value] of Object.entries(dotenvVars)) {
+          if (process.env[key] === undefined) {
+            process.env[key] = value;
+          }
+        }
+        // Align NODE_ENV with Next.js semantics: build -> production, serve -> development.
+        // Next.js unconditionally forces NODE_ENV during build/dev, so we do the same.
+        let resolvedNodeEnv: string;
+        if (mode === "test") {
+          resolvedNodeEnv = "test";
+        } else if (env?.command === "build") {
+          resolvedNodeEnv = "production";
+        } else {
+          resolvedNodeEnv = "development";
+        }
+        if (process.env.NODE_ENV !== resolvedNodeEnv) {
+          process.env.NODE_ENV = resolvedNodeEnv;
+        }
 
         // Resolve the base directory for app/pages detection.
         // If appDir is provided, resolve it (supports both relative and absolute paths).
@@ -1739,7 +1758,17 @@ hydrate();
 
         // Merge env from next.config.js with NEXT_PUBLIC_* env vars
         const defines = getNextPublicEnvDefines();
+        if (
+          !config.define ||
+          typeof config.define !== "object" ||
+          !("process.env.NODE_ENV" in config.define)
+        ) {
+          defines["process.env.NODE_ENV"] = JSON.stringify(resolvedNodeEnv);
+        }
         for (const [key, value] of Object.entries(nextConfig.env)) {
+          // Skip NODE_ENV from next.config.js env — Next.js ignores it too,
+          // and it would silently override the value we just set above.
+          if (key === "NODE_ENV") continue;
           defines[`process.env.${key}`] = JSON.stringify(value);
         }
         // Expose basePath to client-side code
@@ -1752,6 +1781,24 @@ hydrate();
         );
         defines["process.env.__VINEXT_IMAGE_DOMAINS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.domains ?? []),
+        );
+        // Expose allowed image widths (union of deviceSizes + imageSizes) for
+        // server-side validation. Matches Next.js behavior: only configured
+        // sizes are accepted by the image optimization endpoint.
+        {
+          const deviceSizes = nextConfig.images?.deviceSizes ?? [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+          const imageSizes = nextConfig.images?.imageSizes ?? [16, 32, 48, 64, 96, 128, 256, 384];
+          defines["process.env.__VINEXT_IMAGE_DEVICE_SIZES"] = JSON.stringify(
+            JSON.stringify(deviceSizes),
+          );
+          defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(
+            JSON.stringify(imageSizes),
+          );
+        }
+        // Expose dangerouslyAllowSVG flag for the image shim's auto-skip logic.
+        // When false (default), .svg sources bypass the optimization endpoint.
+        defines["process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG"] = JSON.stringify(
+          String(nextConfig.images?.dangerouslyAllowSVG ?? false),
         );
         // Draft mode secret — generated once at build time so the
         // __prerender_bypass cookie is consistent across all server
@@ -1766,6 +1813,7 @@ hydrate();
           "next/link": path.join(shimsDir, "link"),
           "next/head": path.join(shimsDir, "head"),
           "next/router": path.join(shimsDir, "router"),
+          "next/compat/router": path.join(shimsDir, "compat-router"),
           "next/image": path.join(shimsDir, "image"),
           "next/legacy/image": path.join(shimsDir, "legacy-image"),
           "next/dynamic": path.join(shimsDir, "dynamic"),
@@ -1831,6 +1879,11 @@ hydrate();
             p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")
           ),
         );
+        hasNitroPlugin = pluginsFlat.some(
+          (p: any) => p && typeof p === "object" && typeof p.name === "string" && (
+            p.name === "nitro" || p.name.startsWith("nitro:")
+          ),
+        );
 
         // Resolve PostCSS string plugin names that Vite can't handle.
         // Next.js projects commonly use array-form plugins like
@@ -1850,18 +1903,17 @@ hydrate();
           (p: any) => p && typeof p === "object" && typeof p.name === "string" &&
             (p.name === "@mdx-js/rollup" || p.name === "mdx"),
         );
-        const mdxPlugins: any[] = [];
         if (!hasMdxPlugin && hasMdxFiles(root, hasAppDir ? appDir : null, hasPagesDir ? pagesDir : null)) {
           try {
             const mdxRollup = await import("@mdx-js/rollup");
-            const mdxPlugin = mdxRollup.default ?? mdxRollup;
+            const mdxFactory = mdxRollup.default ?? mdxRollup;
             const mdxOpts: Record<string, unknown> = {};
             if (nextConfig.mdx) {
               if (nextConfig.mdx.remarkPlugins) mdxOpts.remarkPlugins = nextConfig.mdx.remarkPlugins;
               if (nextConfig.mdx.rehypePlugins) mdxOpts.rehypePlugins = nextConfig.mdx.rehypePlugins;
               if (nextConfig.mdx.recmaPlugins) mdxOpts.recmaPlugins = nextConfig.mdx.recmaPlugins;
             }
-            mdxPlugins.push(mdxPlugin(mdxOpts));
+            mdxDelegate = mdxFactory(mdxOpts);
             if (nextConfig.mdx) {
               console.log("[vinext] Auto-injected @mdx-js/rollup with remark/rehype plugins from next.config");
             } else {
@@ -1871,7 +1923,7 @@ hydrate();
             // @mdx-js/rollup not installed — warn but don't fail
             console.warn(
               "[vinext] MDX files detected but @mdx-js/rollup is not installed. " +
-              "Install it with: npm install -D @mdx-js/rollup"
+              "Install it with: " + detectPackageManager(process.cwd()) + " @mdx-js/rollup"
             );
           }
         }
@@ -1884,9 +1936,9 @@ hydrate();
         // In multi-env builds, manualChunks must only be set per-environment
         // (on the client env), not globally — otherwise it leaks into RSC/SSR
         // environments where it can cause asset resolution issues.
-        const isMultiEnv = hasAppDir || hasCloudflarePlugin;
+        const isMultiEnv = hasAppDir || hasCloudflarePlugin || hasNitroPlugin;
 
-        const viteConfig: Record<string, any> = {
+        const viteConfig: UserConfig = {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           build: {
@@ -1899,7 +1951,7 @@ hydrate();
               // warning handling is not lost.
               onwarn: (() => {
                 const userOnwarn = config.build?.rollupOptions?.onwarn;
-                return (warning: any, defaultHandler: any) => {
+                return (warning, defaultHandler) => {
                   if (
                     warning.code === "MODULE_LEVEL_DIRECTIVE" &&
                     (warning.message?.includes('"use client"') ||
@@ -1937,11 +1989,19 @@ hydrate();
           // route handlers so they can set the Allow header and run user-defined
           // OPTIONS handlers. Without this, Vite's CORS middleware responds to
           // OPTIONS with a 204 before the request reaches vinext's handler.
-          server: { cors: { preflightContinue: true } },
+          // Keep Vite's default restrictive origin policy by explicitly
+          // setting it. Without the `origin` field, `preflightContinue: true`
+          // would override Vite's default and allow any origin.
+          server: {
+            cors: {
+              preflightContinue: true,
+              origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/,
+            },
+          },
           // Externalize React packages from SSR transform — they are CJS and
           // must be loaded natively by Node, not through Vite's ESM evaluator.
-          // Skip when targeting Cloudflare Workers (they bundle everything).
-          ...(hasCloudflarePlugin ? {} : {
+          // Skip when targeting bundled runtimes (Cloudflare/Nitro bundle everything).
+          ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
             ssr: {
               external: ["react", "react-dom", "react-dom/server"],
             },
@@ -1994,14 +2054,14 @@ hydrate();
 
           viteConfig.environments = {
             rsc: {
-              ...(hasCloudflarePlugin ? {} : {
+              ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
                 resolve: {
                   // Externalize native/heavy packages so the RSC environment
                   // loads them natively via Node rather than through Vite's
                   // ESM module evaluator (which can't handle native addons).
                   // Note: Do NOT externalize react/react-dom here — they must
                   // be bundled with the "react-server" condition for RSC.
-                  // Skip when targeting Cloudflare Workers.
+                  // Skip when targeting bundled runtimes (Cloudflare/Nitro).
                   external: [
                     "satori",
                     "@resvg/resvg-js",
@@ -2035,11 +2095,15 @@ hydrate();
             client: {
               optimizeDeps: {
                 exclude: ["vinext"],
-                // react and react-dom are framework dependencies used for
-                // hydration. They aren't crawled from app/ source files so
-                // must be pre-included to prevent late discovery and page
-                // reloads during development.
-                include: ["react", "react-dom", "react-dom/client"],
+                // React packages aren't crawled from app/ source files,
+                // so must be pre-included to avoid late discovery (#25).
+                include: [
+                  "react",
+                  "react-dom",
+                  "react-dom/client",
+                  "react/jsx-runtime",
+                  "react/jsx-dev-runtime",
+                ],
               },
               build: {
                 // When targeting Cloudflare Workers, enable manifest generation
@@ -2076,11 +2140,6 @@ hydrate();
               },
             },
           };
-        }
-
-        // Add auto-injected MDX plugin if needed
-        if (mdxPlugins.length > 0) {
-          viteConfig.plugins = mdxPlugins;
         }
 
         return viteConfig;
@@ -2181,6 +2240,7 @@ hydrate();
             rewrites: nextConfig?.rewrites,
             headers: nextConfig?.headers,
             allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
+            allowedDevOrigins: nextConfig?.serverActionsAllowedOrigins,
           });
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
@@ -2189,6 +2249,29 @@ hydrate();
         if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
           return generateBrowserEntry();
         }
+      },
+    },
+    // Proxy plugin for @mdx-js/rollup. The real MDX plugin is created lazily
+    // during vinext:config's config() (when MDX files are detected), but
+    // plugins returned from config() hooks run too late in the pipeline —
+    // after vite:import-analysis. This top-level proxy with enforce:"pre"
+    // ensures MDX transforms run at the correct stage. Both vinext:config
+    // and this proxy are enforce:"pre", and vinext:config comes first in
+    // the array, so mdxDelegate is already set when this proxy's hooks fire.
+    {
+      name: "vinext:mdx",
+      enforce: "pre",
+      config(config, env) {
+        if (!mdxDelegate?.config) return;
+        const hook = mdxDelegate.config;
+        const fn = typeof hook === "function" ? hook : hook.handler;
+        return fn.call(this, config, env);
+      },
+      transform(code, id, options) {
+        if (!mdxDelegate?.transform) return;
+        const hook = mdxDelegate.transform;
+        const fn = typeof hook === "function" ? hook : hook.handler;
+        return fn.call(this, code, id, options);
       },
     },
     // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
@@ -2268,12 +2351,33 @@ hydrate();
       configureServer(server: ViteDevServer) {
         // Watch pages directory for file additions/removals to invalidate route cache.
         const pageExtensions = /\.(tsx?|jsx?|mdx)$/;
+
+        /**
+         * Invalidate the virtual RSC entry module in Vite's module graph.
+         *
+         * The App Router route table is baked into the virtual RSC entry
+         * at generation time. When routes are added or removed, clearing
+         * the route cache alone is not enough: the virtual module must
+         * also be invalidated so Vite re-calls the load() hook to
+         * regenerate the entry with the updated route table.
+         */
+        function invalidateRscEntryModule() {
+          const rscEnv = server.environments["rsc"];
+          if (!rscEnv) return;
+          const mod = rscEnv.moduleGraph.getModuleById(RESOLVED_RSC_ENTRY);
+          if (mod) {
+            rscEnv.moduleGraph.invalidateModule(mod);
+            rscEnv.hot.send({ type: "full-reload" });
+          }
+        }
+
         server.watcher.on("add", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
           }
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
             invalidateAppRouteCache();
+            invalidateRscEntryModule();
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
@@ -2282,6 +2386,7 @@ hydrate();
           }
           if (hasAppDir && filePath.startsWith(appDir) && pageExtensions.test(filePath)) {
             invalidateAppRouteCache();
+            invalidateRscEntryModule();
           }
         });
 
@@ -2294,7 +2399,7 @@ hydrate();
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
-          server.middlewares.use(async (req: any, res: any, next: any) => {
+          server.middlewares.use(async (req, res, next) => {
             try {
               let url: string = req.url ?? "/";
 
@@ -2316,16 +2421,46 @@ hydrate();
                 return next();
               }
 
+              // ── Cross-origin request protection ─────────────────────────
+              // Block requests from non-localhost origins to prevent
+              // cross-origin data exfiltration from the dev server.
+              const blockReason = validateDevRequest(
+                {
+                  origin: req.headers.origin as string | undefined,
+                  host: req.headers.host,
+                  "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
+                  "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
+                  "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
+                },
+                nextConfig?.serverActionsAllowedOrigins,
+              );
+              if (blockReason) {
+                console.warn(`[vinext] Blocked dev request: ${blockReason} (${url})`);
+                res.writeHead(403, { "Content-Type": "text/plain" });
+                res.end("Forbidden");
+                return;
+              }
+
               // ── Image optimization passthrough (dev mode) ─────────────
               // In dev, redirect to the original asset URL so Vite serves it.
               if (url.split("?")[0] === "/_vinext/image") {
                 const imgParams = new URLSearchParams(url.split("?")[1] ?? "");
-                const imgUrl = imgParams.get("url");
+                const rawImgUrl = imgParams.get("url");
+                // Normalize backslashes: browsers and the URL constructor treat
+                // /\evil.com as //evil.com, bypassing the // check.
+                const imgUrl = rawImgUrl?.replaceAll("\\", "/") ?? null;
                 // Allowlist: must start with "/" but not "//" — blocks absolute
-                // URLs, protocol-relative, and exotic schemes (data:, javascript:, etc.).
+                // URLs, protocol-relative, backslash variants, and exotic schemes.
                 if (!imgUrl || !imgUrl.startsWith("/") || imgUrl.startsWith("//")) {
                   res.writeHead(400);
-                  res.end(!imgUrl ? "Missing url parameter" : "Only relative URLs allowed");
+                  res.end(!rawImgUrl ? "Missing url parameter" : "Only relative URLs allowed");
+                  return;
+                }
+                // Validate the constructed URL's origin hasn't changed (defense in depth).
+                const resolvedImg = new URL(imgUrl, `http://${req.headers.host || "localhost"}`);
+                if (resolvedImg.origin !== `http://${req.headers.host || "localhost"}`) {
+                  res.writeHead(400);
+                  res.end("Only relative URLs allowed");
                   return;
                 }
                 res.writeHead(302, { Location: imgUrl });
@@ -2349,14 +2484,26 @@ hydrate();
                 return next();
               }
 
-              // Guard against protocol-relative URL open redirect attacks.
-              // Paths like //example.com/ would be redirected to //example.com
-              // by the trailing-slash normalizer, which browsers interpret as
-              // http://example.com — an open redirect. Next.js returns 404 for
-              // double-slash paths.
+              // Guard against protocol-relative URL open redirects.
+              // Normalize backslashes first: browsers treat /\ as // in URL
+              // context. Check the RAW pathname before normalizePath so the
+              // guard fires before normalizePath collapses //.
+              pathname = pathname.replaceAll("\\", "/");
               if (pathname.startsWith("//")) {
                 res.writeHead(404);
                 res.end("404 Not Found");
+                return;
+              }
+
+              // Normalize the pathname to prevent path-confusion attacks.
+              // decodeURIComponent prevents /%61dmin bypassing /admin matchers.
+              // normalizePath collapses // and resolves . / .. segments.
+              try {
+                pathname = normalizePath(decodeURIComponent(pathname));
+              } catch {
+                // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of crashing.
+                res.writeHead(400);
+                res.end("Bad Request");
                 return;
               }
 
@@ -2428,7 +2575,7 @@ hydrate();
                   if (result.response) {
                     res.statusCode = result.response.status;
                     for (const [key, value] of result.response.headers) {
-                      res.setHeader(key, value);
+                      res.appendHeader(key, value);
                     }
                     const body = await result.response.text();
                     res.end(body);
@@ -2439,7 +2586,7 @@ hydrate();
                 // Apply middleware response headers
                 if (result.responseHeaders) {
                   for (const [key, value] of result.responseHeaders) {
-                    res.setHeader(key, value);
+                    res.appendHeader(key, value);
                   }
                 }
 
@@ -2452,9 +2599,26 @@ hydrate();
                 }
               }
 
+              // Build request context once for has/missing condition checks
+              // across headers, redirects, and rewrites.
+              const reqUrl = new URL(url, `http://${req.headers.host || "localhost"}`);
+              const reqCtxHeaders = new Headers(
+                Object.fromEntries(
+                  Object.entries(req.headers)
+                    .filter(([, v]) => v !== undefined)
+                    .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])
+                ),
+              );
+              const reqCtx: RequestContext = {
+                headers: reqCtxHeaders,
+                cookies: parseCookies(reqCtxHeaders.get("cookie")),
+                query: reqUrl.searchParams,
+                host: reqCtxHeaders.get("host") ?? reqUrl.host,
+              };
+
               // Apply custom headers from next.config.js
               if (nextConfig?.headers.length) {
-                applyHeaders(pathname, res, nextConfig.headers);
+                applyHeaders(pathname, res, nextConfig.headers, reqCtx);
               }
 
               // Apply redirects from next.config.js
@@ -2463,6 +2627,7 @@ hydrate();
                   pathname,
                   res,
                   nextConfig.redirects,
+                  reqCtx,
                 );
                 if (redirected) return;
               }
@@ -2471,7 +2636,7 @@ hydrate();
               let resolvedUrl = url;
               if (nextConfig?.rewrites.beforeFiles.length) {
                 resolvedUrl =
-                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles) ??
+                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles, reqCtx) ??
                   url;
               }
 
@@ -2512,6 +2677,7 @@ hydrate();
                 const afterRewrite = applyRewrites(
                   resolvedUrl.split("?")[0],
                   nextConfig.rewrites.afterFiles,
+                  reqCtx,
                 );
                 if (afterRewrite) resolvedUrl = afterRewrite;
               }
@@ -2537,6 +2703,7 @@ hydrate();
                 const fallbackRewrite = applyRewrites(
                   resolvedUrl.split("?")[0],
                   nextConfig.rewrites.fallback,
+                  reqCtx,
                 );
                 if (fallbackRewrite) {
                   // External fallback rewrite — proxy to external URL
@@ -2572,7 +2739,7 @@ hydrate();
       enforce: "pre",
 
       // Cache of image dimensions to avoid re-reading files
-      _dimCache: new Map<string, { width: number; height: number }>(),
+      _dimCache: imageImportDimCache,
 
       resolveId: {
         filter: { id: /\?vinext-meta$/ },
@@ -2589,7 +2756,7 @@ hydrate();
         const imagePath = id.replace("\0vinext-image-meta:", "");
 
         // Read from cache first
-        const cache = (this as any)._dimCache as Map<string, { width: number; height: number }>;
+        const cache = imageImportDimCache;
         let dims = cache.get(imagePath);
         if (!dims) {
           try {
@@ -2904,7 +3071,7 @@ hydrate();
           if (!resolvedRscTransformsPath) {
             throw new Error(
               "vinext: 'use cache' requires @vitejs/plugin-rsc to be installed.\n" +
-              "Run: npm install -D @vitejs/plugin-rsc",
+              "Run: " + detectPackageManager(process.cwd()) + " @vitejs/plugin-rsc",
             );
           }
           const { transformWrapExport, transformHoistInlineDirective } = await import(pathToFileURL(resolvedRscTransformsPath).href);
@@ -3016,7 +3183,7 @@ hydrate();
         sequential: true,
         order: "post",
         async handler(options) {
-          const envName = (this as any).environment?.name as string | undefined;
+          const envName = this.environment?.name;
           if (envName !== "rsc") return;
 
           const outDir = options.dir;
@@ -3055,6 +3222,37 @@ hydrate();
         },
       },
     },
+    // Write image config JSON for the App Router production server.
+    // The App Router RSC entry doesn't export vinextConfig (that's a Pages
+    // Router pattern), so we write a separate JSON file at build time that
+    // prod-server.ts reads at startup for SVG/security header config.
+    {
+      name: "vinext:image-config",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(options) {
+          const envName = this.environment?.name;
+          if (envName !== "rsc") return;
+
+          const outDir = options.dir;
+          if (!outDir) return;
+
+          const imageConfig = {
+            dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
+            contentDispositionType: nextConfig?.images?.contentDispositionType,
+            contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+          };
+
+          fs.writeFileSync(
+            path.join(outDir, "image-config.json"),
+            JSON.stringify(imageConfig),
+          );
+        },
+      },
+    },
     // Cloudflare Workers production build integration:
     // After all environments are built, compute lazy chunks from the client
     // build manifest and inject globals into the worker entry.
@@ -3073,11 +3271,11 @@ hydrate();
         sequential: true,
         order: "post",
         async handler() {
-          const envName = (this as any).environment?.name as string | undefined;
+          const envName = this.environment?.name
           if (!envName || !hasCloudflarePlugin) return;
           if (envName !== "client") return;
 
-          const envConfig = (this as any).environment?.config;
+          const envConfig = this.environment?.config;
           if (!envConfig) return;
           const buildRoot = envConfig.root ?? process.cwd();
           const distDir = path.resolve(buildRoot, "dist");
@@ -3227,6 +3425,26 @@ function getNextPublicEnvDefines(): Record<string, string> {
 }
 
 /**
+ * If the current position in `str` starts with a parenthesized group, consume
+ * it and advance `re.lastIndex` past the closing `)`. Returns the group
+ * contents or null if no group is present.
+ */
+function extractConstraint(str: string, re: RegExp): string | null {
+  if (str[re.lastIndex] !== "(") return null;
+  const start = re.lastIndex + 1;
+  let depth = 1;
+  let i = start;
+  while (i < str.length && depth > 0) {
+    if (str[i] === "(") depth++;
+    else if (str[i] === ")") depth--;
+    i++;
+  }
+  if (depth !== 0) return null;
+  re.lastIndex = i;
+  return str.slice(start, i - 1);
+}
+
+/**
  * Match a Next.js route pattern (e.g. "/blog/:slug", "/docs/:path*") against a pathname.
  * Returns matched params or null.
  *
@@ -3248,7 +3466,8 @@ export function matchConfigPattern(
   if (
     pattern.includes("(") ||
     pattern.includes("\\") ||
-    /:\w+[*+][^/]/.test(pattern)
+    /:[\w-]+[*+][^/]/.test(pattern) ||
+    /:[\w-]+\./.test(pattern)
   ) {
     try {
       // Extract named params and their constraints from the pattern.
@@ -3256,29 +3475,42 @@ export function matchConfigPattern(
       // :param -> ([^/]+)
       // :param* -> (.*)
       // :param+ -> (.+)
+      // Param names may contain hyphens (e.g. :auth-method, :sign-in).
       const paramNames: string[] = [];
-      const regexStr = pattern
-        .replace(/\./g, "\\.")
-        // :param* with optional constraint
-        .replace(/:(\w+)\*(?:\(([^)]+)\))?/g, (_m, name, constraint) => {
-          paramNames.push(name);
-          return constraint ? `(${constraint})` : "(.*)";
-        })
-        // :param+ with optional constraint
-        .replace(/:(\w+)\+(?:\(([^)]+)\))?/g, (_m, name, constraint) => {
-          paramNames.push(name);
-          return constraint ? `(${constraint})` : "(.+)";
-        })
-        // :param(constraint) — named param with inline regex constraint
-        .replace(/:(\w+)\(([^)]+)\)/g, (_m, name, constraint) => {
-          paramNames.push(name);
-          return `(${constraint})`;
-        })
-        // :param — plain named param
-        .replace(/:(\w+)/g, (_m, name) => {
-          paramNames.push(name);
-          return "([^/]+)";
-        });
+      // Single-pass conversion with procedural suffix handling. The tokenizer
+      // matches only simple, non-overlapping tokens; quantifier/constraint
+      // suffixes after :param are consumed procedurally to avoid polynomial
+      // backtracking in the regex engine.
+      let regexStr = "";
+      const tokenRe = /:([\w-]+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
+      let tok: RegExpExecArray | null;
+      while ((tok = tokenRe.exec(pattern)) !== null) {
+        if (tok[1] !== undefined) {
+          const name = tok[1];
+          const rest = pattern.slice(tokenRe.lastIndex);
+          // Check for quantifier (* or +) with optional constraint
+          if (rest.startsWith("*") || rest.startsWith("+")) {
+            const quantifier = rest[0];
+            tokenRe.lastIndex += 1;
+            const constraint = extractConstraint(pattern, tokenRe);
+            paramNames.push(name);
+            if (constraint !== null) {
+              regexStr += `(${constraint})`;
+            } else {
+              regexStr += quantifier === "*" ? "(.*)" : "(.+)";
+            }
+          } else {
+            // Check for inline constraint without quantifier
+            const constraint = extractConstraint(pattern, tokenRe);
+            paramNames.push(name);
+            regexStr += constraint !== null ? `(${constraint})` : "([^/]+)";
+          }
+        } else if (tok[0] === ".") {
+          regexStr += "\\.";
+        } else {
+          regexStr += tok[0];
+        }
+      }
       const re = safeRegExp("^" + regexStr + "$");
       if (!re) return null;
       const match = re.exec(pathname);
@@ -3294,7 +3526,8 @@ export function matchConfigPattern(
   }
 
   // Check for catch-all patterns (:param* or :param+) without regex groups
-  const catchAllMatch = pattern.match(/:(\w+)(\*|\+)$/);
+  // Param names may contain hyphens (e.g. :sign-in*, :sign-up+).
+  const catchAllMatch = pattern.match(/:([\w-]+)(\*|\+)$/);
   if (catchAllMatch) {
     const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
     const paramName = catchAllMatch[1];
@@ -3306,7 +3539,10 @@ export function matchConfigPattern(
     // For :path+ we need at least one segment (non-empty after the prefix)
     if (isPlus && (!rest || rest === "/")) return null;
     // For :path* zero segments is fine
-    return { [paramName]: rest.startsWith("/") ? rest.slice(1) : rest };
+    let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
+    // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
+    // the entry point. Decoding again would create a double-decode vector.
+    return { [paramName]: restValue };
   }
 
   // Simple segment-based matching for exact patterns and :param
@@ -3327,6 +3563,17 @@ export function matchConfigPattern(
 }
 
 /**
+ * Sanitize a redirect/rewrite destination by collapsing leading slashes and
+ * backslashes to a single "/" for non-external URLs. Browsers interpret "\"
+ * as "/" in URL contexts, so "\/evil.com" becomes "//evil.com" (protocol-relative).
+ */
+function sanitizeDestinationLocal(dest: string): string {
+  if (dest.startsWith("http://") || dest.startsWith("https://")) return dest;
+  dest = dest.replace(/^[\\/]+/, "/");
+  return dest;
+}
+
+/**
  * Apply redirect rules from next.config.js.
  * Returns true if a redirect was applied.
  */
@@ -3334,20 +3581,15 @@ function applyRedirects(
   pathname: string,
   res: any,
   redirects: NextRedirect[],
+  ctx: RequestContext,
 ): boolean {
-  for (const redirect of redirects) {
-    const params = matchConfigPattern(pathname, redirect.source);
-    if (params) {
-      let dest = redirect.destination;
-      for (const [key, value] of Object.entries(params)) {
-        dest = dest.replace(`:${key}*`, value);
-        dest = dest.replace(`:${key}+`, value);
-        dest = dest.replace(`:${key}`, value);
-      }
-      res.writeHead(redirect.permanent ? 308 : 307, { Location: dest });
-      res.end();
-      return true;
-    }
+  const result = matchRedirect(pathname, redirects, ctx);
+  if (result) {
+    // Sanitize to prevent open redirect via protocol-relative URLs
+    const dest = sanitizeDestinationLocal(result.destination);
+    res.writeHead(result.permanent ? 308 : 307, { Location: dest });
+    res.end();
+    return true;
   }
   return false;
 }
@@ -3424,18 +3666,12 @@ async function proxyExternalRewriteNode(
 function applyRewrites(
   pathname: string,
   rewrites: NextRewrite[],
+  ctx: RequestContext,
 ): string | null {
-  for (const rewrite of rewrites) {
-    const params = matchConfigPattern(pathname, rewrite.source);
-    if (params) {
-      let dest = rewrite.destination;
-      for (const [key, value] of Object.entries(params)) {
-        dest = dest.replace(`:${key}*`, value);
-        dest = dest.replace(`:${key}+`, value);
-        dest = dest.replace(`:${key}`, value);
-      }
-      return dest;
-    }
+  const dest = matchRewrite(pathname, rewrites, ctx);
+  if (dest) {
+    // Sanitize to prevent open redirect via protocol-relative URLs
+    return sanitizeDestinationLocal(dest);
   }
   return null;
 }
@@ -3446,33 +3682,12 @@ function applyRewrites(
 function applyHeaders(
   pathname: string,
   res: any,
-  headers: Array<{ source: string; headers: Array<{ key: string; value: string }> }>,
+  headers: NextHeader[],
+  ctx: RequestContext,
 ): void {
-  for (const rule of headers) {
-    // Escape regex metacharacters in the source, then convert Next.js patterns.
-    // Strategy: extract regex groups first, process the rest, then restore groups.
-    const groups: string[] = [];
-    const withPlaceholders = rule.source.replace(/\(([^)]+)\)/g, (_m, inner) => {
-      groups.push(inner);
-      return `___GROUP_${groups.length - 1}___`;
-    });
-    const escaped = withPlaceholders
-      // Escape dots and other metacharacters
-      .replace(/\./g, "\\.")
-      .replace(/\+/g, "\\+")
-      .replace(/\?/g, "\\?")
-      // Convert glob * to .*
-      .replace(/\*/g, ".*")
-      // Convert :param to [^/]+
-      .replace(/:\w+/g, "[^/]+")
-      // Restore regex groups (contents are untouched)
-      .replace(/___GROUP_(\d+)___/g, (_m, idx) => `(${groups[Number(idx)]})`);
-    const sourceRegex = safeRegExp("^" + escaped + "$");
-    if (sourceRegex && sourceRegex.test(pathname)) {
-      for (const header of rule.headers) {
-        res.setHeader(header.key, header.value);
-      }
-    }
+  const matched = matchHeaders(pathname, headers, ctx);
+  for (const header of matched) {
+    res.setHeader(header.key, header.value);
   }
 }
 

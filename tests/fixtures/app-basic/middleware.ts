@@ -21,11 +21,11 @@ export function middleware(request: NextRequest) {
   const response = NextResponse.next();
 
   // Add headers to prove middleware ran and NextRequest APIs worked
-  response.headers.set("x-middleware-pathname", pathname);
-  response.headers.set("x-middleware-ran", "true");
+  response.headers.set("x-mw-pathname", pathname);
+  response.headers.set("x-mw-ran", "true");
 
   if (sessionToken) {
-    response.headers.set("x-middleware-has-session", "true");
+    response.headers.set("x-mw-has-session", "true");
   }
 
   // Redirect /middleware-redirect to /about (with cookie, like OpenNext)
@@ -70,10 +70,10 @@ export function middleware(request: NextRequest) {
   const r = NextResponse.next({
     request: { headers: requestHeaders },
   });
-  r.headers.set("x-middleware-pathname", pathname);
-  r.headers.set("x-middleware-ran", "true");
+  r.headers.set("x-mw-pathname", pathname);
+  r.headers.set("x-mw-ran", "true");
   if (sessionToken) {
-    r.headers.set("x-middleware-has-session", "true");
+    r.headers.set("x-mw-has-session", "true");
   }
   return r;
 }

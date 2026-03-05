@@ -36,22 +36,21 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   serverInsertedHTMLCallbacks: [],
 } satisfies NavigationState) as NavigationState;
 
-function _enterWith(state: NavigationState): void {
-  const enterWith = (_als as any).enterWith;
-  if (typeof enterWith === "function") {
-    try {
-      enterWith.call(_als, state);
-      return;
-    } catch {
-      // Fall through to best-effort fallback.
-    }
-  }
-  _fallbackState.serverContext = state.serverContext;
-  _fallbackState.serverInsertedHTMLCallbacks = state.serverInsertedHTMLCallbacks;
-}
-
 function _getState(): NavigationState {
   return _als.getStore() ?? _fallbackState;
+}
+
+/**
+ * Run a function within a navigation ALS scope.
+ * Ensures per-request isolation for navigation context and
+ * useServerInsertedHTML callbacks on concurrent runtimes.
+ */
+export function runWithNavigationContext<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  const state: NavigationState = {
+    serverContext: null,
+    serverInsertedHTMLCallbacks: [],
+  };
+  return _als.run(state, fn);
 }
 
 // ---------------------------------------------------------------------------
@@ -64,23 +63,13 @@ _registerStateAccessors({
   },
 
   setServerContext(ctx: NavigationContext | null): void {
-    if (ctx !== null) {
-      const existing = _als.getStore();
-      _enterWith({
-        serverContext: ctx,
-        serverInsertedHTMLCallbacks: existing?.serverInsertedHTMLCallbacks
-          ?? _fallbackState.serverInsertedHTMLCallbacks
-          ?? [],
-      });
-      _fallbackState.serverContext = ctx;
-      return;
-    }
-    // Cleanup: clear context in both ALS store and fallback to prevent leaks.
     const state = _als.getStore();
     if (state) {
-      state.serverContext = null;
+      state.serverContext = ctx;
+    } else {
+      // No ALS scope — fallback for environments without als.run() wrapping.
+      _fallbackState.serverContext = ctx;
     }
-    _fallbackState.serverContext = null;
   },
 
   getInsertedHTMLCallbacks(): Array<() => unknown> {
@@ -91,7 +80,8 @@ _registerStateAccessors({
     const state = _als.getStore();
     if (state) {
       state.serverInsertedHTMLCallbacks = [];
+    } else {
+      _fallbackState.serverInsertedHTMLCallbacks = [];
     }
-    _fallbackState.serverInsertedHTMLCallbacks = [];
   },
 });

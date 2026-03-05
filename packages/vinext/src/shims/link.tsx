@@ -11,6 +11,7 @@ import React, { forwardRef, useRef, useEffect, useCallback, useContext, createCo
 // Import shared RSC prefetch utilities from navigation shim (relative path
 // so this resolves both via the Vite plugin and in direct vitest imports)
 import { toRscUrl, getPrefetchedUrls, storePrefetchResponse } from "./navigation.js";
+import { isDangerousScheme } from "./url-safety.js";
 
 interface NavigateEvent {
   url: URL;
@@ -165,6 +166,7 @@ function prefetchUrl(href: string): void {
       // App Router: prefetch the RSC payload and store in cache
       fetch(rscUrl, {
         headers: { Accept: "text/x-component" },
+        credentials: "include",
         priority: "low" as any,
         // @ts-expect-error — purpose is a valid fetch option in some browsers
         purpose: "prefetch",
@@ -277,8 +279,16 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // If `as` is provided, use it as the actual URL (legacy Next.js pattern
   // where href is a route pattern like "/user/[id]" and as is "/user/1")
   const resolvedHref = as ?? resolveHref(href);
-  // Apply locale prefix if specified
-  const localizedHref = applyLocaleToHref(resolvedHref, locale);
+
+  const isDangerous =
+    typeof resolvedHref === "string" && isDangerousScheme(resolvedHref);
+
+  // Apply locale prefix if specified (safe even for dangerous hrefs since we
+  // won't use the result when isDangerous is true)
+  const localizedHref = applyLocaleToHref(
+    isDangerous ? "/" : resolvedHref,
+    locale,
+  );
   // Full href with basePath for browser URLs and fetches
   const fullHref = withBasePath(localizedHref);
 
@@ -293,7 +303,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Prefetching: observe the element when it enters the viewport.
   // prefetch={false} disables, prefetch={true} or undefined/null (default) enables.
   const internalRef = useRef<HTMLAnchorElement | null>(null);
-  const shouldPrefetch = prefetchProp !== false;
+  const shouldPrefetch = prefetchProp !== false && !isDangerous;
 
   const setRefs = useCallback(
     (node: HTMLAnchorElement | null) => {
@@ -459,6 +469,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const { passHref: _p, ...anchorProps } = restWithoutLocale;
 
   const linkStatusValue = React.useMemo(() => ({ pending }), [pending]);
+
+  // Block dangerous URI schemes (javascript:, data:, vbscript:).
+  // Render an inert <a> without href to prevent XSS while preserving
+  // styling and attributes like className, id, aria-*.
+  // This check is placed after all hooks to satisfy the Rules of Hooks.
+  if (isDangerous) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(`<Link> blocked dangerous href: ${resolvedHref}`);
+    }
+    return <a {...anchorProps}>{children}</a>;
+  }
 
   return (
     <LinkStatusContext.Provider value={linkStatusValue}>

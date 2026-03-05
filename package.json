@@ -6,6 +6,7 @@
     "build": "pnpm --filter vinext run build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "generate:google-fonts": "node scripts/generate-google-fonts.js",
     "typecheck": "tsgo --noEmit",
     "lint": "oxlint --deny-warnings",
     "test:e2e": "playwright test"

@@ -6,7 +6,7 @@ export function middleware(request: NextRequest) {
 
   // Add a custom header to all matched requests
   const response = NextResponse.next();
-  response.headers.set("x-middleware-test", "active");
+  response.headers.set("x-custom-middleware", "active");
 
   // Redirect /old-page to /about
   if (url.pathname === "/old-page") {
@@ -26,6 +26,14 @@ export function middleware(request: NextRequest) {
   // Throw an error to test that middleware errors return 500, not bypass auth
   if (url.pathname === "/middleware-throw") {
     throw new Error("middleware crash");
+  }
+
+  // Forward modified request headers via NextResponse.next({ request: { headers } })
+  // to test that x-middleware-request-* headers survive runMiddleware stripping.
+  if (url.pathname === "/header-override") {
+    const headers = new Headers(request.headers);
+    headers.set("x-custom-injected", "from-middleware");
+    return NextResponse.next({ request: { headers } });
   }
 
   return response;

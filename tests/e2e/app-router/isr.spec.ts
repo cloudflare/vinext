@@ -144,6 +144,7 @@ test.describe("ISR dynamicParams cache headers", () => {
       const html = await res.text();
       // React SSR inserts <!-- --> comment nodes between text and expressions,
       // so "Product 1" may appear as "Product <!-- -->1" in raw HTML.
+      // lgtm[js/redos] — applied to trusted SSR output, not user input
       expect(html).toMatch(/Product\s*(?:<!--.*?-->)*\s*1/);
     });
 
@@ -238,7 +239,8 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     expect(res1.status()).toBe(200);
     const html1 = await res1.text();
     // React SSR may insert <!-- --> comment nodes between text and expressions,
-    // so use a flexible regex that allows anything between the tag and content
+    // so use a flexible regex that allows anything between the tag and content.
+    // lgtm[js/redos] — applied to trusted SSR output, not user input
     const reqId1 = html1.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
       ?? html1.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
     expect(reqId1).toBeDefined();
@@ -246,6 +248,7 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     // Load again to confirm it's cached (same request ID)
     const res2 = await request.get(`${BASE}/revalidate-tag-test`);
     const html2 = await res2.text();
+    // lgtm[js/redos] — applied to trusted SSR output, not user input
     const reqId2 = html2.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
       ?? html2.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
     const cacheHeader = res2.headers()["x-vinext-cache"];
@@ -263,6 +266,7 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     // Reload — content should be different (cache was invalidated)
     const res3 = await request.get(`${BASE}/revalidate-tag-test`);
     const html3 = await res3.text();
+    // lgtm[js/redos] — applied to trusted SSR output, not user input
     const reqId3 = html3.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
       ?? html3.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
 
@@ -284,6 +288,7 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     const res1 = await request.get(`${BASE}/revalidate-tag-test`);
     expect(res1.status()).toBe(200);
     const html1 = await res1.text();
+    // lgtm[js/redos] — applied to trusted SSR output, not user input
     const reqId1 = html1.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
       ?? html1.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
     expect(reqId1).toBeDefined();
@@ -298,6 +303,7 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     // Reload — content should be different
     const res2 = await request.get(`${BASE}/revalidate-tag-test`);
     const html2 = await res2.text();
+    // lgtm[js/redos] — applied to trusted SSR output, not user input
     const reqId2 = html2.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
       ?? html2.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
 

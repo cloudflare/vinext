@@ -61,10 +61,34 @@ examples/               # User-facing demo apps
 ### Adding a New Feature
 
 1. **Check if Next.js has it** — look at Next.js source to understand expected behavior
-2. **Add tests first** — put test cases in the appropriate `tests/*.test.ts` file
-3. **Implement in shims or server** — most features are either a shim (`next/*` module) or server-side logic
-4. **Add fixture pages if needed** — `tests/fixtures/` has test apps for integration testing
-5. **Run the full test suite** before committing
+2. **Search the Next.js test suite** — before writing code, search `test/e2e/` and `test/unit/` in the Next.js repo for related test files (see below)
+3. **Add tests first** — put test cases in the appropriate `tests/*.test.ts` file
+4. **Implement in shims or server** — most features are either a shim (`next/*` module) or server-side logic
+5. **Add fixture pages if needed** — `tests/fixtures/` has test apps for integration testing
+6. **Run the full test suite** before committing
+
+### Searching the Next.js Test Suite
+
+**This is a required step for all feature work and bug fixes.** Before writing code, search the Next.js repo's `test/e2e/` and `test/unit/` directories for tests related to whatever you're working on. Search broadly, not just for exact feature names.
+
+For example, when working on middleware:
+- Search for `middleware` and `proxy` in test directory names
+- Search for error messages like `"must export"` to find validation tests
+- Check for edge cases like missing exports, misspelled names, invalid configs
+
+**Why this matters:** vinext aims to match Next.js behavior exactly. If Next.js has a test for it, we should have an equivalent test. Missing this step has caused silent behavioral differences, like middleware failing open on invalid exports instead of throwing an error (which Next.js tests explicitly).
+
+When you find relevant Next.js tests, port the test cases to our test suite and include a comment linking back to the original Next.js test file:
+```ts
+// Ported from Next.js: test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
+```
+
+**Use `gh search code` for efficient searching:**
+```bash
+gh search code "middleware" --repo vercel/next.js --filename "*.test.*" --limit 20
+gh search code "must export" --repo vercel/next.js --filename "*.test.*" --limit 10
+```
 
 ### Fixing Bugs
 
@@ -214,6 +238,30 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
   5. Wait for CI to pass — all required checks (Lint, Typecheck, Vitest, Playwright E2E) must be green
   6. Merge via `gh pr merge --squash --delete-branch`
   7. If merge is blocked, check which status check failed and fix it — do not bypass with `--admin`
+
+### CI for External Contributors
+
+CI is split into safe checks (no secrets) and deploy previews (requires secrets). This lets external contributors get feedback on their PRs without exposing credentials.
+
+**Safe CI (`ci.yml`)** runs for all PRs after first-time contributor approval:
+- Lint, Typecheck, Vitest, Playwright E2E
+- Uses zero secrets and read-only permissions
+- First-time contributors need one manual approval, then subsequent PRs run automatically
+
+**Deploy previews (`deploy-examples.yml`)** run automatically only for same-repo branches:
+- The entire workflow is skipped for fork PRs via a job-level `if` condition
+- Cloudflare employees should push branches to the main repo (not fork), so previews deploy automatically
+- For fork PRs, a maintainer can comment `/deploy-preview` to trigger the deploy (see `deploy-preview-command.yml`)
+
+**`/deploy-preview` slash command** (`deploy-preview-command.yml`):
+- Triggered by commenting `/deploy-preview` on any PR
+- Restricted to org members, collaborators, and repo owners via `author_association`
+- Builds all examples, deploys previews, runs smoke tests, and posts preview URLs
+
+When modifying CI workflows, keep these rules in mind:
+- `ci.yml` must never use secrets. It runs untrusted code from forks.
+- `deploy-examples.yml` must skip entirely for fork PRs. Don't remove the job-level `if` guard.
+- The `/deploy-preview` slash command gates secret usage behind the `author_association` check.
 
 ---
 

@@ -1,0 +1,17 @@
+{
+  "name": "vinext-app-router-nitro",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "vite dev",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "vite": "^7",
+    "vinext": "workspace:*",
+    "nitro": "npm:nitro-nightly@latest"
+  }
+}

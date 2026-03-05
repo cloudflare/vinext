@@ -30,10 +30,11 @@ jobs:
       - name: Install hyperfine
         run: |
           wget https://github.com/sharkdp/hyperfine/releases/download/v1.19.0/hyperfine_1.19.0_amd64.deb
+          echo "5ffe6996aefbbf547f383116eea53569263cc7cf6598ee53f0081e37b702055d  hyperfine_1.19.0_amd64.deb" | sha256sum -c
           sudo dpkg -i hyperfine_1.19.0_amd64.deb
 
       # Install monorepo deps (builds vinext plugin via pnpm run build)
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
       - name: Build vinext plugin
         run: pnpm run build
 

@@ -30,16 +30,180 @@ import { AsyncLocalStorage } from "node:async_hooks";
 // ---------------------------------------------------------------------------
 
 /**
+ * Headers excluded from the cache key. These are W3C trace context headers
+ * that can break request caching and deduplication.
+ * All other headers ARE included in the cache key, matching Next.js behavior.
+ */
+const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
+
+// Cache key version — bump when changing the key format to bust stale entries
+const CACHE_KEY_PREFIX = "v2";
+const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
+
+class BodyTooLargeForCacheKeyError extends Error {
+  constructor() {
+    super("Fetch body too large for cache key generation");
+  }
+}
+
+/**
+ * Collect all headers from the request, excluding the blocklist.
+ * Merges headers from both the Request object and the init object,
+ * with init taking precedence (matching fetch() spec behavior).
+ */
+function collectHeaders(input: string | URL | Request, init?: RequestInit): Record<string, string> {
+  const merged: Record<string, string> = {};
+
+  // Start with headers from Request object (if any)
+  if (input instanceof Request && input.headers) {
+    input.headers.forEach((v, k) => { merged[k] = v; });
+  }
+
+  // Override with headers from init (init takes precedence per fetch spec)
+  if (init?.headers) {
+    const headers = init.headers instanceof Headers
+      ? init.headers
+      : new Headers(init.headers as HeadersInit);
+    headers.forEach((v, k) => { merged[k] = v; });
+  }
+
+  // Remove blocklisted headers
+  for (const blocked of HEADER_BLOCKLIST) {
+    delete merged[blocked];
+  }
+
+  return merged;
+}
+
+/**
+ * Check whether a fetch request carries any per-user auth headers.
+ * Used for the safety bypass (skip caching when auth headers are present
+ * without an explicit cache opt-in).
+ */
+const AUTH_HEADERS = ["authorization", "cookie", "x-api-key"];
+
+function hasAuthHeaders(input: string | URL | Request, init?: RequestInit): boolean {
+  const headers = collectHeaders(input, init);
+  return AUTH_HEADERS.some((name) => name in headers);
+}
+
+/**
+ * Serialize request body into string chunks for cache key inclusion.
+ * Handles all body types: string, Uint8Array, ReadableStream, FormData, Blob.
+ * Returns the serialized body chunks and optionally stashes the original body
+ * on init as `_ogBody` so it can still be used after stream consumption.
+ */
+async function serializeBody(init?: RequestInit): Promise<string[]> {
+  if (!init?.body) return [];
+
+  const bodyChunks: string[] = [];
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  let totalBodyBytes = 0;
+
+  const pushBodyChunk = (chunk: string): void => {
+    totalBodyBytes += encoder.encode(chunk).byteLength;
+    if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
+    bodyChunks.push(chunk);
+  };
+
+  if (init.body instanceof Uint8Array) {
+    if (init.body.byteLength > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
+    pushBodyChunk(decoder.decode(init.body));
+    (init as any)._ogBody = init.body;
+  } else if (typeof (init.body as any).getReader === "function") {
+    // ReadableStream
+    const readableBody = init.body as ReadableStream<Uint8Array | string>;
+    const [bodyForHashing, bodyForFetch] = readableBody.tee();
+    (init as any)._ogBody = bodyForFetch;
+    const reader = bodyForHashing.getReader();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (typeof value === "string") {
+          pushBodyChunk(value);
+        } else {
+          // Check raw byte size before the expensive decode to prevent
+          // OOM from a single oversized chunk.
+          totalBodyBytes += value.byteLength;
+          if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
+            throw new BodyTooLargeForCacheKeyError();
+          }
+          bodyChunks.push(decoder.decode(value, { stream: true }));
+        }
+      }
+      const finalChunk = decoder.decode();
+      if (finalChunk) {
+        pushBodyChunk(finalChunk);
+      }
+    } catch (err) {
+      await reader.cancel();
+      if (err instanceof BodyTooLargeForCacheKeyError) {
+        throw err;
+      }
+      console.error("[vinext] Problem reading body for cache key", err);
+    }
+  } else if (init.body instanceof URLSearchParams) {
+    // URLSearchParams — .toString() gives a stable serialization
+    (init as any)._ogBody = init.body;
+    pushBodyChunk(init.body.toString());
+  } else if (typeof (init.body as any).keys === "function") {
+    // FormData
+    const formData = init.body as FormData;
+    (init as any)._ogBody = init.body;
+    for (const key of new Set(formData.keys())) {
+      const values = formData.getAll(key);
+      const serializedValues = await Promise.all(
+        values.map(async (val) => {
+          if (typeof val === "string") return val;
+          if (val.size > MAX_CACHE_KEY_BODY_BYTES || totalBodyBytes + val.size > MAX_CACHE_KEY_BODY_BYTES) {
+            throw new BodyTooLargeForCacheKeyError();
+          }
+          // Note: File name/type/lastModified are not included — only content.
+          // Two Files with identical content but different names produce the same key.
+          return await val.text();
+        })
+      );
+      pushBodyChunk(`${key}=${serializedValues.join(",")}`);
+    }
+  } else if (typeof (init.body as any).arrayBuffer === "function") {
+    // Blob
+    const blob = init.body as Blob;
+    if (blob.size > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
+    pushBodyChunk(await blob.text());
+    const arrayBuffer = await blob.arrayBuffer();
+    (init as any)._ogBody = new Blob([arrayBuffer], { type: blob.type });
+  } else if (typeof init.body === "string") {
+    // String length is always <= UTF-8 byte length, so this is a
+    // cheap lower-bound check that avoids encoder.encode() for huge strings.
+    if (init.body.length > MAX_CACHE_KEY_BODY_BYTES) {
+      throw new BodyTooLargeForCacheKeyError();
+    }
+    pushBodyChunk(init.body);
+    (init as any)._ogBody = init.body;
+  }
+
+  return bodyChunks;
+}
+
+/**
  * Generate a deterministic cache key from a fetch request.
  *
- * Key = "fetch:" + URL + "|" + sorted relevant options.
- * We exclude headers that are request-specific (cookie, authorization)
- * unless the user explicitly opts in via `next.tags`.
+ * Matches Next.js behavior: the key is a SHA-256 hash of a JSON array
+ * containing URL, method, all headers (minus blocklist), all RequestInit
+ * options, and the serialized body.
  */
-function buildFetchCacheKey(input: string | URL | Request, init?: RequestInit & { next?: NextFetchOptions }): string {
+async function buildFetchCacheKey(input: string | URL | Request, init?: RequestInit & { next?: NextFetchOptions }): Promise<string> {
   let url: string;
   let method = "GET";
-  let body: string | undefined;
 
   if (typeof input === "string") {
     url = input;
@@ -52,13 +216,31 @@ function buildFetchCacheKey(input: string | URL | Request, init?: RequestInit & 
   }
 
   if (init?.method) method = init.method;
-  if (init?.body && typeof init.body === "string") body = init.body;
 
-  // Build a stable key from URL + method + body
-  const parts = [`fetch:${method}:${url}`];
-  if (body) parts.push(body);
+  const headers = collectHeaders(input, init);
+  const bodyChunks = await serializeBody(init);
 
-  return parts.join("|");
+  const cacheString = JSON.stringify([
+    CACHE_KEY_PREFIX,
+    url,
+    method,
+    headers,
+    init?.mode,
+    init?.redirect,
+    init?.credentials,
+    init?.referrer,
+    init?.referrerPolicy,
+    init?.integrity,
+    init?.cache,
+    bodyChunks,
+  ]);
+
+  const encoder = new TextEncoder();
+  const buffer = encoder.encode(cacheString);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.prototype.map
+    .call(new Uint8Array(hashBuffer), (b: number) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -157,9 +339,22 @@ function createPatchedFetch(): typeof globalThis.fetch {
       return originalFetch(input, init);
     }
 
-    // Explicit no-store
-    if (cacheDirective === "no-store" || nextOpts?.revalidate === false || nextOpts?.revalidate === 0) {
+    // Explicit no-store or no-cache — bypass cache entirely
+    if (cacheDirective === "no-store" || cacheDirective === "no-cache" || nextOpts?.revalidate === false || nextOpts?.revalidate === 0) {
       // Strip the `next` property before passing to real fetch
+      const cleanInit = stripNextFromInit(init);
+      return originalFetch(input, cleanInit);
+    }
+
+    // Safety: when per-user auth headers are present and the developer hasn't
+    // explicitly opted into caching with `cache: 'force-cache'` or an explicit
+    // `next.revalidate`, skip caching to prevent accidental cross-user data
+    // leakage. Developers who understand the implications can still force
+    // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
+    const hasExplicitCacheOpt =
+      cacheDirective === "force-cache" ||
+      (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
+    if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
       const cleanInit = stripNextFromInit(init);
       return originalFetch(input, cleanInit);
     }
@@ -187,7 +382,16 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     const tags = nextOpts?.tags ?? [];
-    const cacheKey = buildFetchCacheKey(input, init);
+    let cacheKey: string;
+    try {
+      cacheKey = await buildFetchCacheKey(input, init);
+    } catch (err) {
+      if (err instanceof BodyTooLargeForCacheKeyError) {
+        const cleanInit = stripNextFromInit(init);
+        return originalFetch(input, cleanInit);
+      }
+      throw err;
+    }
     const handler = getCacheHandler();
 
     // Collect tags for this render pass
@@ -301,8 +505,13 @@ function createPatchedFetch(): typeof globalThis.fetch {
  */
 function stripNextFromInit(init?: RequestInit): RequestInit | undefined {
   if (!init) return init;
-  if (!("next" in init)) return init;
-  const { next: _next, ...rest } = init as RequestInit & { next?: unknown };
+  const castInit = init as RequestInit & { next?: unknown; _ogBody?: BodyInit };
+  const { next: _next, _ogBody, ...rest } = castInit;
+  // Restore the original body if it was stashed by serializeBody (e.g. after
+  // consuming a ReadableStream for cache key generation).
+  if (_ogBody !== undefined) {
+    rest.body = _ogBody;
+  }
   return Object.keys(rest).length > 0 ? rest : undefined;
 }
 
@@ -329,9 +538,8 @@ function _ensurePatchInstalled(): void {
  * Install the patched fetch and reset per-request tag state.
  * Returns a cleanup function that clears tags.
  *
- * In single-threaded contexts (dev server, tests) this is safe because
- * requests are sequential.  For concurrent environments, prefer
- * `runWithFetchCache()` which uses `AsyncLocalStorage.run()`.
+ * @deprecated Prefer `runWithFetchCache()` which uses `AsyncLocalStorage.run()`
+ * for proper per-request isolation in concurrent environments.
  *
  * Usage:
  *   const cleanup = withFetchCache();
