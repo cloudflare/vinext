@@ -2153,10 +2153,18 @@ async function _handleRequest(request, __reqCtx) {
       }
     }
     // Attach internal timing header so the dev server middleware can log it.
+    // Format: "handlerStart,compileMs,renderMs"
+    //   handlerStart - absolute performance.now() when _handleRequest began,
+    //                  used by the logging middleware to compute true compile
+    //                  time as (handlerStart - middlewareReqStart).
+    //   compileMs    - time inside the handler before renderToReadableStream.
+    //   renderMs     - -1 sentinel for RSC-only (soft-nav) responses, since
+    //                  rendering is handled asynchronously by the client. The
+    //                  logging middleware computes render time as totalMs - compileMs.
     if (process.env.NODE_ENV !== "production") {
       const handlerStart = Math.round(__reqStart);
       const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : 0;
-      responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",0";
+      responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
     }
     return new Response(rscStream, { status: _middlewareRewriteStatus || 200, headers: responseHeaders });
   }
@@ -2221,13 +2229,14 @@ async function _handleRequest(request, __reqCtx) {
     //                  used by the logging middleware to compute true compile
     //                  time as (handlerStart - middlewareReqStart).
     //   compileMs    - time inside the handler before renderToReadableStream.
-    //   renderMs     - time from renderToReadableStream to handleSsr completion.
+    //   renderMs     - time from renderToReadableStream to handleSsr completion,
+    //                  or -1 sentinel if not measured (falls back to totalMs - compileMs).
     if (process.env.NODE_ENV !== "production") {
       const handlerStart = Math.round(__reqStart);
       const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : 0;
       const renderMs = __renderEnd !== undefined && __compileEnd !== undefined
         ? Math.round(__renderEnd - __compileEnd)
-        : 0;
+        : -1;
       response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
     }
     // Apply custom status code from middleware rewrite

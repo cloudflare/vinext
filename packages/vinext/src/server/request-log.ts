@@ -65,10 +65,10 @@ export function logRequest({
     formatDuration(totalMs),
   ].join(" ");
 
-	const parts = [
-		!!compileMs && `compile: ${formatDuration(compileMs)}`,
-		!!renderMs && `render: ${formatDuration(renderMs)}`,
-	].filter(Boolean)
+  const parts = [
+    compileMs !== undefined && `compile: ${formatDuration(compileMs)}`,
+    renderMs !== undefined && `render: ${formatDuration(renderMs)}`,
+  ].filter(Boolean);
   if (parts.length > 0) {
     line += pretty.dim(` (${parts.join(", ")})`);
   }
