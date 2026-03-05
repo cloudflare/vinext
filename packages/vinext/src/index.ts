@@ -2449,8 +2449,8 @@ hydrate();
               // compile/transform cost.
               function _parseTiming(raw: unknown) {
                 const [handlerStart, inHandlerCompileMs, renderMs] = String(raw).split(",").map((v) => Number(v));
-                if (!Number.isNaN(handlerStart) && !Number.isNaN(inHandlerCompileMs)) {
-                  _compileMs = Math.max(0, Math.round(handlerStart - _reqStart)) + Math.max(inHandlerCompileMs, 0);
+                if (!Number.isNaN(handlerStart) && !Number.isNaN(inHandlerCompileMs) && inHandlerCompileMs !== -1) {
+                  _compileMs = Math.max(0, Math.round(handlerStart - _reqStart)) + inHandlerCompileMs;
                 }
                 if (!Number.isNaN(renderMs) && renderMs !== -1) {
                   _renderMs = renderMs;

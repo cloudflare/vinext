@@ -280,11 +280,11 @@ export function createSSRHandler(
 
     res.on("finish", () => {
       const totalMs = now() - _reqStart;
-      const compileMs = _compileEnd !== undefined ? _compileEnd - _reqStart : undefined;
+      const compileMs = _compileEnd !== undefined ? Math.round(_compileEnd - _reqStart) : undefined;
       // renderMs = time from end of compile to end of stream.
       // _renderEnd is set just after streamPageToResponse resolves.
       const renderMs = _renderEnd !== undefined && _compileEnd !== undefined
-        ? _renderEnd - _compileEnd
+        ? Math.round(_renderEnd - _compileEnd)
         : undefined;
       logRequest({
         method: req.method ?? "GET",
