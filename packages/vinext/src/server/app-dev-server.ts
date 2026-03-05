@@ -1337,7 +1337,9 @@ async function _handleRequest(request, __reqCtx) {
 
   // ── Apply beforeFiles rewrites from next.config.js ────────────────────
   if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
-    const __rewritten = __applyConfigRewrites(pathname, __configRewrites.beforeFiles, __reqCtx);
+    // Strip .rsc suffix before matching rewrite rules — same reason as redirects above.
+    const __rewritePathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
+    const __rewritten = __applyConfigRewrites(__rewritePathname, __configRewrites.beforeFiles, __reqCtx);
     if (__rewritten) {
       if (__isExternalUrl(__rewritten)) {
         setHeadersContext(null);
@@ -2930,7 +2932,12 @@ async function main() {
   // Checks the prefetch cache (populated by <Link> IntersectionObserver and
   // router.prefetch()) before making a network request. This makes navigation
   // near-instant for prefetched routes.
-  window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(href) {
+  window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(href, __redirectDepth) {
+    if ((__redirectDepth || 0) > 10) {
+      console.error("[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.");
+      window.location.href = href;
+      return;
+    }
     try {
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
@@ -2962,10 +2969,12 @@ async function main() {
       const __finalUrl = new URL(navResponse.url);
       const __requestedUrl = new URL(rscUrl, window.location.origin);
       if (__finalUrl.pathname !== __requestedUrl.pathname) {
-        // Strip .rsc suffix from the final URL to get the page path for history
+        // Strip .rsc suffix from the final URL to get the page path for history.
+        // Use replaceState instead of pushState: the caller (navigateImpl) already
+        // pushed the pre-redirect URL; replacing it avoids a stale history entry.
         const __destPath = __finalUrl.pathname.replace(/\\.rsc$/, "") + __finalUrl.search;
-        window.history.pushState(null, "", __destPath);
-        return window.__VINEXT_RSC_NAVIGATE__(__finalUrl.pathname + __finalUrl.search);
+        window.history.replaceState(null, "", __destPath);
+        return window.__VINEXT_RSC_NAVIGATE__(__destPath, (__redirectDepth || 0) + 1);
       }
 
       // Update useParams() with route params from the server before re-rendering
