@@ -878,6 +878,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Config headers are additive for multi-value headers (Vary,
       // Set-Cookie) and override for everything else. Set-Cookie values
       // are stored as arrays (RFC 6265 forbids comma-joining cookies).
+      // Middleware headers take precedence: skip config keys already set
+      // by middleware so middleware always wins for the same key.
       if (configHeaders.length) {
         const matched = matchHeaders(resolvedPathname, configHeaders, reqCtx);
         for (const h of matched) {
@@ -893,7 +895,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             }
           } else if (lk === "vary" && middlewareHeaders[lk]) {
             middlewareHeaders[lk] += ", " + h.value;
-          } else {
+          } else if (!(lk in middlewareHeaders)) {
+            // Middleware headers take precedence: only set if middleware
+            // did not already place this key on the response.
             middlewareHeaders[lk] = h.value;
           }
         }

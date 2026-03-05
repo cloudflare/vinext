@@ -81,6 +81,15 @@ export function middleware(request: NextRequest) {
     return NextResponse.next({ request: { headers } });
   }
 
+  // Middleware headers take precedence over next.config.js headers for the same key.
+  // Middleware sets e2e-headers=middleware; config sets e2e-headers=next.config.js via /(.*).
+  // Ref: opennextjs-cloudflare headers.test.ts — "Middleware headers override next.config.js headers"
+  if (pathname === "/headers/override-from-middleware") {
+    const res = NextResponse.next();
+    res.headers.set("e2e-headers", "middleware");
+    return res;
+  }
+
   // Forward search params as a header for RSC testing
   // Ref: opennextjs-cloudflare middleware.ts — search-params header
   const requestHeaders = new Headers(request.headers);
@@ -108,6 +117,7 @@ export const config = {
     "/middleware-blocked",
     "/middleware-throw",
     "/search-query",
+    "/headers/override-from-middleware",
     "/",
     "/mw-gated-before",
     "/mw-gated-fallback",

@@ -774,7 +774,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | # | OpenNext Test | Vinext Status | Notes |
 |---|---|---|---|
 | 1 | `next.config.js` headers set on response | PASS | Covered by ON-15 tests in config-redirect.spec.ts |
-| 2 | Middleware headers override config headers (when configured) | FIXME | vinext does not implement `dangerous.middlewareHeadersOverrideNextConfigHeaders` |
+| 2 | Middleware headers override config headers | PASS | Middleware headers always win over next.config.js headers for the same key (matches Next.js behavior); tested in config-redirect.spec.ts |
 | 3 | `x-powered-by` absent when `poweredByHeader: false` | PASS | vinext never sends X-Powered-By; explicit assertion added |
 
 ### ON-9: Parallel Routes and Intercepting Routes
@@ -815,10 +815,10 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | ON-5. Streaming/SSE | 3 | 3 | 0 | 0 | 0 | `sse.test.ts`, `streaming.test.ts` |
 | ON-6. Middleware Headers | 7 | 7 | 0 | 0 | 0 | `middleware.cookies.test.ts`, `headers.test.ts` |
 | ON-7. next/after | 3 | 3 | 0 | 0 | 0 | `after.test.ts` |
-| ON-8. Headers Precedence | 3 | 2 | 1 | 0 | 0 | `headers.test.ts` |
+| ON-8. Headers Precedence | 3 | 3 | 0 | 0 | 0 | `headers.test.ts` |
 | ON-9. Parallel/Intercepting | 5 | 4 | 0 | 0 | 1 | `parallel.test.ts`, `modals.test.ts` |
 | ON-10. Server Actions | 5 | 5 | 0 | 0 | 0 | `serverActions.test.ts` |
-| **Total** | **55** | **48** | **6** | **0** | **1** | |
+| **Total** | **55** | **49** | **5** | **0** | **1** | |
 
 - **Pass**: Tests that pass in the E2E suite
 - **Fixme**: Tests written but marked `test.fixme()` due to vinext feature gaps
@@ -941,7 +941,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | ON-5. Streaming/SSE | 3 | 3 | 0 | 0 | 0 | `sse.test.ts`, `streaming.test.ts` |
 | ON-6. Middleware Headers | 7 | 7 | 0 | 0 | 0 | `middleware.cookies.test.ts`, `headers.test.ts` |
 | ON-7. next/after | 3 | 3 | 0 | 0 | 0 | `after.test.ts` |
-| ON-8. Headers Precedence | 3 | 2 | 1 | 0 | 0 | `headers.test.ts` |
+| ON-8. Headers Precedence | 3 | 3 | 0 | 0 | 0 | `headers.test.ts` |
 | ON-9. Parallel/Intercepting | 5 | 4 | 0 | 0 | 1 | `parallel.test.ts`, `modals.test.ts` |
 | ON-10. Server Actions | 5 | 5 | 0 | 0 | 0 | `serverActions.test.ts` |
 | ON-11. Middleware Redirect/Rewrite | 6 | 5 | 1 | 0 | 0 | `middleware.redirect.test.ts` |
@@ -949,7 +949,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | ON-13. Trailing Slash | 3 | 3 | 0 | 0 | 0 | `trailing.test.ts` |
 | ON-14. Catch-all/Host/Query | 6 | 4 | 2 | 0 | 0 | `catch-all.test.ts`, `host.test.ts`, `query.test.ts` |
 | ON-15. Config Headers | 6 | 5 | 1 | 0 | 0 | `headers.test.ts` |
-| **Total** | **84** | **72** | **11** | **0** | **1** | |
+| **Total** | **84** | **73** | **10** | **0** | **1** | |
 
 ### New Feature Gaps Found (ON-11 through ON-15)
 

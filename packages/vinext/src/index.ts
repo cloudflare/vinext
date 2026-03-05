@@ -4054,6 +4054,8 @@ function applyRewrites(
 
 /**
  * Apply custom header rules from next.config.js.
+ * Middleware headers take precedence: if a header key was already set on the
+ * response (by middleware), the config value is skipped for that key.
  */
 function applyHeaders(
   pathname: string,
@@ -4086,7 +4088,11 @@ function applyHeaders(
         res.setHeader(header.key, header.value);
       }
     } else {
-      res.setHeader(header.key, header.value);
+      // Middleware headers take precedence: skip config keys already set by
+      // middleware so middleware always wins over next.config.js headers.
+      if (!res.getHeader(lk)) {
+        res.setHeader(header.key, header.value);
+      }
     }
   }
 }
@@ -4139,6 +4145,10 @@ function scanDirForMdx(dir: string): boolean {
 // Public exports for static export
 export { staticExportPages, staticExportApp } from "./build/static-export.js";
 export type { StaticExportResult, StaticExportOptions, AppStaticExportOptions } from "./build/static-export.js";
+
+// Export NextConfig type so next.config.ts files can import it from "vinext"
+// instead of "next".
+export type { NextConfig } from "./config/next-config.js";
 
 // Exported for CLI and testing
 export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig, computeLazyChunks };

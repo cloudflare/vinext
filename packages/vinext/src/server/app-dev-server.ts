@@ -1299,17 +1299,11 @@ export default async function handler(request) {
                   const lk = h.key.toLowerCase();
                   if (lk === "vary" || lk === "set-cookie") {
                     response.headers.append(h.key, h.value);
-                  } else {
+                  } else if (!response.headers.has(lk)) {
+                    // Middleware headers take precedence: skip config keys already
+                    // set by middleware so middleware headers always win.
                     response.headers.set(h.key, h.value);
                   }
-                }
-              }
-              // Merge middleware response headers into the final response.
-              // This runs at the top level so every response path (route
-              // handlers, server actions, metadata, errors, etc.) gets them.
-              if (_mwCtx.headers) {
-                for (const [key, value] of _mwCtx.headers) {
-                  response.headers.append(key, value);
                 }
               }
             }
@@ -2208,7 +2202,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     } else if (revalidateSeconds) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
     }
-    // Middleware response headers are merged by the handler() wrapper.
+    // Merge middleware response headers into the RSC response.
     // Attach internal timing header so the dev server middleware can log it.
     // Format: "handlerStart,compileMs,renderMs"
     //   handlerStart - absolute performance.now() when _handleRequest began,
@@ -2219,6 +2213,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     //   renderMs     - -1 sentinel for RSC-only (soft-nav) responses, since
     //                  rendering is handled asynchronously by the client. The
     //                  logging middleware computes render time as totalMs - compileMs.
+    if (_mwCtx.headers) {
+      for (const [key, value] of _mwCtx.headers) {
+        responseHeaders[key] = value;
+      }
+    }
     if (process.env.NODE_ENV !== "production") {
       const handlerStart = Math.round(__reqStart);
       const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
@@ -2276,7 +2275,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (fontLinkHeader) {
       response.headers.set("Link", fontLinkHeader);
     }
-    // Middleware response headers are merged by the handler() wrapper.
+    // Merge middleware response headers into the final response.
+    // The response is freshly constructed above (new Response(htmlStream, {...})),
+    // so set() and append() are equivalent — there are no same-key conflicts yet.
+    // Precedence over config headers is handled by the outer handler, which
+    // skips config keys that middleware already placed on the response.
+    if (_mwCtx.headers) {
+      for (const [key, value] of _mwCtx.headers) {
+        response.headers.append(key, value);
+      }
+    }
     // Attach internal timing header so the dev server middleware can log it.
     // Format: "handlerStart,compileMs,renderMs"
     //   handlerStart - absolute performance.now() when _handleRequest began,

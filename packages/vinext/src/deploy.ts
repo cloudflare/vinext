@@ -609,6 +609,8 @@ export default {
       // Set-Cookie) and override for everything else. Vary values are
       // comma-joined per HTTP spec. Set-Cookie values are accumulated
       // as arrays (RFC 6265 forbids comma-joining cookies).
+      // Middleware headers take precedence: skip config keys already set
+      // by middleware so middleware always wins for the same key.
       if (configHeaders.length) {
         const matched = matchHeaders(resolvedPathname, configHeaders, reqCtx);
         for (const h of matched) {
@@ -624,7 +626,9 @@ export default {
             }
           } else if (lk === "vary" && middlewareHeaders[lk]) {
             middlewareHeaders[lk] += ", " + h.value;
-          } else {
+          } else if (!(lk in middlewareHeaders)) {
+            // Middleware headers take precedence: only set if middleware
+            // did not already place this key on the response.
             middlewareHeaders[lk] = h.value;
           }
         }
