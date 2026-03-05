@@ -2414,11 +2414,12 @@ hydrate();
               // Skip Vite internals, HMR, and static assets.
               // Do NOT skip .rsc-suffixed URLs or RSC wire requests (Accept: text/x-component)
               // — those are soft navigations and should be logged like any other page request.
+              const [pathname] = url.split("?");
               if (
                 url.startsWith("/@") ||
                 url.startsWith("/__vite") ||
                 url.startsWith("/node_modules") ||
-                (url.includes(".") && !url.split("?")[0].endsWith(".html") && !url.split("?")[0].endsWith(".rsc"))
+                (url.includes(".") && !pathname.endsWith(".html") && !pathname.endsWith(".rsc"))
               ) {
                 return next();
               }
@@ -2449,7 +2450,7 @@ hydrate();
               function _parseTiming(raw: unknown) {
                 const [handlerStart, inHandlerCompileMs, renderMs] = String(raw).split(",").map((v) => Number(v));
                 if (!Number.isNaN(handlerStart) && !Number.isNaN(inHandlerCompileMs)) {
-                  _compileMs = Math.max(0, Math.round(handlerStart - _reqStart)) + inHandlerCompileMs;
+                  _compileMs = Math.max(0, Math.round(handlerStart - _reqStart)) + Math.max(inHandlerCompileMs, 0);
                 }
                 if (!Number.isNaN(renderMs) && renderMs !== -1) {
                   _renderMs = renderMs;
@@ -2466,7 +2467,7 @@ hydrate();
               };
 
               const _origWriteHead = res.writeHead.bind(res);
-              (res).writeHead = function (statusCode, ...args: any[]) {
+              res.writeHead = function (statusCode, ...args: any[]) {
                 // Normalise the optional headers argument (may be reason, headers object, or both).
                 let headers: Record<string, unknown> | undefined;
                 const [reasonOrHeaders, maybeHeaders] = args;

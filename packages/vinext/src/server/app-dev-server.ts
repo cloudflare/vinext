@@ -2158,12 +2158,13 @@ async function _handleRequest(request, __reqCtx) {
     //                  used by the logging middleware to compute true compile
     //                  time as (handlerStart - middlewareReqStart).
     //   compileMs    - time inside the handler before renderToReadableStream.
+    //                  -1 sentinel means compile time is not measured.
     //   renderMs     - -1 sentinel for RSC-only (soft-nav) responses, since
     //                  rendering is handled asynchronously by the client. The
     //                  logging middleware computes render time as totalMs - compileMs.
     if (process.env.NODE_ENV !== "production") {
       const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : 0;
+      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
       responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
     }
     return new Response(rscStream, { status: _middlewareRewriteStatus || 200, headers: responseHeaders });
@@ -2192,6 +2193,7 @@ async function _handleRequest(request, __reqCtx) {
   try {
     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
     htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
+    // Shell render complete; Suspense boundaries stream asynchronously
     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
@@ -2233,7 +2235,7 @@ async function _handleRequest(request, __reqCtx) {
     //                  or -1 sentinel if not measured (falls back to totalMs - compileMs).
     if (process.env.NODE_ENV !== "production") {
       const handlerStart = Math.round(__reqStart);
-      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : 0;
+      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
       const renderMs = __renderEnd !== undefined && __compileEnd !== undefined
         ? Math.round(__renderEnd - __compileEnd)
         : -1;
