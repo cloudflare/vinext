@@ -2242,7 +2242,7 @@ hydrate();
             headers: nextConfig?.headers,
             allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
             allowedDevOrigins: nextConfig?.serverActionsAllowedOrigins,
-          });
+          }, instrumentationPath);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
           return generateSsrEntry();
@@ -2392,45 +2392,21 @@ hydrate();
         });
 
         // Run instrumentation.ts register() if present (once at server startup).
-        // Prefer loading via the RSC environment runner so the user's instrumentation
-        // file and its imports (including vinext/instrumentation) are resolved in the
-        // same RSC module graph as the generated RSC entry.
         //
-        // We must NOT use server.ssrLoadModule() or access any env.runner here.
-        // Vite 7's SSRCompatModuleRunner (used by ssrLoadModule) and the lazy
-        // RunnableDevEnvironment.runner getter both call:
-        //   createServerModuleRunnerTransport({ channel: environment.hot })
-        // which immediately calls connect() and reads environment.hot.api.outsideEmitter.
-        // That property is only set once DevEnvironment.listen() runs — which happens
-        // when the server starts listening, after configureServer() returns:
-        //   TypeError: Cannot read properties of undefined (reading 'outsideEmitter')
+        // App Router: register() is baked into the generated RSC entry as a
+        // top-level await at module evaluation time. This means it runs inside
+        // the Worker process (or RSC Vite environment) — the same process that
+        // handles requests — which is exactly what Next.js specifies. We do NOT
+        // call runInstrumentation() here for App Router; doing so would run
+        // register() in the host Node.js process, which is a separate process
+        // from the Cloudflare Worker when @cloudflare/vite-plugin is present.
         //
-        // This is triggered specifically when @cloudflare/vite-plugin is present: it
-        // registers a Vite environment named "rsc" (a CloudflareDevEnvironment, not a
-        // RunnableDevEnvironment), so server.environments["rsc"] exists but has no
-        // .runner.import. The old code fell through to server (ssrLoadModule) and
-        // crashed before the server ever started listening.
-        //
-        // Fix: build a direct-call ModuleRunner on the SSR DevEnvironment that invokes
-        // environment.fetchModule() directly, bypassing the hot channel entirely.
-        // environment.fetchModule() is a plain async method on DevEnvironment — safe
-        // at any time, including during configureServer(). This lets register() run
-        // immediately on startup as Next.js specifies.
-        //
-        // Environment preference:
-        //   1. "rsc" runner if it exposes .runner.import (@vitejs/plugin-rsc case) —
-        //      keeps instrumentation in the same RSC module graph as the RSC entry.
-        //   2. SSR DevEnvironment via a direct-call ModuleRunner — safe in all setups
-        //      including @cloudflare/vite-plugin where the rsc env has no runner.
-        //   3. Any other available DevEnvironment as a further fallback.
-        //   4. server (ssrLoadModule) as a last resort for plain Vite setups.
-        if (instrumentationPath) {
-          const rscEnv = server.environments["rsc"] as any;
-          const loader: Parameters<typeof runInstrumentation>[0] =
-            rscEnv && typeof rscEnv.runner?.import === "function"
-              ? rscEnv.runner
-              : (server.environments["ssr"] ?? server.environments["rsc"] ?? server);
-          runInstrumentation(loader, instrumentationPath).catch((err) => {
+        // Pages Router: there is no RSC entry, so configureServer() is the right
+        // place to call register(). Pages Router never uses @cloudflare/vite-plugin
+        // (it relies on plain Vite + Node.js), so server.ssrLoadModule() is safe
+        // here — no outsideEmitter crash risk.
+        if (instrumentationPath && hasPagesDir && !hasAppDir) {
+          runInstrumentation(server, instrumentationPath).catch((err) => {
             console.error("[vinext] Instrumentation error:", err);
           });
         }

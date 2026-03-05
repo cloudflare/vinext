@@ -1,34 +1,18 @@
 /**
  * Shared state for instrumentation.ts testing in app-router-cloudflare.
  *
- * ## The Worker boundary problem
+ * ## Why plain module-level variables work here
  *
- * When @cloudflare/vite-plugin is present, app code (including API routes)
- * runs inside a Cloudflare Worker via miniflare — a separate process with its
- * own isolated globalThis. The host Node.js process runs vinext's configureServer
- * hook and calls runInstrumentation(), which executes register() in the host
- * process. A globalThis flag set there is invisible to the Worker.
+ * register() is now emitted as a top-level `await` inside the generated RSC
+ * entry module (see `generateRscEntry` in `app-dev-server.ts`). This means it
+ * runs inside the Cloudflare Worker process — the same process and module graph
+ * as the API routes. Plain module-level variables are therefore visible to both
+ * the instrumentation code and the API route that reads them.
  *
- * ## Solution: temp file bridge
- *
- * register() (host process) writes a sentinel file to disk.
- * The API route (Worker process) reads that file to check whether register()
- * was called. The file path uses the project root so both sides agree on it.
- *
- * This is test-only infrastructure — real instrumentation hooks (Sentry,
- * OpenTelemetry, etc.) don't need cross-process visibility.
+ * This is different from the old approach (writing to a temp file on disk) which
+ * was needed when register() ran in the host Node.js process and API routes ran
+ * in the miniflare Worker subprocess (two separate processes, no shared memory).
  */
-
-import fs from "node:fs";
-import path from "node:path";
-import os from "node:os";
-
-const STATE_FILE = path.join(os.tmpdir(), "vinext-instrumentation-test-state.json");
-
-interface State {
-  registerCalled: boolean;
-  errors: CapturedRequestError[];
-}
 
 export interface CapturedRequestError {
   message: string;
@@ -39,38 +23,29 @@ export interface CapturedRequestError {
   routeType: string;
 }
 
-function readState(): State {
-  try {
-    return JSON.parse(fs.readFileSync(STATE_FILE, "utf-8")) as State;
-  } catch {
-    return { registerCalled: false, errors: [] };
-  }
-}
+/** Set to true when instrumentation.ts register() is called. */
+let registerCalled = false;
 
-function writeState(state: State): void {
-  fs.writeFileSync(STATE_FILE, JSON.stringify(state), "utf-8");
-}
+/** List of errors captured by onRequestError(). */
+const capturedErrors: CapturedRequestError[] = [];
 
 export function isRegisterCalled(): boolean {
-  return readState().registerCalled;
+  return registerCalled;
 }
 
 export function getCapturedErrors(): CapturedRequestError[] {
-  return readState().errors;
+  return [...capturedErrors];
 }
 
 export function markRegisterCalled(): void {
-  const state = readState();
-  state.registerCalled = true;
-  writeState(state);
+  registerCalled = true;
 }
 
 export function recordRequestError(entry: CapturedRequestError): void {
-  const state = readState();
-  state.errors.push(entry);
-  writeState(state);
+  capturedErrors.push(entry);
 }
 
 export function resetInstrumentationState(): void {
-  writeState({ registerCalled: false, errors: [] });
+  registerCalled = false;
+  capturedErrors.length = 0;
 }

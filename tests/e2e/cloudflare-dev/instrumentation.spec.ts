@@ -1,70 +1,59 @@
 /**
- * Regression test for instrumentation.ts startup crash when
+ * Regression test + functional test for instrumentation.ts when
  * @cloudflare/vite-plugin is present.
  *
- * ## The bug
+ * ## The original bug (startup crash)
  *
  * When @cloudflare/vite-plugin is loaded, it registers a Vite environment
- * named "rsc". The vinext configureServer() hook detects this and (in the
- * buggy version) tries to load instrumentation.ts via server.ssrLoadModule().
- *
- * Calling ssrLoadModule() during configureServer() — before the dev server is
- * listening — crashes in Vite 7 with:
+ * named "rsc". The old vinext configureServer() hook detected this and tried
+ * to load instrumentation.ts via server.ssrLoadModule() — which crashed with:
  *
  *   TypeError: Cannot read properties of undefined (reading 'outsideEmitter')
  *
- * because SSRCompatModuleRunner is constructed synchronously and immediately
- * calls connect() on the transport, which reads environment.hot.api —
- * a property that is only populated once the server starts listening.
+ * because SSRCompatModuleRunner is constructed synchronously during
+ * configureServer(), before the dev server starts listening, and immediately
+ * reads environment.hot.api which is undefined at that point.
  *
- * The crash is specific to the combination of:
- *   1. @cloudflare/vite-plugin present (creates server.environments["rsc"])
- *   2. instrumentation.ts present in the project root
- *   3. The "rsc" environment has no .runner.import (it is a Cloudflare Workers
- *      environment, not @vitejs/plugin-rsc), so the check
- *      `rscEnv?.runner?.import` returns undefined and the code falls through
- *      to the ssrLoadModule fallback
+ * ## The real bug (wrong process)
  *
- * ## How this test reproduces it
+ * Even if the crash was papered over, register() was running in the host
+ * Node.js process (where configureServer() runs). With @cloudflare/vite-plugin,
+ * the Worker runs in a miniflare subprocess — a completely separate process
+ * with its own isolated globalThis. Any state set by register() in the host
+ * was invisible to the Worker where the API routes execute.
+ *
+ * ## The fix
+ *
+ * register() is now emitted as a top-level `await` inside the generated RSC
+ * entry module. This means it runs inside the Cloudflare Worker — the same
+ * process and module graph as the API routes. State set by register() is
+ * immediately visible to any module imported from the Worker.
+ *
+ * configureServer() no longer calls runInstrumentation() for App Router at all.
+ *
+ * ## How this test reproduces both issues
  *
  * The Playwright webServer for this project is configured with
- * reuseExistingServer: false — it always starts a fresh server. If the bug is
- * present, `vite dev` exits with a non-zero code before the server ever starts
- * listening, Playwright cannot connect to port 4178, and every test in this
- * file fails with a connection error.
+ * reuseExistingServer: false — it always starts a fresh server.
  *
- * If the fix is in place, the server starts successfully and the assertions
- * below pass.
+ * 1. If the startup crash is present, `vite dev` exits before the server ever
+ *    starts listening. Playwright cannot connect to port 4178 and every test
+ *    fails with a connection error.
  *
- * ## Note on register() observability
- *
- * register() runs in the host Node.js process (where configureServer() runs),
- * but the API routes run inside a Cloudflare Worker via miniflare — a separate
- * process with its own isolated globalThis and no access to the host filesystem
- * via real node:fs. There is no lightweight way to observe from within the
- * Worker that register() was called in the host. The crash test is the right
- * regression check: if the server starts and serves requests, the bug is absent.
- *
- * ## Fix
- *
- * When no usable module runner is found (neither @vitejs/plugin-rsc's runner
- * nor any other environment with .runner.import), build a direct-call
- * ModuleRunner on the SSR DevEnvironment that invokes environment.fetchModule()
- * directly, bypassing the hot channel entirely. environment.fetchModule() is a
- * plain async method on DevEnvironment — safe at any time during configureServer().
+ * 2. If register() runs in the wrong process (host instead of Worker), the
+ *    API route returns { registerCalled: false } and the second assertion fails.
  */
 
 import { test, expect } from "@playwright/test";
 
 const BASE = "http://localhost:4178";
 
-test.describe("instrumentation.ts startup crash regression (@cloudflare/vite-plugin)", () => {
+test.describe("instrumentation.ts with @cloudflare/vite-plugin", () => {
   test("dev server starts without crashing when instrumentation.ts is present alongside @cloudflare/vite-plugin", async ({
     request,
   }) => {
     // If we reach this line at all, vite dev started successfully — the
-    // regression (a hard process crash in configureServer before the server
-    // ever starts listening) is not present.
+    // startup crash regression is not present.
     //
     // The webServer for this project uses reuseExistingServer: false, so a
     // fresh server is started for every test run. A crash would cause
@@ -72,6 +61,24 @@ test.describe("instrumentation.ts startup crash regression (@cloudflare/vite-plu
     // reach its body.
     const res = await request.get(`${BASE}/api/hello`);
     expect(res.status()).toBe(200);
+  });
+
+  test("register() runs inside the Worker and is visible to API routes", async ({
+    request,
+  }) => {
+    // This assertion catches the wrong-process bug: if register() ran in the
+    // host Node.js process instead of the Worker, the API route would return
+    // { registerCalled: false } because the Worker's module graph has a
+    // separate copy of instrumentation-state.ts with registerCalled = false.
+    //
+    // With the fix, register() is emitted as a top-level await in the RSC
+    // entry, so it runs in the Worker before any request is handled. The API
+    // route reads from the same module instance and sees registerCalled = true.
+    const res = await request.get(`${BASE}/api/instrumentation-test`);
+    expect(res.status()).toBe(200);
+
+    const data = await res.json() as { registerCalled: boolean; errors: unknown[] };
+    expect(data.registerCalled).toBe(true);
   });
 
   test("app routes are served correctly after startup with instrumentation.ts", async ({
