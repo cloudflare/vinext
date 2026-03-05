@@ -1271,6 +1271,12 @@ export default async function handler(request) {
 }
 
 async function _handleRequest(request, __reqCtx) {
+  const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
+  let __compileEnd;
+  let __renderEnd;
+  // __reqStart is included in the timing header so the Node logging middleware
+  // can compute true compile time as: handlerStart - middlewareStart.
+  // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -2115,6 +2121,9 @@ async function _handleRequest(request, __reqCtx) {
     console.error = _origConsoleError;
   }
 
+  // Mark end of compile phase: route matching, middleware, tree building are done.
+  if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
+
   // Render to RSC stream
   const rscStream = renderToReadableStream(element, { onError: rscOnError });
 
@@ -2143,6 +2152,12 @@ async function _handleRequest(request, __reqCtx) {
         responseHeaders[key] = value;
       }
     }
+    // Attach internal timing header so the dev server middleware can log it.
+    if (process.env.NODE_ENV !== "production") {
+      const handlerStart = Math.round(__reqStart);
+      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : 0;
+      responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",0";
+    }
     return new Response(rscStream, { status: _middlewareRewriteStatus || 200, headers: responseHeaders });
   }
 
@@ -2169,6 +2184,7 @@ async function _handleRequest(request, __reqCtx) {
   try {
     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
     htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
+    if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
@@ -2198,6 +2214,21 @@ async function _handleRequest(request, __reqCtx) {
       for (const [key, value] of _middlewareResponseHeaders) {
         response.headers.append(key, value);
       }
+    }
+    // Attach internal timing header so the dev server middleware can log it.
+    // Format: "handlerStart,compileMs,renderMs"
+    //   handlerStart - absolute performance.now() when _handleRequest began,
+    //                  used by the logging middleware to compute true compile
+    //                  time as (handlerStart - middlewareReqStart).
+    //   compileMs    - time inside the handler before renderToReadableStream.
+    //   renderMs     - time from renderToReadableStream to handleSsr completion.
+    if (process.env.NODE_ENV !== "production") {
+      const handlerStart = Math.round(__reqStart);
+      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : 0;
+      const renderMs = __renderEnd !== undefined && __compileEnd !== undefined
+        ? Math.round(__renderEnd - __compileEnd)
+        : 0;
+      response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
     }
     // Apply custom status code from middleware rewrite
     if (_middlewareRewriteStatus) {

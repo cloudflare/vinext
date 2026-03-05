@@ -27,6 +27,7 @@ import path from "node:path";
 import fs from "node:fs";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
+import { logRequest, now } from "./request-log.js";
 
 const PAGE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
 
@@ -273,6 +274,28 @@ export function createSSRHandler(
     /** Status code override — propagated from middleware rewrite status. */
     statusCode?: number,
   ): Promise<void> => {
+    const _reqStart = now();
+    let _compileEnd: number | undefined;
+    let _renderEnd: number | undefined;
+
+    res.on("finish", () => {
+      const totalMs = now() - _reqStart;
+      const compileMs = _compileEnd !== undefined ? _compileEnd - _reqStart : undefined;
+      // renderMs = time from end of compile to end of stream.
+      // _renderEnd is set just after streamPageToResponse resolves.
+      const renderMs = _renderEnd !== undefined && _compileEnd !== undefined
+        ? _renderEnd - _compileEnd
+        : undefined;
+      logRequest({
+        method: req.method ?? "GET",
+        url,
+        status: res.statusCode,
+        totalMs,
+        compileMs,
+        renderMs,
+      });
+    });
+
     // --- i18n: extract locale from URL prefix ---
     let locale: string | undefined;
     let localeStrippedUrl = url;
@@ -347,6 +370,8 @@ export function createSSRHandler(
       // Load the page module through Vite's SSR pipeline
       // This gives us HMR and transform support for free
       const pageModule = await server.ssrLoadModule(route.filePath);
+      // Mark end of compile phase: everything from here is rendering.
+      _compileEnd = now();
 
       // Get the page component (default export)
       const PageComponent = pageModule.default;
@@ -745,6 +770,7 @@ hydrate();
           ? headShim.getSSRHeadHTML()
           : "",
       });
+      _renderEnd = now();
 
       // Clear SSR context after rendering
       if (typeof routerShim.setSSRContext === "function") {

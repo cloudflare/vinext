@@ -19,6 +19,7 @@ import {
 } from "./config/next-config.js";
 
 import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
+import { logRequest, now } from "./server/request-log.js";
 import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormalizePathCode } from "./server/middleware-codegen.js";
 import { normalizePath } from "./server/normalize-path.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
@@ -2398,7 +2399,124 @@ hydrate();
         }
 
         // Return a function to register middleware AFTER Vite's built-in middleware
-        return () => {
+				return () => {
+					// App Router request logging in dev server
+	        //
+	        // For App Router, the RSC plugin handles requests internally.
+	        // We install a timing middleware here that:
+	        //   1. Intercepts writeHead() to pluck the X-Vinext-Timing header
+	        //      (compile=Xms,render=Yms) that the RSC entry attaches before
+	        //      it is flushed to the client.
+	        //   2. Logs the full request after res finishes, using those timings.
+	        if (hasAppDir) {
+	          server.middlewares.use((req, res, next) => {
+	            const url = req.url ?? "/";
+	            // Skip Vite internals, HMR, and static assets.
+	            // Do NOT skip .rsc-suffixed URLs or RSC wire requests (Accept: text/x-component)
+	            // — those are soft navigations and should be logged like any other page request.
+	            if (
+	              url.startsWith("/@") ||
+	              url.startsWith("/__vite") ||
+	              url.startsWith("/node_modules") ||
+	              (url.includes(".") && !url.split("?")[0].endsWith(".html") && !url.split("?")[0].endsWith(".rsc"))
+	            ) {
+	              return next();
+	            }
+	            const _reqStart = now();
+	            let _compileMs: number | undefined;
+	            let _renderMs: number | undefined;
+
+	            // Intercept setHeader and writeHead so we can strip X-Vinext-Timing
+	            // before it reaches the client and capture the compile/render split.
+	            // The RSC plugin may set headers either way depending on its version.
+	            // Parse the three-part X-Vinext-Timing header:
+	            //   "handlerStart,inHandlerCompileMs,renderMs"
+	            //
+	            // True compile time = time the RSC plugin spent loading/transforming
+	            // modules before our handler code ran, plus any in-handler work before
+	            // renderToReadableStream. Concretely:
+	            //   compileMs = (handlerStart - _reqStart) + inHandlerCompileMs
+	            //   renderMs  = renderMs from header
+	            //
+	            // handlerStart is performance.now() recorded at the very top of
+	            // _handleRequest in the generated RSC entry. _reqStart is recorded
+	            // here in the Node middleware, one stack frame before the RSC plugin
+	            // loads the module. The gap between them is exactly the Vite
+	            // compile/transform cost.
+	            function _parseTiming(raw: unknown) {
+									const [handlerStart, inHandlerCompileMs, renderMs] = String(raw).split(",").map((v) => Number(v));
+
+	              if (!Number.isNaN(handlerStart) && !Number.isNaN(inHandlerCompileMs)) {
+	                _compileMs = Math.max(0, Math.round(handlerStart - _reqStart)) + inHandlerCompileMs;
+	              }
+	              if (!Number.isNaN(renderMs)) {
+	                _renderMs = renderMs;
+	              }
+	            }
+
+	            const _origSetHeader = res.setHeader.bind(res);
+	            res.setHeader = function (name, value) {
+	              if (name.toLowerCase() === "x-vinext-timing") {
+	                _parseTiming(value);
+	                return res; // drop the header — don't forward to client
+	              }
+	              return _origSetHeader(name, value);
+	            };
+
+	            const _origWriteHead = res.writeHead.bind(res);
+	            (res).writeHead = function (statusCode, ...args: any[]) {
+	              // Normalise the optional headers argument (may be reason, headers object, or both).
+	              let headers: Record<string, unknown> | undefined;
+	              const [reasonOrHeaders, maybeHeaders] = args;
+	              if (typeof reasonOrHeaders === "string") {
+	                headers = maybeHeaders;
+	              } else {
+	                headers = reasonOrHeaders;
+	              }
+
+	              // Pull timing out of the headers object when present.
+	              if (headers && typeof headers === "object" && !Array.isArray(headers)) {
+	                const timingKey = Object.keys(headers).find(
+	                  (k) => k.toLowerCase() === "x-vinext-timing",
+	                );
+	                if (timingKey) {
+	                  _parseTiming(headers[timingKey]);
+	                  delete headers[timingKey];
+	                }
+	              }
+
+	              return _origWriteHead(statusCode, ...args);
+	            };
+
+	            res.on("finish", () => {
+	              // Strip .rsc suffix — it's an internal RSC protocol detail,
+	              // not part of the actual page path the user navigated to.
+	              const logUrl = url.replace(/\.rsc(\?|$)/, "$1");
+									const totalMs = now() - _reqStart;
+
+	              // For RSC-only responses (soft nav), _renderMs is 0 because the
+	              // stream is returned immediately and rendered asynchronously.
+	              // Compute render time as totalMs - compileMs, which is how long
+	              // the RSC stream took to fully flush to the client — matching
+	              // what Next.js shows for soft navigations.
+	              const resolvedRenderMs = (_renderMs !== undefined && _renderMs > 0)
+	                ? _renderMs
+	                : (_compileMs !== undefined ? Math.max(0, Math.round(totalMs - _compileMs)) : undefined);
+
+									logRequest({
+	                method: req.method ?? "GET",
+	                url: logUrl,
+	                status: res.statusCode,
+	                totalMs,
+	                compileMs: _compileMs,
+	                renderMs: resolvedRenderMs,
+	              });
+								});
+
+	            next();
+	          });
+					}
+
           server.middlewares.use(async (req, res, next) => {
             try {
               let url: string = req.url ?? "/";
