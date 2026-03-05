@@ -11,6 +11,16 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4174";
 
 test.describe("Config Redirects (OpenNext compat)", () => {
+  test("config redirects are applied to RSC requests (i.e. for soft navigation)", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/redirect-test-config.rsc`);
+    expect(page.url()).toMatch(/\/about/);
+
+    const el = page.getByText("About", { exact: true });
+    await expect(el).toBeVisible();
+  });
+
   // Ref: opennextjs-cloudflare config.redirect.test.ts — simple redirect
   test("simple redirect from config source to destination", async ({
     page,

@@ -54,6 +54,12 @@ const nextConfig: NextConfig = {
         permanent: false,
         missing: [{ type: "cookie", key: "stay-here" }],
       },
+      // Used by E2E: config-redirect.spec.ts
+      {
+        source: "/redirect-test-config",
+        destination: "/about",
+        permanent: false,
+      },
     ];
   },
 

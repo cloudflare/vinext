@@ -1317,7 +1317,11 @@ async function _handleRequest(request, __reqCtx) {
 
   // ── Apply redirects from next.config.js ───────────────────────────────
   if (__configRedirects.length) {
-    const __redir = __applyConfigRedirects(pathname, __reqCtx);
+    // Strip .rsc suffix before matching redirect rules - RSC (client-side nav) requests
+    // arrive as /some/path.rsc but redirect patterns are defined without it (e.g.
+    // /some/path). Without this, soft-nav fetches bypass all config redirects.
+    const __redirPathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
+    const __redir = __applyConfigRedirects(__redirPathname, __reqCtx);
     if (__redir) {
       const __redirDest = __sanitizeDestination(
         __basePath && !__redir.destination.startsWith(__basePath)
