@@ -656,9 +656,14 @@ export async function proxyExternalRequest(
 
   // Build the response to return to the client.
   // Copy all upstream headers except hop-by-hop headers.
+  // Also strip content-encoding and content-length because Node's fetch()
+  // automatically decompresses the body, making these headers inaccurate.
+  // Forwarding them causes browsers to attempt double decompression,
+  // resulting in ERR_CONTENT_DECODING_FAILED.
   const responseHeaders = new Headers();
   upstreamResponse.headers.forEach((value, key) => {
-    if (!HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+    const lk = key.toLowerCase();
+    if (!HOP_BY_HOP_HEADERS.has(lk) && lk !== "content-encoding" && lk !== "content-length") {
       responseHeaders.append(key, value);
     }
   });
