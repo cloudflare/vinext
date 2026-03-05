@@ -3,6 +3,7 @@ import { createBuilder, type ViteDevServer } from "vite";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import zlib from "node:zlib";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES, startFixtureServer, fetchHtml } from "./helpers.js";
 import { generateRscEntry } from "../packages/vinext/src/server/app-dev-server.js";
@@ -2147,6 +2148,18 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("__isExternalUrl(__fallbackRewritten)");
   });
 
+  it("guards content-encoding stripping to Node runtime in generated external proxy helper", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      rewrites: {
+        beforeFiles: [{ source: "/proxy/:path*", destination: "https://api.example.com/:path*" }],
+        afterFiles: [],
+        fallback: [],
+      },
+    });
+    expect(code).toContain("const __isNodeRuntime = typeof process !== \"undefined\" && !!(process.versions && process.versions.node);");
+    expect(code).toContain("if (__isNodeRuntime && (lower === \"content-encoding\" || lower === \"content-length\")) return;");
+  });
+
   it("adds basePath prefix to redirect destinations", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "/app", false, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
@@ -2717,6 +2730,7 @@ describe("App Router external rewrite proxy credential stripping", () => {
   let mockServer: import("node:http").Server;
   let mockPort: number;
   let capturedHeaders: import("node:http").IncomingHttpHeaders | null = null;
+  let mockResponseMode: "plain" | "gzipHeaderAndBody" = "plain";
   let server: ViteDevServer;
   let baseUrl: string;
 
@@ -2725,6 +2739,18 @@ describe("App Router external rewrite proxy credential stripping", () => {
     const http = await import("node:http");
     mockServer = http.createServer((req, res) => {
       capturedHeaders = req.headers;
+      if (mockResponseMode === "gzipHeaderAndBody") {
+        const payload = "proxied gzipped body";
+        const gzipped = zlib.gzipSync(Buffer.from(payload));
+        res.writeHead(200, {
+          "Content-Type": "text/plain",
+          "Content-Encoding": "gzip",
+          "Content-Length": String(gzipped.byteLength),
+          "x-custom": "keep-me",
+        });
+        res.end(gzipped);
+        return;
+      }
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("proxied ok");
     });
@@ -2746,6 +2772,7 @@ describe("App Router external rewrite proxy credential stripping", () => {
   });
 
   it("strips credential headers from proxied requests to external rewrite targets", async () => {
+    mockResponseMode = "plain";
     capturedHeaders = null;
 
     await fetch(`${baseUrl}/proxy-external-test/some-path`, {
@@ -2769,5 +2796,15 @@ describe("App Router external rewrite proxy credential stripping", () => {
     expect(capturedHeaders!["x-middleware-next"]).toBeUndefined();
     // Non-sensitive headers must be preserved
     expect(capturedHeaders!["x-custom-safe"]).toBe("keep-me");
+  });
+
+  it("strips content-encoding and content-length for Node fetch auto-decompression", async () => {
+    mockResponseMode = "gzipHeaderAndBody";
+    const response = await fetch(`${baseUrl}/proxy-external-test/some-path`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(response.headers.get("x-custom")).toBe("keep-me");
+    expect(await response.text()).toBe("proxied gzipped body");
   });
 });
