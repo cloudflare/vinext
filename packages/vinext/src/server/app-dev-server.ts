@@ -2094,21 +2094,19 @@ async function collectStreamChunks(stream) {
   return chunks;
 }
 
-/**
- * React 19 dev-mode workaround:
- *
- * In dev, Flight error decoding in react-server-dom-webpack/client.edge
- * can hit resolveErrorDev() which (via React's dev error stack capture)
- * expects a non-null hooks dispatcher.
- *
- * Vinext previously called createFromReadableStream() outside of any React render.
- * When an RSC stream contains an error, dev-mode decoding could crash with:
- *   - "Invalid hook call"
- *   - "Cannot read properties of null (reading 'useContext')"
- *
- * Fix: call createFromReadableStream() lazily inside a React component render.
- * This mirrors Next.js behavior and ensures the dispatcher is set.
- */
+// React 19 dev-mode workaround (see VinextFlightRoot in handleSsr):
+//
+// In dev, Flight error decoding in react-server-dom-webpack/client.edge
+// can hit resolveErrorDev() which (via React's dev error stack capture)
+// expects a non-null hooks dispatcher.
+//
+// Vinext previously called createFromReadableStream() outside of any React render.
+// When an RSC stream contains an error, dev-mode decoding could crash with:
+//   - "Invalid hook call"
+//   - "Cannot read properties of null (reading 'useContext')"
+//
+// Fix: call createFromReadableStream() lazily inside a React component render.
+// This mirrors Next.js behavior and ensures the dispatcher is set.
 
 /**
  * Create a TransformStream that appends RSC chunks as inline <script> tags
@@ -2241,7 +2239,9 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // chunks arrive. Awaiting here would block until all async server components
     // complete, collapsing the streaming behavior.
     // Lazily create the Flight root inside render so React's hook dispatcher is set
-    // (avoids React 19 dev-mode resolveErrorDev() crash).
+    // (avoids React 19 dev-mode resolveErrorDev() crash). VinextFlightRoot returns
+    // a thenable (not a ReactNode), which React 19 consumes via its internal
+    // thenable-as-child suspend/resume behavior. This matches Next.js's approach.
     let flightRoot;
     function VinextFlightRoot() {
       if (!flightRoot) {

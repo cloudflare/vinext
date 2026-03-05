@@ -1,3 +1,7 @@
+// This error boundary exists so the route has a realistic structure (matching
+// how real apps would set up error handling). During SSR, React falls back to
+// client rendering before this boundary fires, so the test asserts client-render
+// fallback behavior rather than error boundary rendering.
 "use client";
 
 export default function React19DevRscErrorBoundary({

@@ -597,8 +597,11 @@ describe("App Router integration", () => {
     const html = await res.text();
 
     expect(res.status).toBe(200);
-    // In React 19 dev mode, this route currently switches to client rendering.
-    // The key regression check is that decode no longer crashes with a null dispatcher.
+    // In React 19 dev mode, this route switches to client rendering when the
+    // async server throw is encountered during Flight streaming. The key
+    // regression check is that decode no longer crashes with a null dispatcher.
+    // Note: "Switched to client rendering" is a React internal message that
+    // may change across React versions.
     expect(html).toContain("Switched to client rendering");
     expect(html).toContain("react19-dev-rsc-error");
     expect(html).toContain('data-testid="react19-dev-rsc-loading"');
