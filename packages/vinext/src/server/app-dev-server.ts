@@ -2956,6 +2956,18 @@ async function main() {
         });
       }
 
+      // Detect if fetch followed a redirect: compare the final response URL to
+      // what we requested. If they differ, the server issued a 3xx — push the
+      // canonical destination URL into history before rendering.
+      const __finalUrl = new URL(navResponse.url);
+      const __requestedUrl = new URL(rscUrl, window.location.origin);
+      if (__finalUrl.pathname !== __requestedUrl.pathname) {
+        // Strip .rsc suffix from the final URL to get the page path for history
+        const __destPath = __finalUrl.pathname.replace(/.rsc$/, "") + __finalUrl.search;
+        window.history.pushState(null, "", __destPath);
+        return window.__VINEXT_RSC_NAVIGATE__(__finalUrl.pathname + __finalUrl.search);
+      }
+
       // Update useParams() with route params from the server before re-rendering
       const navParamsHeader = navResponse.headers.get("X-Vinext-Params");
       if (navParamsHeader) {

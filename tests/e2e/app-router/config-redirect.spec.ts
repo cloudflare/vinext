@@ -11,11 +11,22 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4174";
 
 test.describe("Config Redirects (OpenNext compat)", () => {
-  test("config redirects are applied to RSC requests (i.e. for soft navigation)", async ({
+  test("config redirects are applied to direct RSC requests", async ({
     page,
   }) => {
     await page.goto(`${BASE}/redirect-test-config.rsc`);
     expect(page.url()).toMatch(/\/about/);
+
+    const el = page.getByText("About", { exact: true });
+    await expect(el).toBeVisible();
+  });
+
+  test("config redirects are applied to soft-nav RSC requests and update request path", async ({
+    page,
+  }) => {
+    await page.goto(BASE);
+    await page.click('[data-testid="redirect-test-link"]');
+    await page.waitForURL(/\/about/);
 
     const el = page.getByText("About", { exact: true });
     await expect(el).toBeVisible();
