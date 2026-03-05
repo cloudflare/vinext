@@ -1205,7 +1205,14 @@ async function __proxyExternalRequest(request, externalUrl) {
     console.error("[vinext] External rewrite proxy error:", e); return new Response("Bad Gateway", { status: 502 });
   }
   const respHeaders = new Headers();
-  upstream.headers.forEach(function(value, key) { if (!__hopByHopHeaders.has(key.toLowerCase())) respHeaders.append(key, value); });
+  upstream.headers.forEach(function(value, key) {
+    var lower = key.toLowerCase();
+    if (__hopByHopHeaders.has(lower)) return;
+    // Node.js fetch() auto-decompresses responses, so strip content-encoding
+    // and content-length to avoid ERR_CONTENT_DECODING_FAILED in the browser.
+    if (lower === "content-encoding" || lower === "content-length") return;
+    respHeaders.append(key, value);
+  });
   return new Response(upstream.body, { status: upstream.status, statusText: upstream.statusText, headers: respHeaders });
 }
 

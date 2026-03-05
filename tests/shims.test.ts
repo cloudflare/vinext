@@ -3773,6 +3773,42 @@ describe("proxyExternalRequest", () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it("strips content-encoding and content-length from proxied response to avoid double-decompression", async () => {
+    const { proxyExternalRequest } = await import(
+      "../packages/vinext/src/config/config-matchers.js"
+    );
+
+    const request = new Request("http://localhost:3000/test");
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_url: any, _init: any) => {
+      // Simulate an upstream that sent gzip-encoded content.
+      // Node.js fetch() auto-decompresses, but the original headers remain.
+      return new Response("decompressed body", {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "content-encoding": "gzip",
+          "content-length": "42",
+          "x-custom": "keep",
+        },
+      });
+    };
+
+    try {
+      const response = await proxyExternalRequest(request, "https://api.example.com/data");
+      // content-encoding and content-length must be stripped to prevent
+      // ERR_CONTENT_DECODING_FAILED in the browser (double-decompression bug).
+      expect(response.headers.get("content-encoding")).toBeNull();
+      expect(response.headers.get("content-length")).toBeNull();
+      // Other headers must be preserved
+      expect(response.headers.get("content-type")).toBe("application/json");
+      expect(response.headers.get("x-custom")).toBe("keep");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
