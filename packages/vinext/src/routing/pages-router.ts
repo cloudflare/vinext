@@ -1,5 +1,6 @@
 import { glob } from "node:fs/promises";
 import path from "node:path";
+import { routePrecedence } from "./utils.js";
 
 export interface Route {
   /** URL pattern, e.g. "/" or "/about" or "/posts/:id" */
@@ -122,32 +123,6 @@ function fileToRoute(file: string, pagesDir: string): Route | null {
     isDynamic,
     params,
   };
-}
-
-/**
- * Route precedence — lower score is higher priority.
- * Matches Next.js specificity rules:
- * 1. Static routes first (scored by segment count, more = more specific)
- * 2. Dynamic segments penalized by position
- * 3. Catch-all comes after dynamic
- * 4. Optional catch-all last
- * 5. Lexicographic tiebreaker for determinism
- */
-function routePrecedence(pattern: string): number {
-  const parts = pattern.split("/").filter(Boolean);
-  let score = 0;
-  for (let i = 0; i < parts.length; i++) {
-    const p = parts[i];
-    if (p.endsWith("+")) {
-      score += 10000 + i; // catch-all: high penalty
-    } else if (p.endsWith("*")) {
-      score += 20000 + i; // optional catch-all: highest penalty
-    } else if (p.startsWith(":")) {
-      score += 100 + i; // dynamic: moderate penalty by position
-    }
-    // static segments contribute nothing (better specificity)
-  }
-  return score;
 }
 
 /**

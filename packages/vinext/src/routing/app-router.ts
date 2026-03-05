@@ -16,6 +16,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { glob } from "node:fs/promises";
+import { routePrecedence } from "./utils.js";
 
 export interface InterceptingRoute {
   /** The interception convention: "." | ".." | "../.." | "..." */
@@ -1031,49 +1032,4 @@ function matchPattern(
   if (urlParts.length !== patternParts.length) return null;
 
   return params;
-}
-
-/**
- * Route precedence — lower score is higher priority.
- * Matches Next.js specificity rules:
- * 1. Static routes first (scored by segment count, more = more specific)
- * 2. Dynamic segments penalized by position
- * 3. Catch-all comes after dynamic
- * 4. Optional catch-all last
- * 5. Lexicographic tiebreaker for determinism
- *
- * Key insight: routes with static prefix segments should have higher priority
- * than catch-all routes without them. E.g., /_sites/:subdomain/:slug* should
- * match before /:slug* because "_sites" must match exactly.
- */
-function routePrecedence(pattern: string): number {
-  const parts = pattern.split("/").filter(Boolean);
-  let score = 0;
-  let staticPrefixCount = 0;
-
-  // Count static prefix segments (before first dynamic/catch-all)
-  for (const p of parts) {
-    if (p.startsWith(":") || p.endsWith("+") || p.endsWith("*")) break;
-    staticPrefixCount++;
-  }
-
-  // Static prefix segments dramatically reduce score (increase priority).
-  // Each static prefix segment gives -10000 priority boost.
-  score -= staticPrefixCount * 10000;
-
-  for (let i = 0; i < parts.length; i++) {
-    const p = parts[i];
-    if (p.endsWith("+")) {
-      score += 1000 + i; // catch-all: moderate penalty
-    } else if (p.endsWith("*")) {
-      score += 2000 + i; // optional catch-all: high penalty
-    } else if (p.startsWith(":")) {
-      score += 100 + i; // dynamic: small penalty by position
-    }
-    // static segments after first dynamic boost priority (more specific route)
-    else if (i >= staticPrefixCount) {
-      score -= 500; // static literal after dynamic = more specific than a bare catch-all
-    }
-  }
-  return score;
 }
