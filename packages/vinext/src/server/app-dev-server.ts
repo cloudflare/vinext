@@ -2963,7 +2963,7 @@ async function main() {
       const __requestedUrl = new URL(rscUrl, window.location.origin);
       if (__finalUrl.pathname !== __requestedUrl.pathname) {
         // Strip .rsc suffix from the final URL to get the page path for history
-        const __destPath = __finalUrl.pathname.replace(/.rsc$/, "") + __finalUrl.search;
+        const __destPath = __finalUrl.pathname.replace(/\\.rsc$/, "") + __finalUrl.search;
         window.history.pushState(null, "", __destPath);
         return window.__VINEXT_RSC_NAVIGATE__(__finalUrl.pathname + __finalUrl.search);
       }
