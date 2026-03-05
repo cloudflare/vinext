@@ -16,11 +16,13 @@
 import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
 import path from "node:path";
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execSync } from "node:child_process";
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit } from "./init.js";
+import { loadDotenv } from "./config/dotenv.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -60,7 +62,10 @@ async function loadVite(): Promise<ViteModule> {
     vitePath = "vite";
   }
 
-  const vite = (await import(/* @vite-ignore */ vitePath)) as ViteModule;
+  // On Windows, absolute paths must be file:// URLs for ESM import().
+  // The fallback ("vite") is a bare specifier and works as-is.
+  const viteUrl = vitePath === "vite" ? vitePath : pathToFileURL(vitePath).href;
+  const vite = (await import(/* @vite-ignore */ viteUrl)) as ViteModule;
   _viteModule = vite;
   return vite;
 }
@@ -72,7 +77,9 @@ function getViteVersion(): string {
   return _viteModule?.version ?? "unknown";
 }
 
-const VERSION = "0.0.1";
+const VERSION = JSON.parse(
+  fs.readFileSync(new URL("../package.json", import.meta.url), "utf-8"),
+).version as string;
 
 // ─── CLI Argument Parsing ──────────────────────────────────────────────────────
 
@@ -176,6 +183,11 @@ async function dev() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("dev");
 
+  loadDotenv({
+    root: process.cwd(),
+    mode: "development",
+  });
+
   const vite = await loadVite();
 
   const port = parsed.port ?? 3000;
@@ -195,6 +207,11 @@ async function dev() {
 async function buildApp() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("build");
+
+  loadDotenv({
+    root: process.cwd(),
+    mode: "production",
+  });
 
   const vite = await loadVite();
 
@@ -249,6 +266,11 @@ async function buildApp() {
 async function start() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("start");
+
+  loadDotenv({
+    root: process.cwd(),
+    mode: "production",
+  });
 
   const port = parsed.port ?? parseInt(process.env.PORT ?? "3000", 10);
   const host = parsed.hostname ?? "0.0.0.0";

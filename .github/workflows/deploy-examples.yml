@@ -76,7 +76,7 @@ jobs:
           command: deploy --config ${{ matrix.example.wrangler_config }}
 
       - name: Deploy Preview Version
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -96,14 +96,14 @@ jobs:
         run: ./scripts/smoke-test.sh
 
       - name: Smoke test (preview)
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         run: ./scripts/smoke-test.sh --preview pr-${{ github.event.pull_request.number }}
 
   comment:
     name: Comment Preview URLs
     runs-on: ubuntu-latest
     needs: deploy
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       pull-requests: write
     steps:

@@ -16,6 +16,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { execFileSync, execSync, type ExecSyncOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
 import { createBuilder, build } from "vite";
@@ -24,7 +25,9 @@ import {
   renameCJSConfigs as _renameCJSConfigs,
   detectPackageManager as _detectPackageManager,
 } from "./utils/project.js";
+import { getReactUpgradeDeps } from "./init.js";
 import { runTPR } from "./cloudflare/tpr.js";
+import { loadDotenv } from "./config/dotenv.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -581,7 +584,26 @@ interface MissingDep {
   version: string;
 }
 
-export function getMissingDeps(info: ProjectInfo): MissingDep[] {
+/**
+ * Check if a package is resolvable from a given root directory using
+ * Node's module resolution (createRequire). Handles hoisting, pnpm
+ * symlinks, monorepos, and Yarn PnP correctly.
+ */
+export function isPackageResolvable(root: string, packageName: string): boolean {
+  try {
+    const req = createRequire(path.join(root, "package.json"));
+    req.resolve(packageName);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function getMissingDeps(
+  info: ProjectInfo,
+  /** Override for testing — defaults to `isPackageResolvable` */
+  _isResolvable: (root: string, pkg: string) => boolean = isPackageResolvable,
+): MissingDep[] {
   const missing: MissingDep[] = [];
 
   if (!info.hasCloudflarePlugin) {
@@ -592,6 +614,12 @@ export function getMissingDeps(info: ProjectInfo): MissingDep[] {
   }
   if (info.isAppRouter && !info.hasRscPlugin) {
     missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
+  }
+  if (info.isAppRouter) {
+    // react-server-dom-webpack must be resolvable from the project root for Vite.
+    if (!_isResolvable(info.root, "react-server-dom-webpack")) {
+      missing.push({ name: "react-server-dom-webpack", version: "latest" });
+    }
   }
   if (info.hasMDX) {
     // Check if @mdx-js/rollup is already installed
@@ -752,6 +780,7 @@ function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" 
 
 export async function deploy(options: DeployOptions): Promise<void> {
   const root = path.resolve(options.root);
+  loadDotenv({ root, mode: "production" });
 
   console.log("\n  vinext deploy\n");
 
@@ -774,6 +803,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
   console.log(`  ISR:     ${info.hasISR ? "detected" : "none"}`);
 
   // Step 2: Check and install missing dependencies
+  // For App Router: upgrade React first if needed for react-server-dom-webpack compatibility
+  if (info.isAppRouter) {
+    const reactUpgrade = getReactUpgradeDeps(root);
+    if (reactUpgrade.length > 0) {
+      const installCmd = detectPackageManager(root).replace(/ -D$/, "");
+      console.log(`  Upgrading ${reactUpgrade.map(d => d.replace(/@latest$/, "")).join(", ")}...`);
+      execSync(`${installCmd} ${reactUpgrade.join(" ")}`, { cwd: root, stdio: "inherit" });
+    }
+  }
   const missingDeps = getMissingDeps(info);
   if (missingDeps.length > 0) {
     console.log();

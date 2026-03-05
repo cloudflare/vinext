@@ -25,7 +25,7 @@ import { staticExportPages } from "./build/static-export.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import MagicString from "magic-string";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 
@@ -270,7 +270,7 @@ async function resolvePostcssStringPlugins(
         return undefined;
       }
     }
-    const mod = await import(configPath);
+    const mod = await import(pathToFileURL(configPath).href);
     config = mod.default ?? mod;
   } catch {
     // If we can't load the config, let Vite/postcss-load-config handle it
@@ -293,7 +293,7 @@ async function resolvePostcssStringPlugins(
     config.plugins.filter(Boolean).map(async (plugin: any) => {
       if (typeof plugin === "string") {
         const resolved = req.resolve(plugin);
-        const mod = await import(resolved);
+        const mod = await import(pathToFileURL(resolved).href);
         const fn = mod.default ?? mod;
         // If the export is a function, call it to get the plugin instance
         return typeof fn === "function" ? fn() : fn;
@@ -302,7 +302,7 @@ async function resolvePostcssStringPlugins(
       if (Array.isArray(plugin) && typeof plugin[0] === "string") {
         const [name, options] = plugin;
         const resolved = req.resolve(name);
-        const mod = await import(resolved);
+        const mod = await import(pathToFileURL(resolved).href);
         const fn = mod.default ?? mod;
         return typeof fn === "function" ? fn(options) : fn;
       }
@@ -1677,7 +1677,7 @@ hydrate();
         "Run: npm install -D @vitejs/plugin-rsc",
       );
     }
-    const rscImport = import(resolvedRscPath);
+    const rscImport = import(pathToFileURL(resolvedRscPath).href);
     rscPluginPromise = rscImport
       .then((mod) => {
         const rsc = mod.default;
@@ -2907,7 +2907,7 @@ hydrate();
               "Run: npm install -D @vitejs/plugin-rsc",
             );
           }
-          const { transformWrapExport, transformHoistInlineDirective } = await import(resolvedRscTransformsPath);
+          const { transformWrapExport, transformHoistInlineDirective } = await import(pathToFileURL(resolvedRscTransformsPath).href);
           const ast = parseAst(code);
 
           // Check for file-level "use cache" directive
@@ -2934,10 +2934,10 @@ hydrate();
             // leaf components with no {children} prop and can be cached directly.
             const isLayoutOrTemplate = /\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id);
 
-            const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
+            const runtimeModuleUrl = pathToFileURL(path.join(shimsDir, "cache-runtime.js")).href;
             const result = transformWrapExport(code, ast as any, {
               runtime: (value: any, name: any) =>
-                `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
+                `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
               rejectNonAsyncFunction: false,
               filter: (name: any, meta: any) => {
                 // Skip non-functions (constants, types, etc.)
@@ -2975,7 +2975,7 @@ hydrate();
           // (e.g., async function getData() { "use cache"; ... })
           const hasInlineCache = code.includes("use cache") && !cacheDirective;
           if (hasInlineCache) {
-            const runtimeModulePath = path.join(shimsDir, "cache-runtime.js");
+            const runtimeModuleUrl2 = pathToFileURL(path.join(shimsDir, "cache-runtime.js")).href;
 
             try {
               const result = transformHoistInlineDirective(code, ast as any, {
@@ -2983,7 +2983,7 @@ hydrate();
                 runtime: (value: any, name: any, meta: any) => {
                   const directiveMatch = meta.directiveMatch[0];
                   const variant = directiveMatch === "use cache" ? "" : directiveMatch.replace("use cache:", "").replace("use cache: ", "").trim();
-                  return `(await import(${JSON.stringify(runtimeModulePath)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
+                  return `(await import(${JSON.stringify(runtimeModuleUrl2)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
                 },
                 rejectNonAsyncFunction: false,
               });

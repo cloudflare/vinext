@@ -137,7 +137,7 @@ The test suite has over 1,700 Vitest tests and 380 Playwright E2E tests. This in
 Mostly nobody. This is an experiment in seeing how far AI-driven development can go. The test suite is the primary quality gate — not human code review. Contributions and code review are welcome.
 
 **Why Vite?**
-Vite is an excellent build tool with a rich plugin ecosystem, first-class ESM support, and fast HMR. The [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-rsc) plugin adds React Server Components support with multi-environment builds. This project is an experiment to see how much of the Next.js developer experience can be replicated on top of Vite's infrastructure.
+Vite is an excellent build tool with a rich plugin ecosystem, first-class ESM support, and fast HMR. The [`@vitejs/plugin-rsc`](https://github.com/vitejs/vite-plugin-react/tree/main/packages/plugin-rsc) plugin adds React Server Components support with multi-environment builds. This project is an experiment to see how much of the Next.js developer experience can be replicated on top of Vite's infrastructure.
 
 **Does this support the Pages Router, App Router, or both?**
 Both. File-system routing, SSR, client hydration, and deployment to Cloudflare Workers work for both routers.
@@ -316,8 +316,37 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 |---------|---|-------|
 | `next.config.js` / `.ts` / `.mjs` | ✅ | Function configs, phase argument |
 | `rewrites` / `redirects` / `headers` | ✅ | All phases, param interpolation |
-| Environment variables (`NEXT_PUBLIC_*`) | ✅ | Inlined at build time via Vite |
+| Environment variables (`.env*`, `NEXT_PUBLIC_*`) | ✅ | Auto-loads Next.js-style dotenv files; only public vars are inlined |
 | `images` config | 🟡 | Parsed but not used for optimization |
+
+### Environment variable loading (`.env*`)
+
+vinext automatically loads dotenv files for `dev`, `build`, `start`, and `deploy`.
+
+Load order matches Next.js (highest priority first):
+
+1. Existing `process.env` values (shell/CI)
+2. `.env.<mode>.local`
+3. `.env.local` (skipped when mode is `test`)
+4. `.env.<mode>`
+5. `.env`
+
+Modes:
+
+- `vinext dev` uses `development`
+- `vinext build`, `vinext start`, and `vinext deploy` use `production`
+
+Variable expansion (`$VAR` / `${VAR}`) is supported.
+
+Client exposure remains explicit:
+
+- `NEXT_PUBLIC_*` variables are inlined for browser usage
+- `next.config.js` `env` entries are also inlined
+- Other env vars stay server-only unless you explicitly expose them through Vite (for example `VITE_*` + `import.meta.env`)
+
+Override behavior:
+
+- To override any `.env*` value, set it in your shell/CI environment before running vinext. Existing `process.env` always wins.
 
 ### Caching
 

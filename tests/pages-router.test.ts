@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { createServer, build, type ViteDevServer } from "vite";
 import path from "node:path";
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import vinext from "../packages/vinext/src/index.js";
 import { PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
 
@@ -712,7 +713,7 @@ describe("Production build", () => {
     }
 
     // Import the server entry
-    const serverEntry = await import(serverEntryPath);
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
     const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
 
     // Create a minimal HTTP server using the built entry.
@@ -790,13 +791,13 @@ describe("Production build", () => {
 
   it("server entry exports runMiddleware function", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
-    const serverEntry = await import(serverEntryPath);
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
     expect(typeof serverEntry.runMiddleware).toBe("function");
   });
 
   it("runMiddleware skips non-matching paths", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
-    const serverEntry = await import(serverEntryPath);
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
     // The middleware matcher is /((?!api|_next|favicon\.ico).*) so /api should not match
     const request = new Request("http://localhost/api/hello");
     const result = await serverEntry.runMiddleware(request);
@@ -806,7 +807,7 @@ describe("Production build", () => {
 
   it("runMiddleware handles redirect (/old-page -> /about)", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
-    const serverEntry = await import(serverEntryPath);
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
     const request = new Request("http://localhost/old-page");
     const result = await serverEntry.runMiddleware(request);
     expect(result.continue).toBe(false);
@@ -816,7 +817,7 @@ describe("Production build", () => {
 
   it("runMiddleware handles rewrite (/rewritten -> /ssr)", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
-    const serverEntry = await import(serverEntryPath);
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
     const request = new Request("http://localhost/rewritten");
     const result = await serverEntry.runMiddleware(request);
     expect(result.continue).toBe(true);
@@ -825,7 +826,7 @@ describe("Production build", () => {
 
   it("runMiddleware handles block (/blocked -> 403)", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
-    const serverEntry = await import(serverEntryPath);
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
     const request = new Request("http://localhost/blocked");
     const result = await serverEntry.runMiddleware(request);
     expect(result.continue).toBe(false);
@@ -835,7 +836,7 @@ describe("Production build", () => {
 
   it("runMiddleware sets x-middleware-test header on matched paths", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
-    const serverEntry = await import(serverEntryPath);
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
     // /about matches the middleware but doesn't redirect/rewrite/block
     const request = new Request("http://localhost/about");
     const result = await serverEntry.runMiddleware(request);
@@ -846,7 +847,7 @@ describe("Production build", () => {
 
   it("runMiddleware returns 500 when middleware throws", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
-    const serverEntry = await import(serverEntryPath);
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
     const request = new Request("http://localhost/middleware-throw");
     const result = await serverEntry.runMiddleware(request);
     expect(result.continue).toBe(false);
@@ -1023,7 +1024,7 @@ describe("Production server next.config.js features (Pages Router)", () => {
 
   it("server entry exports vinextConfig with correct shape", async () => {
     const serverEntryPath = path.join(outDir, "server", "entry.js");
-    const serverEntry = await import(serverEntryPath);
+    const serverEntry = await import(pathToFileURL(serverEntryPath).href);
     expect(serverEntry.vinextConfig).toBeDefined();
     expect(serverEntry.vinextConfig.redirects).toBeInstanceOf(Array);
     expect(serverEntry.vinextConfig.rewrites).toBeDefined();

@@ -13,9 +13,9 @@
  * - Error: app/error.tsx -> ErrorBoundary
  * - Not Found: app/not-found.tsx
  */
-import { glob } from "glob";
 import path from "node:path";
 import fs from "node:fs";
+import { glob } from "node:fs/promises";
 
 export interface InterceptingRoute {
   /** The interception convention: "." | ".." | "../.." | "..." */
@@ -120,25 +120,16 @@ export async function appRouter(appDir: string): Promise<AppRoute[]> {
 
   // Find all page.tsx and route.ts files, excluding @slot directories
   // (slot pages are not standalone routes — they're rendered as props of their parent layout)
-  const allPageFiles = await glob("**/page.{tsx,ts,jsx,js}", { cwd: appDir });
-  const pageFiles = allPageFiles.filter(
-    (f) => !f.split(path.sep).some((s) => s.startsWith("@")),
-  );
-  const allRouteFiles = await glob("**/route.{tsx,ts,jsx,js}", { cwd: appDir });
-  const routeFiles = allRouteFiles.filter(
-    (f) => !f.split(path.sep).some((s) => s.startsWith("@")),
-  );
-
   const routes: AppRoute[] = [];
 
-  // Process page files
-  for (const file of pageFiles) {
+  // Process page files in a single pass
+  for await (const file of glob("**/page.{tsx,ts,jsx,js}", { cwd: appDir, exclude: ["**/@*"] })) {
     const route = fileToAppRoute(file, appDir, "page");
     if (route) routes.push(route);
   }
 
-  // Process route handler files (API routes)
-  for (const file of routeFiles) {
+  // Process route handler files (API routes) in a single pass
+  for await (const file of glob("**/route.{tsx,ts,jsx,js}", { cwd: appDir, exclude: ["**/@*"] })) {
     const route = fileToAppRoute(file, appDir, "route");
     if (route) routes.push(route);
   }
