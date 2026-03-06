@@ -213,7 +213,7 @@ import {
 } from "@vitejs/plugin-rsc/rsc";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext, applyMiddlewareRequestHeaders } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext, applyMiddlewareRequestHeaders, getHeadersContext } from "next/headers";
 import { NextRequest } from "next/server";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
@@ -1068,6 +1068,24 @@ function __buildRequestContext(request) {
   };
 }
 
+/**
+ * Build a request context from the live ALS HeadersContext, which reflects
+ * any x-middleware-request-* header mutations applied by middleware.
+ * Used for afterFiles and fallback rewrite has/missing evaluation — these
+ * run after middleware in the App Router execution order.
+ */
+function __buildPostMwRequestContext(request) {
+  const url = new URL(request.url);
+  const ctx = getHeadersContext();
+  if (!ctx) return __buildRequestContext(request);
+  return {
+    headers: ctx.headers,
+    cookies: ctx.cookies,
+    query: url.searchParams,
+    host: ctx.headers.get("host") || url.host,
+  };
+}
+
 function __sanitizeDestination(dest) {
   if (dest.startsWith("http://") || dest.startsWith("https://")) return dest;
   dest = dest.replace(/^[\\\\/]+/, "/");
@@ -1469,6 +1487,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
   ` : ""}
 
+  // Build post-middleware request context for afterFiles/fallback rewrites.
+  // These run after middleware in the App Router execution order and should
+  // evaluate has/missing conditions against middleware-modified headers.
+  // When no middleware is present, this falls back to __buildRequestContext.
+  const __postMwReqCtx = __buildPostMwRequestContext(request);
+
   // ── Image optimization passthrough (dev mode — no transformation) ───────
   if (cleanPathname === "/_vinext/image") {
     const __rawImgUrl = url.searchParams.get("url");
@@ -1694,7 +1718,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
   if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
-    const __afterRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.afterFiles, __reqCtx);
+    const __afterRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.afterFiles, __postMwReqCtx);
     if (__afterRewritten) {
       if (__isExternalUrl(__afterRewritten)) {
         setHeadersContext(null);
@@ -1709,7 +1733,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
-    const __fallbackRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.fallback, __reqCtx);
+    const __fallbackRewritten = __applyConfigRewrites(cleanPathname, __configRewrites.fallback, __postMwReqCtx);
     if (__fallbackRewritten) {
       if (__isExternalUrl(__fallbackRewritten)) {
         setHeadersContext(null);

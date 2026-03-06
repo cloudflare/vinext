@@ -132,6 +132,15 @@ export function consumeDynamicUsage(): boolean {
  * in-place and is only safe for cleanup (ctx=null) within an existing
  * als.run() scope.
  */
+/**
+ * Returns the current live HeadersContext from ALS (or the fallback).
+ * Used after applyMiddlewareRequestHeaders() to build a post-middleware
+ * request context for afterFiles/fallback rewrite has/missing evaluation.
+ */
+export function getHeadersContext(): HeadersContext | null {
+  return _getState().headersContext;
+}
+
 export function setHeadersContext(ctx: HeadersContext | null): void {
   if (ctx !== null) {
     // For backward compatibility, set context on the current ALS store

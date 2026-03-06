@@ -1504,6 +1504,7 @@ describe("Production server next.config.js features (Pages Router)", () => {
     expect(res.headers.get("x-guest-only-header")).toBe("1");
   });
 
+<<<<<<< Updated upstream
   it("config Vary header appends instead of replacing existing values", async () => {
     // The /ssr page has config headers: [{ key: "Vary", value: "Accept-Language" }].
     // If the response already has a Vary header (e.g. from compression),
@@ -1512,6 +1513,23 @@ describe("Production server next.config.js features (Pages Router)", () => {
     expect(res.status).toBe(200);
     const vary = res.headers.get("vary") ?? "";
     expect(vary).toContain("Accept-Language");
+=======
+  // afterFiles rewrites run after middleware in the App Router execution order.
+  // has/missing conditions on afterFiles rules should evaluate against
+  // middleware-modified headers, not the original pre-middleware request.
+  it("afterFiles rewrite has/missing conditions see middleware-injected cookies", async () => {
+    // Without ?mw-auth, middleware does NOT inject mw-user=1.
+    // The has:[cookie:mw-user] afterFiles rule should NOT match → no rewrite.
+    const noAuthRes = await fetch(`${prodUrl}/mw-gated-rewrite`);
+    expect(noAuthRes.status).toBe(404);
+
+    // With ?mw-auth, middleware injects mw-user=1 into request cookies.
+    // The has:[cookie:mw-user] afterFiles rule SHOULD match → rewrite to /about.
+    const authRes = await fetch(`${prodUrl}/mw-gated-rewrite?mw-auth`);
+    expect(authRes.status).toBe(200);
+    const html = await authRes.text();
+    expect(html).toContain("About");
+>>>>>>> Stashed changes
   });
 
   it("serves normal pages unaffected by config rules", async () => {
@@ -1639,7 +1657,7 @@ describe("Static export (Pages Router)", () => {
       "utf-8",
     );
     expect(html404).toContain("404");
-  });
+	});
 
   it("escapes meta refresh URL to prevent HTML injection", async () => {
     expect(fs.existsSync(path.join(exportDir, "redirect-xss.html"))).toBe(true);
