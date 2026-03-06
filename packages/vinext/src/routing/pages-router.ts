@@ -47,8 +47,9 @@ export function invalidateRouteCache(pagesDir: string): void {
 export async function pagesRouter(
   pagesDir: string,
   pageExtensions?: readonly string[],
+  matcher?: ValidFileMatcher,
 ): Promise<Route[]> {
-  const matcher = createValidFileMatcher(pageExtensions);
+  matcher ??= createValidFileMatcher(pageExtensions);
   const cacheKey = `pages:${pagesDir}:${JSON.stringify(matcher.extensions)}`;
   const cached = routeCache.get(cacheKey);
   if (cached) return cached.promise;
@@ -184,8 +185,9 @@ export function matchRoute(
 export async function apiRouter(
   pagesDir: string,
   pageExtensions?: readonly string[],
+  matcher?: ValidFileMatcher,
 ): Promise<Route[]> {
-  const matcher = createValidFileMatcher(pageExtensions);
+  matcher ??= createValidFileMatcher(pageExtensions);
   const cacheKey = `api:${pagesDir}:${JSON.stringify(matcher.extensions)}`;
   const cached = routeCache.get(cacheKey);
   if (cached) return cached.promise;

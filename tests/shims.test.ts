@@ -4848,14 +4848,14 @@ describe("pageExtensions config", () => {
     expect(config.pageExtensions).toEqual(["js", "jsx", "ts", "tsx", "mdx"]);
   });
 
-  it("resolveNextConfig preserves configured pageExtensions entries", async () => {
+  it("resolveNextConfig strips leading dots and whitespace from pageExtensions entries", async () => {
     const { resolveNextConfig } = await import(
       "../packages/vinext/src/config/next-config.js"
     );
     const config = await resolveNextConfig({
       pageExtensions: [".tsx", " ts ", "tsx", "", ".mdx"],
     });
-    expect(config.pageExtensions).toEqual([".tsx", " ts ", "tsx", ".mdx"]);
+    expect(config.pageExtensions).toEqual(["tsx", "ts", "tsx", "mdx"]);
   });
 });
 

@@ -583,6 +583,7 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
   let hasAppDir = false;
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
+  let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
   let hasCloudflarePlugin = false;
@@ -599,9 +600,8 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
    * This is the entry point for `vite build --ssr`.
    */
   async function generateServerEntry(): Promise<string> {
-    const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions);
-    const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions);
-    const fileMatcher = createValidFileMatcher(nextConfig?.pageExtensions);
+    const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+    const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
     // Generate import statements using absolute paths since virtual
     // modules don't have a real file location for relative resolution.
@@ -1566,8 +1566,7 @@ ${middlewareExportCode}
    * __NEXT_DATA__ to determine which page to hydrate.
    */
   async function generateClientEntry(): Promise<string> {
-    const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions);
-    const fileMatcher = createValidFileMatcher(nextConfig?.pageExtensions);
+    const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
     const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
     const hasApp = appFilePath !== null;
@@ -1789,6 +1788,7 @@ hydrate();
         // Load next.config.js if present (always from project root, not src/)
         const rawConfig = await loadNextConfig(root);
         nextConfig = await resolveNextConfig(rawConfig);
+        fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
 
         // Merge env from next.config.js with NEXT_PUBLIC_* env vars
         const defines = getNextPublicEnvDefines();
@@ -2265,13 +2265,13 @@ hydrate();
         }
         // App Router virtual modules
         if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
-          const routes = await appRouter(appDir, nextConfig?.pageExtensions);
+          const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
           const metaRoutes = scanMetadataFiles(appDir);
           // Check for global-error.tsx at app root
           const globalErrorPath = findFileWithExts(
             appDir,
             "global-error",
-            createValidFileMatcher(nextConfig?.pageExtensions),
+            fileMatcher,
           );
           return generateRscEntry(appDir, routes, middlewarePath, metaRoutes, globalErrorPath, nextConfig?.basePath, nextConfig?.trailingSlash, {
             redirects: nextConfig?.redirects,
@@ -2379,8 +2379,7 @@ hydrate();
       // ensures changes are always reflected in the browser.
       hotUpdate(options: { file: string; server: ViteDevServer; modules: any[] }) {
         if (!hasPagesDir || hasAppDir) return;
-        const ext = createValidFileMatcher(nextConfig?.pageExtensions).extensionRegex;
-        if (options.file.startsWith(pagesDir) && ext.test(options.file)) {
+        if (options.file.startsWith(pagesDir) && fileMatcher.extensionRegex.test(options.file)) {
           options.server.environments.client.hot.send({ type: "full-reload" });
           return [];
         }
@@ -2388,7 +2387,7 @@ hydrate();
 
       configureServer(server: ViteDevServer) {
         // Watch pages directory for file additions/removals to invalidate route cache.
-        const pageExtensions = createValidFileMatcher(nextConfig?.pageExtensions).extensionRegex;
+        const pageExtensions = fileMatcher.extensionRegex;
 
         /**
          * Invalidate the virtual RSC entry module in Vite's module graph.
@@ -2857,7 +2856,7 @@ hydrate();
                 resolvedPathname.startsWith("/api/") ||
                 resolvedPathname === "/api"
               ) {
-                const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions);
+                const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
                 const handled = await handleApiRoute(
                   server,
                   req,
@@ -2876,7 +2875,7 @@ hydrate();
                 return;
               }
 
-              const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions);
+              const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
               // Apply afterFiles rewrites — these run after initial route matching
               // If beforeFiles already rewrote the URL, afterFiles still run on the
@@ -2897,7 +2896,7 @@ hydrate();
                 return;
               }
 
-              const handler = createSSRHandler(server, routes, pagesDir, nextConfig?.i18n);
+              const handler = createSSRHandler(server, routes, pagesDir, nextConfig?.i18n, fileMatcher);
               const mwStatus = (req as any).__vinextRewriteStatus as number | undefined;
 
               // Try rendering the resolved URL

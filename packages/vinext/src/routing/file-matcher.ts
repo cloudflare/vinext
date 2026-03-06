@@ -13,9 +13,10 @@ export function normalizePageExtensions(
     return [...DEFAULT_PAGE_EXTENSIONS];
   }
 
-  const filtered = pageExtensions.filter(
-    (ext): ext is string => typeof ext === "string" && ext.length > 0,
-  );
+  const filtered = pageExtensions
+    .filter((ext): ext is string => typeof ext === "string")
+    .map((ext) => ext.trim().replace(/^\.+/, ""))
+    .filter((ext) => ext.length > 0);
   return filtered.length > 0 ? [...filtered] : [...DEFAULT_PAGE_EXTENSIONS];
 }
 

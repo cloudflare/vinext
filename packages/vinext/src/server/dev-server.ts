@@ -28,8 +28,7 @@ import fs from "node:fs";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { logRequest, now } from "./request-log.js";
-
-const PAGE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
+import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-matcher.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -172,9 +171,9 @@ async function streamPageToResponse(
   res.end(suffix);
 }
 
-/** Check if a file exists with any page extension (tsx, ts, jsx, js). */
-function findFileWithExtensions(basePath: string): boolean {
-  return PAGE_EXTENSIONS.some((ext) => fs.existsSync(basePath + ext));
+/** Check if a file exists with any configured page extension. */
+function findFileWithExtensions(basePath: string, matcher: ValidFileMatcher): boolean {
+  return matcher.dottedExtensions.some((ext) => fs.existsSync(basePath + ext));
 }
 
 /**
@@ -277,7 +276,9 @@ export function createSSRHandler(
   routes: Route[],
   pagesDir: string,
   i18nConfig?: NextI18nConfig | null,
+  fileMatcher?: ValidFileMatcher,
 ) {
+  const matcher = fileMatcher ?? createValidFileMatcher();
   return async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -343,7 +344,7 @@ export function createSSRHandler(
 
     if (!match) {
       // No route matched — try to render custom 404 page
-      await renderErrorPage(server, req, res, url, pagesDir, 404);
+      await renderErrorPage(server, req, res, url, pagesDir, 404, undefined, matcher);
       return;
     }
 
@@ -421,7 +422,7 @@ export function createSSRHandler(
           });
 
           if (!isValidPath) {
-            await renderErrorPage(server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext);
+            await renderErrorPage(server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext, matcher);
             return;
           }
         }
@@ -620,7 +621,7 @@ export function createSSRHandler(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let AppComponent: any = null;
       const appPath = path.join(pagesDir, "_app");
-      if (findFileWithExtensions(appPath)) {
+      if (findFileWithExtensions(appPath, matcher)) {
         try {
           const appModule = await server.ssrLoadModule(appPath);
           AppComponent = appModule.default ?? null;
@@ -774,7 +775,7 @@ hydrate();
       // Try to load custom _document.tsx
       const docPath = path.join(pagesDir, "_document");
       let DocumentComponent: any = null;
-      if (findFileWithExtensions(docPath)) {
+      if (findFileWithExtensions(docPath, matcher)) {
         try {
           const docModule = await server.ssrLoadModule(docPath);
           DocumentComponent = docModule.default ?? null;
@@ -864,7 +865,7 @@ hydrate();
       ).catch(() => { /* ignore reporting errors */ });
       // Try to render custom 500 error page
       try {
-        await renderErrorPage(server, req, res, url, pagesDir, 500);
+        await renderErrorPage(server, req, res, url, pagesDir, 500, undefined, matcher);
       } catch (fallbackErr) {
         // If error page itself fails, fall back to plain text.
         // This is a dev-only code path (prod uses prod-server.ts), so
@@ -900,7 +901,9 @@ async function renderErrorPage(
   pagesDir: string,
   statusCode: number,
   wrapWithRouterContext?: ((el: React.ReactElement) => React.ReactElement) | null,
+  fileMatcher?: ValidFileMatcher,
 ): Promise<void> {
+  const matcher = fileMatcher ?? createValidFileMatcher();
   // Try specific status page first, then _error, then fallback
   const candidates =
     statusCode === 404
@@ -912,7 +915,7 @@ async function renderErrorPage(
   for (const candidate of candidates) {
     try {
       const candidatePath = path.join(pagesDir, candidate);
-      if (!findFileWithExtensions(candidatePath)) continue;
+      if (!findFileWithExtensions(candidatePath, matcher)) continue;
 
       const errorModule = await server.ssrLoadModule(candidatePath);
       const ErrorComponent = errorModule.default;
@@ -921,7 +924,7 @@ async function renderErrorPage(
       // Try to load _app.tsx to wrap the error page
       let AppComponent: any = null;
       const appPathErr = path.join(pagesDir, "_app");
-      if (findFileWithExtensions(appPathErr)) {
+      if (findFileWithExtensions(appPathErr, matcher)) {
         try {
           const appModule = await server.ssrLoadModule(appPathErr);
           AppComponent = appModule.default ?? null;
@@ -965,7 +968,7 @@ async function renderErrorPage(
       let html: string;
       let DocumentComponent: any = null;
       const docPathErr = path.join(pagesDir, "_document");
-      if (findFileWithExtensions(docPathErr)) {
+      if (findFileWithExtensions(docPathErr, matcher)) {
         try {
           const docModule = await server.ssrLoadModule(docPathErr);
           DocumentComponent = docModule.default ?? null;

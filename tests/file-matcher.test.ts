@@ -9,10 +9,10 @@ describe("file matcher", () => {
     expect(normalizePageExtensions()).toEqual(["tsx", "ts", "jsx", "js"]);
     expect(normalizePageExtensions([])).toEqual(["tsx", "ts", "jsx", "js"]);
     expect(normalizePageExtensions([".tsx", " ts ", "tsx", "", ".mdx"])).toEqual([
-      ".tsx",
-      " ts ",
       "tsx",
-      ".mdx",
+      "ts",
+      "tsx",
+      "mdx",
     ]);
   });
 

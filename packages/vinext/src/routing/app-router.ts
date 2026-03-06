@@ -125,8 +125,9 @@ export function invalidateAppRouteCache(): void {
 export async function appRouter(
   appDir: string,
   pageExtensions?: readonly string[],
+  matcher?: ValidFileMatcher,
 ): Promise<AppRoute[]> {
-  const matcher = createValidFileMatcher(pageExtensions);
+  matcher ??= createValidFileMatcher(pageExtensions);
   const pageExtensionsKey = JSON.stringify(matcher.extensions);
   if (
     cachedRoutes &&
