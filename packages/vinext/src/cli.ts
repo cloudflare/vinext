@@ -366,6 +366,7 @@ async function deployCommand() {
     tprCoverage: parsed.tprCoverage,
     tprLimit: parsed.tprLimit,
     tprWindow: parsed.tprWindow,
+    passthroughArgs: parsed.passthroughArgs,
   });
 }
 
