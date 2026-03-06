@@ -766,9 +766,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       });
 
       // Build request context for has/missing condition matching.
-      // Pages Router: headers, redirects, and beforeFiles all run before
-      // middleware, so they use this pre-middleware snapshot. afterFiles
-      // and fallback rewrites use postMwReqCtx (built after middleware).
+      // headers and redirects run before middleware and use this pre-middleware
+      // snapshot. beforeFiles, afterFiles, and fallback all run after middleware
+      // per the Next.js execution order, so they use postMwReqCtx below.
       const reqCtx: RequestContext = requestContextFromRequest(webRequest);
 
       // ── 4. Run middleware ─────────────────────────────────────────
@@ -901,7 +901,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
       // ── 7. Apply beforeFiles rewrites from next.config.js ─────────
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, reqCtx);
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             const proxyResponse = await proxyExternalRequest(webRequest, rewritten);

@@ -1531,6 +1531,24 @@ describe("Production server next.config.js features (Pages Router)", () => {
     expect(html).toContain("About");
   });
 
+  // beforeFiles rewrites run after middleware per the Next.js execution order:
+  // headers → redirects → Middleware → beforeFiles → filesystem → afterFiles → fallback.
+  // has/missing conditions on beforeFiles rules should evaluate against
+  // middleware-modified headers, not the original pre-middleware request.
+  it("beforeFiles rewrite has/missing conditions see middleware-injected cookies", async () => {
+    // Without ?mw-auth, middleware does NOT inject mw-before-user=1.
+    // The has:[cookie:mw-before-user] beforeFiles rule should NOT match → 404.
+    const noAuthRes = await fetch(`${prodUrl}/mw-gated-before`);
+    expect(noAuthRes.status).toBe(404);
+
+    // With ?mw-auth, middleware injects mw-before-user=1 into request cookies.
+    // The has:[cookie:mw-before-user] beforeFiles rule SHOULD match → rewrite to /about.
+    const authRes = await fetch(`${prodUrl}/mw-gated-before?mw-auth`);
+    expect(authRes.status).toBe(200);
+    const html = await authRes.text();
+    expect(html).toContain("About");
+  });
+
   it("serves normal pages unaffected by config rules", async () => {
     const res = await fetch(`${prodUrl}/`);
     expect(res.status).toBe(200);
