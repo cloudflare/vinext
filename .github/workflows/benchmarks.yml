@@ -45,9 +45,9 @@ jobs:
       # Install benchmark-specific deps (outside pnpm workspace)
       - name: Install benchmark dependencies
         run: |
-          cd benchmarks/nextjs && npm install
-          cd ../vinext && npm install
-          cd ../vinext-rolldown && npm install
+          npm install --prefix benchmarks/nextjs
+          npm install --prefix benchmarks/vinext
+          npm install --prefix benchmarks/vinext-rolldown
 
       # Run the benchmarks
       - name: Run benchmarks

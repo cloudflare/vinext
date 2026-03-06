@@ -5,7 +5,8 @@
  * Backed by the browser History API. Supports client-side navigation
  * by fetching new page data and re-rendering the React root.
  */
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, createElement, type ReactElement } from "react";
+import { RouterContext } from "./internal/router-context.js";
 import { isValidModulePath } from "../client/validate-module-path.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
@@ -388,6 +389,9 @@ async function navigateClient(url: string): Promise<void> {
       element = React.createElement(PageComponent, pageProps);
     }
 
+    // Wrap with RouterContext.Provider so next/compat/router works
+    element = wrapWithRouterContext(element);
+
     root.render(element);
   } catch (err) {
     console.error("[vinext] Client navigation failed:", err);
@@ -396,6 +400,57 @@ async function navigateClient(url: string): Promise<void> {
   } finally {
     _navInProgress = false;
   }
+}
+
+/**
+ * Build the full router value object from the current pathname, query, asPath,
+ * and a set of navigation methods.  Shared by useRouter() (which passes
+ * hook-derived callbacks) and wrapWithRouterContext() (which passes the Router
+ * singleton methods) so the shape stays in sync.
+ */
+function buildRouterValue(
+  pathname: string,
+  query: Record<string, string | string[]>,
+  asPath: string,
+  methods: {
+    push: NextRouter["push"];
+    replace: NextRouter["replace"];
+    back: NextRouter["back"];
+    reload: NextRouter["reload"];
+    prefetch: NextRouter["prefetch"];
+    beforePopState: NextRouter["beforePopState"];
+  },
+): NextRouter {
+  const _ssrState = _getSSRContext();
+  const locale = typeof window === "undefined"
+    ? _ssrState?.locale
+    : (window as any).__VINEXT_LOCALE__;
+  const locales = typeof window === "undefined"
+    ? _ssrState?.locales
+    : (window as any).__VINEXT_LOCALES__;
+  const defaultLocale = typeof window === "undefined"
+    ? _ssrState?.defaultLocale
+    : (window as any).__VINEXT_DEFAULT_LOCALE__;
+
+  const route = typeof window !== "undefined"
+    ? ((window as any).__NEXT_DATA__?.page ?? pathname)
+    : pathname;
+
+  return {
+    pathname,
+    route,
+    query,
+    asPath,
+    basePath: __basePath,
+    locale,
+    locales,
+    defaultLocale,
+    isReady: true,
+    isPreview: false,
+    isFallback: typeof window !== "undefined" && (window as any).__NEXT_DATA__?.isFallback === true,
+    ...methods,
+    events: routerEvents,
+  };
 }
 
 /**
@@ -529,45 +584,16 @@ export function useRouter(): NextRouter {
     }
   }, []);
 
-  // Get i18n info from SSR context or window
-  const _ssrState = _getSSRContext();
-  const locale = typeof window === "undefined"
-    ? _ssrState?.locale
-    : (window as any).__VINEXT_LOCALE__;
-  const locales = typeof window === "undefined"
-    ? _ssrState?.locales
-    : (window as any).__VINEXT_LOCALES__;
-  const defaultLocale = typeof window === "undefined"
-    ? _ssrState?.defaultLocale
-    : (window as any).__VINEXT_DEFAULT_LOCALE__;
-
-  // route is the route pattern (e.g., "/posts/[id]"), not the actual path
-  const route = typeof window !== "undefined"
-    ? ((window as any).__NEXT_DATA__?.page ?? pathname)
-    : pathname;
-
   const router = useMemo(
-    (): NextRouter => ({
-      pathname,
-      route,
-      query,
-      asPath,
-      basePath: __basePath,
-      locale,
-      locales,
-      defaultLocale,
-      isReady: true,
-      isPreview: false,
-      isFallback: typeof window !== "undefined" && (window as any).__NEXT_DATA__?.isFallback === true,
+    (): NextRouter => buildRouterValue(pathname, query, asPath, {
       push,
       replace,
       back,
       reload,
       prefetch,
       beforePopState: (cb: BeforePopStateCallback) => { _beforePopStateCb = cb; },
-      events: routerEvents,
     }),
-    [pathname, query, asPath, locale, locales, defaultLocale, push, replace, back, reload, prefetch, route],
+    [pathname, query, asPath, push, replace, back, reload, prefetch],
   );
 
   return router;
@@ -598,6 +624,30 @@ if (typeof window !== "undefined") {
       window.dispatchEvent(new CustomEvent("vinext:navigate"));
     });
   });
+}
+
+/**
+ * Wrap a React element in a RouterContext.Provider so that
+ * next/compat/router's useRouter() returns the real Pages Router value.
+ *
+ * This is a plain function, NOT a React component — it builds the router
+ * value object directly from the current SSR context (server) or
+ * window.location + Router singleton (client), avoiding duplicate state
+ * that a hook-based component would create.
+ */
+export function wrapWithRouterContext(element: ReactElement): ReactElement {
+  const { pathname, query, asPath } = getPathnameAndQuery();
+
+  const routerValue = buildRouterValue(pathname, query, asPath, {
+    push: Router.push,
+    replace: Router.replace,
+    back: Router.back,
+    reload: Router.reload,
+    prefetch: Router.prefetch,
+    beforePopState: Router.beforePopState,
+  });
+
+  return createElement(RouterContext.Provider, { value: routerValue }, element) as ReactElement;
 }
 
 // Also export a default Router singleton for `import Router from 'next/router'`

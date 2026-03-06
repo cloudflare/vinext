@@ -27,3 +27,9 @@ coverage/
 .DS_Store
 .idea/
 .vscode/
+
+# Nix
+result
+result-*
+.direnv/
+.corepack/

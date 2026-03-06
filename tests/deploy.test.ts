@@ -240,8 +240,7 @@ describe("detectProject", () => {
     writeFile(tmpDir, "package.json", JSON.stringify({ name: "My App_v2!" }));
     const info = detectProject(tmpDir);
     // Workers names: lowercase alphanumeric + hyphens
-    expect(info.projectName).toMatch(/^[a-z0-9-]+$/);
-    expect(info.projectName).not.toMatch(/^-|-$/);
+    expect(info.projectName).toBe("my-app-v2");
   });
 
   it("falls back to directory name when no package.json", () => {

@@ -81,6 +81,9 @@ declare module "next/navigation" {
   export function useSelectedLayoutSegment(parallelRoutesKey?: string): string | null;
   export function useSelectedLayoutSegments(parallelRoutesKey?: string): string[];
   export function useServerInsertedHTML(callback: () => unknown): void;
+  export const ServerInsertedHTMLContext: import("react").Context<
+    ((callback: () => unknown) => void) | null
+  > | null;
   export enum RedirectType {
     push = "push",
     replace = "replace",

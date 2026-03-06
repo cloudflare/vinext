@@ -245,6 +245,20 @@ function setNavigationContext(ctx) {
 // based on export const revalidate for testing purposes.
 // Production ISR is handled by prod-server.ts and the Cloudflare worker entry.
 
+// Normalize null-prototype objects from matchPattern() into thenable objects
+// that work both as Promises (for Next.js 15+ async params) and as plain
+// objects with synchronous property access (for pre-15 code like params.id).
+//
+// matchPattern() uses Object.create(null), producing objects without
+// Object.prototype. The RSC serializer rejects these. Spreading ({...obj})
+// restores a normal prototype. Object.assign onto the Promise preserves
+// synchronous property access (params.id, params.slug) that existing
+// components and test fixtures rely on.
+function makeThenableParams(obj) {
+  const plain = { ...obj };
+  return Object.assign(Promise.resolve(plain), plain);
+}
+
 // djb2 hash — matches Next.js's stringHash for digest generation.
 // Produces a stable numeric string from error message + stack.
 function __errorDigest(str) {
@@ -297,6 +311,48 @@ function rscOnError(error) {
   if (error && typeof error === "object" && "digest" in error) {
     return String(error.digest);
   }
+
+  // In dev, detect the "Only plain objects" RSC serialization error and emit
+  // an actionable hint. This error occurs when a Server Component passes a
+  // class instance, ES module namespace object, or null-prototype object as a
+  // prop to a Client Component.
+  //
+  // Root cause: Vite bundles modules as true ESM (module namespace objects
+  // have a null-like internal slot), while Next.js's webpack build produces
+  // plain CJS-wrapped objects with __esModule:true. React's RSC serializer
+  // accepts the latter as plain objects but rejects the former — which means
+  // code that accidentally passes "import * as X" works in webpack/Next.js
+  // but correctly fails in vinext.
+  //
+  // Common triggers:
+  //   - "import * as utils from './utils'" passed as a prop
+  //   - class instances (new Foo()) passed as props
+  //   - Date / Map / Set instances passed as props
+  //   - Objects with Object.create(null) (null prototype)
+  if (
+    process.env.NODE_ENV !== "production" &&
+    error instanceof Error &&
+    error.message.includes("Only plain objects, and a few built-ins, can be passed to Client Components")
+  ) {
+    console.error(
+      "[vinext] RSC serialization error: a non-plain object was passed from a Server Component to a Client Component.\\n" +
+      "\\n" +
+      "Common causes:\\n" +
+      "  * Passing a module namespace (import * as X) directly as a prop.\\n" +
+      "    Unlike Next.js (webpack), Vite produces real ESM module namespace objects\\n" +
+      "    which are not serializable. Fix: pass individual values instead,\\n" +
+      "    e.g. <Comp value={module.value} />\\n" +
+      "  * Passing a class instance (new Foo()) as a prop.\\n" +
+      "    Fix: convert to a plain object, e.g. { id: foo.id, name: foo.name }\\n" +
+      "  * Passing a Date, Map, or Set. Use .toISOString(), [...map.entries()], etc.\\n" +
+      "  * Passing Object.create(null). Use { ...obj } to restore a prototype.\\n" +
+      "\\n" +
+      "Original error:",
+      error.message,
+    );
+    return undefined;
+  }
+
   // In production, generate a digest hash for non-navigation errors
   if (process.env.NODE_ENV === "production" && error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -637,8 +693,8 @@ async function buildPageElement(route, params, opts, searchParams) {
   // Build nested layout tree from outermost to innermost.
   // Next.js 16 passes params/searchParams as Promises (async pattern)
   // but pre-16 code accesses them as plain objects (params.id).
-  // We create a "thenable object" that works both ways.
-  const asyncParams = Object.assign(Promise.resolve(params), params);
+  // makeThenableParams() normalises null-prototype + preserves both patterns.
+  const asyncParams = makeThenableParams(params);
   const pageProps = { params: asyncParams };
   if (searchParams) {
     const spObj = {};
@@ -661,7 +717,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // approximation: pages with query params in the URL are almost always
     // dynamic, and this avoids false positives from React internals.
     if (hasSearchParams) markDynamicUsage();
-    pageProps.searchParams = Object.assign(Promise.resolve(spObj), spObj);
+    pageProps.searchParams = makeThenableParams(spObj);
   }
   let element = createElement(PageComponent, pageProps);
 
@@ -762,7 +818,7 @@ async function buildPageElement(route, params, opts, searchParams) {
         }
       }
 
-      const layoutProps = { children: element, params: Object.assign(Promise.resolve(params), params) };
+      const layoutProps = { children: element, params: makeThenableParams(params) };
 
       // Add parallel slot elements to the layout that defines them.
       // Each slot has a layoutIndex indicating which layout it belongs to.
@@ -784,7 +840,7 @@ async function buildPageElement(route, params, opts, searchParams) {
           }
 
           if (SlotPage) {
-            let slotElement = createElement(SlotPage, { params: Object.assign(Promise.resolve(slotParams), slotParams) });
+            let slotElement = createElement(SlotPage, { params: makeThenableParams(slotParams) });
             // Wrap with slot-specific layout if present.
             // In Next.js, @slot/layout.tsx wraps the slot's page content
             // before it is passed as a prop to the parent layout.
@@ -792,7 +848,7 @@ async function buildPageElement(route, params, opts, searchParams) {
             if (SlotLayout) {
               slotElement = createElement(SlotLayout, {
                 children: slotElement,
-                params: Object.assign(Promise.resolve(slotParams), slotParams),
+                params: makeThenableParams(slotParams),
               });
             }
             // Wrap with slot-specific loading if present
@@ -1223,6 +1279,12 @@ export default async function handler(request) {
 }
 
 async function _handleRequest(request, __reqCtx, _outerWaitUntilPromises) {
+  const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
+  let __compileEnd;
+  let __renderEnd;
+  // __reqStart is included in the timing header so the Node logging middleware
+  // can compute true compile time as: handlerStart - middlewareStart.
+  // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -1269,7 +1331,11 @@ async function _handleRequest(request, __reqCtx, _outerWaitUntilPromises) {
 
   // ── Apply redirects from next.config.js ───────────────────────────────
   if (__configRedirects.length) {
-    const __redir = __applyConfigRedirects(pathname, __reqCtx);
+    // Strip .rsc suffix before matching redirect rules - RSC (client-side nav) requests
+    // arrive as /some/path.rsc but redirect patterns are defined without it (e.g.
+    // /some/path). Without this, soft-nav fetches bypass all config redirects.
+    const __redirPathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
+    const __redir = __applyConfigRedirects(__redirPathname, __reqCtx);
     if (__redir) {
       const __redirDest = __sanitizeDestination(
         __basePath && !__redir.destination.startsWith(__basePath)
@@ -1285,7 +1351,9 @@ async function _handleRequest(request, __reqCtx, _outerWaitUntilPromises) {
 
   // ── Apply beforeFiles rewrites from next.config.js ────────────────────
   if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
-    const __rewritten = __applyConfigRewrites(pathname, __configRewrites.beforeFiles, __reqCtx);
+    // Strip .rsc suffix before matching rewrite rules — same reason as redirects above.
+    const __rewritePathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
+    const __rewritten = __applyConfigRewrites(__rewritePathname, __configRewrites.beforeFiles, __reqCtx);
     if (__rewritten) {
       if (__isExternalUrl(__rewritten)) {
         setHeadersContext(null);
@@ -1982,7 +2050,7 @@ async function _handleRequest(request, __reqCtx, _outerWaitUntilPromises) {
   // triggers renderHTTPAccessFallbackPage with ALL route layouts, but one of those
   // layouts itself throws notFound() during the fallback rendering (causing a 500).
   if (route.layouts && route.layouts.length > 0) {
-    const asyncParams = Object.assign(Promise.resolve(params), params);
+    const asyncParams = makeThenableParams(params);
     for (let li = route.layouts.length - 1; li >= 0; li--) {
       const LayoutComp = route.layouts[li]?.default;
       if (!LayoutComp) continue;
@@ -2075,6 +2143,9 @@ async function _handleRequest(request, __reqCtx, _outerWaitUntilPromises) {
     console.error = _origConsoleError;
   }
 
+  // Mark end of compile phase: route matching, middleware, tree building are done.
+  if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
+
   // Render to RSC stream
   const rscStream = renderToReadableStream(element, { onError: rscOnError });
 
@@ -2103,6 +2174,21 @@ async function _handleRequest(request, __reqCtx, _outerWaitUntilPromises) {
         responseHeaders[key] = value;
       }
     }
+    // Attach internal timing header so the dev server middleware can log it.
+    // Format: "handlerStart,compileMs,renderMs"
+    //   handlerStart - absolute performance.now() when _handleRequest began,
+    //                  used by the logging middleware to compute true compile
+    //                  time as (handlerStart - middlewareReqStart).
+    //   compileMs    - time inside the handler before renderToReadableStream.
+    //                  -1 sentinel means compile time is not measured.
+    //   renderMs     - -1 sentinel for RSC-only (soft-nav) responses, since
+    //                  rendering is handled asynchronously by the client. The
+    //                  logging middleware computes render time as totalMs - compileMs.
+    if (process.env.NODE_ENV !== "production") {
+      const handlerStart = Math.round(__reqStart);
+      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
+      responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
+    }
     return new Response(rscStream, { status: _middlewareRewriteStatus || 200, headers: responseHeaders });
   }
 
@@ -2129,6 +2215,8 @@ async function _handleRequest(request, __reqCtx, _outerWaitUntilPromises) {
   try {
     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
     htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
+    // Shell render complete; Suspense boundaries stream asynchronously
+    if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
@@ -2158,6 +2246,22 @@ async function _handleRequest(request, __reqCtx, _outerWaitUntilPromises) {
       for (const [key, value] of _middlewareResponseHeaders) {
         response.headers.append(key, value);
       }
+    }
+    // Attach internal timing header so the dev server middleware can log it.
+    // Format: "handlerStart,compileMs,renderMs"
+    //   handlerStart - absolute performance.now() when _handleRequest began,
+    //                  used by the logging middleware to compute true compile
+    //                  time as (handlerStart - middlewareReqStart).
+    //   compileMs    - time inside the handler before renderToReadableStream.
+    //   renderMs     - time from renderToReadableStream to handleSsr completion,
+    //                  or -1 sentinel if not measured (falls back to totalMs - compileMs).
+    if (process.env.NODE_ENV !== "production") {
+      const handlerStart = Math.round(__reqStart);
+      const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
+      const renderMs = __renderEnd !== undefined && __compileEnd !== undefined
+        ? Math.round(__renderEnd - __compileEnd)
+        : -1;
+      response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
     }
     // Apply custom status code from middleware rewrite
     if (_middlewareRewriteStatus) {
@@ -2252,9 +2356,10 @@ export function generateSsrEntry(): string {
   return `
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
-import { setNavigationContext } from "next/navigation";
+import { setNavigationContext, ServerInsertedHTMLContext } from "next/navigation";
 import { runWithNavigationContext as _runWithNavCtx } from "vinext/navigation-state";
 import { safeJsonStringify } from "vinext/html";
+import { createElement as _ssrCE } from "react";
 
 /**
  * Collect all chunks from a ReadableStream into an array of text strings.
@@ -2275,6 +2380,20 @@ async function collectStreamChunks(stream) {
   }
   return chunks;
 }
+
+// React 19 dev-mode workaround (see VinextFlightRoot in handleSsr):
+//
+// In dev, Flight error decoding in react-server-dom-webpack/client.edge
+// can hit resolveErrorDev() which (via React's dev error stack capture)
+// expects a non-null hooks dispatcher.
+//
+// Vinext previously called createFromReadableStream() outside of any React render.
+// When an RSC stream contains an error, dev-mode decoding could crash with:
+//   - "Invalid hook call"
+//   - "Cannot read properties of null (reading 'useContext')"
+//
+// Fix: call createFromReadableStream() lazily inside a React component render.
+// This mirrors Next.js behavior and ensures the dispatcher is set.
 
 /**
  * Create a TransformStream that appends RSC chunks as inline <script> tags
@@ -2390,7 +2509,7 @@ export async function handleSsr(rscStream, navContext, fontData) {
   }
 
   // Clear any stale callbacks from previous requests
-  const { clearServerInsertedHTML, flushServerInsertedHTML } = await import("next/navigation");
+  const { clearServerInsertedHTML, flushServerInsertedHTML, useServerInsertedHTML: _addInsertedHTML } = await import("next/navigation");
   clearServerInsertedHTML();
 
   try {
@@ -2410,7 +2529,27 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // immediately in the HTML shell, then stream in resolved content as RSC
     // chunks arrive. Awaiting here would block until all async server components
     // complete, collapsing the streaming behavior.
-    const root = createFromReadableStream(ssrStream);
+    // Lazily create the Flight root inside render so React's hook dispatcher is set
+    // (avoids React 19 dev-mode resolveErrorDev() crash). VinextFlightRoot returns
+    // a thenable (not a ReactNode), which React 19 consumes via its internal
+    // thenable-as-child suspend/resume behavior. This matches Next.js's approach.
+    let flightRoot;
+    function VinextFlightRoot() {
+      if (!flightRoot) {
+        flightRoot = createFromReadableStream(ssrStream);
+      }
+      return flightRoot;
+    }
+    const root = _ssrCE(VinextFlightRoot);
+
+    // Wrap with ServerInsertedHTMLContext.Provider so libraries that use
+    // useContext(ServerInsertedHTMLContext) (Apollo Client, styled-components,
+    // etc.) get a working callback registration function during SSR.
+    // The provider value is useServerInsertedHTML — same function that direct
+    // callers use — so both paths push to the same ALS-backed callback array.
+    const ssrRoot = ServerInsertedHTMLContext
+      ? _ssrCE(ServerInsertedHTMLContext.Provider, { value: _addInsertedHTML }, root)
+      : root;
 
     // Get the bootstrap script content for the browser entry
     const bootstrapScriptContent =
@@ -2435,7 +2574,7 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // client-side error boundaries from identifying the error type.
     // In production, non-navigation errors also get a digest hash so they
     // can be correlated with server logs without leaking details to clients.
-    const htmlStream = await renderToReadableStream(root, {
+    const htmlStream = await renderToReadableStream(ssrRoot, {
       bootstrapScriptContent,
       onError(error) {
         if (error && typeof error === "object" && "digest" in error) {
@@ -2456,11 +2595,11 @@ export async function handleSsr(rscStream, navContext, fontData) {
     const insertedElements = flushServerInsertedHTML();
 
     // Render the inserted elements to HTML strings
-    const { createElement, Fragment } = await import("react");
+    const { Fragment } = await import("react");
     let insertedHTML = "";
     for (const el of insertedElements) {
       try {
-        insertedHTML += renderToStaticMarkup(createElement(Fragment, null, el));
+        insertedHTML += renderToStaticMarkup(_ssrCE(Fragment, null, el));
       } catch {
         // Skip elements that can't be rendered
       }
@@ -2876,7 +3015,12 @@ async function main() {
   // Checks the prefetch cache (populated by <Link> IntersectionObserver and
   // router.prefetch()) before making a network request. This makes navigation
   // near-instant for prefetched routes.
-  window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(href) {
+  window.__VINEXT_RSC_NAVIGATE__ = async function navigateRsc(href, __redirectDepth) {
+    if ((__redirectDepth || 0) > 10) {
+      console.error("[vinext] Too many RSC redirects — aborting navigation to prevent infinite loop.");
+      window.location.href = href;
+      return;
+    }
     try {
       const url = new URL(href, window.location.origin);
       const rscUrl = toRscUrl(url.pathname + url.search);
@@ -2900,6 +3044,20 @@ async function main() {
           headers: { Accept: "text/x-component" },
           credentials: "include",
         });
+      }
+
+      // Detect if fetch followed a redirect: compare the final response URL to
+      // what we requested. If they differ, the server issued a 3xx — push the
+      // canonical destination URL into history before rendering.
+      const __finalUrl = new URL(navResponse.url);
+      const __requestedUrl = new URL(rscUrl, window.location.origin);
+      if (__finalUrl.pathname !== __requestedUrl.pathname) {
+        // Strip .rsc suffix from the final URL to get the page path for history.
+        // Use replaceState instead of pushState: the caller (navigateImpl) already
+        // pushed the pre-redirect URL; replacing it avoids a stale history entry.
+        const __destPath = __finalUrl.pathname.replace(/\\.rsc$/, "") + __finalUrl.search;
+        window.history.replaceState(null, "", __destPath);
+        return window.__VINEXT_RSC_NAVIGATE__(__destPath, (__redirectDepth || 0) + 1);
       }
 
       // Update useParams() with route params from the server before re-rendering

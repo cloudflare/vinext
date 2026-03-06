@@ -19,11 +19,11 @@ import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
+import { detectPackageManager } from "./utils/project.js";
 import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
-import { detectPackageManager as _detectPackageManager } from "./utils/project.js";
 
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
@@ -226,7 +226,7 @@ async function buildApp() {
   if (isApp) {
     const reactUpgrade = getReactUpgradeDeps(process.cwd());
     if (reactUpgrade.length > 0) {
-      const installCmd = _detectPackageManager(process.cwd()).replace(/ -D$/, "");
+      const installCmd = detectPackageManager(process.cwd()).replace(/ -D$/, "");
       const [pm, ...pmArgs] = installCmd.split(" ");
       console.log("  Upgrading React for RSC compatibility...");
       execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: process.cwd(), stdio: "inherit" });
@@ -336,9 +336,9 @@ async function lint() {
     } else {
       console.log(
         "  No linter found. Install eslint or oxlint:\n\n" +
-          "    npm install -D eslint eslint-config-next\n" +
+          "    " + detectPackageManager(process.cwd()) + " eslint eslint-config-next\n" +
           "    # or\n" +
-          "    npm install -D oxlint\n",
+          "    " + detectPackageManager(process.cwd()) + " oxlint\n",
       );
       process.exit(1);
     }

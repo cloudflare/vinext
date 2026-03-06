@@ -36,6 +36,16 @@ export function middleware(request: NextRequest) {
     return NextResponse.next({ request: { headers } });
   }
 
+  // Inject a cookie via middleware request headers. Config has/missing
+  // conditions should see this cookie even though the original request
+  // did not include it.
+  if (url.pathname === "/about" && url.searchParams.has("inject-login")) {
+    const headers = new Headers(request.headers);
+    const existing = headers.get("cookie") ?? "";
+    headers.set("cookie", existing ? existing + "; logged-in=1" : "logged-in=1");
+    return NextResponse.next({ request: { headers } });
+  }
+
   return response;
 }
 

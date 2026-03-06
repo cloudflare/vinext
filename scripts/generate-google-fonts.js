@@ -68,7 +68,9 @@ function writeGeneratedTs(entries) {
   lines.push("// @generated");
   lines.push("import { createFontLoader, type FontLoader } from \"./font-google-base\";");
   for (const { exportName, family } of entries) {
-    lines.push(`export const ${exportName}: FontLoader = createFontLoader(${JSON.stringify(family)});`);
+    lines.push(
+      `export const ${exportName}: FontLoader = /*#__PURE__*/ createFontLoader(${JSON.stringify(family)});`,
+    );
   }
   lines.push("");
   fs.writeFileSync(outPath, lines.join("\n"));

@@ -65,6 +65,53 @@ export function markDynamicUsage(): void {
   _getState().dynamicUsageDetected = true;
 }
 
+// ---------------------------------------------------------------------------
+// Cache scope detection — checks whether we're inside "use cache" or
+// unstable_cache() by reading ALS instances stored on globalThis via Symbols.
+// This avoids circular imports between headers.ts, cache.ts, and cache-runtime.ts.
+// The ALS instances are registered by cache-runtime.ts and cache.ts respectively.
+// ---------------------------------------------------------------------------
+
+/** Symbol used by cache-runtime.ts to store the "use cache" ALS on globalThis */
+const _USE_CACHE_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
+/** Symbol used by cache.ts to store the unstable_cache ALS on globalThis */
+const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
+const _gHeaders = globalThis as unknown as Record<PropertyKey, unknown>;
+
+function _isInsideUseCache(): boolean {
+  const als = _gHeaders[_USE_CACHE_ALS_KEY] as AsyncLocalStorage<unknown> | undefined;
+  return als?.getStore() != null;
+}
+
+function _isInsideUnstableCache(): boolean {
+  const als = _gHeaders[_UNSTABLE_CACHE_ALS_KEY] as AsyncLocalStorage<unknown> | undefined;
+  return als?.getStore() === true;
+}
+
+/**
+ * Throw if the current execution is inside a "use cache" or unstable_cache()
+ * scope. Called by dynamic request APIs (headers, cookies, connection) to
+ * prevent request-specific data from being frozen into cached results.
+ *
+ * @param apiName - The name of the API being called (e.g. "connection()")
+ */
+export function throwIfInsideCacheScope(apiName: string): void {
+  if (_isInsideUseCache()) {
+    throw new Error(
+      `\`${apiName}\` cannot be called inside "use cache". ` +
+        `If you need this data inside a cached function, call \`${apiName}\` ` +
+        "outside and pass the required data as an argument.",
+    );
+  }
+  if (_isInsideUnstableCache()) {
+    throw new Error(
+      `\`${apiName}\` cannot be called inside a function cached with \`unstable_cache()\`. ` +
+        `If you need this data inside a cached function, call \`${apiName}\` ` +
+        "outside and pass the required data as an argument.",
+    );
+  }
+}
+
 /**
  * Check and reset the dynamic usage flag.
  * Called by the server after rendering to decide on caching.
@@ -208,6 +255,8 @@ export function headersContextFromRequest(request: Request): HeadersContext {
  * the context is already available).
  */
 export async function headers(): Promise<Headers> {
+  throwIfInsideCacheScope("headers()");
+
   const state = _getState();
   if (!state.headersContext) {
     throw new Error(
@@ -224,6 +273,8 @@ export async function headers(): Promise<Headers> {
  * Returns a ReadonlyRequestCookies-like object.
  */
 export async function cookies(): Promise<RequestCookies> {
+  throwIfInsideCacheScope("cookies()");
+
   const state = _getState();
   if (!state.headersContext) {
     throw new Error(
@@ -298,6 +349,8 @@ interface DraftModeResult {
  * - `disable()`: clears the bypass cookie
  */
 export async function draftMode(): Promise<DraftModeResult> {
+  throwIfInsideCacheScope("draftMode()");
+
   const state = _getState();
   const secret = getDraftSecret();
   const isEnabled = state.headersContext

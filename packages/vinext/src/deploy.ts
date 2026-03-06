@@ -160,6 +160,7 @@ export function detectProject(root: string): ProjectInfo {
         // Sanitize: Workers names must be lowercase alphanumeric + hyphens
         projectName = pkg.name
           .replace(/^@[^/]+\//, "") // strip npm scope
+          .toLowerCase()            // lowercase BEFORE stripping invalid chars
           .replace(/[^a-z0-9-]/g, "-")
           .replace(/-+/g, "-")
           .replace(/^-|-$/g, "");
@@ -392,6 +393,7 @@ export function generateAppRouterWorkerEntry(): string {
  * directly in wrangler.jsonc: "main": "vinext/server/app-router-entry"
  */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
+import type { ImageConfig } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 
 interface Env {
@@ -404,6 +406,12 @@ interface Env {
     };
   };
 }
+
+// Image security config. SVG sources with .svg extension auto-skip the
+// optimization endpoint on the client side (served directly, no proxy).
+// To route SVGs through the optimizer (with security headers), set
+// dangerouslyAllowSVG: true in next.config.js and uncomment below:
+// const imageConfig: ImageConfig = { dangerouslyAllowSVG: true };
 
 export default {
   async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
@@ -437,6 +445,7 @@ export function generatePagesRouterWorkerEntry(): string {
  * Edit freely or delete to regenerate on next deploy.
  */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
+import type { ImageConfig } from "vinext/server/image-optimization";
 import {
   matchRedirect,
   matchRewrite,
@@ -444,6 +453,7 @@ import {
   requestContextFromRequest,
   isExternalUrl,
   proxyExternalRequest,
+  sanitizeDestination,
 } from "vinext/config/config-matchers";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -466,6 +476,11 @@ const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
 const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
 const configHeaders = vinextConfig?.headers ?? [];
+const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
+  dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
+  contentDispositionType: vinextConfig.images.contentDispositionType,
+  contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
+} : undefined;
 
 export default {
   async fetch(request: Request, env: Env, ctx: any): Promise<Response> {
@@ -498,7 +513,7 @@ export default {
             const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
             return result.response();
           },
-        }, allowedWidths);
+        }, allowedWidths, imageConfig);
       }
 
       // ── 2. Trailing slash normalization ────────────────────────────
@@ -528,8 +543,9 @@ export default {
       }
 
       // Build request context for has/missing condition matching.
-      // Created before middleware runs, matching prod-server ordering.
-      const reqCtx = requestContextFromRequest(request);
+      // This is rebuilt after middleware runs (see below) so that
+      // config rules see middleware-modified cookies and headers.
+      let reqCtx = requestContextFromRequest(request);
 
       // ── 3. Run middleware ──────────────────────────────────────────
       let resolvedUrl = urlWithQuery;
@@ -601,6 +617,12 @@ export default {
         });
       }
 
+      // Rebuild request context now that middleware may have modified
+      // headers (e.g. x-middleware-request-cookie copied to cookie).
+      // Without this, has/missing conditions in config redirects,
+      // rewrites, and headers would evaluate against stale values.
+      reqCtx = requestContextFromRequest(request);
+
       let resolvedPathname = resolvedUrl.split("?")[0];
 
       // ── 4. Apply custom headers from next.config.js ───────────────
@@ -615,9 +637,11 @@ export default {
       if (configRedirects.length) {
         const redirect = matchRedirect(resolvedPathname, configRedirects, reqCtx);
         if (redirect) {
-          const dest = basePath && !redirect.destination.startsWith(basePath)
-            ? basePath + redirect.destination
-            : redirect.destination;
+          const dest = sanitizeDestination(
+            basePath && !redirect.destination.startsWith(basePath)
+              ? basePath + redirect.destination
+              : redirect.destination,
+          );
           return new Response(null, {
             status: redirect.permanent ? 308 : 307,
             headers: { Location: dest },

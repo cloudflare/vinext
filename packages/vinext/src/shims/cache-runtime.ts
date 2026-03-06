@@ -44,7 +44,13 @@ export interface CacheContext {
   variant: string;
 }
 
-export const cacheContextStorage = new AsyncLocalStorage<CacheContext>();
+// Store on globalThis via Symbol so headers.ts can detect "use cache" scope
+// without a direct import (avoiding circular dependencies).
+const _CONTEXT_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
+const _gCacheRuntime = globalThis as unknown as Record<PropertyKey, unknown>;
+export const cacheContextStorage = (
+  _gCacheRuntime[_CONTEXT_ALS_KEY] ??= new AsyncLocalStorage<CacheContext>()
+) as AsyncLocalStorage<CacheContext>;
 
 // Register the context accessor so cacheLife()/cacheTag() in cache.ts can
 // access the context without a circular import.

@@ -94,7 +94,7 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
       - name: Build vinext plugin
         run: pnpm run build
@@ -126,6 +126,7 @@ jobs:
   comment:
     name: Comment Preview URLs
     needs: [check, deploy]
+    if: always() && needs.check.result == 'success' && needs.deploy.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write

@@ -75,28 +75,82 @@ export function renameCJSConfigs(root: string): Array<[string, string]> {
 
 // ─── Package Manager Detection ───────────────────────────────────────────────
 
-/**
- * Detect which package manager is used by looking at lock files.
- * Returns the install command string (e.g. "pnpm add -D").
- */
-export function detectPackageManager(root: string): string {
-  if (fs.existsSync(path.join(root, "pnpm-lock.yaml"))) return "pnpm add -D";
-  if (fs.existsSync(path.join(root, "yarn.lock"))) return "yarn add -D";
-  if (fs.existsSync(path.join(root, "bun.lock"))) return "bun add -D";
-  if (fs.existsSync(path.join(root, "bun.lockb"))) return "bun add -D";
-  return "npm install -D";
+type PackageManagerName = "pnpm" | "yarn" | "bun" | "npm";
+
+function parsePackageManagerName(value: string | undefined): PackageManagerName | null {
+  if (!value) return null;
+
+  // packageManager: "pnpm@10.0.0"
+  const fromPkg = value.trim().toLowerCase().split("@")[0];
+  if (fromPkg === "pnpm" || fromPkg === "yarn" || fromPkg === "bun" || fromPkg === "npm") {
+    return fromPkg;
+  }
+
+  // npm_config_user_agent: "pnpm/10.0.0 npm/? node/v22..."
+  const fromUA = value.trim().toLowerCase().split(" ")[0]?.split("/")[0];
+  if (fromUA === "pnpm" || fromUA === "yarn" || fromUA === "bun" || fromUA === "npm") {
+    return fromUA;
+  }
+
+  return null;
+}
+
+function detectPackageManagerFromPackageJson(root: string): PackageManagerName | null {
+  const pkgPath = path.join(root, "package.json");
+  if (!fs.existsSync(pkgPath)) return null;
+
+  try {
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { packageManager?: string };
+    return parsePackageManagerName(pkg.packageManager);
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Detect which package manager name is used (without install args).
- * Returns "pnpm", "yarn", "bun", or "npm".
+ * Detect which package manager name is used.
+ * Priority:
+ * 1) lock files in the project
+ * 2) package.json#packageManager
+ * 3) invoking CLI user agent (npm_config_user_agent)
+ * 4) npm fallback
  */
-export function detectPackageManagerName(root: string): string {
+export function detectPackageManagerName(
+  root: string,
+  env: Record<string, string | undefined> = process.env,
+): PackageManagerName {
   if (fs.existsSync(path.join(root, "pnpm-lock.yaml"))) return "pnpm";
   if (fs.existsSync(path.join(root, "yarn.lock"))) return "yarn";
-  if (fs.existsSync(path.join(root, "bun.lock"))) return "bun";
-  if (fs.existsSync(path.join(root, "bun.lockb"))) return "bun";
+  if (
+    fs.existsSync(path.join(root, "bun.lock")) ||
+    fs.existsSync(path.join(root, "bun.lockb"))
+  ) {
+    return "bun";
+  }
+  if (
+    fs.existsSync(path.join(root, "package-lock.json")) ||
+    fs.existsSync(path.join(root, "npm-shrinkwrap.json"))
+  ) {
+    return "npm";
+  }
+
+  const fromPkg = detectPackageManagerFromPackageJson(root);
+  if (fromPkg) return fromPkg;
+
+  const fromUA = parsePackageManagerName(env.npm_config_user_agent);
+  if (fromUA) return fromUA;
+
   return "npm";
+}
+
+/**
+ * Detect which package manager install command to use.
+ * Returns the dev-install command string (e.g. "pnpm add -D").
+ */
+export function detectPackageManager(root: string): string {
+  const pm = detectPackageManagerName(root);
+  if (pm === "npm") return "npm install -D";
+  return `${pm} add -D`;
 }
 
 // ─── Vite Config Detection ───────────────────────────────────────────────────

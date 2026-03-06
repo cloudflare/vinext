@@ -9,10 +9,11 @@
  * 4. Check Content-Type, status codes, and asset references
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createServer as createViteServer, type ViteDevServer } from "vite";
+import { type ViteDevServer } from "vite";
 import { createServer, type Server } from "node:http";
 import fs from "node:fs";
 import path from "node:path";
+import { startFixtureServer } from "./helpers.js";
 
 const PAGES_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 const APP_FIXTURE = path.resolve(import.meta.dirname, "./fixtures/app-basic");
@@ -70,23 +71,6 @@ function createStaticServer(rootDir: string): Promise<{ server: Server; baseUrl:
       resolve({ server, baseUrl: `http://127.0.0.1:${port}` });
     });
   });
-}
-
-/** Start a Vite dev server for a fixture directory. */
-async function startFixtureServer(
-  fixtureDir: string,
-  _opts?: { appRouter?: boolean },
-): Promise<{ server: ViteDevServer; baseUrl: string }> {
-  const server = await createViteServer({
-    root: fixtureDir,
-    configFile: path.join(fixtureDir, "vite.config.ts"),
-    server: { port: 0, strictPort: false },
-    logLevel: "silent",
-  });
-  await server.listen();
-  const addr = server.httpServer?.address();
-  const port = typeof addr === "object" && addr ? addr.port : 4321;
-  return { server, baseUrl: `http://localhost:${port}` };
 }
 
 // ─── Pages Router Static Export E2E ─────────────────────────────────────────
@@ -222,7 +206,9 @@ describe("Static export — App Router (served via HTTP)", () => {
   const exportDir = path.resolve(APP_FIXTURE, "out-e2e");
 
   beforeAll(async () => {
-    // 1. Start Vite dev server for the fixture
+    // 1. Start Vite dev server for the fixture (use shared helper which
+    //    passes configFile: false + explicit plugins — avoids RSC timing
+    //    issues when loading via configFile in non-browser test clients)
     const vite = await startFixtureServer(APP_FIXTURE, { appRouter: true });
     viteServer = vite.server;
     viteBaseUrl = vite.baseUrl;

@@ -21,6 +21,27 @@ import * as React from "react";
 
 let _LayoutSegmentCtx: React.Context<number> | null = null;
 
+// ─── ServerInsertedHTML context ────────────────────────────────────────────────
+// Used by CSS-in-JS libraries (Apollo Client, styled-components, emotion) to
+// register HTML injection callbacks during SSR via useContext().
+// The SSR entry wraps the rendered tree with a Provider whose value is a
+// callback registration function (useServerInsertedHTML).
+//
+// In Next.js, ServerInsertedHTMLContext holds a function:
+//   (callback: () => React.ReactNode) => void
+// Libraries call useContext(ServerInsertedHTMLContext) to get this function,
+// then call it to register callbacks that inject HTML during SSR.
+//
+// Created eagerly at module load time. In the RSC environment (react-server
+// condition), createContext isn't available so this will be null.
+
+export const ServerInsertedHTMLContext: React.Context<
+  ((callback: () => unknown) => void) | null
+> | null =
+  typeof React.createContext === "function"
+    ? React.createContext<((callback: () => unknown) => void) | null>(null)
+    : null;
+
 /**
  * Get or create the layout segment context.
  * Returns null in the RSC environment (createContext unavailable).

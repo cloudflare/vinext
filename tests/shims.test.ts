@@ -2594,6 +2594,58 @@ describe("NextRequest API", () => {
     expect(cloned.pathname).toBe("/other");
   });
 
+  it("nextUrl supports all URL setters (port, host, hostname, protocol, href)", async () => {
+    const { NextURL } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const url = new NextURL("http://example.com:8080/path?q=1#hash");
+
+    // port setter
+    url.port = "9090";
+    expect(url.port).toBe("9090");
+
+    // hostname setter
+    url.hostname = "other.com";
+    expect(url.hostname).toBe("other.com");
+
+    // host setter (hostname + port)
+    url.host = "third.com:3000";
+    expect(url.host).toBe("third.com:3000");
+    expect(url.hostname).toBe("third.com");
+    expect(url.port).toBe("3000");
+
+    // protocol setter
+    url.protocol = "https:";
+    expect(url.protocol).toBe("https:");
+
+    // href setter
+    url.href = "http://new.com/new-path";
+    expect(url.href).toBe("http://new.com/new-path");
+    expect(url.hostname).toBe("new.com");
+    expect(url.pathname).toBe("/new-path");
+  });
+
+  it("nextUrl.clone() setters work for next-intl compatibility", async () => {
+    // next-intl's getAlternateLinksHeaderValue does: cloned.port = ""; cloned.host = h
+    // This test ensures those setter operations work without throwing.
+    const { NextRequest } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+    const req = new NextRequest("http://example.com:8080/en");
+    const cloned = req.nextUrl.clone();
+
+    // Should not throw — next-intl strips port when x-forwarded-host is present
+    cloned.port = "";
+    expect(cloned.port).toBe("");
+
+    // Should not throw — next-intl sets host from x-forwarded-host header
+    cloned.host = "example.com";
+    expect(cloned.hostname).toBe("example.com");
+
+    // Original should be unaffected
+    expect(req.nextUrl.port).toBe("8080");
+  });
+
   it("ip reads x-forwarded-for header", async () => {
     const { NextRequest } = await import(
       "../packages/vinext/src/shims/server.js"
@@ -4777,6 +4829,36 @@ describe("basePath config validation", () => {
   });
 });
 
+describe("pageExtensions config", () => {
+  it("resolveNextConfig defaults pageExtensions to Next.js defaults", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({});
+    expect(config.pageExtensions).toEqual(["tsx", "ts", "jsx", "js"]);
+  });
+
+  it("resolveNextConfig reads pageExtensions from config", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({
+      pageExtensions: ["js", "jsx", "ts", "tsx", "mdx"],
+    });
+    expect(config.pageExtensions).toEqual(["js", "jsx", "ts", "tsx", "mdx"]);
+  });
+
+  it("resolveNextConfig strips leading dots and whitespace from pageExtensions entries", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({
+      pageExtensions: [".tsx", " ts ", "tsx", "", ".mdx"],
+    });
+    expect(config.pageExtensions).toEqual(["tsx", "ts", "tsx", "mdx"]);
+  });
+});
+
 describe("cacheComponents config (Next.js 16)", () => {
   it("resolveNextConfig defaults cacheComponents to false", async () => {
     const { resolveNextConfig } = await import(
@@ -5210,7 +5292,100 @@ describe("next/amp shim", () => {
   });
 });
 
+describe("next/compat/router shim", () => {
+  it("exports useRouter as a function", async () => {
+    const mod = await import(
+      "../packages/vinext/src/shims/compat-router.js"
+    );
+    // useRouter should be a named export, not a default export (unlike next/router).
+    // Returns null in App Router context instead of throwing.
+    expect(typeof mod.useRouter).toBe("function");
+    expect((mod as Record<string, unknown>).default).toBeUndefined();
+  });
+
+  it("useRouter returns null when no RouterContext.Provider wraps the tree", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { useRouter } = await import(
+      "../packages/vinext/src/shims/compat-router.js"
+    );
+
+    let captured: unknown = "NOT_SET";
+    function Probe() {
+      captured = useRouter();
+      return React.createElement("div", null, "probe");
+    }
+
+    renderToStaticMarkup(React.createElement(Probe));
+    expect(captured).toBeNull();
+  });
+
+  it("useRouter returns the router when wrapWithRouterContext wraps the tree", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { useRouter: useCompatRouter } = await import(
+      "../packages/vinext/src/shims/compat-router.js"
+    );
+    const { wrapWithRouterContext } = await import(
+      "../packages/vinext/src/shims/router.js"
+    );
+
+    let captured: unknown = "NOT_SET";
+    function Probe() {
+      captured = useCompatRouter();
+      return React.createElement("div", null, "probe");
+    }
+
+    const element = wrapWithRouterContext(React.createElement(Probe));
+    renderToStaticMarkup(element);
+    expect(captured).not.toBeNull();
+    expect(typeof (captured as any).pathname).toBe("string");
+    expect(typeof (captured as any).push).toBe("function");
+    expect(typeof (captured as any).replace).toBe("function");
+    expect(typeof (captured as any).back).toBe("function");
+    expect(typeof (captured as any).reload).toBe("function");
+  });
+
+  it("useRouter returns router reflecting SSR context when set", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const { useRouter: useCompatRouter } = await import(
+      "../packages/vinext/src/shims/compat-router.js"
+    );
+    const { wrapWithRouterContext, setSSRContext } = await import(
+      "../packages/vinext/src/shims/router.js"
+    );
+
+    setSSRContext({
+      pathname: "/posts/42",
+      query: { id: "42" },
+      asPath: "/posts/42?tab=comments",
+    });
+
+    let captured: unknown = "NOT_SET";
+    function Probe() {
+      captured = useCompatRouter();
+      return React.createElement("div", null, "probe");
+    }
+
+    const element = wrapWithRouterContext(React.createElement(Probe));
+    renderToStaticMarkup(element);
+
+    setSSRContext(null);
+
+    expect(captured).not.toBeNull();
+    expect((captured as any).pathname).toBe("/posts/42");
+    expect((captured as any).asPath).toBe("/posts/42?tab=comments");
+    expect((captured as any).query.id).toBe("42");
+  });
+});
+
 describe("Pages Router router helpers", () => {
+  it("exports wrapWithRouterContext function", async () => {
+    const mod = await import("../packages/vinext/src/shims/router.js");
+    expect(typeof mod.wrapWithRouterContext).toBe("function");
+  });
+
   describe("isExternalUrl", () => {
     it("detects https:// as external", () => {
       expect(isExternalUrl("https://example.com")).toBe(true);
@@ -5489,6 +5664,30 @@ describe("next/image enhancements", () => {
     // unoptimized=true should serve the raw src, not the optimization endpoint
     expect(result.props.src).toBe("/photo.jpg");
     expect(result.props.src).not.toContain("/_vinext/image");
+  });
+
+  it("SVG src auto-skips optimization endpoint (default behavior)", async () => {
+    const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+    const result = getImageProps({
+      src: "/logo.svg",
+      alt: "SVG logo",
+      width: 200,
+      height: 200,
+    });
+    // By default (dangerouslyAllowSVG not set), .svg sources bypass the optimizer
+    expect(result.props.src).toBe("/logo.svg");
+    expect(result.props.src).not.toContain("/_vinext/image");
+  });
+
+  it("non-SVG src still uses optimization endpoint", async () => {
+    const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
+    const result = getImageProps({
+      src: "/photo.png",
+      alt: "PNG photo",
+      width: 256,
+      height: 256,
+    });
+    expect(result.props.src).toContain("/_vinext/image");
   });
 });
 
@@ -6027,6 +6226,23 @@ describe("isSafeImageContentType", () => {
     expect(isSafeImageContentType("Image/JPEG")).toBe(true);
     expect(isSafeImageContentType("IMAGE/SVG+XML")).toBe(false);
   });
+
+  it("allows SVG when dangerouslyAllowSVG is true", async () => {
+    const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(isSafeImageContentType("image/svg+xml", true)).toBe(true);
+  });
+
+  it("allows SVG with parameters when dangerouslyAllowSVG is true", async () => {
+    const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(isSafeImageContentType("image/svg+xml; charset=utf-8", true)).toBe(true);
+  });
+
+  it("still rejects non-image types when dangerouslyAllowSVG is true", async () => {
+    const { isSafeImageContentType } = await import("../packages/vinext/src/server/image-optimization.js");
+    expect(isSafeImageContentType("text/html", true)).toBe(false);
+    expect(isSafeImageContentType("application/javascript", true)).toBe(false);
+    expect(isSafeImageContentType(null, true)).toBe(false);
+  });
 });
 
 describe("handleImageOptimization", () => {
@@ -6223,6 +6439,114 @@ describe("handleImageOptimization", () => {
     expect(response.status).toBe(200);
     // Should override to the negotiated format, not pass through text/html
     expect(response.headers.get("Content-Type")).toBe("image/webp");
+  });
+
+  it("allows SVG passthrough with dangerouslyAllowSVG: true", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const handlers = {
+      fetchAsset: async () => new Response('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>', {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: true });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>');
+    expect(response.headers.get("Content-Type")).toBe("image/svg+xml");
+  });
+
+  it("still blocks SVG when dangerouslyAllowSVG is false", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const handlers = {
+      fetchAsset: async () => new Response("<svg></svg>", {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: false });
+    expect(response.status).toBe(400);
+  });
+
+  it("SVG passthrough skips transformImage", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    let transformCalled = false;
+    const handlers = {
+      fetchAsset: async () => new Response("<svg></svg>", {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+      transformImage: async () => {
+        transformCalled = true;
+        return new Response("transformed");
+      },
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: true });
+    expect(response.status).toBe(200);
+    expect(transformCalled).toBe(false);
+    expect(await response.text()).toBe("<svg></svg>");
+  });
+
+  it("applies security headers on SVG passthrough", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Flogo.svg&w=100&q=75");
+    const handlers = {
+      fetchAsset: async () => new Response("<svg></svg>", {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { dangerouslyAllowSVG: true });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Security-Policy")).toBe("script-src 'none'; frame-src 'none'; sandbox;");
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(response.headers.get("Content-Disposition")).toBe("inline");
+  });
+
+  it("applies custom contentDispositionType", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, { contentDispositionType: "attachment" });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Disposition")).toBe("attachment");
+  });
+
+  it("applies custom contentSecurityPolicy", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      }),
+    };
+    const customCSP = "default-src 'self'; script-src 'none';";
+    const response = await handleImageOptimization(request, handlers, undefined, { contentSecurityPolicy: customCSP });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Security-Policy")).toBe(customCSP);
+  });
+
+  it("default behavior unchanged when no imageConfig provided", async () => {
+    const { handleImageOptimization } = await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () => new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      }),
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Security-Policy")).toBe("script-src 'none'; frame-src 'none'; sandbox;");
+    expect(response.headers.get("Content-Disposition")).toBe("inline");
   });
 });
 
@@ -6429,6 +6753,45 @@ describe("next/script SSR rendering", () => {
     expect(html).toContain("<script");
     expect(html).toContain('id="inline-script"');
     expect(html).toContain("console.log('hello')");
+  });
+
+  it("beforeInteractive escapes </script> in dangerouslySetInnerHTML", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        strategy: "beforeInteractive",
+        id: "escape-test",
+        dangerouslySetInnerHTML: {
+          __html: 'var x = "</script><img src=x onerror=alert(1)>";',
+        },
+      }),
+    );
+    // The raw </script> must NOT appear — it would break the tag boundary
+    expect(html).not.toContain("</script><img");
+    // The escaped form should be present instead
+    expect(html).toContain("<\\/script>");
+  });
+
+  it("beforeInteractive escapes </script> case-insensitively", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        strategy: "beforeInteractive",
+        id: "case-test",
+        dangerouslySetInnerHTML: {
+          __html: 'var x = "</SCRIPT><img src=x onerror=alert(1)>";',
+        },
+      }),
+    );
+    // Mixed-case </SCRIPT> must also be escaped
+    expect(html).not.toContain("</SCRIPT>");
+    expect(html).toContain("<\\/SCRIPT>");
   });
 
   it("exports handleClientScriptLoad and initScriptLoader", async () => {
@@ -7048,6 +7411,51 @@ describe("next/head SSR security", () => {
     expect(html).toContain("body { color: red; }");
   });
 
+  it("escapes </script> in dangerouslySetInnerHTML for script tags", async () => {
+    const React = await import("react");
+    const html = await collectHeadHTML([
+      React.createElement("script", {
+        dangerouslySetInnerHTML: {
+          __html: 'var x = "</script><img src=x onerror=alert(1)>";',
+        },
+      }),
+    ]);
+
+    // The raw </script> must NOT appear in the output
+    expect(html).not.toContain("</script><img");
+    // The escaped form preserves the JS string content
+    expect(html).toContain("<\\/script>");
+  });
+
+  it("escapes </style> in dangerouslySetInnerHTML for style tags", async () => {
+    const React = await import("react");
+    const html = await collectHeadHTML([
+      React.createElement("style", {
+        dangerouslySetInnerHTML: {
+          __html: "body::after { content: '</style><img src=x onerror=alert(1)>'; }",
+        },
+      }),
+    ]);
+
+    // The raw </style> must NOT appear
+    expect(html).not.toContain("</style><img");
+    expect(html).toContain("<\\/style>");
+  });
+
+  it("escapes case-insensitive closing tags in dangerouslySetInnerHTML", async () => {
+    const React = await import("react");
+    const html = await collectHeadHTML([
+      React.createElement("script", {
+        dangerouslySetInnerHTML: {
+          __html: 'var x = "</SCRIPT><img src=x onerror=alert(1)>";',
+        },
+      }),
+    ]);
+
+    expect(html).not.toContain("</SCRIPT>");
+    expect(html).toContain("<\\/SCRIPT>");
+  });
+
   it("attributes are still properly escaped", async () => {
     const React = await import("react");
     const html = await collectHeadHTML([
@@ -7114,6 +7522,54 @@ describe("next/head SSR security", () => {
   });
 });
 
+describe("escapeInlineContent", () => {
+  it("escapes </script> within script content", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    const input = 'var x = "</script><img src=x onerror=alert(1)>";';
+    const result = escapeInlineContent(input, "script");
+    expect(result).toBe('var x = "<\\/script><img src=x onerror=alert(1)>";');
+    expect(result).not.toContain("</script>");
+  });
+
+  it("escapes </style> within style content", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    const input = "body::after { content: '</style><div>'; }";
+    const result = escapeInlineContent(input, "style");
+    expect(result).toBe("body::after { content: '<\\/style><div>'; }");
+    expect(result).not.toContain("</style>");
+  });
+
+  it("handles case-insensitive closing tags", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    expect(escapeInlineContent("</Script>", "script")).toBe("<\\/Script>");
+    expect(escapeInlineContent("</SCRIPT>", "script")).toBe("<\\/SCRIPT>");
+    expect(escapeInlineContent("</sCrIpT>", "script")).toBe("<\\/sCrIpT>");
+  });
+
+  it("handles multiple occurrences", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    const input = '</script></script></SCRIPT>';
+    const result = escapeInlineContent(input, "script");
+    expect(result).toBe('<\\/script><\\/script><\\/SCRIPT>');
+    expect(result).not.toContain("</script>");
+    expect(result).not.toContain("</SCRIPT>");
+  });
+
+  it("does not escape unrelated closing tags", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    // Escaping for "script" should not touch </style>
+    const input = '</style></div>';
+    const result = escapeInlineContent(input, "script");
+    expect(result).toBe('</style></div>');
+  });
+
+  it("passes through content with no closing tags", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    const input = "console.log('hello world');";
+    expect(escapeInlineContent(input, "script")).toBe(input);
+  });
+});
+
 describe("isValidModulePath", () => {
   it("accepts valid absolute paths", () => {
     expect(isValidModulePath("/src/pages/index.tsx")).toBe(true);
@@ -7172,5 +7628,293 @@ describe("isValidModulePath", () => {
 
   it("rejects ftp:// protocol", () => {
     expect(isValidModulePath("ftp://evil.com/script.js")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cache scope guards — headers()/cookies()/connection() must throw inside
+// "use cache" and unstable_cache() scopes (matches Next.js behavior).
+// Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache/use-cache.test.ts
+
+describe("cache scope guards for dynamic APIs", () => {
+  it('headers() throws inside "use cache" scope', async () => {
+    const { cacheContextStorage } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { headers, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    // Set up a valid headers context so the "no context" error doesn't fire
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    // Run inside a "use cache" ALS scope
+    await cacheContextStorage.run(
+      { tags: [], lifeConfigs: [], variant: "default" },
+      async () => {
+        await expect(headers()).rejects.toThrow(
+          /cannot be called inside "use cache"/,
+        );
+      },
+    );
+
+    setHeadersContext(null);
+  });
+
+  it('cookies() throws inside "use cache" scope', async () => {
+    const { cacheContextStorage } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { cookies, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    await cacheContextStorage.run(
+      { tags: [], lifeConfigs: [], variant: "default" },
+      async () => {
+        await expect(cookies()).rejects.toThrow(
+          /cannot be called inside "use cache"/,
+        );
+      },
+    );
+
+    setHeadersContext(null);
+  });
+
+  it('connection() throws inside "use cache" scope', async () => {
+    const { cacheContextStorage } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { connection } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+
+    await cacheContextStorage.run(
+      { tags: [], lifeConfigs: [], variant: "default" },
+      async () => {
+        await expect(connection()).rejects.toThrow(
+          /cannot be called inside "use cache"/,
+        );
+      },
+    );
+  });
+
+  it("headers() throws inside unstable_cache() scope", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { headers, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    const cached = unstable_cache(
+      async () => {
+        // This should throw because we're inside an unstable_cache scope
+        const h = await headers();
+        return h.get("x-test");
+      },
+      ["test-headers-in-cache"],
+    );
+
+    await expect(cached()).rejects.toThrow(/unstable_cache/);
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("cookies() throws inside unstable_cache() scope", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { cookies, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "abc"]]),
+    });
+
+    const cached = unstable_cache(
+      async () => {
+        const c = await cookies();
+        return c.get("session");
+      },
+      ["test-cookies-in-cache"],
+    );
+
+    await expect(cached()).rejects.toThrow(/unstable_cache/);
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("connection() throws inside unstable_cache() scope", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { connection } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = unstable_cache(
+      async () => {
+        await connection();
+      },
+      ["test-connection-in-cache"],
+    );
+
+    await expect(cached()).rejects.toThrow(/unstable_cache/);
+
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("headers() works normally outside cache scopes", async () => {
+    const { headers, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setHeadersContext({
+      headers: new Headers({ "x-test": "works" }),
+      cookies: new Map(),
+    });
+
+    // Should not throw outside any cache scope
+    const h = await headers();
+    expect(h.get("x-test")).toBe("works");
+
+    setHeadersContext(null);
+  });
+
+  it("cookies() works normally outside cache scopes", async () => {
+    const { cookies, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["token", "abc"]]),
+    });
+
+    // Should not throw outside any cache scope
+    const c = await cookies();
+    expect(c.get("token")).toEqual({ name: "token", value: "abc" });
+
+    setHeadersContext(null);
+  });
+
+  it('draftMode() throws inside "use cache" scope', async () => {
+    const { cacheContextStorage } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { draftMode, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    await cacheContextStorage.run(
+      { tags: [], lifeConfigs: [], variant: "default" },
+      async () => {
+        await expect(draftMode()).rejects.toThrow(
+          /cannot be called inside "use cache"/,
+        );
+      },
+    );
+
+    setHeadersContext(null);
+  });
+
+  it("draftMode() throws inside unstable_cache() scope", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { draftMode, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    const cached = unstable_cache(
+      async () => {
+        await draftMode();
+      },
+      ["test-draftmode-in-cache"],
+    );
+
+    await expect(cached()).rejects.toThrow(/unstable_cache/);
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("headers() throws inside nested scopes (unstable_cache inside \"use cache\")", async () => {
+    const { cacheContextStorage } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { headers, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    // Nest unstable_cache inside a "use cache" scope: the outermost
+    // scope ("use cache") should be detected first.
+    await cacheContextStorage.run(
+      { tags: [], lifeConfigs: [], variant: "default" },
+      async () => {
+        const cached = unstable_cache(
+          async () => {
+            const h = await headers();
+            return h.get("x-test");
+          },
+          ["test-nested-scopes"],
+        );
+
+        // Either scope's guard triggers (the "use cache" check runs first)
+        await expect(cached()).rejects.toThrow(
+          /cannot be called inside/,
+        );
+      },
+    );
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("existing unstable_cache tests still pass (cache miss executes callback)", async () => {
+    // Verify that the ALS wrapping in unstable_cache doesn't break normal caching
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = unstable_cache(
+      async (x: number) => {
+        callCount++;
+        return x * 2;
+      },
+      ["regression-test"],
+    );
+
+    const r1 = await cached(5);
+    expect(r1).toBe(10);
+    expect(callCount).toBe(1);
+
+    const r2 = await cached(5);
+    expect(r2).toBe(10);
+    expect(callCount).toBe(1); // Cached, not called again
+
+    setCacheHandler(new MemoryCacheHandler());
   });
 });

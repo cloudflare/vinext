@@ -8,6 +8,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import { PHASE_DEVELOPMENT_SERVER } from "../shims/constants.js";
+import { normalizePageExtensions } from "../routing/file-matcher.js";
 
 export interface HasCondition {
   type: "header" | "cookie" | "query" | "host";
@@ -102,9 +104,17 @@ export interface NextConfig {
     deviceSizes?: number[];
     /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [16, 32, 48, 64, 96, 128, 256, 384] */
     imageSizes?: number[];
+    /** Allow SVG images through the image optimization endpoint. SVG can contain scripts, so only enable if you trust all image sources. */
+    dangerouslyAllowSVG?: boolean;
+    /** Content-Disposition header for image responses. Defaults to "inline". */
+    contentDispositionType?: "inline" | "attachment";
+    /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
+    contentSecurityPolicy?: string;
   };
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
   output?: "export" | "standalone";
+  /** File extensions treated as routable pages/routes (Next.js pageExtensions) */
+  pageExtensions?: string[];
   /**
    * Enable Cache Components (Next.js 16).
    * When true, enables the "use cache" directive for pages, components, and functions.
@@ -127,6 +137,7 @@ export interface ResolvedNextConfig {
   basePath: string;
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
+  pageExtensions: string[];
   cacheComponents: boolean;
   redirects: NextRedirect[];
   rewrites: {
@@ -171,10 +182,10 @@ function isCjsError(e: unknown): boolean {
  * Unwrap the config value from a loaded module, calling it if it's a
  * function-form config (Next.js supports `module.exports = (phase, opts) => config`).
  */
-async function unwrapConfig(mod: any): Promise<NextConfig> {
+async function unwrapConfig(mod: any, phase: string = PHASE_DEVELOPMENT_SERVER): Promise<NextConfig> {
   const config = mod.default ?? mod;
   if (typeof config === "function") {
-    const result = await config("phase-development-server", {
+    const result = await config(phase, {
       defaultConfig: {},
     });
     return result as NextConfig;
@@ -191,7 +202,7 @@ async function unwrapConfig(mod: any): Promise<NextConfig> {
  * back to loading it via `createRequire` so that CJS config files (common in
  * the Next.js ecosystem for plugin wrappers like nextra, @next/mdx, etc.) work.
  */
-export async function loadNextConfig(root: string): Promise<NextConfig | null> {
+export async function loadNextConfig(root: string, phase: string = PHASE_DEVELOPMENT_SERVER): Promise<NextConfig | null> {
   for (const filename of CONFIG_FILES) {
     const configPath = path.join(root, filename);
     if (!fs.existsSync(configPath)) continue;
@@ -200,7 +211,7 @@ export async function loadNextConfig(root: string): Promise<NextConfig | null> {
       // Use dynamic import for ESM/TS config files
       const fileUrl = pathToFileURL(configPath).href;
       const mod = await import(fileUrl);
-      return await unwrapConfig(mod);
+      return await unwrapConfig(mod, phase);
     } catch (e) {
       // If the error indicates a CJS file loaded in ESM context, retry with
       // createRequire which provides a proper CommonJS environment.
@@ -208,7 +219,7 @@ export async function loadNextConfig(root: string): Promise<NextConfig | null> {
         try {
           const require = createRequire(path.join(root, "package.json"));
           const mod = require(configPath);
-          return await unwrapConfig({ default: mod });
+          return await unwrapConfig({ default: mod }, phase);
         } catch (e2) {
           console.warn(
             `[vinext] Failed to load ${filename}: ${(e2 as Error).message}`,
@@ -240,6 +251,7 @@ export async function resolveNextConfig(
       basePath: "",
       trailingSlash: false,
       output: "",
+      pageExtensions: normalizePageExtensions(),
       cacheComponents: false,
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -304,6 +316,8 @@ export async function resolveNextConfig(
     console.warn(`[vinext] Unknown output mode "${output as string}", ignoring`);
   }
 
+  const pageExtensions = normalizePageExtensions(config.pageExtensions);
+
   // Parse i18n config
   let i18n: NextI18nConfig | null = null;
   if (config.i18n) {
@@ -320,6 +334,7 @@ export async function resolveNextConfig(
     basePath: config.basePath ?? "",
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
+    pageExtensions,
     cacheComponents: config.cacheComponents ?? false,
     redirects,
     rewrites,

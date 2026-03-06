@@ -280,19 +280,15 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // where href is a route pattern like "/user/[id]" and as is "/user/1")
   const resolvedHref = as ?? resolveHref(href);
 
-  // Block dangerous URI schemes (javascript:, data:, vbscript:).
-  // Render an inert <a> without href to prevent XSS while preserving
-  // styling and attributes like className, id, aria-*.
-  if (typeof resolvedHref === "string" && isDangerousScheme(resolvedHref)) {
-    if (process.env.NODE_ENV !== "production") {
-      console.warn(`<Link> blocked dangerous href: ${resolvedHref}`);
-    }
-    const { passHref: _p, ...safeProps } = restWithoutLocale;
-    return <a {...safeProps}>{children}</a>;
-  }
+  const isDangerous =
+    typeof resolvedHref === "string" && isDangerousScheme(resolvedHref);
 
-  // Apply locale prefix if specified
-  const localizedHref = applyLocaleToHref(resolvedHref, locale);
+  // Apply locale prefix if specified (safe even for dangerous hrefs since we
+  // won't use the result when isDangerous is true)
+  const localizedHref = applyLocaleToHref(
+    isDangerous ? "/" : resolvedHref,
+    locale,
+  );
   // Full href with basePath for browser URLs and fetches
   const fullHref = withBasePath(localizedHref);
 
@@ -307,7 +303,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // Prefetching: observe the element when it enters the viewport.
   // prefetch={false} disables, prefetch={true} or undefined/null (default) enables.
   const internalRef = useRef<HTMLAnchorElement | null>(null);
-  const shouldPrefetch = prefetchProp !== false;
+  const shouldPrefetch = prefetchProp !== false && !isDangerous;
 
   const setRefs = useCallback(
     (node: HTMLAnchorElement | null) => {
@@ -473,6 +469,17 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   const { passHref: _p, ...anchorProps } = restWithoutLocale;
 
   const linkStatusValue = React.useMemo(() => ({ pending }), [pending]);
+
+  // Block dangerous URI schemes (javascript:, data:, vbscript:).
+  // Render an inert <a> without href to prevent XSS while preserving
+  // styling and attributes like className, id, aria-*.
+  // This check is placed after all hooks to satisfy the Rules of Hooks.
+  if (isDangerous) {
+    if (process.env.NODE_ENV !== "production") {
+      console.warn(`<Link> blocked dangerous href: ${resolvedHref}`);
+    }
+    return <a {...anchorProps}>{children}</a>;
+  }
 
   return (
     <LinkStatusContext.Provider value={linkStatusValue}>

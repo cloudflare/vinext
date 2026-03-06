@@ -33,6 +33,7 @@ async function startFixture(
     cwd: root,
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env },
+    detached: process.platform !== "win32",
   });
 
   // Wait for the server to be ready
@@ -81,8 +82,32 @@ async function startFixture(
 }
 
 function killProcess(proc: ChildProcess | null) {
-  if (proc && !proc.killed) {
-    proc.kill("SIGTERM");
+  if (!proc || proc.killed) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      return;
+    }
+    return;
+  }
+
+  const pid = proc.pid;
+  if (pid == null) {
+    return;
+  }
+
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -225,6 +250,10 @@ describe("better-auth", () => {
     return { res, cookieHeader: toCookieHeader(res.headers.getSetCookie()) };
   }
 
+  function nextEmail(prefix: string) {
+    return `${prefix}-${Math.random().toString(36).slice(2, 10)}@example.com`;
+  }
+
   beforeAll(async () => {
     const fixture = await startFixture("better-auth", 4403);
     proc = fixture.process;
@@ -257,28 +286,26 @@ describe("better-auth", () => {
   });
 
   it("sign-up flow creates user and returns session", async () => {
-    const { res } = await signUpUser(
-      "signup-test@example.com",
-      "password123456",
-      "Signup Test",
-    );
+    const email = nextEmail("signup-test");
+    const { res } = await signUpUser(email, "password123456", "Signup Test");
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.user).toBeDefined();
-    expect(data.user.email).toBe("signup-test@example.com");
+    expect(data.user.email).toBe(email);
     expect(data.user.name).toBe("Signup Test");
   });
 
   it("session is accessible after sign-in with cookie", async () => {
     // Create a user first (self-contained — no dependency on other tests)
-    await signUpUser("signin-test@example.com", "password123456", "Signin Test");
+    const email = nextEmail("signin-test");
+    await signUpUser(email, "password123456", "Signin Test");
 
     // Sign in to get a session cookie
     const signinRes = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        email: "signin-test@example.com",
+        email,
         password: "password123456",
       }),
       signal: AbortSignal.timeout(10000),
@@ -294,18 +321,19 @@ describe("better-auth", () => {
     });
     expect(sessionRes.status).toBe(200);
     const session = await sessionRes.json();
-    expect(session.user.email).toBe("signin-test@example.com");
+    expect(session.user.email).toBe(email);
   });
 
   it("server component can access session via headers()", async () => {
     // Create and sign in a user (self-contained)
-    await signUpUser("protected-test@example.com", "password123456", "Protected Test");
+    const email = nextEmail("protected-test");
+    await signUpUser(email, "password123456", "Protected Test");
 
     const signinRes = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        email: "protected-test@example.com",
+        email,
         password: "password123456",
       }),
       signal: AbortSignal.timeout(10000),
@@ -321,7 +349,7 @@ describe("better-auth", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('data-testid="protected-heading"');
-    expect(html).toContain("Logged in as protected-test@example.com");
+    expect(html).toContain(`Logged in as ${email}`);
   });
 });
 

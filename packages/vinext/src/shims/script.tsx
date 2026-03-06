@@ -13,6 +13,7 @@
  *   - "worker": sets type="text/partytown" (requires Partytown setup)
  */
 import React, { useEffect, useRef } from "react";
+import { escapeInlineContent } from "./head.js";
 
 export interface ScriptProps {
   /** Script source URL */
@@ -107,26 +108,10 @@ function Script(props: ScriptProps): React.ReactElement | null {
   } = props;
 
   const hasMounted = useRef(false);
-
-  // SSR path: only "beforeInteractive" renders a <script> tag server-side
-  if (typeof window === "undefined") {
-    if (strategy === "beforeInteractive") {
-      const scriptProps: Record<string, unknown> = { ...rest };
-      if (src) scriptProps.src = src;
-      if (id) scriptProps.id = id;
-      if (dangerouslySetInnerHTML) {
-        scriptProps.dangerouslySetInnerHTML = dangerouslySetInnerHTML;
-      }
-      return React.createElement("script", scriptProps, children);
-    }
-    // Other strategies don't render during SSR
-    return null;
-  }
-
   const key = id ?? src ?? "";
 
-  // Client path: load scripts via useEffect based on strategy
-  // eslint-disable-next-line react-hooks/rules-of-hooks
+  // Client path: load scripts via useEffect based on strategy.
+  // useEffect never runs during SSR, so it's safe to call unconditionally.
   useEffect(() => {
     if (hasMounted.current) return;
     hasMounted.current = true;
@@ -202,6 +187,26 @@ function Script(props: ScriptProps): React.ReactElement | null {
       load();
     }
   }, [src, id, strategy, onLoad, onReady, onError, children, dangerouslySetInnerHTML, key, rest]);
+
+  // SSR path: only "beforeInteractive" renders a <script> tag server-side
+  if (typeof window === "undefined") {
+    if (strategy === "beforeInteractive") {
+      const scriptProps: Record<string, unknown> = { ...rest };
+      if (src) scriptProps.src = src;
+      if (id) scriptProps.id = id;
+      if (dangerouslySetInnerHTML) {
+        // Escape closing </script> sequences in inline content so the HTML
+        // parser doesn't prematurely terminate the element during SSR.
+        const raw = dangerouslySetInnerHTML.__html;
+        scriptProps.dangerouslySetInnerHTML = {
+          __html: escapeInlineContent(raw, "script"),
+        };
+      }
+      return React.createElement("script", scriptProps, children);
+    }
+    // Other strategies don't render during SSR
+    return null;
+  }
 
   // The component itself renders nothing — scripts are injected imperatively
   return null;
