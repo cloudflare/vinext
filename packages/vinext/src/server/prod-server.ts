@@ -23,7 +23,7 @@ import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
-import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "../config/config-matchers.js";
+import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, applyMiddlewareRequestHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { IMAGE_OPTIMIZATION_PATH, IMAGE_CONTENT_SECURITY_POLICY, parseImageParams, isSafeImageContentType, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, type ImageConfig } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
@@ -789,7 +789,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }, new Headers());
       const method = req.method ?? "GET";
       const hasBody = method !== "GET" && method !== "HEAD";
-      const webRequest = new Request(`${protocol}://${hostHeader}${url}`, {
+      let webRequest = new Request(`${protocol}://${hostHeader}${url}`, {
         method,
         headers: reqHeaders,
         body: hasBody ? readNodeStream(req) : undefined,
@@ -865,26 +865,12 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         middlewareRewriteStatus = result.rewriteStatus;
       }
 
-      // Unpack x-middleware-request-* headers into the actual request so that
-      // renderPage / handleApiRoute see the middleware-modified headers.
-      // Strip ALL x-middleware-* headers from the response — this prefix is
-      // reserved for internal routing signals and must never reach clients.
-      // (Matches Next.js behavior where x-middleware-* headers are internal.)
-      const mwReqPrefix = "x-middleware-request-";
-      for (const key of Object.keys(middlewareHeaders)) {
-        if (key.startsWith(mwReqPrefix)) {
-          const realName = key.slice(mwReqPrefix.length);
-          webRequest.headers.set(realName, middlewareHeaders[key] as string);
-          delete middlewareHeaders[key];
-        } else if (key.startsWith("x-middleware-")) {
-          delete middlewareHeaders[key];
-        }
-      }
-
-      // Rebuild context after middleware has unpacked x-middleware-request-*
-      // headers into webRequest. Used only for afterFiles and fallback rewrites,
-      // which run after middleware in the App Router execution order.
-      const postMwReqCtx: RequestContext = requestContextFromRequest(webRequest);
+      // Unpack x-middleware-request-* headers into the actual request and strip
+      // all x-middleware-* internal signals. Rebuilds postMwReqCtx for use by
+      // beforeFiles, afterFiles, and fallback config rules (which run after
+      // middleware per the Next.js execution order).
+      const { postMwReqCtx, request: postMwReq } = applyMiddlewareRequestHeaders(middlewareHeaders, webRequest);
+      webRequest = postMwReq;
 
       let resolvedPathname = resolvedUrl.split("?")[0];
 

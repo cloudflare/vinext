@@ -581,11 +581,8 @@ describe("generatePagesRouterWorkerEntry", () => {
 
   it("preserves x-middleware-request-* headers for prod request override handling", () => {
     const content = generatePagesRouterWorkerEntry();
-    // Worker entry must unpack x-middleware-request-* into the actual request
-    expect(content).toContain('const mwReqPrefix = "x-middleware-request-"');
-    expect(content).toContain('key.startsWith(mwReqPrefix)');
-    // Worker entry must also strip remaining x-middleware-* headers (defense-in-depth)
-    expect(content).toContain('key.startsWith("x-middleware-")');
+    // Worker entry delegates x-middleware-request-* unpacking to the shared helper
+    expect(content).toContain("applyMiddlewareRequestHeaders");
   });
 
   it("handles external rewrites via proxyExternalRequest", () => {

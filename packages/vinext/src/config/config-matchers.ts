@@ -259,6 +259,58 @@ export function requestContextFromRequest(request: Request): RequestContext {
 }
 
 /**
+ * Unpack `x-middleware-request-*` headers from the collected middleware
+ * response headers into the actual request, and strip all `x-middleware-*`
+ * internal signals so they never reach clients.
+ *
+ * `middlewareHeaders` is mutated in-place (matching keys are deleted).
+ * Returns a (possibly cloned) `Request` with the unpacked headers applied,
+ * and a fresh `RequestContext` built from it — ready for post-middleware
+ * config rule matching (beforeFiles, afterFiles, fallback).
+ *
+ * Works for both Node.js requests (mutable headers) and Workers requests
+ * (immutable — cloned only when there are headers to apply).
+ *
+ * `x-middleware-request-*` values are always plain strings (they carry
+ * individual header values), so the wider `string | string[]` type of
+ * `middlewareHeaders` is safe to cast here.
+ */
+export function applyMiddlewareRequestHeaders(
+  middlewareHeaders: Record<string, string | string[]>,
+  request: Request,
+): { request: Request; postMwReqCtx: RequestContext } {
+  const mwReqPrefix = "x-middleware-request-";
+  const toApply: Record<string, string> = {};
+
+  for (const key of Object.keys(middlewareHeaders)) {
+    if (key.startsWith(mwReqPrefix)) {
+      const realName = key.slice(mwReqPrefix.length);
+      toApply[realName] = middlewareHeaders[key] as string;
+      delete middlewareHeaders[key];
+    } else if (key.startsWith("x-middleware-")) {
+      delete middlewareHeaders[key];
+    }
+  }
+
+  if (Object.keys(toApply).length > 0) {
+    // Headers may be immutable (Workers), so always clone via new Headers().
+    const newHeaders = new Headers(request.headers);
+    for (const [k, v] of Object.entries(toApply)) {
+      newHeaders.set(k, v);
+    }
+    request = new Request(request.url, {
+      method: request.method,
+      headers: newHeaders,
+      body: request.body,
+      // @ts-expect-error — duplex needed for streaming request bodies
+      duplex: request.body ? "half" : undefined,
+    });
+  }
+
+  return { request, postMwReqCtx: requestContextFromRequest(request) };
+}
+
+/**
  * Check a single has/missing condition against request context.
  * Returns true if the condition is satisfied.
  */

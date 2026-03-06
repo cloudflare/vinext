@@ -448,6 +448,7 @@ import {
   matchRewrite,
   matchHeaders,
   requestContextFromRequest,
+  applyMiddlewareRequestHeaders,
   isExternalUrl,
   proxyExternalRequest,
   sanitizeDestination,
@@ -594,38 +595,12 @@ export default {
         middlewareRewriteStatus = result.rewriteStatus;
       }
 
-      // Unpack x-middleware-request-* headers into the actual request so
-      // that renderPage / handleApiRoute see middleware-modified headers.
-      // Workers incoming request headers are immutable, so clone if needed.
-      const mwReqPrefix = "x-middleware-request-";
-      const mwReqHeaders: Record<string, string> = {};
-      for (const key of Object.keys(middlewareHeaders)) {
-        if (key.startsWith(mwReqPrefix)) {
-          const realName = key.slice(mwReqPrefix.length);
-          mwReqHeaders[realName] = middlewareHeaders[key] as string;
-          delete middlewareHeaders[key];
-        } else if (key.startsWith("x-middleware-")) {
-          delete middlewareHeaders[key];
-        }
-      }
-      if (Object.keys(mwReqHeaders).length > 0) {
-        const newHeaders = new Headers(request.headers);
-        for (const [k, v] of Object.entries(mwReqHeaders)) {
-          newHeaders.set(k, v);
-        }
-        request = new Request(request.url, {
-          method: request.method,
-          headers: newHeaders,
-          body: request.body,
-          // @ts-expect-error -- duplex needed for streaming request bodies
-          duplex: request.body ? "half" : undefined,
-        });
-      }
-
-      // Rebuild context after middleware has unpacked x-middleware-request-*
-      // headers into the cloned request. Used only for afterFiles and fallback
-      // rewrites, which run after middleware in the App Router execution order.
-      const postMwReqCtx = requestContextFromRequest(request);
+      // Unpack x-middleware-request-* headers into the actual request and strip
+      // all x-middleware-* internal signals. Rebuilds postMwReqCtx for use by
+      // beforeFiles, afterFiles, and fallback config rules (which run after
+      // middleware per the Next.js execution order).
+      const { postMwReqCtx, request: postMwReq } = applyMiddlewareRequestHeaders(middlewareHeaders, request);
+      request = postMwReq;
 
       let resolvedPathname = resolvedUrl.split("?")[0];
 
