@@ -73,6 +73,14 @@ const nextConfig: NextConfig = {
         ...(process.env.TEST_EXTERNAL_PROXY_TARGET
           ? [{ source: "/proxy-external-test/:path*", destination: `${process.env.TEST_EXTERNAL_PROXY_TARGET}/:path*` }]
           : []),
+        // Used by Vitest: app-router.test.ts — beforeFiles rewrite gated on a
+        // cookie injected by middleware. In App Router order, beforeFiles runs
+        // after middleware, so it should see middleware-injected cookies.
+        {
+          source: "/mw-gated-before",
+          has: [{ type: "cookie", key: "mw-before-user" }],
+          destination: "/about",
+        },
       ],
       afterFiles: [
         // Used by Vitest: app-router.test.ts
@@ -80,7 +88,17 @@ const nextConfig: NextConfig = {
         // Used by E2E: config-redirect.spec.ts
         { source: "/config-rewrite", destination: "/" },
       ],
-      fallback: [],
+      fallback: [
+        // Used by Vitest: app-router.test.ts — fallback rewrite gated on a
+        // cookie injected by middleware. Fallback runs after middleware and
+        // after a 404 from route matching, so it should see middleware-injected
+        // cookies. /mw-gated-fallback has no real page, so it falls through.
+        {
+          source: "/mw-gated-fallback",
+          has: [{ type: "cookie", key: "mw-fallback-user" }],
+          destination: "/about",
+        },
+      ],
     };
   },
 

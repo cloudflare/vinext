@@ -1078,9 +1078,13 @@ function __buildPostMwRequestContext(request) {
   const url = new URL(request.url);
   const ctx = getHeadersContext();
   if (!ctx) return __buildRequestContext(request);
+  // ctx.cookies is a Map<string, string> (HeadersContext), but RequestContext
+  // requires a plain Record<string, string> for has/missing cookie evaluation
+  // (config-matchers.ts uses obj[key] not Map.get()). Convert here.
+  const cookiesRecord = Object.fromEntries(ctx.cookies);
   return {
     headers: ctx.headers,
-    cookies: ctx.cookies,
+    cookies: cookiesRecord,
     query: url.searchParams,
     host: ctx.headers.get("host") || url.host,
   };
@@ -1379,23 +1383,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
   }
 
-  // ── Apply beforeFiles rewrites from next.config.js ────────────────────
-  if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
-    // Strip .rsc suffix before matching rewrite rules — same reason as redirects above.
-    const __rewritePathname = pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
-    const __rewritten = __applyConfigRewrites(__rewritePathname, __configRewrites.beforeFiles, __reqCtx);
-    if (__rewritten) {
-      if (__isExternalUrl(__rewritten)) {
-        setHeadersContext(null);
-        setNavigationContext(null);
-        return __proxyExternalRequest(request, __rewritten);
-      }
-      pathname = __rewritten;
-    }
-  }
-
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
-  let cleanPathname = pathname.replace(/\\.rsc$/, "");
+  let cleanPathname = pathname.replace(/.rsc$/, "");
 
   // Middleware response headers and custom rewrite status are stored in
   // _mwCtx (per-request container) so handler() can merge them into
@@ -1492,6 +1481,21 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // evaluate has/missing conditions against middleware-modified headers.
   // When no middleware is present, this falls back to __buildRequestContext.
   const __postMwReqCtx = __buildPostMwRequestContext(request);
+
+  // ── Apply beforeFiles rewrites from next.config.js ────────────────────
+  // In App Router execution order, beforeFiles runs after middleware so that
+  // has/missing conditions can evaluate against middleware-modified headers.
+  if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
+    const __rewritten = __applyConfigRewrites(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx);
+    if (__rewritten) {
+      if (__isExternalUrl(__rewritten)) {
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return __proxyExternalRequest(request, __rewritten);
+      }
+      cleanPathname = __rewritten;
+    }
+  }
 
   // ── Image optimization passthrough (dev mode — no transformation) ───────
   if (cleanPathname === "/_vinext/image") {

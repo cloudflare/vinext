@@ -1960,6 +1960,40 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(html).toContain("About");
   });
 
+  // In App Router execution order, beforeFiles rewrites run after middleware.
+  // has/missing conditions on beforeFiles rules should therefore evaluate against
+  // middleware-modified headers/cookies, not the original pre-middleware request.
+  it("beforeFiles rewrite has/missing conditions see middleware-injected cookies", async () => {
+    // Without ?mw-auth, middleware does NOT inject mw-before-user=1.
+    // The has:[cookie:mw-before-user] beforeFiles rule should NOT match → no rewrite.
+    const noAuthRes = await fetch(`${baseUrl}/mw-gated-before`);
+    expect(noAuthRes.status).toBe(404);
+
+    // With ?mw-auth, middleware injects mw-before-user=1 into request cookies.
+    // The has:[cookie:mw-before-user] beforeFiles rule SHOULD match → rewrite to /about.
+    const authRes = await fetch(`${baseUrl}/mw-gated-before?mw-auth`);
+    expect(authRes.status).toBe(200);
+    const html = await authRes.text();
+    expect(html).toContain("About");
+  });
+
+  // Fallback rewrites run after middleware and after a 404 from route matching.
+  // has/missing conditions on fallback rules should evaluate against
+  // middleware-modified headers/cookies, not the original pre-middleware request.
+  it("fallback rewrite has/missing conditions see middleware-injected cookies", async () => {
+    // Without ?mw-auth, middleware does NOT inject mw-fallback-user=1.
+    // The has:[cookie:mw-fallback-user] fallback rule should NOT match → 404.
+    const noAuthRes = await fetch(`${baseUrl}/mw-gated-fallback`);
+    expect(noAuthRes.status).toBe(404);
+
+    // With ?mw-auth, middleware injects mw-fallback-user=1 into request cookies.
+    // The has:[cookie:mw-fallback-user] fallback rule SHOULD match → rewrite to /about.
+    const authRes = await fetch(`${baseUrl}/mw-gated-fallback?mw-auth`);
+    expect(authRes.status).toBe(200);
+    const html = await authRes.text();
+    expect(html).toContain("About");
+  });
+
   it("applies custom headers from next.config.js on API routes", async () => {
     const res = await fetch(`${baseUrl}/api/hello`);
     expect(res.headers.get("x-custom-header")).toBe("vinext-app");
@@ -2163,8 +2197,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
   it("strips .rsc suffix before matching beforeFiles rewrite rules", () => {
     // RSC (soft-nav) requests arrive as /some/path.rsc but rewrite patterns
     // are defined without the extension. The generated code must strip .rsc
-    // before calling __applyConfigRewrites for beforeFiles, just like it does
-    // for redirects.
+    // before calling __applyConfigRewrites for beforeFiles.
+    // beforeFiles now runs after middleware (using __postMwReqCtx), and
+    // cleanPathname has already had .rsc stripped at that point.
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       rewrites: {
         beforeFiles: [{ source: "/old", destination: "/new" }],
@@ -2172,14 +2207,14 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         fallback: [],
       },
     });
-    // The generated code should use a .rsc-stripped pathname variable when
-    // calling __applyConfigRewrites for beforeFiles, not the raw `pathname`.
-    const rewritePathIdx = code.indexOf("__rewritePathname");
-    expect(rewritePathIdx).toBeGreaterThan(-1);
-    // The .rsc stripping assignment must appear before the beforeFiles rewrite call
-    const beforeFilesCallIdx = code.indexOf("__applyConfigRewrites(__rewritePathname");
+    // The generated code uses cleanPathname (already .rsc-stripped) when
+    // calling __applyConfigRewrites for beforeFiles.
+    const beforeFilesCallIdx = code.indexOf("__applyConfigRewrites(cleanPathname, __configRewrites.beforeFiles");
     expect(beforeFilesCallIdx).toBeGreaterThan(-1);
-    expect(rewritePathIdx).toBeLessThan(beforeFilesCallIdx);
+    // The cleanPathname assignment (stripping .rsc) must appear before the beforeFiles call
+    const cleanPathnameIdx = code.indexOf("cleanPathname = pathname.replace");
+    expect(cleanPathnameIdx).toBeGreaterThan(-1);
+    expect(cleanPathnameIdx).toBeLessThan(beforeFilesCallIdx);
   });
 
   it("applies afterFiles rewrites in the handler code", () => {

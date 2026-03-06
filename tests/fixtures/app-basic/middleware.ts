@@ -60,6 +60,27 @@ export function middleware(request: NextRequest) {
     throw new Error("middleware crash");
   }
 
+  // Inject mw-before-user=1 cookie for beforeFiles rewrite gating test.
+  // In App Router order, beforeFiles rewrites run after middleware, so they
+  // should see this cookie. The /mw-gated-before rule in next.config.ts has:
+  // [cookie:mw-before-user], which matches when ?mw-auth is present.
+  if (pathname === "/mw-gated-before" && request.nextUrl.searchParams.has("mw-auth")) {
+    const headers = new Headers(request.headers);
+    const existing = headers.get("cookie") ?? "";
+    headers.set("cookie", existing ? existing + "; mw-before-user=1" : "mw-before-user=1");
+    return NextResponse.next({ request: { headers } });
+  }
+
+  // Inject mw-fallback-user=1 cookie for fallback rewrite gating test.
+  // Fallback rewrites run after middleware and after a 404 from route matching.
+  // The /mw-gated-fallback rule has: [cookie:mw-fallback-user].
+  if (pathname === "/mw-gated-fallback" && request.nextUrl.searchParams.has("mw-auth")) {
+    const headers = new Headers(request.headers);
+    const existing = headers.get("cookie") ?? "";
+    headers.set("cookie", existing ? existing + "; mw-fallback-user=1" : "mw-fallback-user=1");
+    return NextResponse.next({ request: { headers } });
+  }
+
   // Forward search params as a header for RSC testing
   // Ref: opennextjs-cloudflare middleware.ts — search-params header
   const requestHeaders = new Headers(request.headers);
@@ -88,5 +109,7 @@ export const config = {
     "/middleware-throw",
     "/search-query",
     "/",
+    "/mw-gated-before",
+    "/mw-gated-fallback",
   ],
 };
