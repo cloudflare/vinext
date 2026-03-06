@@ -702,9 +702,8 @@ export default {
         return new Response("404 - Not found", { status: 404 });
       }
 
-
       // Bubble up any background tasks attached by the app-dev-server layer
-      if ("__vinextWaitUntil" in response) {
+      if (response && typeof response === "object" && "__vinextWaitUntil" in response && Array.isArray((response as any).__vinextWaitUntil)) {
         for (const p of (response as any).__vinextWaitUntil) {
           ctx.waitUntil(p);
         }

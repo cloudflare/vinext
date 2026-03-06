@@ -830,6 +830,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // Apply custom status code from middleware rewrite
         // (e.g. NextResponse.rewrite(url, { status: 403 }))
         middlewareRewriteStatus = result.rewriteStatus;
+
+        // Await any background promises registered via event.waitUntil() during middleware.
+        // In prod-server (Node.js) there's no Workers ctx.waitUntil(), so we settle them
+        // here to avoid silently dropping work (e.g. Clerk session sync).
+        if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
+          Promise.allSettled(result.waitUntilPromises).catch(() => {});
+        }
       }
 
       // Unpack x-middleware-request-* headers into the actual request so that

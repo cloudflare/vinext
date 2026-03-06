@@ -91,7 +91,7 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next-view-transitions": { status: "supported" },
   "@vercel/analytics": { status: "supported", detail: "analytics script injected client-side" },
   "next-intl": { status: "partial", detail: "works with middleware-based setup, some server component features may differ" },
-  "@clerk/nextjs": { status: "supported" },
+  "@clerk/nextjs": { status: "partial", detail: "waitUntil supported; requires @clerk/nextjs ESM fix (clerk/javascript#7954)" },
   "@auth/nextjs": { status: "unsupported", detail: "relies on Next.js internal auth handlers; consider migrating to better-auth" },
   "next-auth": { status: "unsupported", detail: "relies on Next.js API route internals; consider migrating to better-auth (see https://authjs.dev/getting-started/migrate-to-better-auth)" },
   "better-auth": { status: "supported", detail: "uses only public next/* APIs (headers, cookies, NextRequest/NextResponse)" },

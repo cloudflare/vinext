@@ -52,7 +52,8 @@ export default {
     // Delegate to RSC handler (which decodes + normalizes the pathname itself)
     const result = await rscHandler(request);
 
-    // If the middleware registered any waitUntil promises, hand them off to the runtime
+    // Extract waitUntil promises BEFORE the instanceof check — the property is
+    // non-enumerable on the Response and we need to hand it off to ctx before returning.
     if (result && typeof result === "object" && "__vinextWaitUntil" in result && Array.isArray(result.__vinextWaitUntil)) {
       for (const p of result.__vinextWaitUntil) {
         ctx.waitUntil(p);

@@ -1236,7 +1236,7 @@ function __applyConfigHeaders(pathname, ctx) {
 }
 
 export default async function handler(request) {
-  let _waitUntilPromises = [];
+  const _waitUntilPromises = [];
 
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
@@ -1421,6 +1421,11 @@ async function _handleRequest(request, __reqCtx, _outerWaitUntilPromises) {
         } else {
           // Check for redirect
           if (mwResponse.status >= 300 && mwResponse.status < 400) {
+            // Attach waitUntil promises before early return so they reach ctx.waitUntil().
+            // This is the most common Clerk auth pattern: redirect unauthenticated users.
+            if (_outerWaitUntilPromises.length > 0) {
+              Object.defineProperty(mwResponse, "__vinextWaitUntil", { value: _outerWaitUntilPromises, enumerable: false });
+            }
             return mwResponse;
           }
           // Check for rewrite
@@ -1440,7 +1445,10 @@ async function _handleRequest(request, __reqCtx, _outerWaitUntilPromises) {
               }
             }
           } else {
-            // Middleware returned a custom response
+            // Middleware returned a custom response — attach waitUntil promises before early return
+            if (_outerWaitUntilPromises.length > 0) {
+              Object.defineProperty(mwResponse, "__vinextWaitUntil", { value: _outerWaitUntilPromises, enumerable: false });
+            }
             return mwResponse;
           }
         }
