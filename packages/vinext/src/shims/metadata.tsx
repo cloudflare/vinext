@@ -62,8 +62,13 @@ export async function resolveModuleViewport(
  * Merge viewport configs from multiple sources (layouts + page).
  * Later entries override earlier ones.
  */
+const DEFAULT_VIEWPORT: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+};
+
 export function mergeViewport(viewportList: Viewport[]): Viewport {
-  const merged: Viewport = {};
+  const merged: Viewport = { ...DEFAULT_VIEWPORT };
   for (const vp of viewportList) {
     Object.assign(merged, vp);
   }

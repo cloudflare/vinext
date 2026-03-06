@@ -1885,12 +1885,14 @@ describe("MetadataHead rendering", () => {
 
 describe("ViewportHead rendering", () => {
   let ViewportHead: typeof import("../packages/vinext/src/shims/metadata.js").ViewportHead;
+  let mergeViewport: typeof import("../packages/vinext/src/shims/metadata.js").mergeViewport;
   let React: typeof import("react");
   let renderToStaticMarkup: typeof import("react-dom/server").renderToStaticMarkup;
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/shims/metadata.js");
     ViewportHead = mod.ViewportHead;
+    mergeViewport = mod.mergeViewport;
     React = await import("react");
     renderToStaticMarkup = (await import("react-dom/server")).renderToStaticMarkup;
   });
@@ -1958,6 +1960,47 @@ describe("ViewportHead rendering", () => {
     );
     expect(html).toContain('name="color-scheme"');
     expect(html).toContain('content="dark"');
+  });
+
+  // mergeViewport default injection tests
+  it("mergeViewport includes default width and initialScale when not provided", () => {
+    const result = mergeViewport([{ themeColor: "#000" }]);
+    expect(result.width).toBe("device-width");
+    expect(result.initialScale).toBe(1);
+    expect(result.themeColor).toBe("#000");
+  });
+
+  it("mergeViewport allows overriding defaults", () => {
+    const result = mergeViewport([{ width: 1024, initialScale: 0.5 }]);
+    expect(result.width).toBe(1024);
+    expect(result.initialScale).toBe(0.5);
+  });
+
+  it("mergeViewport returns defaults for empty list", () => {
+    const result = mergeViewport([]);
+    expect(result.width).toBe("device-width");
+    expect(result.initialScale).toBe(1);
+  });
+
+  it("mergeViewport later entries override earlier ones including defaults", () => {
+    const result = mergeViewport([
+      { width: 800 },
+      { width: 1024, themeColor: "#fff" },
+    ]);
+    expect(result.width).toBe(1024);
+    expect(result.initialScale).toBe(1);
+    expect(result.themeColor).toBe("#fff");
+  });
+
+  it("renders viewport meta even when only themeColor is provided (defaults injected)", () => {
+    const merged = mergeViewport([{ themeColor: "#000" }]);
+    const html = renderToStaticMarkup(
+      React.createElement(ViewportHead, { viewport: merged }),
+    );
+    expect(html).toContain('name="viewport"');
+    expect(html).toContain("width=device-width");
+    expect(html).toContain("initial-scale=1");
+    expect(html).toContain('name="theme-color"');
   });
 });
 
