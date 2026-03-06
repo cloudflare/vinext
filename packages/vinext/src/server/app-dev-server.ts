@@ -1235,22 +1235,12 @@ function __applyConfigHeaders(pathname, ctx) {
   return result;
 }
 
-// Module-level storage for middleware response headers. Set by
-// _handleRequest(), consumed by handler() to merge into all response
-// paths. This ensures middleware headers are applied regardless of
-// which code path produces the response (route handlers, server
-// actions, metadata routes, error pages, etc.).
-let __pendingMiddlewareHeaders = null;
-let __pendingMiddlewareRewriteStatus = null;
-
 export default async function handler(request) {
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
   // streaming), preventing state leakage between concurrent requests on
   // Cloudflare Workers and other concurrent runtimes.
-  __pendingMiddlewareHeaders = null;
-  __pendingMiddlewareRewriteStatus = null;
   const headersCtx = headersContextFromRequest(request);
   return runWithHeadersContext(headersCtx, () =>
     _runWithNavigationContext(() =>
@@ -1258,7 +1248,11 @@ export default async function handler(request) {
         _runWithPrivateCache(() =>
           runWithFetchCache(async () => {
             const __reqCtx = __buildRequestContext(request);
-            const response = await _handleRequest(request, __reqCtx);
+            // Per-request container for middleware state. Passed into
+            // _handleRequest which fills in .headers and .status;
+            // avoids module-level variables that race on Workers.
+            const _mwCtx = { headers: null, status: null };
+            const response = await _handleRequest(request, __reqCtx, _mwCtx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -1276,8 +1270,8 @@ export default async function handler(request) {
               // Merge middleware response headers into the final response.
               // This runs at the top level so every response path (route
               // handlers, server actions, metadata, errors, etc.) gets them.
-              if (__pendingMiddlewareHeaders) {
-                for (const [key, value] of __pendingMiddlewareHeaders) {
+              if (_mwCtx.headers) {
+                for (const [key, value] of _mwCtx.headers) {
                   response.headers.append(key, value);
                 }
               }
@@ -1290,7 +1284,7 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request, __reqCtx) {
+async function _handleRequest(request, __reqCtx, _mwCtx) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
   let __compileEnd;
   let __renderEnd;
@@ -1380,8 +1374,8 @@ async function _handleRequest(request, __reqCtx) {
   let cleanPathname = pathname.replace(/\\.rsc$/, "");
 
   // Middleware response headers and custom rewrite status are stored in
-  // module-level variables (__pendingMiddlewareHeaders / __pendingMiddlewareRewriteStatus)
-  // so the handler() wrapper can merge them into every response path.
+  // _mwCtx (per-request container) so handler() can merge them into
+  // every response path without module-level state that races on Workers.
 
   ${middlewarePath ? `
    // Run proxy/middleware if present and path matches.
@@ -1415,10 +1409,10 @@ async function _handleRequest(request, __reqCtx) {
           // headers are kept so applyMiddlewareRequestHeaders() can unpack them;
           // the blanket strip loop after that call removes every remaining
           // x-middleware-* header before the set is merged into the response.
-           __pendingMiddlewareHeaders = new Headers();
+           _mwCtx.headers = new Headers();
           for (const [key, value] of mwResponse.headers) {
             if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
-              __pendingMiddlewareHeaders.append(key, value);
+              _mwCtx.headers.append(key, value);
             }
           }
         } else {
@@ -1433,13 +1427,13 @@ async function _handleRequest(request, __reqCtx) {
             cleanPathname = rewriteParsed.pathname;
             // Capture custom status code from rewrite (e.g. NextResponse.rewrite(url, { status: 403 }))
             if (mwResponse.status !== 200) {
-              __pendingMiddlewareRewriteStatus = mwResponse.status;
+              _mwCtx.status = mwResponse.status;
             }
             // Also save any other headers from the rewrite response
-            __pendingMiddlewareHeaders = new Headers();
+            _mwCtx.headers = new Headers();
             for (const [key, value] of mwResponse.headers) {
               if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
-                __pendingMiddlewareHeaders.append(key, value);
+                _mwCtx.headers.append(key, value);
               }
             }
           } else {
@@ -1459,11 +1453,11 @@ async function _handleRequest(request, __reqCtx) {
   // request headers. Strip ALL x-middleware-* headers from the set that will
   // be merged into the outgoing HTTP response — this prefix is reserved for
   // internal routing signals and must never reach clients.
-  if (__pendingMiddlewareHeaders) {
-    applyMiddlewareRequestHeaders(__pendingMiddlewareHeaders);
-    for (const key of [...__pendingMiddlewareHeaders.keys()]) {
+  if (_mwCtx.headers) {
+    applyMiddlewareRequestHeaders(_mwCtx.headers);
+    for (const key of [..._mwCtx.headers.keys()]) {
       if (key.startsWith("x-middleware-")) {
-        __pendingMiddlewareHeaders.delete(key);
+        _mwCtx.headers.delete(key);
       }
     }
   }
@@ -2187,7 +2181,7 @@ async function _handleRequest(request, __reqCtx) {
       const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
       responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
     }
-    return new Response(rscStream, { status: __pendingMiddlewareRewriteStatus || 200, headers: responseHeaders });
+    return new Response(rscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
 
   // Collect font data from RSC environment before passing to SSR
@@ -2257,9 +2251,9 @@ async function _handleRequest(request, __reqCtx) {
       response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
     }
     // Apply custom status code from middleware rewrite
-    if (__pendingMiddlewareRewriteStatus) {
+    if (_mwCtx.status) {
       return new Response(response.body, {
-        status: __pendingMiddlewareRewriteStatus,
+        status: _mwCtx.status,
         headers: response.headers,
       });
     }
