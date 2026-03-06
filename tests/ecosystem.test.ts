@@ -228,6 +228,52 @@ describe("nuqs", () => {
   });
 });
 
+// ─── next-intl ────────────────────────────────────────────────────────────────
+describe("next-intl", () => {
+  let proc: ChildProcess | null = null;
+  let fetchPage: (path: string) => Promise<{ html: string; status: number }>;
+
+  beforeAll(async () => {
+    const fixture = await startFixture("next-intl", 4404);
+    proc = fixture.process;
+    fetchPage = fixture.fetchPage;
+  }, 30000);
+
+  afterAll(() => killProcess(proc));
+
+  it("renders English translations at /en", async () => {
+    const { html, status } = await fetchPage("/en");
+    expect(status).toBe(200);
+    expect(html).toContain("Hello World");
+    expect(html).toContain(
+      "This page uses next-intl for internationalization.",
+    );
+  });
+
+  it("renders German translations at /de", async () => {
+    const { html, status } = await fetchPage("/de");
+    expect(status).toBe(200);
+    expect(html).toContain("Hallo Welt");
+    expect(html).toContain(
+      "Diese Seite verwendet next-intl zur Internationalisierung.",
+    );
+  });
+
+  it("sets html lang attribute per locale", async () => {
+    const { html: enHtml } = await fetchPage("/en");
+    expect(enHtml).toContain('<html lang="en"');
+
+    const { html: deHtml } = await fetchPage("/de");
+    expect(deHtml).toContain('<html lang="de"');
+  });
+
+  it("renders data-testid attributes for translated content", async () => {
+    const { html } = await fetchPage("/en");
+    expect(html).toContain('data-testid="title"');
+    expect(html).toContain('data-testid="description"');
+  });
+});
+
 // ─── better-auth ──────────────────────────────────────────────────────────────
 describe("better-auth", () => {
   let proc: ChildProcess | null = null;

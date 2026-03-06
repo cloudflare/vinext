@@ -147,6 +147,13 @@ export interface ResolvedNextConfig {
   mdx: MdxOptions | null;
   /** Extra allowed origins for server action CSRF validation (from experimental.serverActions.allowedOrigins). */
   serverActionsAllowedOrigins: string[];
+  /**
+   * Module aliases extracted from next.config webpack function.
+   * Plugins like next-intl's createNextIntlPlugin set webpack.resolve.alias
+   * to redirect module imports (e.g. "next-intl/config" → user's i18n/request.ts).
+   * These are forwarded to Vite's resolve.alias so the same redirections apply.
+   */
+  webpackAliases: Record<string, string>;
 }
 
 const CONFIG_FILES = [
@@ -236,9 +243,14 @@ export async function loadNextConfig(root: string): Promise<NextConfig | null> {
 /**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
+ *
+ * @param config The raw next.config value (or null if no config file found)
+ * @param root The project root directory, used to extract webpack aliases from
+ *   next.config plugins (e.g. next-intl's createNextIntlPlugin / withNextIntl).
  */
 export async function resolveNextConfig(
   config: NextConfig | null,
+  root?: string,
 ): Promise<ResolvedNextConfig> {
   if (!config) {
     return {
@@ -254,6 +266,7 @@ export async function resolveNextConfig(
       i18n: null,
       mdx: null,
       serverActionsAllowedOrigins: [],
+      webpackAliases: {},
     };
   }
 
@@ -288,6 +301,12 @@ export async function resolveNextConfig(
   // Extract MDX remark/rehype plugins from @next/mdx's webpack wrapper
   const mdx = extractMdxOptions(config);
 
+  // Extract module aliases from next.config webpack function.
+  // Plugins like next-intl's createNextIntlPlugin add webpack.resolve.alias
+  // entries (e.g. "next-intl/config" → user's i18n/request.ts) that Vite
+  // must also apply for correct module resolution.
+  const webpackAliases = root ? extractWebpackAliases(config, root) : {};
+
   // Resolve serverActions.allowedOrigins from experimental config
   const experimental = config.experimental as Record<string, unknown> | undefined;
   const serverActionsConfig = experimental?.serverActions as Record<string, unknown> | undefined;
@@ -295,8 +314,10 @@ export async function resolveNextConfig(
     ? (serverActionsConfig.allowedOrigins as string[])
     : [];
 
-  // Warn about unsupported options (skip webpack if we extracted MDX from it)
-  const unsupported = mdx ? [] : ["webpack"];
+  // Warn about unsupported options (skip webpack if we extracted MDX or
+  // plugin aliases from it — in those cases the webpack function was useful).
+  const webpackHandled = mdx !== null || Object.keys(webpackAliases).length > 0;
+  const unsupported = webpackHandled ? [] : ["webpack"];
   for (const key of unsupported) {
     if (config[key] !== undefined) {
       console.warn(
@@ -334,7 +355,65 @@ export async function resolveNextConfig(
     i18n,
     mdx,
     serverActionsAllowedOrigins,
+    webpackAliases,
   };
+}
+
+/**
+ * Extract module aliases from a next.config webpack function.
+ *
+ * Plugins like next-intl's createNextIntlPlugin / withNextIntl use
+ * webpack.resolve.alias to redirect module imports — for example:
+ *   "next-intl/config" → "<root>/i18n/request.ts"
+ *
+ * Vite needs these same aliases for correct module resolution. This function
+ * probes the webpack function with a mock config (using the real project root
+ * so path resolution works) and extracts the resulting alias map.
+ *
+ * @param config The next.config object (must have a webpack function)
+ * @param root The project root directory (used to resolve alias target paths)
+ * @returns A Record of alias name → absolute path (string-valued entries only)
+ */
+export function extractWebpackAliases(
+  config: NextConfig,
+  root: string,
+): Record<string, string> {
+  if (typeof config.webpack !== "function") return {};
+
+  const mockModuleRules: any[] = [];
+  const mockConfig = {
+    resolve: { alias: {} as Record<string, string> },
+    module: { rules: mockModuleRules },
+    plugins: [] as any[],
+    context: root,
+  };
+  const mockOptions = {
+    defaultLoaders: { babel: { loader: "next-babel-loader" } },
+    isServer: false,
+    dev: false,
+    dir: root,
+  };
+
+  try {
+    const result = (config.webpack as Function)(mockConfig, mockOptions);
+    const finalConfig = result ?? mockConfig;
+    const alias = finalConfig.resolve?.alias ?? mockConfig.resolve.alias;
+
+    // Only collect string-valued aliases (skip regex patterns and arrays,
+    // which are webpack-specific and don't translate to Vite aliases).
+    const aliases: Record<string, string> = {};
+    for (const [key, value] of Object.entries(alias)) {
+      if (typeof value === "string") {
+        aliases[key] = value;
+      }
+    }
+    return aliases;
+  } catch {
+    // If the webpack function throws (e.g. missing i18n/request.ts or other
+    // webpack internals required), silently return empty — the caller handles
+    // missing aliases gracefully.
+    return {};
+  }
 }
 
 /**

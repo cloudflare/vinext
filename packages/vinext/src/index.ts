@@ -1786,7 +1786,7 @@ hydrate();
 
         // Load next.config.js if present (always from project root, not src/)
         const rawConfig = await loadNextConfig(root);
-        nextConfig = await resolveNextConfig(rawConfig);
+        nextConfig = await resolveNextConfig(rawConfig, root);
 
         // Merge env from next.config.js with NEXT_PUBLIC_* env vars
         const defines = getNextPublicEnvDefines();
@@ -1895,6 +1895,17 @@ hydrate();
           "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
           "vinext/html": path.resolve(__dirname, "server", "html"),
         };
+
+        // Merge module aliases from next.config webpack plugins (e.g. next-intl's
+        // createNextIntlPlugin / withNextIntl). These map package names to the
+        // user's project files — for example, "next-intl/config" → i18n/request.ts.
+        // Vinext's own shims always take precedence, so only add entries that are
+        // not already in nextShimMap.
+        for (const [key, value] of Object.entries(nextConfig.webpackAliases)) {
+          if (!nextShimMap[key]) {
+            nextShimMap[key] = value;
+          }
+        }
 
         // Detect if Cloudflare's vite plugin is present — if so, skip
         // SSR externals (Workers bundle everything, can't have Node.js externals).

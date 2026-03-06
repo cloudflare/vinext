@@ -91,7 +91,7 @@ Tested and working:
 - next-themes
 - nuqs
 - next-view-transitions
-- next-intl
+- next-intl (partial: `createNextIntlPlugin` requires manual webpack alias workaround, see #202)
 - better-auth
 - @vercel/analytics
 - tailwindcss

@@ -90,7 +90,7 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   nuqs: { status: "supported" },
   "next-view-transitions": { status: "supported" },
   "@vercel/analytics": { status: "supported", detail: "analytics script injected client-side" },
-  "next-intl": { status: "partial", detail: "works with middleware-based setup, some server component features may differ" },
+  "next-intl": { status: "partial", detail: "webpack alias extraction works, but createNextIntlPlugin requires manual alias workaround (see #202). requestLocale not populated without middleware" },
   "@clerk/nextjs": { status: "unsupported", detail: "deep Next.js middleware integration not compatible" },
   "@auth/nextjs": { status: "unsupported", detail: "relies on Next.js internal auth handlers; consider migrating to better-auth" },
   "next-auth": { status: "unsupported", detail: "relies on Next.js API route internals; consider migrating to better-auth (see https://authjs.dev/getting-started/migrate-to-better-auth)" },

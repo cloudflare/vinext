@@ -5238,6 +5238,128 @@ describe("extractMdxOptions", () => {
   });
 });
 
+describe("extractWebpackAliases", () => {
+  it("returns empty when no webpack function", async () => {
+    const { extractWebpackAliases } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    expect(extractWebpackAliases({}, "/tmp")).toEqual({});
+    expect(extractWebpackAliases({ webpack: "not a function" }, "/tmp")).toEqual({});
+  });
+
+  it("extracts string-valued aliases from webpack resolve.alias", async () => {
+    const { extractWebpackAliases } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = {
+      webpack: (webpackConfig: any) => {
+        webpackConfig.resolve.alias["next-intl/config"] = "/app/i18n/request.ts";
+        webpackConfig.resolve.alias["my-lib/settings"] = "/app/settings.ts";
+        return webpackConfig;
+      },
+    };
+    const result = extractWebpackAliases(config, "/app");
+    expect(result).toEqual({
+      "next-intl/config": "/app/i18n/request.ts",
+      "my-lib/settings": "/app/settings.ts",
+    });
+  });
+
+  it("skips non-string alias values (regex, arrays)", async () => {
+    const { extractWebpackAliases } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = {
+      webpack: (webpackConfig: any) => {
+        webpackConfig.resolve.alias["valid"] = "/app/valid.ts";
+        webpackConfig.resolve.alias["regex-alias"] = /some-regex/;
+        webpackConfig.resolve.alias["array-alias"] = ["/a", "/b"];
+        webpackConfig.resolve.alias["false-alias"] = false;
+        return webpackConfig;
+      },
+    };
+    const result = extractWebpackAliases(config, "/app");
+    expect(result).toEqual({ valid: "/app/valid.ts" });
+  });
+
+  it("returns empty when webpack throws", async () => {
+    const { extractWebpackAliases } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = {
+      webpack: () => {
+        throw new Error("plugin requires real webpack");
+      },
+    };
+    expect(extractWebpackAliases(config, "/tmp")).toEqual({});
+  });
+
+  it("handles webpack function that mutates config without returning", async () => {
+    const { extractWebpackAliases } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = {
+      webpack: (webpackConfig: any) => {
+        webpackConfig.resolve.alias["next-intl/config"] = "/app/i18n/request.ts";
+        // No return statement (some plugins mutate in-place)
+      },
+    };
+    const result = extractWebpackAliases(config, "/app");
+    expect(result).toEqual({
+      "next-intl/config": "/app/i18n/request.ts",
+    });
+  });
+
+  it("passes root as context and dir to the webpack function", async () => {
+    const { extractWebpackAliases } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    let capturedContext: string | undefined;
+    let capturedDir: string | undefined;
+    const config = {
+      webpack: (webpackConfig: any, options: any) => {
+        capturedContext = webpackConfig.context;
+        capturedDir = options.dir;
+        return webpackConfig;
+      },
+    };
+    extractWebpackAliases(config, "/my/project");
+    expect(capturedContext).toBe("/my/project");
+    expect(capturedDir).toBe("/my/project");
+  });
+
+  it("resolveNextConfig populates webpackAliases when root is provided", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig(
+      {
+        webpack: (webpackConfig: any) => {
+          webpackConfig.resolve.alias["next-intl/config"] = "/app/i18n/request.ts";
+          return webpackConfig;
+        },
+      },
+      "/app",
+    );
+    expect(config.webpackAliases).toEqual({
+      "next-intl/config": "/app/i18n/request.ts",
+    });
+  });
+
+  it("resolveNextConfig returns empty webpackAliases when root is not provided", async () => {
+    const { resolveNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+    const config = await resolveNextConfig({
+      webpack: (webpackConfig: any) => {
+        webpackConfig.resolve.alias["next-intl/config"] = "/app/i18n/request.ts";
+        return webpackConfig;
+      },
+    });
+    expect(config.webpackAliases).toEqual({});
+  });
+});
+
 describe("next/web-vitals shim", () => {
   it("exports useReportWebVitals as a no-op function", async () => {
     const { useReportWebVitals } = await import(

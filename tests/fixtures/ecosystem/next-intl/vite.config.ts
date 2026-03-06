@@ -3,4 +3,7 @@ import vinext from "vinext";
 
 export default defineConfig({
   plugins: [vinext()],
+  ssr: {
+    noExternal: ["next-intl"],
+  },
 });
