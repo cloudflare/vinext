@@ -7468,3 +7468,209 @@ describe("isValidModulePath", () => {
     expect(isValidModulePath("ftp://evil.com/script.js")).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cache scope guards — headers()/cookies()/connection() must throw inside
+// "use cache" and unstable_cache() scopes (matches Next.js behavior).
+// Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache/use-cache.test.ts
+
+describe("cache scope guards for dynamic APIs", () => {
+  it('headers() throws inside "use cache" scope', async () => {
+    const { cacheContextStorage } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { headers, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    // Set up a valid headers context so the "no context" error doesn't fire
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    // Run inside a "use cache" ALS scope
+    await cacheContextStorage.run(
+      { tags: [], lifeConfigs: [], variant: "default" },
+      async () => {
+        await expect(headers()).rejects.toThrow(
+          /cannot be called inside "use cache"/,
+        );
+      },
+    );
+
+    setHeadersContext(null);
+  });
+
+  it('cookies() throws inside "use cache" scope', async () => {
+    const { cacheContextStorage } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { cookies, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    await cacheContextStorage.run(
+      { tags: [], lifeConfigs: [], variant: "default" },
+      async () => {
+        await expect(cookies()).rejects.toThrow(
+          /cannot be called inside "use cache"/,
+        );
+      },
+    );
+
+    setHeadersContext(null);
+  });
+
+  it('connection() throws inside "use cache" scope', async () => {
+    const { cacheContextStorage } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { connection } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+
+    await cacheContextStorage.run(
+      { tags: [], lifeConfigs: [], variant: "default" },
+      async () => {
+        await expect(connection()).rejects.toThrow(
+          /cannot be called inside "use cache"/,
+        );
+      },
+    );
+  });
+
+  it("headers() throws inside unstable_cache() scope", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { headers, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    const cached = unstable_cache(
+      async () => {
+        // This should throw because we're inside an unstable_cache scope
+        const h = await headers();
+        return h.get("x-test");
+      },
+      ["test-headers-in-cache"],
+    );
+
+    await expect(cached()).rejects.toThrow(/unstable_cache/);
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("cookies() throws inside unstable_cache() scope", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { cookies, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "abc"]]),
+    });
+
+    const cached = unstable_cache(
+      async () => {
+        const c = await cookies();
+        return c.get("session");
+      },
+      ["test-cookies-in-cache"],
+    );
+
+    await expect(cached()).rejects.toThrow(/unstable_cache/);
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("connection() throws inside unstable_cache() scope", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { connection } = await import(
+      "../packages/vinext/src/shims/server.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = unstable_cache(
+      async () => {
+        await connection();
+      },
+      ["test-connection-in-cache"],
+    );
+
+    await expect(cached()).rejects.toThrow(/unstable_cache/);
+
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("headers() works normally outside cache scopes", async () => {
+    const { headers, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setHeadersContext({
+      headers: new Headers({ "x-test": "works" }),
+      cookies: new Map(),
+    });
+
+    // Should not throw outside any cache scope
+    const h = await headers();
+    expect(h.get("x-test")).toBe("works");
+
+    setHeadersContext(null);
+  });
+
+  it("cookies() works normally outside cache scopes", async () => {
+    const { cookies, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["token", "abc"]]),
+    });
+
+    // Should not throw outside any cache scope
+    const c = await cookies();
+    expect(c.get("token")).toEqual({ name: "token", value: "abc" });
+
+    setHeadersContext(null);
+  });
+
+  it("existing unstable_cache tests still pass (cache miss executes callback)", async () => {
+    // Verify that the ALS wrapping in unstable_cache doesn't break normal caching
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const cached = unstable_cache(
+      async (x: number) => {
+        callCount++;
+        return x * 2;
+      },
+      ["regression-test"],
+    );
+
+    const r1 = await cached(5);
+    expect(r1).toBe(10);
+    expect(callCount).toBe(1);
+
+    const r2 = await cached(5);
+    expect(r2).toBe(10);
+    expect(callCount).toBe(1); // Cached, not called again
+
+    setCacheHandler(new MemoryCacheHandler());
+  });
+});
