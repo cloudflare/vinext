@@ -9,6 +9,7 @@ out/
 .wrangler/
 test-results/
 playwright-report/
+out-e2e
 
 # Environment + secrets
 .env
