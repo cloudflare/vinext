@@ -1504,6 +1504,16 @@ describe("Production server next.config.js features (Pages Router)", () => {
     expect(res.headers.get("x-guest-only-header")).toBeNull();
   });
 
+  it("config Vary header appends instead of replacing existing values", async () => {
+    // The /ssr page has config headers: [{ key: "Vary", value: "Accept-Language" }].
+    // If the response already has a Vary header (e.g. from compression),
+    // the config value should be appended, not replace it.
+    const res = await fetch(`${prodUrl}/ssr`);
+    expect(res.status).toBe(200);
+    const vary = res.headers.get("vary") ?? "";
+    expect(vary).toContain("Accept-Language");
+  });
+
   it("serves normal pages unaffected by config rules", async () => {
     const res = await fetch(`${prodUrl}/`);
     expect(res.status).toBe(200);

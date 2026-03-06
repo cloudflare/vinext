@@ -4040,7 +4040,18 @@ function applyHeaders(
     // (Vary, Set-Cookie). Using setHeader() on these would destroy
     // existing values like "Vary: RSC, Accept".
     const lk = header.key.toLowerCase();
-    if (lk === "vary" || lk === "set-cookie") {
+    if (lk === "set-cookie") {
+      // Node.js res.getHeader("set-cookie") returns string[] when
+      // multiple Set-Cookie headers have been set. Preserve the array.
+      const existing = res.getHeader(lk);
+      if (Array.isArray(existing)) {
+        res.setHeader(header.key, [...existing, header.value]);
+      } else if (existing) {
+        res.setHeader(header.key, [String(existing), header.value]);
+      } else {
+        res.setHeader(header.key, header.value);
+      }
+    } else if (lk === "vary") {
       const existing = res.getHeader(lk);
       if (existing) {
         res.setHeader(header.key, existing + ", " + header.value);

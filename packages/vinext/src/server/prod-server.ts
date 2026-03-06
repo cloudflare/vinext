@@ -857,10 +857,27 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       let resolvedPathname = resolvedUrl.split("?")[0];
 
       // ── 5. Apply custom headers from next.config.js ───────────────
+      // Config headers are additive for multi-value headers (Vary,
+      // Set-Cookie) and override for everything else. Set-Cookie values
+      // are stored as arrays (RFC 6265 forbids comma-joining cookies).
       if (configHeaders.length) {
         const matched = matchHeaders(resolvedPathname, configHeaders, reqCtx);
         for (const h of matched) {
-          middlewareHeaders[h.key.toLowerCase()] = h.value;
+          const lk = h.key.toLowerCase();
+          if (lk === "set-cookie") {
+            const existing = middlewareHeaders[lk];
+            if (Array.isArray(existing)) {
+              existing.push(h.value);
+            } else if (existing) {
+              (middlewareHeaders as any)[lk] = [existing, h.value];
+            } else {
+              (middlewareHeaders as any)[lk] = [h.value];
+            }
+          } else if (lk === "vary" && middlewareHeaders[lk]) {
+            middlewareHeaders[lk] += ", " + h.value;
+          } else {
+            middlewareHeaders[lk] = h.value;
+          }
         }
       }
 

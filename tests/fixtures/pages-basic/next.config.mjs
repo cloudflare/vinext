@@ -57,6 +57,11 @@ const nextConfig = {
         missing: [{ type: "cookie", key: "logged-in" }],
         headers: [{ key: "X-Guest-Only-Header", value: "1" }],
       },
+      // Test that Vary headers from config are additive (append, not replace)
+      {
+        source: "/ssr",
+        headers: [{ key: "Vary", value: "Accept-Language" }],
+      },
     ];
   },
 };

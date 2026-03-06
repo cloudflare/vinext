@@ -1261,7 +1261,16 @@ export default async function handler(request) {
                 ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
                 const extraHeaders = __applyConfigHeaders(pathname, __reqCtx);
                 for (const h of extraHeaders) {
-                  response.headers.set(h.key, h.value);
+                  // Use append() for headers where multiple values must coexist
+                  // (Vary, Set-Cookie). Using set() on these would destroy
+                  // existing values like "Vary: RSC, Accept" which are critical
+                  // for correct CDN caching behavior.
+                  const lk = h.key.toLowerCase();
+                  if (lk === "vary" || lk === "set-cookie") {
+                    response.headers.append(h.key, h.value);
+                  } else {
+                    response.headers.set(h.key, h.value);
+                  }
                 }
               }
               // Merge middleware response headers into the final response.
