@@ -2910,7 +2910,7 @@ describe("App Router external rewrite proxy credential stripping", () => {
     await new Promise<void>((resolve) => mockServer?.close(() => resolve()));
   });
 
-  it("strips credential headers from proxied requests to external rewrite targets", async () => {
+  it("forwards credential headers through proxied requests to external rewrite targets", async () => {
     mockResponseMode = "plain";
     capturedHeaders = null;
 
@@ -2926,11 +2926,11 @@ describe("App Router external rewrite proxy credential stripping", () => {
     });
 
     expect(capturedHeaders).not.toBeNull();
-    // Credential headers must be stripped
-    expect(capturedHeaders!["cookie"]).toBeUndefined();
-    expect(capturedHeaders!["authorization"]).toBeUndefined();
-    expect(capturedHeaders!["x-api-key"]).toBeUndefined();
-    expect(capturedHeaders!["proxy-authorization"]).toBeUndefined();
+    // Credential headers must be forwarded (matching Next.js behavior)
+    expect(capturedHeaders!["cookie"]).toBe("session=secret123");
+    expect(capturedHeaders!["authorization"]).toBe("Bearer tok_secret");
+    expect(capturedHeaders!["x-api-key"]).toBe("sk_live_secret");
+    expect(capturedHeaders!["proxy-authorization"]).toBe("Basic cHJveHk=");
     // Internal middleware headers must be stripped
     expect(capturedHeaders!["x-middleware-next"]).toBeUndefined();
     // Non-sensitive headers must be preserved
