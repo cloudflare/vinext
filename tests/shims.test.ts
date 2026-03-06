@@ -963,6 +963,85 @@ describe("next/cache shim", () => {
     // Should accept multiple tags without throwing
     expect(() => cacheTag("tag1", "tag2", "tag3")).not.toThrow();
   });
+
+  it("unstable_cache re-fetches when entry is stale (time-expired)", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const fn = async () => {
+      callCount++;
+      return "value-" + callCount;
+    };
+
+    // Use a very short revalidate (1 second)
+    const cached = unstable_cache(fn, ["stale-test"], {
+      revalidate: 1,
+    });
+
+    const r1 = await cached();
+    expect(r1).toBe("value-1");
+    expect(callCount).toBe(1);
+
+    // Cached call should still return the same value
+    const r2 = await cached();
+    expect(r2).toBe("value-1");
+    expect(callCount).toBe(1);
+
+    // Manually expire the entry by advancing time past revalidate window.
+    // We do this by patching the entry's revalidateAt in the handler.
+    const handler = (await import("../packages/vinext/src/shims/cache.js")).getCacheHandler();
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      if (entry.revalidateAt) {
+        entry.revalidateAt = Date.now() - 1000; // expired 1 second ago
+      }
+    }
+
+    // Next call should re-fetch because entry is now stale
+    const r3 = await cached();
+    expect(r3).toBe("value-2");
+    expect(callCount).toBe(2);
+
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("unstable_cache with no revalidate option caches indefinitely", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+
+    setCacheHandler(new MemoryCacheHandler());
+
+    let callCount = 0;
+    const fn = async () => {
+      callCount++;
+      return "result-" + callCount;
+    };
+
+    // No revalidate option (should cache indefinitely, not expire at t=0)
+    const cached = unstable_cache(fn, ["no-revalidate-test"]);
+
+    const r1 = await cached();
+    expect(r1).toBe("result-1");
+    expect(callCount).toBe(1);
+
+    // Should return cached value (not re-fetch)
+    const r2 = await cached();
+    expect(r2).toBe("result-1");
+    expect(callCount).toBe(1);
+
+    // Even after "time passes", should still be cached (not stale)
+    const handler = (await import("../packages/vinext/src/shims/cache.js")).getCacheHandler();
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      // revalidateAt should be null (indefinite) not 0 or past timestamp
+      expect(entry.revalidateAt).toBeNull();
+    }
+
+    setCacheHandler(new MemoryCacheHandler());
+  });
 });
 
 // ---------------------------------------------------------------------------

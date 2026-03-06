@@ -73,7 +73,7 @@ export interface CachedFetchValue {
     status?: number;
   };
   tags?: string[];
-  revalidate: number;
+  revalidate: number | false;
 }
 
 export interface CachedAppPageValue {
@@ -617,12 +617,13 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     const argsKey = JSON.stringify(args);
     const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
 
-    // Try to get from cache
+    // Try to get from cache. Check cacheState so time-expired entries
+    // trigger a re-fetch instead of being served indefinitely.
     const existing = await activeHandler.get(cacheKey, {
       kind: "FETCH",
       tags,
     });
-    if (existing?.value && existing.value.kind === "FETCH") {
+    if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
       try {
         return JSON.parse(existing.value.data.body);
       } catch {
@@ -644,7 +645,11 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
         url: cacheKey,
       },
       tags,
-      revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : 0,
+      // revalidate: false means "cache indefinitely" (no time-based expiry).
+      // A positive number means time-based revalidation in seconds.
+      // When unset (undefined), default to false (indefinite) matching
+      // Next.js behavior for unstable_cache without explicit revalidate.
+      revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
     };
 
     await activeHandler.set(cacheKey, cacheValue, {
