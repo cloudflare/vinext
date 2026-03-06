@@ -1287,12 +1287,26 @@ describe("App Router dev server origin check", () => {
     expect(res.status).toBe(403);
   });
 
-  it("blocks cross-origin requests with Sec-Fetch-Site: cross-site", async () => {
-    const res = await fetch(`${baseUrl}/`, {
-      headers: { "Sec-Fetch-Site": "cross-site" },
+  it("blocks requests with Sec-Fetch-Site: cross-site and no-cors mode", async () => {
+    // Node.js fetch strips Sec-Fetch-* headers (they're forbidden headers
+    // in the Fetch spec). Use raw HTTP to simulate browser behavior.
+    const http = await import("node:http");
+    const url = new URL(baseUrl);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request({
+        hostname: url.hostname,
+        port: url.port,
+        path: "/",
+        method: "GET",
+        headers: {
+          "sec-fetch-site": "cross-site",
+          "sec-fetch-mode": "no-cors",
+        },
+      }, (res) => resolve(res.statusCode ?? 0));
+      req.on("error", reject);
+      req.end();
     });
-    // Sec-Fetch-Site without Origin is caught as defense-in-depth
-    expect(res.status).toBe(200);
+    expect(status).toBe(403);
   });
 
   it("blocks cross-origin requests to source files", async () => {

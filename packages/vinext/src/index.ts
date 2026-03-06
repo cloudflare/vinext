@@ -2404,50 +2404,23 @@ hydrate();
         // (including /@*, /__vite*, /node_modules* paths) are validated
         // before Vite serves any content.
         server.middlewares.use((req: any, res: any, next: any) => {
-          // WebSocket upgrade requests don't go through connect middleware
-          // and are handled by Vite's HMR server directly.
-          // Allow same-origin requests and requests with no Origin header
-          // (e.g. direct browser navigation, curl, etc.).
-          const origin = req.headers["origin"];
-          if (!origin || origin === "null") return next();
-
-          // Derive the expected host from the Host header
-          const host = req.headers["host"];
-          if (!host) return next();
-
-          let originHost: string;
-          try {
-            originHost = new URL(origin).host;
-          } catch {
+          const blockReason = validateDevRequest(
+            {
+              origin: req.headers.origin as string | undefined,
+              host: req.headers.host,
+              "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
+              "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
+              "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
+            },
+            nextConfig?.serverActionsAllowedOrigins,
+          );
+          if (blockReason) {
+            console.warn(`[vinext] Blocked dev request: ${blockReason} (${req.url})`);
             res.writeHead(403, { "Content-Type": "text/plain" });
             res.end("Forbidden");
             return;
           }
-
-          // Same-origin: origin host matches the Host header
-          if (originHost === host) return next();
-
-          // Allow localhost variants (127.0.0.1, [::1], *.localhost)
-          const localhostRe = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/;
-          if (localhostRe.test(originHost) && localhostRe.test(host)) return next();
-
-          // Check Sec-Fetch-Site: browsers set this on every request.
-          // "same-origin" and "same-site" are safe. "none" means direct
-          // navigation (typing in address bar). "cross-site" is the
-          // only dangerous value, but we already blocked it above via
-          // origin/host mismatch. This is defense-in-depth for browsers
-          // that send Sec-Fetch-Site but not Origin on some request types.
-          const secFetchSite = req.headers["sec-fetch-site"];
-          if (secFetchSite === "cross-site") {
-            res.writeHead(403, { "Content-Type": "text/plain" });
-            res.end("Forbidden");
-            return;
-          }
-
-          // Block: origin doesn't match host
-          res.writeHead(403, { "Content-Type": "text/plain" });
-          res.end("Forbidden");
-          return;
+          next();
         });
 
         // Return a function to register middleware AFTER Vite's built-in middleware
@@ -2593,9 +2566,12 @@ hydrate();
                 return next();
               }
 
-              // ── Cross-origin request protection ─────────────────────────
-              // Block requests from non-localhost origins to prevent
-              // cross-origin data exfiltration from the dev server.
+              // ── Cross-origin request protection (defense-in-depth) ──────
+              // The pre-Vite middleware above already blocks cross-origin
+              // requests before Vite serves any content. This second check
+              // guards the Pages Router handler specifically, in case the
+              // middleware ordering changes or new middleware is added between
+              // the two. Both calls use the same validateDevRequest() function.
               const blockReason = validateDevRequest(
                 {
                   origin: req.headers.origin as string | undefined,
