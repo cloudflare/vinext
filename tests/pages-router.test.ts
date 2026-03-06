@@ -1345,7 +1345,9 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.status).toBe(200);
     const ct = res.headers.get("content-type") ?? "";
     // Must NOT default to text/html, which would cause browsers to render
-    // the response body as HTML.
+    // the response body as HTML. When the handler passes a string to
+    // res.end(), the Response constructor sets text/plain automatically,
+    // so we verify the dangerous text/html default is gone.
     expect(ct).not.toContain("text/html");
   });
 
