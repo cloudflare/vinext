@@ -3570,6 +3570,7 @@ hydrate();
               "  Cache-Control: public, max-age=31536000, immutable",
               "",
             ].join("\n");
+            fs.mkdirSync(clientDir, { recursive: true });
             fs.writeFileSync(headersPath, headersContent);
           }
         },
