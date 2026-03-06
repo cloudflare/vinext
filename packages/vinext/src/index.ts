@@ -1132,6 +1132,12 @@ function createReqRes(request, url, query, body) {
       else { res.writeHead(statusOrUrl, { Location: url2 }); }
       res.end();
     },
+    getHeaders: function() {
+      var h = Object.assign({}, resHeaders);
+      if (setCookieHeaders.length > 0) h["set-cookie"] = setCookieHeaders;
+      return h;
+    },
+    get headersSent() { return ended; },
   };
 
   return { req, res, responsePromise };
@@ -1246,8 +1252,9 @@ export async function renderPage(request, url, manifest) {
     }
 
     let pageProps = {};
+    var gsspRes = null;
     if (typeof pageModule.getServerSideProps === "function") {
-      const { req, res } = createReqRes(request, routeUrl, parseQuery(routeUrl), undefined);
+      const { req, res, responsePromise } = createReqRes(request, routeUrl, parseQuery(routeUrl), undefined);
       const ctx = {
         params, req, res,
         query: parseQuery(routeUrl),
@@ -1257,6 +1264,10 @@ export async function renderPage(request, url, manifest) {
         defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
       };
       const result = await pageModule.getServerSideProps(ctx);
+      // If gSSP called res.end() directly (short-circuit), return that response.
+      if (res.headersSent) {
+        return await responsePromise;
+      }
       if (result && result.props) pageProps = result.props;
       if (result && result.redirect) {
         var gsspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
@@ -1265,6 +1276,9 @@ export async function renderPage(request, url, manifest) {
       if (result && result.notFound) {
         return new Response("404", { status: 404 });
       }
+      // Preserve the res object so headers/status/cookies set by gSSP
+      // can be merged into the final HTML response.
+      gsspRes = res;
     }
     // Build font Link header early so it's available for ISR cached responses too.
     // Font preloads are module-level state populated at import time and persist across requests.
@@ -1441,16 +1455,33 @@ export async function renderPage(request, url, manifest) {
       await isrSet(isrCacheKey, { kind: "PAGES", html: fullHtml, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
     }
 
-    const responseHeaders = { "Content-Type": "text/html" };
+    // Merge headers/status/cookies set by getServerSideProps on the res object.
+    // gSSP commonly uses res.setHeader("Set-Cookie", ...) or res.status(304).
+    var finalStatus = 200;
+    const responseHeaders = new Headers({ "Content-Type": "text/html" });
+    if (gsspRes) {
+      finalStatus = gsspRes.statusCode;
+      var gsspHeaders = gsspRes.getHeaders();
+      for (var hk of Object.keys(gsspHeaders)) {
+        var hv = gsspHeaders[hk];
+        if (hk === "set-cookie" && Array.isArray(hv)) {
+          for (var sc of hv) responseHeaders.append("set-cookie", sc);
+        } else if (hv != null) {
+          responseHeaders.set(hk, String(hv));
+        }
+      }
+      // Ensure Content-Type stays text/html (gSSP shouldn't override it for page renders)
+      responseHeaders.set("Content-Type", "text/html");
+    }
     if (isrRevalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=" + isrRevalidateSeconds + ", stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "MISS";
+      responseHeaders.set("Cache-Control", "s-maxage=" + isrRevalidateSeconds + ", stale-while-revalidate");
+      responseHeaders.set("X-Vinext-Cache", "MISS");
     }
     // Set HTTP Link header for font preloading
     if (_fontLinkHeader) {
-      responseHeaders["Link"] = _fontLinkHeader;
+      responseHeaders.set("Link", _fontLinkHeader);
     }
-    return new Response(compositeStream, { status: 200, headers: responseHeaders });
+    return new Response(compositeStream, { status: finalStatus, headers: responseHeaders });
   } catch (e) {
     console.error("[vinext] SSR error:", e);
     return new Response("Internal Server Error", { status: 500 });

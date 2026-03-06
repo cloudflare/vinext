@@ -433,6 +433,11 @@ export function createSSRHandler(
           defaultLocale: i18nConfig?.defaultLocale,
         };
         const result = await pageModule.getServerSideProps(context);
+        // If gSSP called res.end() directly (short-circuit pattern),
+        // the response is already sent. Do not continue rendering.
+        if (res.writableEnded) {
+          return;
+        }
         if (result && "props" in result) {
           pageProps = result.props;
         }
@@ -454,6 +459,11 @@ export function createSSRHandler(
         if (result && "notFound" in result && result.notFound) {
           await renderErrorPage(server, req, res, url, pagesDir, 404, routerShim.wrapWithRouterContext);
           return;
+        }
+        // Preserve any status code set by gSSP (e.g. res.statusCode = 201).
+        // This takes precedence over the default 200 but not over middleware status.
+        if (!statusCode && res.statusCode !== 200) {
+          statusCode = res.statusCode;
         }
       }
       // Collect font preloads early so ISR cached responses can include

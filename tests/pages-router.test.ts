@@ -63,6 +63,28 @@ describe("Pages Router integration", () => {
     expect(html).toContain("Rendered at:");
   });
 
+  it("getServerSideProps headers and status are applied to the response", async () => {
+    const res = await fetch(`${baseUrl}/ssr-headers`);
+    // gSSP sets statusCode = 201
+    expect(res.status).toBe(201);
+    const html = await res.text();
+    expect(html).toContain("Headers were set");
+    // Custom header set via res.setHeader
+    expect(res.headers.get("x-custom-header")).toBe("hello-from-gssp");
+    // Cookie set via res.setHeader("set-cookie", ...)
+    const setCookie = res.headers.get("set-cookie");
+    expect(setCookie).toContain("gssp_token=abc123");
+  });
+
+  it("getServerSideProps calling res.end() short-circuits the response", async () => {
+    const res = await fetch(`${baseUrl}/ssr-res-end`);
+    // gSSP calls res.end() with a JSON body and status 202
+    expect(res.status).toBe(202);
+    expect(res.headers.get("content-type")).toBe("application/json");
+    const body = await res.json();
+    expect(body).toEqual({ ok: true, source: "gssp-res-end" });
+  });
+
   it("getServerSideProps returning notFound renders custom 404 page", async () => {
     const res = await fetch(`${baseUrl}/posts/missing`);
     expect(res.status).toBe(404);
