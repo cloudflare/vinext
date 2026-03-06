@@ -543,11 +543,11 @@ export default {
       }
 
       // Build request context for has/missing condition matching.
-      // headers, redirects, and beforeFiles rewrites run before middleware,
-      // so they use this pre-middleware snapshot. afterFiles and fallback
-      // rewrites run after middleware (App Router order), so they use a
-      // rebuilt context (postMwReqCtx) created after x-middleware-request-*
-      // headers are unpacked into request.
+      // headers and redirects run before middleware, so they use this
+      // pre-middleware snapshot. beforeFiles, afterFiles, and fallback
+      // rewrites run after middleware (App Router order), so they use
+      // postMwReqCtx created after x-middleware-request-* headers are
+      // unpacked into request.
       const reqCtx = requestContextFromRequest(request);
 
       // ── 3. Run middleware ──────────────────────────────────────────
@@ -656,7 +656,7 @@ export default {
 
       // ��─ 6. Apply beforeFiles rewrites from next.config.js ─────────
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, reqCtx);
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);

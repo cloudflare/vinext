@@ -766,11 +766,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       });
 
       // Build request context for has/missing condition matching.
-      // headers, redirects, and beforeFiles rewrites run before middleware,
-      // so they use this pre-middleware snapshot. afterFiles and fallback
-      // rewrites run after middleware (App Router order), so they use a
-      // rebuilt context (postMwReqCtx) created after x-middleware-request-*
-      // headers are unpacked into webRequest.
+      // Pages Router: headers, redirects, and beforeFiles all run before
+      // middleware, so they use this pre-middleware snapshot. afterFiles
+      // and fallback rewrites use postMwReqCtx (built after middleware).
       const reqCtx: RequestContext = requestContextFromRequest(webRequest);
 
       // ── 4. Run middleware ─────────────────────────────────────────
