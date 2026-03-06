@@ -42,6 +42,10 @@ export function routePrecedence(pattern: string): number {
     } else if (i >= staticPrefixCount) {
       // Static segment interleaved after a dynamic segment (infix static).
       // Boost priority — more specific than a bare catch-all.
+      // The -500 compounds for each infix static segment, so routes with more
+      // static infixes score lower (higher priority) than those with fewer.
+      // E.g. /:a/x/y/:b+ (-1000) beats /:a/x/:b+ (-500) beats /:a/:b+ (0).
+      // This is intentional: more static constraints = more specific route.
       score -= 500;
     }
     // Static prefix segments (i < staticPrefixCount) are handled below.
