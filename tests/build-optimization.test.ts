@@ -1016,6 +1016,84 @@ describe("collectAssetTags lazy chunk filtering", () => {
   });
 });
 
+// ─── vinext:async-hooks-stub ───────────────────────────────────────────────────
+// The plugin is defined inline (not exported), so we recreate the hook logic
+// here to validate the resolveId/load behavior as pure functions.
+
+describe("vinext:async-hooks-stub", () => {
+  const VIRTUAL_ID = "\0vinext:async-hooks-stub";
+
+  function resolveId(id: string, environmentName: string | undefined): string | undefined {
+    if (/^(node:)?async_hooks$/.test(id) && environmentName === "client") {
+      return VIRTUAL_ID;
+    }
+    return undefined;
+  }
+
+  function load(id: string): string | undefined {
+    if (id === VIRTUAL_ID) {
+      return [
+        "export class AsyncLocalStorage {",
+        "  run(_store, fn, ...args) { return fn(...args); }",
+        "  getStore() { return undefined; }",
+        "  enterWith() {}",
+        "  exit(fn, ...args) { return fn(...args); }",
+        "  disable() {}",
+        "}",
+      ].join("\n");
+    }
+    return undefined;
+  }
+
+  describe("resolveId", () => {
+    it("resolves node:async_hooks to virtual module in client env", () => {
+      expect(resolveId("node:async_hooks", "client")).toBe(VIRTUAL_ID);
+    });
+
+    it("resolves bare async_hooks to virtual module in client env", () => {
+      expect(resolveId("async_hooks", "client")).toBe(VIRTUAL_ID);
+    });
+
+    it("returns undefined in ssr environment", () => {
+      expect(resolveId("node:async_hooks", "ssr")).toBeUndefined();
+    });
+
+    it("returns undefined in rsc environment", () => {
+      expect(resolveId("node:async_hooks", "rsc")).toBeUndefined();
+    });
+
+    it("returns undefined when environment is undefined", () => {
+      expect(resolveId("node:async_hooks", undefined)).toBeUndefined();
+    });
+  });
+
+  describe("load", () => {
+    it("returns stub source with AsyncLocalStorage class", () => {
+      const source = load(VIRTUAL_ID);
+      expect(source).toBeDefined();
+      expect(source).toContain("export class AsyncLocalStorage");
+      expect(source).toContain("getStore()");
+      expect(source).toContain("run(_store, fn, ...args)");
+    });
+
+    it("returns undefined for other module ids", () => {
+      expect(load("some-other-module")).toBeUndefined();
+    });
+
+    it("stub getStore() returns undefined and run() passes through callback", () => {
+      const source = load(VIRTUAL_ID)!;
+      // Verify getStore returns undefined
+      expect(source).toContain("getStore() { return undefined; }");
+      // Verify run passes through to the callback
+      expect(source).toContain("run(_store, fn, ...args) { return fn(...args); }");
+      // Verify other methods exist
+      expect(source).toContain("enterWith() {}");
+      expect(source).toContain("exit(fn, ...args) { return fn(...args); }");
+      expect(source).toContain("disable() {}");
+    });
+  });
+});
+
 // ─── stripServerExports ───────────────────────────────────────────────────────
 
 // Note: stripServerExports runs in Vite's transform pipeline AFTER JSX and

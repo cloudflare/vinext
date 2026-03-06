@@ -2305,7 +2305,7 @@ hydrate();
       enforce: "pre",
 
       resolveId: {
-        filter: { id: /^node:async_hooks$/ },
+        filter: { id: /^(node:)?async_hooks$/ },
         handler(_id) {
           if (this.environment?.name === "client") {
             return "\0vinext:async-hooks-stub";
@@ -2313,18 +2313,23 @@ hydrate();
         },
       },
 
-      load(id) {
-        if (id === "\0vinext:async-hooks-stub") {
-          return [
-            "export class AsyncLocalStorage {",
-            "  run(_store, fn, ...args) { return fn(...args); }",
-            "  getStore() { return undefined; }",
-            "  enterWith() {}",
-            "  exit(fn, ...args) { return fn(...args); }",
-            "  disable() {}",
-            "}",
-          ].join("\n");
-        }
+      load: {
+        handler(id) {
+          if (id === "\0vinext:async-hooks-stub") {
+            // Intentionally minimal: only AsyncLocalStorage is exported.
+            // If other node:async_hooks exports (e.g. AsyncResource,
+            // executionAsyncId) are needed in client shims, extend here.
+            return [
+              "export class AsyncLocalStorage {",
+              "  run(_store, fn, ...args) { return fn(...args); }",
+              "  getStore() { return undefined; }",
+              "  enterWith() {}",
+              "  exit(fn, ...args) { return fn(...args); }",
+              "  disable() {}",
+              "}",
+            ].join("\n");
+          }
+        },
       },
     },
     // Proxy plugin for @mdx-js/rollup. The real MDX plugin is created lazily
