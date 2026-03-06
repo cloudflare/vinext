@@ -560,6 +560,87 @@ describe("Pages Router integration", () => {
   });
 });
 
+describe("Pages Router dev server origin check", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    ({ server, baseUrl } = await startFixtureServer(FIXTURE_DIR));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  it("allows requests with no Origin header (direct navigation)", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+  });
+
+  it("allows same-origin requests", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: baseUrl },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("blocks cross-origin requests", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: "http://evil.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks cross-origin requests to /@* Vite internal paths", async () => {
+    const res = await fetch(`${baseUrl}/@fs/etc/passwd`, {
+      headers: { Origin: "http://evil.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks cross-origin requests to /__vite internal paths", async () => {
+    const res = await fetch(`${baseUrl}/__vite_ping`, {
+      headers: { Origin: "http://evil.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks cross-origin requests to /node_modules paths", async () => {
+    const res = await fetch(`${baseUrl}/node_modules/.vite/deps/react.js`, {
+      headers: { Origin: "http://evil.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks requests with malformed Origin header", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: "not-a-url" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks image endpoint redirect to /@* internal paths", async () => {
+    const res = await fetch(`${baseUrl}/_vinext/image?url=/@fs/etc/passwd&w=100&q=75`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("blocks image endpoint redirect to /__vite internal paths", async () => {
+    const res = await fetch(`${baseUrl}/_vinext/image?url=/__vite_hmr&w=100&q=75`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("blocks image endpoint redirect to /node_modules paths", async () => {
+    const res = await fetch(`${baseUrl}/_vinext/image?url=/node_modules/.vite/manifest.json&w=100&q=75`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("Virtual server entry generation", () => {
   it("generates valid JavaScript for the server entry", async () => {
     // Create a minimal server just to access the plugin's virtual module

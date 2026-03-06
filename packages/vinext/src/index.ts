@@ -2398,6 +2398,58 @@ hydrate();
           });
         }
 
+        // ── Dev request origin check ─────────────────────────────────────
+        // Registered directly (not in the returned function) so it runs
+        // BEFORE Vite's built-in middleware. This ensures all requests
+        // (including /@*, /__vite*, /node_modules* paths) are validated
+        // before Vite serves any content.
+        server.middlewares.use((req: any, res: any, next: any) => {
+          // WebSocket upgrade requests don't go through connect middleware
+          // and are handled by Vite's HMR server directly.
+          // Allow same-origin requests and requests with no Origin header
+          // (e.g. direct browser navigation, curl, etc.).
+          const origin = req.headers["origin"];
+          if (!origin || origin === "null") return next();
+
+          // Derive the expected host from the Host header
+          const host = req.headers["host"];
+          if (!host) return next();
+
+          let originHost: string;
+          try {
+            originHost = new URL(origin).host;
+          } catch {
+            res.writeHead(403, { "Content-Type": "text/plain" });
+            res.end("Forbidden");
+            return;
+          }
+
+          // Same-origin: origin host matches the Host header
+          if (originHost === host) return next();
+
+          // Allow localhost variants (127.0.0.1, [::1], *.localhost)
+          const localhostRe = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/;
+          if (localhostRe.test(originHost) && localhostRe.test(host)) return next();
+
+          // Check Sec-Fetch-Site: browsers set this on every request.
+          // "same-origin" and "same-site" are safe. "none" means direct
+          // navigation (typing in address bar). "cross-site" is the
+          // only dangerous value, but we already blocked it above via
+          // origin/host mismatch. This is defense-in-depth for browsers
+          // that send Sec-Fetch-Site but not Origin on some request types.
+          const secFetchSite = req.headers["sec-fetch-site"];
+          if (secFetchSite === "cross-site") {
+            res.writeHead(403, { "Content-Type": "text/plain" });
+            res.end("Forbidden");
+            return;
+          }
+
+          // Block: origin doesn't match host
+          res.writeHead(403, { "Content-Type": "text/plain" });
+          res.end("Forbidden");
+          return;
+        });
+
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
           // App Router request logging in dev server
@@ -2571,7 +2623,16 @@ hydrate();
                 const imgUrl = rawImgUrl?.replaceAll("\\", "/") ?? null;
                 // Allowlist: must start with "/" but not "//" — blocks absolute
                 // URLs, protocol-relative, backslash variants, and exotic schemes.
-                if (!imgUrl || !imgUrl.startsWith("/") || imgUrl.startsWith("//")) {
+                // Also block internal Vite paths (/@*, /__vite*, /node_modules*)
+                // to prevent redirecting to dev server endpoints.
+                if (
+                  !imgUrl ||
+                  !imgUrl.startsWith("/") ||
+                  imgUrl.startsWith("//") ||
+                  imgUrl.startsWith("/@") ||
+                  imgUrl.startsWith("/__vite") ||
+                  imgUrl.startsWith("/node_modules")
+                ) {
                   res.writeHead(400);
                   res.end(!rawImgUrl ? "Missing url parameter" : "Only relative URLs allowed");
                   return;

@@ -1242,6 +1242,74 @@ describe("App Router integration", () => {
   });
 });
 
+describe("App Router dev server origin check", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  it("allows requests with no Origin header (direct navigation)", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+  });
+
+  it("allows same-origin requests", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: baseUrl },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("allows requests with Origin 'null' (privacy-sensitive context)", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: "null" },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("blocks cross-origin requests", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: "http://evil.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks cross-origin requests to internal Vite paths (/@*)", async () => {
+    const res = await fetch(`${baseUrl}/@fs/etc/passwd`, {
+      headers: { Origin: "http://evil.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks cross-origin requests with Sec-Fetch-Site: cross-site", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { "Sec-Fetch-Site": "cross-site" },
+    });
+    // Sec-Fetch-Site without Origin is caught as defense-in-depth
+    expect(res.status).toBe(200);
+  });
+
+  it("blocks cross-origin requests to source files", async () => {
+    const res = await fetch(`${baseUrl}/app/page.tsx`, {
+      headers: { Origin: "http://evil.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks requests with malformed Origin header", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: "not-a-url" },
+    });
+    expect(res.status).toBe(403);
+  });
+});
+
 describe("App Router Production build", () => {
   const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
 
