@@ -19,10 +19,30 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Readable, pipeline } from "node:stream";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
+import { register } from "node:module";
+
+// Register the .wasm ESM hook at module load time so that any subsequent
+// dynamic import() of the RSC entry (which contains CF-native WASM module
+// imports) is handled correctly under Node.js.  The hook compiles the WASM
+// bytes with `new WebAssembly.Module()` and exports the module as default —
+// matching exactly what the Cloudflare runtime provides natively.
+//
+// The registration is skipped gracefully when the compiled .js file is not
+// present (e.g. when running under Vitest directly against TypeScript sources),
+// since tests do not load actual .wasm files and don't need the hook.
+try {
+  const wasmHookUrl = new URL("./wasm-hook.js", import.meta.url);
+  // Only register if the file actually exists on disk.
+  if (fs.existsSync(fileURLToPath(wasmHookUrl))) {
+    register(wasmHookUrl.href, { parentURL: import.meta.url });
+  }
+} catch {
+  // Silently skip — hook is not available in this environment.
+}
 import { matchRedirect, matchRewrite, matchHeaders, requestContextFromRequest, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "../config/config-matchers.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { IMAGE_OPTIMIZATION_PATH, IMAGE_CONTENT_SECURITY_POLICY, parseImageParams, isSafeImageContentType, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES, type ImageConfig } from "./image-optimization.js";
@@ -476,11 +496,30 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     } catch { /* ignore parse errors */ }
   }
 
+  const _origFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = input instanceof URL ? input : new URL(String(input));
+    if (url.protocol === "file:") {
+      const bytes = fs.readFileSync(fileURLToPath(url));
+      return new Response(bytes);
+    }
+    return _origFetch(input as Request, init);
+  };
+
   // Import the RSC handler (use file:// URL for reliable dynamic import)
   const rscModule = await import(pathToFileURL(rscEntryPath).href);
-  const rscHandler: (request: Request) => Promise<Response> = rscModule.default;
+  const rscExport = rscModule.default;
 
-  if (typeof rscHandler !== "function") {
+  // The RSC entry may export either:
+  //   - a plain function: handler(request) => Response   (vinext-native)
+  //   - a CF Worker object: { fetch(request, env) }      (Cloudflare build)
+  // Normalise both to a plain (request) => Response function.
+  let rscHandler: (request: Request) => Promise<Response>;
+  if (typeof rscExport === "function") {
+    rscHandler = rscExport;
+  } else if (rscExport && typeof rscExport.fetch === "function") {
+    rscHandler = (request: Request) => rscExport.fetch(request, {});
+  } else {
     console.error("[vinext] RSC entry does not export a default handler function");
     process.exit(1);
   }

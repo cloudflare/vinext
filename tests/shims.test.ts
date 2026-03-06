@@ -2151,7 +2151,7 @@ describe("double-encoded path handling in middleware", () => {
     // Create a mock Vite server that returns a middleware module
     let capturedUrl: string | undefined;
     const mockServer = {
-      ssrLoadModule: async () => ({
+      import: async () => ({
         default: (req: Request) => {
           capturedUrl = req.url;
           return new Response("OK", {
@@ -2184,7 +2184,7 @@ describe("double-encoded path handling in middleware", () => {
     );
 
     const mockServer = {
-      ssrLoadModule: async () => ({
+      import: async () => ({
         proxy: () => {
           const response = new Response(null, { status: 307 });
           response.headers.set("location", "/login");
