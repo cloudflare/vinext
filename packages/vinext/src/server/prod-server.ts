@@ -765,10 +765,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         duplex: hasBody ? "half" : undefined,
       });
 
-      // Build request context for has/missing condition matching.
-      // This is rebuilt after middleware runs (see below) so that
-      // config rules see middleware-modified cookies and headers.
-      let reqCtx: RequestContext = requestContextFromRequest(webRequest);
+      // Build request context for has/missing condition matching
+      const reqCtx: RequestContext = requestContextFromRequest(webRequest);
 
       // ── 4. Run middleware ─────────────────────────────────────────
       let resolvedUrl = url;
@@ -847,12 +845,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
           delete middlewareHeaders[key];
         }
       }
-
-      // Rebuild request context now that middleware may have modified
-      // headers (e.g. x-middleware-request-cookie copied to cookie).
-      // Without this, has/missing conditions in config redirects,
-      // rewrites, and headers would evaluate against stale values.
-      reqCtx = requestContextFromRequest(webRequest);
 
       let resolvedPathname = resolvedUrl.split("?")[0];
 

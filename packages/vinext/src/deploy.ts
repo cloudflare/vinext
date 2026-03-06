@@ -543,9 +543,8 @@ export default {
       }
 
       // Build request context for has/missing condition matching.
-      // This is rebuilt after middleware runs (see below) so that
-      // config rules see middleware-modified cookies and headers.
-      let reqCtx = requestContextFromRequest(request);
+      // Created before middleware runs, matching prod-server ordering.
+      const reqCtx = requestContextFromRequest(request);
 
       // ── 3. Run middleware ──────────────────────────────────────────
       let resolvedUrl = urlWithQuery;
@@ -609,12 +608,6 @@ export default {
           duplex: request.body ? "half" : undefined,
         });
       }
-
-      // Rebuild request context now that middleware may have modified
-      // headers (e.g. x-middleware-request-cookie copied to cookie).
-      // Without this, has/missing conditions in config redirects,
-      // rewrites, and headers would evaluate against stale values.
-      reqCtx = requestContextFromRequest(request);
 
       let resolvedPathname = resolvedUrl.split("?")[0];
 
