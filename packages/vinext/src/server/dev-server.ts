@@ -70,7 +70,7 @@ async function streamPageToResponse(
     scripts: string;
     DocumentComponent: React.ComponentType | null;
     statusCode?: number;
-    extraHeaders?: Record<string, string>;
+    extraHeaders?: Record<string, string | string[]>;
     /** Called after renderToReadableStream resolves (shell ready) to collect head HTML */
     getHeadHTML: () => string;
   },
@@ -134,12 +134,23 @@ async function streamPageToResponse(
   const prefix = transformedShell.slice(0, markerIdx);
   const suffix = transformedShell.slice(markerIdx + STREAM_BODY_MARKER.length);
 
-  // Send headers and start streaming
+  // Send headers and start streaming.
+  // Set array-valued headers (e.g. Set-Cookie from gSSP) via setHeader()
+  // before writeHead(), since writeHead()'s headers object doesn't handle
+  // arrays portably. Then writeHead() merges with any setHeader() calls.
   const headers: Record<string, string> = {
     "Content-Type": "text/html",
     "Transfer-Encoding": "chunked",
-    ...extraHeaders,
   };
+  if (extraHeaders) {
+    for (const [key, val] of Object.entries(extraHeaders)) {
+      if (Array.isArray(val)) {
+        res.setHeader(key, val);
+      } else {
+        headers[key] = val;
+      }
+    }
+  }
   res.writeHead(statusCode, headers);
 
   // Write the document prefix (head, opening body)
@@ -421,7 +432,16 @@ export function createSSRHandler(
         // but since we always have data available via SSR, we render fully.
       }
 
+      // Headers set by getServerSideProps for explicit forwarding to
+      // streamPageToResponse. Without this, they survive only through
+      // Node.js writeHead() implicitly merging setHeader() calls, which
+      // would silently break if streamPageToResponse is refactored.
+      const gsspExtraHeaders: Record<string, string | string[]> = {};
+
       if (typeof pageModule.getServerSideProps === "function") {
+        // Snapshot existing headers so we can detect what gSSP adds.
+        const headersBeforeGSSP = new Set(Object.keys(res.getHeaders()));
+
         const context = {
           params,
           req,
@@ -435,6 +455,11 @@ export function createSSRHandler(
         const result = await pageModule.getServerSideProps(context);
         // If gSSP called res.end() directly (short-circuit pattern),
         // the response is already sent. Do not continue rendering.
+        // Note: middleware headers are already on `res` (middleware runs
+        // before this handler in the connect chain), so they are included
+        // in the short-circuited response. The prod path achieves the same
+        // result via the worker entry merging middleware headers after
+        // renderPage() returns.
         if (res.writableEnded) {
           return;
         }
@@ -464,6 +489,19 @@ export function createSSRHandler(
         // This takes precedence over the default 200 but not over middleware status.
         if (!statusCode && res.statusCode !== 200) {
           statusCode = res.statusCode;
+        }
+
+        // Capture headers newly set by gSSP and forward them explicitly.
+        // Remove from `res` to prevent duplication when writeHead() merges.
+        const headersAfterGSSP = res.getHeaders();
+        for (const [key, val] of Object.entries(headersAfterGSSP)) {
+          if (headersBeforeGSSP.has(key) || val == null) continue;
+          res.removeHeader(key);
+          if (Array.isArray(val)) {
+            gsspExtraHeaders[key] = val.map(String);
+          } else {
+            gsspExtraHeaders[key] = String(val);
+          }
         }
       }
       // Collect font preloads early so ISR cached responses can include
@@ -747,8 +785,9 @@ hydrate();
 
       const allScripts = `${nextDataScript}\n  ${hydrationScript}`;
 
-      // Build cache headers for ISR responses
-      const extraHeaders: Record<string, string> = {};
+      // Build response headers: start with gSSP headers, then layer on
+      // ISR and font preload headers (which take precedence).
+      const extraHeaders: Record<string, string | string[]> = { ...gsspExtraHeaders };
       if (isrRevalidateSeconds) {
         extraHeaders["Cache-Control"] = `s-maxage=${isrRevalidateSeconds}, stale-while-revalidate`;
         extraHeaders["X-Vinext-Cache"] = "MISS";
