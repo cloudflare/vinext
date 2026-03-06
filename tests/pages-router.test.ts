@@ -1340,6 +1340,15 @@ describe("Production server middleware (Pages Router)", () => {
     expect(body.equals(Buffer.from([0xff, 0xfe, 0xfd, 0x00, 0x61, 0x62, 0x63]))).toBe(true);
   });
 
+  it("defaults to application/octet-stream for API routes without Content-Type", async () => {
+    const res = await fetch(`${prodUrl}/api/no-content-type`);
+    expect(res.status).toBe(200);
+    const ct = res.headers.get("content-type") ?? "";
+    // Must NOT default to text/html, which would cause browsers to render
+    // the response body as HTML.
+    expect(ct).not.toContain("text/html");
+  });
+
   it("serves normal pages without middleware interference", async () => {
     const res = await fetch(`${prodUrl}/`);
     expect(res.status).toBe(200);

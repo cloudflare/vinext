@@ -907,7 +907,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
         // Merge middleware + config headers into the response
         const responseBody = Buffer.from(await response.arrayBuffer());
-        const ct = response.headers.get("content-type") ?? "text/html";
+        // API routes may return arbitrary data (JSON, binary, etc.), so
+        // default to application/octet-stream rather than text/html when
+        // the handler doesn't set an explicit Content-Type.
+        const ct = response.headers.get("content-type") ?? "application/octet-stream";
         const responseHeaders: Record<string, string> = { ...middlewareHeaders };
         response.headers.forEach((v, k) => { responseHeaders[k] = v; });
 
