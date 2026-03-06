@@ -49,5 +49,5 @@ jobs:
           mentions: "/bigbonk"
           variant: "max"
           permissions: write
-          opencode_dev: true
+          opencode_dev: false
           agent: viguy
