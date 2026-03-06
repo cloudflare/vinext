@@ -453,6 +453,7 @@ import {
   requestContextFromRequest,
   isExternalUrl,
   proxyExternalRequest,
+  sanitizeDestination,
 } from "vinext/config/config-matchers";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -622,9 +623,11 @@ export default {
       if (configRedirects.length) {
         const redirect = matchRedirect(resolvedPathname, configRedirects, reqCtx);
         if (redirect) {
-          const dest = basePath && !redirect.destination.startsWith(basePath)
-            ? basePath + redirect.destination
-            : redirect.destination;
+          const dest = sanitizeDestination(
+            basePath && !redirect.destination.startsWith(basePath)
+              ? basePath + redirect.destination
+              : redirect.destination,
+          );
           return new Response(null, {
             status: redirect.permanent ? 308 : 307,
             headers: { Location: dest },
