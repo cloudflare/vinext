@@ -6725,6 +6725,45 @@ describe("next/script SSR rendering", () => {
     expect(html).toContain("console.log('hello')");
   });
 
+  it("beforeInteractive escapes </script> in dangerouslySetInnerHTML", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        strategy: "beforeInteractive",
+        id: "escape-test",
+        dangerouslySetInnerHTML: {
+          __html: 'var x = "</script><img src=x onerror=alert(1)>";',
+        },
+      }),
+    );
+    // The raw </script> must NOT appear — it would break the tag boundary
+    expect(html).not.toContain("</script><img");
+    // The escaped form should be present instead
+    expect(html).toContain("<\\/script>");
+  });
+
+  it("beforeInteractive escapes </script> case-insensitively", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const Script = (await import("../packages/vinext/src/shims/script.js")).default;
+
+    const html = renderToStaticMarkup(
+      React.createElement(Script, {
+        strategy: "beforeInteractive",
+        id: "case-test",
+        dangerouslySetInnerHTML: {
+          __html: 'var x = "</SCRIPT><img src=x onerror=alert(1)>";',
+        },
+      }),
+    );
+    // Mixed-case </SCRIPT> must also be escaped
+    expect(html).not.toContain("</SCRIPT>");
+    expect(html).toContain("<\\/SCRIPT>");
+  });
+
   it("exports handleClientScriptLoad and initScriptLoader", async () => {
     const scriptModule = await import("../packages/vinext/src/shims/script.js");
     expect(typeof scriptModule.handleClientScriptLoad).toBe("function");
@@ -7342,6 +7381,51 @@ describe("next/head SSR security", () => {
     expect(html).toContain("body { color: red; }");
   });
 
+  it("escapes </script> in dangerouslySetInnerHTML for script tags", async () => {
+    const React = await import("react");
+    const html = await collectHeadHTML([
+      React.createElement("script", {
+        dangerouslySetInnerHTML: {
+          __html: 'var x = "</script><img src=x onerror=alert(1)>";',
+        },
+      }),
+    ]);
+
+    // The raw </script> must NOT appear in the output
+    expect(html).not.toContain("</script><img");
+    // The escaped form preserves the JS string content
+    expect(html).toContain("<\\/script>");
+  });
+
+  it("escapes </style> in dangerouslySetInnerHTML for style tags", async () => {
+    const React = await import("react");
+    const html = await collectHeadHTML([
+      React.createElement("style", {
+        dangerouslySetInnerHTML: {
+          __html: "body::after { content: '</style><img src=x onerror=alert(1)>'; }",
+        },
+      }),
+    ]);
+
+    // The raw </style> must NOT appear
+    expect(html).not.toContain("</style><img");
+    expect(html).toContain("<\\/style>");
+  });
+
+  it("escapes case-insensitive closing tags in dangerouslySetInnerHTML", async () => {
+    const React = await import("react");
+    const html = await collectHeadHTML([
+      React.createElement("script", {
+        dangerouslySetInnerHTML: {
+          __html: 'var x = "</SCRIPT><img src=x onerror=alert(1)>";',
+        },
+      }),
+    ]);
+
+    expect(html).not.toContain("</SCRIPT>");
+    expect(html).toContain("<\\/SCRIPT>");
+  });
+
   it("attributes are still properly escaped", async () => {
     const React = await import("react");
     const html = await collectHeadHTML([
@@ -7405,6 +7489,54 @@ describe("next/head SSR security", () => {
       expect(html).toContain(`<${tag}`);
       expect(html).toContain('data-vinext-head="true"');
     }
+  });
+});
+
+describe("escapeInlineContent", () => {
+  it("escapes </script> within script content", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    const input = 'var x = "</script><img src=x onerror=alert(1)>";';
+    const result = escapeInlineContent(input, "script");
+    expect(result).toBe('var x = "<\\/script><img src=x onerror=alert(1)>";');
+    expect(result).not.toContain("</script>");
+  });
+
+  it("escapes </style> within style content", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    const input = "body::after { content: '</style><div>'; }";
+    const result = escapeInlineContent(input, "style");
+    expect(result).toBe("body::after { content: '<\\/style><div>'; }");
+    expect(result).not.toContain("</style>");
+  });
+
+  it("handles case-insensitive closing tags", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    expect(escapeInlineContent("</Script>", "script")).toBe("<\\/Script>");
+    expect(escapeInlineContent("</SCRIPT>", "script")).toBe("<\\/SCRIPT>");
+    expect(escapeInlineContent("</sCrIpT>", "script")).toBe("<\\/sCrIpT>");
+  });
+
+  it("handles multiple occurrences", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    const input = '</script></script></SCRIPT>';
+    const result = escapeInlineContent(input, "script");
+    expect(result).toBe('<\\/script><\\/script><\\/SCRIPT>');
+    expect(result).not.toContain("</script>");
+    expect(result).not.toContain("</SCRIPT>");
+  });
+
+  it("does not escape unrelated closing tags", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    // Escaping for "script" should not touch </style>
+    const input = '</style></div>';
+    const result = escapeInlineContent(input, "script");
+    expect(result).toBe('</style></div>');
+  });
+
+  it("passes through content with no closing tags", async () => {
+    const { escapeInlineContent } = await import("../packages/vinext/src/shims/head.js");
+    const input = "console.log('hello world');";
+    expect(escapeInlineContent(input, "script")).toBe(input);
   });
 });
 
