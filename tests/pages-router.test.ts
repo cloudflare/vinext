@@ -1481,6 +1481,18 @@ describe("Production server next.config.js features (Pages Router)", () => {
     expect(authRes.headers.get("x-guest-only-header")).toBeNull();
   });
 
+  it("has/missing conditions see middleware-injected cookies", async () => {
+    // When ?inject-login is present, middleware injects logged-in=1 cookie
+    // into the request headers. The config has/missing conditions should
+    // evaluate against the updated request, not the original.
+    const res = await fetch(`${prodUrl}/about?inject-login`);
+    expect(res.status).toBe(200);
+    // The has:[cookie:logged-in] condition should match
+    expect(res.headers.get("x-auth-only-header")).toBe("1");
+    // The missing:[cookie:logged-in] condition should NOT match
+    expect(res.headers.get("x-guest-only-header")).toBeNull();
+  });
+
   it("serves normal pages unaffected by config rules", async () => {
     const res = await fetch(`${prodUrl}/`);
     expect(res.status).toBe(200);
