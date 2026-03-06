@@ -2934,8 +2934,8 @@ hydrate();
     // Strip server-only data-fetching exports (getServerSideProps, getStaticProps,
     // getStaticPaths) from page modules in the client bundle. These functions
     // often import server-only modules (database drivers, fs, etc.) that would
-    // break or bloat the client bundle. Next.js does this via an SWC transform;
-    // we use a lightweight regex-based approach.
+    // break or bloat the client bundle. Next.js does this via an SWC transform
+    // (next-ssg-transform); we use Vite's parseAst + MagicString.
     //
     // Only applies to client builds (not SSR) and only to files under the
     // pages/ directory.
@@ -3704,107 +3704,86 @@ function extractConstraint(str: string, re: RegExp): string | null {
  * point to the opening bracket). Returns the position AFTER the closing bracket.
  * Handles nested brackets, string literals, and comments.
  */
-function skipBalanced(code: string, pos: number, open: string, close: string): number {
-  let depth = 1;
-  pos++;
-  while (pos < code.length && depth > 0) {
-    const ch = code[pos];
-    if (ch === open) depth++;
-    else if (ch === close) depth--;
-    else if (ch === '"' || ch === "'" || ch === '`') {
-      const quote = ch;
-      pos++;
-      while (pos < code.length) {
-        if (code[pos] === '\\') { pos++; }
-        else if (code[pos] === quote) break;
-        pos++;
-      }
-    }
-    else if (ch === '/' && code[pos + 1] === '/') {
-      pos = code.indexOf('\n', pos);
-      if (pos === -1) pos = code.length;
-      continue;
-    }
-    else if (ch === '/' && code[pos + 1] === '*') {
-      pos = code.indexOf('*/', pos + 2);
-      if (pos === -1) pos = code.length;
-      else pos++;
-    }
-    pos++;
-  }
-  return pos;
-}
-
+/**
+ * Strip server-only data-fetching exports (getServerSideProps,
+ * getStaticProps, getStaticPaths) from page modules for the client
+ * bundle. Uses Vite's parseAst (Rollup/acorn) for correct handling
+ * of all export patterns including function expressions, arrow
+ * functions with TS return types, and re-exports.
+ *
+ * Modeled after Next.js's SWC `next-ssg-transform`.
+ */
 function stripServerExports(code: string): string | null {
-  const SERVER_EXPORTS = ["getServerSideProps", "getStaticProps", "getStaticPaths"];
-  if (!SERVER_EXPORTS.some(name => code.includes(name))) return null;
+  const SERVER_EXPORTS = new Set(["getServerSideProps", "getStaticProps", "getStaticPaths"]);
+  if (![...SERVER_EXPORTS].some(name => code.includes(name))) return null;
 
-  let transformed = code;
+  let ast: ReturnType<typeof parseAst>;
+  try {
+    ast = parseAst(code);
+  } catch {
+    // If parsing fails (shouldn't happen post-JSX/TS transform), bail out
+    return null;
+  }
 
-  for (const name of SERVER_EXPORTS) {
-    if (!transformed.includes(name)) continue;
+  const s = new MagicString(code);
+  let changed = false;
 
-    // Pattern 1: export (async) function name(...) { ... }
-    const funcPattern = new RegExp(
-      `export\\s+(?:async\\s+)?function\\s+${name}\\s*\\(`,
-    );
-    const funcMatch = funcPattern.exec(transformed);
-    if (funcMatch) {
-      const start = funcMatch.index;
-      // The regex matched up to and including the opening "(" of the parameter list.
-      // Use paren-counting to skip past the entire parameter list (including TS types).
-      const openParenPos = start + funcMatch[0].length - 1;
-      let afterParams = skipBalanced(transformed, openParenPos, "(", ")");
-      // Skip optional return type annotation (e.g. ": Promise<...>") and whitespace
-      // until we find the "{" that opens the function body.
-      while (afterParams < transformed.length && transformed[afterParams] !== "{") {
-        afterParams++;
-      }
-      if (afterParams < transformed.length) {
-        const bodyEnd = skipBalanced(transformed, afterParams, "{", "}");
-        transformed = transformed.slice(0, start) +
-          `export function ${name}() { return { props: {} }; }` +
-          transformed.slice(bodyEnd);
+  for (const node of ast.body as any[]) {
+    if (node.type !== "ExportNamedDeclaration") continue;
+
+    // Case 1: export function name() {} / export async function name() {}
+    // Case 2: export const/let/var name = ...
+    if (node.declaration) {
+      const decl = node.declaration;
+      if (decl.type === "FunctionDeclaration" && SERVER_EXPORTS.has(decl.id?.name)) {
+        s.overwrite(node.start, node.end, `export function ${decl.id.name}() { return { props: {} }; }`);
+        changed = true;
+      } else if (decl.type === "VariableDeclaration") {
+        for (const declarator of decl.declarations) {
+          if (declarator.id?.type === "Identifier" && SERVER_EXPORTS.has(declarator.id.name)) {
+            s.overwrite(node.start, node.end, `export const ${declarator.id.name} = undefined;`);
+            changed = true;
+          }
+        }
       }
       continue;
     }
 
-    // Pattern 2: export const/let/var name = ...
-    const constPattern = new RegExp(
-      `export\\s+(?:const|let|var)\\s+${name}\\s*=`,
-    );
-    const constMatch = constPattern.exec(transformed);
-    if (constMatch) {
-      const start = constMatch.index;
-      let pos = start + constMatch[0].length;
-      while (pos < transformed.length && /\s/.test(transformed[pos])) pos++;
-
-      const afterEquals = transformed.slice(pos);
-      // Check for arrow function with block body
-      const arrowMatch = afterEquals.match(/^(?:async\s+)?(?:\([^)]*\)|[a-zA-Z_$]\w*)\s*=>\s*\{/);
-      if (arrowMatch) {
-        const braceStart = pos + afterEquals.indexOf("{");
-        let endPos = skipBalanced(transformed, braceStart, "{", "}");
-        if (endPos < transformed.length && transformed[endPos] === ";") endPos++;
-        transformed = transformed.slice(0, start) +
-          `export const ${name} = undefined;` +
-          transformed.slice(endPos);
-      } else {
-        // Simple assignment: find the semicolon
-        let endPos = transformed.indexOf(";", pos);
-        if (endPos === -1) endPos = transformed.indexOf("\n", pos);
-        if (endPos === -1) endPos = transformed.length;
-        else endPos++;
-        transformed = transformed.slice(0, start) +
-          `export const ${name} = undefined;` +
-          transformed.slice(endPos);
+    // Case 3: export { getServerSideProps } or export { getServerSideProps as gSSP }
+    if (node.specifiers && node.specifiers.length > 0 && !node.source) {
+      const kept: any[] = [];
+      const stripped: string[] = [];
+      for (const spec of node.specifiers) {
+        // spec.local.name is the binding name, spec.exported.name is the export name
+        const exportedName = spec.exported?.name ?? spec.exported?.value;
+        if (SERVER_EXPORTS.has(exportedName)) {
+          stripped.push(exportedName);
+        } else {
+          kept.push(spec);
+        }
       }
-      continue;
+      if (stripped.length > 0) {
+        // Build replacement: keep non-server specifiers, add stubs for stripped ones
+        const parts: string[] = [];
+        if (kept.length > 0) {
+          const keptStr = kept.map((sp: any) => {
+            const local = sp.local.name;
+            const exported = sp.exported?.name ?? sp.exported?.value;
+            return local === exported ? local : `${local} as ${exported}`;
+          }).join(", ");
+          parts.push(`export { ${keptStr} };`);
+        }
+        for (const name of stripped) {
+          parts.push(`export const ${name} = undefined;`);
+        }
+        s.overwrite(node.start, node.end, parts.join("\n"));
+        changed = true;
+      }
     }
   }
 
-  if (transformed === code) return null;
-  return transformed;
+  if (!changed) return null;
+  return s.toString();
 }
 
 export function matchConfigPattern(

@@ -1018,11 +1018,16 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
 // ─── stripServerExports ───────────────────────────────────────────────────────
 
+// Note: stripServerExports runs in Vite's transform pipeline AFTER JSX and
+// TypeScript have been compiled to plain JavaScript by esbuild/SWC. All test
+// inputs use post-compiled JS (no JSX, no TS type annotations).
+// Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/unit/babel-plugin-next-ssg-transform.test.ts
 describe("stripServerExports", () => {
   it("returns null when code has no server exports", () => {
     const code = `
 export default function Page({ data }) {
-  return <div>{data}</div>;
+  return data;
 }
 `;
     expect(_stripServerExports(code)).toBeNull();
@@ -1033,7 +1038,7 @@ export default function Page({ data }) {
 import db from './db';
 
 export default function Page({ data }) {
-  return <div>{data}</div>;
+  return data;
 }
 
 export async function getServerSideProps(ctx) {
@@ -1051,7 +1056,7 @@ export async function getServerSideProps(ctx) {
   it("strips export function getStaticProps", () => {
     const code = `
 export default function Page({ items }) {
-  return <ul>{items.map(i => <li key={i}>{i}</li>)}</ul>;
+  return items;
 }
 
 export function getStaticProps() {
@@ -1067,7 +1072,7 @@ export function getStaticProps() {
   it("strips export async function getStaticPaths", () => {
     const code = `
 export default function Post({ id }) {
-  return <h1>Post {id}</h1>;
+  return id;
 }
 
 export async function getStaticPaths() {
@@ -1089,7 +1094,7 @@ export async function getStaticProps({ params }) {
   it("strips export const getServerSideProps = arrow function", () => {
     const code = `
 export default function Page({ data }) {
-  return <div>{data}</div>;
+  return data;
 }
 
 export const getServerSideProps = async (ctx) => {
@@ -1109,7 +1114,7 @@ export const getServerSideProps = async (ctx) => {
 import { fetchPageData } from '../lib/data';
 
 export default function Page({ data }) {
-  return <div>{data}</div>;
+  return data;
 }
 
 export const getServerSideProps = fetchPageData;
@@ -1126,7 +1131,7 @@ import React from 'react';
 export const config = { runtime: 'edge' };
 
 export default function Page({ data }) {
-  return <div>{data}</div>;
+  return data;
 }
 
 export async function getServerSideProps() {
@@ -1144,7 +1149,7 @@ export async function getServerSideProps() {
   it("handles nested braces in function body", () => {
     const code = `
 export default function Page({ items }) {
-  return <div>{items.map(i => <span>{i}</span>)}</div>;
+  return items;
 }
 
 export async function getServerSideProps() {
@@ -1163,39 +1168,86 @@ export async function getServerSideProps() {
     expect(result).not.toContain("nested: { deep: true }");
   });
 
-  it("handles TypeScript type annotations in function parameters", () => {
-    const code = `import { useRouter } from "next/router";
-
-interface PostProps {
-  id: string;
+  it("handles function expressions (= function() {})", () => {
+    // This pattern broke the old regex approach because it didn't match
+    // function expressions, only arrow functions.
+    const code = `
+export default function Page({ data }) {
+  return data;
 }
 
-export default function Post({ id }: PostProps) {
-  const router = useRouter();
-  return null;
-}
-
-export async function getServerSideProps({ params }: { params: { id: string } }) {
-  return {
-    props: {
-      id: params.id,
-    },
-  };
-}
+export const getStaticProps = function() {
+  const data = fetchData();
+  return { props: { data } };
+};
 `;
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
-    expect(result).toContain("export default function Post");
-    expect(result).toContain("export function getServerSideProps()");
-    expect(result).not.toContain("params.id");
-    // Verify the TS type annotation is not left dangling after the stub
-    expect(result).not.toContain(": { params:");
+    expect(result).toContain("export const getStaticProps = undefined;");
+    expect(result).not.toContain("fetchData");
+  });
+
+  it("handles async named function expressions", () => {
+    const code = `
+export default function Page({ data }) {
+  return data;
+}
+
+export const getServerSideProps = async function fetchData() {
+  const data = await db.query();
+  return { props: { data } };
+};
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("db.query");
+  });
+
+  it("handles export { name } re-export syntax", () => {
+    // This pattern was completely unhandled by the old regex approach.
+    const code = `
+const getServerSideProps = async () => {
+  return { props: { data: 'secret' } };
+};
+
+export default function Page() {
+  return null;
+}
+
+export { getServerSideProps };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const getServerSideProps = undefined;");
+    // The original local declaration remains (dead code, tree-shaken later)
+    expect(result).not.toContain("export { getServerSideProps }");
+  });
+
+  it("handles export { name } with other specifiers", () => {
+    const code = `
+const getServerSideProps = async () => {
+  return { props: {} };
+};
+const config = { runtime: 'edge' };
+
+export default function Page() {
+  return null;
+}
+
+export { getServerSideProps, config };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    // config should be preserved
+    expect(result).toContain("export { config }");
+    expect(result).toContain("export const getServerSideProps = undefined;");
   });
 
   it("handles strings containing braces", () => {
     const code = `
 export default function Page({ msg }) {
-  return <div>{msg}</div>;
+  return msg;
 }
 
 export async function getServerSideProps() {
@@ -1207,5 +1259,40 @@ export async function getServerSideProps() {
     expect(result).not.toBeNull();
     expect(result).toContain("export function getServerSideProps()");
     expect(result).not.toContain('Hello {world}');
+  });
+
+  it("handles regex literals in function body", () => {
+    // The old skipBalanced function didn't handle regex literals,
+    // causing premature function body termination.
+    const code = `
+export default function Page() {
+  return null;
+}
+
+export function getServerSideProps() {
+  const pattern = /\\{[^}]+\\}/;
+  return { props: {} };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("pattern");
+  });
+
+  it("handles expression-body arrows with semicolons in strings", () => {
+    const code = `
+export default function Page() {
+  return null;
+}
+
+export const getStaticPaths = () => [
+  { params: { id: 'a;b' } },
+];
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const getStaticPaths = undefined;");
+    expect(result).not.toContain("a;b");
   });
 });
