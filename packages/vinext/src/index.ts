@@ -2291,6 +2291,42 @@ hydrate();
         }
       },
     },
+    // Stub node:async_hooks in client (browser) builds.
+    // Several shims (headers, cache, navigation-state, etc.) import
+    // AsyncLocalStorage from node:async_hooks. These shims are aliased
+    // globally via resolve.alias so they resolve in every environment.
+    // In client builds, Vite externalizes node:async_hooks to an empty
+    // __vite-browser-external stub with no named exports, causing Rollup
+    // errors. This plugin intercepts node:async_hooks in the client
+    // environment and provides a no-op AsyncLocalStorage — semantically
+    // correct since shims already guard with `_als.getStore() ?? fallback`.
+    {
+      name: "vinext:async-hooks-stub",
+      enforce: "pre",
+
+      resolveId: {
+        filter: { id: /^node:async_hooks$/ },
+        handler(_id) {
+          if (this.environment?.name === "client") {
+            return "\0vinext:async-hooks-stub";
+          }
+        },
+      },
+
+      load(id) {
+        if (id === "\0vinext:async-hooks-stub") {
+          return [
+            "export class AsyncLocalStorage {",
+            "  run(_store, fn, ...args) { return fn(...args); }",
+            "  getStore() { return undefined; }",
+            "  enterWith() {}",
+            "  exit(fn, ...args) { return fn(...args); }",
+            "  disable() {}",
+            "}",
+          ].join("\n");
+        }
+      },
+    },
     // Proxy plugin for @mdx-js/rollup. The real MDX plugin is created lazily
     // during vinext:config's config() (when MDX files are detected), but
     // plugins returned from config() hooks run too late in the pipeline —
