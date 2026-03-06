@@ -1238,12 +1238,6 @@ async function __proxyExternalRequest(request, externalUrl) {
   const headers = new Headers(request.headers);
   headers.set("host", targetUrl.host);
   headers.delete("connection");
-  // Strip credentials and internal headers to prevent leaking auth tokens,
-  // session cookies, and middleware internals to third-party origins.
-  headers.delete("cookie");
-  headers.delete("authorization");
-  headers.delete("x-api-key");
-  headers.delete("proxy-authorization");
   for (const key of [...headers.keys()]) {
     if (key.startsWith("x-middleware-")) headers.delete(key);
   }

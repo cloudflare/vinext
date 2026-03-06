@@ -658,12 +658,6 @@ export async function proxyExternalRequest(
   headers.set("host", targetUrl.host);
   // Remove headers that should not be forwarded to external services
   headers.delete("connection");
-  // Strip credentials and internal headers to prevent leaking auth tokens,
-  // session cookies, and middleware internals to third-party origins.
-  headers.delete("cookie");
-  headers.delete("authorization");
-  headers.delete("x-api-key");
-  headers.delete("proxy-authorization");
   const keysToDelete: string[] = [];
   for (const key of headers.keys()) {
     if (key.startsWith("x-middleware-")) {
