@@ -349,6 +349,8 @@ interface DraftModeResult {
  * - `disable()`: clears the bypass cookie
  */
 export async function draftMode(): Promise<DraftModeResult> {
+  throwIfInsideCacheScope("draftMode()");
+
   const state = _getState();
   const secret = getDraftSecret();
   const isEnabled = state.headersContext

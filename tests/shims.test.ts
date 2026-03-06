@@ -7647,6 +7647,88 @@ describe("cache scope guards for dynamic APIs", () => {
     setHeadersContext(null);
   });
 
+  it('draftMode() throws inside "use cache" scope', async () => {
+    const { cacheContextStorage } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { draftMode, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    await cacheContextStorage.run(
+      { tags: [], lifeConfigs: [], variant: "default" },
+      async () => {
+        await expect(draftMode()).rejects.toThrow(
+          /cannot be called inside "use cache"/,
+        );
+      },
+    );
+
+    setHeadersContext(null);
+  });
+
+  it("draftMode() throws inside unstable_cache() scope", async () => {
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { draftMode, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    const cached = unstable_cache(
+      async () => {
+        await draftMode();
+      },
+      ["test-draftmode-in-cache"],
+    );
+
+    await expect(cached()).rejects.toThrow(/unstable_cache/);
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
+  it("headers() throws inside nested scopes (unstable_cache inside \"use cache\")", async () => {
+    const { cacheContextStorage } = await import(
+      "../packages/vinext/src/shims/cache-runtime.js"
+    );
+    const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { headers, setHeadersContext } = await import(
+      "../packages/vinext/src/shims/headers.js"
+    );
+
+    setCacheHandler(new MemoryCacheHandler());
+    setHeadersContext({ headers: new Headers(), cookies: new Map() });
+
+    // Nest unstable_cache inside a "use cache" scope: the outermost
+    // scope ("use cache") should be detected first.
+    await cacheContextStorage.run(
+      { tags: [], lifeConfigs: [], variant: "default" },
+      async () => {
+        const cached = unstable_cache(
+          async () => {
+            const h = await headers();
+            return h.get("x-test");
+          },
+          ["test-nested-scopes"],
+        );
+
+        // Either scope's guard triggers (the "use cache" check runs first)
+        await expect(cached()).rejects.toThrow(
+          /cannot be called inside/,
+        );
+      },
+    );
+
+    setHeadersContext(null);
+    setCacheHandler(new MemoryCacheHandler());
+  });
+
   it("existing unstable_cache tests still pass (cache miss executes callback)", async () => {
     // Verify that the ALS wrapping in unstable_cache doesn't break normal caching
     const { unstable_cache, setCacheHandler, MemoryCacheHandler } =

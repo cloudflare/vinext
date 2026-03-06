@@ -63,15 +63,6 @@ export function getCacheContext(): CacheContext | null {
   return cacheContextStorage.getStore() ?? null;
 }
 
-/**
- * Check if the current execution context is inside a "use cache" function.
- * Used by headers(), cookies(), and connection() to throw errors when
- * dynamic request APIs are called inside a cache scope.
- */
-export function isInsideCacheScope(): boolean {
-  return cacheContextStorage.getStore() != null;
-}
-
 // ---------------------------------------------------------------------------
 // Lazy RSC module loading
 // ---------------------------------------------------------------------------
