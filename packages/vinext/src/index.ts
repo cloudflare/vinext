@@ -2789,10 +2789,19 @@ hydrate();
                   }
                 }
 
-                // Apply middleware response headers
+                // Apply middleware response headers. Unpack
+                // x-middleware-request-* headers into req.headers so
+                // config has/missing conditions and downstream handlers
+                // see middleware-modified cookies and headers.
                 if (result.responseHeaders) {
+                  const mwReqPrefix = "x-middleware-request-";
                   for (const [key, value] of result.responseHeaders) {
-                    res.appendHeader(key, value);
+                    if (key.startsWith(mwReqPrefix)) {
+                      const realName = key.slice(mwReqPrefix.length);
+                      req.headers[realName] = value;
+                    } else if (!key.startsWith("x-middleware-")) {
+                      res.appendHeader(key, value);
+                    }
                   }
                 }
 
