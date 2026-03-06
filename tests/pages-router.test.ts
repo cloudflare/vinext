@@ -1338,6 +1338,19 @@ describe("Production server middleware (Pages Router)", () => {
     const body = await res.text();
     expect(body).toContain("Bad Request");
   });
+
+  it("blocks access to .vite/ build metadata directory", async () => {
+    // The .vite/ directory contains build manifests (ssr-manifest.json,
+    // manifest.json) that should not be publicly accessible.
+    const res = await fetch(`${prodUrl}/.vite/ssr-manifest.json`);
+    expect(res.status).toBe(404);
+  });
+
+  it("blocks access to .vite/ with percent-encoded dot", async () => {
+    // Ensure encoded variants like /%2Evite/ are also blocked
+    const res = await fetch(`${prodUrl}/%2Evite/ssr-manifest.json`);
+    expect(res.status).toBe(404);
+  });
 });
 
 describe("Production server next.config.js features (Pages Router)", () => {

@@ -194,6 +194,14 @@ function tryServeStatic(
   } catch {
     return false;
   }
+
+  // Block access to internal build metadata directories. The .vite/
+  // directory contains manifests and other build artifacts that should
+  // not be publicly served. Check after decoding to catch encoded
+  // variants like /%2Evite/manifest.json.
+  if (decodedPathname.startsWith("/.vite/") || decodedPathname === "/.vite") {
+    return false;
+  }
   const staticFile = path.resolve(clientDir, "." + decodedPathname);
   if (!staticFile.startsWith(resolvedClient + path.sep) && staticFile !== resolvedClient) {
     return false;
