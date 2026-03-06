@@ -2931,6 +2931,36 @@ hydrate();
         };
       },
     },
+    // Strip server-only data-fetching exports (getServerSideProps, getStaticProps,
+    // getStaticPaths) from page modules in the client bundle. These functions
+    // often import server-only modules (database drivers, fs, etc.) that would
+    // break or bloat the client bundle. Next.js does this via an SWC transform;
+    // we use a lightweight regex-based approach.
+    //
+    // Only applies to client builds (not SSR) and only to files under the
+    // pages/ directory.
+    {
+      name: "vinext:strip-server-exports",
+      transform: {
+        // Only match page source files, not node_modules
+        filter: { id: /\.(tsx?|jsx?|mjs)$/ },
+        handler(code, id) {
+          const ssr = this.environment?.name !== "client";
+          if (ssr) return null;
+          if (!hasPagesDir) return null;
+          // Only transform files under the pages/ directory
+          if (!id.startsWith(pagesDir)) return null;
+          // Skip API routes, _app, _document, _error
+          const relativePath = id.slice(pagesDir.length);
+          if (relativePath.startsWith("/api/") || relativePath === "/api") return null;
+          if (/\/_(?:app|document|error)\b/.test(relativePath)) return null;
+
+          const result = stripServerExports(code);
+          if (!result) return null;
+          return { code: result, map: null };
+        },
+      },
+    },
     // Local image import transform:
     // When a source file imports a local image (e.g., `import hero from './hero.jpg'`),
     // this plugin transforms the default import to a StaticImageData object with
@@ -3660,6 +3690,123 @@ function extractConstraint(str: string, re: RegExp): string | null {
  *   :param+    — matches one or more segments
  *   (regex)    — inline regex patterns in the source
  */
+/**
+ * Strip server-only data-fetching exports from a page module's source code.
+ * Returns the transformed code, or null if no changes were made.
+ *
+ * Handles:
+ * - export (async) function getServerSideProps(...) { ... }
+ * - export const getStaticProps = async (...) => { ... }
+ * - export const getServerSideProps = someHelper;
+ */
+/**
+ * Skip past balanced brackets/parens/braces starting at `pos` (which should
+ * point to the opening bracket). Returns the position AFTER the closing bracket.
+ * Handles nested brackets, string literals, and comments.
+ */
+function skipBalanced(code: string, pos: number, open: string, close: string): number {
+  let depth = 1;
+  pos++;
+  while (pos < code.length && depth > 0) {
+    const ch = code[pos];
+    if (ch === open) depth++;
+    else if (ch === close) depth--;
+    else if (ch === '"' || ch === "'" || ch === '`') {
+      const quote = ch;
+      pos++;
+      while (pos < code.length) {
+        if (code[pos] === '\\') { pos++; }
+        else if (code[pos] === quote) break;
+        pos++;
+      }
+    }
+    else if (ch === '/' && code[pos + 1] === '/') {
+      pos = code.indexOf('\n', pos);
+      if (pos === -1) pos = code.length;
+      continue;
+    }
+    else if (ch === '/' && code[pos + 1] === '*') {
+      pos = code.indexOf('*/', pos + 2);
+      if (pos === -1) pos = code.length;
+      else pos++;
+    }
+    pos++;
+  }
+  return pos;
+}
+
+function stripServerExports(code: string): string | null {
+  const SERVER_EXPORTS = ["getServerSideProps", "getStaticProps", "getStaticPaths"];
+  if (!SERVER_EXPORTS.some(name => code.includes(name))) return null;
+
+  let transformed = code;
+
+  for (const name of SERVER_EXPORTS) {
+    if (!transformed.includes(name)) continue;
+
+    // Pattern 1: export (async) function name(...) { ... }
+    const funcPattern = new RegExp(
+      `export\\s+(?:async\\s+)?function\\s+${name}\\s*\\(`,
+    );
+    const funcMatch = funcPattern.exec(transformed);
+    if (funcMatch) {
+      const start = funcMatch.index;
+      // The regex matched up to and including the opening "(" of the parameter list.
+      // Use paren-counting to skip past the entire parameter list (including TS types).
+      const openParenPos = start + funcMatch[0].length - 1;
+      let afterParams = skipBalanced(transformed, openParenPos, "(", ")");
+      // Skip optional return type annotation (e.g. ": Promise<...>") and whitespace
+      // until we find the "{" that opens the function body.
+      while (afterParams < transformed.length && transformed[afterParams] !== "{") {
+        afterParams++;
+      }
+      if (afterParams < transformed.length) {
+        const bodyEnd = skipBalanced(transformed, afterParams, "{", "}");
+        transformed = transformed.slice(0, start) +
+          `export function ${name}() { return { props: {} }; }` +
+          transformed.slice(bodyEnd);
+      }
+      continue;
+    }
+
+    // Pattern 2: export const/let/var name = ...
+    const constPattern = new RegExp(
+      `export\\s+(?:const|let|var)\\s+${name}\\s*=`,
+    );
+    const constMatch = constPattern.exec(transformed);
+    if (constMatch) {
+      const start = constMatch.index;
+      let pos = start + constMatch[0].length;
+      while (pos < transformed.length && /\s/.test(transformed[pos])) pos++;
+
+      const afterEquals = transformed.slice(pos);
+      // Check for arrow function with block body
+      const arrowMatch = afterEquals.match(/^(?:async\s+)?(?:\([^)]*\)|[a-zA-Z_$]\w*)\s*=>\s*\{/);
+      if (arrowMatch) {
+        const braceStart = pos + afterEquals.indexOf("{");
+        let endPos = skipBalanced(transformed, braceStart, "{", "}");
+        if (endPos < transformed.length && transformed[endPos] === ";") endPos++;
+        transformed = transformed.slice(0, start) +
+          `export const ${name} = undefined;` +
+          transformed.slice(endPos);
+      } else {
+        // Simple assignment: find the semicolon
+        let endPos = transformed.indexOf(";", pos);
+        if (endPos === -1) endPos = transformed.indexOf("\n", pos);
+        if (endPos === -1) endPos = transformed.length;
+        else endPos++;
+        transformed = transformed.slice(0, start) +
+          `export const ${name} = undefined;` +
+          transformed.slice(endPos);
+      }
+      continue;
+    }
+  }
+
+  if (transformed === code) return null;
+  return transformed;
+}
+
 export function matchConfigPattern(
   pathname: string,
   pattern: string,
@@ -3947,3 +4094,4 @@ export type { StaticExportResult, StaticExportOptions, AppStaticExportOptions } 
 export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig, computeLazyChunks };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
+export { stripServerExports as _stripServerExports };

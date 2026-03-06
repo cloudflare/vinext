@@ -10,6 +10,7 @@ import {
   clientManualChunks,
   clientTreeshakeConfig,
   computeLazyChunks,
+  _stripServerExports,
 } from "../packages/vinext/src/index.js";
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
@@ -1012,5 +1013,199 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
     // framework.js should also appear with correct path
     expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
+  });
+});
+
+// ─── stripServerExports ───────────────────────────────────────────────────────
+
+describe("stripServerExports", () => {
+  it("returns null when code has no server exports", () => {
+    const code = `
+export default function Page({ data }) {
+  return <div>{data}</div>;
+}
+`;
+    expect(_stripServerExports(code)).toBeNull();
+  });
+
+  it("strips export async function getServerSideProps", () => {
+    const code = `
+import db from './db';
+
+export default function Page({ data }) {
+  return <div>{data}</div>;
+}
+
+export async function getServerSideProps(ctx) {
+  const data = await db.query('SELECT * FROM posts');
+  return { props: { data } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export default function Page");
+    expect(result).not.toContain("db.query");
+    expect(result).toContain("export function getServerSideProps()");
+  });
+
+  it("strips export function getStaticProps", () => {
+    const code = `
+export default function Page({ items }) {
+  return <ul>{items.map(i => <li key={i}>{i}</li>)}</ul>;
+}
+
+export function getStaticProps() {
+  return { props: { items: ['a', 'b'] }, revalidate: 60 };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export function getStaticProps()");
+    expect(result).not.toContain("revalidate: 60");
+  });
+
+  it("strips export async function getStaticPaths", () => {
+    const code = `
+export default function Post({ id }) {
+  return <h1>Post {id}</h1>;
+}
+
+export async function getStaticPaths() {
+  const paths = [{ params: { id: '1' } }, { params: { id: '2' } }];
+  return { paths, fallback: false };
+}
+
+export async function getStaticProps({ params }) {
+  return { props: { id: params.id } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("fallback: false");
+    expect(result).toContain("export function getStaticPaths()");
+    expect(result).toContain("export function getStaticProps()");
+  });
+
+  it("strips export const getServerSideProps = arrow function", () => {
+    const code = `
+export default function Page({ data }) {
+  return <div>{data}</div>;
+}
+
+export const getServerSideProps = async (ctx) => {
+  const res = await fetch('https://api.example.com/data');
+  const data = await res.json();
+  return { props: { data } };
+};
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("api.example.com");
+  });
+
+  it("strips export const getServerSideProps = simple reference", () => {
+    const code = `
+import { fetchPageData } from '../lib/data';
+
+export default function Page({ data }) {
+  return <div>{data}</div>;
+}
+
+export const getServerSideProps = fetchPageData;
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const getServerSideProps = undefined;");
+  });
+
+  it("preserves the default export and non-server exports", () => {
+    const code = `
+import React from 'react';
+
+export const config = { runtime: 'edge' };
+
+export default function Page({ data }) {
+  return <div>{data}</div>;
+}
+
+export async function getServerSideProps() {
+  return { props: { data: 'hello' } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const config");
+    expect(result).toContain("export default function Page");
+    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("data: 'hello'");
+  });
+
+  it("handles nested braces in function body", () => {
+    const code = `
+export default function Page({ items }) {
+  return <div>{items.map(i => <span>{i}</span>)}</div>;
+}
+
+export async function getServerSideProps() {
+  const items = [];
+  for (let i = 0; i < 10; i++) {
+    if (i % 2 === 0) {
+      items.push({ id: i, nested: { deep: true } });
+    }
+  }
+  return { props: { items } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("nested: { deep: true }");
+  });
+
+  it("handles TypeScript type annotations in function parameters", () => {
+    const code = `import { useRouter } from "next/router";
+
+interface PostProps {
+  id: string;
+}
+
+export default function Post({ id }: PostProps) {
+  const router = useRouter();
+  return null;
+}
+
+export async function getServerSideProps({ params }: { params: { id: string } }) {
+  return {
+    props: {
+      id: params.id,
+    },
+  };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export default function Post");
+    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("params.id");
+    // Verify the TS type annotation is not left dangling after the stub
+    expect(result).not.toContain(": { params:");
+  });
+
+  it("handles strings containing braces", () => {
+    const code = `
+export default function Page({ msg }) {
+  return <div>{msg}</div>;
+}
+
+export async function getServerSideProps() {
+  const msg = "Hello {world}";
+  return { props: { msg } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain('Hello {world}');
   });
 });
