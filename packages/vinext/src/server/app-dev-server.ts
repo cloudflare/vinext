@@ -217,7 +217,7 @@ import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader,
 import { NextRequest } from "next/server";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
-import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
+import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport, DEFAULT_VIEWPORT } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("./metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
 import { _consumeRequestScopedCacheLife, _runWithCacheState } from "next/cache";
@@ -422,7 +422,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   const noindexMeta = createElement("meta", { name: "robots", content: "noindex" });
   const headElements = [charsetMeta, noindexMeta];
   if (resolvedMetadata) headElements.push(createElement(MetadataHead, { metadata: resolvedMetadata }));
-  const effectiveViewport = resolvedViewport ?? { width: "device-width", initialScale: 1 };
+  const effectiveViewport = resolvedViewport ?? DEFAULT_VIEWPORT;
   headElements.push(createElement(ViewportHead, { viewport: effectiveViewport }));
   let element = createElement(Fragment, null, ...headElements, createElement(BoundaryComponent));
   if (isRscRequest) {
@@ -730,7 +730,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     headElements.push(createElement("meta", { charSet: "utf-8" }));
     if (resolvedMetadata) headElements.push(createElement(MetadataHead, { metadata: resolvedMetadata }));
     // Default viewport to standard responsive settings when none is exported
-    const effectiveViewport = resolvedViewport ?? { width: "device-width", initialScale: 1 };
+    const effectiveViewport = resolvedViewport ?? DEFAULT_VIEWPORT;
     headElements.push(createElement(ViewportHead, { viewport: effectiveViewport }));
     element = createElement(Fragment, null, ...headElements, element);
   }

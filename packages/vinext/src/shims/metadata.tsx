@@ -62,7 +62,7 @@ export async function resolveModuleViewport(
  * Merge viewport configs from multiple sources (layouts + page).
  * Later entries override earlier ones.
  */
-const DEFAULT_VIEWPORT: Viewport = {
+export const DEFAULT_VIEWPORT: Viewport = {
   width: "device-width",
   initialScale: 1,
 };
