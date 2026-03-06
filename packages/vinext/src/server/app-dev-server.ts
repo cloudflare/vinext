@@ -1384,7 +1384,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
-  let cleanPathname = pathname.replace(/.rsc$/, "");
+  let cleanPathname = pathname.replace(/\\.rsc$/, "");
 
   // Middleware response headers and custom rewrite status are stored in
   // _mwCtx (per-request container) so handler() can merge them into
