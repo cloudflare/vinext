@@ -619,10 +619,17 @@ export default {
       let resolvedPathname = resolvedUrl.split("?")[0];
 
       // ── 4. Apply custom headers from next.config.js ───────────────
+      // Config headers are additive for multi-value headers (Vary,
+      // Set-Cookie) and override for everything else.
       if (configHeaders.length) {
         const matched = matchHeaders(resolvedPathname, configHeaders, reqCtx);
         for (const h of matched) {
-          middlewareHeaders[h.key.toLowerCase()] = h.value;
+          const lk = h.key.toLowerCase();
+          if ((lk === "vary" || lk === "set-cookie") && middlewareHeaders[lk]) {
+            middlewareHeaders[lk] += ", " + h.value;
+          } else {
+            middlewareHeaders[lk] = h.value;
+          }
         }
       }
 
