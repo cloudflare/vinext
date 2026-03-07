@@ -2091,6 +2091,15 @@ hydrate();
           ...(postcssOverride ? { css: { postcss: postcssOverride } } : {}),
         };
 
+        // Collect user-provided ssr.external so we can propagate it into
+        // both the RSC and SSR environment configs. Vite's `ssr.*` config
+        // only applies to the default `ssr` environment, not custom ones
+        // like `rsc`. Native addon packages (e.g. better-sqlite3) listed
+        // in ssr.external must be externalized from ALL server environments.
+        const userSsrExternal: string[] = Array.isArray(config.ssr?.external)
+          ? config.ssr.external
+          : [];
+
         // If app/ directory exists, configure RSC environments
         if (hasAppDir) {
           // Compute optimizeDeps.entries so Vite discovers server-side
@@ -2118,6 +2127,7 @@ hydrate();
                     "satori",
                     "@resvg/resvg-js",
                     "yoga-wasm-web",
+                    ...userSsrExternal,
                   ],
                   // Force all node_modules through Vite's transform pipeline
                   // so non-JS imports (CSS, images) don't hit Node's native
@@ -2140,6 +2150,7 @@ hydrate();
             ssr: {
               ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
                 resolve: {
+                  external: [...userSsrExternal],
                   // Force all node_modules through Vite's transform pipeline
                   // so non-JS imports (CSS, images) don't hit Node's native
                   // ESM loader. Matches Next.js behavior of bundling everything.
