@@ -71,7 +71,9 @@ describe("node_modules CSS import (Pages Router)", () => {
     for (const pkg of requiredPackages) {
       const src = path.join(rootNodeModules, pkg);
       const dest = path.join(nmDir, pkg);
-      await fs.symlink(src, dest, "junction").catch(() => {});
+      await fs.symlink(src, dest, "junction").catch((err) => {
+        if (err.code !== "EEXIST") throw err;
+      });
     }
 
     // Create fake packages that import .css and .module.css
@@ -125,6 +127,9 @@ export default function Page() {
 }`,
     );
 
+    // `appDir` points to the tmp project root. For a Pages Router test (no
+    // `app/` directory) this just gives vinext a root to resolve from; the
+    // plugin ignores the absence of `app/`.
     const plugins: any[] = [vinext({ appDir: tmpDir })];
 
     server = await createServer({
@@ -151,19 +156,12 @@ export default function Page() {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   });
 
-  it("renders page that imports CSS from node_modules without crashing", async () => {
+  it("renders page that imports CSS and CSS modules from node_modules without crashing", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("node-modules-css-pages-works");
     expect(html).toContain("fake-css-lib-rendered");
-  });
-
-  it("renders page that imports CSS modules from node_modules without crashing", async () => {
-    const res = await fetch(`${baseUrl}/`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain("node-modules-css-pages-works");
     expect(html).toContain("fake-css-module-rendered");
   });
 });

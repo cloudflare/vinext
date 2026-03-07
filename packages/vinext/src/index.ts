@@ -2049,8 +2049,14 @@ hydrate();
               origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/,
             },
           },
-          // Externalize React packages from SSR transform — they are CJS and
-          // must be loaded natively by Node, not through Vite's ESM evaluator.
+          // Configure SSR transform behaviour for Node targets.
+          // - `external`: React packages are loaded natively by Node (CJS)
+          //   rather than through Vite's ESM evaluator.
+          // - `noExternal: true`: force everything else through Vite's
+          //   transform pipeline so non-JS imports (CSS, images) from
+          //   node_modules don't hit Node's native ESM loader.
+          //   Any user-provided `ssr.noExternal` is intentionally superseded
+          //   by this setting; only `ssr.external` entries escape Vite's transform.
           // Skip when targeting bundled runtimes (Cloudflare/Nitro bundle everything).
           ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
             ssr: {
