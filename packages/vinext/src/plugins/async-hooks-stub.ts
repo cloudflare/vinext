@@ -28,7 +28,6 @@ export const asyncHooksStubPlugin: Plugin = {
   },
 
   load: {
-    filter: { id: /^\0vinext:async-hooks-stub$/ },
     handler(id) {
       if (id === ASYNC_HOOKS_STUB_ID) {
         // Intentionally minimal: only AsyncLocalStorage is exported.
