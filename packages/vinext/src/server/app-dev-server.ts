@@ -2085,53 +2085,65 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // layouts itself throws notFound() during the fallback rendering (causing a 500).
   if (route.layouts && route.layouts.length > 0) {
     const asyncParams = makeThenableParams(params);
-    for (let li = route.layouts.length - 1; li >= 0; li--) {
-      const LayoutComp = route.layouts[li]?.default;
-      if (!LayoutComp) continue;
-      try {
-        const lr = LayoutComp({ params: asyncParams, children: null });
-        if (lr && typeof lr === "object" && typeof lr.then === "function") await lr;
-      } catch (layoutErr) {
-        if (layoutErr && typeof layoutErr === "object" && "digest" in layoutErr) {
-          const digest = String(layoutErr.digest);
-           if (digest.startsWith("NEXT_REDIRECT;")) {
-             const parts = digest.split(";");
-             const redirectUrl = decodeURIComponent(parts[2]);
-             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
-             setHeadersContext(null);
-             setNavigationContext(null);
-             return Response.redirect(new URL(redirectUrl, request.url), statusCode);
-          }
-          if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-            const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
-            // Find the not-found component from the parent level (the boundary that
-            // would catch this in Next.js). Walk up from the throwing layout to find
-            // the nearest not-found at a parent layout's directory.
-            let parentNotFound = null;
-            if (route.notFounds) {
-              for (let pi = li - 1; pi >= 0; pi--) {
-                if (route.notFounds[pi]?.default) {
-                  parentNotFound = route.notFounds[pi].default;
-                  break;
+    // Suppress "Invalid hook call" warnings: layout components that use use()
+    // trigger this dev-mode warning when called outside React's render cycle.
+    // This is expected — we're probing for redirect/notFound throws only.
+    const _origConsoleErrorLayouts = console.error;
+    console.error = (...args) => {
+      if (typeof args[0] === "string" && args[0].includes("Invalid hook call")) return;
+      _origConsoleErrorLayouts.apply(console, args);
+    };
+    try {
+      for (let li = route.layouts.length - 1; li >= 0; li--) {
+        const LayoutComp = route.layouts[li]?.default;
+        if (!LayoutComp) continue;
+        try {
+          const lr = LayoutComp({ params: asyncParams, children: null });
+          if (lr && typeof lr === "object" && typeof lr.then === "function") await lr;
+        } catch (layoutErr) {
+          if (layoutErr && typeof layoutErr === "object" && "digest" in layoutErr) {
+            const digest = String(layoutErr.digest);
+             if (digest.startsWith("NEXT_REDIRECT;")) {
+               const parts = digest.split(";");
+               const redirectUrl = decodeURIComponent(parts[2]);
+               const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
+               setHeadersContext(null);
+               setNavigationContext(null);
+               return Response.redirect(new URL(redirectUrl, request.url), statusCode);
+            }
+            if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
+              const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
+              // Find the not-found component from the parent level (the boundary that
+              // would catch this in Next.js). Walk up from the throwing layout to find
+              // the nearest not-found at a parent layout's directory.
+              let parentNotFound = null;
+              if (route.notFounds) {
+                for (let pi = li - 1; pi >= 0; pi--) {
+                  if (route.notFounds[pi]?.default) {
+                    parentNotFound = route.notFounds[pi].default;
+                    break;
+                  }
                 }
               }
+              if (!parentNotFound) parentNotFound = ${rootNotFoundVar ? `${rootNotFoundVar}?.default` : "null"};
+              // Wrap in only the layouts above the throwing one
+              const parentLayouts = route.layouts.slice(0, li);
+              const fallbackResp = await renderHTTPAccessFallbackPage(
+                route, statusCode, isRscRequest, request,
+                { boundaryComponent: parentNotFound, layouts: parentLayouts }
+              );
+              if (fallbackResp) return fallbackResp;
+              setHeadersContext(null);
+              setNavigationContext(null);
+              const statusText = statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
+              return new Response(statusText, { status: statusCode });
             }
-            if (!parentNotFound) parentNotFound = ${rootNotFoundVar ? `${rootNotFoundVar}?.default` : "null"};
-            // Wrap in only the layouts above the throwing one
-            const parentLayouts = route.layouts.slice(0, li);
-            const fallbackResp = await renderHTTPAccessFallbackPage(
-              route, statusCode, isRscRequest, request,
-              { boundaryComponent: parentNotFound, layouts: parentLayouts }
-            );
-            if (fallbackResp) return fallbackResp;
-            setHeadersContext(null);
-            setNavigationContext(null);
-            const statusText = statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
-            return new Response(statusText, { status: statusCode });
           }
+          // Not a special error — let it propagate through normal RSC rendering
         }
-        // Not a special error — let it propagate through normal RSC rendering
       }
+    } finally {
+      console.error = _origConsoleErrorLayouts;
     }
   }
 
