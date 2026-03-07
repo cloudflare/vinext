@@ -99,6 +99,44 @@ declare global {
      * Prevents duplicate prefetch requests for the same URL.
      */
     __VINEXT_RSC_PREFETCHED_URLS__: Set<string> | undefined;
+
+    // ── Next.js conventional globals ────────────────────────────────────────
+
+    /**
+     * Pages Router SSR data injected by the server as an inline `<script>`.
+     * Contains page props, route params, locale info, and vinext-specific
+     * metadata (page module URL, app module URL) needed for client hydration
+     * and subsequent client-side navigations.
+     */
+    __NEXT_DATA__:
+      | {
+          /** Serialised page props. */
+          props: { pageProps: unknown };
+          /** Next.js route pattern (e.g. `"/posts/[id]"`). */
+          page: string;
+          /** Merged URL search params + dynamic route params. */
+          query: Record<string, string | string[]>;
+          /** `true` while a fallback SSG page is being generated. */
+          isFallback: boolean;
+          /** Active locale. */
+          locale?: string;
+          /** All configured locales. */
+          locales?: string[];
+          /** Default locale. */
+          defaultLocale?: string;
+          /** vinext-specific additions (not part of Next.js upstream). */
+          __vinext?: {
+            /** Absolute URL of the page module for dynamic import. */
+            pageModuleUrl?: string;
+            /** Absolute URL of the `_app` module for dynamic import. */
+            appModuleUrl?: string;
+          };
+          /** Serialised page module path (legacy — used by `client/entry.ts`). */
+          __pageModule?: string;
+          /** Serialised `_app` module path (legacy — used by `client/entry.ts`). */
+          __appModule?: string;
+        }
+      | undefined;
   }
 
   // ── self globals used inside server-injected inline scripts ───────────────
@@ -258,7 +296,6 @@ declare global {
   }
 }
 
-// This file must be a module (not a script) so that the `declare global`
-// blocks above are recognised as global augmentations rather than
-// module-level declarations.
-export {};
+// The `import type { Root }` at the top of this file makes it a TypeScript
+// module (rather than a script), which is required for `declare global` blocks
+// to act as global augmentations.

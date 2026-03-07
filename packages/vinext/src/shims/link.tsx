@@ -180,7 +180,7 @@ function prefetchUrl(href: string): void {
         // Network error: allow retry on next viewport intersection
         prefetched.delete(rscUrl);
       });
-    } else if ((window as any).__NEXT_DATA__?.__vinext?.pageModuleUrl) {
+    } else if (window.__NEXT_DATA__?.__vinext?.pageModuleUrl) {
       // Pages Router: inject a prefetch link for the target page module
       // We can't easily resolve the target page's module URL from the Link,
       // so we create a <link rel="prefetch"> for the HTML page which helps

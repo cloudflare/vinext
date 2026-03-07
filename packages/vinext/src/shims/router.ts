@@ -261,7 +261,7 @@ function getPathnameAndQuery(): {
   const query: Record<string, string> = {};
   // Include dynamic route params from __NEXT_DATA__ (e.g., { id: "42" } from /posts/[id]).
   // Only include keys that are part of the route pattern (not stale query params).
-  const nextData = (window as any).__NEXT_DATA__;
+  const nextData = window.__NEXT_DATA__;
   if (nextData && nextData.query && nextData.page) {
     const routeParamNames = extractRouteParamNames(nextData.page);
     for (const key of routeParamNames) {
@@ -290,7 +290,6 @@ let _navInProgress = false;
 async function navigateClient(url: string): Promise<void> {
   if (typeof window === "undefined") return;
 
-  const win = window as any;
   const root = window.__VINEXT_ROOT__;
   if (!root) {
     // No React root yet — fall back to hard navigation
@@ -321,7 +320,7 @@ async function navigateClient(url: string): Promise<void> {
 
     const nextData = JSON.parse(match[1]);
     const { pageProps } = nextData.props;
-    win.__NEXT_DATA__ = nextData;
+    window.__NEXT_DATA__ = nextData;
 
     // Get the page module URL from __NEXT_DATA__.__vinext (preferred),
     // or fall back to parsing the hydration script
@@ -433,7 +432,7 @@ function buildRouterValue(
     : window.__VINEXT_DEFAULT_LOCALE__;
 
   const route = typeof window !== "undefined"
-    ? ((window as any).__NEXT_DATA__?.page ?? pathname)
+    ? (window.__NEXT_DATA__?.page ?? pathname)
     : pathname;
 
   return {
@@ -447,7 +446,7 @@ function buildRouterValue(
     defaultLocale,
     isReady: true,
     isPreview: false,
-    isFallback: typeof window !== "undefined" && (window as any).__NEXT_DATA__?.isFallback === true,
+    isFallback: typeof window !== "undefined" && window.__NEXT_DATA__?.isFallback === true,
     ...methods,
     events: routerEvents,
   };

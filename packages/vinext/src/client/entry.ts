@@ -17,8 +17,8 @@ import "next/router";
 import { isValidModulePath } from "./validate-module-path.js";
 
 // Read the SSR data injected by the server
-const nextData = (window as any).__NEXT_DATA__;
-const { pageProps } = nextData?.props ?? { pageProps: {} };
+const nextData = window.__NEXT_DATA__;
+const pageProps = (nextData?.props.pageProps ?? {}) as Record<string, unknown>;
 const pageModulePath = nextData?.__pageModule;
 const appModulePath = nextData?.__appModule;
 
