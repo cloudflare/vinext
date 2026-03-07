@@ -1083,6 +1083,7 @@ describe("vinext:async-hooks-stub", () => {
       const als = new ALS();
       expect(als.getStore()).toBeUndefined();
       expect(als.run(42, () => "result")).toBe("result");
+      expect(als.run(42, (a: number, b: number) => a + b, 3, 4)).toBe(7);
       expect(als.exit(() => "exit-result")).toBe("exit-result");
     });
   });
