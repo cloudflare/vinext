@@ -2055,6 +2055,7 @@ hydrate();
           ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
             ssr: {
               external: ["react", "react-dom", "react-dom/server"],
+              noExternal: true,
             },
           }),
           resolve: {
@@ -2118,6 +2119,11 @@ hydrate();
                     "@resvg/resvg-js",
                     "yoga-wasm-web",
                   ],
+                  // Force all node_modules through Vite's transform pipeline
+                  // so non-JS imports (CSS, images) don't hit Node's native
+                  // ESM loader. Matches Next.js behavior of bundling everything.
+                  // Packages in `external` above take precedence per Vite rules.
+                  noExternal: true,
                 },
               }),
               optimizeDeps: {
@@ -2132,6 +2138,14 @@ hydrate();
               },
             },
             ssr: {
+              ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
+                resolve: {
+                  // Force all node_modules through Vite's transform pipeline
+                  // so non-JS imports (CSS, images) don't hit Node's native
+                  // ESM loader. Matches Next.js behavior of bundling everything.
+                  noExternal: true,
+                },
+              }),
               optimizeDeps: {
                 exclude: ["vinext"],
                 entries: appEntries,
