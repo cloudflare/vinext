@@ -188,11 +188,10 @@ export function toRscUrl(href: string): string {
 /** Get or create the shared in-memory RSC prefetch cache on window. */
 export function getPrefetchCache(): Map<string, PrefetchCacheEntry> {
   if (isServer) return new Map();
-  const win = window as any;
-  if (!win.__VINEXT_RSC_PREFETCH_CACHE__) {
-    win.__VINEXT_RSC_PREFETCH_CACHE__ = new Map<string, PrefetchCacheEntry>();
+  if (!window.__VINEXT_RSC_PREFETCH_CACHE__) {
+    window.__VINEXT_RSC_PREFETCH_CACHE__ = new Map<string, PrefetchCacheEntry>();
   }
-  return win.__VINEXT_RSC_PREFETCH_CACHE__;
+  return window.__VINEXT_RSC_PREFETCH_CACHE__;
 }
 
 /**
@@ -201,11 +200,10 @@ export function getPrefetchCache(): Map<string, PrefetchCacheEntry> {
  */
 export function getPrefetchedUrls(): Set<string> {
   if (isServer) return new Set();
-  const win = window as any;
-  if (!win.__VINEXT_RSC_PREFETCHED_URLS__) {
-    win.__VINEXT_RSC_PREFETCHED_URLS__ = new Set<string>();
+  if (!window.__VINEXT_RSC_PREFETCHED_URLS__) {
+    window.__VINEXT_RSC_PREFETCHED_URLS__ = new Set<string>();
   }
-  return win.__VINEXT_RSC_PREFETCHED_URLS__;
+  return window.__VINEXT_RSC_PREFETCHED_URLS__;
 }
 
 /**
@@ -423,7 +421,7 @@ function restoreScrollPosition(state: unknown): void {
     // and set __VINEXT_RSC_PENDING__. Promise.resolve() schedules a microtask
     // that runs after all synchronous event listeners have completed.
     void Promise.resolve().then(() => {
-      const pending: Promise<void> | null = (window as any).__VINEXT_RSC_PENDING__ ?? null;
+      const pending: Promise<void> | null = window.__VINEXT_RSC_PENDING__ ?? null;
 
       if (pending) {
         // Wait for the RSC navigation to finish rendering, then scroll.
@@ -496,8 +494,8 @@ async function navigateImpl(
   // Trigger RSC re-fetch if available, and wait for the new content to render
   // before scrolling. This prevents the old page from visibly jumping to the
   // top before the new content paints.
-  if (typeof (window as any).__VINEXT_RSC_NAVIGATE__ === "function") {
-    await (window as any).__VINEXT_RSC_NAVIGATE__(fullHref);
+  if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
+    await window.__VINEXT_RSC_NAVIGATE__(fullHref);
   }
 
   if (scroll) {
@@ -539,8 +537,8 @@ const _appRouter = {
   refresh(): void {
     if (isServer) return;
     // Re-fetch the current page's RSC stream
-    if (typeof (window as any).__VINEXT_RSC_NAVIGATE__ === "function") {
-      (window as any).__VINEXT_RSC_NAVIGATE__(window.location.href);
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
+      window.__VINEXT_RSC_NAVIGATE__(window.location.href);
     }
   },
   prefetch(href: string): void {

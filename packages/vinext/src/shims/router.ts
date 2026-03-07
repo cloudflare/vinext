@@ -124,7 +124,7 @@ function resolveUrl(url: string | UrlObject): string {
  */
 export function applyNavigationLocale(url: string, locale?: string): string {
   if (!locale || typeof window === "undefined") return url;
-  const defaultLocale = (window as any).__VINEXT_DEFAULT_LOCALE__;
+  const defaultLocale = window.__VINEXT_DEFAULT_LOCALE__;
   // Default locale doesn't get a prefix
   if (locale === defaultLocale) return url;
   // Don't double-prefix
@@ -291,7 +291,7 @@ async function navigateClient(url: string): Promise<void> {
   if (typeof window === "undefined") return;
 
   const win = window as any;
-  const root = win.__VINEXT_ROOT__;
+  const root = window.__VINEXT_ROOT__;
   if (!root) {
     // No React root yet — fall back to hard navigation
     window.location.href = url;
@@ -361,7 +361,7 @@ async function navigateClient(url: string): Promise<void> {
     const React = (await import("react")).default;
 
     // Re-render with the new page, loading _app if needed
-    let AppComponent = win.__VINEXT_APP__;
+    let AppComponent = window.__VINEXT_APP__;
     const appModuleUrl: string | undefined =
       nextData.__vinext?.appModuleUrl;
 
@@ -372,7 +372,7 @@ async function navigateClient(url: string): Promise<void> {
         try {
           const appModule = await import(/* @vite-ignore */ appModuleUrl);
           AppComponent = appModule.default;
-          win.__VINEXT_APP__ = AppComponent;
+          window.__VINEXT_APP__ = AppComponent;
         } catch {
           // _app not available — continue without it
         }
@@ -424,13 +424,13 @@ function buildRouterValue(
   const _ssrState = _getSSRContext();
   const locale = typeof window === "undefined"
     ? _ssrState?.locale
-    : (window as any).__VINEXT_LOCALE__;
+    : window.__VINEXT_LOCALE__;
   const locales = typeof window === "undefined"
     ? _ssrState?.locales
-    : (window as any).__VINEXT_LOCALES__;
+    : window.__VINEXT_LOCALES__;
   const defaultLocale = typeof window === "undefined"
     ? _ssrState?.defaultLocale
-    : (window as any).__VINEXT_DEFAULT_LOCALE__;
+    : window.__VINEXT_DEFAULT_LOCALE__;
 
   const route = typeof window !== "undefined"
     ? ((window as any).__NEXT_DATA__?.page ?? pathname)

@@ -73,7 +73,7 @@ async function hydrate() {
   // Expose root on window so the router shim (a separate module) can
   // re-render the tree during client-side navigation. import.meta.hot.data
   // is module-scoped and cannot be read across module boundaries.
-  (window as any).__VINEXT_ROOT__ = root;
+  window.__VINEXT_ROOT__ = root;
 }
 
 void hydrate();

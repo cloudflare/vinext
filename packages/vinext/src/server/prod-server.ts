@@ -652,7 +652,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
       const lazyChunks = computeLazyChunks(buildManifest);
       if (lazyChunks.length > 0) {
-        (globalThis as any).__VINEXT_LAZY_CHUNKS__ = lazyChunks;
+        globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
       }
     } catch { /* ignore parse errors */ }
   }

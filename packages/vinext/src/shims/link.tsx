@@ -161,8 +161,7 @@ function prefetchUrl(href: string): void {
   const schedule = (window as any).requestIdleCallback ?? ((fn: () => void) => setTimeout(fn, 100));
 
   schedule(() => {
-    const win = window as any;
-    if (typeof win.__VINEXT_RSC_NAVIGATE__ === "function") {
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
       // App Router: prefetch the RSC payload and store in cache
       fetch(rscUrl, {
         headers: { Accept: "text/x-component" },
@@ -181,7 +180,7 @@ function prefetchUrl(href: string): void {
         // Network error: allow retry on next viewport intersection
         prefetched.delete(rscUrl);
       });
-    } else if (win.__NEXT_DATA__?.__vinext?.pageModuleUrl) {
+    } else if ((window as any).__NEXT_DATA__?.__vinext?.pageModuleUrl) {
       // Pages Router: inject a prefetch link for the target page module
       // We can't easily resolve the target page's module URL from the Link,
       // so we create a <link rel="prefetch"> for the HTML page which helps
@@ -232,9 +231,9 @@ function getSharedObserver(): IntersectionObserver | null {
 
 function getDefaultLocale(): string | undefined {
   if (typeof window !== "undefined") {
-    return (window as any).__VINEXT_DEFAULT_LOCALE__ as string | undefined;
+    return window.__VINEXT_DEFAULT_LOCALE__;
   }
-  return (globalThis as any).__VINEXT_DEFAULT_LOCALE__ as string | undefined;
+  return globalThis.__VINEXT_DEFAULT_LOCALE__;
 }
 
 /**
@@ -418,8 +417,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     const hash = hashIdx !== -1 ? absoluteFullHref.slice(hashIdx) : "";
 
     // Try RSC navigation first (App Router), then Pages Router
-    const win = window as any;
-    if (typeof win.__VINEXT_RSC_NAVIGATE__ === "function") {
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
       // App Router: push/replace history state, then fetch RSC stream.
       // Await the RSC navigate so scroll-to-top happens after the new
       // content is committed to the DOM (prevents flash of old page at top).
@@ -430,7 +428,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       }
       setPending(true);
       try {
-        await win.__VINEXT_RSC_NAVIGATE__(absoluteFullHref);
+        await window.__VINEXT_RSC_NAVIGATE__(absoluteFullHref);
       } finally {
         if (mountedRef.current) setPending(false);
       }

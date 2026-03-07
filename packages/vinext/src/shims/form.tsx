@@ -103,15 +103,14 @@ const Form = forwardRef(function Form(
     const url = `${action as string}?${params.toString()}`;
 
     // Navigate client-side
-    const win = window as any;
-    if (typeof win.__VINEXT_RSC_NAVIGATE__ === "function") {
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
       // App Router: RSC navigation. Await so scroll happens after new content renders.
       if (replace) {
         window.history.replaceState(null, "", url);
       } else {
         window.history.pushState(null, "", url);
       }
-      await win.__VINEXT_RSC_NAVIGATE__(url);
+      await window.__VINEXT_RSC_NAVIGATE__(url);
     } else {
       // Pages Router: use router or fallback
       if (replace) {
