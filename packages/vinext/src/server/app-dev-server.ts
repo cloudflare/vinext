@@ -2233,7 +2233,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         }
       }
     }
-    //
     // Attach internal timing header so the dev server middleware can log it.
     // Format: "handlerStart,compileMs,renderMs"
     //   handlerStart - absolute performance.now() when _handleRequest began,
