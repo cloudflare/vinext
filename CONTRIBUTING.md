@@ -15,12 +15,13 @@ We use [OpenCode](https://opencode.ai) with Claude Opus 4.6, set to max thinking
 
 ## AI code review
 
-When you open a PR, tag one of our AI reviewers in a comment:
+Every PR goes through AI code review. When you open a PR, a contributor with write access will request a review from **BigBonk** (Claude Opus 4.6, max thinking mode). External contributors can't trigger this directly.
 
-- **`/bonk`** — AI code review using Claude Opus 4.6
-- **`/bigbonk`** — Same model, max thinking mode. Use this for complex or large PRs.
+Our process is to iterate on BigBonk's feedback until there are no unresolved comments. That doesn't mean you have to accept every suggestion verbatim, but we've found it to be very good at finding real problems and very useful for debugging this codebase. Expect multiple review rounds on larger PRs.
 
-The reviewer will leave comments on your PR. You can respond to its comments and it will follow up.
+**Our bias is towards merging.** This is a new project with known gaps, and we're trying to fill them as fast as possible. We want to get PRs in, not block them. If your contribution moves things forward, we'll work with you to get it landed.
+
+At a maintainer's discretion, we may push BigBonk's recommended changes directly into your PR and merge it, or we may create a new PR based on your work. When we do this, we always try to preserve the original author credit. If that ever doesn't happen, please let us know and we'll fix it.
 
 ## Debugging
 
@@ -28,7 +29,7 @@ For browser-level debugging (verifying rendered output, client-side navigation, 
 
 ## What to work on
 
-Check the [open issues](https://github.com/cloudflare/vinext/issues). Issues labeled `post-launch` are known gaps we're planning to address. If you're looking to contribute, those are a good place to start.
+Check the [open issues](https://github.com/cloudflare/vinext/issues). If you're looking to contribute, those are a good place to start.
 
 ## Project structure
 
