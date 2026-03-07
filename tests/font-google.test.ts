@@ -12,15 +12,20 @@ function unwrapHook(hook: any): Function {
 }
 
 /** Extract the vinext:google-fonts plugin from the plugin array */
-function getGoogleFontsPlugin(): Plugin & {
-  _isBuild: boolean;
-  _fontCache: Map<string, string>;
-  _cacheDir: string;
-} {
+function getGoogleFontsPlugin(): Plugin {
   const plugins = vinext() as Plugin[];
   const plugin = plugins.find((p) => p.name === "vinext:google-fonts");
   if (!plugin) throw new Error("vinext:google-fonts plugin not found");
-  return plugin as any;
+  return plugin;
+}
+
+/** Simulate Vite's configResolved hook to initialize plugin state */
+function initPlugin(plugin: Plugin, opts: { command?: "build" | "serve"; root?: string }) {
+  const fakeConfig = {
+    command: opts.command ?? "serve",
+    root: opts.root ?? import.meta.dirname,
+  };
+  (plugin.configResolved as Function)(fakeConfig);
 }
 
 // ── Font shim tests ───────────────────────────────────────────
@@ -277,7 +282,7 @@ describe("vinext:google-fonts plugin", () => {
 
   it("is a no-op in dev mode (isBuild = false)", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = false;
+    initPlugin(plugin, { command: "serve" });
     const transform = unwrapHook(plugin.transform);
     const code = `import { Inter } from 'next/font/google';\nconst inter = Inter({ weight: ['400'] });`;
     const result = await transform.call(plugin, code, "/app/layout.tsx");
@@ -286,8 +291,7 @@ describe("vinext:google-fonts plugin", () => {
 
   it("returns null for files without next/font/google imports", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
-    plugin._cacheDir = path.join(import.meta.dirname, ".test-font-cache");
+    initPlugin(plugin, { command: "build" });
     const transform = unwrapHook(plugin.transform);
     const code = `import React from 'react';\nconst x = 1;`;
     const result = await transform.call(plugin, code, "/app/layout.tsx");
@@ -296,7 +300,7 @@ describe("vinext:google-fonts plugin", () => {
 
   it("returns null for node_modules files", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
+    initPlugin(plugin, { command: "build" });
     const transform = unwrapHook(plugin.transform);
     const code = `import { Inter } from 'next/font/google';`;
     const result = await transform.call(plugin, code, "node_modules/some-pkg/index.ts");
@@ -305,7 +309,7 @@ describe("vinext:google-fonts plugin", () => {
 
   it("returns null for virtual modules", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
+    initPlugin(plugin, { command: "build" });
     const transform = unwrapHook(plugin.transform);
     const code = `import { Inter } from 'next/font/google';`;
     const result = await transform.call(plugin, code, "\0virtual:something");
@@ -314,7 +318,7 @@ describe("vinext:google-fonts plugin", () => {
 
   it("returns null for non-script files", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
+    initPlugin(plugin, { command: "build" });
     const transform = unwrapHook(plugin.transform);
     const code = `import { Inter } from 'next/font/google';`;
     const result = await transform.call(plugin, code, "/app/styles.css");
@@ -323,8 +327,7 @@ describe("vinext:google-fonts plugin", () => {
 
   it("returns null when import exists but no font constructor call", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
-    plugin._cacheDir = path.join(import.meta.dirname, ".test-font-cache");
+    initPlugin(plugin, { command: "build" });
     const transform = unwrapHook(plugin.transform);
     const code = `import { Inter } from 'next/font/google';\n// no call`;
     const result = await transform.call(plugin, code, "/app/layout.tsx");
@@ -333,10 +336,8 @@ describe("vinext:google-fonts plugin", () => {
 
   it("transforms font call to include _selfHostedCSS during build", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
-    const cacheDir = path.join(import.meta.dirname, ".test-font-cache");
-    plugin._cacheDir = cacheDir;
-    plugin._fontCache.clear();
+    const root = path.join(import.meta.dirname, ".test-font-root");
+    initPlugin(plugin, { command: "build", root });
 
     const transform = unwrapHook(plugin.transform);
     const code = [
@@ -352,6 +353,7 @@ describe("vinext:google-fonts plugin", () => {
     expect(result.map).toBeDefined();
 
     // Verify cache dir was created with font files
+    const cacheDir = path.join(root, ".vinext", "fonts");
     expect(fs.existsSync(cacheDir)).toBe(true);
     const dirs = fs.readdirSync(cacheDir);
     const interDir = dirs.find((d: string) => d.startsWith("inter-"));
@@ -362,115 +364,140 @@ describe("vinext:google-fonts plugin", () => {
     expect(files.some((f: string) => f.endsWith(".woff2"))).toBe(true);
 
     // Clean up
-    fs.rmSync(cacheDir, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
   }, 15000); // Network timeout
 
   it("uses cached fonts on second call", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
-    const cacheDir = path.join(import.meta.dirname, ".test-font-cache-2");
-    plugin._cacheDir = cacheDir;
+    const root = path.join(import.meta.dirname, ".test-font-root-2");
+    initPlugin(plugin, { command: "build", root });
 
-    // Pre-populate cache
+    // Pre-populate the on-disk cache so fetchAndCacheFont finds it
+    const cacheDir = path.join(root, ".vinext", "fonts");
     const fakeCSS = "@font-face { font-family: 'Inter'; src: url(/fake.woff2); }";
-    plugin._fontCache.set(
-      "https://fonts.googleapis.com/css2?family=Inter%3Awght%40400&display=swap",
-      fakeCSS,
-    );
+    // The plugin hashes the URL to create the dir name. Instead, call
+    // transform twice: first with a real fetch to populate the in-memory
+    // cache, then again to verify the cache is used (no second fetch).
+    // Simpler approach: mock fetch to return controlled CSS.
+    const originalFetch = globalThis.fetch;
+    const fetchCount = { value: 0 };
+    globalThis.fetch = async (input: any, init?: any) => {
+      fetchCount.value++;
+      // Return fake Google Fonts CSS
+      return new Response(fakeCSS, {
+        status: 200,
+        headers: { "content-type": "text/css" },
+      });
+    };
 
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import { Inter } from 'next/font/google';`,
-      `const inter = Inter({ weight: '400' });`,
-    ].join("\n");
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({ weight: '400' });`,
+      ].join("\n");
 
-    const result = await transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    expect(result.code).toContain("_selfHostedCSS");
-    // lgtm[js/incomplete-sanitization] — escaping quotes for test assertion, not sanitization
-    expect(result.code).toContain(fakeCSS.replace(/"/g, '\\"'));
+      // First call: fetches and caches
+      const result1 = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result1).not.toBeNull();
+      expect(result1.code).toContain("_selfHostedCSS");
+      const firstFetchCount = fetchCount.value;
 
-    plugin._fontCache.clear();
+      // Second call: should use in-memory cache (no additional fetch)
+      const result2 = await transform.call(plugin, code, "/app/page.tsx");
+      expect(result2).not.toBeNull();
+      expect(fetchCount.value).toBe(firstFetchCount);
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("handles multiple font imports in one file", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
-    const cacheDir = path.join(import.meta.dirname, ".test-font-cache-3");
-    plugin._cacheDir = cacheDir;
-    plugin._fontCache.clear();
+    const root = path.join(import.meta.dirname, ".test-font-root-3");
+    initPlugin(plugin, { command: "build", root });
 
-    // Pre-populate cache for both fonts
-    plugin._fontCache.set(
-      "https://fonts.googleapis.com/css2?family=Inter%3Awght%40400&display=swap",
-      "@font-face { font-family: 'Inter'; src: url(/inter.woff2); }",
-    );
-    plugin._fontCache.set(
-      "https://fonts.googleapis.com/css2?family=Roboto%3Awght%40400&display=swap",
-      "@font-face { font-family: 'Roboto'; src: url(/roboto.woff2); }",
-    );
+    // Mock fetch to return different CSS per font family
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (input: any) => {
+      const url = String(input);
+      if (url.includes("Inter")) {
+        return new Response("@font-face { font-family: 'Inter'; src: url(/inter.woff2); }", {
+          status: 200, headers: { "content-type": "text/css" },
+        });
+      }
+      return new Response("@font-face { font-family: 'Roboto'; src: url(/roboto.woff2); }", {
+        status: 200, headers: { "content-type": "text/css" },
+      });
+    };
 
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import { Inter, Roboto } from 'next/font/google';`,
-      `const inter = Inter({ weight: '400' });`,
-      `const roboto = Roboto({ weight: '400' });`,
-    ].join("\n");
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter, Roboto } from 'next/font/google';`,
+        `const inter = Inter({ weight: '400' });`,
+        `const roboto = Roboto({ weight: '400' });`,
+      ].join("\n");
 
-    const result = await transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    // Both font calls should be transformed
-    const matches = result.code.match(/_selfHostedCSS/g);
-    expect(matches?.length).toBe(2);
-
-    plugin._fontCache.clear();
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      // Both font calls should be transformed
+      const matches = result.code.match(/_selfHostedCSS/g);
+      expect(matches?.length).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("skips font calls not from the import", async () => {
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
-    plugin._cacheDir = path.join(import.meta.dirname, ".test-font-cache-4");
-    plugin._fontCache.clear();
+    const root = path.join(import.meta.dirname, ".test-font-root-4");
+    initPlugin(plugin, { command: "build", root });
 
-    const transform = unwrapHook(plugin.transform);
-    const code = [
-      `import { Inter } from 'next/font/google';`,
-      `const inter = Inter({ weight: '400' });`,
-      `const Roboto = (opts) => opts; // Not from import`,
-      `const roboto = Roboto({ weight: '400' });`,
-    ].join("\n");
+    // Mock fetch for Inter only
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      return new Response("@font-face { font-family: 'Inter'; }", {
+        status: 200, headers: { "content-type": "text/css" },
+      });
+    };
 
-    // Pre-populate Inter cache only
-    plugin._fontCache.set(
-      "https://fonts.googleapis.com/css2?family=Inter%3Awght%40400&display=swap",
-      "@font-face { font-family: 'Inter'; }",
-    );
+    try {
+      const transform = unwrapHook(plugin.transform);
+      const code = [
+        `import { Inter } from 'next/font/google';`,
+        `const inter = Inter({ weight: '400' });`,
+        `const Roboto = (opts) => opts; // Not from import`,
+        `const roboto = Roboto({ weight: '400' });`,
+      ].join("\n");
 
-    const result = await transform.call(plugin, code, "/app/layout.tsx");
-    expect(result).not.toBeNull();
-    // Only Inter should be transformed (1 match)
-    const matches = result.code.match(/_selfHostedCSS/g);
-    expect(matches?.length).toBe(1);
-
-    plugin._fontCache.clear();
+      const result = await transform.call(plugin, code, "/app/layout.tsx");
+      expect(result).not.toBeNull();
+      // Only Inter should be transformed (1 match)
+      const matches = result.code.match(/_selfHostedCSS/g);
+      expect(matches?.length).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
 // ── fetchAndCacheFont integration ─────────────────────────────
 
 describe("fetchAndCacheFont", () => {
-  const cacheDir = path.join(import.meta.dirname, ".test-fetch-cache");
+  const root = path.join(import.meta.dirname, ".test-fetch-root");
 
   afterEach(() => {
-    fs.rmSync(cacheDir, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
   });
 
   it("fetches Inter font CSS and downloads woff2 files", async () => {
     // Use the plugin's transform which internally calls fetchAndCacheFont
     const plugin = getGoogleFontsPlugin();
-    plugin._isBuild = true;
-    plugin._cacheDir = cacheDir;
-    plugin._fontCache.clear();
+    initPlugin(plugin, { command: "build", root });
 
     const transform = unwrapHook(plugin.transform);
     const code = [
@@ -481,18 +508,18 @@ describe("fetchAndCacheFont", () => {
     const result = await transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
 
-    // Verify the CSS references local file paths, not googleapis.com
-    const selfHostedCSS = plugin._fontCache.values().next().value;
-    expect(selfHostedCSS).toBeDefined();
-    expect(selfHostedCSS).toContain("@font-face");
-    expect(selfHostedCSS).toContain("Inter");
-    expect(selfHostedCSS).not.toContain("fonts.gstatic.com");
-    // Should reference local absolute paths to cached woff2 files
-    expect(selfHostedCSS).toContain(".woff2");
+    // Verify the transformed code contains self-hosted CSS with @font-face
+    expect(result.code).toContain("_selfHostedCSS");
+    expect(result.code).toContain("@font-face");
+    expect(result.code).toContain("Inter");
+    // Should reference local file paths, not googleapis.com CDN
+    expect(result.code).not.toContain("fonts.gstatic.com");
+    expect(result.code).toContain(".woff2");
   }, 15000);
 
   it("reuses cached CSS on filesystem", async () => {
     // Create a fake cached font dir
+    const cacheDir = path.join(root, ".vinext", "fonts");
     const fontDir = path.join(cacheDir, "inter-fake123");
     fs.mkdirSync(fontDir, { recursive: true });
     const fakeCSS = "@font-face { font-family: 'Inter'; src: url(/cached.woff2); }";
