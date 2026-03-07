@@ -83,33 +83,18 @@ jobs:
             project: hackernews
             wrangler_config: dist/server/wrangler.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: ./.github/actions/build-vinext
         with:
           ref: ${{ needs.check.outputs.sha }}
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/deploy-example
         with:
-          node-version: 24
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Build vinext plugin
-        run: pnpm run build
-
-      - name: Build example
-        run: pnpm exec vite build
-        working-directory: examples/${{ matrix.example.name }}
-
-      - name: Deploy Preview Version
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: examples/${{ matrix.example.name }}
-          command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ needs.check.outputs.pr_number }}
+          example-name: ${{ matrix.example.name }}
+          wrangler-config: ${{ matrix.example.wrangler_config }}
+          mode: preview
+          preview-alias: pr-${{ needs.check.outputs.pr_number }}
+          cloudflare-api-token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          cloudflare-account-id: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
   smoke-test:
     name: Smoke Test Previews
@@ -131,58 +116,9 @@ jobs:
     permissions:
       pull-requests: write
     steps:
-      - name: Comment PR with preview URLs
-        uses: actions/github-script@v7
+      - uses: actions/checkout@v4
         with:
-          script: |
-            const prNumber = ${{ needs.check.outputs.pr_number }};
-            const alias = `pr-${prNumber}`;
-
-            const examples = [
-              { name: 'app-router-cloudflare', project: 'app-router-cloudflare' },
-              { name: 'pages-router-cloudflare', project: 'pages-router-cloudflare' },
-              { name: 'app-router-playground', project: 'app-router-playground', original: 'https://app-router.vercel.app' },
-              { name: 'realworld-api-rest', project: 'realworld-api-rest' },
-              { name: 'nextra-docs-template', project: 'nextra-docs-template' },
-              { name: 'benchmarks', project: 'benchmarks' },
-              { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
-            ];
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-            });
-
-            const marker = '<!-- vinext-deploy-previews -->';
-            const existingComment = comments.find(c => c.body?.includes(marker));
-
-            const rows = examples
-              .map(e => {
-                const orig = e.original ? `[original](${e.original})` : '';
-                return `| ${e.name} | [preview](https://${alias}-${e.project}.vinext.workers.dev) | [production](https://${e.project}.vinext.workers.dev) | ${orig} |`;
-              })
-              .join('\n');
-
-            const body = [
-              marker,
-              '| Example | Preview | Production | Original |',
-              '|---------|---------|------------|----------|',
-              rows,
-            ].join('\n');
-
-            if (existingComment) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existingComment.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: prNumber,
-                body,
-              });
-            }
+          ref: ${{ needs.check.outputs.sha }}
+      - uses: ./.github/actions/comment-preview-urls
+        with:
+          pr-number: ${{ needs.check.outputs.pr_number }}

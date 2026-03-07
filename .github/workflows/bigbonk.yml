@@ -21,22 +21,9 @@ jobs:
       issues: write
       pull-requests: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-pnpm
         with:
-          fetch-depth: 30 # 30 is a balance in providing enough context for the agent vs. pulling down the entire repo history. It is not a scientific number. 27 or 31 or 36 would likely work as well.
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+          fetch-depth: "30" # enough context for the agent without full history
 
       - name: Run Bonk
         uses: ask-bonk/ask-bonk/github@main

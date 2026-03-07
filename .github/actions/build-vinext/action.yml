@@ -1,0 +1,29 @@
+name: Build vinext plugin
+description: Set up the environment and build the vinext package.
+
+inputs:
+  node-version:
+    description: Node.js version to use
+    required: false
+    default: "24"
+  fetch-depth:
+    description: Number of commits to fetch
+    required: false
+    default: "1"
+  ref:
+    description: The branch, tag or SHA to checkout
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/setup-node-pnpm
+      with:
+        node-version: ${{ inputs.node-version }}
+        fetch-depth: ${{ inputs.fetch-depth }}
+        ref: ${{ inputs.ref }}
+
+    - name: Build vinext plugin
+      shell: bash
+      run: pnpm run build

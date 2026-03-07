@@ -1,0 +1,49 @@
+name: Deploy example to Cloudflare Workers
+description: Build a vinext example and deploy or upload a preview version to Cloudflare Workers.
+
+inputs:
+  example-name:
+    description: Directory name of the example under examples/
+    required: true
+  wrangler-config:
+    description: Path to the wrangler config file (relative to the example directory)
+    required: true
+  mode:
+    description: "'production' to deploy, 'preview' to upload a preview version"
+    required: true
+  preview-alias:
+    description: Preview alias (e.g. pr-42). Required when mode is 'preview'.
+    required: false
+    default: ""
+  cloudflare-api-token:
+    description: Cloudflare API token
+    required: true
+  cloudflare-account-id:
+    description: Cloudflare account ID
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Build example
+      shell: bash
+      working-directory: examples/${{ inputs.example-name }}
+      run: pnpm exec vite build
+
+    - name: Deploy (production)
+      if: inputs.mode == 'production'
+      uses: cloudflare/wrangler-action@v3
+      with:
+        apiToken: ${{ inputs.cloudflare-api-token }}
+        accountId: ${{ inputs.cloudflare-account-id }}
+        workingDirectory: examples/${{ inputs.example-name }}
+        command: deploy --config ${{ inputs.wrangler-config }}
+
+    - name: Upload preview version
+      if: inputs.mode == 'preview'
+      uses: cloudflare/wrangler-action@v3
+      with:
+        apiToken: ${{ inputs.cloudflare-api-token }}
+        accountId: ${{ inputs.cloudflare-account-id }}
+        workingDirectory: examples/${{ inputs.example-name }}
+        command: versions upload --config ${{ inputs.wrangler-config }} --preview-alias ${{ inputs.preview-alias }}
