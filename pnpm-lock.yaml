@@ -443,6 +443,12 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: ^0.5.19
         version: 0.5.20(react-dom@19.2.4(react@19.2.4))(react-server-dom-webpack@19.2.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.31.1))
+      fake-css-lib:
+        specifier: file:./__test_packages__/fake-css-lib
+        version: file:tests/fixtures/app-basic/__test_packages__/fake-css-lib
+      fake-css-module-lib:
+        specifier: file:./__test_packages__/fake-css-module-lib
+        version: file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib
       react:
         specifier: ^19.2.4
         version: 19.2.4
@@ -2895,6 +2901,12 @@ packages:
 
   extend@3.0.2:
     resolution: {integrity: sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g==}
+
+  fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-lib, type: directory}
+
+  fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-module-lib, type: directory}
 
   fast-glob@3.3.3:
     resolution: {integrity: sha512-7MptL8U0cqcFdzIzwOTHoilX9x5BrNqye7Z/LuC7kCMRio1EMSyqRK3BEAUD7sXRq4iT4AzTVuZdhgQ2TCvYLg==}
@@ -6047,6 +6059,10 @@ snapshots:
   expect-type@1.3.0: {}
 
   extend@3.0.2: {}
+
+  fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib: {}
+
+  fake-css-module-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-module-lib: {}
 
   fast-glob@3.3.3:
     dependencies:

@@ -5,7 +5,7 @@
  * through its transform pipeline (not Node's native ESM loader, which can't
  * handle non-JS extensions). The `noExternal: true` config ensures this.
  *
- * Relates to: https://github.com/nicepkg/vinext/issues/270
+ * Relates to: https://github.com/cloudflare/vinext/issues/270
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -57,31 +57,52 @@ describe("node_modules CSS import (Pages Router)", () => {
     const nmDir = path.join(tmpDir, "node_modules");
     await fs.mkdir(nmDir, { recursive: true });
 
-    // Symlink only required packages from repo root
+    // Symlink only the packages this test actually needs from the repo root.
+    // Symlinking only what's needed (rather than all entries) keeps the test
+    // hermetic and avoids touching unrelated packages.
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
-    for (const entry of await fs.readdir(rootNodeModules)) {
-      if (entry.startsWith(".") || entry === "fake-css-lib") continue;
-      await fs.symlink(
-        path.join(rootNodeModules, entry),
-        path.join(nmDir, entry),
-        "junction",
-      );
+    const requiredPackages = [
+      "react",
+      "react-dom",
+      "vite",
+      "@vitejs",
+      "vinext",
+    ];
+    for (const pkg of requiredPackages) {
+      const src = path.join(rootNodeModules, pkg);
+      const dest = path.join(nmDir, pkg);
+      await fs.symlink(src, dest, "junction").catch(() => {});
     }
 
-    // Create a fake package that imports .css (in the real dir, not through symlink)
-    const fakePkgDir = path.join(nmDir, "fake-css-lib");
-    await fs.mkdir(fakePkgDir, { recursive: true });
+    // Create fake packages that import .css and .module.css
+    const fakeCssDir = path.join(nmDir, "fake-css-lib");
+    await fs.mkdir(fakeCssDir, { recursive: true });
     await fs.writeFile(
-      path.join(fakePkgDir, "package.json"),
+      path.join(fakeCssDir, "package.json"),
       JSON.stringify({ name: "fake-css-lib", version: "1.0.0", type: "module", main: "index.js" }),
     );
     await fs.writeFile(
-      path.join(fakePkgDir, "styles.css"),
+      path.join(fakeCssDir, "styles.css"),
       `.fake-css-lib { color: red; }`,
     );
     await fs.writeFile(
-      path.join(fakePkgDir, "index.js"),
+      path.join(fakeCssDir, "index.js"),
       `import "./styles.css";\nexport function FakeComponent() { return "fake-css-lib-rendered"; }\n`,
+    );
+
+    const fakeCssModuleDir = path.join(nmDir, "fake-css-module-lib");
+    await fs.mkdir(fakeCssModuleDir, { recursive: true });
+    await fs.writeFile(
+      path.join(fakeCssModuleDir, "package.json"),
+      JSON.stringify({ name: "fake-css-module-lib", version: "1.0.0", type: "module", main: "index.js" }),
+    );
+    await fs.writeFile(
+      path.join(fakeCssModuleDir, "styles.module.css"),
+      `.item { font-weight: bold; }`,
+    );
+    await fs.writeFile(
+      path.join(fakeCssModuleDir, "index.js"),
+      `import classes from "./styles.module.css";\nexport const styles = classes;\nexport function ModComponent() { return "fake-css-module-rendered"; }\n`,
     );
 
     // Pages Router structure
@@ -91,12 +112,14 @@ describe("node_modules CSS import (Pages Router)", () => {
     await fs.writeFile(
       path.join(pagesDir, "index.tsx"),
       `import { FakeComponent } from "fake-css-lib";
+import { ModComponent } from "fake-css-module-lib";
 
 export default function Page() {
   return (
     <div>
       <h1 id="nm-css-test">node-modules-css-pages-works</h1>
       <p>{FakeComponent()}</p>
+      <p>{ModComponent()}</p>
     </div>
   );
 }`,
@@ -134,5 +157,13 @@ export default function Page() {
     const html = await res.text();
     expect(html).toContain("node-modules-css-pages-works");
     expect(html).toContain("fake-css-lib-rendered");
+  });
+
+  it("renders page that imports CSS modules from node_modules without crashing", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("node-modules-css-pages-works");
+    expect(html).toContain("fake-css-module-rendered");
   });
 });

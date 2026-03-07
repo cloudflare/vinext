@@ -2096,9 +2096,12 @@ hydrate();
         // only applies to the default `ssr` environment, not custom ones
         // like `rsc`. Native addon packages (e.g. better-sqlite3) listed
         // in ssr.external must be externalized from ALL server environments.
-        const userSsrExternal: string[] = Array.isArray(config.ssr?.external)
+        // Vite's SSROptions.external is `string[] | true`; handle both forms.
+        const userSsrExternal: string[] | true = Array.isArray(config.ssr?.external)
           ? config.ssr.external
-          : [];
+          : config.ssr?.external === true
+            ? true
+            : [];
 
         // If app/ directory exists, configure RSC environments
         if (hasAppDir) {
@@ -2123,7 +2126,7 @@ hydrate();
                   // Note: Do NOT externalize react/react-dom here — they must
                   // be bundled with the "react-server" condition for RSC.
                   // Skip when targeting bundled runtimes (Cloudflare/Nitro).
-                  external: [
+                  external: userSsrExternal === true ? true : [
                     "satori",
                     "@resvg/resvg-js",
                     "yoga-wasm-web",
@@ -2133,7 +2136,9 @@ hydrate();
                   // so non-JS imports (CSS, images) don't hit Node's native
                   // ESM loader. Matches Next.js behavior of bundling everything.
                   // Packages in `external` above take precedence per Vite rules.
-                  noExternal: true,
+                  // When user sets `ssr.external: true`, skip noExternal since
+                  // everything is already externalized.
+                  ...(userSsrExternal === true ? {} : { noExternal: true as const }),
                 },
               }),
               optimizeDeps: {
@@ -2150,11 +2155,13 @@ hydrate();
             ssr: {
               ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
                 resolve: {
-                  external: [...userSsrExternal],
+                  external: userSsrExternal === true ? true : [...userSsrExternal],
                   // Force all node_modules through Vite's transform pipeline
                   // so non-JS imports (CSS, images) don't hit Node's native
                   // ESM loader. Matches Next.js behavior of bundling everything.
-                  noExternal: true,
+                  // When user sets `ssr.external: true`, skip noExternal since
+                  // everything is already externalized.
+                  ...(userSsrExternal === true ? {} : { noExternal: true as const }),
                 },
               }),
               optimizeDeps: {
