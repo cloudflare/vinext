@@ -20,7 +20,7 @@ vinext reimplements the Next.js API surface using Vite, with Cloudflare Workers 
 pnpm test                                        # Vitest — full suite (~2 min, serial)
 pnpm test tests/routing.test.ts                  # Run a single test file (~seconds)
 pnpm test tests/shims.test.ts tests/link.test.ts # Run specific files
-pnpm run test:e2e                                # Playwright E2E tests (5 projects)
+pnpm run test:e2e                                # Playwright E2E tests (all projects, use PLAYWRIGHT_PROJECT=<name> to target one)
 pnpm run typecheck                               # TypeScript via tsgo (fast)
 pnpm run lint                                    # oxlint
 pnpm run build                                   # Build the vinext package
