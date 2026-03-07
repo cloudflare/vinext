@@ -1,5 +1,5 @@
 import path from "node:path";
-import { routePrecedence } from "./utils.js";
+import { compareRoutes } from "./utils.js";
 import {
   createValidFileMatcher,
   scanWithExtensions,
@@ -79,10 +79,7 @@ async function scanPageRoutes(
   }
 
   // Sort: static routes first, then dynamic, then catch-all
-  routes.sort((a, b) => {
-    const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
-    return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
-  });
+  routes.sort(compareRoutes);
 
   return routes;
 }
@@ -229,10 +226,7 @@ async function scanApiRoutes(
   }
 
   // Sort same as page routes
-  routes.sort((a, b) => {
-    const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
-    return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
-  });
+  routes.sort(compareRoutes);
 
   return routes;
 }

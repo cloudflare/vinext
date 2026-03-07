@@ -15,7 +15,7 @@
  */
 import path from "node:path";
 import fs from "node:fs";
-import { routePrecedence } from "./utils.js";
+import { compareRoutes } from "./utils.js";
 import {
   createValidFileMatcher,
   scanWithExtensions,
@@ -172,10 +172,7 @@ export async function appRouter(
   routes.push(...slotSubRoutes);
 
   // Sort: static routes first, then dynamic, then catch-all
-  routes.sort((a, b) => {
-    const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
-    return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
-  });
+  routes.sort(compareRoutes);
 
   cachedRoutes = routes;
   cachedAppDir = appDir;

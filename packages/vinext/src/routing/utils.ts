@@ -69,3 +69,14 @@ export function routePrecedence(pattern: string): number {
 
   return score;
 }
+
+/**
+ * Sort comparator for routes — lower precedence score sorts first (higher priority).
+ * Lexicographic tiebreaker on pattern for determinism.
+ *
+ * Usage: routes.sort(compareRoutes)
+ */
+export function compareRoutes<T extends { pattern: string }>(a: T, b: T): number {
+  const diff = routePrecedence(a.pattern) - routePrecedence(b.pattern);
+  return diff !== 0 ? diff : a.pattern.localeCompare(b.pattern);
+}
