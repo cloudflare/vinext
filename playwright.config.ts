@@ -68,6 +68,23 @@ const projectServers = {
       timeout: 60_000,
     },
   },
+  "cloudflare-dev": {
+    testDir: "./tests/e2e",
+    testMatch: [
+      "**/cloudflare-dev/**/*.spec.ts",
+      "**/app-router/instrumentation.spec.ts",
+    ],
+    use: { baseURL: "http://localhost:4178" },
+    server: {
+      // Run vite dev (not wrangler) against the cloudflare example so that
+      // configureServer() is exercised with @cloudflare/vite-plugin loaded.
+      command: "npx vite --port 4178",
+      cwd: "./examples/app-router-cloudflare",
+      port: 4178,
+      reuseExistingServer: !process.env.CI,
+      timeout: 30_000,
+    },
+  },
 };
 
 type ProjectName = keyof typeof projectServers;

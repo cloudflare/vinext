@@ -103,6 +103,7 @@ jobs:
           - cloudflare-pages-router
           - pages-router-prod
           - cloudflare-workers
+          - cloudflare-dev
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node-pnpm
