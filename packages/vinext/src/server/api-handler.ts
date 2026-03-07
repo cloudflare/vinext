@@ -217,7 +217,7 @@ export async function handleApiRoute(
           Object.entries(req.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v ?? "")]),
         ),
       },
-      { routerKind: "Pages Router", routePath: match.route.pattern, routeType: "render" },
+      { routerKind: "Pages Router", routePath: match.route.pattern, routeType: "route" },
     ).catch(() => { /* ignore reporting errors */ });
     if ((e as Error).message === "Request body too large") {
       res.statusCode = 413;

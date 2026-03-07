@@ -102,7 +102,7 @@ test.describe("instrumentation.ts onRequestError (Pages Router)", () => {
     expect(err.path).toBe("/api/error-route");
     expect(err.method).toBe("GET");
     expect(err.routerKind).toBe("Pages Router");
-    expect(err.routeType).toBe("render");
+    expect(err.routeType).toBe("route");
 	});
 
   test("onRequestError() receives the correct route path pattern", async ({
