@@ -11,6 +11,7 @@ import {
   clientTreeshakeConfig,
   computeLazyChunks,
   _stripServerExports,
+  _asyncHooksStubPlugin,
 } from "../packages/vinext/src/index.js";
 
 // The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
@@ -1017,32 +1018,20 @@ describe("collectAssetTags lazy chunk filtering", () => {
 });
 
 // ─── vinext:async-hooks-stub ───────────────────────────────────────────────────
-// The plugin is defined inline (not exported), so we recreate the hook logic
-// here to validate the resolveId/load behavior as pure functions.
 
 describe("vinext:async-hooks-stub", () => {
   const VIRTUAL_ID = "\0vinext:async-hooks-stub";
 
+  // The resolveId handler uses `this.environment?.name`, so we call it with a
+  // mock context to control which environment is being simulated.
   function resolveId(id: string, environmentName: string | undefined): string | undefined {
-    if (/^(node:)?async_hooks$/.test(id) && environmentName === "client") {
-      return VIRTUAL_ID;
-    }
-    return undefined;
+    const handler = (_asyncHooksStubPlugin.resolveId as { handler: (id: string) => string | undefined }).handler;
+    return handler.call({ environment: environmentName ? { name: environmentName } : undefined }, id);
   }
 
   function load(id: string): string | undefined {
-    if (id === VIRTUAL_ID) {
-      return [
-        "export class AsyncLocalStorage {",
-        "  run(_store, fn, ...args) { return fn(...args); }",
-        "  getStore() { return undefined; }",
-        "  enterWith() {}",
-        "  exit(fn, ...args) { return fn(...args); }",
-        "  disable() {}",
-        "}",
-      ].join("\n");
-    }
-    return undefined;
+    const handler = (_asyncHooksStubPlugin.load as { handler: (id: string) => string | undefined }).handler;
+    return handler.call({}, id);
   }
 
   describe("resolveId", () => {

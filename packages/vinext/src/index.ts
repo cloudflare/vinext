@@ -39,6 +39,7 @@ import {
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
 import { detectPackageManager } from "./utils/project.js";
+import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import MagicString from "magic-string";
 import path from "node:path";
@@ -2300,38 +2301,7 @@ hydrate();
     // errors. This plugin intercepts node:async_hooks in the client
     // environment and provides a no-op AsyncLocalStorage — semantically
     // correct since shims already guard with `_als.getStore() ?? fallback`.
-    {
-      name: "vinext:async-hooks-stub",
-      enforce: "pre",
-
-      resolveId: {
-        filter: { id: /^(node:)?async_hooks$/ },
-        handler(_id) {
-          if (this.environment?.name === "client") {
-            return "\0vinext:async-hooks-stub";
-          }
-        },
-      },
-
-      load: {
-        handler(id) {
-          if (id === "\0vinext:async-hooks-stub") {
-            // Intentionally minimal: only AsyncLocalStorage is exported.
-            // If other node:async_hooks exports (e.g. AsyncResource,
-            // executionAsyncId) are needed in client shims, extend here.
-            return [
-              "export class AsyncLocalStorage {",
-              "  run(_store, fn, ...args) { return fn(...args); }",
-              "  getStore() { return undefined; }",
-              "  enterWith() {}",
-              "  exit(fn, ...args) { return fn(...args); }",
-              "  disable() {}",
-              "}",
-            ].join("\n");
-          }
-        },
-      },
-    },
+    asyncHooksStubPlugin,
     // Proxy plugin for @mdx-js/rollup. The real MDX plugin is created lazily
     // during vinext:config's config() (when MDX files are detected), but
     // plugins returned from config() hooks run too late in the pipeline —
@@ -4159,3 +4129,4 @@ export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig, computeL
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
 export { stripServerExports as _stripServerExports };
+export { asyncHooksStubPlugin as _asyncHooksStubPlugin };
