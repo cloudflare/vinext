@@ -1823,8 +1823,16 @@ describe("detectPackageManager", () => {
   });
 
   it("falls back to npm when no lock file is found", () => {
-    expect(detectPackageManager(tmpDir)).toBe("npm install -D");
-    expect(detectPackageManagerName(tmpDir)).toBe("npm");
+    // Clear the user-agent env var so the CI runner's package manager (pnpm)
+    // doesn't leak into the fallback chain.
+    const savedUA = process.env.npm_config_user_agent;
+    delete process.env.npm_config_user_agent;
+    try {
+      expect(detectPackageManager(tmpDir)).toBe("npm install -D");
+      expect(detectPackageManagerName(tmpDir)).toBe("npm");
+    } finally {
+      if (savedUA !== undefined) process.env.npm_config_user_agent = savedUA;
+    }
   });
 
   it("walks up to parent directory to find lock file (monorepo root)", () => {
