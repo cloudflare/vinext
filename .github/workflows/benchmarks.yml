@@ -20,14 +20,8 @@ jobs:
         with:
           fetch-depth: 0 # Need full history for commit info
 
-      - uses: pnpm/action-setup@v4
+      - uses: ./.github/actions/setup-node-pnpm
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
       - name: Build vinext plugin
         run: pnpm run build
 

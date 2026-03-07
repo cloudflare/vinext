@@ -25,14 +25,9 @@ jobs:
       - name: Checkout vinext
         uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node-pnpm
         with:
           node-version: ${{ inputs.node_version }}
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
 
       - name: Build vinext plugin
         run: pnpm run build

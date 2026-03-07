@@ -6,6 +6,10 @@ inputs:
     description: Node.js version to use
     required: false
     default: "24"
+  registry-url:
+    description: npm registry URL (e.g. https://registry.npmjs.org). Leave empty to skip.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -16,6 +20,7 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
         cache: pnpm
+        registry-url: ${{ inputs.registry-url }}
 
     - name: Install dependencies
       shell: bash

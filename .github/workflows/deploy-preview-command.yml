@@ -87,14 +87,7 @@ jobs:
         with:
           ref: ${{ needs.check.outputs.sha }}
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-node-pnpm
 
       - name: Build vinext plugin
         run: pnpm run build
