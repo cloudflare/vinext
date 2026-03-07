@@ -2203,6 +2203,28 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
     }
     // Merge middleware response headers into the RSC response.
+    // set-cookie is accumulated as an array to preserve multiple values
+    // (e.g. two Set-Cookie directives from middleware); all other keys use
+    // plain assignment so middleware headers win over config headers, which
+    // the outer handler applies afterward and skips keys already present.
+    if (_mwCtx.headers) {
+      for (const [key, value] of _mwCtx.headers) {
+        const lk = key.toLowerCase();
+        if (lk === "set-cookie") {
+          const existing = responseHeaders[lk];
+          if (Array.isArray(existing)) {
+            existing.push(value);
+          } else if (existing) {
+            responseHeaders[lk] = [existing, value];
+          } else {
+            responseHeaders[lk] = [value];
+          }
+        } else {
+          responseHeaders[key] = value;
+        }
+      }
+    }
+    //
     // Attach internal timing header so the dev server middleware can log it.
     // Format: "handlerStart,compileMs,renderMs"
     //   handlerStart - absolute performance.now() when _handleRequest began,
@@ -2213,11 +2235,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     //   renderMs     - -1 sentinel for RSC-only (soft-nav) responses, since
     //                  rendering is handled asynchronously by the client. The
     //                  logging middleware computes render time as totalMs - compileMs.
-    if (_mwCtx.headers) {
-      for (const [key, value] of _mwCtx.headers) {
-        responseHeaders[key] = value;
-      }
-    }
     if (process.env.NODE_ENV !== "production") {
       const handlerStart = Math.round(__reqStart);
       const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
