@@ -17,13 +17,13 @@ vinext reimplements the Next.js API surface using Vite, with Cloudflare Workers 
 ### Commands
 
 ```bash
-pnpm test             # Vitest — full suite (~2 min, serial)
-pnpm test -- tests/routing.test.ts          # Run a single test file (~seconds)
-pnpm test -- tests/shims.test.ts tests/link.test.ts  # Run specific files
-pnpm run test:e2e     # Playwright E2E tests (5 projects)
-pnpm run typecheck    # TypeScript via tsgo (fast)
-pnpm run lint         # oxlint
-pnpm run build        # Build the vinext package
+pnpm test                                        # Vitest — full suite (~2 min, serial)
+pnpm test tests/routing.test.ts                  # Run a single test file (~seconds)
+pnpm test tests/shims.test.ts tests/link.test.ts # Run specific files
+pnpm run test:e2e                                # Playwright E2E tests (5 projects)
+pnpm run typecheck                               # TypeScript via tsgo (fast)
+pnpm run lint                                    # oxlint
+pnpm run build                                   # Build the vinext package
 ```
 
 ### Project Structure
@@ -100,16 +100,16 @@ gh search code "must export" --repo vercel/next.js --filename "*.test.*" --limit
 
 ```bash
 # Run a single test file (fast — seconds, not minutes)
-pnpm test -- tests/routing.test.ts
+pnpm test tests/routing.test.ts
 
 # Run a few related files
-pnpm test -- tests/shims.test.ts tests/link.test.ts
+pnpm test tests/shims.test.ts tests/link.test.ts
 
 # Run all nextjs-compat tests
-pnpm test -- tests/nextjs-compat/
+pnpm test tests/nextjs-compat/
 
 # Run tests matching a name pattern
-pnpm test -- -t "middleware"
+pnpm test -t "middleware"
 ```
 
 **Which test files to run** depends on what you changed:
