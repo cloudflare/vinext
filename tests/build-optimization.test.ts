@@ -1077,7 +1077,8 @@ describe("vinext:async-hooks-stub", () => {
       const cjsSource = source.replace(/^export\s+/m, "") + "\nreturn AsyncLocalStorage;";
       const ALS = new Function(cjsSource)() as new () => {
         getStore(): unknown;
-        run(store: unknown, fn: () => unknown): unknown;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+        run(store: unknown, fn: Function, ...args: unknown[]): unknown;
         exit(fn: () => unknown): unknown;
       };
       const als = new ALS();
