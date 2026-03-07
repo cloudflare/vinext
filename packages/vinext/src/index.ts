@@ -2523,7 +2523,13 @@ hydrate();
           // Must be inside the returned function — ssrLoadModule() requires the
           // SSR environment's transport channel, which is not initialized until
           // after configureServer() returns. (See issue #167)
-          if (instrumentationPath) {
+          //
+          // App Router: register() is baked into the generated RSC entry as a
+          // top-level await, so it runs inside the Worker process (or RSC Vite
+          // environment) — the same process as request handling. Calling
+          // runInstrumentation() here too would run it a second time in the host
+          // process, which is wrong when @cloudflare/vite-plugin is present.
+          if (instrumentationPath && !hasAppDir) {
             runInstrumentation(server, instrumentationPath).catch((err) => {
               console.error("[vinext] Instrumentation error:", err);
             });
