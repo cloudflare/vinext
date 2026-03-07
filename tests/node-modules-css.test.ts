@@ -53,12 +53,23 @@ describe("node_modules CSS import (Pages Router)", () => {
   beforeAll(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-nm-css-pages-"));
 
-    // Symlink node_modules from repo root
-    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
-    await fs.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    // Create a real node_modules dir (not a symlink, to avoid mutating workspace)
+    const nmDir = path.join(tmpDir, "node_modules");
+    await fs.mkdir(nmDir, { recursive: true });
 
-    // Create a fake package that imports .css
-    const fakePkgDir = path.join(tmpDir, "node_modules", "fake-css-lib");
+    // Symlink only required packages from repo root
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    for (const entry of await fs.readdir(rootNodeModules)) {
+      if (entry.startsWith(".") || entry === "fake-css-lib") continue;
+      await fs.symlink(
+        path.join(rootNodeModules, entry),
+        path.join(nmDir, entry),
+        "junction",
+      );
+    }
+
+    // Create a fake package that imports .css (in the real dir, not through symlink)
+    const fakePkgDir = path.join(nmDir, "fake-css-lib");
     await fs.mkdir(fakePkgDir, { recursive: true });
     await fs.writeFile(
       path.join(fakePkgDir, "package.json"),
