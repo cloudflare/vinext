@@ -79,4 +79,58 @@ test.describe("instrumentation.ts onRequestError (Pages Router)", () => {
     // by the successful /api/hello request.
     expect(data.errors.length).toBe(0);
   });
+
+  test("onRequestError() is called when a route handler throws", async ({
+    request,
+  }) => {
+    // /api/error-route throws an unhandled Error — vinext should invoke
+    // the onRequestError handler registered in instrumentation.ts.
+    const errorRes = await request.get(`${BASE}/api/error-route`);
+    expect(errorRes.status()).toBe(500);
+
+    // Give the async reportRequestError() call a moment to complete.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const stateRes = await request.get(`${BASE}/api/instrumentation-test`);
+    expect(stateRes.status()).toBe(200);
+
+    const data = await stateRes.json();
+    expect(data.errors.length).toBeGreaterThanOrEqual(1);
+
+    const err = data.errors[data.errors.length - 1];
+    expect(err.message).toBe("Intentional route handler error");
+    expect(err.path).toBe("/api/error-route");
+    expect(err.method).toBe("GET");
+    expect(err.routerKind).toBe("Pages Router");
+    expect(err.routeType).toBe("render");
+	});
+
+  test("onRequestError() receives the correct route path pattern", async ({
+    request,
+  }) => {
+    const errorRes = await request.get(`${BASE}/api/error-route`);
+    expect(errorRes.status()).toBe(500);
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const stateRes = await request.get(`${BASE}/api/instrumentation-test`);
+    const data = await stateRes.json();
+    expect(data.errors.length).toBeGreaterThanOrEqual(1);
+
+    const err = data.errors[data.errors.length - 1];
+    // The routePath should be the file-system route pattern, not the concrete URL.
+    expect(err.routePath).toContain("error-route");
+  });
+
+  test("multiple errors are captured independently", async ({ request }) => {
+    // Fire the error route twice and verify both entries are recorded.
+    await request.get(`${BASE}/api/error-route`);
+    await request.get(`${BASE}/api/error-route`);
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    const stateRes = await request.get(`${BASE}/api/instrumentation-test`);
+    const data = await stateRes.json();
+    expect(data.errors.length).toBeGreaterThanOrEqual(2);
+  });
 });

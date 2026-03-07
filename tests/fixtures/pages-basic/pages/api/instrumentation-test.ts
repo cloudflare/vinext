@@ -3,7 +3,7 @@ import {
   isRegisterCalled,
   getCapturedErrors,
   resetInstrumentationState,
-} from "@/instrumentation-state";
+} from "../../instrumentation-state";
 
 /**
  * API route that exposes the current instrumentation state for e2e testing.
