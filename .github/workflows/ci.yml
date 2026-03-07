@@ -19,6 +19,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node-pnpm
       - run: pnpm run lint
 
@@ -26,6 +27,7 @@ jobs:
     name: Typecheck
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-node-pnpm
       - run: pnpm run typecheck
 
@@ -33,7 +35,15 @@ jobs:
     name: Vitest
     runs-on: ubuntu-latest
     steps:
-      - uses: ./.github/actions/build-vinext
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build plugin (needed by ecosystem fixtures)
+        run: pnpm run build
       - run: pnpm test
 
   create-next-app:
@@ -44,7 +54,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: ./.github/actions/build-vinext
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build plugin
+        run: pnpm run build
 
       - name: Pack vinext for local install
         run: npm pack --pack-destination "${{ runner.temp }}"
@@ -96,7 +114,15 @@ jobs:
           - pages-router-prod
           - cloudflare-workers
     steps:
-      - uses: ./.github/actions/build-vinext
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build plugin
+        run: pnpm run build
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4

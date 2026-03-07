@@ -32,14 +32,23 @@ jobs:
     if: github.repository_owner == 'cloudflare'
     runs-on: ubuntu-latest
     steps:
-      - uses: ./.github/actions/build-vinext
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: "0" # full history for changelog generation
-          node-version: "24"
+          fetch-depth: 0 # full history for changelog generation
+
+      - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
         with:
+          node-version: 24
+          cache: pnpm
           registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm run build
 
       - name: Bump version
         id: version

@@ -16,9 +16,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: ./.github/actions/build-vinext
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: "0" # full history for commit info
+          fetch-depth: 0 # Need full history for commit info
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - name: Build vinext plugin
+        run: pnpm run build
 
       - name: Install hyperfine
         run: |

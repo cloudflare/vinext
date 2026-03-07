@@ -1,28 +1,15 @@
 name: Setup Node.js and pnpm
-description: Checkout, install pnpm, set up Node.js with cache, and install dependencies.
+description: Install pnpm, set up Node.js with cache, and install dependencies. Requires the repo to already be checked out.
 
 inputs:
   node-version:
     description: Node.js version to use
     required: false
     default: "24"
-  fetch-depth:
-    description: Number of commits to fetch (0 = full history)
-    required: false
-    default: "1"
-  ref:
-    description: The branch, tag or SHA to checkout
-    required: false
-    default: ""
 
 runs:
   using: composite
   steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: ${{ inputs.fetch-depth }}
-        ref: ${{ inputs.ref }}
-
     - uses: pnpm/action-setup@v4
 
     - uses: actions/setup-node@v4
