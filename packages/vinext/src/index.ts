@@ -2343,7 +2343,7 @@ hydrate();
             headers: nextConfig?.headers,
             allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
             allowedDevOrigins: nextConfig?.serverActionsAllowedOrigins,
-          });
+          }, instrumentationPath);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
           return generateSsrEntry();

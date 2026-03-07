@@ -49,6 +49,7 @@ export function generateRscEntry(
   basePath?: string,
   trailingSlash?: boolean,
   config?: AppRouterConfig,
+  instrumentationPath?: string | null,
 ): string {
   const bp = basePath ?? "";
   const ts = trailingSlash ?? false;
@@ -220,6 +221,7 @@ import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
+${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("./metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
 import { _consumeRequestScopedCacheLife, _runWithCacheState } from "next/cache";
 import { runWithFetchCache } from "vinext/fetch-cache";
@@ -378,6 +380,23 @@ function rscOnError(error) {
 }
 
 ${imports.join("\n")}
+
+${instrumentationPath ? `// Run instrumentation register() once at module evaluation time — before any
+// requests are handled. This runs inside the Worker process (or RSC environment),
+// which is exactly where request handling happens. Matches Next.js semantics:
+// register() is called once on startup in the process that handles requests.
+if (typeof _instrumentation.register === "function") {
+  await _instrumentation.register();
+}
+// Store the onRequestError handler on globalThis so it is visible to
+// reportRequestError() (imported as _reportRequestError above) regardless
+// of which Vite environment module graph it is called from. With
+// @vitejs/plugin-rsc the RSC and SSR environments run in the same Node.js
+// process and share globalThis. With @cloudflare/vite-plugin everything
+// runs inside the Worker so globalThis is the Worker's global — also correct.
+if (typeof _instrumentation.onRequestError === "function") {
+  globalThis.__VINEXT_onRequestErrorHandler__ = _instrumentation.onRequestError;
+}` : ""}
 
 const routes = [
 ${routeEntries.join(",\n")}
