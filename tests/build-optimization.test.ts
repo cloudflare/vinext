@@ -1069,16 +1069,21 @@ describe("vinext:async-hooks-stub", () => {
       expect(load("some-other-module")).toBeUndefined();
     });
 
-    it("stub getStore() returns undefined and run() passes through callback", () => {
+    it("stub getStore() returns undefined and run() passes through callback return value", () => {
       const source = load(VIRTUAL_ID)!;
-      // Verify getStore returns undefined
-      expect(source).toContain("getStore() { return undefined; }");
-      // Verify run passes through to the callback
-      expect(source).toContain("run(_store, fn, ...args) { return fn(...args); }");
-      // Verify other methods exist
-      expect(source).toContain("enterWith() {}");
-      expect(source).toContain("exit(fn, ...args) { return fn(...args); }");
-      expect(source).toContain("disable() {}");
+      // Evaluate the generated source to test actual runtime behavior, not just
+      // string shape. This catches subtle syntax errors that string matching misses.
+      // Strip the ES module `export` keyword so we can evaluate with new Function.
+      const cjsSource = source.replace(/^export\s+/m, "") + "\nreturn AsyncLocalStorage;";
+      const ALS = new Function(cjsSource)() as new () => {
+        getStore(): unknown;
+        run(store: unknown, fn: () => unknown): unknown;
+        exit(fn: () => unknown): unknown;
+      };
+      const als = new ALS();
+      expect(als.getStore()).toBeUndefined();
+      expect(als.run(42, () => "result")).toBe("result");
+      expect(als.exit(() => "exit-result")).toBe("exit-result");
     });
   });
 });
