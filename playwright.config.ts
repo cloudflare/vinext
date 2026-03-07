@@ -19,6 +19,7 @@ const projectServers = {
   },
   "app-router": {
     testDir: "./tests/e2e/app-router",
+    use: { baseURL: "http://localhost:4174" },
     server: {
       command: "npx vite --port 4174",
       cwd: "./tests/fixtures/app-basic",
@@ -51,7 +52,12 @@ const projectServers = {
     },
   },
   "cloudflare-workers": {
-    testDir: "./tests/e2e/cloudflare-workers",
+    testDir: "./tests/e2e",
+    testMatch: [
+      "**/cloudflare-workers/**/*.spec.ts",
+      "**/app-router/instrumentation.spec.ts",
+    ],
+    use: { baseURL: "http://localhost:4176" },
     server: {
       // Build app-router-cloudflare with Vite, then serve with wrangler dev (miniflare)
       command:
@@ -90,9 +96,14 @@ export default defineConfig({
     // Use chromium only — fast and sufficient for our tests
     browserName: "chromium",
   },
-  projects: activeProjects.map((name) => ({
-    name,
-    testDir: projectServers[name].testDir,
-  })),
+  projects: activeProjects.map((name) => {
+    const p = projectServers[name];
+    return {
+      name,
+      testDir: p.testDir,
+      ...("testMatch" in p ? { testMatch: p.testMatch } : {}),
+      ...("use" in p ? { use: p.use } : {}),
+    };
+  }),
   webServer: activeProjects.map((name) => projectServers[name].server),
 });

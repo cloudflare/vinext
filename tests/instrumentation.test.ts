@@ -66,6 +66,10 @@ describe("runInstrumentation", () => {
     getOnRequestErrorHandler = mod.getOnRequestErrorHandler;
   });
 
+  afterEach(() => {
+    delete globalThis.__VINEXT_onRequestErrorHandler__;
+  })
+
   it("calls register() when exported", async () => {
     const register = vi.fn();
     const server = {
