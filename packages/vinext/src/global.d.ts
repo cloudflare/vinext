@@ -15,6 +15,7 @@
  */
 
 import type { Root } from "react-dom/client";
+import type { OnRequestErrorHandler } from "./server/instrumentation";
 
 // ---------------------------------------------------------------------------
 // Window globals — browser-side state shared across module boundaries
@@ -243,7 +244,19 @@ declare global {
    * is not yet available (e.g. during SSR of Link components).
    */
   // eslint-disable-next-line no-var
-  var __VINEXT_DEFAULT_LOCALE__: string | undefined;
+	var __VINEXT_DEFAULT_LOCALE__: string | undefined;
+
+  /**
+   * The onRequestError handler registered by instrumentation.ts.
+   * Set by the instrumentation.ts register() function.
+   *
+   * The handler is stored on `globalThis` so it is visible across the RSC and
+   * SSR Vite environments (separate module graphs, same Node.js process). With
+   * `@cloudflare/vite-plugin` it runs entirely inside the Worker, so
+   * `globalThis` is the Worker's global — also correct.
+   */
+	// eslint-disable-next-line no-var
+	var __VINEXT_onRequestErrorHandler__: OnRequestErrorHandler | undefined;
 }
 
 // ---------------------------------------------------------------------------
