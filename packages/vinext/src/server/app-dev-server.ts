@@ -211,6 +211,7 @@ import {
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext, applyMiddlewareRequestHeaders, getHeadersContext } from "next/headers";
@@ -230,6 +231,20 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+// ALS used to suppress the expected "Invalid hook call" dev warning when
+// layout/page components are probed outside React's render cycle. Patching
+// console.error once at module load (instead of per-request) avoids the
+// concurrent-request issue where request A's suppression filter could
+// swallow real errors from request B.
+const _suppressHookWarningAls = new AsyncLocalStorage();
+const _origConsoleError = console.error;
+console.error = (...args) => {
+  if (_suppressHookWarningAls.getStore() === true &&
+      typeof args[0] === "string" &&
+      args[0].includes("Invalid hook call")) return;
+  _origConsoleError.apply(console, args);
+};
 
 // Set navigation context in the ALS-backed store. "use client" components
 // rendered during SSR need the pathname/searchParams/params but the SSR
@@ -2085,15 +2100,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // layouts itself throws notFound() during the fallback rendering (causing a 500).
   if (route.layouts && route.layouts.length > 0) {
     const asyncParams = makeThenableParams(params);
-    // Suppress "Invalid hook call" warnings: layout components that use use()
-    // trigger this dev-mode warning when called outside React's render cycle.
-    // This is expected — we're probing for redirect/notFound throws only.
-    const _origConsoleErrorLayouts = console.error;
-    console.error = (...args) => {
-      if (typeof args[0] === "string" && args[0].includes("Invalid hook call")) return;
-      _origConsoleErrorLayouts.apply(console, args);
-    };
-    try {
+    // Run inside ALS context so the module-level console.error patch suppresses
+    // "Invalid hook call" only for this request's probe — concurrent requests
+    // each have their own ALS store and are unaffected.
+    const _layoutProbeResult = await _suppressHookWarningAls.run(true, async () => {
       for (let li = route.layouts.length - 1; li >= 0; li--) {
         const LayoutComp = route.layouts[li]?.default;
         if (!LayoutComp) continue;
@@ -2142,9 +2152,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           // Not a special error — let it propagate through normal RSC rendering
         }
       }
-    } finally {
-      console.error = _origConsoleErrorLayouts;
-    }
+      return null;
+    });
+    if (_layoutProbeResult instanceof Response) return _layoutProbeResult;
   }
 
   // Pre-render the page component to catch redirect()/notFound() thrown synchronously.
@@ -2157,37 +2167,35 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // would be hit before the RSC stream even starts).
   //
   // Because this calls the component outside React's render cycle, hooks like use()
-  // trigger "Invalid hook call" console.error in dev. Suppress that expected warning.
+  // trigger "Invalid hook call" console.error in dev. The module-level ALS patch
+  // suppresses the warning only within this request's execution context.
   const _hasLoadingBoundary = !!(route.loading && route.loading.default);
-  const _origConsoleError = console.error;
-  console.error = (...args) => {
-    if (typeof args[0] === "string" && args[0].includes("Invalid hook call")) return;
-    _origConsoleError.apply(console, args);
-  };
-  try {
-    const testResult = PageComponent({ params });
-    // If it's a promise (async component), only await if there's no loading boundary.
-    // With a loading boundary, the Suspense streaming pipeline handles async resolution
-    // and any redirect/notFound errors via rscOnError.
-    if (testResult && typeof testResult === "object" && typeof testResult.then === "function") {
-      if (!_hasLoadingBoundary) {
-        await testResult;
-      } else {
-        // Suppress unhandled promise rejection — with a loading boundary,
-        // redirect/notFound errors are handled by rscOnError during streaming.
-        testResult.catch(() => {});
+  const _pageProbeResult = await _suppressHookWarningAls.run(true, async () => {
+    try {
+      const testResult = PageComponent({ params });
+      // If it's a promise (async component), only await if there's no loading boundary.
+      // With a loading boundary, the Suspense streaming pipeline handles async resolution
+      // and any redirect/notFound errors via rscOnError.
+      if (testResult && typeof testResult === "object" && typeof testResult.then === "function") {
+        if (!_hasLoadingBoundary) {
+          await testResult;
+        } else {
+          // Suppress unhandled promise rejection — with a loading boundary,
+          // redirect/notFound errors are handled by rscOnError during streaming.
+          testResult.catch(() => {});
+        }
       }
+    } catch (preRenderErr) {
+      const specialResponse = await handleRenderError(preRenderErr);
+      if (specialResponse) return specialResponse;
+      // Non-special errors from the pre-render test are expected (e.g. use() hook
+      // fails outside React's render cycle, client references can't execute on server).
+      // Only redirect/notFound/forbidden/unauthorized are actionable here — other
+      // errors will be properly caught during actual RSC/SSR rendering below.
     }
-  } catch (preRenderErr) {
-    const specialResponse = await handleRenderError(preRenderErr);
-    if (specialResponse) return specialResponse;
-    // Non-special errors from the pre-render test are expected (e.g. use() hook
-    // fails outside React's render cycle, client references can't execute on server).
-    // Only redirect/notFound/forbidden/unauthorized are actionable here — other
-    // errors will be properly caught during actual RSC/SSR rendering below.
-  } finally {
-    console.error = _origConsoleError;
-  }
+    return null;
+  });
+  if (_pageProbeResult instanceof Response) return _pageProbeResult;
 
   // Mark end of compile phase: route matching, middleware, tree building are done.
   if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
