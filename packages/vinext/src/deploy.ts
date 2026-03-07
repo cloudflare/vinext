@@ -1146,7 +1146,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
         vinext(),
         cloudflare(${info.isAppRouter ? `{
           viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
-        }` : "()"}),
+        }` : ""}),
       ],
     });
 
