@@ -163,6 +163,30 @@ We track the public Next.js API surface and add support for new stable features.
 
 vinext has native integration with Cloudflare Workers through `@cloudflare/vite-plugin`, including bindings access via `cloudflare:workers`, KV caching, image optimization, and the `vinext deploy` one-command workflow.
 
+#### Prerequisites
+
+Before running `vinext deploy` for the first time you need to authenticate with Cloudflare and tell wrangler which account to deploy to.
+
+**Authentication — pick one:**
+
+- **`wrangler login`** (recommended for local development) — opens a browser window to authenticate. Run it once and wrangler caches the token.
+- **`CLOUDFLARE_API_TOKEN` env var** (CI / non-interactive) — create a token at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) using the **Edit Cloudflare Workers** template. That template grants all the permissions `vinext deploy` needs.
+
+**Account ID:**
+
+wrangler needs to know which Cloudflare account to deploy to. Add your account ID to `wrangler.jsonc`:
+
+```jsonc
+{
+  "account_id": "<your-account-id>",
+  ...
+}
+```
+
+Find your account ID in the Cloudflare dashboard URL (`dash.cloudflare.com/<account-id>`) or by running `wrangler whoami` after logging in.
+
+Alternatively, set the `CLOUDFLARE_ACCOUNT_ID` environment variable instead of hardcoding it in the config file.
+
 `vinext deploy` auto-generates the necessary configuration files (`vite.config.ts`, `wrangler.jsonc`, `worker/index.ts`) if they don't exist, builds the application, and deploys to Workers.
 
 ```bash

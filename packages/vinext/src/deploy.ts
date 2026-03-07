@@ -914,6 +914,35 @@ interface GeneratedFile {
   description: string;
 }
 
+/**
+ * Check whether an existing vite.config file already imports and uses the
+ * Cloudflare Vite plugin. This is a heuristic text scan — it doesn't execute
+ * the config — so it may produce false negatives for unusual configurations.
+ *
+ * Returns true if `@cloudflare/vite-plugin` appears to be configured, false
+ * if it is missing (meaning the build will fail with "could not resolve
+ * virtual:vinext-rsc-entry").
+ */
+export function viteConfigHasCloudflarePlugin(root: string): boolean {
+  const candidates = [
+    path.join(root, "vite.config.ts"),
+    path.join(root, "vite.config.js"),
+    path.join(root, "vite.config.mjs"),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      try {
+        const content = fs.readFileSync(candidate, "utf-8");
+        return content.includes("@cloudflare/vite-plugin");
+      } catch {
+        // unreadable — assume it might be fine
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function getFilesToGenerate(info: ProjectInfo): GeneratedFile[] {
   const files: GeneratedFile[] = [];
 
@@ -1100,6 +1129,29 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (filesToGenerate.length > 0) {
     console.log();
     writeGeneratedFiles(filesToGenerate);
+  }
+
+  // Warn if an existing vite.config.ts is missing the Cloudflare plugin.
+  // This is the most common cause of "could not resolve virtual:vinext-rsc-entry"
+  // errors — `vinext init` generates a minimal local-dev config without it.
+  if (info.hasViteConfig && !viteConfigHasCloudflarePlugin(root)) {
+    console.warn(`
+  Warning: your vite.config.ts does not appear to import @cloudflare/vite-plugin.
+  Cloudflare Workers deployment requires it. Add the plugin to your config:
+
+    import { cloudflare } from "@cloudflare/vite-plugin";
+
+    export default defineConfig({
+      plugins: [
+        vinext(),
+        cloudflare(${info.isAppRouter ? `{
+          viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
+        }` : "()"}),
+      ],
+    });
+
+  Or delete vite.config.ts and re-run \`vinext deploy\` to auto-generate it.
+`);
   }
 
   if (options.dryRun) {
