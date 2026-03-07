@@ -28,8 +28,7 @@ export const asyncHooksStubPlugin: Plugin = {
   },
 
   load: {
-    // eslint-disable-next-line no-control-regex -- \0 prefix is Vite's virtual module convention
-    filter: { id: /^\u0000vinext:async-hooks-stub$/ },
+    filter: { id: new RegExp(`^${ASYNC_HOOKS_STUB_ID}$`) },
     handler(id) {
       if (id === ASYNC_HOOKS_STUB_ID) {
         // Intentionally minimal: only AsyncLocalStorage is exported.
