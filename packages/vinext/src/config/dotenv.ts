@@ -96,11 +96,13 @@ function expandEnv(
     ...processEnv,
   };
 
-  function resolveValue(key: string): string {
+  const MAX_EXPANSION_DEPTH = 10;
+
+  function resolveValue(key: string, depth = 0): string {
     const cached = expanded[key];
     if (cached !== undefined) return cached;
 
-    if (resolving.has(key)) {
+    if (resolving.has(key) || depth > MAX_EXPANSION_DEPTH) {
       return context[key] ?? "";
     }
 
@@ -112,7 +114,7 @@ function expandEnv(
       if (escaped) return match.slice(1);
 
       const refKey = (braced || bare) as string;
-      return resolveValue(refKey);
+      return resolveValue(refKey, depth + 1);
     });
     // Strip remaining \$ escapes not caught by the regex (e.g. \$100 where
     // what follows $ isn't a valid variable name).

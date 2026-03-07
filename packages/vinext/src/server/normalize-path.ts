@@ -19,6 +19,14 @@
  *  - Lowercase the path (route matching is case-sensitive)
  */
 export function normalizePath(pathname: string): string {
+  // Strip null bytes — these can cause path confusion in native filesystem
+  // APIs where the path is passed to C libraries that treat \0 as a string
+  // terminator (e.g. "/etc/passwd\0.png" → "/etc/passwd" on the filesystem
+  // but "/etc/passwd\0.png" to path-based security checks).
+  if (pathname.includes("\0")) {
+    pathname = pathname.replaceAll("\0", "");
+  }
+
   // Fast path: already canonical (single leading /, no //, no /./, no /../)
   if (
     pathname === "/" ||

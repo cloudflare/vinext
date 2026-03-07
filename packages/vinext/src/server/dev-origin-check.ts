@@ -108,6 +108,35 @@ export function validateDevRequest(
     return `cross-site no-cors request blocked`;
   }
 
+  // DNS rebinding protection: validate the Host header is a known dev host.
+  // Without this check, an attacker can register a domain that resolves to
+  // 127.0.0.1, then use it to bypass same-origin policy via DNS rebinding.
+  const hostHeader = headers.host;
+  if (hostHeader) {
+    const hostHostname = hostHeader.split(",")[0].trim().split(":")[0].toLowerCase();
+    if (!SAFE_DEV_HOSTS.includes(hostHostname) && !hostHostname.endsWith(".localhost")) {
+      // Check if the host is in allowedDevOrigins
+      let hostAllowed = false;
+      if (allowedDevOrigins) {
+        for (const pattern of allowedDevOrigins) {
+          if (pattern.startsWith("*.")) {
+            const suffix = pattern.slice(1);
+            if (hostHostname === pattern.slice(2) || hostHostname.endsWith(suffix)) {
+              hostAllowed = true;
+              break;
+            }
+          } else if (hostHostname === pattern) {
+            hostAllowed = true;
+            break;
+          }
+        }
+      }
+      if (!hostAllowed) {
+        return `host "${hostHostname}" is not allowed (possible DNS rebinding attack)`;
+      }
+    }
+  }
+
   // Use x-forwarded-host when behind a reverse proxy, falling back to host.
   // Matches the App Router generated code in generateDevOriginCheckCode().
   const effectiveHost = headers["x-forwarded-host"] || headers.host;

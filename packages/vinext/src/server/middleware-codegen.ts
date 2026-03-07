@@ -81,6 +81,10 @@ function __isSafeRegex(pattern) {
   return true;
 }
 function __safeRegExp(pattern, flags) {
+  if (pattern.length > 8192) {
+    console.warn("[vinext] Ignoring oversized regex pattern (" + pattern.length + " chars).");
+    return null;
+  }
   if (!__isSafeRegex(pattern)) {
     console.warn("[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): " + pattern);
     return null;
@@ -102,6 +106,10 @@ export function generateNormalizePathCode(style: "modern" | "es5" = "modern"): s
   const l = style === "modern" ? "let" : "var";
   return `
 function __normalizePath(pathname) {
+  // Strip null bytes to prevent path confusion in native filesystem APIs
+  if (pathname.includes("\\0")) {
+    pathname = pathname.replaceAll("\\0", "");
+  }
   if (
     pathname === "/" ||
     (pathname.length > 1 &&

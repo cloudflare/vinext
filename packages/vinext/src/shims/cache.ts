@@ -152,6 +152,13 @@ interface MemoryEntry {
   revalidateAt: number | null;
 }
 
+/**
+ * Maximum entries in the in-memory cache. Prevents unbounded memory growth
+ * when many unique cache keys are generated (e.g. per-user or per-query caches).
+ * When the limit is reached, the oldest entry (by insertion order) is evicted.
+ */
+const MAX_MEMORY_CACHE_ENTRIES = 10_000;
+
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
   private tagRevalidatedAt = new Map<string, number>();
@@ -212,6 +219,13 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     if (data && "revalidate" in data && typeof data.revalidate === "number") {
       revalidateAt = Date.now() + data.revalidate * 1000;
+    }
+
+    // Evict oldest entries when at capacity to prevent unbounded memory growth.
+    // Map iterates in insertion order, so the first key is the oldest.
+    if (this.store.size >= MAX_MEMORY_CACHE_ENTRIES && !this.store.has(key)) {
+      const oldest = this.store.keys().next().value;
+      if (oldest !== undefined) this.store.delete(oldest);
     }
 
     this.store.set(key, {

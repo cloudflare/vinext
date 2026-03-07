@@ -154,12 +154,8 @@ jobs:
             --arg summary "$SUMMARY" \
             '{"text": ("*vinext v" + $version + " published to npm*\n\n" + $summary + "\n\nnpm: https://www.npmjs.com/package/vinext/v/" + $version)}')
 
-          echo "::group::Webhook payload"
-          echo "$PAYLOAD"
-          echo "::endgroup::"
-
-          RESPONSE=$(curl -sS -w "\nHTTP %{http_code}" -X POST "$GOOGLE_CHAT_WEBHOOK" \
+          RESPONSE=$(curl -sS -o /dev/null -w "%{http_code}" -X POST "$GOOGLE_CHAT_WEBHOOK" \
             -H "Content-Type: application/json; charset=UTF-8" \
             -d "$PAYLOAD")
 
-          echo "$RESPONSE"
+          echo "Webhook response: HTTP $RESPONSE"

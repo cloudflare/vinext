@@ -97,11 +97,12 @@ async function parseBody(req: IncomingMessage): Promise<unknown> {
  */
 function parseCookies(req: IncomingMessage): Record<string, string> {
   const header = req.headers.cookie ?? "";
-  const cookies: Record<string, string> = {};
+  const cookies: Record<string, string> = Object.create(null);
   for (const part of header.split(";")) {
     const [key, ...rest] = part.split("=");
-    if (key) {
-      cookies[key.trim()] = rest.join("=").trim();
+    const name = key?.trim();
+    if (name && name !== "__proto__" && name !== "constructor" && name !== "prototype") {
+      cookies[name] = rest.join("=").trim();
     }
   }
   return cookies;
@@ -146,11 +147,22 @@ function enhanceApiObjects(
   };
 
   apiRes.redirect = function (statusOrUrl: number | string, url?: string) {
+    let status: number;
+    let location: string;
     if (typeof statusOrUrl === "string") {
-      this.writeHead(307, { Location: statusOrUrl });
+      status = 307;
+      location = statusOrUrl;
     } else {
-      this.writeHead(statusOrUrl, { Location: url! });
+      status = statusOrUrl;
+      location = url!;
     }
+    // Sanitize the redirect URL to prevent open redirect via protocol-relative
+    // URLs (//evil.com) or backslash variants (\/evil.com). Browsers treat
+    // these as absolute URLs pointing to the attacker's domain.
+    if (location && !location.startsWith("http://") && !location.startsWith("https://")) {
+      location = location.replace(/^[\\/]+/, "/");
+    }
+    this.writeHead(status, { Location: location });
     this.end();
   };
 

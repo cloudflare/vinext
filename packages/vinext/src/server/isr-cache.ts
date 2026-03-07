@@ -68,9 +68,18 @@ export async function isrSet(
 const pendingRegenerations = new Map<string, Promise<void>>();
 
 /**
+ * Maximum concurrent background regenerations. Prevents resource exhaustion
+ * when many pages become stale simultaneously (e.g. after a revalidateTag
+ * call that invalidates thousands of pages).
+ */
+const MAX_PENDING_REGENERATIONS = 50;
+
+/**
  * Trigger a background regeneration for a cache key.
  *
  * If a regeneration for this key is already in progress, this is a no-op.
+ * If the maximum number of concurrent regenerations is reached, the request
+ * is silently dropped (the stale content is served instead).
  * The renderFn should produce the new cache value and call isrSet internally.
  */
 export function triggerBackgroundRegeneration(
@@ -78,6 +87,7 @@ export function triggerBackgroundRegeneration(
   renderFn: () => Promise<void>,
 ): void {
   if (pendingRegenerations.has(key)) return;
+  if (pendingRegenerations.size >= MAX_PENDING_REGENERATIONS) return;
 
   const promise = renderFn()
     .catch((err) => {

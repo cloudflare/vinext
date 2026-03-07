@@ -16,6 +16,11 @@ import type { CachedPagesValue } from "../shims/cache.js";
 import { runWithFetchCache } from "../shims/fetch-cache.js";
 import { _runWithCacheState } from "../shims/cache.js";
 import { runWithPrivateCache } from "../shims/cache-runtime.js";
+/** Sanitize a value for HTTP Link header to prevent CRLF injection. */
+function sanitizeLinkHeaderValue(value: string): string {
+  return value.replace(/[\r\n\0<>]/g, "");
+}
+
 // Import server-only state modules to register ALS-backed accessors.
 // These modules must be imported before any rendering occurs.
 import { runWithRouterState } from "../shims/router-state.js";
@@ -372,7 +377,9 @@ export function createSSRHandler(
         });
       }
 
-      // Set globalThis locale info for Link component locale prop support during SSR
+      // Set globalThis locale info for Link component locale prop support during SSR.
+      // NOTE: These are cleaned up in the finally block to prevent cross-request
+      // state leakage in concurrent environments.
       if (i18nConfig) {
         (globalThis as any).__VINEXT_LOCALE__ = locale ?? i18nConfig.defaultLocale;
         (globalThis as any).__VINEXT_LOCALES__ = i18nConfig.locales;
@@ -725,6 +732,11 @@ export function createSSRHandler(
 
       // Hydration entry: inline script that imports the page and hydrates.
       // Stores the React root and page loader for client-side navigation.
+      // Sanitize module URLs to prevent injection via malicious route file paths.
+      // Only allow URL-safe characters (alphanumeric, slashes, dots, hyphens, underscores).
+      const safePageModuleUrl = pageModuleUrl.replace(/[^a-zA-Z0-9/_.\-@]/g, "");
+      const safeAppModuleUrl = appModuleUrl ? appModuleUrl.replace(/[^a-zA-Z0-9/_.\-@]/g, "") : null;
+
       const hydrationScript = `
 <script type="module">
 import React from "react";
@@ -735,13 +747,13 @@ const nextData = window.__NEXT_DATA__;
 const { pageProps } = nextData.props;
 
 async function hydrate() {
-  const pageModule = await import("${pageModuleUrl}");
+  const pageModule = await import("${safePageModuleUrl}");
   const PageComponent = pageModule.default;
   let element;
   ${
-    appModuleUrl
+    safeAppModuleUrl
       ? `
-  const appModule = await import("${appModuleUrl}");
+  const appModule = await import("${safeAppModuleUrl}");
   const AppComponent = appModule.default;
   window.__VINEXT_APP__ = AppComponent;
   element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
@@ -798,7 +810,7 @@ hydrate();
       // This lets the browser (and CDN) start fetching font files before parsing HTML.
       if (allFontPreloads.length > 0) {
         extraHeaders["Link"] = allFontPreloads
-          .map((p) => `<${p.href}>; rel=preload; as=font; type=${p.type}; crossorigin`)
+          .map((p) => `<${sanitizeLinkHeaderValue(p.href)}>; rel=preload; as=font; type=${sanitizeLinkHeaderValue(p.type)}; crossorigin`)
           .join(", ");
       }
 
@@ -868,10 +880,12 @@ hydrate();
         await renderErrorPage(server, req, res, url, pagesDir, 500, undefined, matcher);
       } catch (fallbackErr) {
         // If error page itself fails, fall back to plain text.
-        // This is a dev-only code path (prod uses prod-server.ts), so
-        // include the error message for debugging.
+        // Do NOT include error message in response to prevent information
+        // disclosure (stack traces, file paths, internal state).
         res.statusCode = 500;
-        res.end(`Internal Server Error: ${(fallbackErr as Error).message}`);
+        res.end("Internal Server Error");
+        // Log full error details server-side for debugging
+        console.error("[vinext] Error page rendering failed:", fallbackErr);
       }
     } finally {
       // Cleanup is handled by ALS scope unwinding —

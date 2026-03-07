@@ -315,6 +315,13 @@ export async function runMiddleware(
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? response.headers.get("location");
     if (location) {
+      // Sanitize the redirect URL to prevent open redirect via protocol-relative
+      // URLs (//evil.com) or backslash variants (\/evil.com). Middleware may
+      // construct redirect URLs from user input (e.g. locale-based redirects).
+      let sanitizedLocation = location;
+      if (!location.startsWith("http://") && !location.startsWith("https://")) {
+        sanitizedLocation = location.replace(/^[\\/]+/, "/");
+      }
       // Collect non-internal headers (e.g. Set-Cookie) to forward with the redirect.
       const responseHeaders = new Headers();
       for (const [key, value] of response.headers) {
@@ -324,7 +331,7 @@ export async function runMiddleware(
       }
       return {
         continue: false,
-        redirectUrl: location,
+        redirectUrl: sanitizedLocation,
         redirectStatus: response.status,
         responseHeaders,
       };
@@ -348,6 +355,10 @@ export async function runMiddleware(
       rewritePath = rewriteParsed.pathname + rewriteParsed.search;
     } catch {
       rewritePath = rewriteUrl;
+    }
+    // Sanitize: collapse protocol-relative URLs to prevent SSRF via rewrites.
+    if (!rewritePath.startsWith("http://") && !rewritePath.startsWith("https://")) {
+      rewritePath = rewritePath.replace(/^[\\/]+/, "/");
     }
     return {
       continue: true,

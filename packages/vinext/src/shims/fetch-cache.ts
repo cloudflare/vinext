@@ -25,6 +25,13 @@ import {
 } from "./cache.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
+/**
+ * Deduplicate background fetch revalidations to prevent race conditions
+ * where concurrent stale hits trigger multiple refetches that overwrite
+ * each other's cache entries (potentially leaking data between users).
+ */
+const _pendingFetchRevalidations = new Set<string>();
+
 // ---------------------------------------------------------------------------
 // Cache key generation
 // ---------------------------------------------------------------------------
@@ -422,32 +429,38 @@ function createPatchedFetch(): typeof globalThis.fetch {
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
         const staleData = cached.value.data;
 
-        // Background refetch
-        const cleanInit = stripNextFromInit(init);
-        originalFetch(input, cleanInit).then(async (freshResp) => {
-          const freshBody = await freshResp.text();
-          const freshHeaders: Record<string, string> = {};
-          freshResp.headers.forEach((v, k) => { freshHeaders[k] = v; });
+        // Background refetch — deduplicated to prevent race conditions where
+        // concurrent requests overwrite each other's cached responses.
+        if (!_pendingFetchRevalidations.has(cacheKey)) {
+          _pendingFetchRevalidations.add(cacheKey);
+          const cleanInit = stripNextFromInit(init);
+          originalFetch(input, cleanInit).then(async (freshResp) => {
+            const freshBody = await freshResp.text();
+            const freshHeaders: Record<string, string> = {};
+            freshResp.headers.forEach((v, k) => { freshHeaders[k] = v; });
 
-          const freshValue: CachedFetchValue = {
-            kind: "FETCH",
-            data: {
-              headers: freshHeaders,
-              body: freshBody,
-              url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
-              status: freshResp.status,
-            },
-            tags,
-            revalidate: revalidateSeconds,
-          };
-          await handler.set(cacheKey, freshValue, {
-            fetchCache: true,
-            tags,
-            revalidate: revalidateSeconds,
+            const freshValue: CachedFetchValue = {
+              kind: "FETCH",
+              data: {
+                headers: freshHeaders,
+                body: freshBody,
+                url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+                status: freshResp.status,
+              },
+              tags,
+              revalidate: revalidateSeconds,
+            };
+            await handler.set(cacheKey, freshValue, {
+              fetchCache: true,
+              tags,
+              revalidate: revalidateSeconds,
+            });
+          }).catch((err) => {
+            console.error("[vinext] fetch cache background revalidation failed:", err);
+          }).finally(() => {
+            _pendingFetchRevalidations.delete(cacheKey);
           });
-        }).catch((err) => {
-          console.error("[vinext] fetch cache background revalidation failed:", err);
-        });
+        }
 
         // Return stale data immediately
         return new Response(staleData.body, {

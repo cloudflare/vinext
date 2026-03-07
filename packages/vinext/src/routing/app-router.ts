@@ -1059,6 +1059,22 @@ export function matchAppRoute(
     /* malformed percent-encoding — match as-is */
   }
 
+  // After decoding, re-normalize to prevent path traversal via encoded
+  // sequences like %2e%2e (%2F already decoded by some servers).
+  // Remove any ".." segments that could escape intended routing boundaries.
+  if (normalizedUrl.includes("..")) {
+    const parts = normalizedUrl.split("/");
+    const resolved: string[] = [];
+    for (const part of parts) {
+      if (part === "..") {
+        resolved.pop();
+      } else if (part !== ".") {
+        resolved.push(part);
+      }
+    }
+    normalizedUrl = resolved.join("/") || "/";
+  }
+
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
     if (params !== null) {

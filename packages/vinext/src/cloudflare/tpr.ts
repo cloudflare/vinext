@@ -549,6 +549,13 @@ async function prerenderRoutes(
       const batch = routes.slice(i, i + FETCH_CONCURRENCY);
       const promises = batch.map(async (routePath) => {
         try {
+          // Validate route path to prevent SSRF via poisoned analytics data.
+          // Only allow paths starting with / and without traversal sequences.
+          if (!routePath.startsWith("/") || routePath.includes("..") || routePath.includes("\0")) {
+            console.warn(`  TPR: Skipping invalid route path: ${routePath.slice(0, 100)}`);
+            failedCount++;
+            return;
+          }
           const response = await fetch(`http://127.0.0.1:${port}${routePath}`, {
             headers: {
               "User-Agent": "vinext-tpr/1.0",
@@ -614,9 +621,20 @@ function startLocalServer(root: string, port: number): ChildProcess {
   const prodServerPath = path.resolve(thisDir, "..", "server", "prod-server.js");
   const outDir = path.join(root, "dist");
 
-  // Escape backslashes for Windows paths inside the JS string
-  const escapedProdServer = prodServerPath.replace(/\\/g, "\\\\");
-  const escapedOutDir = outDir.replace(/\\/g, "\\\\");
+  // Escape paths for safe embedding in JavaScript string literals.
+  // Must escape backslash, double-quote, backtick, $, and newlines to
+  // prevent code injection via crafted directory names.
+  function escapeJsString(s: string): string {
+    return s
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/`/g, "\\`")
+      .replace(/\$/g, "\\$")
+      .replace(/\n/g, "\\n")
+      .replace(/\r/g, "\\r");
+  }
+  const escapedProdServer = escapeJsString(prodServerPath);
+  const escapedOutDir = escapeJsString(outDir);
 
   const script = [
     `import("file://${escapedProdServer}")`,

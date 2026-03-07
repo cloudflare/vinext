@@ -139,7 +139,20 @@ export function isSafeRegex(pattern: string): boolean {
  *
  * Logs a warning when a pattern is rejected so developers can fix their config.
  */
+/**
+ * Maximum allowed regex pattern length. Patterns longer than this are
+ * rejected to prevent excessive compilation time and memory usage.
+ * 8 KiB is generous for any reasonable URL matching pattern.
+ */
+const MAX_REGEX_LENGTH = 8192;
+
 export function safeRegExp(pattern: string, flags?: string): RegExp | null {
+  if (pattern.length > MAX_REGEX_LENGTH) {
+    console.warn(
+      `[vinext] Ignoring oversized regex pattern (${pattern.length} chars, max ${MAX_REGEX_LENGTH}).`,
+    );
+    return null;
+  }
   if (!isSafeRegex(pattern)) {
     console.warn(
       `[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
@@ -635,6 +648,37 @@ export function isExternalUrl(url: string): boolean {
  *
  * Works in all runtimes (Node.js, Cloudflare Workers) via the standard fetch() API.
  */
+/**
+ * Check if a hostname resolves to a private/internal network address.
+ * Used to prevent SSRF attacks via external rewrites that target
+ * internal services (e.g. cloud metadata endpoints, internal APIs).
+ */
+function isPrivateHostname(hostname: string): boolean {
+  // Block common cloud metadata endpoints and private network hostnames
+  const lower = hostname.toLowerCase();
+  if (
+    lower === "localhost" ||
+    lower === "metadata.google.internal" ||
+    lower === "metadata.google" ||
+    lower.endsWith(".internal") ||
+    lower === "169.254.169.254" || // AWS/GCP metadata
+    lower === "100.100.100.200" || // Alibaba Cloud metadata
+    lower === "[fd00::c4]" || // Azure Wire Server IPv6
+    lower === "168.63.129.16" // Azure Wire Server
+  ) {
+    return true;
+  }
+  // Block IPv4 private ranges: 10.x, 172.16-31.x, 192.168.x, 127.x, 169.254.x
+  if (/^(10\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|127\.|169\.254\.|0\.)/.test(hostname)) {
+    return true;
+  }
+  // Block IPv6 loopback and link-local
+  if (lower === "::1" || lower === "[::1]" || lower.startsWith("fe80:") || lower.startsWith("[fe80:")) {
+    return true;
+  }
+  return false;
+}
+
 export async function proxyExternalRequest(
   request: Request,
   externalUrl: string,
@@ -642,6 +686,17 @@ export async function proxyExternalRequest(
   // Build the full external URL, preserving query parameters from the original request
   const originalUrl = new URL(request.url);
   const targetUrl = new URL(externalUrl);
+
+  // SSRF protection: block requests to private/internal network addresses.
+  // In development/test, localhost proxying is allowed for local upstream
+  // servers — the protection targets production deployments where rewrites
+  // to cloud metadata or internal services would be exploitable.
+  const isDev = process.env.NODE_ENV !== "production";
+  const isLocalhost = targetUrl.hostname === "localhost" || targetUrl.hostname === "127.0.0.1" || targetUrl.hostname === "::1" || targetUrl.hostname === "[::1]";
+  if (isPrivateHostname(targetUrl.hostname) && !(isDev && isLocalhost)) {
+    console.warn(`[vinext] Blocked external rewrite to private address: ${targetUrl.hostname}`);
+    return new Response("Forbidden", { status: 403 });
+  }
 
   // If the rewrite destination already has query params, merge them.
   // Destination params take precedence — original request params are only added

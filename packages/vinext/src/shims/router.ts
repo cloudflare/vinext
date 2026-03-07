@@ -320,6 +320,11 @@ async function navigateClient(url: string): Promise<void> {
     }
 
     const nextData = JSON.parse(match[1]);
+    // Prevent prototype pollution from malicious __NEXT_DATA__ payloads
+    if (Object.hasOwn(nextData, "__proto__") || Object.hasOwn(nextData, "constructor")) {
+      window.location.href = url;
+      return;
+    }
     const { pageProps } = nextData.props;
     win.__NEXT_DATA__ = nextData;
 

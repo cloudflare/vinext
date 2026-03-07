@@ -16,6 +16,15 @@ import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormaliz
 import { isProxyFile } from "./middleware.js";
 
 /**
+ * Sanitize a value for use in an HTTP Link header.
+ * Strips control characters (CR, LF, NUL) that could enable header injection,
+ * and removes angle brackets that could break the Link header syntax.
+ */
+function _sanitizeLinkHeaderValue(value: string): string {
+  return value.replace(/[\r\n\0<>]/g, "");
+}
+
+/**
  * Resolved config options relevant to App Router request handling.
  * Passed from the Vite plugin where the full next.config.js is loaded.
  */
@@ -481,7 +490,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   setHeadersContext(null);
   setNavigationContext(null);
   const _respHeaders = { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" };
-  const _linkParts = (fontData.preloads || []).map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; });
+  const _linkParts = (fontData.preloads || []).map(function(p) { return "<" + _sanitizeLinkHeaderValue(p.href) + ">; rel=preload; as=font; type=" + _sanitizeLinkHeaderValue(p.type) + "; crossorigin"; });
   if (_linkParts.length > 0) _respHeaders["Link"] = _linkParts.join(", ");
   return new Response(htmlStream, {
     status: statusCode,
@@ -579,7 +588,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request) {
   setHeadersContext(null);
   setNavigationContext(null);
   const _errHeaders = { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" };
-  const _errLinkParts = (fontData.preloads || []).map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; });
+  const _errLinkParts = (fontData.preloads || []).map(function(p) { return "<" + _sanitizeLinkHeaderValue(p.href) + ">; rel=preload; as=font; type=" + _sanitizeLinkHeaderValue(p.type) + "; crossorigin"; });
   if (_errLinkParts.length > 0) _errHeaders["Link"] = _errLinkParts.join(", ");
   return new Response(htmlStream, {
     status: 200,
@@ -2265,7 +2274,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   const fontPreloads = fontData.preloads || [];
   const fontLinkHeaderParts = [];
   for (const preload of fontPreloads) {
-    fontLinkHeaderParts.push("<" + preload.href + ">; rel=preload; as=font; type=" + preload.type + "; crossorigin");
+    fontLinkHeaderParts.push("<" + _sanitizeLinkHeaderValue(preload.href) + ">; rel=preload; as=font; type=" + _sanitizeLinkHeaderValue(preload.type) + "; crossorigin");
   }
   const fontLinkHeader = fontLinkHeaderParts.length > 0 ? fontLinkHeaderParts.join(", ") : "";
 

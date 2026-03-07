@@ -812,8 +812,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
         if (!result.continue) {
           if (result.redirectUrl) {
+            // Sanitize middleware redirect URL to prevent open redirect via
+            // protocol-relative URLs (//evil.com) or backslash variants.
+            let safeRedirectUrl = result.redirectUrl;
+            if (!safeRedirectUrl.startsWith("http://") && !safeRedirectUrl.startsWith("https://")) {
+              safeRedirectUrl = safeRedirectUrl.replace(/^[\\/]+/, "/");
+            }
             res.writeHead(result.redirectStatus ?? 307, {
-              Location: result.redirectUrl,
+              Location: safeRedirectUrl,
             });
             res.end();
             return;

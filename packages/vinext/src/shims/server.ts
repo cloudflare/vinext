@@ -114,7 +114,13 @@ export class NextResponse<_Body = unknown> extends Response {
    */
   static redirect(url: string | URL, init?: number | ResponseInit): NextResponse {
     const status = typeof init === "number" ? init : init?.status ?? 307;
-    const destination = typeof url === "string" ? url : url.toString();
+    let destination = typeof url === "string" ? url : url.toString();
+    // Sanitize: collapse protocol-relative URLs (//evil.com) and backslash
+    // variants (\/evil.com) to prevent open redirect when middleware builds
+    // redirect URLs from user input.
+    if (!destination.startsWith("http://") && !destination.startsWith("https://")) {
+      destination = destination.replace(/^[\\/]+/, "/");
+    }
     const headers = new Headers(typeof init === "object" ? init?.headers : undefined);
     headers.set("Location", destination);
     return new NextResponse(null, { status, headers });
@@ -125,7 +131,12 @@ export class NextResponse<_Body = unknown> extends Response {
    * Sets the x-middleware-rewrite header.
    */
   static rewrite(destination: string | URL, init?: MiddlewareResponseInit): NextResponse {
-    const url = typeof destination === "string" ? destination : destination.toString();
+    let url = typeof destination === "string" ? destination : destination.toString();
+    // Sanitize: collapse protocol-relative URLs (//evil.com) and backslash
+    // variants (\/evil.com) to prevent SSRF via rewrite to attacker-controlled host.
+    if (!url.startsWith("http://") && !url.startsWith("https://")) {
+      url = url.replace(/^[\\/]+/, "/");
+    }
     const headers = new Headers(init?.headers);
     headers.set("x-middleware-rewrite", url);
     return new NextResponse(null, { ...init, headers });
