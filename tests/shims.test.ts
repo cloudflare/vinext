@@ -17,6 +17,36 @@ describe("next/navigation shim", () => {
     expect(typeof nav.useRouter).toBe("function");
   });
 
+  // Regression test: useRouter() must return a stable singleton.
+  // Next.js returns the same router object reference on every call.
+  // Components using the router in useMemo/useEffect dependency arrays or
+  // wrapped in React.memo would re-render unnecessarily if each call
+  // returned a new object.
+  // Ported from: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
+  it("useRouter() returns the same object reference on every call (stable singleton)", async () => {
+    const { useRouter } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    const first = useRouter();
+    const second = useRouter();
+    const third = useRouter();
+    expect(first).toBe(second);
+    expect(second).toBe(third);
+  });
+
+  it("useRouter() singleton exposes the expected navigation methods", async () => {
+    const { useRouter } = await import(
+      "../packages/vinext/src/shims/navigation.js"
+    );
+    const router = useRouter();
+    expect(typeof router.push).toBe("function");
+    expect(typeof router.replace).toBe("function");
+    expect(typeof router.back).toBe("function");
+    expect(typeof router.forward).toBe("function");
+    expect(typeof router.refresh).toBe("function");
+    expect(typeof router.prefetch).toBe("function");
+  });
+
   it("exports redirect, notFound, permanentRedirect", async () => {
     const nav = await import(
       "../packages/vinext/src/shims/navigation.js"

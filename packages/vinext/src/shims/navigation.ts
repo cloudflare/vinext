@@ -509,61 +509,76 @@ async function navigateImpl(
   }
 }
 
+// ---------------------------------------------------------------------------
+// App Router router singleton
+//
+// All methods close over module-level state (navigateImpl, withBasePath, etc.)
+// and carry no per-render data, so the object can be created once and reused.
+// Next.js returns the same router reference on every call to useRouter(), which
+// matters for components that rely on referential equality (e.g. useMemo /
+// useEffect dependency arrays, React.memo bailouts).
+// ---------------------------------------------------------------------------
+
+const _appRouter = {
+  push(href: string, options?: { scroll?: boolean }): void {
+    if (isServer) return;
+    void navigateImpl(href, "push", options?.scroll !== false);
+  },
+  replace(href: string, options?: { scroll?: boolean }): void {
+    if (isServer) return;
+    void navigateImpl(href, "replace", options?.scroll !== false);
+  },
+  back(): void {
+    if (isServer) return;
+    window.history.back();
+  },
+  forward(): void {
+    if (isServer) return;
+    window.history.forward();
+  },
+  refresh(): void {
+    if (isServer) return;
+    // Re-fetch the current page's RSC stream
+    if (typeof (window as any).__VINEXT_RSC_NAVIGATE__ === "function") {
+      (window as any).__VINEXT_RSC_NAVIGATE__(window.location.href);
+    }
+  },
+  prefetch(href: string): void {
+    if (isServer) return;
+    // Prefetch the RSC payload for the target route and store in cache
+    const fullHref = withBasePath(href);
+    const rscUrl = toRscUrl(fullHref);
+    const prefetched = getPrefetchedUrls();
+    if (prefetched.has(rscUrl)) return;
+    prefetched.add(rscUrl);
+    fetch(rscUrl, {
+      headers: { Accept: "text/x-component" },
+      credentials: "include",
+      priority: "low" as RequestInit["priority"],
+    }).then((response) => {
+      if (response.ok) {
+        storePrefetchResponse(rscUrl, response);
+      } else {
+        // Non-ok response: allow retry on next prefetch() call
+        prefetched.delete(rscUrl);
+      }
+    }).catch(() => {
+      // Network error: allow retry on next prefetch() call
+      prefetched.delete(rscUrl);
+    });
+  },
+};
+
 /**
  * App Router's useRouter — returns push/replace/back/forward/refresh.
  * Different from Pages Router's useRouter (next/router).
+ *
+ * Returns a stable singleton: the same object reference on every call,
+ * matching Next.js behavior so components using referential equality
+ * (e.g. useMemo / useEffect deps, React.memo) don't re-render unnecessarily.
  */
 export function useRouter() {
-  const router = {
-    push(href: string, options?: { scroll?: boolean }): void {
-      if (isServer) return;
-      void navigateImpl(href, "push", options?.scroll !== false);
-    },
-    replace(href: string, options?: { scroll?: boolean }): void {
-      if (isServer) return;
-      void navigateImpl(href, "replace", options?.scroll !== false);
-    },
-    back(): void {
-      if (isServer) return;
-      window.history.back();
-    },
-    forward(): void {
-      if (isServer) return;
-      window.history.forward();
-    },
-    refresh(): void {
-      if (isServer) return;
-      // Re-fetch the current page's RSC stream
-      if (typeof (window as any).__VINEXT_RSC_NAVIGATE__ === "function") {
-        (window as any).__VINEXT_RSC_NAVIGATE__(window.location.href);
-      }
-    },
-    prefetch(href: string): void {
-      if (isServer) return;
-      // Prefetch the RSC payload for the target route and store in cache
-      const fullHref = withBasePath(href);
-      const rscUrl = toRscUrl(fullHref);
-      const prefetched = getPrefetchedUrls();
-      if (prefetched.has(rscUrl)) return;
-      prefetched.add(rscUrl);
-      fetch(rscUrl, {
-        headers: { Accept: "text/x-component" },
-        credentials: "include",
-        priority: "low" as RequestInit["priority"],
-      }).then((response) => {
-        if (response.ok) {
-          storePrefetchResponse(rscUrl, response);
-        } else {
-          // Non-ok response: allow retry on next prefetch() call
-          prefetched.delete(rscUrl);
-        }
-      }).catch(() => {
-        // Network error: allow retry on next prefetch() call
-        prefetched.delete(rscUrl);
-      });
-    },
-  };
-  return router;
+  return _appRouter;
 }
 
 /**
