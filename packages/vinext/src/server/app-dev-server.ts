@@ -2203,9 +2203,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
     }
     // Merge middleware response headers into the RSC response.
-    // set-cookie is accumulated as an array to preserve multiple values
-    // (e.g. two Set-Cookie directives from middleware); all other keys use
-    // plain assignment so middleware headers win over config headers, which
+    // set-cookie and vary are accumulated to preserve existing values
+    // (e.g. "Vary: RSC, Accept" set above); all other keys use plain
+    // assignment so middleware headers win over config headers, which
     // the outer handler applies afterward and skips keys already present.
     if (_mwCtx.headers) {
       for (const [key, value] of _mwCtx.headers) {
@@ -2218,6 +2218,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             responseHeaders[lk] = [existing, value];
           } else {
             responseHeaders[lk] = [value];
+          }
+        } else if (lk === "vary") {
+          // Accumulate Vary values to preserve the existing "RSC, Accept" entry.
+          const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
+          if (existing) {
+            responseHeaders["Vary"] = existing + ", " + value;
+            if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
+          } else {
+            responseHeaders[key] = value;
           }
         } else {
           responseHeaders[key] = value;
