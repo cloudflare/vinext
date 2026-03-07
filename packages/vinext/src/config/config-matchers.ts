@@ -659,13 +659,15 @@ export async function proxyExternalRequest(
   // Node.js fetch() auto-decompresses responses (gzip, br, etc.), so the body
   // we receive is already plain text. Forwarding the original content-encoding
   // and content-length headers causes the browser to attempt a second
-  // decompression on the already-decoded body → ERR_CONTENT_DECODING_FAILED.
-  // Strip both headers so the browser handles the response correctly.
+  // decompression on the already-decoded body, resulting in
+  // ERR_CONTENT_DECODING_FAILED. Strip both headers on Node.js only.
+  // On Workers, fetch() preserves wire encoding, so the headers stay accurate.
+  const isNodeRuntime = typeof process !== "undefined" && !!(process.versions?.node);
   const responseHeaders = new Headers();
   upstreamResponse.headers.forEach((value, key) => {
     const lower = key.toLowerCase();
     if (HOP_BY_HOP_HEADERS.has(lower)) return;
-    if (lower === "content-encoding" || lower === "content-length") return;
+    if (isNodeRuntime && (lower === "content-encoding" || lower === "content-length")) return;
     responseHeaders.append(key, value);
   });
 
