@@ -2408,6 +2408,9 @@ hydrate();
         return fn.call(this, config, env);
       },
       transform(code, id, options) {
+        // Skip ?raw and other query imports — @mdx-js/rollup ignores the query
+        // and would compile the file as MDX instead of returning raw text.
+        if (id.includes("?")) return;
         if (!mdxDelegate?.transform) return;
         const hook = mdxDelegate.transform;
         const fn = typeof hook === "function" ? hook : hook.handler;
