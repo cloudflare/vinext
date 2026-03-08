@@ -242,9 +242,18 @@ export class MemoryCacheHandler implements CacheHandler {
 // ---------------------------------------------------------------------------
 // Active cache handler — the singleton used by next/cache API functions.
 // Defaults to MemoryCacheHandler, can be swapped at runtime.
+//
+// Stored on globalThis so it is shared across all module instances running
+// in the same Node.js process (e.g. the host process and the Vite RSC
+// environment share the same globalThis). Without this, setCacheHandler()
+// called from outside the RSC environment would not affect the RSC copy.
 // ---------------------------------------------------------------------------
 
-let activeHandler: CacheHandler = new MemoryCacheHandler();
+const _CACHE_HANDLER_KEY = Symbol.for("vinext.activeHandler");
+const _handlerGlobal = globalThis as unknown as Record<typeof _CACHE_HANDLER_KEY, CacheHandler>;
+if (!_handlerGlobal[_CACHE_HANDLER_KEY]) {
+  _handlerGlobal[_CACHE_HANDLER_KEY] = new MemoryCacheHandler();
+}
 
 /**
  * Set a custom CacheHandler. Call this during server startup to
@@ -254,14 +263,14 @@ let activeHandler: CacheHandler = new MemoryCacheHandler();
  * as Next.js 16's CacheHandler class).
  */
 export function setCacheHandler(handler: CacheHandler): void {
-  activeHandler = handler;
+  _handlerGlobal[_CACHE_HANDLER_KEY] = handler;
 }
 
 /**
  * Get the active CacheHandler (for internal use or testing).
  */
 export function getCacheHandler(): CacheHandler {
-  return activeHandler;
+  return _handlerGlobal[_CACHE_HANDLER_KEY];
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +307,7 @@ export async function revalidateTag(
   } else if (profile && typeof profile === "object") {
     durations = profile;
   }
-  await activeHandler.revalidateTag(tag, durations);
+  await _handlerGlobal[_CACHE_HANDLER_KEY].revalidateTag(tag, durations);
 }
 
 /**
@@ -313,7 +322,7 @@ export async function revalidatePath(
 ): Promise<void> {
   // Next.js internally converts paths to tags with a prefix
   const pathTag = `_N_T_${path}`;
-  await activeHandler.revalidateTag([path, pathTag]);
+  await _handlerGlobal[_CACHE_HANDLER_KEY].revalidateTag([path, pathTag]);
 }
 
 /**
@@ -330,7 +339,7 @@ export async function revalidatePath(
  */
 export async function updateTag(tag: string): Promise<void> {
   // Expire the tag immediately (same as revalidateTag without SWR)
-  await activeHandler.revalidateTag(tag);
+  await _handlerGlobal[_CACHE_HANDLER_KEY].revalidateTag(tag);
 }
 
 /**
@@ -634,7 +643,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
 
     // Try to get from cache. Check cacheState so time-expired entries
     // trigger a re-fetch instead of being served indefinitely.
-    const existing = await activeHandler.get(cacheKey, {
+    const existing = await _handlerGlobal[_CACHE_HANDLER_KEY].get(cacheKey, {
       kind: "FETCH",
       tags,
     });
@@ -667,7 +676,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
     };
 
-    await activeHandler.set(cacheKey, cacheValue, {
+    await _handlerGlobal[_CACHE_HANDLER_KEY].set(cacheKey, cacheValue, {
       fetchCache: true,
       tags,
       revalidate: revalidateSeconds,

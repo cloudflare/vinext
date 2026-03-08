@@ -227,6 +227,7 @@ ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifes
 import { _consumeRequestScopedCacheLife, _runWithCacheState } from "next/cache";
 import { runWithFetchCache } from "vinext/fetch-cache";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
+import { isrGet, isrSet, isrCacheKey, buildAppPageCacheValue, triggerBackgroundRegeneration, setRevalidateDuration, getRevalidateDuration } from "vinext/isr-cache";
 // Import server-only state module to register ALS-backed accessors.
 import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
@@ -257,11 +258,6 @@ console.error = (...args) => {
 function setNavigationContext(ctx) {
   _setNavigationContextOrig(ctx);
 }
-
-// ISR cache is disabled in dev mode — every request re-renders fresh,
-// matching Next.js dev behavior. Cache-Control headers are still emitted
-// based on export const revalidate for testing purposes.
-// Production ISR is handled by prod-server.ts and the Cloudflare worker entry.
 
 // Normalize null-prototype objects from matchPattern() into thenable objects
 // that work both as Promises (for Next.js 15+ async params) and as plain
@@ -2594,9 +2590,81 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }));
   }
 
-  // Emit Cache-Control for ISR pages so tests can verify revalidate values,
-  // but skip actual caching in dev — every request renders fresh.
+  // Emit Cache-Control for ISR pages and serve from/write to the ISR cache.
   if (revalidateSeconds !== null && revalidateSeconds > 0) {
+    if (process.env.NODE_ENV === "production") {
+      const cacheKey = isrCacheKey("app", cleanPathname);
+
+      // Helper: render the page fresh and store in cache (used for background regen)
+      async function renderFreshAndCache() {
+        const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+        const rscStream2 = renderToReadableStream(element, { onError: onRenderError });
+        const htmlStream2 = await ssrEntry2.handleSsr(rscStream2, _getNavigationContext(), fontData);
+        const reader = htmlStream2.getReader();
+        const chunks = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+        }
+        const freshHtml = chunks.join("");
+        await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, undefined, 200), revalidateSeconds);
+        setRevalidateDuration(cacheKey, revalidateSeconds);
+        return freshHtml;
+      }
+
+      const cached = await isrGet(cacheKey);
+
+      if (cached && !cached.isStale && cached.value.value?.kind === "APP_PAGE") {
+        // Fresh cache HIT — serve directly
+        const cachedHtml = cached.value.value.html;
+        const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
+        return attachMiddlewareContext(new Response(cachedHtml, {
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
+            "X-Vinext-Cache": "HIT",
+            "Vary": "RSC, Accept",
+          },
+        }));
+      }
+
+      if (cached && cached.isStale && cached.value.value?.kind === "APP_PAGE") {
+        // Stale hit — serve stale immediately, trigger background regeneration
+        const cachedHtml = cached.value.value.html;
+        const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
+        triggerBackgroundRegeneration(cacheKey, renderFreshAndCache);
+        return attachMiddlewareContext(new Response(cachedHtml, {
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
+            "X-Vinext-Cache": "STALE",
+            "Vary": "RSC, Accept",
+          },
+        }));
+      }
+
+      // Cache MISS — collect stream, store in cache, then respond
+      const reader = htmlStream.getReader();
+      const chunks = [];
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+      }
+      const freshHtml = chunks.join("");
+      await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, undefined, 200), revalidateSeconds);
+      setRevalidateDuration(cacheKey, revalidateSeconds);
+      return attachMiddlewareContext(new Response(freshHtml, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+          "Vary": "RSC, Accept",
+        },
+      }));
+    }
+
+    // Dev/test: skip caching, still emit Cache-Control so the header is visible
     return attachMiddlewareContext(new Response(htmlStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",

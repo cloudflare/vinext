@@ -1948,6 +1948,7 @@ hydrate();
           "vinext/head-state": path.join(shimsDir, "head-state"),
           "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
           "vinext/html": path.resolve(__dirname, "server", "html"),
+          "vinext/isr-cache": path.resolve(__dirname, "server", "isr-cache"),
         };
 
         // Detect if Cloudflare's vite plugin is present — if so, skip
