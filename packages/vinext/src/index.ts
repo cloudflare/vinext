@@ -3626,47 +3626,75 @@ hydrate();
       name: "vinext:og-inline-fetch-assets",
       enforce: "pre",
       transform(code, id) {
-        // Quick bail-out: only process modules that use the fetch+new URL+import.meta.url pattern
-        if (!code.includes("import.meta.url") || !code.includes("fetch(")) {
+        // Quick bail-out: only process modules that use new URL(..., import.meta.url)
+        if (!code.includes("import.meta.url")) {
           return null;
         }
-
-        // Match: fetch(new URL("./relative/path.ext", import.meta.url)).then((res) => res.arrayBuffer())
-        // Handles both minified (no spaces) and pretty-printed (spaces around parens/commas) forms.
-        // Capture group 1: the relative file path (e.g. "./noto-sans-v27-latin-regular.ttf")
-        const pattern = /fetch\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*\}?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*\))/g;
 
         const moduleDir = path.dirname(id);
         let newCode = code;
         let didReplace = false;
 
-        for (const match of code.matchAll(pattern)) {
-          const fullMatch = match[0];
-          const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
-          const absPath = path.resolve(moduleDir, relPath);
+        // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
+        // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
+        if (code.includes("fetch(")) {
+          const fetchPattern = /fetch\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*\}?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*\))/g;
 
-          let fileBase64: string;
-          try {
-            fileBase64 = fs.readFileSync(absPath).toString("base64");
-          } catch {
-            // File not found on disk — skip this occurrence (may be a runtime-only asset)
-            continue;
+          for (const match of code.matchAll(fetchPattern)) {
+            const fullMatch = match[0];
+            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
+            const absPath = path.resolve(moduleDir, relPath);
+
+            let fileBase64: string;
+            try {
+              fileBase64 = fs.readFileSync(absPath).toString("base64");
+            } catch {
+              // File not found on disk — skip (may be a runtime-only asset)
+              continue;
+            }
+
+            // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
+            const inlined = [
+              `(function(){`,
+              `var b=${JSON.stringify(fileBase64)};`,
+              `var r=atob(b);`,
+              `var a=new Uint8Array(r.length);`,
+              `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
+              `return Promise.resolve(a.buffer);`,
+              `})()`,
+            ].join("");
+
+            newCode = newCode.replace(fullMatch, inlined);
+            didReplace = true;
           }
+        }
 
-          // Replace the entire fetch(...).then(...) with an inline IIFE that decodes
-          // the base64 string and returns the ArrayBuffer synchronously wrapped in a Promise.
-          const inlined = [
-            `(function(){`,
-            `var b=${JSON.stringify(fileBase64)};`,
-            `var r=atob(b);`,
-            `var a=new Uint8Array(r.length);`,
-            `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
-            `return Promise.resolve(a.buffer);`,
-            `})()`,
-          ].join("");
+        // Pattern 2 — node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
+        // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
+        // both font data passed to satori and WASM bytes passed to initWasm).
+        if (code.includes("readFileSync(")) {
+          const readFilePattern = /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
 
-          newCode = newCode.replace(fullMatch, inlined);
-          didReplace = true;
+          for (const match of newCode.matchAll(readFilePattern)) {
+            const fullMatch = match[0];
+            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
+            const absPath = path.resolve(moduleDir, relPath);
+
+            let fileBase64: string;
+            try {
+              fileBase64 = fs.readFileSync(absPath).toString("base64");
+            } catch {
+              // File not found on disk — skip
+              continue;
+            }
+
+            // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
+            // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
+            const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
+
+            newCode = newCode.replace(fullMatch, inlined);
+            didReplace = true;
+          }
         }
 
         if (!didReplace) return null;
@@ -3675,12 +3703,17 @@ hydrate();
     },
     // Copy @vercel/og binary assets to the RSC output directory for production builds.
     //
-    // The font is inlined as base64 by vinext:og-inline-fetch-assets (no copy needed).
-    // The WASM file is imported as `import resvg_wasm from "./resvg.wasm?module"` — a
-    // static Vite import. Rollup/Vite resolves the ?module import and emits the asset,
-    // but if it isn't emitted (e.g. the RSC environment doesn't recognize the ?module
-    // suffix), the runtime will fail to find resvg.wasm at the expected relative path.
-    // This plugin copies the WASM file as a safety net for those cases.
+    // The edge build (dist/index.edge.js) uses:
+    //   - fetch(new URL("./noto-sans...", import.meta.url))  → inlined by og-inline-fetch-assets
+    //   - import resvg_wasm from "./resvg.wasm?module"       → static Vite import, emitted by Rollup
+    //
+    // The node build (dist/index.node.js) uses:
+    //   - fs.readFileSync(fileURLToPath(new URL("./noto-sans...", import.meta.url)))  → inlined
+    //   - fs.readFileSync(fileURLToPath(new URL("./resvg.wasm", import.meta.url)))   → inlined
+    //
+    // Both builds' font + WASM assets are inlined as base64 by vinext:og-inline-fetch-assets,
+    // so no file copy is strictly needed. This plugin is kept as a safety net for any edge-build
+    // ?module WASM imports that Rollup/Vite might not emit correctly in the RSC environment.
     {
       name: "vinext:og-assets",
       apply: "build",
