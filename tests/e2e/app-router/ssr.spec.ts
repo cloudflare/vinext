@@ -39,7 +39,7 @@ test.describe("App Router SSR", () => {
     await page.goto(`${BASE}/blog/hello-world`);
 
     await expect(page.locator("h1")).toHaveText("Blog Post");
-    await expect(page.locator("p")).toContainText("Slug: hello-world");
+    await expect(page.locator("main p")).toContainText("Slug: hello-world");
   });
 
   test("nested layout wraps dashboard pages", async ({ page }) => {
