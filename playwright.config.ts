@@ -19,7 +19,11 @@ const projectServers = {
     },
   },
   "app-router": {
-    testDir: "./tests/e2e/app-router",
+    testDir: "./tests/e2e",
+    testMatch: [
+      "**/app-router/**/*.spec.ts",
+      "**/og-image.spec.ts",
+    ],
     use: { baseURL: "http://localhost:4174" },
     server: {
       command: "npx vite --port 4174",
@@ -62,6 +66,7 @@ const projectServers = {
     testMatch: [
       "**/cloudflare-workers/**/*.spec.ts",
       "**/app-router/instrumentation.spec.ts",
+      "**/og-image.spec.ts",
     ],
     use: { baseURL: "http://localhost:4176" },
     server: {
@@ -79,6 +84,7 @@ const projectServers = {
     testMatch: [
       "**/cloudflare-dev/**/*.spec.ts",
       "**/app-router/instrumentation.spec.ts",
+      "**/og-image.spec.ts",
     ],
     use: { baseURL: "http://localhost:4178" },
     server: {

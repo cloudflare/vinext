@@ -19,6 +19,7 @@
     "@typescript/native-preview": "^7.0.0-dev.20260213.1",
     "@vitejs/plugin-rsc": "^0.5.19",
     "image-size": "2.0.2",
+    "next": "^16.1.6",
     "oxlint": "^1.47.0",
     "playwright": "^1.52.0",
     "react": "^19.2.4",
@@ -34,7 +35,10 @@
   },
   "pnpm": {
     "peerDependencyRules": {
-      "ignoreMissing": ["next", "webpack"]
+      "ignoreMissing": [
+        "next",
+        "webpack"
+      ]
     },
     "onlyBuiltDependencies": [
       "better-sqlite3",

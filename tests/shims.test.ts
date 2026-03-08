@@ -5317,6 +5317,29 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
     expect(config!.basePath).toBe("/esm-app");
   });
 
+  it("loads next.config.ts with extensionless local imports", async () => {
+    const fsp = await import("node:fs/promises");
+    const { loadNextConfig } = await import(
+      "../packages/vinext/src/config/next-config.js"
+    );
+
+    await fsp.writeFile(path.join(tmpDir, "env.ts"), `export const BASE_PATH = "/from-env";`);
+    await fsp.writeFile(
+      path.join(tmpDir, "next.config.ts"),
+      `import { BASE_PATH } from "./env";
+
+export default {
+  basePath: BASE_PATH,
+  trailingSlash: true,
+};`,
+    );
+
+    const config = await loadNextConfig(tmpDir);
+    expect(config).not.toBeNull();
+    expect(config!.basePath).toBe("/from-env");
+    expect(config!.trailingSlash).toBe(true);
+  });
+
   it("returns null when no config file exists", async () => {
     const { loadNextConfig } = await import(
       "../packages/vinext/src/config/next-config.js"
@@ -6927,12 +6950,23 @@ describe("next/error shim", () => {
 describe("next/constants shim", () => {
   it("exports all phase constants", async () => {
     const constants = await import("../packages/vinext/src/shims/constants.js");
-    expect(constants.PHASE_PRODUCTION_BUILD).toBe("phase-production-build");
-    expect(constants.PHASE_DEVELOPMENT_SERVER).toBe("phase-development-server");
-    expect(constants.PHASE_PRODUCTION_SERVER).toBe("phase-production-server");
-    expect(constants.PHASE_EXPORT).toBe("phase-export");
-    expect(constants.PHASE_INFO).toBe("phase-info");
-    expect(constants.PHASE_TEST).toBe("phase-test");
+    const constantsFromNext = await import("next/constants");
+    const normalizeConstants = (mod: Record<string, unknown>) => {
+      const {
+        __esModule: _esModule,
+        default: _default,
+        CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL,
+        ...rest
+      } = mod;
+      return {
+        ...rest,
+        CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL:
+          typeof CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL === "symbol"
+            ? CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL.description
+            : CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL,
+      };
+    };
+    expect(normalizeConstants(constants)).toEqual(normalizeConstants(constantsFromNext));
   });
 });
 

@@ -875,6 +875,58 @@ describe("Plugin config", () => {
     expect(mdxProxy.config({}, { command: "build", mode: "production" })).toBeUndefined();
     expect(mdxProxy.transform("code", "./foo.ts", {})).toBeUndefined();
   });
+
+  it("vinext:mdx transform skips ids that contain a query string (regression: ?raw)", () => {
+    // @mdx-js/rollup strips the query before matching the file extension, so
+    // it would compile "foo.mdx?raw" as MDX and return compiled JSX instead of
+    // raw text. The proxy must short-circuit on any id that contains "?".
+    const plugins = vinext() as any[];
+    const mdxProxy = plugins.find((p: any) => p.name === "vinext:mdx");
+
+    // Common query-param import patterns that must be skipped
+    expect(mdxProxy.transform("# hello", "/app/content.mdx?raw", {})).toBeUndefined();
+    expect(mdxProxy.transform("# hello", "/app/page.mdx?url", {})).toBeUndefined();
+    expect(mdxProxy.transform("# hello", "/app/page.mdx?inline", {})).toBeUndefined();
+  });
+
+  it("vinext:mdx proxy logic — ?raw guard prevents delegate from compiling query imports", () => {
+    // Self-contained unit test that exercises the guard independently of whether
+    // mdxDelegate is set. Without the guard, @mdx-js/rollup silently compiles
+    // ?raw imports into JSX; with it, the proxy returns undefined (pass-through).
+    const mockTransformResult = { code: "/* compiled mdx */", map: null };
+    const mockDelegate = {
+      transform: vi.fn().mockReturnValue(mockTransformResult),
+    };
+
+    // Proxy WITHOUT the query guard — reproduces the bug
+    function transformWithoutGuard(code: string, id: string) {
+      if (!mockDelegate.transform) return;
+      return (mockDelegate.transform as any).call({}, code, id, {});
+    }
+
+    // Proxy WITH the query guard — the fix
+    function transformWithGuard(code: string, id: string) {
+      // Skip ?raw and other query imports — @mdx-js/rollup ignores the query
+      // and would compile the file as MDX instead of returning raw text.
+      if (id.includes("?")) return;
+      if (!mockDelegate.transform) return;
+      return (mockDelegate.transform as any).call({}, code, id, {});
+    }
+
+    // Without the guard: ?raw import is incorrectly handed to the MDX compiler
+    expect(transformWithoutGuard("", "/app/content.mdx?raw")).toEqual(mockTransformResult);
+    expect(mockDelegate.transform).toHaveBeenCalledWith("", "/app/content.mdx?raw", {});
+
+    mockDelegate.transform.mockClear();
+
+    // With the guard: ?raw import is skipped (undefined = Vite pass-through)
+    expect(transformWithGuard("", "/app/content.mdx?raw")).toBeUndefined();
+    expect(mockDelegate.transform).not.toHaveBeenCalled();
+
+    // Plain .mdx (no query) still goes through the delegate
+    expect(transformWithGuard("", "/app/content.mdx")).toEqual(mockTransformResult);
+    expect(mockDelegate.transform).toHaveBeenCalledWith("", "/app/content.mdx", {});
+  });
 });
 
 describe("Production build", () => {

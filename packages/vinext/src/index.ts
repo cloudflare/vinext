@@ -2119,8 +2119,11 @@ hydrate();
           // Exclude vinext from dependency optimization so esbuild doesn't
           // scan dist files containing virtual module imports (virtual:vinext-*)
           // that only resolve at Vite plugin time, not during pre-bundling.
+          // Exclude @vercel/og so Vite's esbuild pre-bundler doesn't cache it
+          // before our vinext:og-font-patch transform can inline the font and
+          // patch the yoga WASM instantiation for workerd compatibility.
           optimizeDeps: {
-            exclude: ["vinext"],
+            exclude: ["vinext", "@vercel/og"],
           },
           // Enable JSX in .tsx/.jsx files
           // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`
@@ -2186,7 +2189,7 @@ hydrate();
                 },
               }),
               optimizeDeps: {
-                exclude: ["vinext"],
+                exclude: ["vinext", "@vercel/og"],
                 entries: appEntries,
               },
               build: {
@@ -2209,7 +2212,7 @@ hydrate();
                 },
               }),
               optimizeDeps: {
-                exclude: ["vinext"],
+                exclude: ["vinext", "@vercel/og"],
                 entries: appEntries,
               },
               build: {
@@ -2380,6 +2383,7 @@ hydrate();
             headers: nextConfig?.headers,
             allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
             allowedDevOrigins: nextConfig?.allowedDevOrigins,
+            bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
           }, instrumentationPath);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
@@ -2409,6 +2413,9 @@ hydrate();
         return fn.call(this, config, env);
       },
       transform(code, id, options) {
+        // Skip ?raw and other query imports — @mdx-js/rollup ignores the query
+        // and would compile the file as MDX instead of returning raw text.
+        if (id.includes("?")) return;
         if (!mdxDelegate?.transform) return;
         const hook = mdxDelegate.transform;
         const fn = typeof hook === "function" ? hook : hook.handler;
@@ -3599,11 +3606,119 @@ hydrate();
         },
       },
     },
-    // Copy @vercel/og assets (font, WASM) to the RSC output directory.
-    // @vercel/og uses readFileSync(new URL("./font.ttf", import.meta.url)) which
-    // breaks when the module is bundled because Vite doesn't process
-    // new URL(..., import.meta.url) for server-side (SSR/RSC) builds.
-    // This plugin copies the required assets so they exist alongside the bundle.
+    // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))`.
+    //
+    // Some bundled libraries (notably @vercel/og) load assets at module init time
+    // with the pattern:
+    //
+    //   fetch(new URL("./some-font.ttf", import.meta.url)).then(res => res.arrayBuffer())
+    //
+    // This works in browser and standard Node.js because import.meta.url is a real
+    // file:// URL. In Cloudflare Workers (both wrangler dev and production), however,
+    // import.meta.url is the string "worker" — not a URL — so new URL(...) throws
+    // "TypeError: Invalid URL string" and the Worker fails to start.
+    //
+    // Fix: at Vite transform time, find every such pattern, resolve the referenced
+    // file relative to the module's actual path on disk (available as `id`), read it,
+    // and replace the entire fetch(new URL(...)) expression with an inline base64 IIFE
+    // that resolves synchronously. This eliminates the runtime fetch entirely and works
+    // in all environments (workerd, Node.js, browser).
+    //
+    // Note: WASM files imported via `import ... from "./foo.wasm?module"` are handled
+    // by the bundler/Vite directly and do not need this treatment. Only assets that
+    // are runtime-fetched (not statically imported) need to be inlined here.
+    {
+      name: "vinext:og-inline-fetch-assets",
+      enforce: "pre",
+      transform(code, id) {
+        // Quick bail-out: only process modules that use new URL(..., import.meta.url)
+        if (!code.includes("import.meta.url")) {
+          return null;
+        }
+
+        const moduleDir = path.dirname(id);
+        let newCode = code;
+        let didReplace = false;
+
+        // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
+        // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
+        if (code.includes("fetch(")) {
+          const fetchPattern = /fetch\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*\}?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*\))/g;
+
+          for (const match of code.matchAll(fetchPattern)) {
+            const fullMatch = match[0];
+            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
+            const absPath = path.resolve(moduleDir, relPath);
+
+            let fileBase64: string;
+            try {
+              fileBase64 = fs.readFileSync(absPath).toString("base64");
+            } catch {
+              // File not found on disk — skip (may be a runtime-only asset)
+              continue;
+            }
+
+            // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
+            const inlined = [
+              `(function(){`,
+              `var b=${JSON.stringify(fileBase64)};`,
+              `var r=atob(b);`,
+              `var a=new Uint8Array(r.length);`,
+              `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
+              `return Promise.resolve(a.buffer);`,
+              `})()`,
+            ].join("");
+
+            newCode = newCode.replaceAll(fullMatch, inlined);
+            didReplace = true;
+          }
+        }
+
+        // Pattern 2 — node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
+        // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
+        // both font data passed to satori and WASM bytes passed to initWasm).
+        if (code.includes("readFileSync(")) {
+          const readFilePattern = /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
+
+          for (const match of newCode.matchAll(readFilePattern)) {
+            const fullMatch = match[0];
+            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
+            const absPath = path.resolve(moduleDir, relPath);
+
+            let fileBase64: string;
+            try {
+              fileBase64 = fs.readFileSync(absPath).toString("base64");
+            } catch {
+              // File not found on disk — skip
+              continue;
+            }
+
+            // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
+            // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
+            const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
+
+            newCode = newCode.replaceAll(fullMatch, inlined);
+            didReplace = true;
+          }
+        }
+
+        if (!didReplace) return null;
+        return { code: newCode, map: null };
+      },
+    },
+    // Copy @vercel/og binary assets to the RSC output directory for production builds.
+    //
+    // The edge build (dist/index.edge.js) uses:
+    //   - fetch(new URL("./noto-sans...", import.meta.url))  → inlined by og-inline-fetch-assets
+    //   - import resvg_wasm from "./resvg.wasm?module"       → static Vite import, emitted by Rollup
+    //
+    // The node build (dist/index.node.js) uses:
+    //   - fs.readFileSync(fileURLToPath(new URL("./noto-sans...", import.meta.url)))  → inlined
+    //   - fs.readFileSync(fileURLToPath(new URL("./resvg.wasm", import.meta.url)))   → inlined
+    //
+    // Both builds' font + WASM assets are inlined as base64 by vinext:og-inline-fetch-assets,
+    // so no file copy is strictly needed. This plugin is kept as a safety net for any edge-build
+    // ?module WASM imports that Rollup/Vite might not emit correctly in the RSC environment.
     {
       name: "vinext:og-assets",
       apply: "build",
@@ -3623,8 +3738,9 @@ hydrate();
           if (!fs.existsSync(indexPath)) return;
 
           const content = fs.readFileSync(indexPath, "utf-8");
+          // The font is inlined as base64 by vinext:og-inline-fetch-assets, so only
+          // the WASM needs to be present as a file alongside the bundle.
           const ogAssets = [
-            "noto-sans-v27-latin-regular.ttf",
             "resvg.wasm",
           ];
 
@@ -3828,6 +3944,59 @@ hydrate();
             fs.writeFileSync(headersPath, headersContent);
           }
         },
+      },
+    },
+    {
+      // @vercel/og patch for workerd (cloudflare-dev + cloudflare-workers)
+      //
+      // @vercel/og/dist/index.edge.js has one remaining workerd issue after the
+      // generic vinext:og-inline-fetch-assets plugin runs (which already handles
+      // the font fetch pattern):
+      //
+      // YOGA WASM: yoga-layout embeds its WASM as a base64 data URL and instantiates
+      // it via WebAssembly.instantiate(bytes) at runtime.
+      // workerd forbids dynamic WASM compilation from bytes — WASM must be loaded
+      // through the module system as a pre-compiled WebAssembly.Module.
+      // Fix: extract the yoga WASM bytes at Vite transform time (Node.js), write
+      // yoga.wasm to @vercel/og/dist/, import it via `?module` so @cloudflare/vite-plugin
+      // can serve it through the module system, and inject h2.instantiateWasm to
+      // use the pre-compiled module instead of bytes.
+      name: "vinext:og-font-patch",
+      enforce: "pre" as const,
+      transform(code: string, id: string) {
+        if (!id.includes("@vercel/og") || !id.includes("index.edge.js")) return null;
+        let result = code;
+
+        // ── Extract yoga WASM and import via ?module ──────────────────────────────────
+        // yoga-layout's emscripten bundle sets H to a data URL containing the yoga WASM,
+        // then later calls WebAssembly.instantiate(bytes, imports), which workerd rejects.
+        // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch
+        // that we inject to use a pre-compiled WebAssembly.Module loaded via ?module.
+        const YOGA_DATA_URL_RE = /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
+        const yogaMatch = YOGA_DATA_URL_RE.exec(result);
+        if (yogaMatch) {
+          const yogaBase64 = yogaMatch[1];
+          const distDir = path.dirname(id);
+          const yogaWasmPath = path.join(distDir, "yoga.wasm");
+          // Write yoga.wasm to disk idempotently at transform time (Node.js side)
+          if (!fs.existsSync(yogaWasmPath)) {
+            fs.writeFileSync(yogaWasmPath, Buffer.from(yogaBase64, "base64"));
+          }
+          // Disable the data-URL branch so emscripten doesn't try to instantiate from bytes
+          result = result.replace(yogaMatch[0], `H = "";`);
+          // Patch the loadYoga call site to inject instantiateWasm using the ?module import
+          const YOGA_CALL = `yoga_wasm_base64_esm_default()`;
+          const YOGA_CALL_PATCHED =
+            `yoga_wasm_base64_esm_default({ instantiateWasm: function(imports, callback) {` +
+            ` WebAssembly.instantiate(yoga_wasm_module, imports).then(function(inst) { callback(inst); });` +
+            ` return {}; } })`;
+          result = result.replace(YOGA_CALL, YOGA_CALL_PATCHED);
+          // Prepend the yoga wasm ?module import so @cloudflare/vite-plugin handles it
+          result = `import yoga_wasm_module from "./yoga.wasm?module";\n` + result;
+        }
+
+        if (result === code) return null;
+        return { code: result, map: null };
       },
     },
   ];
