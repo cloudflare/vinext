@@ -14,7 +14,21 @@ export type CapturedRequestError = {
   routeType: string;
 }
 
-/** Set to true when instrumentation.ts register() is called. */
+/**
+ * Set to true when instrumentation.ts register() is called.
+ *
+ * Unlike the middleware counter below, this does NOT need globalThis.
+ * instrumentation.ts is loaded in the RSC environment (via the vinext
+ * instrumentation runner), and the /api/instrumentation-test route is also
+ * an App Router route — also loaded in the RSC environment. Because both
+ * files live in the same Vite module graph, ESM live bindings work normally:
+ * when markRegisterCalled() updates this variable, the API route's import
+ * sees the updated value immediately.
+ *
+ * The middleware counter must use globalThis because middleware.ts is loaded
+ * in *two separate environments* (SSR env via ssrLoadModule, RSC env via the
+ * RSC entry), so there is no shared module instance to rely on.
+ */
 export let registerCalled = false;
 
 /** List of errors captured by onRequestError(). */
