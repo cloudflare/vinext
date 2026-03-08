@@ -26,7 +26,12 @@ export function parseBodySizeLimit(value: string | number | undefined | null): n
   }
   const trimmed = value.trim();
   const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb|pb)?$/i);
-  if (!match) return 1 * 1024 * 1024;
+  if (!match) {
+    console.warn(
+      `[vinext] Invalid bodySizeLimit value: "${value}". Expected a number or a string like "1mb", "500kb". Falling back to 1MB.`,
+    );
+    return 1 * 1024 * 1024;
+  }
   const num = parseFloat(match[1]);
   const unit = (match[2] ?? "b").toLowerCase();
   let bytes: number;

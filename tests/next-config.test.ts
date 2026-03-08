@@ -265,9 +265,18 @@ describe("parseBodySizeLimit", () => {
     expect(parseBodySizeLimit(null)).toBe(1 * 1024 * 1024);
   });
 
-  it("returns default 1MB for invalid strings", () => {
+  it("returns default 1MB and warns for invalid strings", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(parseBodySizeLimit("invalid")).toBe(1 * 1024 * 1024);
+    expect(parseBodySizeLimit("10mbb")).toBe(1 * 1024 * 1024);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(warn.mock.calls[0][0]).toContain("Invalid bodySizeLimit");
+    warn.mockRestore();
+    // empty string also falls through to the regex (no match), so it warns too
+    const warn2 = vi.spyOn(console, "warn").mockImplementation(() => {});
     expect(parseBodySizeLimit("")).toBe(1 * 1024 * 1024);
+    expect(warn2).toHaveBeenCalledTimes(1);
+    warn2.mockRestore();
   });
 
   it("parses terabyte strings", () => {
