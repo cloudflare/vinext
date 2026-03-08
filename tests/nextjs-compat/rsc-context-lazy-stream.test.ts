@@ -48,6 +48,7 @@
  * called usePathname() or useSearchParams().
  *
  * Fix: generateSsrEntry() embeds __VINEXT_RSC_NAV__ = { pathname, searchParams }
+ * (where searchParams is an array of [key, value] pairs to preserve duplicates)
  * and __VINEXT_RSC_PARAMS__ = { ...params } as <script> tags in <head>.
  * generateBrowserEntry() reads self.__VINEXT_RSC_NAV__ before hydrateRoot()
  * and calls setNavigationContext() so the client snapshot matches the server.
@@ -252,20 +253,21 @@ describe("__VINEXT_RSC_NAV__: nav context embedded for hydration snapshot consis
     expect(nav.pathname).toBe(NAV_ROUTE);
   });
 
-  // ── 3. searchParams are correct (no query string) ─────────────────────────
+   // ── 3. searchParams are correct (no query string) ─────────────────────────
 
-  it("__VINEXT_RSC_NAV__ searchParams is empty object when no query string", async () => {
-    const res = await fetch(`${_baseUrl}${NAV_ROUTE}`);
-    const html = await res.text();
+   it("__VINEXT_RSC_NAV__ searchParams is empty array when no query string", async () => {
+     const res = await fetch(`${_baseUrl}${NAV_ROUTE}`);
+     const html = await res.text();
 
-    const match = html.match(/self\.__VINEXT_RSC_NAV__=(\{[^<]+\})/);
-    expect(match).toBeTruthy();
-    const nav = JSON.parse(match![1]);
+     const match = html.match(/self\.__VINEXT_RSC_NAV__=(\{[^<]+\})/);
+     expect(match).toBeTruthy();
+     const nav = JSON.parse(match![1]);
 
-    // searchParams is serialised as Object.fromEntries(urlSearchParams.entries())
-    // so with no query string it should be an empty object.
-    expect(nav.searchParams).toEqual({});
-  });
+     // searchParams is serialised as [...urlSearchParams.entries()] — an array of
+     // [key, value] pairs — to preserve duplicate keys (e.g. ?tag=a&tag=b).
+     // With no query string it should be an empty array.
+     expect(nav.searchParams).toEqual([]);
+   });
 
   it("SSR-rendered useSearchParams() returns empty string when no query string", async () => {
     const res = await fetch(`${_baseUrl}${NAV_ROUTE}`);
@@ -286,20 +288,21 @@ describe("__VINEXT_RSC_NAV__: nav context embedded for hydration snapshot consis
   //
   // With __VINEXT_RSC_NAV__:
   //   - SSR renders: <span id="nav-search-q">hello</span>
-  //   - browser entry calls setNavigationContext with new URLSearchParams({ q: "hello" })
+   //   - browser entry calls setNavigationContext with new URLSearchParams([["q","hello"]])
   //   - getServerSnapshot returns: "hello"
   //   → React sees "hello" = "hello" → no mismatch
 
-  it("__VINEXT_RSC_NAV__ searchParams carries query params from request URL", async () => {
-    const res = await fetch(`${_baseUrl}${NAV_ROUTE}?q=hello&page=3`);
-    const html = await res.text();
+   it("__VINEXT_RSC_NAV__ searchParams carries query params from request URL", async () => {
+     const res = await fetch(`${_baseUrl}${NAV_ROUTE}?q=hello&page=3`);
+     const html = await res.text();
 
-    const match = html.match(/self\.__VINEXT_RSC_NAV__=(\{[^<]+\})/);
-    expect(match).toBeTruthy();
-    const nav = JSON.parse(match![1]);
+     const match = html.match(/self\.__VINEXT_RSC_NAV__=(\{[^<]+\})/);
+     expect(match).toBeTruthy();
+     const nav = JSON.parse(match![1]);
 
-    expect(nav.searchParams).toEqual({ q: "hello", page: "3" });
-  });
+     // Serialised as array of [key, value] pairs to preserve duplicates.
+     expect(nav.searchParams).toEqual([["q", "hello"], ["page", "3"]]);
+   });
 
   it("__VINEXT_RSC_NAV__ searchParams agrees with SSR-rendered useSearchParams() output", async () => {
     const res = await fetch(`${_baseUrl}${NAV_ROUTE}?q=hello&page=3`);

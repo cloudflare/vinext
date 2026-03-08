@@ -173,6 +173,19 @@ declare global {
   var __VINEXT_RSC_PARAMS__: Record<string, string | string[]> | undefined;
 
   /**
+   * Navigation context embedded by `generateSsrEntry()` for hydration
+   * snapshot consistency. Contains the pathname and searchParams used
+   * during SSR so `useSyncExternalStore` `getServerSnapshot` matches the
+   * SSR-rendered HTML.
+   * `searchParams` is serialised as an array of `[key, value]` pairs to
+   * preserve duplicate keys (e.g. `?tag=a&tag=b`).
+   */
+  // eslint-disable-next-line no-var
+  var __VINEXT_RSC_NAV__:
+    | { pathname: string; searchParams: [string, string][] }
+    | undefined;
+
+  /**
    * Legacy RSC embed format (pre-progressive-streaming).
    * A single object containing all RSC chunks and the route params, embedded
    * in a single `<script>` block.

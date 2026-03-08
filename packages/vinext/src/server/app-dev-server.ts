@@ -2879,7 +2879,10 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // browser useSyncExternalStore getServerSnapshot can return the correct
     // value during hydration. Without this, getServerSnapshot returns "/" and
     // React detects a mismatch against the SSR-rendered HTML.
-    const __navPayload = { pathname: navContext?.pathname ?? '/', searchParams: navContext?.searchParams ? Object.fromEntries(navContext.searchParams.entries()) : {} };
+     // Serialise searchParams as an array of [key, value] pairs to preserve
+     // duplicate keys (e.g. ?tag=a&tag=b). Object.fromEntries() would keep
+     // only the last value, causing a hydration mismatch for multi-value params.
+     const __navPayload = { pathname: navContext?.pathname ?? '/', searchParams: navContext?.searchParams ? [...navContext.searchParams.entries()] : [] };
     const navScript = '<script>self.__VINEXT_RSC_NAV__=' + safeJsonStringify(__navPayload) + '</script>';
     const injectHTML = paramsScript + navScript + modulePreloadHTML + insertedHTML + fontHTML;
 
