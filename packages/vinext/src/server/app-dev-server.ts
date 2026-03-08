@@ -1830,11 +1830,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         { temporaryReferences, onError: onRenderError },
       );
 
-      // Collect cookies set during the action
+      // Collect cookies set during the action synchronously (before stream is consumed).
+      // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
+      // by the client, and async server components that run during consumption need the
+      // context to still be live. The AsyncLocalStorage scope from runWithHeadersContext
+      // handles cleanup naturally when all async continuations complete.
       const actionPendingCookies = getAndClearPendingCookies();
       const actionDraftCookie = getDraftModeCookieHeader();
-      setHeadersContext(null);
-      setNavigationContext(null);
 
       const actionHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
       const actionResponse = new Response(rscStream, { headers: actionHeaders });
@@ -2152,8 +2154,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           sourceRoute.pattern,
         );
         const interceptStream = renderToReadableStream(interceptElement, { onError: interceptOnError });
-        setHeadersContext(null);
-        setNavigationContext(null);
+        // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
+        // by the client, and async server components that run during consumption need the
+        // context to still be live. The AsyncLocalStorage scope from runWithHeadersContext
+        // handles cleanup naturally when all async continuations complete.
         return new Response(interceptStream, {
           headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
         });
