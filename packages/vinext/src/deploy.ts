@@ -1140,27 +1140,23 @@ export async function deploy(options: DeployOptions): Promise<void> {
     writeGeneratedFiles(filesToGenerate);
   }
 
-  // Warn if an existing vite.config.ts is missing the Cloudflare plugin.
+  // Fail if an existing vite.config.ts is missing the Cloudflare plugin.
   // This is the most common cause of "could not resolve virtual:vinext-rsc-entry"
   // errors — `vinext init` generates a minimal local-dev config without it.
   if (info.hasViteConfig && !viteConfigHasCloudflarePlugin(root)) {
-    console.warn(`
-  Warning: your vite.config.ts does not appear to import @cloudflare/vite-plugin.
-  Cloudflare Workers deployment requires it. Add the plugin to your config:
-
-    import { cloudflare } from "@cloudflare/vite-plugin";
-
-    export default defineConfig({
-      plugins: [
-        vinext(),
-        cloudflare(${info.isAppRouter ? `{
-          viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
-        }` : ""}),
-      ],
-    });
-
-  Or delete vite.config.ts and re-run \`vinext deploy\` to auto-generate it.
-`);
+    throw new Error(
+      `[vinext] Missing @cloudflare/vite-plugin in your Vite config.\n\n` +
+      `  Cloudflare Workers deployment requires the cloudflare() plugin.\n` +
+      `  Add it to your vite.config.ts:\n\n` +
+      `    import { cloudflare } from "@cloudflare/vite-plugin";\n\n` +
+      `    export default defineConfig({\n` +
+      `      plugins: [\n` +
+      `        vinext(),\n` +
+      `        cloudflare(${info.isAppRouter ? `{\n          viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },\n        }` : ""}),\n` +
+      `      ],\n` +
+      `    });\n\n` +
+      `  Or delete vite.config.ts and re-run \`vinext deploy\` to auto-generate it.`,
+    );
   }
 
   if (options.dryRun) {

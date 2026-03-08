@@ -2304,6 +2304,39 @@ hydrate();
             );
           }
         }
+
+        // Fail the build when targeting Cloudflare Workers without the
+        // cloudflare() plugin. Without it, wrangler's esbuild can't resolve
+        // virtual:vinext-rsc-entry and produces a cryptic error. (#325)
+        const hasWranglerConfig =
+          fs.existsSync(path.join(root, "wrangler.jsonc")) ||
+          fs.existsSync(path.join(root, "wrangler.json")) ||
+          fs.existsSync(path.join(root, "wrangler.toml"));
+
+        if (
+          config.command === "build" &&
+          !hasCloudflarePlugin &&
+          !hasNitroPlugin &&
+          hasWranglerConfig
+        ) {
+          const cfArg = hasAppDir
+            ? "{\n               viteEnvironment: { name: \"rsc\", childEnvironments: [\"ssr\"] },\n             }"
+            : "";
+          throw new Error(
+            "[vinext] Missing @cloudflare/vite-plugin in your Vite config.\n" +
+            "         A wrangler config was found, but the cloudflare() plugin is not registered.\n" +
+            "         Without it, Vite can't resolve virtual modules and the build will fail.\n\n" +
+            "         Add it to your vite.config.ts:\n\n" +
+            "           import { cloudflare } from \"@cloudflare/vite-plugin\";\n\n" +
+            "           export default defineConfig({\n" +
+            "             plugins: [\n" +
+            "               vinext(),\n" +
+            "               cloudflare(" + cfArg + "),\n" +
+            "             ],\n" +
+            "           });\n\n" +
+            "         Or delete vite.config.ts and run 'vinext deploy' to auto-generate it.",
+          );
+        }
       },
 
       resolveId: {
