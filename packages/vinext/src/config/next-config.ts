@@ -13,24 +13,34 @@ import { normalizePageExtensions } from "../routing/file-matcher.js";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
- * Accepts Next.js-style strings like "1mb", "500kb", "10mb".
+ * Accepts Next.js-style strings like "1mb", "500kb", "10mb", bare number strings like "1048576" (bytes),
+ * and numeric values. Supports b, kb, mb, gb, tb, pb units.
  * Returns the default 1MB if the value is not provided or invalid.
+ * Throws if the parsed value is less than 1.
  */
 export function parseBodySizeLimit(value: string | number | undefined | null): number {
   if (value === undefined || value === null) return 1 * 1024 * 1024;
-  if (typeof value === "number") return value;
-  if (typeof value !== "string") return 1 * 1024 * 1024;
-  const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)$/i);
+  if (typeof value === "number") {
+    if (value < 1) throw new Error(`Body size limit must be a positive number, got ${value}`);
+    return value;
+  }
+  const trimmed = value.trim();
+  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb|pb)?$/i);
   if (!match) return 1 * 1024 * 1024;
   const num = parseFloat(match[1]);
-  const unit = match[2].toLowerCase();
+  const unit = (match[2] ?? "b").toLowerCase();
+  let bytes: number;
   switch (unit) {
-    case "b": return Math.floor(num);
-    case "kb": return Math.floor(num * 1024);
-    case "mb": return Math.floor(num * 1024 * 1024);
-    case "gb": return Math.floor(num * 1024 * 1024 * 1024);
+    case "b": bytes = Math.floor(num); break;
+    case "kb": bytes = Math.floor(num * 1024); break;
+    case "mb": bytes = Math.floor(num * 1024 * 1024); break;
+    case "gb": bytes = Math.floor(num * 1024 * 1024 * 1024); break;
+    case "tb": bytes = Math.floor(num * 1024 * 1024 * 1024 * 1024); break;
+    case "pb": bytes = Math.floor(num * 1024 * 1024 * 1024 * 1024 * 1024); break;
     default: return 1 * 1024 * 1024;
   }
+  if (bytes < 1) throw new Error(`Body size limit must be a positive number, got ${bytes}`);
+  return bytes;
 }
 
 export interface HasCondition {

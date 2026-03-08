@@ -268,7 +268,24 @@ describe("parseBodySizeLimit", () => {
   it("returns default 1MB for invalid strings", () => {
     expect(parseBodySizeLimit("invalid")).toBe(1 * 1024 * 1024);
     expect(parseBodySizeLimit("")).toBe(1 * 1024 * 1024);
-    expect(parseBodySizeLimit("10tb")).toBe(1 * 1024 * 1024);
+  });
+
+  it("parses terabyte strings", () => {
+    expect(parseBodySizeLimit("10tb")).toBe(10 * 1024 * 1024 * 1024 * 1024);
+  });
+
+  it("parses petabyte strings", () => {
+    expect(parseBodySizeLimit("1pb")).toBe(1 * 1024 * 1024 * 1024 * 1024 * 1024);
+  });
+
+  it("accepts bare number strings as bytes", () => {
+    expect(parseBodySizeLimit("1048576")).toBe(1048576);
+    expect(parseBodySizeLimit("2097152")).toBe(2097152);
+  });
+
+  it("throws for zero or negative numeric values", () => {
+    expect(() => parseBodySizeLimit(0)).toThrow();
+    expect(() => parseBodySizeLimit(-1)).toThrow();
   });
 });
 
