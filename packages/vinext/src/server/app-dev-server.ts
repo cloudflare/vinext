@@ -2875,7 +2875,13 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // Params are embedded eagerly in <head> so they're available before client
     // hydration starts, avoiding the need for polling on the client.
     const paramsScript = '<script>self.__VINEXT_RSC_PARAMS__=' + safeJsonStringify(navContext?.params || {}) + '</script>';
-    const injectHTML = paramsScript + modulePreloadHTML + insertedHTML + fontHTML;
+    // Embed the initial navigation context (pathname + searchParams) so the
+    // browser useSyncExternalStore getServerSnapshot can return the correct
+    // value during hydration. Without this, getServerSnapshot returns "/" and
+    // React detects a mismatch against the SSR-rendered HTML.
+    const __navPayload = { pathname: navContext?.pathname ?? '/', searchParams: navContext?.searchParams ? Object.fromEntries(navContext.searchParams.entries()) : {} };
+    const navScript = '<script>self.__VINEXT_RSC_NAV__=' + safeJsonStringify(__navPayload) + '</script>';
+    const injectHTML = paramsScript + navScript + modulePreloadHTML + insertedHTML + fontHTML;
 
     // Inject the collected HTML before </head> and progressively embed RSC
     // chunks as script tags throughout the HTML body stream.
@@ -3033,7 +3039,7 @@ import {
 } from "@vitejs/plugin-rsc/browser";
 import { hydrateRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { setClientParams, toRscUrl, getPrefetchCache, getPrefetchedUrls, PREFETCH_CACHE_TTL } from "next/navigation";
+import { setClientParams, setNavigationContext, toRscUrl, getPrefetchCache, getPrefetchedUrls, PREFETCH_CACHE_TTL } from "next/navigation";
 
 let reactRoot;
 
@@ -3202,12 +3208,22 @@ async function main() {
       if (embedData.params) {
         setClientParams(embedData.params);
       }
+      // Legacy format may include nav context for hydration snapshot consistency.
+      if (embedData.nav) {
+        setNavigationContext({ pathname: embedData.nav.pathname, searchParams: new URLSearchParams(embedData.nav.searchParams || {}), params: embedData.params || {} });
+      }
       rscStream = chunksToReadableStream(embedData.rsc);
     } else {
       // Progressive format: chunks arrive incrementally via script tags.
       // Params are embedded in <head> so they're always available by this point.
       if (self.__VINEXT_RSC_PARAMS__) {
         setClientParams(self.__VINEXT_RSC_PARAMS__);
+      }
+      // Restore the server navigation context so useSyncExternalStore getServerSnapshot
+      // matches what was rendered on the server, preventing hydration mismatches.
+      if (self.__VINEXT_RSC_NAV__) {
+        const __nav = self.__VINEXT_RSC_NAV__;
+        setNavigationContext({ pathname: __nav.pathname, searchParams: new URLSearchParams(__nav.searchParams), params: self.__VINEXT_RSC_PARAMS__ || {} });
       }
       rscStream = createProgressiveRscStream();
     }
@@ -3220,6 +3236,8 @@ async function main() {
     if (paramsHeader) {
       try { setClientParams(JSON.parse(paramsHeader)); } catch (_e) { /* ignore */ }
     }
+    // Set nav context from current URL for hydration snapshot consistency.
+    setNavigationContext({ pathname: window.location.pathname, searchParams: new URLSearchParams(window.location.search), params: self.__VINEXT_RSC_PARAMS__ || {} });
 
     rscStream = rscResponse.body;
   }
