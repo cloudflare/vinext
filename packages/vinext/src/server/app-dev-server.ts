@@ -504,11 +504,12 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     // client-side tree reconciliation.
     const _treePositions = route?.layoutTreePositions;
     const _routeSegs = route?.routeSegments || [];
-    const _fallbackParams = opts?.params || {};
+    const _fallbackParams = opts?.matchedParams ?? route?.params ?? {};
+    const _asyncFallbackParams = makeThenableParams(_fallbackParams);
     for (let i = layouts.length - 1; i >= 0; i--) {
       const LayoutComponent = layouts[i]?.default;
       if (LayoutComponent) {
-        element = createElement(LayoutComponent, { children: element });
+        element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParams });
         const _tp = _treePositions ? _treePositions[i] : 0;
         const _cs = __resolveChildSegments(_routeSegs, _tp, _fallbackParams);
         element = createElement(LayoutSegmentProvider, { childSegments: _cs }, element);
@@ -533,10 +534,12 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   }
   // For HTML (full page load) responses, wrap with layouts only (no client-side
   // wrappers needed since SSR generates the complete HTML document).
+  const _fallbackParamsHtml = opts?.matchedParams ?? route?.params ?? {};
+  const _asyncFallbackParamsHtml = makeThenableParams(_fallbackParamsHtml);
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
     if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element });
+      element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParamsHtml });
     }
   }
   const rscStream = renderToReadableStream(element, { onError: rscOnError });
@@ -560,8 +563,8 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
 }
 
 /** Convenience: render a not-found page (404) */
-async function renderNotFoundPage(route, isRscRequest, request, params) {
-  return renderHTTPAccessFallbackPage(route, 404, isRscRequest, request, { params });
+async function renderNotFoundPage(route, isRscRequest, request, matchedParams) {
+  return renderHTTPAccessFallbackPage(route, 404, isRscRequest, request, { matchedParams });
 }
 
 /**
@@ -571,7 +574,7 @@ async function renderNotFoundPage(route, isRscRequest, request, params) {
  * Next.js returns HTTP 200 when error.tsx catches an error (the error is "handled"
  * by the boundary). This matches that behavior intentionally.
  */
-async function renderErrorBoundaryPage(route, error, isRscRequest, request, params) {
+async function renderErrorBoundaryPage(route, error, isRscRequest, request, matchedParams) {
   // Resolve the error boundary component: leaf error.tsx first, then walk per-layout
   // errors from innermost to outermost (matching ancestor inheritance), then global-error.tsx.
   let ErrorComponent = route?.error?.default ?? null;
@@ -606,11 +609,12 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, para
     // Same rationale as renderHTTPAccessFallbackPage — see comment there.
     const _errTreePositions = route?.layoutTreePositions;
     const _errRouteSegs = route?.routeSegments || [];
-    const _errParams = params || {};
+    const _errParams = matchedParams ?? route?.params ?? {};
+    const _asyncErrParams = makeThenableParams(_errParams);
     for (let i = layouts.length - 1; i >= 0; i--) {
       const LayoutComponent = layouts[i]?.default;
       if (LayoutComponent) {
-        element = createElement(LayoutComponent, { children: element });
+        element = createElement(LayoutComponent, { children: element, params: _asyncErrParams });
         const _etp = _errTreePositions ? _errTreePositions[i] : 0;
         const _ecs = __resolveChildSegments(_errRouteSegs, _etp, _errParams);
         element = createElement(LayoutSegmentProvider, { childSegments: _ecs }, element);
@@ -634,10 +638,12 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, para
     });
   }
   // For HTML (full page load) responses, wrap with layouts only.
+  const _errParamsHtml = matchedParams ?? route?.params ?? {};
+  const _asyncErrParamsHtml = makeThenableParams(_errParamsHtml);
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
     if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element });
+      element = createElement(LayoutComponent, { children: element, params: _asyncErrParamsHtml });
     }
   }
   const rscStream = renderToReadableStream(element, { onError: rscOnError });
@@ -2110,7 +2116,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       }
       if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
         const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
-        const fallbackResp = await renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, { params });
+        const fallbackResp = await renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, { matchedParams: params });
         if (fallbackResp) return fallbackResp;
         setHeadersContext(null);
         setNavigationContext(null);
@@ -2141,7 +2147,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       }
       if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
         const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
-        const fallbackResp = await renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, { params });
+        const fallbackResp = await renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, { matchedParams: params });
         if (fallbackResp) return fallbackResp;
         setHeadersContext(null);
         setNavigationContext(null);
@@ -2206,7 +2212,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               const parentLayouts = route.layouts.slice(0, li);
               const fallbackResp = await renderHTTPAccessFallbackPage(
                 route, statusCode, isRscRequest, request,
-                { boundaryComponent: parentNotFound, layouts: parentLayouts, params }
+                { boundaryComponent: parentNotFound, layouts: parentLayouts, matchedParams: params }
               );
               if (fallbackResp) return fallbackResp;
               setHeadersContext(null);
