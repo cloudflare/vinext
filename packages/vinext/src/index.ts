@@ -3664,9 +3664,7 @@ hydrate();
               `})()`,
             ].join("");
 
-            // Use split().join() instead of replace() to handle all occurrences —
-            // String.replace(string, ...) only replaces the first match.
-            newCode = newCode.split(fullMatch).join(inlined);
+            newCode = newCode.replaceAll(fullMatch, inlined);
             didReplace = true;
           }
         }
@@ -3694,9 +3692,7 @@ hydrate();
             // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
             const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
 
-            // Use split().join() instead of replace() to handle all occurrences —
-            // String.replace(string, ...) only replaces the first match.
-            newCode = newCode.split(fullMatch).join(inlined);
+            newCode = newCode.replaceAll(fullMatch, inlined);
             didReplace = true;
           }
         }
