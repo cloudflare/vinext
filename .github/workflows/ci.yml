@@ -102,6 +102,7 @@ jobs:
           - app-router
           - cloudflare-pages-router
           - pages-router-prod
+          - app-router-prod
           - cloudflare-workers
           - cloudflare-dev
           - cloudflare-pages-router-dev
