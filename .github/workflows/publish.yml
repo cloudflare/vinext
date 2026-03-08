@@ -143,6 +143,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
@@ -150,9 +151,9 @@ jobs:
         run: |
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
-            --notes "${SUMMARY}" \
+            --notes-file - \
             --draft \
-            --repo "${{ github.repository }}"
+            --repo "${{ github.repository }}" <<< "${SUMMARY}"
 
       - name: Notify Google Chat
         if: success()
