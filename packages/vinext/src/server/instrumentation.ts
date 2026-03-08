@@ -29,12 +29,23 @@
  * ## Pages Router
  *
  * Pages Router has no RSC entry, so `configureServer()` is the right place to
- * call `register()`. Pages Router always uses plain Vite + Node.js (never
- * `@cloudflare/vite-plugin`), so `server.ssrLoadModule()` is safe here.
+ * call `register()`. `runInstrumentation()` accepts a `ModuleRunner` (created
+ * via `createDirectRunner()`) rather than `server.ssrLoadModule()` so it is
+ * safe when `@cloudflare/vite-plugin` is present — that plugin replaces the
+ * SSR environment's hot channel, causing `ssrLoadModule()` to crash with
+ * `TypeError: Cannot read properties of undefined (reading 'outsideEmitter')`.
  */
 
 import fs from "node:fs";
 import path from "node:path";
+/**
+ * Minimal duck-typed interface for the module runner passed to
+ * `runInstrumentation`. Only `.import()` is used — this avoids requiring
+ * callers (including tests) to provide a full `ModuleRunner` instance.
+ */
+export interface ModuleImporter {
+  import(id: string): Promise<unknown>;
+}
 
 /** Possible instrumentation file names. */
 const INSTRUMENTATION_FILES = [
@@ -94,10 +105,10 @@ export function getOnRequestErrorHandler(): OnRequestErrorHandler | null {
 }
 
 /**
- * Load and execute the instrumentation file via Vite's SSR module loader.
+ * Load and execute the instrumentation file via a ModuleRunner.
  *
  * Called once during Pages Router server startup (`configureServer`). It:
- * 1. Loads the instrumentation module via `server.ssrLoadModule()`.
+ * 1. Loads the instrumentation module via `runner.import()`.
  * 2. Calls the `register()` function if exported.
  * 3. Stores the `onRequestError()` handler on `globalThis` so it is visible
  *    to all Vite environment module graphs (SSR and the host process share
@@ -107,15 +118,18 @@ export function getOnRequestErrorHandler(): OnRequestErrorHandler | null {
  * emitted as a top-level `await` inside the generated RSC entry module so it
  * runs in the same Worker/environment as request handling.
  *
- * @param server - Vite dev server (exposes `ssrLoadModule`)
+ * @param runner - A ModuleRunner created via `createDirectRunner()`. Must be
+ *   the same long-lived runner used for middleware and SSR so the module graph
+ *   is shared. Safe with all Vite plugin combinations, including
+ *   `@cloudflare/vite-plugin`, because it never touches the hot channel.
  * @param instrumentationPath - Absolute path to the instrumentation file
  */
 export async function runInstrumentation(
-  server: { ssrLoadModule: (id: string) => Promise<Record<string, unknown>> },
+  runner: ModuleImporter,
   instrumentationPath: string,
 ): Promise<void> {
   try {
-    const mod = await server.ssrLoadModule(instrumentationPath);
+    const mod = await runner.import(instrumentationPath) as Record<string, unknown>;
 
     // Call register() if exported
     if (typeof mod.register === "function") {

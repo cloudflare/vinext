@@ -2522,15 +2522,15 @@ describe("instrumentation.ts support", () => {
     let registerCalled = false;
     const mockOnRequestError = (_error: any, _request: any, _context: any) => {};
 
-    // Create a mock SSR module loader
-    const mockServer = {
-      ssrLoadModule: async (_id: string) => ({
+    // Create a mock ModuleRunner
+    const mockRunner = {
+      import: async (_id: string) => ({
         register: () => { registerCalled = true; },
         onRequestError: mockOnRequestError,
       }),
     };
 
-    await runInstrumentation(mockServer, "/fake/instrumentation.ts");
+    await runInstrumentation(mockRunner, "/fake/instrumentation.ts");
 
     expect(registerCalled).toBe(true);
     expect(getOnRequestErrorHandler()).toBe(mockOnRequestError);
@@ -2543,8 +2543,8 @@ describe("instrumentation.ts support", () => {
 
     const reportedErrors: { error: Error; request: any; context: any }[] = [];
 
-    const mockServer = {
-      ssrLoadModule: async (_id: string) => ({
+    const mockRunner = {
+      import: async (_id: string) => ({
         register: () => {},
         onRequestError: (error: Error, request: any, context: any) => {
           reportedErrors.push({ error, request, context });
@@ -2552,7 +2552,7 @@ describe("instrumentation.ts support", () => {
       }),
     };
 
-    await runInstrumentation(mockServer, "/fake/instrumentation.ts");
+    await runInstrumentation(mockRunner, "/fake/instrumentation.ts");
 
     const testError = new Error("test error");
     await reportRequestError(
@@ -2573,12 +2573,12 @@ describe("instrumentation.ts support", () => {
     );
 
     // Register a module with no onRequestError
-    const mockServer = {
-      ssrLoadModule: async (_id: string) => ({
+    const mockRunner = {
+      import: async (_id: string) => ({
         register: () => {},
       }),
     };
-    await runInstrumentation(mockServer, "/fake/no-error-handler.ts");
+    await runInstrumentation(mockRunner, "/fake/no-error-handler.ts");
 
     // Should not throw
     await reportRequestError(
@@ -2594,20 +2594,20 @@ describe("instrumentation.ts support", () => {
     );
 
     // Module with no register() or onRequestError()
-    const mockServer = {
-      ssrLoadModule: async (_id: string) => ({}),
+    const mockRunner = {
+      import: async (_id: string) => ({}),
     };
 
     // Should not throw
-    await runInstrumentation(mockServer, "/fake/empty-instrumentation.ts");
+    await runInstrumentation(mockRunner, "/fake/empty-instrumentation.ts");
   });
 
-  it("runInstrumentation handles ssrLoadModule transport errors gracefully", async () => {
+  it("runInstrumentation handles import errors gracefully", async () => {
     const { runInstrumentation } = await import(
       "../packages/vinext/src/server/instrumentation.js"
     );
-    const mockServer = {
-      ssrLoadModule: async (_id: string) => {
+    const mockRunner = {
+      import: async (_id: string) => {
         throw new TypeError(
           "Cannot read properties of undefined (reading 'outsideEmitter')"
         );
@@ -2615,7 +2615,7 @@ describe("instrumentation.ts support", () => {
     };
     const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await runInstrumentation(mockServer, "/fake/instrumentation.ts");
+      await runInstrumentation(mockRunner, "/fake/instrumentation.ts");
       expect(consoleErrorSpy).toHaveBeenCalledWith(
         "[vinext] Failed to load instrumentation:",
         "Cannot read properties of undefined (reading 'outsideEmitter')",

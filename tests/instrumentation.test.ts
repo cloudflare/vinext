@@ -68,49 +68,49 @@ describe("runInstrumentation", () => {
 
   afterEach(() => {
     delete globalThis.__VINEXT_onRequestErrorHandler__;
-  })
+  });
 
   it("calls register() when exported", async () => {
     const register = vi.fn();
-    const server = {
-      ssrLoadModule: vi.fn().mockResolvedValue({ register }),
+    const runner = {
+      import: vi.fn().mockResolvedValue({ register }),
     };
 
-    await runInstrumentation(server, "/fake/instrumentation.ts");
+    await runInstrumentation(runner, "/fake/instrumentation.ts");
 
     expect(register).toHaveBeenCalledOnce();
   });
 
   it("stores onRequestError handler for later retrieval", async () => {
     const onRequestError = vi.fn();
-    const server = {
-      ssrLoadModule: vi.fn().mockResolvedValue({ onRequestError }),
+    const runner = {
+      import: vi.fn().mockResolvedValue({ onRequestError }),
     };
 
-    await runInstrumentation(server, "/fake/instrumentation.ts");
+    await runInstrumentation(runner, "/fake/instrumentation.ts");
 
     expect(getOnRequestErrorHandler()).toBe(onRequestError);
   });
 
   it("handles modules with no register or onRequestError gracefully", async () => {
-    const server = {
-      ssrLoadModule: vi.fn().mockResolvedValue({}),
+    const runner = {
+      import: vi.fn().mockResolvedValue({}),
     };
 
     // Should not throw
-    await runInstrumentation(server, "/fake/instrumentation.ts");
+    await runInstrumentation(runner, "/fake/instrumentation.ts");
 
     expect(getOnRequestErrorHandler()).toBeNull();
   });
 
-  it("logs error and continues when ssrLoadModule fails", async () => {
+  it("logs error and continues when import fails", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const server = {
-      ssrLoadModule: vi.fn().mockRejectedValue(new Error("Module not found")),
+    const runner = {
+      import: vi.fn().mockRejectedValue(new Error("Module not found")),
     };
 
     // Should not throw
-    await runInstrumentation(server, "/fake/instrumentation.ts");
+    await runInstrumentation(runner, "/fake/instrumentation.ts");
 
     expect(consoleSpy).toHaveBeenCalledWith(
       "[vinext] Failed to load instrumentation:",
@@ -140,10 +140,10 @@ describe("reportRequestError", () => {
 
   it("calls the registered handler with correct args", async () => {
     const onRequestError = vi.fn();
-    const server = {
-      ssrLoadModule: vi.fn().mockResolvedValue({ onRequestError }),
+    const runner = {
+      import: vi.fn().mockResolvedValue({ onRequestError }),
     };
-    await runInstrumentation(server, "/fake/instrumentation.ts");
+    await runInstrumentation(runner, "/fake/instrumentation.ts");
 
     const error = new Error("boom");
     await reportRequestError(error, sampleRequest, sampleContext);
@@ -164,10 +164,10 @@ describe("reportRequestError", () => {
   it("catches and logs errors thrown by the handler", async () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const onRequestError = vi.fn().mockRejectedValue(new Error("handler broke"));
-    const server = {
-      ssrLoadModule: vi.fn().mockResolvedValue({ onRequestError }),
+    const runner = {
+      import: vi.fn().mockResolvedValue({ onRequestError }),
     };
-    await runInstrumentation(server, "/fake/instrumentation.ts");
+    await runInstrumentation(runner, "/fake/instrumentation.ts");
 
     await reportRequestError(new Error("boom"), sampleRequest, sampleContext);
 
