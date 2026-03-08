@@ -2881,6 +2881,15 @@ hydrate();
                 // Apply middleware rewrite (URL and optional status code)
                 if (result.rewriteUrl) {
                   url = result.rewriteUrl;
+                  // Write the rewritten URL back onto req.url so every subsequent
+                  // handler in the connect chain sees the correct path. The local
+                  // `url` variable is only visible within this handler — anything
+                  // further down the chain (Vite's built-in middleware, the
+                  // Cloudflare plugin's handler, or any other connect middleware)
+                  // reads req.url directly. Without this, a middleware rewrite
+                  // would be invisible to those handlers and the original URL
+                  // would be dispatched instead.
+                  req.url = url;
                 }
                 if (result.rewriteStatus) {
                   (req as any).__vinextRewriteStatus = result.rewriteStatus;
