@@ -111,17 +111,19 @@ test.describe("App Router ISR — production cache lifecycle", () => {
 });
 
 test.describe("App Router ISR — RSC request caching", () => {
-  test("RSC request for ISR page is a MISS on first request", async ({
-    request,
-  }) => {
-    const res = await request.get(`${BASE}/isr-test.rsc`);
+  // Use /revalidate-test (60s TTL) for MISS assertions — it has a long enough
+  // TTL that it won't expire mid-suite, and it's not hit by the isr-test lifecycle
+  // tests above, so the cache is cold at the start of this describe block.
+
+  test("RSC request for uncached ISR page is a MISS", async ({ request }) => {
+    const res = await request.get(`${BASE}/revalidate-test.rsc`);
     expect(res.status()).toBe(200);
     expect(res.headers()["content-type"]).toContain("text/x-component");
     expect(res.headers()["x-vinext-cache"]).toBe("MISS");
   });
 
-  test("RSC request within TTL is a HIT", async ({ request }) => {
-    // Warm the cache with an HTML request
+  test("second RSC request within TTL is a HIT", async ({ request }) => {
+    // Warm the cache with an HTML request first
     await request.get(`${BASE}/isr-test`);
 
     // RSC request should be a HIT (shared cache entry)

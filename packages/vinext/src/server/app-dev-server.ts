@@ -228,7 +228,7 @@ ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewar
 ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("./metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
 import { _consumeRequestScopedCacheLife, _runWithCacheState } from "next/cache";
-import { runWithFetchCache } from "vinext/fetch-cache";
+import { runWithFetchCache, getCollectedFetchTags } from "vinext/fetch-cache";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 import { isrGet, isrSet, isrCacheKey, buildAppPageCacheValue, triggerBackgroundRegeneration, setRevalidateDuration, getRevalidateDuration } from "vinext/isr-cache";
 // Import server-only state module to register ALS-backed accessors.
@@ -2399,6 +2399,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
     return _baseOnError(error, requestInfo, errorContext);
   };
+  // Collect font data before the isRscRequest branch so the RSC STALE background
+  // regen lambda (inside that branch) can reference it. If collected after the
+  // branch, the const binding is in the TDZ for the closure and resolves to
+  // undefined when the lambda actually runs.
+  const fontData = {
+    links: _getSSRFontLinks(),
+    styles: _getSSRFontStyles(),
+    preloads: _getSSRFontPreloads(),
+  };
   const rscStream = renderToReadableStream(element, { onError: onRenderError });
 
   if (isRscRequest) {
@@ -2449,13 +2458,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                ssrEntry2.handleSsr(rscStream2b, _rscFrozenNavCtx, fontData),
              ]);
              const htmlReader = htmlStream2.getReader();
-             const htmlChunks = [];
-             while (true) {
-               const { done, value } = await htmlReader.read();
-               if (done) break;
-               htmlChunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-             }
-             await isrSet(rscCacheKey, buildAppPageCacheValue(htmlChunks.join(""), rscBytesCollected, 200), revalidateSeconds);
+              const htmlChunks = [];
+              while (true) {
+                const { done, value } = await htmlReader.read();
+                if (done) break;
+                htmlChunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+              }
+              const _rscRegenTags = getCollectedFetchTags();
+              await isrSet(rscCacheKey, buildAppPageCacheValue(htmlChunks.join(""), rscBytesCollected, 200), revalidateSeconds, _rscRegenTags);
              setRevalidateDuration(rscCacheKey, revalidateSeconds);
            });
          }
@@ -2547,14 +2557,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
      }
      return new Response(rscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
    }
-
-  // Collect font data from RSC environment before passing to SSR
-  // (Fonts are loaded during RSC rendering when layout.tsx calls Geist() etc.)
-  const fontData = {
-    links: _getSSRFontLinks(),
-    styles: _getSSRFontStyles(),
-    preloads: _getSSRFontPreloads(),
-  };
 
   // Build HTTP Link header for font preloading.
   // This lets the browser (and CDN) start fetching font files before parsing HTML,
@@ -2733,7 +2735,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
          }
          const freshHtml = chunks.join("");
-         await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds);
+         const _regenPageTags = getCollectedFetchTags();
+         await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _regenPageTags);
          setRevalidateDuration(cacheKey, revalidateSeconds);
        }
 
@@ -2786,7 +2789,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
          collectHtmlChunks(),
          _rscStreamForCache ? collectStreamAsArrayBuffer(_rscStreamForCache) : Promise.resolve(undefined),
        ]);
-       await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds);
+       const _missPageTags = getCollectedFetchTags();
+       await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
        setRevalidateDuration(cacheKey, revalidateSeconds);
        return attachMiddlewareContext(new Response(freshHtml, {
          headers: {
