@@ -16,6 +16,23 @@ import { test, expect } from "@playwright/test";
  */
 const BASE = "http://localhost:4180";
 
+/**
+ * Extract the request ID from SSR HTML.
+ *
+ * React SSR may insert HTML comment nodes (<!-- -->) between text and
+ * expression boundaries. We strip all HTML comments first, then match
+ * the simple pattern. This avoids a ReDoS-prone regex with nested
+ * quantifiers over comment-interleaved content.
+ */
+function extractRequestId(html: string): string | undefined {
+  // Strip all HTML comments before matching — O(n) and safe from backtracking
+  const stripped = html.replace(/<!--[\s\S]*?-->/g, "");
+  return (
+    stripped.match(/data-testid="request-id"[^>]*>RequestID:\s*([a-z0-9]+)/)?.[1] ??
+    stripped.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1]
+  );
+}
+
 test.describe("App Router ISR — production cache lifecycle", () => {
   test("first request is a cache MISS", async ({ request }) => {
     const res = await request.get(`${BASE}/isr-test`);
@@ -156,22 +173,13 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     const res1 = await request.get(`${BASE}/revalidate-tag-test`);
     expect(res1.status()).toBe(200);
     const html1 = await res1.text();
-    // React SSR may insert <!-- --> comment nodes between text and expressions
-    // lgtm[js/redos] — applied to trusted SSR output, not user input
-    const reqId1 =
-      html1.match(
-        /data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/,
-      )?.[1] ?? html1.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    const reqId1 = extractRequestId(html1);
     expect(reqId1).toBeDefined();
 
     // Second request should be cached (same request ID)
     const res2 = await request.get(`${BASE}/revalidate-tag-test`);
     const html2 = await res2.text();
-    // lgtm[js/redos] — applied to trusted SSR output, not user input
-    const reqId2 =
-      html2.match(
-        /data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/,
-      )?.[1] ?? html2.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    const reqId2 = extractRequestId(html2);
     expect(["HIT", "STALE"]).toContain(res2.headers()["x-vinext-cache"]);
     expect(reqId2).toBe(reqId1);
 
@@ -183,11 +191,7 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     // Reload — content should be different (cache was invalidated)
     const res3 = await request.get(`${BASE}/revalidate-tag-test`);
     const html3 = await res3.text();
-    // lgtm[js/redos] — applied to trusted SSR output, not user input
-    const reqId3 =
-      html3.match(
-        /data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/,
-      )?.[1] ?? html3.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    const reqId3 = extractRequestId(html3);
 
     expect(reqId3).not.toBe(reqId1);
     expect(res3.headers()["x-vinext-cache"]).toBe("MISS");
@@ -199,11 +203,7 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     const res1 = await request.get(`${BASE}/revalidate-tag-test`);
     expect(res1.status()).toBe(200);
     const html1 = await res1.text();
-    // lgtm[js/redos] — applied to trusted SSR output, not user input
-    const reqId1 =
-      html1.match(
-        /data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/,
-      )?.[1] ?? html1.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    const reqId1 = extractRequestId(html1);
     expect(reqId1).toBeDefined();
 
     await new Promise((r) => setTimeout(r, 500));
@@ -214,11 +214,7 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
 
     const res2 = await request.get(`${BASE}/revalidate-tag-test`);
     const html2 = await res2.text();
-    // lgtm[js/redos] — applied to trusted SSR output, not user input
-    const reqId2 =
-      html2.match(
-        /data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/,
-      )?.[1] ?? html2.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    const reqId2 = extractRequestId(html2);
 
     expect(reqId2).not.toBe(reqId1);
   });

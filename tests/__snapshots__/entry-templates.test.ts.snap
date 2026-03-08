@@ -2389,6 +2389,148 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
+  // ─── Early ISR cache check ────────────────────────────────────────────────
+  // Check the ISR cache BEFORE buildPageElement / renderToReadableStream.
+  // On a HIT or STALE, we can serve cached bytes immediately — no render needed.
+  // This eliminates the ~3s wall-time penalty on cache HITs where the full RSC
+  // render was previously started before the cache was consulted.
+  //
+  // Only applies in production (process.env.NODE_ENV === "production" is
+  // statically replaced by Vite's define transform — this block is dead-code-
+  // eliminated in dev/test mode).
+  //
+  // Skip for: force-dynamic, intercepting routes (RSC only — those require a
+  // fresh render to assemble the intercepted slot), and RSC requests that don't
+  // have a corresponding cache entry yet (first visit, pre-HTML).
+  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0 && !isForceDynamic) {
+    const _earlyIsrKey = isrCacheKey("app", cleanPathname);
+    // Skip early RSC check for intercepting routes — they render a different element tree.
+    const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
+    if (!_isInterceptingRsc) {
+      const _earlyCached = await isrGet(_earlyIsrKey);
+      if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
+        const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
+        const _earlyIsStale = _earlyCached.isStale;
+        if (isRscRequest) {
+          // RSC path — serve cached rscData if present
+          if (_earlyCached.value.value.rscData) {
+            const _earlyRscResponseHeaders = {
+              "Content-Type": "text/x-component; charset=utf-8",
+              "Vary": "RSC, Accept",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+            };
+            if (params && Object.keys(params).length > 0) {
+              _earlyRscResponseHeaders["X-Vinext-Params"] = JSON.stringify(params);
+            }
+            if (_earlyIsStale) {
+              // Background regeneration: re-render and update cache
+              const _earlyFrozenNavCtx = _getNavigationContext();
+              const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+                ]);
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _regenTags2 = getCollectedFetchTags();
+                await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+              });
+            }
+            if (_mwCtx.headers) {
+              for (const [key, value] of _mwCtx.headers) {
+                const lk = key.toLowerCase();
+                if (lk === "set-cookie") {
+                  const existing = _earlyRscResponseHeaders[lk];
+                  if (Array.isArray(existing)) existing.push(value);
+                  else if (existing) _earlyRscResponseHeaders[lk] = [existing, value];
+                  else _earlyRscResponseHeaders[lk] = [value];
+                } else if (lk === "vary") {
+                  const existing = _earlyRscResponseHeaders["Vary"] ?? _earlyRscResponseHeaders["vary"];
+                  if (existing) {
+                    _earlyRscResponseHeaders["Vary"] = existing + ", " + value;
+                    if (_earlyRscResponseHeaders["vary"] !== undefined) delete _earlyRscResponseHeaders["vary"];
+                  } else {
+                    _earlyRscResponseHeaders[key] = value;
+                  }
+                } else {
+                  _earlyRscResponseHeaders[key] = value;
+                }
+              }
+            }
+            setHeadersContext(null);
+            setNavigationContext(null);
+            const _earlyCachedRscStream = new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(_earlyCached.value.value.rscData));
+                controller.close();
+              }
+            });
+            return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
+          }
+          // RSC HIT but no rscData — fall through to render (will populate it)
+        } else {
+          // HTML path — serve cached HTML
+          const _earlyHtml = _earlyCached.value.value.html;
+          if (_earlyIsStale) {
+            // Background regeneration
+            const _earlyFrozenNavCtx = _getNavigationContext();
+            const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+            triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+              let _earlyEl;
+              try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+              const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+              const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+              const [rscBytesCollected, htmlStream2] = await Promise.all([
+                collectStreamAsArrayBuffer(rscStream2a),
+                ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+              ]);
+              const htmlReader2 = htmlStream2.getReader();
+              const htmlChunks2 = [];
+              while (true) {
+                const { done, value } = await htmlReader2.read();
+                if (done) break;
+                htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+              }
+              const _regenTags2 = getCollectedFetchTags();
+              await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+              setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+            });
+          }
+          setHeadersContext(null);
+          setNavigationContext(null);
+          const _earlyHtmlResp = new Response(_earlyHtml, {
+            status: _mwCtx.status || 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+              "Vary": "RSC, Accept",
+            },
+          });
+          if (_mwCtx.headers) {
+            for (const [key, value] of _mwCtx.headers) {
+              _earlyHtmlResp.headers.append(key, value);
+            }
+          }
+          return _earlyHtmlResp;
+        }
+      }
+    }
+  }
+  // ─── End early ISR cache check ────────────────────────────────────────────
+
   // Check for intercepting routes on RSC requests (client-side navigation).
   // If the target URL matches an intercepting route in a parallel slot,
   // render the source route with the intercepting page in the slot.
@@ -2650,82 +2792,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
     }
 
-     // ISR: serve cached RSC flight data for client-side navigations (production only).
-     // Next.js stores rscData alongside HTML in the cache entry and serves it directly
-     // on RSC requests, avoiding a re-render on every client navigation.
+     // ISR RSC path: HIT/STALE are handled by the early ISR check above (before buildPageElement).
+     // If we reach here with an ISR page, it's a MISS — the early check found nothing usable.
+     // Mark MISS so the response header reflects the cache state.
      if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0) {
-       // _frozenNavContext must be captured before any context clearing.
-       // The RSC request block runs before context is nulled (which happens after SSR),
-       // so _getNavigationContext() is still valid here — but we freeze it now so
-       // background regeneration lambdas always have a valid reference.
-       const _rscFrozenNavCtx = _getNavigationContext();
-       const rscCacheKey = isrCacheKey("app", cleanPathname);
-       const rscCached = await isrGet(rscCacheKey);
-
-       if (rscCached && rscCached.value.value?.kind === "APP_PAGE" && rscCached.value.value.rscData) {
-         // HIT or STALE — serve cached RSC flight data directly, no re-render needed
-         const cachedRscData = rscCached.value.value.rscData;
-         const revalidateSecs = getRevalidateDuration(rscCacheKey) ?? revalidateSeconds;
-         responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSecs + ", stale-while-revalidate";
-         responseHeaders["X-Vinext-Cache"] = rscCached.isStale ? "STALE" : "HIT";
-         if (rscCached.isStale) {
-           // Trigger background regeneration (HTML + RSC) so next request gets fresh data
-           triggerBackgroundRegeneration(rscCacheKey, async () => {
-             const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-             const [rscStream2a, rscStream2b] = renderToReadableStream(element, { onError: onRenderError }).tee();
-             const [rscBytesCollected, htmlStream2] = await Promise.all([
-               collectStreamAsArrayBuffer(rscStream2a),
-               ssrEntry2.handleSsr(rscStream2b, _rscFrozenNavCtx, fontData),
-             ]);
-             const htmlReader = htmlStream2.getReader();
-              const htmlChunks = [];
-              while (true) {
-                const { done, value } = await htmlReader.read();
-                if (done) break;
-                htmlChunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-              }
-              const _rscRegenTags = getCollectedFetchTags();
-              await isrSet(rscCacheKey, buildAppPageCacheValue(htmlChunks.join(""), rscBytesCollected, 200), revalidateSeconds, _rscRegenTags);
-             setRevalidateDuration(rscCacheKey, revalidateSeconds);
-           });
-         }
-         // Serve cached RSC bytes as a stream
-         const cachedRscStream = new ReadableStream({
-           start(controller) {
-             controller.enqueue(new Uint8Array(cachedRscData));
-             controller.close();
-           }
-         });
-         // Merge middleware headers into cached RSC response
-         if (_mwCtx.headers) {
-           for (const [key, value] of _mwCtx.headers) {
-             const lk = key.toLowerCase();
-             if (lk === "set-cookie") {
-               const existing = responseHeaders[lk];
-               if (Array.isArray(existing)) {
-                 existing.push(value);
-               } else if (existing) {
-                 responseHeaders[lk] = [existing, value];
-               } else {
-                 responseHeaders[lk] = [value];
-               }
-             } else if (lk === "vary") {
-               const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-               if (existing) {
-                 responseHeaders["Vary"] = existing + ", " + value;
-                 if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-               } else {
-                 responseHeaders[key] = value;
-               }
-             } else {
-               responseHeaders[key] = value;
-             }
-           }
-         }
-         return new Response(cachedRscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
-       }
-       // RSC MISS — fall through to serve the live rscStream below.
-       // The HTML path (non-RSC) will populate the cache with both HTML and rscData.
        responseHeaders["X-Vinext-Cache"] = "MISS";
      }
 
@@ -2928,83 +2998,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (process.env.NODE_ENV === "production") {
       const cacheKey = isrCacheKey("app", cleanPathname);
 
-      // Helper: render the page fresh and store in cache (used for background regen).
-       // Uses _frozenNavContext captured before context-clearing so that pages using
-       // usePathname() / useSearchParams() etc. still get the correct values.
-       async function renderFreshAndCache() {
-         const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-         const rscStream2 = renderToReadableStream(element, { onError: onRenderError });
-         const [rscStream2a, rscStream2b] = rscStream2.tee();
-         const [rscBytesCollected, htmlStream2] = await Promise.all([
-           collectStreamAsArrayBuffer(rscStream2a),
-           ssrEntry2.handleSsr(rscStream2b, _frozenNavContext, fontData),
-         ]);
-         const reader = htmlStream2.getReader();
+       // HIT/STALE are handled by the early ISR check above (before buildPageElement/renderToReadableStream).
+       // If we reach here it is always a MISS (early check found nothing — first request for this page).
+       // Tee htmlStream: stream one branch to the client immediately (first byte wins),
+       // drain the other branch + rscStreamForCache to isrSet in the background.
+       // This eliminates the previous ~full-render latency on MISS by not buffering the
+       // entire HTML before responding.
+       const [htmlStreamForClient, htmlStreamForCache] = htmlStream.tee();
+
+       // Background cache population — runs after the response is already streaming.
+       // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
+       // waitUntil mechanism keeps the isolate alive until the cache write completes.
+       triggerBackgroundRegeneration(cacheKey, async () => {
+         const htmlReader = htmlStreamForCache.getReader();
          const chunks = [];
          while (true) {
-           const { done, value } = await reader.read();
+           const { done, value } = await htmlReader.read();
            if (done) break;
            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
          }
          const freshHtml = chunks.join("");
-         const _regenPageTags = getCollectedFetchTags();
-         await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _regenPageTags);
-         setRevalidateDuration(cacheKey, revalidateSeconds);
-       }
-
-       const cached = await isrGet(cacheKey);
-
-       if (cached && !cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Fresh cache HIT — serve directly
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "HIT",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       if (cached && cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Stale hit — serve stale immediately, trigger background regeneration
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         triggerBackgroundRegeneration(cacheKey, async () => { await renderFreshAndCache(); });
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "STALE",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       // Cache MISS — collect HTML and RSC flight data concurrently, store both in cache.
-       // Concurrent collection is required: htmlStream (SSR) produces HTML by consuming
-       // the RSC stream, so if we block on the RSC tee copy before draining htmlStream
-       // we risk a deadlock under backpressure. Run both collectors in parallel.
-       async function collectHtmlChunks() {
-         const reader = htmlStream.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await reader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+         // Only cache if no dynamic API usage was detected during this render.
+         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+         if (!dynamicUsedDuringRender) {
+           const rscBytesCollected = _rscStreamForCache
+             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+             : undefined;
+           const _missPageTags = getCollectedFetchTags();
+           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+           setRevalidateDuration(cacheKey, revalidateSeconds);
          }
-         return chunks.join("");
-       }
-       const [freshHtml, rscBytesCollected] = await Promise.all([
-         collectHtmlChunks(),
-         _rscStreamForCache ? collectStreamAsArrayBuffer(_rscStreamForCache) : Promise.resolve(undefined),
-       ]);
-       const _missPageTags = getCollectedFetchTags();
-       await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-       setRevalidateDuration(cacheKey, revalidateSeconds);
-       return attachMiddlewareContext(new Response(freshHtml, {
+       });
+       return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
            "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
@@ -5096,6 +5121,148 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
+  // ─── Early ISR cache check ────────────────────────────────────────────────
+  // Check the ISR cache BEFORE buildPageElement / renderToReadableStream.
+  // On a HIT or STALE, we can serve cached bytes immediately — no render needed.
+  // This eliminates the ~3s wall-time penalty on cache HITs where the full RSC
+  // render was previously started before the cache was consulted.
+  //
+  // Only applies in production (process.env.NODE_ENV === "production" is
+  // statically replaced by Vite's define transform — this block is dead-code-
+  // eliminated in dev/test mode).
+  //
+  // Skip for: force-dynamic, intercepting routes (RSC only — those require a
+  // fresh render to assemble the intercepted slot), and RSC requests that don't
+  // have a corresponding cache entry yet (first visit, pre-HTML).
+  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0 && !isForceDynamic) {
+    const _earlyIsrKey = isrCacheKey("app", cleanPathname);
+    // Skip early RSC check for intercepting routes — they render a different element tree.
+    const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
+    if (!_isInterceptingRsc) {
+      const _earlyCached = await isrGet(_earlyIsrKey);
+      if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
+        const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
+        const _earlyIsStale = _earlyCached.isStale;
+        if (isRscRequest) {
+          // RSC path — serve cached rscData if present
+          if (_earlyCached.value.value.rscData) {
+            const _earlyRscResponseHeaders = {
+              "Content-Type": "text/x-component; charset=utf-8",
+              "Vary": "RSC, Accept",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+            };
+            if (params && Object.keys(params).length > 0) {
+              _earlyRscResponseHeaders["X-Vinext-Params"] = JSON.stringify(params);
+            }
+            if (_earlyIsStale) {
+              // Background regeneration: re-render and update cache
+              const _earlyFrozenNavCtx = _getNavigationContext();
+              const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+                ]);
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _regenTags2 = getCollectedFetchTags();
+                await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+              });
+            }
+            if (_mwCtx.headers) {
+              for (const [key, value] of _mwCtx.headers) {
+                const lk = key.toLowerCase();
+                if (lk === "set-cookie") {
+                  const existing = _earlyRscResponseHeaders[lk];
+                  if (Array.isArray(existing)) existing.push(value);
+                  else if (existing) _earlyRscResponseHeaders[lk] = [existing, value];
+                  else _earlyRscResponseHeaders[lk] = [value];
+                } else if (lk === "vary") {
+                  const existing = _earlyRscResponseHeaders["Vary"] ?? _earlyRscResponseHeaders["vary"];
+                  if (existing) {
+                    _earlyRscResponseHeaders["Vary"] = existing + ", " + value;
+                    if (_earlyRscResponseHeaders["vary"] !== undefined) delete _earlyRscResponseHeaders["vary"];
+                  } else {
+                    _earlyRscResponseHeaders[key] = value;
+                  }
+                } else {
+                  _earlyRscResponseHeaders[key] = value;
+                }
+              }
+            }
+            setHeadersContext(null);
+            setNavigationContext(null);
+            const _earlyCachedRscStream = new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(_earlyCached.value.value.rscData));
+                controller.close();
+              }
+            });
+            return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
+          }
+          // RSC HIT but no rscData — fall through to render (will populate it)
+        } else {
+          // HTML path — serve cached HTML
+          const _earlyHtml = _earlyCached.value.value.html;
+          if (_earlyIsStale) {
+            // Background regeneration
+            const _earlyFrozenNavCtx = _getNavigationContext();
+            const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+            triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+              let _earlyEl;
+              try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+              const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+              const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+              const [rscBytesCollected, htmlStream2] = await Promise.all([
+                collectStreamAsArrayBuffer(rscStream2a),
+                ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+              ]);
+              const htmlReader2 = htmlStream2.getReader();
+              const htmlChunks2 = [];
+              while (true) {
+                const { done, value } = await htmlReader2.read();
+                if (done) break;
+                htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+              }
+              const _regenTags2 = getCollectedFetchTags();
+              await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+              setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+            });
+          }
+          setHeadersContext(null);
+          setNavigationContext(null);
+          const _earlyHtmlResp = new Response(_earlyHtml, {
+            status: _mwCtx.status || 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+              "Vary": "RSC, Accept",
+            },
+          });
+          if (_mwCtx.headers) {
+            for (const [key, value] of _mwCtx.headers) {
+              _earlyHtmlResp.headers.append(key, value);
+            }
+          }
+          return _earlyHtmlResp;
+        }
+      }
+    }
+  }
+  // ─── End early ISR cache check ────────────────────────────────────────────
+
   // Check for intercepting routes on RSC requests (client-side navigation).
   // If the target URL matches an intercepting route in a parallel slot,
   // render the source route with the intercepting page in the slot.
@@ -5357,82 +5524,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
     }
 
-     // ISR: serve cached RSC flight data for client-side navigations (production only).
-     // Next.js stores rscData alongside HTML in the cache entry and serves it directly
-     // on RSC requests, avoiding a re-render on every client navigation.
+     // ISR RSC path: HIT/STALE are handled by the early ISR check above (before buildPageElement).
+     // If we reach here with an ISR page, it's a MISS — the early check found nothing usable.
+     // Mark MISS so the response header reflects the cache state.
      if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0) {
-       // _frozenNavContext must be captured before any context clearing.
-       // The RSC request block runs before context is nulled (which happens after SSR),
-       // so _getNavigationContext() is still valid here — but we freeze it now so
-       // background regeneration lambdas always have a valid reference.
-       const _rscFrozenNavCtx = _getNavigationContext();
-       const rscCacheKey = isrCacheKey("app", cleanPathname);
-       const rscCached = await isrGet(rscCacheKey);
-
-       if (rscCached && rscCached.value.value?.kind === "APP_PAGE" && rscCached.value.value.rscData) {
-         // HIT or STALE — serve cached RSC flight data directly, no re-render needed
-         const cachedRscData = rscCached.value.value.rscData;
-         const revalidateSecs = getRevalidateDuration(rscCacheKey) ?? revalidateSeconds;
-         responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSecs + ", stale-while-revalidate";
-         responseHeaders["X-Vinext-Cache"] = rscCached.isStale ? "STALE" : "HIT";
-         if (rscCached.isStale) {
-           // Trigger background regeneration (HTML + RSC) so next request gets fresh data
-           triggerBackgroundRegeneration(rscCacheKey, async () => {
-             const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-             const [rscStream2a, rscStream2b] = renderToReadableStream(element, { onError: onRenderError }).tee();
-             const [rscBytesCollected, htmlStream2] = await Promise.all([
-               collectStreamAsArrayBuffer(rscStream2a),
-               ssrEntry2.handleSsr(rscStream2b, _rscFrozenNavCtx, fontData),
-             ]);
-             const htmlReader = htmlStream2.getReader();
-              const htmlChunks = [];
-              while (true) {
-                const { done, value } = await htmlReader.read();
-                if (done) break;
-                htmlChunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-              }
-              const _rscRegenTags = getCollectedFetchTags();
-              await isrSet(rscCacheKey, buildAppPageCacheValue(htmlChunks.join(""), rscBytesCollected, 200), revalidateSeconds, _rscRegenTags);
-             setRevalidateDuration(rscCacheKey, revalidateSeconds);
-           });
-         }
-         // Serve cached RSC bytes as a stream
-         const cachedRscStream = new ReadableStream({
-           start(controller) {
-             controller.enqueue(new Uint8Array(cachedRscData));
-             controller.close();
-           }
-         });
-         // Merge middleware headers into cached RSC response
-         if (_mwCtx.headers) {
-           for (const [key, value] of _mwCtx.headers) {
-             const lk = key.toLowerCase();
-             if (lk === "set-cookie") {
-               const existing = responseHeaders[lk];
-               if (Array.isArray(existing)) {
-                 existing.push(value);
-               } else if (existing) {
-                 responseHeaders[lk] = [existing, value];
-               } else {
-                 responseHeaders[lk] = [value];
-               }
-             } else if (lk === "vary") {
-               const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-               if (existing) {
-                 responseHeaders["Vary"] = existing + ", " + value;
-                 if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-               } else {
-                 responseHeaders[key] = value;
-               }
-             } else {
-               responseHeaders[key] = value;
-             }
-           }
-         }
-         return new Response(cachedRscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
-       }
-       // RSC MISS — fall through to serve the live rscStream below.
-       // The HTML path (non-RSC) will populate the cache with both HTML and rscData.
        responseHeaders["X-Vinext-Cache"] = "MISS";
      }
 
@@ -5635,83 +5730,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (process.env.NODE_ENV === "production") {
       const cacheKey = isrCacheKey("app", cleanPathname);
 
-      // Helper: render the page fresh and store in cache (used for background regen).
-       // Uses _frozenNavContext captured before context-clearing so that pages using
-       // usePathname() / useSearchParams() etc. still get the correct values.
-       async function renderFreshAndCache() {
-         const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-         const rscStream2 = renderToReadableStream(element, { onError: onRenderError });
-         const [rscStream2a, rscStream2b] = rscStream2.tee();
-         const [rscBytesCollected, htmlStream2] = await Promise.all([
-           collectStreamAsArrayBuffer(rscStream2a),
-           ssrEntry2.handleSsr(rscStream2b, _frozenNavContext, fontData),
-         ]);
-         const reader = htmlStream2.getReader();
+       // HIT/STALE are handled by the early ISR check above (before buildPageElement/renderToReadableStream).
+       // If we reach here it is always a MISS (early check found nothing — first request for this page).
+       // Tee htmlStream: stream one branch to the client immediately (first byte wins),
+       // drain the other branch + rscStreamForCache to isrSet in the background.
+       // This eliminates the previous ~full-render latency on MISS by not buffering the
+       // entire HTML before responding.
+       const [htmlStreamForClient, htmlStreamForCache] = htmlStream.tee();
+
+       // Background cache population — runs after the response is already streaming.
+       // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
+       // waitUntil mechanism keeps the isolate alive until the cache write completes.
+       triggerBackgroundRegeneration(cacheKey, async () => {
+         const htmlReader = htmlStreamForCache.getReader();
          const chunks = [];
          while (true) {
-           const { done, value } = await reader.read();
+           const { done, value } = await htmlReader.read();
            if (done) break;
            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
          }
          const freshHtml = chunks.join("");
-         const _regenPageTags = getCollectedFetchTags();
-         await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _regenPageTags);
-         setRevalidateDuration(cacheKey, revalidateSeconds);
-       }
-
-       const cached = await isrGet(cacheKey);
-
-       if (cached && !cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Fresh cache HIT — serve directly
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "HIT",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       if (cached && cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Stale hit — serve stale immediately, trigger background regeneration
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         triggerBackgroundRegeneration(cacheKey, async () => { await renderFreshAndCache(); });
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "STALE",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       // Cache MISS — collect HTML and RSC flight data concurrently, store both in cache.
-       // Concurrent collection is required: htmlStream (SSR) produces HTML by consuming
-       // the RSC stream, so if we block on the RSC tee copy before draining htmlStream
-       // we risk a deadlock under backpressure. Run both collectors in parallel.
-       async function collectHtmlChunks() {
-         const reader = htmlStream.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await reader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+         // Only cache if no dynamic API usage was detected during this render.
+         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+         if (!dynamicUsedDuringRender) {
+           const rscBytesCollected = _rscStreamForCache
+             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+             : undefined;
+           const _missPageTags = getCollectedFetchTags();
+           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+           setRevalidateDuration(cacheKey, revalidateSeconds);
          }
-         return chunks.join("");
-       }
-       const [freshHtml, rscBytesCollected] = await Promise.all([
-         collectHtmlChunks(),
-         _rscStreamForCache ? collectStreamAsArrayBuffer(_rscStreamForCache) : Promise.resolve(undefined),
-       ]);
-       const _missPageTags = getCollectedFetchTags();
-       await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-       setRevalidateDuration(cacheKey, revalidateSeconds);
-       return attachMiddlewareContext(new Response(freshHtml, {
+       });
+       return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
            "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
@@ -7828,6 +7878,148 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
+  // ─── Early ISR cache check ────────────────────────────────────────────────
+  // Check the ISR cache BEFORE buildPageElement / renderToReadableStream.
+  // On a HIT or STALE, we can serve cached bytes immediately — no render needed.
+  // This eliminates the ~3s wall-time penalty on cache HITs where the full RSC
+  // render was previously started before the cache was consulted.
+  //
+  // Only applies in production (process.env.NODE_ENV === "production" is
+  // statically replaced by Vite's define transform — this block is dead-code-
+  // eliminated in dev/test mode).
+  //
+  // Skip for: force-dynamic, intercepting routes (RSC only — those require a
+  // fresh render to assemble the intercepted slot), and RSC requests that don't
+  // have a corresponding cache entry yet (first visit, pre-HTML).
+  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0 && !isForceDynamic) {
+    const _earlyIsrKey = isrCacheKey("app", cleanPathname);
+    // Skip early RSC check for intercepting routes — they render a different element tree.
+    const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
+    if (!_isInterceptingRsc) {
+      const _earlyCached = await isrGet(_earlyIsrKey);
+      if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
+        const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
+        const _earlyIsStale = _earlyCached.isStale;
+        if (isRscRequest) {
+          // RSC path — serve cached rscData if present
+          if (_earlyCached.value.value.rscData) {
+            const _earlyRscResponseHeaders = {
+              "Content-Type": "text/x-component; charset=utf-8",
+              "Vary": "RSC, Accept",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+            };
+            if (params && Object.keys(params).length > 0) {
+              _earlyRscResponseHeaders["X-Vinext-Params"] = JSON.stringify(params);
+            }
+            if (_earlyIsStale) {
+              // Background regeneration: re-render and update cache
+              const _earlyFrozenNavCtx = _getNavigationContext();
+              const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+                ]);
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _regenTags2 = getCollectedFetchTags();
+                await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+              });
+            }
+            if (_mwCtx.headers) {
+              for (const [key, value] of _mwCtx.headers) {
+                const lk = key.toLowerCase();
+                if (lk === "set-cookie") {
+                  const existing = _earlyRscResponseHeaders[lk];
+                  if (Array.isArray(existing)) existing.push(value);
+                  else if (existing) _earlyRscResponseHeaders[lk] = [existing, value];
+                  else _earlyRscResponseHeaders[lk] = [value];
+                } else if (lk === "vary") {
+                  const existing = _earlyRscResponseHeaders["Vary"] ?? _earlyRscResponseHeaders["vary"];
+                  if (existing) {
+                    _earlyRscResponseHeaders["Vary"] = existing + ", " + value;
+                    if (_earlyRscResponseHeaders["vary"] !== undefined) delete _earlyRscResponseHeaders["vary"];
+                  } else {
+                    _earlyRscResponseHeaders[key] = value;
+                  }
+                } else {
+                  _earlyRscResponseHeaders[key] = value;
+                }
+              }
+            }
+            setHeadersContext(null);
+            setNavigationContext(null);
+            const _earlyCachedRscStream = new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(_earlyCached.value.value.rscData));
+                controller.close();
+              }
+            });
+            return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
+          }
+          // RSC HIT but no rscData — fall through to render (will populate it)
+        } else {
+          // HTML path — serve cached HTML
+          const _earlyHtml = _earlyCached.value.value.html;
+          if (_earlyIsStale) {
+            // Background regeneration
+            const _earlyFrozenNavCtx = _getNavigationContext();
+            const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+            triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+              let _earlyEl;
+              try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+              const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+              const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+              const [rscBytesCollected, htmlStream2] = await Promise.all([
+                collectStreamAsArrayBuffer(rscStream2a),
+                ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+              ]);
+              const htmlReader2 = htmlStream2.getReader();
+              const htmlChunks2 = [];
+              while (true) {
+                const { done, value } = await htmlReader2.read();
+                if (done) break;
+                htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+              }
+              const _regenTags2 = getCollectedFetchTags();
+              await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+              setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+            });
+          }
+          setHeadersContext(null);
+          setNavigationContext(null);
+          const _earlyHtmlResp = new Response(_earlyHtml, {
+            status: _mwCtx.status || 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+              "Vary": "RSC, Accept",
+            },
+          });
+          if (_mwCtx.headers) {
+            for (const [key, value] of _mwCtx.headers) {
+              _earlyHtmlResp.headers.append(key, value);
+            }
+          }
+          return _earlyHtmlResp;
+        }
+      }
+    }
+  }
+  // ─── End early ISR cache check ────────────────────────────────────────────
+
   // Check for intercepting routes on RSC requests (client-side navigation).
   // If the target URL matches an intercepting route in a parallel slot,
   // render the source route with the intercepting page in the slot.
@@ -8089,82 +8281,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
     }
 
-     // ISR: serve cached RSC flight data for client-side navigations (production only).
-     // Next.js stores rscData alongside HTML in the cache entry and serves it directly
-     // on RSC requests, avoiding a re-render on every client navigation.
+     // ISR RSC path: HIT/STALE are handled by the early ISR check above (before buildPageElement).
+     // If we reach here with an ISR page, it's a MISS — the early check found nothing usable.
+     // Mark MISS so the response header reflects the cache state.
      if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0) {
-       // _frozenNavContext must be captured before any context clearing.
-       // The RSC request block runs before context is nulled (which happens after SSR),
-       // so _getNavigationContext() is still valid here — but we freeze it now so
-       // background regeneration lambdas always have a valid reference.
-       const _rscFrozenNavCtx = _getNavigationContext();
-       const rscCacheKey = isrCacheKey("app", cleanPathname);
-       const rscCached = await isrGet(rscCacheKey);
-
-       if (rscCached && rscCached.value.value?.kind === "APP_PAGE" && rscCached.value.value.rscData) {
-         // HIT or STALE — serve cached RSC flight data directly, no re-render needed
-         const cachedRscData = rscCached.value.value.rscData;
-         const revalidateSecs = getRevalidateDuration(rscCacheKey) ?? revalidateSeconds;
-         responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSecs + ", stale-while-revalidate";
-         responseHeaders["X-Vinext-Cache"] = rscCached.isStale ? "STALE" : "HIT";
-         if (rscCached.isStale) {
-           // Trigger background regeneration (HTML + RSC) so next request gets fresh data
-           triggerBackgroundRegeneration(rscCacheKey, async () => {
-             const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-             const [rscStream2a, rscStream2b] = renderToReadableStream(element, { onError: onRenderError }).tee();
-             const [rscBytesCollected, htmlStream2] = await Promise.all([
-               collectStreamAsArrayBuffer(rscStream2a),
-               ssrEntry2.handleSsr(rscStream2b, _rscFrozenNavCtx, fontData),
-             ]);
-             const htmlReader = htmlStream2.getReader();
-              const htmlChunks = [];
-              while (true) {
-                const { done, value } = await htmlReader.read();
-                if (done) break;
-                htmlChunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-              }
-              const _rscRegenTags = getCollectedFetchTags();
-              await isrSet(rscCacheKey, buildAppPageCacheValue(htmlChunks.join(""), rscBytesCollected, 200), revalidateSeconds, _rscRegenTags);
-             setRevalidateDuration(rscCacheKey, revalidateSeconds);
-           });
-         }
-         // Serve cached RSC bytes as a stream
-         const cachedRscStream = new ReadableStream({
-           start(controller) {
-             controller.enqueue(new Uint8Array(cachedRscData));
-             controller.close();
-           }
-         });
-         // Merge middleware headers into cached RSC response
-         if (_mwCtx.headers) {
-           for (const [key, value] of _mwCtx.headers) {
-             const lk = key.toLowerCase();
-             if (lk === "set-cookie") {
-               const existing = responseHeaders[lk];
-               if (Array.isArray(existing)) {
-                 existing.push(value);
-               } else if (existing) {
-                 responseHeaders[lk] = [existing, value];
-               } else {
-                 responseHeaders[lk] = [value];
-               }
-             } else if (lk === "vary") {
-               const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-               if (existing) {
-                 responseHeaders["Vary"] = existing + ", " + value;
-                 if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-               } else {
-                 responseHeaders[key] = value;
-               }
-             } else {
-               responseHeaders[key] = value;
-             }
-           }
-         }
-         return new Response(cachedRscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
-       }
-       // RSC MISS — fall through to serve the live rscStream below.
-       // The HTML path (non-RSC) will populate the cache with both HTML and rscData.
        responseHeaders["X-Vinext-Cache"] = "MISS";
      }
 
@@ -8375,83 +8495,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (process.env.NODE_ENV === "production") {
       const cacheKey = isrCacheKey("app", cleanPathname);
 
-      // Helper: render the page fresh and store in cache (used for background regen).
-       // Uses _frozenNavContext captured before context-clearing so that pages using
-       // usePathname() / useSearchParams() etc. still get the correct values.
-       async function renderFreshAndCache() {
-         const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-         const rscStream2 = renderToReadableStream(element, { onError: onRenderError });
-         const [rscStream2a, rscStream2b] = rscStream2.tee();
-         const [rscBytesCollected, htmlStream2] = await Promise.all([
-           collectStreamAsArrayBuffer(rscStream2a),
-           ssrEntry2.handleSsr(rscStream2b, _frozenNavContext, fontData),
-         ]);
-         const reader = htmlStream2.getReader();
+       // HIT/STALE are handled by the early ISR check above (before buildPageElement/renderToReadableStream).
+       // If we reach here it is always a MISS (early check found nothing — first request for this page).
+       // Tee htmlStream: stream one branch to the client immediately (first byte wins),
+       // drain the other branch + rscStreamForCache to isrSet in the background.
+       // This eliminates the previous ~full-render latency on MISS by not buffering the
+       // entire HTML before responding.
+       const [htmlStreamForClient, htmlStreamForCache] = htmlStream.tee();
+
+       // Background cache population — runs after the response is already streaming.
+       // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
+       // waitUntil mechanism keeps the isolate alive until the cache write completes.
+       triggerBackgroundRegeneration(cacheKey, async () => {
+         const htmlReader = htmlStreamForCache.getReader();
          const chunks = [];
          while (true) {
-           const { done, value } = await reader.read();
+           const { done, value } = await htmlReader.read();
            if (done) break;
            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
          }
          const freshHtml = chunks.join("");
-         const _regenPageTags = getCollectedFetchTags();
-         await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _regenPageTags);
-         setRevalidateDuration(cacheKey, revalidateSeconds);
-       }
-
-       const cached = await isrGet(cacheKey);
-
-       if (cached && !cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Fresh cache HIT — serve directly
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "HIT",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       if (cached && cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Stale hit — serve stale immediately, trigger background regeneration
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         triggerBackgroundRegeneration(cacheKey, async () => { await renderFreshAndCache(); });
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "STALE",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       // Cache MISS — collect HTML and RSC flight data concurrently, store both in cache.
-       // Concurrent collection is required: htmlStream (SSR) produces HTML by consuming
-       // the RSC stream, so if we block on the RSC tee copy before draining htmlStream
-       // we risk a deadlock under backpressure. Run both collectors in parallel.
-       async function collectHtmlChunks() {
-         const reader = htmlStream.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await reader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+         // Only cache if no dynamic API usage was detected during this render.
+         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+         if (!dynamicUsedDuringRender) {
+           const rscBytesCollected = _rscStreamForCache
+             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+             : undefined;
+           const _missPageTags = getCollectedFetchTags();
+           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+           setRevalidateDuration(cacheKey, revalidateSeconds);
          }
-         return chunks.join("");
-       }
-       const [freshHtml, rscBytesCollected] = await Promise.all([
-         collectHtmlChunks(),
-         _rscStreamForCache ? collectStreamAsArrayBuffer(_rscStreamForCache) : Promise.resolve(undefined),
-       ]);
-       const _missPageTags = getCollectedFetchTags();
-       await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-       setRevalidateDuration(cacheKey, revalidateSeconds);
-       return attachMiddlewareContext(new Response(freshHtml, {
+       });
+       return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
            "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
@@ -10553,6 +10628,148 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
+  // ─── Early ISR cache check ────────────────────────────────────────────────
+  // Check the ISR cache BEFORE buildPageElement / renderToReadableStream.
+  // On a HIT or STALE, we can serve cached bytes immediately — no render needed.
+  // This eliminates the ~3s wall-time penalty on cache HITs where the full RSC
+  // render was previously started before the cache was consulted.
+  //
+  // Only applies in production (process.env.NODE_ENV === "production" is
+  // statically replaced by Vite's define transform — this block is dead-code-
+  // eliminated in dev/test mode).
+  //
+  // Skip for: force-dynamic, intercepting routes (RSC only — those require a
+  // fresh render to assemble the intercepted slot), and RSC requests that don't
+  // have a corresponding cache entry yet (first visit, pre-HTML).
+  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0 && !isForceDynamic) {
+    const _earlyIsrKey = isrCacheKey("app", cleanPathname);
+    // Skip early RSC check for intercepting routes — they render a different element tree.
+    const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
+    if (!_isInterceptingRsc) {
+      const _earlyCached = await isrGet(_earlyIsrKey);
+      if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
+        const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
+        const _earlyIsStale = _earlyCached.isStale;
+        if (isRscRequest) {
+          // RSC path — serve cached rscData if present
+          if (_earlyCached.value.value.rscData) {
+            const _earlyRscResponseHeaders = {
+              "Content-Type": "text/x-component; charset=utf-8",
+              "Vary": "RSC, Accept",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+            };
+            if (params && Object.keys(params).length > 0) {
+              _earlyRscResponseHeaders["X-Vinext-Params"] = JSON.stringify(params);
+            }
+            if (_earlyIsStale) {
+              // Background regeneration: re-render and update cache
+              const _earlyFrozenNavCtx = _getNavigationContext();
+              const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+                ]);
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _regenTags2 = getCollectedFetchTags();
+                await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+              });
+            }
+            if (_mwCtx.headers) {
+              for (const [key, value] of _mwCtx.headers) {
+                const lk = key.toLowerCase();
+                if (lk === "set-cookie") {
+                  const existing = _earlyRscResponseHeaders[lk];
+                  if (Array.isArray(existing)) existing.push(value);
+                  else if (existing) _earlyRscResponseHeaders[lk] = [existing, value];
+                  else _earlyRscResponseHeaders[lk] = [value];
+                } else if (lk === "vary") {
+                  const existing = _earlyRscResponseHeaders["Vary"] ?? _earlyRscResponseHeaders["vary"];
+                  if (existing) {
+                    _earlyRscResponseHeaders["Vary"] = existing + ", " + value;
+                    if (_earlyRscResponseHeaders["vary"] !== undefined) delete _earlyRscResponseHeaders["vary"];
+                  } else {
+                    _earlyRscResponseHeaders[key] = value;
+                  }
+                } else {
+                  _earlyRscResponseHeaders[key] = value;
+                }
+              }
+            }
+            setHeadersContext(null);
+            setNavigationContext(null);
+            const _earlyCachedRscStream = new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(_earlyCached.value.value.rscData));
+                controller.close();
+              }
+            });
+            return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
+          }
+          // RSC HIT but no rscData — fall through to render (will populate it)
+        } else {
+          // HTML path — serve cached HTML
+          const _earlyHtml = _earlyCached.value.value.html;
+          if (_earlyIsStale) {
+            // Background regeneration
+            const _earlyFrozenNavCtx = _getNavigationContext();
+            const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+            triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+              let _earlyEl;
+              try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+              const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+              const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+              const [rscBytesCollected, htmlStream2] = await Promise.all([
+                collectStreamAsArrayBuffer(rscStream2a),
+                ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+              ]);
+              const htmlReader2 = htmlStream2.getReader();
+              const htmlChunks2 = [];
+              while (true) {
+                const { done, value } = await htmlReader2.read();
+                if (done) break;
+                htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+              }
+              const _regenTags2 = getCollectedFetchTags();
+              await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+              setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+            });
+          }
+          setHeadersContext(null);
+          setNavigationContext(null);
+          const _earlyHtmlResp = new Response(_earlyHtml, {
+            status: _mwCtx.status || 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+              "Vary": "RSC, Accept",
+            },
+          });
+          if (_mwCtx.headers) {
+            for (const [key, value] of _mwCtx.headers) {
+              _earlyHtmlResp.headers.append(key, value);
+            }
+          }
+          return _earlyHtmlResp;
+        }
+      }
+    }
+  }
+  // ─── End early ISR cache check ────────────────────────────────────────────
+
   // Check for intercepting routes on RSC requests (client-side navigation).
   // If the target URL matches an intercepting route in a parallel slot,
   // render the source route with the intercepting page in the slot.
@@ -10814,82 +11031,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
     }
 
-     // ISR: serve cached RSC flight data for client-side navigations (production only).
-     // Next.js stores rscData alongside HTML in the cache entry and serves it directly
-     // on RSC requests, avoiding a re-render on every client navigation.
+     // ISR RSC path: HIT/STALE are handled by the early ISR check above (before buildPageElement).
+     // If we reach here with an ISR page, it's a MISS — the early check found nothing usable.
+     // Mark MISS so the response header reflects the cache state.
      if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0) {
-       // _frozenNavContext must be captured before any context clearing.
-       // The RSC request block runs before context is nulled (which happens after SSR),
-       // so _getNavigationContext() is still valid here — but we freeze it now so
-       // background regeneration lambdas always have a valid reference.
-       const _rscFrozenNavCtx = _getNavigationContext();
-       const rscCacheKey = isrCacheKey("app", cleanPathname);
-       const rscCached = await isrGet(rscCacheKey);
-
-       if (rscCached && rscCached.value.value?.kind === "APP_PAGE" && rscCached.value.value.rscData) {
-         // HIT or STALE — serve cached RSC flight data directly, no re-render needed
-         const cachedRscData = rscCached.value.value.rscData;
-         const revalidateSecs = getRevalidateDuration(rscCacheKey) ?? revalidateSeconds;
-         responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSecs + ", stale-while-revalidate";
-         responseHeaders["X-Vinext-Cache"] = rscCached.isStale ? "STALE" : "HIT";
-         if (rscCached.isStale) {
-           // Trigger background regeneration (HTML + RSC) so next request gets fresh data
-           triggerBackgroundRegeneration(rscCacheKey, async () => {
-             const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-             const [rscStream2a, rscStream2b] = renderToReadableStream(element, { onError: onRenderError }).tee();
-             const [rscBytesCollected, htmlStream2] = await Promise.all([
-               collectStreamAsArrayBuffer(rscStream2a),
-               ssrEntry2.handleSsr(rscStream2b, _rscFrozenNavCtx, fontData),
-             ]);
-             const htmlReader = htmlStream2.getReader();
-              const htmlChunks = [];
-              while (true) {
-                const { done, value } = await htmlReader.read();
-                if (done) break;
-                htmlChunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-              }
-              const _rscRegenTags = getCollectedFetchTags();
-              await isrSet(rscCacheKey, buildAppPageCacheValue(htmlChunks.join(""), rscBytesCollected, 200), revalidateSeconds, _rscRegenTags);
-             setRevalidateDuration(rscCacheKey, revalidateSeconds);
-           });
-         }
-         // Serve cached RSC bytes as a stream
-         const cachedRscStream = new ReadableStream({
-           start(controller) {
-             controller.enqueue(new Uint8Array(cachedRscData));
-             controller.close();
-           }
-         });
-         // Merge middleware headers into cached RSC response
-         if (_mwCtx.headers) {
-           for (const [key, value] of _mwCtx.headers) {
-             const lk = key.toLowerCase();
-             if (lk === "set-cookie") {
-               const existing = responseHeaders[lk];
-               if (Array.isArray(existing)) {
-                 existing.push(value);
-               } else if (existing) {
-                 responseHeaders[lk] = [existing, value];
-               } else {
-                 responseHeaders[lk] = [value];
-               }
-             } else if (lk === "vary") {
-               const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-               if (existing) {
-                 responseHeaders["Vary"] = existing + ", " + value;
-                 if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-               } else {
-                 responseHeaders[key] = value;
-               }
-             } else {
-               responseHeaders[key] = value;
-             }
-           }
-         }
-         return new Response(cachedRscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
-       }
-       // RSC MISS — fall through to serve the live rscStream below.
-       // The HTML path (non-RSC) will populate the cache with both HTML and rscData.
        responseHeaders["X-Vinext-Cache"] = "MISS";
      }
 
@@ -11092,83 +11237,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (process.env.NODE_ENV === "production") {
       const cacheKey = isrCacheKey("app", cleanPathname);
 
-      // Helper: render the page fresh and store in cache (used for background regen).
-       // Uses _frozenNavContext captured before context-clearing so that pages using
-       // usePathname() / useSearchParams() etc. still get the correct values.
-       async function renderFreshAndCache() {
-         const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-         const rscStream2 = renderToReadableStream(element, { onError: onRenderError });
-         const [rscStream2a, rscStream2b] = rscStream2.tee();
-         const [rscBytesCollected, htmlStream2] = await Promise.all([
-           collectStreamAsArrayBuffer(rscStream2a),
-           ssrEntry2.handleSsr(rscStream2b, _frozenNavContext, fontData),
-         ]);
-         const reader = htmlStream2.getReader();
+       // HIT/STALE are handled by the early ISR check above (before buildPageElement/renderToReadableStream).
+       // If we reach here it is always a MISS (early check found nothing — first request for this page).
+       // Tee htmlStream: stream one branch to the client immediately (first byte wins),
+       // drain the other branch + rscStreamForCache to isrSet in the background.
+       // This eliminates the previous ~full-render latency on MISS by not buffering the
+       // entire HTML before responding.
+       const [htmlStreamForClient, htmlStreamForCache] = htmlStream.tee();
+
+       // Background cache population — runs after the response is already streaming.
+       // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
+       // waitUntil mechanism keeps the isolate alive until the cache write completes.
+       triggerBackgroundRegeneration(cacheKey, async () => {
+         const htmlReader = htmlStreamForCache.getReader();
          const chunks = [];
          while (true) {
-           const { done, value } = await reader.read();
+           const { done, value } = await htmlReader.read();
            if (done) break;
            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
          }
          const freshHtml = chunks.join("");
-         const _regenPageTags = getCollectedFetchTags();
-         await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _regenPageTags);
-         setRevalidateDuration(cacheKey, revalidateSeconds);
-       }
-
-       const cached = await isrGet(cacheKey);
-
-       if (cached && !cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Fresh cache HIT — serve directly
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "HIT",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       if (cached && cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Stale hit — serve stale immediately, trigger background regeneration
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         triggerBackgroundRegeneration(cacheKey, async () => { await renderFreshAndCache(); });
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "STALE",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       // Cache MISS — collect HTML and RSC flight data concurrently, store both in cache.
-       // Concurrent collection is required: htmlStream (SSR) produces HTML by consuming
-       // the RSC stream, so if we block on the RSC tee copy before draining htmlStream
-       // we risk a deadlock under backpressure. Run both collectors in parallel.
-       async function collectHtmlChunks() {
-         const reader = htmlStream.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await reader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+         // Only cache if no dynamic API usage was detected during this render.
+         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+         if (!dynamicUsedDuringRender) {
+           const rscBytesCollected = _rscStreamForCache
+             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+             : undefined;
+           const _missPageTags = getCollectedFetchTags();
+           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+           setRevalidateDuration(cacheKey, revalidateSeconds);
          }
-         return chunks.join("");
-       }
-       const [freshHtml, rscBytesCollected] = await Promise.all([
-         collectHtmlChunks(),
-         _rscStreamForCache ? collectStreamAsArrayBuffer(_rscStreamForCache) : Promise.resolve(undefined),
-       ]);
-       const _missPageTags = getCollectedFetchTags();
-       await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-       setRevalidateDuration(cacheKey, revalidateSeconds);
-       return attachMiddlewareContext(new Response(freshHtml, {
+       });
+       return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
            "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
@@ -13262,6 +13362,148 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
+  // ─── Early ISR cache check ────────────────────────────────────────────────
+  // Check the ISR cache BEFORE buildPageElement / renderToReadableStream.
+  // On a HIT or STALE, we can serve cached bytes immediately — no render needed.
+  // This eliminates the ~3s wall-time penalty on cache HITs where the full RSC
+  // render was previously started before the cache was consulted.
+  //
+  // Only applies in production (process.env.NODE_ENV === "production" is
+  // statically replaced by Vite's define transform — this block is dead-code-
+  // eliminated in dev/test mode).
+  //
+  // Skip for: force-dynamic, intercepting routes (RSC only — those require a
+  // fresh render to assemble the intercepted slot), and RSC requests that don't
+  // have a corresponding cache entry yet (first visit, pre-HTML).
+  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0 && !isForceDynamic) {
+    const _earlyIsrKey = isrCacheKey("app", cleanPathname);
+    // Skip early RSC check for intercepting routes — they render a different element tree.
+    const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
+    if (!_isInterceptingRsc) {
+      const _earlyCached = await isrGet(_earlyIsrKey);
+      if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
+        const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
+        const _earlyIsStale = _earlyCached.isStale;
+        if (isRscRequest) {
+          // RSC path — serve cached rscData if present
+          if (_earlyCached.value.value.rscData) {
+            const _earlyRscResponseHeaders = {
+              "Content-Type": "text/x-component; charset=utf-8",
+              "Vary": "RSC, Accept",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+            };
+            if (params && Object.keys(params).length > 0) {
+              _earlyRscResponseHeaders["X-Vinext-Params"] = JSON.stringify(params);
+            }
+            if (_earlyIsStale) {
+              // Background regeneration: re-render and update cache
+              const _earlyFrozenNavCtx = _getNavigationContext();
+              const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+                ]);
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _regenTags2 = getCollectedFetchTags();
+                await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+              });
+            }
+            if (_mwCtx.headers) {
+              for (const [key, value] of _mwCtx.headers) {
+                const lk = key.toLowerCase();
+                if (lk === "set-cookie") {
+                  const existing = _earlyRscResponseHeaders[lk];
+                  if (Array.isArray(existing)) existing.push(value);
+                  else if (existing) _earlyRscResponseHeaders[lk] = [existing, value];
+                  else _earlyRscResponseHeaders[lk] = [value];
+                } else if (lk === "vary") {
+                  const existing = _earlyRscResponseHeaders["Vary"] ?? _earlyRscResponseHeaders["vary"];
+                  if (existing) {
+                    _earlyRscResponseHeaders["Vary"] = existing + ", " + value;
+                    if (_earlyRscResponseHeaders["vary"] !== undefined) delete _earlyRscResponseHeaders["vary"];
+                  } else {
+                    _earlyRscResponseHeaders[key] = value;
+                  }
+                } else {
+                  _earlyRscResponseHeaders[key] = value;
+                }
+              }
+            }
+            setHeadersContext(null);
+            setNavigationContext(null);
+            const _earlyCachedRscStream = new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(_earlyCached.value.value.rscData));
+                controller.close();
+              }
+            });
+            return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
+          }
+          // RSC HIT but no rscData — fall through to render (will populate it)
+        } else {
+          // HTML path — serve cached HTML
+          const _earlyHtml = _earlyCached.value.value.html;
+          if (_earlyIsStale) {
+            // Background regeneration
+            const _earlyFrozenNavCtx = _getNavigationContext();
+            const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+            triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+              let _earlyEl;
+              try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+              const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+              const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+              const [rscBytesCollected, htmlStream2] = await Promise.all([
+                collectStreamAsArrayBuffer(rscStream2a),
+                ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+              ]);
+              const htmlReader2 = htmlStream2.getReader();
+              const htmlChunks2 = [];
+              while (true) {
+                const { done, value } = await htmlReader2.read();
+                if (done) break;
+                htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+              }
+              const _regenTags2 = getCollectedFetchTags();
+              await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+              setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+            });
+          }
+          setHeadersContext(null);
+          setNavigationContext(null);
+          const _earlyHtmlResp = new Response(_earlyHtml, {
+            status: _mwCtx.status || 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+              "Vary": "RSC, Accept",
+            },
+          });
+          if (_mwCtx.headers) {
+            for (const [key, value] of _mwCtx.headers) {
+              _earlyHtmlResp.headers.append(key, value);
+            }
+          }
+          return _earlyHtmlResp;
+        }
+      }
+    }
+  }
+  // ─── End early ISR cache check ────────────────────────────────────────────
+
   // Check for intercepting routes on RSC requests (client-side navigation).
   // If the target URL matches an intercepting route in a parallel slot,
   // render the source route with the intercepting page in the slot.
@@ -13523,82 +13765,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
     }
 
-     // ISR: serve cached RSC flight data for client-side navigations (production only).
-     // Next.js stores rscData alongside HTML in the cache entry and serves it directly
-     // on RSC requests, avoiding a re-render on every client navigation.
+     // ISR RSC path: HIT/STALE are handled by the early ISR check above (before buildPageElement).
+     // If we reach here with an ISR page, it's a MISS — the early check found nothing usable.
+     // Mark MISS so the response header reflects the cache state.
      if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0) {
-       // _frozenNavContext must be captured before any context clearing.
-       // The RSC request block runs before context is nulled (which happens after SSR),
-       // so _getNavigationContext() is still valid here — but we freeze it now so
-       // background regeneration lambdas always have a valid reference.
-       const _rscFrozenNavCtx = _getNavigationContext();
-       const rscCacheKey = isrCacheKey("app", cleanPathname);
-       const rscCached = await isrGet(rscCacheKey);
-
-       if (rscCached && rscCached.value.value?.kind === "APP_PAGE" && rscCached.value.value.rscData) {
-         // HIT or STALE — serve cached RSC flight data directly, no re-render needed
-         const cachedRscData = rscCached.value.value.rscData;
-         const revalidateSecs = getRevalidateDuration(rscCacheKey) ?? revalidateSeconds;
-         responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSecs + ", stale-while-revalidate";
-         responseHeaders["X-Vinext-Cache"] = rscCached.isStale ? "STALE" : "HIT";
-         if (rscCached.isStale) {
-           // Trigger background regeneration (HTML + RSC) so next request gets fresh data
-           triggerBackgroundRegeneration(rscCacheKey, async () => {
-             const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-             const [rscStream2a, rscStream2b] = renderToReadableStream(element, { onError: onRenderError }).tee();
-             const [rscBytesCollected, htmlStream2] = await Promise.all([
-               collectStreamAsArrayBuffer(rscStream2a),
-               ssrEntry2.handleSsr(rscStream2b, _rscFrozenNavCtx, fontData),
-             ]);
-             const htmlReader = htmlStream2.getReader();
-              const htmlChunks = [];
-              while (true) {
-                const { done, value } = await htmlReader.read();
-                if (done) break;
-                htmlChunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-              }
-              const _rscRegenTags = getCollectedFetchTags();
-              await isrSet(rscCacheKey, buildAppPageCacheValue(htmlChunks.join(""), rscBytesCollected, 200), revalidateSeconds, _rscRegenTags);
-             setRevalidateDuration(rscCacheKey, revalidateSeconds);
-           });
-         }
-         // Serve cached RSC bytes as a stream
-         const cachedRscStream = new ReadableStream({
-           start(controller) {
-             controller.enqueue(new Uint8Array(cachedRscData));
-             controller.close();
-           }
-         });
-         // Merge middleware headers into cached RSC response
-         if (_mwCtx.headers) {
-           for (const [key, value] of _mwCtx.headers) {
-             const lk = key.toLowerCase();
-             if (lk === "set-cookie") {
-               const existing = responseHeaders[lk];
-               if (Array.isArray(existing)) {
-                 existing.push(value);
-               } else if (existing) {
-                 responseHeaders[lk] = [existing, value];
-               } else {
-                 responseHeaders[lk] = [value];
-               }
-             } else if (lk === "vary") {
-               const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-               if (existing) {
-                 responseHeaders["Vary"] = existing + ", " + value;
-                 if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-               } else {
-                 responseHeaders[key] = value;
-               }
-             } else {
-               responseHeaders[key] = value;
-             }
-           }
-         }
-         return new Response(cachedRscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
-       }
-       // RSC MISS — fall through to serve the live rscStream below.
-       // The HTML path (non-RSC) will populate the cache with both HTML and rscData.
        responseHeaders["X-Vinext-Cache"] = "MISS";
      }
 
@@ -13801,83 +13971,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (process.env.NODE_ENV === "production") {
       const cacheKey = isrCacheKey("app", cleanPathname);
 
-      // Helper: render the page fresh and store in cache (used for background regen).
-       // Uses _frozenNavContext captured before context-clearing so that pages using
-       // usePathname() / useSearchParams() etc. still get the correct values.
-       async function renderFreshAndCache() {
-         const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-         const rscStream2 = renderToReadableStream(element, { onError: onRenderError });
-         const [rscStream2a, rscStream2b] = rscStream2.tee();
-         const [rscBytesCollected, htmlStream2] = await Promise.all([
-           collectStreamAsArrayBuffer(rscStream2a),
-           ssrEntry2.handleSsr(rscStream2b, _frozenNavContext, fontData),
-         ]);
-         const reader = htmlStream2.getReader();
+       // HIT/STALE are handled by the early ISR check above (before buildPageElement/renderToReadableStream).
+       // If we reach here it is always a MISS (early check found nothing — first request for this page).
+       // Tee htmlStream: stream one branch to the client immediately (first byte wins),
+       // drain the other branch + rscStreamForCache to isrSet in the background.
+       // This eliminates the previous ~full-render latency on MISS by not buffering the
+       // entire HTML before responding.
+       const [htmlStreamForClient, htmlStreamForCache] = htmlStream.tee();
+
+       // Background cache population — runs after the response is already streaming.
+       // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
+       // waitUntil mechanism keeps the isolate alive until the cache write completes.
+       triggerBackgroundRegeneration(cacheKey, async () => {
+         const htmlReader = htmlStreamForCache.getReader();
          const chunks = [];
          while (true) {
-           const { done, value } = await reader.read();
+           const { done, value } = await htmlReader.read();
            if (done) break;
            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
          }
          const freshHtml = chunks.join("");
-         const _regenPageTags = getCollectedFetchTags();
-         await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _regenPageTags);
-         setRevalidateDuration(cacheKey, revalidateSeconds);
-       }
-
-       const cached = await isrGet(cacheKey);
-
-       if (cached && !cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Fresh cache HIT — serve directly
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "HIT",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       if (cached && cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Stale hit — serve stale immediately, trigger background regeneration
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         triggerBackgroundRegeneration(cacheKey, async () => { await renderFreshAndCache(); });
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "STALE",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       // Cache MISS — collect HTML and RSC flight data concurrently, store both in cache.
-       // Concurrent collection is required: htmlStream (SSR) produces HTML by consuming
-       // the RSC stream, so if we block on the RSC tee copy before draining htmlStream
-       // we risk a deadlock under backpressure. Run both collectors in parallel.
-       async function collectHtmlChunks() {
-         const reader = htmlStream.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await reader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+         // Only cache if no dynamic API usage was detected during this render.
+         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+         if (!dynamicUsedDuringRender) {
+           const rscBytesCollected = _rscStreamForCache
+             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+             : undefined;
+           const _missPageTags = getCollectedFetchTags();
+           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+           setRevalidateDuration(cacheKey, revalidateSeconds);
          }
-         return chunks.join("");
-       }
-       const [freshHtml, rscBytesCollected] = await Promise.all([
-         collectHtmlChunks(),
-         _rscStreamForCache ? collectStreamAsArrayBuffer(_rscStreamForCache) : Promise.resolve(undefined),
-       ]);
-       const _missPageTags = getCollectedFetchTags();
-       await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-       setRevalidateDuration(cacheKey, revalidateSeconds);
-       return attachMiddlewareContext(new Response(freshHtml, {
+       });
+       return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
            "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
@@ -16088,6 +16213,148 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
+  // ─── Early ISR cache check ────────────────────────────────────────────────
+  // Check the ISR cache BEFORE buildPageElement / renderToReadableStream.
+  // On a HIT or STALE, we can serve cached bytes immediately — no render needed.
+  // This eliminates the ~3s wall-time penalty on cache HITs where the full RSC
+  // render was previously started before the cache was consulted.
+  //
+  // Only applies in production (process.env.NODE_ENV === "production" is
+  // statically replaced by Vite's define transform — this block is dead-code-
+  // eliminated in dev/test mode).
+  //
+  // Skip for: force-dynamic, intercepting routes (RSC only — those require a
+  // fresh render to assemble the intercepted slot), and RSC requests that don't
+  // have a corresponding cache entry yet (first visit, pre-HTML).
+  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0 && !isForceDynamic) {
+    const _earlyIsrKey = isrCacheKey("app", cleanPathname);
+    // Skip early RSC check for intercepting routes — they render a different element tree.
+    const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
+    if (!_isInterceptingRsc) {
+      const _earlyCached = await isrGet(_earlyIsrKey);
+      if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
+        const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
+        const _earlyIsStale = _earlyCached.isStale;
+        if (isRscRequest) {
+          // RSC path — serve cached rscData if present
+          if (_earlyCached.value.value.rscData) {
+            const _earlyRscResponseHeaders = {
+              "Content-Type": "text/x-component; charset=utf-8",
+              "Vary": "RSC, Accept",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+            };
+            if (params && Object.keys(params).length > 0) {
+              _earlyRscResponseHeaders["X-Vinext-Params"] = JSON.stringify(params);
+            }
+            if (_earlyIsStale) {
+              // Background regeneration: re-render and update cache
+              const _earlyFrozenNavCtx = _getNavigationContext();
+              const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+                ]);
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _regenTags2 = getCollectedFetchTags();
+                await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+              });
+            }
+            if (_mwCtx.headers) {
+              for (const [key, value] of _mwCtx.headers) {
+                const lk = key.toLowerCase();
+                if (lk === "set-cookie") {
+                  const existing = _earlyRscResponseHeaders[lk];
+                  if (Array.isArray(existing)) existing.push(value);
+                  else if (existing) _earlyRscResponseHeaders[lk] = [existing, value];
+                  else _earlyRscResponseHeaders[lk] = [value];
+                } else if (lk === "vary") {
+                  const existing = _earlyRscResponseHeaders["Vary"] ?? _earlyRscResponseHeaders["vary"];
+                  if (existing) {
+                    _earlyRscResponseHeaders["Vary"] = existing + ", " + value;
+                    if (_earlyRscResponseHeaders["vary"] !== undefined) delete _earlyRscResponseHeaders["vary"];
+                  } else {
+                    _earlyRscResponseHeaders[key] = value;
+                  }
+                } else {
+                  _earlyRscResponseHeaders[key] = value;
+                }
+              }
+            }
+            setHeadersContext(null);
+            setNavigationContext(null);
+            const _earlyCachedRscStream = new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(_earlyCached.value.value.rscData));
+                controller.close();
+              }
+            });
+            return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
+          }
+          // RSC HIT but no rscData — fall through to render (will populate it)
+        } else {
+          // HTML path — serve cached HTML
+          const _earlyHtml = _earlyCached.value.value.html;
+          if (_earlyIsStale) {
+            // Background regeneration
+            const _earlyFrozenNavCtx = _getNavigationContext();
+            const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+            triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+              let _earlyEl;
+              try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+              const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+              const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+              const [rscBytesCollected, htmlStream2] = await Promise.all([
+                collectStreamAsArrayBuffer(rscStream2a),
+                ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
+              ]);
+              const htmlReader2 = htmlStream2.getReader();
+              const htmlChunks2 = [];
+              while (true) {
+                const { done, value } = await htmlReader2.read();
+                if (done) break;
+                htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+              }
+              const _regenTags2 = getCollectedFetchTags();
+              await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+              setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+            });
+          }
+          setHeadersContext(null);
+          setNavigationContext(null);
+          const _earlyHtmlResp = new Response(_earlyHtml, {
+            status: _mwCtx.status || 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "s-maxage=" + _earlyRevalidateSecs + ", stale-while-revalidate",
+              "X-Vinext-Cache": _earlyIsStale ? "STALE" : "HIT",
+              "Vary": "RSC, Accept",
+            },
+          });
+          if (_mwCtx.headers) {
+            for (const [key, value] of _mwCtx.headers) {
+              _earlyHtmlResp.headers.append(key, value);
+            }
+          }
+          return _earlyHtmlResp;
+        }
+      }
+    }
+  }
+  // ─── End early ISR cache check ────────────────────────────────────────────
+
   // Check for intercepting routes on RSC requests (client-side navigation).
   // If the target URL matches an intercepting route in a parallel slot,
   // render the source route with the intercepting page in the slot.
@@ -16349,82 +16616,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
     }
 
-     // ISR: serve cached RSC flight data for client-side navigations (production only).
-     // Next.js stores rscData alongside HTML in the cache entry and serves it directly
-     // on RSC requests, avoiding a re-render on every client navigation.
+     // ISR RSC path: HIT/STALE are handled by the early ISR check above (before buildPageElement).
+     // If we reach here with an ISR page, it's a MISS — the early check found nothing usable.
+     // Mark MISS so the response header reflects the cache state.
      if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0) {
-       // _frozenNavContext must be captured before any context clearing.
-       // The RSC request block runs before context is nulled (which happens after SSR),
-       // so _getNavigationContext() is still valid here — but we freeze it now so
-       // background regeneration lambdas always have a valid reference.
-       const _rscFrozenNavCtx = _getNavigationContext();
-       const rscCacheKey = isrCacheKey("app", cleanPathname);
-       const rscCached = await isrGet(rscCacheKey);
-
-       if (rscCached && rscCached.value.value?.kind === "APP_PAGE" && rscCached.value.value.rscData) {
-         // HIT or STALE — serve cached RSC flight data directly, no re-render needed
-         const cachedRscData = rscCached.value.value.rscData;
-         const revalidateSecs = getRevalidateDuration(rscCacheKey) ?? revalidateSeconds;
-         responseHeaders["Cache-Control"] = "s-maxage=" + revalidateSecs + ", stale-while-revalidate";
-         responseHeaders["X-Vinext-Cache"] = rscCached.isStale ? "STALE" : "HIT";
-         if (rscCached.isStale) {
-           // Trigger background regeneration (HTML + RSC) so next request gets fresh data
-           triggerBackgroundRegeneration(rscCacheKey, async () => {
-             const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-             const [rscStream2a, rscStream2b] = renderToReadableStream(element, { onError: onRenderError }).tee();
-             const [rscBytesCollected, htmlStream2] = await Promise.all([
-               collectStreamAsArrayBuffer(rscStream2a),
-               ssrEntry2.handleSsr(rscStream2b, _rscFrozenNavCtx, fontData),
-             ]);
-             const htmlReader = htmlStream2.getReader();
-              const htmlChunks = [];
-              while (true) {
-                const { done, value } = await htmlReader.read();
-                if (done) break;
-                htmlChunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-              }
-              const _rscRegenTags = getCollectedFetchTags();
-              await isrSet(rscCacheKey, buildAppPageCacheValue(htmlChunks.join(""), rscBytesCollected, 200), revalidateSeconds, _rscRegenTags);
-             setRevalidateDuration(rscCacheKey, revalidateSeconds);
-           });
-         }
-         // Serve cached RSC bytes as a stream
-         const cachedRscStream = new ReadableStream({
-           start(controller) {
-             controller.enqueue(new Uint8Array(cachedRscData));
-             controller.close();
-           }
-         });
-         // Merge middleware headers into cached RSC response
-         if (_mwCtx.headers) {
-           for (const [key, value] of _mwCtx.headers) {
-             const lk = key.toLowerCase();
-             if (lk === "set-cookie") {
-               const existing = responseHeaders[lk];
-               if (Array.isArray(existing)) {
-                 existing.push(value);
-               } else if (existing) {
-                 responseHeaders[lk] = [existing, value];
-               } else {
-                 responseHeaders[lk] = [value];
-               }
-             } else if (lk === "vary") {
-               const existing = responseHeaders["Vary"] ?? responseHeaders["vary"];
-               if (existing) {
-                 responseHeaders["Vary"] = existing + ", " + value;
-                 if (responseHeaders["vary"] !== undefined) delete responseHeaders["vary"];
-               } else {
-                 responseHeaders[key] = value;
-               }
-             } else {
-               responseHeaders[key] = value;
-             }
-           }
-         }
-         return new Response(cachedRscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
-       }
-       // RSC MISS — fall through to serve the live rscStream below.
-       // The HTML path (non-RSC) will populate the cache with both HTML and rscData.
        responseHeaders["X-Vinext-Cache"] = "MISS";
      }
 
@@ -16627,83 +16822,38 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (process.env.NODE_ENV === "production") {
       const cacheKey = isrCacheKey("app", cleanPathname);
 
-      // Helper: render the page fresh and store in cache (used for background regen).
-       // Uses _frozenNavContext captured before context-clearing so that pages using
-       // usePathname() / useSearchParams() etc. still get the correct values.
-       async function renderFreshAndCache() {
-         const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-         const rscStream2 = renderToReadableStream(element, { onError: onRenderError });
-         const [rscStream2a, rscStream2b] = rscStream2.tee();
-         const [rscBytesCollected, htmlStream2] = await Promise.all([
-           collectStreamAsArrayBuffer(rscStream2a),
-           ssrEntry2.handleSsr(rscStream2b, _frozenNavContext, fontData),
-         ]);
-         const reader = htmlStream2.getReader();
+       // HIT/STALE are handled by the early ISR check above (before buildPageElement/renderToReadableStream).
+       // If we reach here it is always a MISS (early check found nothing — first request for this page).
+       // Tee htmlStream: stream one branch to the client immediately (first byte wins),
+       // drain the other branch + rscStreamForCache to isrSet in the background.
+       // This eliminates the previous ~full-render latency on MISS by not buffering the
+       // entire HTML before responding.
+       const [htmlStreamForClient, htmlStreamForCache] = htmlStream.tee();
+
+       // Background cache population — runs after the response is already streaming.
+       // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
+       // waitUntil mechanism keeps the isolate alive until the cache write completes.
+       triggerBackgroundRegeneration(cacheKey, async () => {
+         const htmlReader = htmlStreamForCache.getReader();
          const chunks = [];
          while (true) {
-           const { done, value } = await reader.read();
+           const { done, value } = await htmlReader.read();
            if (done) break;
            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
          }
          const freshHtml = chunks.join("");
-         const _regenPageTags = getCollectedFetchTags();
-         await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _regenPageTags);
-         setRevalidateDuration(cacheKey, revalidateSeconds);
-       }
-
-       const cached = await isrGet(cacheKey);
-
-       if (cached && !cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Fresh cache HIT — serve directly
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "HIT",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       if (cached && cached.isStale && cached.value.value?.kind === "APP_PAGE") {
-         // Stale hit — serve stale immediately, trigger background regeneration
-         const cachedHtml = cached.value.value.html;
-         const revalidateSecs = getRevalidateDuration(cacheKey) ?? revalidateSeconds;
-         triggerBackgroundRegeneration(cacheKey, async () => { await renderFreshAndCache(); });
-         return attachMiddlewareContext(new Response(cachedHtml, {
-           headers: {
-             "Content-Type": "text/html; charset=utf-8",
-             "Cache-Control": "s-maxage=" + revalidateSecs + ", stale-while-revalidate",
-             "X-Vinext-Cache": "STALE",
-             "Vary": "RSC, Accept",
-           },
-         }));
-       }
-
-       // Cache MISS — collect HTML and RSC flight data concurrently, store both in cache.
-       // Concurrent collection is required: htmlStream (SSR) produces HTML by consuming
-       // the RSC stream, so if we block on the RSC tee copy before draining htmlStream
-       // we risk a deadlock under backpressure. Run both collectors in parallel.
-       async function collectHtmlChunks() {
-         const reader = htmlStream.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await reader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+         // Only cache if no dynamic API usage was detected during this render.
+         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+         if (!dynamicUsedDuringRender) {
+           const rscBytesCollected = _rscStreamForCache
+             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+             : undefined;
+           const _missPageTags = getCollectedFetchTags();
+           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+           setRevalidateDuration(cacheKey, revalidateSeconds);
          }
-         return chunks.join("");
-       }
-       const [freshHtml, rscBytesCollected] = await Promise.all([
-         collectHtmlChunks(),
-         _rscStreamForCache ? collectStreamAsArrayBuffer(_rscStreamForCache) : Promise.resolve(undefined),
-       ]);
-       const _missPageTags = getCollectedFetchTags();
-       await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-       setRevalidateDuration(cacheKey, revalidateSeconds);
-       return attachMiddlewareContext(new Response(freshHtml, {
+       });
+       return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
            "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
