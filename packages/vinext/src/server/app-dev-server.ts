@@ -557,8 +557,12 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
       route?.pattern ?? _pathname,
     );
     const rscStream = renderToReadableStream(element, { onError: onRenderError });
-    setHeadersContext(null);
-    setNavigationContext(null);
+    // Do NOT clear context here — the RSC stream is consumed lazily by the client.
+    // Clearing context now would cause async server components (e.g. NextIntlClientProviderServer)
+    // that run during stream consumption to see null headers/navigation context and throw,
+    // resulting in missing provider context on the client (e.g. next-intl useTranslations fails
+    // with "context from NextIntlClientProvider was not found").
+    // Context is cleared naturally when the ALS scope from runWithHeadersContext unwinds.
     return new Response(rscStream, {
       status: statusCode,
       headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
@@ -674,8 +678,12 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
       route?.pattern ?? _pathname,
     );
     const rscStream = renderToReadableStream(element, { onError: onRenderError });
-    setHeadersContext(null);
-    setNavigationContext(null);
+    // Do NOT clear context here — the RSC stream is consumed lazily by the client.
+    // Clearing context now would cause async server components (e.g. NextIntlClientProviderServer)
+    // that run during stream consumption to see null headers/navigation context and throw,
+    // resulting in missing provider context on the client (e.g. next-intl useTranslations fails
+    // with "context from NextIntlClientProvider was not found").
+    // Context is cleared naturally when the ALS scope from runWithHeadersContext unwinds.
     return new Response(rscStream, {
       status: 200,
       headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
