@@ -1176,7 +1176,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     writeGeneratedFiles(filesToGenerate);
   }
 
-  // Fail if an existing vite.config.ts is missing the Cloudflare plugin.
+  // Fail if an existing Vite config is missing the Cloudflare plugin.
   // This is the most common cause of "could not resolve virtual:vinext-rsc-entry"
   // errors — `vinext init` generates a minimal local-dev config without it.
   if (info.hasViteConfig && !viteConfigHasCloudflarePlugin(root)) {
