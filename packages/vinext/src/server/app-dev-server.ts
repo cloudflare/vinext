@@ -2206,33 +2206,35 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             if (_earlyIsStale) {
               // Background regeneration: re-render and update cache
               const _earlyFrozenNavCtx = _getNavigationContext();
-              const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-                let _earlyEl;
-                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-                const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-                const [rscBytesCollected, htmlStream2] = await Promise.all([
-                  collectStreamAsArrayBuffer(rscStream2a),
-                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
-                ]);
-                const htmlReader2 = htmlStream2.getReader();
-                const htmlChunks2 = [];
-                while (true) {
-                  const { done, value } = await htmlReader2.read();
-                  if (done) break;
-                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-                }
-                const _regenTags2 = getCollectedFetchTags();
-                await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-                setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-              });
-            }
-            if (_mwCtx.headers) {
-              for (const [key, value] of _mwCtx.headers) {
-                const lk = key.toLowerCase();
-                if (lk === "set-cookie") {
-                  const existing = _earlyRscResponseHeaders[lk];
+               triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                 let _earlyEl;
+                 try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                 const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+                 const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                 // Capture font data after render starts (fonts are populated during RSC rendering).
+                 const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                 const [rscBytesCollected, htmlStream2] = await Promise.all([
+                   collectStreamAsArrayBuffer(rscStream2a),
+                   ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                 ]);
+                 const htmlReader2 = htmlStream2.getReader();
+                 const htmlChunks2 = [];
+                 while (true) {
+                   const { done, value } = await htmlReader2.read();
+                   if (done) break;
+                   htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                 }
+                 // Include path tags so revalidatePath() can invalidate this entry.
+                 const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+               });
+             }
+             if (_mwCtx.headers) {
+               for (const [key, value] of _mwCtx.headers) {
+                 const lk = key.toLowerCase();
+                 if (lk === "set-cookie") {
+                   const existing = _earlyRscResponseHeaders[lk];
                   if (Array.isArray(existing)) existing.push(value);
                   else if (existing) _earlyRscResponseHeaders[lk] = [existing, value];
                   else _earlyRscResponseHeaders[lk] = [value];
@@ -2263,32 +2265,34 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         } else {
           // HTML path — serve cached HTML
           const _earlyHtml = _earlyCached.value.value.html;
-          if (_earlyIsStale) {
-            // Background regeneration
-            const _earlyFrozenNavCtx = _getNavigationContext();
-            const _earlyFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-            triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-              let _earlyEl;
-              try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-              const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
-              const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-              const [rscBytesCollected, htmlStream2] = await Promise.all([
-                collectStreamAsArrayBuffer(rscStream2a),
-                ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _earlyFontData),
-              ]);
-              const htmlReader2 = htmlStream2.getReader();
-              const htmlChunks2 = [];
-              while (true) {
-                const { done, value } = await htmlReader2.read();
-                if (done) break;
-                htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-              }
-              const _regenTags2 = getCollectedFetchTags();
-              await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-              setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-            });
-          }
-          setHeadersContext(null);
+           if (_earlyIsStale) {
+             // Background regeneration
+             const _earlyFrozenNavCtx = _getNavigationContext();
+             triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+               let _earlyEl;
+               try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+               const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+               const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+               // Capture font data after render starts (fonts are populated during RSC rendering).
+               const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+               const [rscBytesCollected, htmlStream2] = await Promise.all([
+                 collectStreamAsArrayBuffer(rscStream2a),
+                 ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+               ]);
+               const htmlReader2 = htmlStream2.getReader();
+               const htmlChunks2 = [];
+               while (true) {
+                 const { done, value } = await htmlReader2.read();
+                 if (done) break;
+                 htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+               }
+               // Include path tags so revalidatePath() can invalidate this entry.
+               const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+               await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+               setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+             });
+           }
+           setHeadersContext(null);
           setNavigationContext(null);
           const _earlyHtmlResp = new Response(_earlyHtml, {
             status: _mwCtx.status || 200,
@@ -2573,11 +2577,43 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
 
      // ISR RSC path: HIT/STALE are handled by the early ISR check above (before buildPageElement).
-     // If we reach here with an ISR page, it's a MISS — the early check found nothing usable.
-     // Mark MISS so the response header reflects the cache state.
-     if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0) {
-       responseHeaders["X-Vinext-Cache"] = "MISS";
-     }
+      // If we reach here with an ISR page, it's a MISS — the early check found nothing usable.
+      // Mark MISS so the response header reflects the cache state.
+      // Also populate the cache in the background so subsequent RSC requests get HIT/STALE.
+      let _rscResponseStream = rscStream;
+      if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0) {
+        responseHeaders["X-Vinext-Cache"] = "MISS";
+        // Tee the RSC stream: one branch for the client, one for background cache population.
+        const [rscStreamForClient, rscStreamForBgCache] = rscStream.tee();
+        _rscResponseStream = rscStreamForClient;
+        const _rssMissNavCtx = _getNavigationContext();
+        const _rssMissCacheKey = isrCacheKey("app", cleanPathname);
+        triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
+          const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
+          // Render a second time to get HTML for the cache entry (needed so HTML
+          // requests also get a HIT after an RSC-first visit populates the cache).
+          let _bgEl;
+          try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+          const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+          const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+          const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+          const [, htmlStream2] = await Promise.all([
+            collectStreamAsArrayBuffer(rscStream3a),
+            ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
+          ]);
+          const htmlReader2 = htmlStream2.getReader();
+          const htmlChunks2 = [];
+          while (true) {
+            const { done, value } = await htmlReader2.read();
+            if (done) break;
+            htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+          }
+          const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+          // Cache with the original RSC bytes (from the first render, already served to client).
+          await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
+          setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
+        });
+      }
 
      // Merge middleware response headers into the RSC response.
      // set-cookie and vary are accumulated to preserve existing values
@@ -2625,7 +2661,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
        const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
        responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
      }
-     return new Response(rscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
+      return new Response(_rscResponseStream, { status: _mwCtx.status || 200, headers: responseHeaders });
    }
 
   // Build HTTP Link header for font preloading.
@@ -2812,7 +2848,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
            const rscBytesCollected = _rscStreamForCache
              ? await collectStreamAsArrayBuffer(_rscStreamForCache)
              : undefined;
-           const _missPageTags = getCollectedFetchTags();
+            const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
            await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
            setRevalidateDuration(cacheKey, revalidateSeconds);
          }

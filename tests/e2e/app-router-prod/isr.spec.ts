@@ -25,7 +25,8 @@ const BASE = "http://localhost:4180";
  * quantifiers over comment-interleaved content.
  */
 function extractRequestId(html: string): string | undefined {
-  // Strip all HTML comments before matching — O(n) and safe from backtracking
+  // Strip all HTML comments before matching — O(n) and safe from backtracking.
+  // codeql[js/incomplete-multi-character-sanitization] -- trusted SSR output, not user input
   const stripped = html.replace(/<!--[\s\S]*?-->/g, "");
   return (
     stripped.match(/data-testid="request-id"[^>]*>RequestID:\s*([a-z0-9]+)/)?.[1] ??
