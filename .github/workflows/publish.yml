@@ -141,6 +141,18 @@ jobs:
             echo "EOFMARKER"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SUMMARY: ${{ steps.summary.outputs.text }}
+        run: |
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes "${SUMMARY}" \
+            --draft \
+            --repo "${{ github.repository }}"
+
       - name: Notify Google Chat
         if: success()
         continue-on-error: true
