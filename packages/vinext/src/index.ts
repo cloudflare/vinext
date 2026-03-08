@@ -2118,8 +2118,11 @@ hydrate();
           // Exclude vinext from dependency optimization so esbuild doesn't
           // scan dist files containing virtual module imports (virtual:vinext-*)
           // that only resolve at Vite plugin time, not during pre-bundling.
+          // Exclude @vercel/og so Vite's esbuild pre-bundler doesn't cache it
+          // before our vinext:og-font-patch transform can inline the font and
+          // patch the yoga WASM instantiation for workerd compatibility.
           optimizeDeps: {
-            exclude: ["vinext"],
+            exclude: ["vinext", "@vercel/og"],
           },
           // Enable JSX in .tsx/.jsx files
           // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`
@@ -2185,7 +2188,7 @@ hydrate();
                 },
               }),
               optimizeDeps: {
-                exclude: ["vinext"],
+                exclude: ["vinext", "@vercel/og"],
                 entries: appEntries,
               },
               build: {
@@ -2208,7 +2211,7 @@ hydrate();
                 },
               }),
               optimizeDeps: {
-                exclude: ["vinext"],
+                exclude: ["vinext", "@vercel/og"],
                 entries: appEntries,
               },
               build: {
@@ -3598,6 +3601,98 @@ hydrate();
         },
       },
     },
+    // Fix @vercel/og asset initialization for all environments.
+    //
+    // The @vercel/og edge build has two top-level initializations that break
+    // in different contexts:
+    //
+    // 1. Font: `fetch(new URL("./noto-sans-v27-latin-regular.ttf", import.meta.url))`
+    //    In Cloudflare Workers (production and dev), `import.meta.url` is "worker"
+    //    (not a real URL), so `new URL(...)` throws "TypeError: Invalid URL string".
+    //    Fix: inline the 27 KB font as base64, resolved at Vite transform time.
+    //
+    // 2. WASM: `var initializedResvg = initWasm(resvg_wasm)` (top-level await)
+    //    In Vite dev mode, the RSC module runs through Node.js's module graph
+    //    (the Vite module runner), where `.wasm?module` imports are not natively
+    //    supported and `WebAssembly.instantiate()` may be disallowed by the embedder.
+    //    Fix: defer WASM initialization to first use (lazy) so the error doesn't
+    //    happen at module load time. workerd can initialize the WASM on demand
+    //    when ImageResponse is actually called.
+    {
+      name: "vinext:og-font-fix",
+      enforce: "pre",
+      transform(code, id) {
+        // Only act on @vercel/og edge build
+        if (!id.includes("@vercel/og") || !code.includes("noto-sans-v27-latin-regular.ttf")) {
+          return null;
+        }
+
+        let newCode = code;
+
+        // Fix 1: Inline the fallback font as base64 to avoid fetch(new URL(..., import.meta.url))
+        if (newCode.includes("import.meta.url")) {
+          let fontBase64: string | null = null;
+          try {
+            const req = createRequire(import.meta.url);
+            const ogPkgPath = req.resolve("@vercel/og/package.json");
+            const fontPath = path.join(path.dirname(ogPkgPath), "dist", "noto-sans-v27-latin-regular.ttf");
+            fontBase64 = fs.readFileSync(fontPath).toString("base64");
+          } catch {
+            // @vercel/og not installed or font missing — skip font fix
+          }
+
+          if (fontBase64) {
+            // Replace the top-level fetch(new URL(..., import.meta.url)) with an
+            // inline Uint8Array constructed from base64. Works in all environments.
+            const inlined = [
+              `(function(){`,
+              `var b=${JSON.stringify(fontBase64)};`,
+              `var r=atob(b);`,
+              `var a=new Uint8Array(r.length);`,
+              `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
+              `return Promise.resolve(a.buffer);`,
+              `})()`,
+            ].join("");
+
+            const patternMultiLine = /fetch\(\s*new URL\(["']\.\/noto-sans-v27-latin-regular\.ttf["'],\s*import\.meta\.url\s*\)\s*\)\.then\(\s*\(res\)\s*=>\s*res\.arrayBuffer\(\)\s*\)/;
+            const patternSingleLine = /fetch\(new URL\(["']\.\/noto-sans-v27-latin-regular\.ttf["'],import\.meta\.url\)\)\.then\(\(res\)=>res\.arrayBuffer\(\)\)/;
+
+            if (patternMultiLine.test(newCode)) {
+              newCode = newCode.replace(patternMultiLine, inlined);
+            } else if (patternSingleLine.test(newCode)) {
+              newCode = newCode.replace(patternSingleLine, inlined);
+            } else {
+              // Fallback: replace the URL construction only
+              newCode = newCode.replace(
+                /new URL\(["']\.\/noto-sans-v27-latin-regular\.ttf["'],\s*import\.meta\.url\s*\)/g,
+                `(${JSON.stringify("data:font/ttf;base64," + fontBase64)})`,
+              );
+            }
+          }
+        }
+
+        // Fix 2: Defer WASM initialization from module load time to first ImageResponse use.
+        // In Vite dev mode the module runner can't compile WASM at load time. Making the
+        // init lazy means it only runs inside the workerd subprocess when ImageResponse
+        // is actually constructed, where WebAssembly.instantiate() is fully supported.
+        //
+        // Replace: var initializedResvg = initWasm(resvg_wasm);
+        // With:    var initializedResvg = null;
+        // And:     await Promise.all([fallbackFont, initializedResvg])
+        // With:    await Promise.all([fallbackFont, initializedResvg || (initializedResvg = initWasm(resvg_wasm))])
+        const wasmInitPattern = /var initializedResvg = initWasm\(resvg_wasm\);/;
+        if (wasmInitPattern.test(newCode)) {
+          newCode = newCode.replace(wasmInitPattern, "var initializedResvg = null;");
+          newCode = newCode.replace(
+            /await Promise\.all\(\[fallbackFont, initializedResvg\]\)/g,
+            "await Promise.all([fallbackFont, initializedResvg || (initializedResvg = initWasm(resvg_wasm))])",
+          );
+        }
+
+        if (newCode === code) return null;
+        return { code: newCode, map: null };
+      },
+    },
     // Copy @vercel/og assets (font, WASM) to the RSC output directory.
     // @vercel/og uses readFileSync(new URL("./font.ttf", import.meta.url)) which
     // breaks when the module is bundled because Vite doesn't process
@@ -3827,6 +3922,82 @@ hydrate();
             fs.writeFileSync(headersPath, headersContent);
           }
         },
+      },
+    },
+    {
+      // @vercel/og patch for workerd (cloudflare-dev + cloudflare-workers)
+      //
+      // @vercel/og/dist/index.edge.js has two dynamic WASM/fetch issues in workerd:
+      //
+      // 1. FONT FETCH: top-level fetch(new URL(..., import.meta.url)) for the fallback
+      //    font fails because import.meta.url is a file:// URL in Vite's module runner,
+      //    and workerd cannot fetch file:// URLs.
+      //    Fix: inline the font bytes as base64 and resolve synchronously.
+      //
+      // 2. YOGA WASM: yoga-layout embeds its WASM as a base64 data URL and instantiates
+      //    it via WebAssembly.instantiate(bytes) at runtime.
+      //    workerd forbids dynamic WASM compilation from bytes — WASM must be loaded
+      //    through the module system as a pre-compiled WebAssembly.Module.
+      //    Fix: extract the yoga WASM bytes at Vite transform time (Node.js), write
+      //    yoga.wasm to @vercel/og/dist/, import it via `?module` so @cloudflare/vite-plugin
+      //    can serve it through the module system, and inject h2.instantiateWasm to
+      //    use the pre-compiled module instead of bytes.
+      name: "vinext:og-font-patch",
+      enforce: "pre" as const,
+      transform(code: string, id: string) {
+        if (!id.includes("@vercel/og") || !id.includes("index.edge.js")) return null;
+        let result = code;
+
+        // ── Fix 1: Inline the fallback Noto Sans font ─────────────────────────────────
+        const FETCH_PATTERN = `var fallbackFont = fetch(\n  new URL("./noto-sans-v27-latin-regular.ttf", import.meta.url)\n).then((res) => res.arrayBuffer());`;
+        if (result.includes(FETCH_PATTERN)) {
+          const fontPath = path.join(path.dirname(id), "noto-sans-v27-latin-regular.ttf");
+          let fontBytes: Buffer | null = null;
+          try { fontBytes = fs.readFileSync(fontPath); } catch { /* not found */ }
+          if (fontBytes) {
+            const fontBase64 = fontBytes.toString("base64");
+            const fontReplacement =
+              `var fallbackFont = (function() {` +
+              ` var b64 = ${JSON.stringify(fontBase64)};` +
+              ` var bin = atob(b64);` +
+              ` var buf = new Uint8Array(bin.length);` +
+              ` for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);` +
+              ` return Promise.resolve(buf.buffer);` +
+              ` })();`;
+            result = result.replace(FETCH_PATTERN, fontReplacement);
+          }
+        }
+
+        // ── Fix 2: Extract yoga WASM and import via ?module ───────────────────────────
+        // yoga-layout's emscripten bundle sets H to a data URL containing the yoga WASM,
+        // then later calls WebAssembly.instantiate(bytes, imports), which workerd rejects.
+        // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch
+        // that we inject to use a pre-compiled WebAssembly.Module loaded via ?module.
+        const YOGA_DATA_URL_RE = /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
+        const yogaMatch = YOGA_DATA_URL_RE.exec(result);
+        if (yogaMatch) {
+          const yogaBase64 = yogaMatch[1];
+          const distDir = path.dirname(id);
+          const yogaWasmPath = path.join(distDir, "yoga.wasm");
+          // Write yoga.wasm to disk idempotently at transform time (Node.js side)
+          if (!fs.existsSync(yogaWasmPath)) {
+            fs.writeFileSync(yogaWasmPath, Buffer.from(yogaBase64, "base64"));
+          }
+          // Disable the data-URL branch so emscripten doesn't try to instantiate from bytes
+          result = result.replace(yogaMatch[0], `H = "";`);
+          // Patch the loadYoga call site to inject instantiateWasm using the ?module import
+          const YOGA_CALL = `yoga_wasm_base64_esm_default()`;
+          const YOGA_CALL_PATCHED =
+            `yoga_wasm_base64_esm_default({ instantiateWasm: function(imports, callback) {` +
+            ` WebAssembly.instantiate(yoga_wasm_module, imports).then(function(inst) { callback(inst); });` +
+            ` return {}; } })`;
+          result = result.replace(YOGA_CALL, YOGA_CALL_PATCHED);
+          // Prepend the yoga wasm ?module import so @cloudflare/vite-plugin handles it
+          result = `import yoga_wasm_module from "./yoga.wasm?module";\n` + result;
+        }
+
+        if (result === code) return null;
+        return { code: result, map: null };
       },
     },
   ];
