@@ -5,6 +5,7 @@ import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
+import { createDirectRunner } from "./server/dev-module-runner.js";
 import {
   generateRscEntry,
   generateSsrEntry,
@@ -2458,6 +2459,34 @@ hydrate();
         // Watch pages directory for file additions/removals to invalidate route cache.
         const pageExtensions = fileMatcher.extensionRegex;
 
+        // Build a long-lived ModuleRunner for loading all Pages Router modules
+        // (middleware, API routes, SSR page rendering) on every request.
+        //
+        // We must NOT use server.ssrLoadModule() here: when @cloudflare/vite-plugin
+        // is present its environments replace the SSR transport, causing
+        // SSRCompatModuleRunner to crash with:
+        //   TypeError: Cannot read properties of undefined (reading 'outsideEmitter')
+        // on the very first request.
+        //
+        // createDirectRunner() builds a runner on environment.fetchModule() which
+        // is a plain async method — safe with all plugin combinations, including
+        // @cloudflare/vite-plugin.
+        //
+        // The runner is created lazily on first use so that all environments are
+        // fully registered before we inspect them. We prefer "ssr", then any
+        // non-"rsc" environment, then whatever is available.
+        let pagesRunner: import("vite/module-runner").ModuleRunner | null = null;
+        function getPagesRunner() {
+          if (!pagesRunner) {
+            const env =
+              server.environments["ssr"] ??
+              Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
+              Object.values(server.environments)[0];
+            pagesRunner = createDirectRunner(env);
+          }
+          return pagesRunner;
+        }
+
         /**
          * Invalidate the virtual RSC entry module in Vite's module graph.
          *
@@ -2832,7 +2861,7 @@ hydrate();
                       .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])
                   ),
                 });
-                const result = await runMiddleware(server, middlewarePath, middlewareRequest);
+                const result = await runMiddleware(getPagesRunner(), middlewarePath, middlewareRequest);
 
                 if (!result.continue) {
                   if (result.redirectUrl) {

@@ -2267,8 +2267,8 @@ describe("double-encoded path handling in middleware", () => {
     );
     // Create a mock Vite server that returns a middleware module
     let capturedUrl: string | undefined;
-    const mockServer = {
-      ssrLoadModule: async () => ({
+    const mockRunner = {
+      import: async () => ({
         default: (req: Request) => {
           capturedUrl = req.url;
           return new Response("OK", {
@@ -2282,7 +2282,7 @@ describe("double-encoded path handling in middleware", () => {
     // Send a double-encoded path — after single decode, it should be /%64ashboard
     const testUrl = "http://localhost:3000/%2564ashboard";
     const request = new Request(testUrl);
-    await runMiddleware(mockServer as any, "/tmp/middleware.ts", request);
+    await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
 
     // Middleware should have received the decoded+normalized URL
     expect(capturedUrl).toBeDefined();
@@ -2300,8 +2300,8 @@ describe("double-encoded path handling in middleware", () => {
       "../packages/vinext/src/server/middleware.js"
     );
 
-    const mockServer = {
-      ssrLoadModule: async () => ({
+    const mockRunner = {
+      import: async () => ({
         proxy: () => {
           const response = new Response(null, { status: 307 });
           response.headers.set("location", "/login");
@@ -2312,7 +2312,7 @@ describe("double-encoded path handling in middleware", () => {
     };
 
     const request = new Request("http://localhost/protected");
-    const result = await runMiddleware(mockServer as any, "/tmp/proxy.js", request);
+    const result = await runMiddleware(mockRunner as any, "/tmp/proxy.js", request);
 
     expect(result.continue).toBe(false);
     expect(result.redirectUrl).toContain("/login");
@@ -2347,8 +2347,8 @@ describe("NextFetchEvent passed to middleware", () => {
     );
     // Middleware that accesses event.waitUntil — will throw if event is undefined
     let receivedEvent: any;
-    const mockServer = {
-      ssrLoadModule: async () => ({
+    const mockRunner = {
+      import: async () => ({
         middleware: (req: any, event: any) => {
           receivedEvent = event;
           event.waitUntil(Promise.resolve("done"));
@@ -2361,7 +2361,7 @@ describe("NextFetchEvent passed to middleware", () => {
     };
 
     const request = new Request("http://localhost:3000/test");
-    const result = await runMiddleware(mockServer as any, "/tmp/middleware.ts", request);
+    const result = await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
 
     expect(result.continue).toBe(true);
     expect(receivedEvent).toBeDefined();
@@ -2374,8 +2374,8 @@ describe("NextFetchEvent passed to middleware", () => {
       "../packages/vinext/src/server/middleware.js"
     );
     let sideEffectRan = false;
-    const mockServer = {
-      ssrLoadModule: async () => ({
+    const mockRunner = {
+      import: async () => ({
         middleware: (_req: any, event: any) => {
           event.waitUntil(
             Promise.resolve().then(() => {
@@ -2391,7 +2391,7 @@ describe("NextFetchEvent passed to middleware", () => {
     };
 
     const request = new Request("http://localhost:3000/drain");
-    await runMiddleware(mockServer as any, "/tmp/middleware.ts", request);
+    await runMiddleware(mockRunner as any, "/tmp/middleware.ts", request);
 
     // The waitUntil promise should have been resolved.
     // Flush the microtask queue so Promise.resolve().then(...) callbacks run.
