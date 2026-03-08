@@ -4,11 +4,12 @@
  * Re-exports ImageResponse from @vercel/og which provides OG image generation
  * using Satori (SVG) + Resvg WASM (PNG).
  *
- * The vinext:og-font-patch Vite plugin (in packages/vinext/src/index.ts)
- * patches @vercel/og/dist/index.edge.js at transform time to inline the
- * fallback font as base64 instead of fetching it via import.meta.url.
- * This is required for Cloudflare Workers (cloudflare-dev and cloudflare-workers)
- * where workerd cannot fetch file:// URLs.
+ * The vinext:og-inline-fetch-assets Vite plugin (in packages/vinext/src/index.ts)
+ * patches @vercel/og/dist/index.edge.js at transform time: any
+ * `fetch(new URL("./asset", import.meta.url)).then(res => res.arrayBuffer())`
+ * expression is replaced with an inline base64 IIFE so no runtime fetch is needed.
+ * This is required for Cloudflare Workers where import.meta.url is "worker" (not
+ * a real URL) and new URL(..., import.meta.url) would throw at module load time.
  *
  * Usage:
  *   import { ImageResponse } from "next/og";

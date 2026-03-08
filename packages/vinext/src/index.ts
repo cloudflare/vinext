@@ -3601,103 +3601,86 @@ hydrate();
         },
       },
     },
-    // Fix @vercel/og asset initialization for all environments.
+    // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))`.
     //
-    // The @vercel/og edge build has two top-level initializations that break
-    // in different contexts:
+    // Some bundled libraries (notably @vercel/og) load assets at module init time
+    // with the pattern:
     //
-    // 1. Font: `fetch(new URL("./noto-sans-v27-latin-regular.ttf", import.meta.url))`
-    //    In Cloudflare Workers (production and dev), `import.meta.url` is "worker"
-    //    (not a real URL), so `new URL(...)` throws "TypeError: Invalid URL string".
-    //    Fix: inline the 27 KB font as base64, resolved at Vite transform time.
+    //   fetch(new URL("./some-font.ttf", import.meta.url)).then(res => res.arrayBuffer())
     //
-    // 2. WASM: `var initializedResvg = initWasm(resvg_wasm)` (top-level await)
-    //    In Vite dev mode, the RSC module runs through Node.js's module graph
-    //    (the Vite module runner), where `.wasm?module` imports are not natively
-    //    supported and `WebAssembly.instantiate()` may be disallowed by the embedder.
-    //    Fix: defer WASM initialization to first use (lazy) so the error doesn't
-    //    happen at module load time. workerd can initialize the WASM on demand
-    //    when ImageResponse is actually called.
+    // This works in browser and standard Node.js because import.meta.url is a real
+    // file:// URL. In Cloudflare Workers (both wrangler dev and production), however,
+    // import.meta.url is the string "worker" — not a URL — so new URL(...) throws
+    // "TypeError: Invalid URL string" and the Worker fails to start.
+    //
+    // Fix: at Vite transform time, find every such pattern, resolve the referenced
+    // file relative to the module's actual path on disk (available as `id`), read it,
+    // and replace the entire fetch(new URL(...)) expression with an inline base64 IIFE
+    // that resolves synchronously. This eliminates the runtime fetch entirely and works
+    // in all environments (workerd, Node.js, browser).
+    //
+    // Note: WASM files imported via `import ... from "./foo.wasm?module"` are handled
+    // by the bundler/Vite directly and do not need this treatment. Only assets that
+    // are runtime-fetched (not statically imported) need to be inlined here.
     {
-      name: "vinext:og-font-fix",
+      name: "vinext:og-inline-fetch-assets",
       enforce: "pre",
       transform(code, id) {
-        // Only act on @vercel/og edge build
-        if (!id.includes("@vercel/og") || !code.includes("noto-sans-v27-latin-regular.ttf")) {
+        // Quick bail-out: only process modules that use the fetch+new URL+import.meta.url pattern
+        if (!code.includes("import.meta.url") || !code.includes("fetch(")) {
           return null;
         }
 
+        // Match: fetch(new URL("./relative/path.ext", import.meta.url)).then((res) => res.arrayBuffer())
+        // Handles both minified (no spaces) and pretty-printed (spaces around parens/commas) forms.
+        // Capture group 1: the relative file path (e.g. "./noto-sans-v27-latin-regular.ttf")
+        const pattern = /fetch\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*\}?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*\))/g;
+
+        const moduleDir = path.dirname(id);
         let newCode = code;
+        let didReplace = false;
 
-        // Fix 1: Inline the fallback font as base64 to avoid fetch(new URL(..., import.meta.url))
-        if (newCode.includes("import.meta.url")) {
-          let fontBase64: string | null = null;
+        for (const match of code.matchAll(pattern)) {
+          const fullMatch = match[0];
+          const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
+          const absPath = path.resolve(moduleDir, relPath);
+
+          let fileBase64: string;
           try {
-            const req = createRequire(import.meta.url);
-            const ogPkgPath = req.resolve("@vercel/og/package.json");
-            const fontPath = path.join(path.dirname(ogPkgPath), "dist", "noto-sans-v27-latin-regular.ttf");
-            fontBase64 = fs.readFileSync(fontPath).toString("base64");
+            fileBase64 = fs.readFileSync(absPath).toString("base64");
           } catch {
-            // @vercel/og not installed or font missing — skip font fix
+            // File not found on disk — skip this occurrence (may be a runtime-only asset)
+            continue;
           }
 
-          if (fontBase64) {
-            // Replace the top-level fetch(new URL(..., import.meta.url)) with an
-            // inline Uint8Array constructed from base64. Works in all environments.
-            const inlined = [
-              `(function(){`,
-              `var b=${JSON.stringify(fontBase64)};`,
-              `var r=atob(b);`,
-              `var a=new Uint8Array(r.length);`,
-              `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
-              `return Promise.resolve(a.buffer);`,
-              `})()`,
-            ].join("");
+          // Replace the entire fetch(...).then(...) with an inline IIFE that decodes
+          // the base64 string and returns the ArrayBuffer synchronously wrapped in a Promise.
+          const inlined = [
+            `(function(){`,
+            `var b=${JSON.stringify(fileBase64)};`,
+            `var r=atob(b);`,
+            `var a=new Uint8Array(r.length);`,
+            `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
+            `return Promise.resolve(a.buffer);`,
+            `})()`,
+          ].join("");
 
-            const patternMultiLine = /fetch\(\s*new URL\(["']\.\/noto-sans-v27-latin-regular\.ttf["'],\s*import\.meta\.url\s*\)\s*\)\.then\(\s*\(res\)\s*=>\s*res\.arrayBuffer\(\)\s*\)/;
-            const patternSingleLine = /fetch\(new URL\(["']\.\/noto-sans-v27-latin-regular\.ttf["'],import\.meta\.url\)\)\.then\(\(res\)=>res\.arrayBuffer\(\)\)/;
-
-            if (patternMultiLine.test(newCode)) {
-              newCode = newCode.replace(patternMultiLine, inlined);
-            } else if (patternSingleLine.test(newCode)) {
-              newCode = newCode.replace(patternSingleLine, inlined);
-            } else {
-              // Fallback: replace the URL construction only
-              newCode = newCode.replace(
-                /new URL\(["']\.\/noto-sans-v27-latin-regular\.ttf["'],\s*import\.meta\.url\s*\)/g,
-                `(${JSON.stringify("data:font/ttf;base64," + fontBase64)})`,
-              );
-            }
-          }
+          newCode = newCode.replace(fullMatch, inlined);
+          didReplace = true;
         }
 
-        // Fix 2: Defer WASM initialization from module load time to first ImageResponse use.
-        // In Vite dev mode the module runner can't compile WASM at load time. Making the
-        // init lazy means it only runs inside the workerd subprocess when ImageResponse
-        // is actually constructed, where WebAssembly.instantiate() is fully supported.
-        //
-        // Replace: var initializedResvg = initWasm(resvg_wasm);
-        // With:    var initializedResvg = null;
-        // And:     await Promise.all([fallbackFont, initializedResvg])
-        // With:    await Promise.all([fallbackFont, initializedResvg || (initializedResvg = initWasm(resvg_wasm))])
-        const wasmInitPattern = /var initializedResvg = initWasm\(resvg_wasm\);/;
-        if (wasmInitPattern.test(newCode)) {
-          newCode = newCode.replace(wasmInitPattern, "var initializedResvg = null;");
-          newCode = newCode.replace(
-            /await Promise\.all\(\[fallbackFont, initializedResvg\]\)/g,
-            "await Promise.all([fallbackFont, initializedResvg || (initializedResvg = initWasm(resvg_wasm))])",
-          );
-        }
-
-        if (newCode === code) return null;
+        if (!didReplace) return null;
         return { code: newCode, map: null };
       },
     },
-    // Copy @vercel/og assets (font, WASM) to the RSC output directory.
-    // @vercel/og uses readFileSync(new URL("./font.ttf", import.meta.url)) which
-    // breaks when the module is bundled because Vite doesn't process
-    // new URL(..., import.meta.url) for server-side (SSR/RSC) builds.
-    // This plugin copies the required assets so they exist alongside the bundle.
+    // Copy @vercel/og binary assets to the RSC output directory for production builds.
+    //
+    // The font is inlined as base64 by vinext:og-inline-fetch-assets (no copy needed).
+    // The WASM file is imported as `import resvg_wasm from "./resvg.wasm?module"` — a
+    // static Vite import. Rollup/Vite resolves the ?module import and emits the asset,
+    // but if it isn't emitted (e.g. the RSC environment doesn't recognize the ?module
+    // suffix), the runtime will fail to find resvg.wasm at the expected relative path.
+    // This plugin copies the WASM file as a safety net for those cases.
     {
       name: "vinext:og-assets",
       apply: "build",
@@ -3717,8 +3700,9 @@ hydrate();
           if (!fs.existsSync(indexPath)) return;
 
           const content = fs.readFileSync(indexPath, "utf-8");
+          // The font is inlined as base64 by vinext:og-inline-fetch-assets, so only
+          // the WASM needs to be present as a file alongside the bundle.
           const ogAssets = [
-            "noto-sans-v27-latin-regular.ttf",
             "resvg.wasm",
           ];
 
