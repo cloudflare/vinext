@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordMiddlewareInvocation } from "./instrumentation-state";
 
 /**
  * App Router middleware that uses NextRequest-specific APIs.
@@ -14,6 +15,12 @@ import { NextRequest, NextResponse } from "next/server";
 export function middleware(request: NextRequest) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
+
+  // Record this invocation so tests can detect double-execution.
+  // In a hybrid app+pages fixture the Vite connect handler runs middleware
+  // via ssrLoadModule (SSR env) and then the RSC entry runs it again inline
+  // (RSC env). A single request should produce exactly one invocation.
+  recordMiddlewareInvocation(pathname);
 
   // Test NextRequest.cookies - this would fail with TypeError if request is plain Request
   const sessionToken = request.cookies.get("session");

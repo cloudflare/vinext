@@ -1,10 +1,3 @@
-import { NextResponse } from "next/server";
-import {
-  isRegisterCalled,
-  getCapturedErrors,
-  resetInstrumentationState,
-} from "../../../instrumentation-state";
-
 /**
  * API route that exposes the current instrumentation state for e2e testing.
  *
@@ -16,10 +9,22 @@ import {
  * DELETE /api/instrumentation-test
  *   Resets the captured state so tests can start from a clean slate.
  */
+
+import { NextResponse } from "next/server";
+import {
+  registerCalled,
+  capturedErrors,
+  resetInstrumentationState,
+  getMiddlewareInvocationCount,
+  getMiddlewareInvokedPaths,
+} from "../../../instrumentation-state";
+
 export async function GET() {
   return NextResponse.json({
-    registerCalled: isRegisterCalled(),
-    errors: getCapturedErrors(),
+    registerCalled,
+    errors: capturedErrors,
+    middlewareInvocationCount: getMiddlewareInvocationCount(),
+    middlewareInvokedPaths: getMiddlewareInvokedPaths(),
   });
 }
 
