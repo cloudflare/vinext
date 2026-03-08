@@ -326,6 +326,60 @@ describe("Next.js compat: not-found", () => {
     }
   });
 
+  // ── Issue #346: renderHTTPAccessFallbackPage must pass params to layouts ──
+  // When a 404 is rendered under a dynamic route segment (e.g. /[lang]/...),
+  // the layout at that segment receives `params: undefined` instead of
+  // `params: Promise<{ lang: string }>`, causing layouts that destructure
+  // params to crash with:
+  //   "Cannot destructure property 'lang' of '(intermediate value)' as it is undefined."
+  //
+  // Fixture: fixtures/app-basic/app/nextjs-compat/not-found-params-layout/[lang]/layout.tsx
+  // The layout awaits params and reads `lang` — it crashes if params is not passed.
+
+  it("valid lang renders page through params-layout (sanity check)", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-params-layout/en",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain("not-found-params-layout-page");
+    expect(html).toContain("not-found-params-layout-wrapper");
+    expect(html).toContain('data-lang="en"');
+  });
+
+  // Regression test for issue #346:
+  // notFound() under a dynamic [lang] layout must NOT crash with
+  // "Cannot destructure property 'lang' of '(intermediate value)' as it is undefined."
+  // renderHTTPAccessFallbackPage must pass `params` to layout components.
+  it("notFound() under dynamic [lang] layout passes params to layout (issue #346)", async () => {
+    // The page at /[lang] only exists for known slugs, so hitting a missing
+    // sub-path triggers notFound(). The [lang]/not-found.tsx boundary catches it,
+    // but to render the not-found page the layout is still invoked — which requires
+    // params to be passed, otherwise it crashes with a 500.
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-params-layout/en/does-not-exist",
+    );
+    // Must be 404, not 500 — a 500 here means the layout crashed because params
+    // was not passed by renderHTTPAccessFallbackPage.
+    expect(res.status).toBe(404);
+    expect(html).toContain("Not Found (params-layout)");
+    // Layout should have rendered with the correct lang param
+    expect(html).toContain('data-lang="en"');
+  });
+
+  it("RSC request: notFound() under dynamic [lang] layout passes params (issue #346)", async () => {
+    const res = await fetch(
+      `${baseUrl}/nextjs-compat/not-found-params-layout/en/does-not-exist.rsc`,
+      { headers: { Accept: "text/x-component" } },
+    );
+    // Must be 404 with valid RSC payload, not 500
+    expect(res.status).toBe(404);
+    const body = await res.text();
+    expect(body.length).toBeGreaterThan(0);
+    expect(body).toContain("params-layout");
+  });
+
   // ── Browser-only tests (need Playwright, documented here) ──
   // These tests require clicking a button client-side which triggers notFound()
   // in a client component. Cannot be tested via HTTP fetch alone.
