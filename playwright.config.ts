@@ -97,6 +97,18 @@ const projectServers = {
       timeout: 30_000,
     },
   },
+  "app-router-prod": {
+    testDir: "./tests/e2e/app-router-prod",
+    server: {
+      // No tsc step needed for App Router — the RSC entry is generated at runtime.
+      command:
+        "node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4180",
+      cwd: "./tests/fixtures/app-basic",
+      port: 4180,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
   "cloudflare-pages-router-dev": {
     testDir: "./tests/e2e",
     testMatch: [
