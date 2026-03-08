@@ -2379,6 +2379,7 @@ hydrate();
             headers: nextConfig?.headers,
             allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
             allowedDevOrigins: nextConfig?.allowedDevOrigins,
+            bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
           }, instrumentationPath);
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {

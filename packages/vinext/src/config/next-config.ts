@@ -11,6 +11,28 @@ import fs from "node:fs";
 import { PHASE_DEVELOPMENT_SERVER } from "../shims/constants.js";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 
+/**
+ * Parse a body size limit value (string or number) into bytes.
+ * Accepts Next.js-style strings like "1mb", "500kb", "10mb".
+ * Returns the default 1MB if the value is not provided or invalid.
+ */
+export function parseBodySizeLimit(value: string | number | undefined | null): number {
+  if (value === undefined || value === null) return 1 * 1024 * 1024;
+  if (typeof value === "number") return value;
+  if (typeof value !== "string") return 1 * 1024 * 1024;
+  const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)$/i);
+  if (!match) return 1 * 1024 * 1024;
+  const num = parseFloat(match[1]);
+  const unit = match[2].toLowerCase();
+  switch (unit) {
+    case "b": return Math.floor(num);
+    case "kb": return Math.floor(num * 1024);
+    case "mb": return Math.floor(num * 1024 * 1024);
+    case "gb": return Math.floor(num * 1024 * 1024 * 1024);
+    default: return 1 * 1024 * 1024;
+  }
+}
+
 export interface HasCondition {
   type: "header" | "cookie" | "query" | "host";
   key: string;
@@ -169,6 +191,8 @@ export interface ResolvedNextConfig {
   allowedDevOrigins: string[];
   /** Extra allowed origins for server action CSRF validation (from experimental.serverActions.allowedOrigins). */
   serverActionsAllowedOrigins: string[];
+  /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
+  serverActionsBodySizeLimit: number;
 }
 
 const CONFIG_FILES = [
@@ -286,6 +310,7 @@ export async function resolveNextConfig(
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
+      serverActionsBodySizeLimit: 1 * 1024 * 1024,
     };
   }
 
@@ -334,7 +359,7 @@ export async function resolveNextConfig(
     ? config.allowedDevOrigins
     : [];
 
-  // Resolve serverActions.allowedOrigins from experimental config
+  // Resolve serverActions.allowedOrigins and bodySizeLimit from experimental config
   const experimental = config.experimental as Record<string, unknown> | undefined;
   const serverActionsConfig = experimental?.serverActions as
     | Record<string, unknown>
@@ -344,6 +369,7 @@ export async function resolveNextConfig(
   )
     ? (serverActionsConfig.allowedOrigins as string[])
     : [];
+  const serverActionsBodySizeLimit = parseBodySizeLimit(serverActionsConfig?.bodySizeLimit as string | number | undefined);
 
   // Warn about unsupported webpack usage. We preserve alias injection and
   // extract MDX settings, but all other webpack customization is still ignored.
@@ -394,6 +420,7 @@ export async function resolveNextConfig(
     aliases,
     allowedDevOrigins,
     serverActionsAllowedOrigins,
+    serverActionsBodySizeLimit,
   };
 }
 

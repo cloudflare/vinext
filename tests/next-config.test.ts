@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadNextConfig, resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
+import { loadNextConfig, parseBodySizeLimit, resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "../packages/vinext/src/shims/constants.js";
 
 function makeTempDir(): string {
@@ -223,5 +223,85 @@ module.exports = withPlugin({ basePath: "/wrapped" });`,
       path.join(tmpDir, "config", "request.ts"),
     );
     expect(config.mdx?.remarkPlugins).toEqual([fakeRemarkPlugin]);
+  });
+});
+
+describe("parseBodySizeLimit", () => {
+  it("parses megabyte strings", () => {
+    expect(parseBodySizeLimit("10mb")).toBe(10 * 1024 * 1024);
+    expect(parseBodySizeLimit("1mb")).toBe(1 * 1024 * 1024);
+  });
+
+  it("parses kilobyte strings", () => {
+    expect(parseBodySizeLimit("500kb")).toBe(500 * 1024);
+  });
+
+  it("parses gigabyte strings", () => {
+    expect(parseBodySizeLimit("1gb")).toBe(1 * 1024 * 1024 * 1024);
+  });
+
+  it("parses byte strings", () => {
+    expect(parseBodySizeLimit("2048b")).toBe(2048);
+  });
+
+  it("passes through numeric values directly", () => {
+    expect(parseBodySizeLimit(2097152)).toBe(2097152);
+  });
+
+  it("is case-insensitive", () => {
+    expect(parseBodySizeLimit("10MB")).toBe(10 * 1024 * 1024);
+    expect(parseBodySizeLimit("500KB")).toBe(500 * 1024);
+  });
+
+  it("handles fractional values", () => {
+    expect(parseBodySizeLimit("1.5mb")).toBe(Math.floor(1.5 * 1024 * 1024));
+  });
+
+  it("returns default 1MB for undefined", () => {
+    expect(parseBodySizeLimit(undefined)).toBe(1 * 1024 * 1024);
+  });
+
+  it("returns default 1MB for null", () => {
+    expect(parseBodySizeLimit(null)).toBe(1 * 1024 * 1024);
+  });
+
+  it("returns default 1MB for invalid strings", () => {
+    expect(parseBodySizeLimit("invalid")).toBe(1 * 1024 * 1024);
+    expect(parseBodySizeLimit("")).toBe(1 * 1024 * 1024);
+    expect(parseBodySizeLimit("10tb")).toBe(1 * 1024 * 1024);
+  });
+});
+
+describe("resolveNextConfig serverActionsBodySizeLimit", () => {
+  it("defaults to 1MB when no config is provided", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.serverActionsBodySizeLimit).toBe(1 * 1024 * 1024);
+  });
+
+  it("defaults to 1MB when serverActions is not configured", async () => {
+    const resolved = await resolveNextConfig({ env: {} });
+    expect(resolved.serverActionsBodySizeLimit).toBe(1 * 1024 * 1024);
+  });
+
+  it("parses bodySizeLimit from experimental.serverActions", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        serverActions: {
+          bodySizeLimit: "10mb",
+        },
+      },
+    });
+    expect(resolved.serverActionsBodySizeLimit).toBe(10 * 1024 * 1024);
+  });
+
+  it("accepts numeric bodySizeLimit", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        serverActions: {
+          bodySizeLimit: 5242880,
+        },
+      },
+    });
+    expect(resolved.serverActionsBodySizeLimit).toBe(5242880);
   });
 });
