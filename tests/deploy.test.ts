@@ -11,8 +11,15 @@ import {
   generatePagesRouterViteConfig,
   getMissingDeps,
   getFilesToGenerate,
+  configNeedsCloudflarePlugin,
   ensureESModule,
   renameCJSConfigs,
+  shouldUseInteractiveWranglerAuth,
+  buildWranglerAuthHelpMessage,
+  buildWranglerAccountIdHelpMessage,
+  planWranglerAuth,
+  resolveWranglerAccountId,
+  buildWranglerExecOptions,
   buildWranglerDeployArgs,
   parseDeployArgs,
   isPackageResolvable,
@@ -54,6 +61,203 @@ afterEach(() => {
 });
 
 // ─── Wrangler deploy args ───────────────────────────────────────────────────
+
+describe("shouldUseInteractiveWranglerAuth", () => {
+  it("uses interactive auth when running in a TTY without an API token", () => {
+    expect(shouldUseInteractiveWranglerAuth({}, { stdin: true, stdout: true, stderr: true })).toBe(true);
+  });
+
+  it("uses token auth when CLOUDFLARE_API_TOKEN is set", () => {
+    expect(
+      shouldUseInteractiveWranglerAuth(
+        { CLOUDFLARE_API_TOKEN: "token" },
+        { stdin: true, stdout: true, stderr: true },
+      ),
+    ).toBe(false);
+  });
+
+  it("uses token auth when no TTY is available", () => {
+    expect(shouldUseInteractiveWranglerAuth({}, { stdin: true, stdout: false, stderr: true })).toBe(false);
+  });
+});
+
+describe("buildWranglerExecOptions", () => {
+  it("preserves the terminal for local wrangler login flows", () => {
+    const useInteractiveAuth = shouldUseInteractiveWranglerAuth(
+      {},
+      { stdin: true, stdout: true, stderr: true },
+    );
+
+    expect(buildWranglerExecOptions(tmpDir, useInteractiveAuth)).toEqual({
+      cwd: tmpDir,
+      stdio: "inherit",
+    });
+  });
+
+  it("pipes output for headless or token-based deploys", () => {
+    const useInteractiveAuth = shouldUseInteractiveWranglerAuth(
+      { CLOUDFLARE_API_TOKEN: "token" },
+      { stdin: true, stdout: true, stderr: true },
+    );
+
+    expect(buildWranglerExecOptions(tmpDir, useInteractiveAuth)).toEqual({
+      cwd: tmpDir,
+      stdio: "pipe",
+      encoding: "utf-8",
+    });
+  });
+});
+
+describe("planWranglerAuth", () => {
+  it("uses token auth when CLOUDFLARE_API_TOKEN is set", () => {
+    expect(
+      planWranglerAuth(
+        { CLOUDFLARE_API_TOKEN: "token" },
+        { stdin: false, stdout: false, stderr: false },
+      ),
+    ).toEqual({ kind: "token" });
+  });
+
+  it("requires an account ID when using API token auth", () => {
+    expect(
+      planWranglerAuth(
+        { CLOUDFLARE_API_TOKEN: "token" },
+        { stdin: false, stdout: false, stderr: false },
+        false,
+        false,
+        "preview",
+      ),
+    ).toEqual({
+      kind: "error",
+      message: buildWranglerAccountIdHelpMessage("preview"),
+    });
+  });
+
+  it("reuses an existing interactive wrangler session when available", () => {
+    expect(
+      planWranglerAuth(
+        {},
+        { stdin: true, stdout: true, stderr: true },
+        true,
+      ),
+    ).toEqual({ kind: "interactive" });
+  });
+
+  it("starts wrangler login when interactive auth is possible but no session exists", () => {
+    expect(
+      planWranglerAuth(
+        {},
+        { stdin: true, stdout: true, stderr: true },
+        false,
+      ),
+    ).toEqual({ kind: "login" });
+  });
+
+  it("returns a helpful headless auth error when no token is available", () => {
+    expect(
+      planWranglerAuth(
+        {},
+        { stdin: false, stdout: false, stderr: false },
+      ),
+    ).toEqual({
+      kind: "error",
+      message: buildWranglerAuthHelpMessage(),
+    });
+  });
+});
+
+describe("buildWranglerAuthHelpMessage", () => {
+  it("documents the required Cloudflare auth setup", () => {
+    const message = buildWranglerAuthHelpMessage();
+    expect(message).toContain("CLOUDFLARE_API_TOKEN");
+    expect(message).toContain("CLOUDFLARE_ACCOUNT_ID");
+    expect(message).toContain("Edit Cloudflare Workers");
+    expect(message).toContain("npx wrangler login");
+    expect(message).toContain("developers.cloudflare.com/fundamentals/api/get-started/create-token/");
+    expect(message).toContain("developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/");
+    expect(message).toContain("developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/");
+    expect(message).toContain("developers.cloudflare.com/workers/wrangler/commands/#login");
+  });
+});
+
+describe("buildWranglerAccountIdHelpMessage", () => {
+  it("documents the required account ID setup for token auth", () => {
+    const message = buildWranglerAccountIdHelpMessage("preview");
+    expect(message).toContain("CLOUDFLARE_API_TOKEN");
+    expect(message).toContain("CLOUDFLARE_ACCOUNT_ID");
+    expect(message).toContain("account_id");
+    expect(message).toContain("preview");
+    expect(message).toContain("developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/");
+    expect(message).toContain("developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/");
+  });
+});
+
+describe("resolveWranglerAccountId", () => {
+  it("prefers CLOUDFLARE_ACCOUNT_ID from the environment", () => {
+    expect(
+      resolveWranglerAccountId(
+        tmpDir,
+        { CLOUDFLARE_ACCOUNT_ID: "  env-account  " },
+        undefined,
+      ),
+    ).toBe("env-account");
+  });
+
+  it("reads a top-level account_id from wrangler.jsonc", () => {
+    writeFile(tmpDir, "wrangler.jsonc", '{\n  "account_id": "jsonc-account"\n}\n');
+    expect(resolveWranglerAccountId(tmpDir)).toBe("jsonc-account");
+  });
+
+  it("prefers an env-specific account_id from wrangler.jsonc", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.jsonc",
+      `{
+  "account_id": "top-level-account",
+  "env": {
+    "preview": {
+      "account_id": "preview-account"
+    }
+  }
+}
+`,
+    );
+
+    expect(resolveWranglerAccountId(tmpDir, {}, "preview")).toBe("preview-account");
+  });
+
+  it("reads an env-specific account_id from wrangler.toml", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.toml",
+      `account_id = "top-level-account"
+
+[env.preview]
+account_id = "preview-account"
+`,
+    );
+
+    expect(resolveWranglerAccountId(tmpDir, {}, "preview")).toBe("preview-account");
+  });
+});
+
+describe("configNeedsCloudflarePlugin", () => {
+  it("returns true when plugins are missing", () => {
+    expect(configNeedsCloudflarePlugin({})).toBe(true);
+  });
+
+  it("returns true when no cloudflare plugin is present", () => {
+    expect(configNeedsCloudflarePlugin({ plugins: [{ name: "vinext" }] })).toBe(true);
+  });
+
+  it("returns false when a cloudflare plugin is present", () => {
+    expect(configNeedsCloudflarePlugin({ plugins: [{ name: "vite:cloudflare" }] })).toBe(false);
+  });
+
+  it("handles nested plugin arrays", () => {
+    expect(configNeedsCloudflarePlugin({ plugins: [[{ name: "vite:cloudflare" }]] })).toBe(false);
+  });
+});
 
 describe("buildWranglerDeployArgs", () => {
   it("uses plain deploy for production by default", () => {

@@ -262,6 +262,10 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
 
 ## Git Workflow
 
+- **Refresh main before assuming repo state.** At the start of every task, run `git fetch origin` and check `git status --branch` so you know whether the local branch and `origin/main` are current. Do not assume the cached `origin/main` ref is up to date.
+
+- **Only fast-forward automatically when safe.** If you are on `main` and the worktree is clean, update with `git pull --ff-only` before doing substantial work. If the worktree is dirty or you are on another branch, do not auto-pull; note the divergence and avoid mutating the user's branch history without an explicit request.
+
 - **NEVER push directly to main.** Always create a feature branch and open a PR, even for small fixes. This ensures CI runs before changes are merged and provides a review checkpoint.
 
 - **Branch protection is enabled on main.** Required checks: Lint, Typecheck, Vitest, Playwright E2E. Pushing directly to main bypasses these protections and can introduce regressions.

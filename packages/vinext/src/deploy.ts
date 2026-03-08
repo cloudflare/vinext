@@ -18,8 +18,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync, type ExecSyncOptions } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { parseArgs as nodeParseArgs } from "node:util";
-import { createBuilder, build } from "vite";
+import { createBuilder, build, loadConfigFromFile, mergeConfig } from "vite";
 import {
   ensureESModule as _ensureESModule,
   renameCJSConfigs as _renameCJSConfigs,
@@ -27,7 +28,7 @@ import {
   findInNodeModules as _findInNodeModules,
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
-import { runTPR } from "./cloudflare/tpr.js";
+import { parseWranglerConfig, runTPR } from "./cloudflare/tpr.js";
 import { loadDotenv } from "./config/dotenv.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -925,12 +926,8 @@ interface GeneratedFile {
 
 /**
  * Check whether an existing vite.config file already imports and uses the
- * Cloudflare Vite plugin. This is a heuristic text scan — it doesn't execute
- * the config — so it may produce false negatives for unusual configurations.
- *
- * Returns true if `@cloudflare/vite-plugin` appears to be configured, false
- * if it is missing (meaning the build will fail with "could not resolve
- * virtual:vinext-rsc-entry").
+ * Cloudflare Vite plugin. This is a heuristic text scan used for guidance only
+ * — the deploy build can still inject the plugin when needed.
  */
 export function viteConfigHasCloudflarePlugin(root: string): boolean {
   const candidates = [
@@ -1001,21 +998,84 @@ function writeGeneratedFiles(files: GeneratedFile[]): void {
 
 // ─── Build ───────────────────────────────────────────────────────────────────
 
+function findViteConfigPath(root: string): string | null {
+  for (const name of ["vite.config.ts", "vite.config.js", "vite.config.mjs"]) {
+    const filePath = path.join(root, name);
+    if (fs.existsSync(filePath)) return filePath;
+  }
+  return null;
+}
+
+function flattenPlugins(plugins: unknown): Array<{ name?: unknown }> {
+  if (!plugins) return [];
+  if (Array.isArray(plugins)) {
+    return plugins.flatMap((plugin) => flattenPlugins(plugin));
+  }
+  if (typeof plugins === "object") {
+    return [plugins as { name?: unknown }];
+  }
+  return [];
+}
+
+export function configNeedsCloudflarePlugin(config: { plugins?: unknown }): boolean {
+  const plugins = flattenPlugins(config.plugins);
+  return !plugins.some((plugin) => {
+    return typeof plugin.name === "string" && plugin.name.toLowerCase().includes("cloudflare");
+  });
+}
+
+async function loadCloudflarePlugin(root: string): Promise<(options?: Record<string, unknown>) => unknown> {
+  const req = createRequire(path.join(root, "package.json"));
+  const resolved = req.resolve("@cloudflare/vite-plugin");
+  const mod = await import(pathToFileURL(resolved).href) as {
+    cloudflare: (options?: Record<string, unknown>) => unknown;
+  };
+  return mod.cloudflare;
+}
+
+async function getDeployBuildConfig(info: ProjectInfo): Promise<Record<string, unknown>> {
+  const configPath = findViteConfigPath(info.root);
+  if (!configPath) {
+    return { root: info.root };
+  }
+
+  const loaded = await loadConfigFromFile({ command: "build", mode: "production" }, configPath, info.root);
+  const userConfig = loaded?.config ?? {};
+
+  if (!configNeedsCloudflarePlugin(userConfig)) {
+    return { root: info.root };
+  }
+
+  const cloudflare = await loadCloudflarePlugin(info.root);
+  const cloudflarePlugin = info.isAppRouter
+    ? cloudflare({
+        viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
+      })
+    : cloudflare();
+
+  return mergeConfig(userConfig, {
+    configFile: false,
+    root: info.root,
+    plugins: [cloudflarePlugin],
+  });
+}
+
 async function runBuild(info: ProjectInfo): Promise<void> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
-  // Use Vite's JS API for the build. The user's vite.config.ts (or our
-  // generated one) has the cloudflare() plugin which handles the Worker
-  // output format. We just need to trigger the build.
+  // Use Vite's JS API for the build. If the project already has a Vite config
+  // but it is host-neutral (for example from `vinext init`), inject the
+  // Cloudflare Vite plugin only for this deploy run.
   //
   // For App Router, createBuilder().buildApp() handles multi-environment builds.
   // For Pages Router, a single build() call suffices (cloudflare plugin manages it).
+  const buildConfig = await getDeployBuildConfig(info);
 
   if (info.isAppRouter) {
-    const builder = await createBuilder({ root: info.root });
+    const builder = await createBuilder(buildConfig);
     await builder.buildApp();
   } else {
-    await build({ root: info.root });
+    await build(buildConfig);
   }
 }
 
@@ -1024,6 +1084,181 @@ async function runBuild(info: ProjectInfo): Promise<void> {
 export interface WranglerDeployArgs {
   args: string[];
   env: string | undefined;
+}
+
+export interface WranglerTtyState {
+  stdin: boolean;
+  stdout: boolean;
+  stderr: boolean;
+}
+
+export type WranglerAuthPlan =
+  | { kind: "token" }
+  | { kind: "interactive" }
+  | { kind: "login" }
+  | { kind: "error"; message: string };
+
+const WRANGLER_LOGIN_DOCS_URL = "https://developers.cloudflare.com/workers/wrangler/commands/#login";
+const CLOUDFLARE_TOKEN_DOCS_URL = "https://developers.cloudflare.com/fundamentals/api/get-started/create-token/";
+const CLOUDFLARE_ACCOUNT_ID_DOCS_URL =
+  "https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/";
+const CLOUDFLARE_CI_DOCS_URL =
+  "https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/";
+
+function getWranglerTtyState(): WranglerTtyState {
+  return {
+    stdin: Boolean(process.stdin.isTTY),
+    stdout: Boolean(process.stdout.isTTY),
+    stderr: Boolean(process.stderr.isTTY),
+  };
+}
+
+function getWranglerBin(root: string): string {
+  return _findInNodeModules(root, ".bin/wrangler")
+    ?? path.join(root, "node_modules", ".bin", "wrangler");
+}
+
+export function shouldUseInteractiveWranglerAuth(
+  env: NodeJS.ProcessEnv = process.env,
+  tty: WranglerTtyState = getWranglerTtyState(),
+): boolean {
+  if (env.CLOUDFLARE_API_TOKEN) return false;
+  return tty.stdin && tty.stdout && tty.stderr;
+}
+
+export function buildWranglerAuthHelpMessage(): string {
+  return [
+    "  Cloudflare authentication is required to run `vinext deploy` in a headless shell.",
+    "  This shell is non-interactive, so Wrangler cannot open the browser-based `wrangler login` flow.",
+    "",
+    "  Provide:",
+    '  - `CLOUDFLARE_API_TOKEN`: use Cloudflare\'s "Edit Cloudflare Workers" API token template',
+    `    ${CLOUDFLARE_TOKEN_DOCS_URL}`,
+    "  - `CLOUDFLARE_ACCOUNT_ID`: your Cloudflare account ID, unless `account_id` is already set in `wrangler.jsonc` or `wrangler.toml`",
+    `    ${CLOUDFLARE_ACCOUNT_ID_DOCS_URL}`,
+    "",
+    "  Local terminal auth:",
+    "  - `npx wrangler login`",
+    `    ${WRANGLER_LOGIN_DOCS_URL}`,
+    "",
+    "  CI setup reference:",
+    `  ${CLOUDFLARE_CI_DOCS_URL}`,
+  ].join("\n");
+}
+
+export function buildWranglerAccountIdHelpMessage(targetEnv?: string): string {
+  const envSuffix = targetEnv ? ` for Wrangler env \`${targetEnv}\`` : "";
+
+  return [
+    `  \`CLOUDFLARE_API_TOKEN\` is set, but no Cloudflare account ID was found${envSuffix}.`,
+    "  Provide one of:",
+    "  - `CLOUDFLARE_ACCOUNT_ID`",
+    "  - `account_id` in `wrangler.jsonc` or `wrangler.toml` (top-level or the selected env block)",
+    `    ${CLOUDFLARE_ACCOUNT_ID_DOCS_URL}`,
+    "",
+    "  CI setup reference:",
+    `  ${CLOUDFLARE_CI_DOCS_URL}`,
+  ].join("\n");
+}
+
+export function resolveWranglerAccountId(
+  root: string,
+  env: NodeJS.ProcessEnv = process.env,
+  targetEnv?: string,
+): string | null {
+  const envAccountId = env.CLOUDFLARE_ACCOUNT_ID?.trim();
+  if (envAccountId) {
+    return envAccountId;
+  }
+
+  const configAccountId = parseWranglerConfig(root, targetEnv)?.accountId?.trim();
+  return configAccountId || null;
+}
+
+export function planWranglerAuth(
+  env: NodeJS.ProcessEnv = process.env,
+  tty: WranglerTtyState = getWranglerTtyState(),
+  hasSavedLogin = false,
+  hasAccountId = true,
+  targetEnv?: string,
+): WranglerAuthPlan {
+  if (env.CLOUDFLARE_API_TOKEN) {
+    if (!hasAccountId) {
+      return {
+        kind: "error",
+        message: buildWranglerAccountIdHelpMessage(targetEnv),
+      };
+    }
+    return { kind: "token" };
+  }
+
+  if (!shouldUseInteractiveWranglerAuth(env, tty)) {
+    return {
+      kind: "error",
+      message: buildWranglerAuthHelpMessage(),
+    };
+  }
+
+  return { kind: hasSavedLogin ? "interactive" : "login" };
+}
+
+export function buildWranglerExecOptions(
+  root: string,
+  useInteractiveAuth = shouldUseInteractiveWranglerAuth(),
+): ExecSyncOptions {
+  if (useInteractiveAuth) {
+    return {
+      cwd: root,
+      stdio: "inherit",
+    };
+  }
+
+  return {
+    cwd: root,
+    stdio: "pipe",
+    encoding: "utf-8",
+  };
+}
+
+function hasSavedWranglerLogin(root: string): boolean {
+  try {
+    execFileSync(getWranglerBin(root), ["whoami"], {
+      cwd: root,
+      stdio: "pipe",
+      encoding: "utf-8",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function ensureWranglerAuth(root: string, options: Pick<DeployOptions, "preview" | "env">): void {
+  const tty = getWranglerTtyState();
+  const { env: targetEnv } = buildWranglerDeployArgs(options);
+  const hasSavedLogin = shouldUseInteractiveWranglerAuth(process.env, tty)
+    ? hasSavedWranglerLogin(root)
+    : false;
+  const hasAccountId = Boolean(resolveWranglerAccountId(root, process.env, targetEnv));
+  const plan = planWranglerAuth(process.env, tty, hasSavedLogin, hasAccountId, targetEnv);
+
+  if (plan.kind === "token" || plan.kind === "interactive") {
+    return;
+  }
+
+  if (plan.kind === "login") {
+    console.log("\n  No saved Wrangler session detected. Starting `wrangler login`...\n");
+    try {
+      execFileSync(getWranglerBin(root), ["login"], buildWranglerExecOptions(root, true));
+      return;
+    } catch {
+      console.error("\n  Wrangler login did not complete. Re-run `npx wrangler login` and try again.\n");
+      process.exit(1);
+    }
+  }
+
+  console.error(`\n${plan.message}\n`);
+  process.exit(1);
 }
 
 export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" | "env">): WranglerDeployArgs {
@@ -1035,24 +1270,22 @@ export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" |
   return { args, env };
 }
 
-function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string {
-  // Walk up ancestor directories so the binary is found even when node_modules
-  // is hoisted to the workspace root in a monorepo.
-  const wranglerBin = _findInNodeModules(root, ".bin/wrangler") ??
-    path.join(root, "node_modules", ".bin", "wrangler"); // fallback for error message clarity
-
-  const execOpts: ExecSyncOptions = {
-    cwd: root,
-    stdio: "pipe",
-    encoding: "utf-8",
-  };
-
+function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string | null {
+  const wranglerBin = getWranglerBin(root);
   const { args, env } = buildWranglerDeployArgs(options);
 
   if (env) {
     console.log(`\n  Deploying to env: ${env}...`);
   } else {
     console.log("\n  Deploying to production...");
+  }
+
+  // Preserve the user's TTY for local deploys so Wrangler can use the normal
+  // interactive login flow. CI/headless environments use API token auth.
+  const execOpts = buildWranglerExecOptions(root);
+  if (execOpts.stdio === "inherit") {
+    execFileSync(wranglerBin, args, execOpts);
+    return null;
   }
 
   // Use execFileSync to avoid shell injection — args are passed as an array,
@@ -1140,13 +1373,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
     writeGeneratedFiles(filesToGenerate);
   }
 
-  // Warn if an existing vite.config.ts is missing the Cloudflare plugin.
-  // This is the most common cause of "could not resolve virtual:vinext-rsc-entry"
-  // errors — `vinext init` generates a minimal local-dev config without it.
+  // Surface the config mismatch, but keep going: deploy injects the Cloudflare
+  // plugin for this build when it is missing from an existing Vite config.
   if (info.hasViteConfig && !viteConfigHasCloudflarePlugin(root)) {
     console.warn(`
-  Warning: your vite.config.ts does not appear to import @cloudflare/vite-plugin.
-  Cloudflare Workers deployment requires it. Add the plugin to your config:
+  Note: your vite.config.ts does not appear to import @cloudflare/vite-plugin.
+  vinext deploy will inject it for this deploy run so Cloudflare Workers
+  deployment can proceed. Add the plugin yourself if you want Cloudflare-
+  specific local behavior such as \`cloudflare:workers\` bindings in dev:
 
     import { cloudflare } from "@cloudflare/vite-plugin";
 
@@ -1167,6 +1401,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Dry run complete. Files generated but no build or deploy performed.\n");
     return;
   }
+
+  // Step 4.5: Ensure Wrangler auth before any long-running build/deploy work.
+  ensureWranglerAuth(root, {
+    preview: options.preview ?? false,
+    env: options.env,
+  });
 
   // Step 5: Build
   if (!options.skipBuild) {
@@ -1196,7 +1436,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
     env: options.env,
   });
 
-  console.log("\n  ─────────────────────────────────────────");
-  console.log(`  Deployed to: ${url}`);
-  console.log("  ─────────────────────────────────────────\n");
+  if (url) {
+    console.log("\n  ─────────────────────────────────────────");
+    console.log(`  Deployed to: ${url}`);
+    console.log("  ─────────────────────────────────────────\n");
+  } else {
+    console.log("\n  Deploy complete. See Wrangler output above.\n");
+  }
 }

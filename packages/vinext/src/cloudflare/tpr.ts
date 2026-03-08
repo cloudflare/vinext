@@ -80,8 +80,10 @@ interface WranglerConfig {
 /**
  * Parse wrangler config (JSONC or TOML) to extract the fields TPR needs:
  * account_id, VINEXT_CACHE KV namespace ID, and custom domain.
+ *
+ * If `targetEnv` is provided, env-specific values override top-level config.
  */
-export function parseWranglerConfig(root: string): WranglerConfig | null {
+export function parseWranglerConfig(root: string, targetEnv?: string): WranglerConfig | null {
   // Try JSONC / JSON first
   for (const filename of ["wrangler.jsonc", "wrangler.json"]) {
     const filepath = path.join(root, filename);
@@ -89,7 +91,7 @@ export function parseWranglerConfig(root: string): WranglerConfig | null {
       const content = fs.readFileSync(filepath, "utf-8");
       try {
         const json = JSON.parse(stripJsonComments(content));
-        return extractFromJSON(json);
+        return extractFromJSON(json, targetEnv);
       } catch {
         continue;
       }
@@ -100,7 +102,7 @@ export function parseWranglerConfig(root: string): WranglerConfig | null {
   const tomlPath = path.join(root, "wrangler.toml");
   if (fs.existsSync(tomlPath)) {
     const content = fs.readFileSync(tomlPath, "utf-8");
-    return extractFromTOML(content);
+    return extractFromTOML(content, targetEnv);
   }
 
   return null;
@@ -179,17 +181,23 @@ function stripJsonComments(str: string): string {
   return result;
 }
 
-function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
+function extractFromJSON(config: Record<string, unknown>, targetEnv?: string): WranglerConfig {
   const result: WranglerConfig = {};
+  const envConfig = getJSONEnvConfig(config, targetEnv);
 
   // account_id
-  if (typeof config.account_id === "string") {
+  if (typeof envConfig?.account_id === "string") {
+    result.accountId = envConfig.account_id;
+  } else if (typeof config.account_id === "string") {
     result.accountId = config.account_id;
   }
 
   // KV namespace ID for VINEXT_CACHE
-  if (Array.isArray(config.kv_namespaces)) {
-    const vinextKV = config.kv_namespaces.find(
+  const kvNamespaces = Array.isArray(envConfig?.kv_namespaces)
+    ? envConfig.kv_namespaces
+    : config.kv_namespaces;
+  if (Array.isArray(kvNamespaces)) {
+    const vinextKV = kvNamespaces.find(
       (ns: Record<string, unknown>) =>
         ns && typeof ns === "object" && ns.binding === "VINEXT_CACHE",
     );
@@ -203,10 +211,30 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
   }
 
   // Custom domain — check routes[] and custom_domains[]
-  const domain = extractDomainFromRoutes(config.routes) ?? extractDomainFromCustomDomains(config);
+  const domain = extractDomainFromRoutes(envConfig?.routes)
+    ?? extractDomainFromRoutes(config.routes)
+    ?? extractDomainFromCustomDomains(envConfig)
+    ?? extractDomainFromCustomDomains(config);
   if (domain) result.customDomain = domain;
 
   return result;
+}
+
+function getJSONEnvConfig(
+  config: Record<string, unknown>,
+  targetEnv?: string,
+): Record<string, unknown> | null {
+  if (!targetEnv || !config.env || typeof config.env !== "object") {
+    return null;
+  }
+
+  const envs = config.env as Record<string, unknown>;
+  const envConfig = envs[targetEnv];
+  if (!envConfig || typeof envConfig !== "object") {
+    return null;
+  }
+
+  return envConfig as Record<string, unknown>;
 }
 
 function extractDomainFromRoutes(routes: unknown): string | null {
@@ -233,7 +261,9 @@ function extractDomainFromRoutes(routes: unknown): string | null {
   return null;
 }
 
-function extractDomainFromCustomDomains(config: Record<string, unknown>): string | null {
+function extractDomainFromCustomDomains(config: Record<string, unknown> | null): string | null {
+  if (!config) return null;
+
   // Workers Custom Domains: "custom_domains": ["example.com"]
   if (Array.isArray(config.custom_domains)) {
     for (const d of config.custom_domains) {
@@ -259,16 +289,18 @@ function cleanDomain(raw: string): string | null {
  * Simple extraction of specific fields from wrangler.toml content.
  * Not a full TOML parser — just enough for the fields we need.
  */
-function extractFromTOML(content: string): WranglerConfig {
+function extractFromTOML(content: string, targetEnv?: string): WranglerConfig {
   const result: WranglerConfig = {};
+  const envBlock = getTOMLEnvBlock(content, targetEnv);
 
   // account_id = "..."
-  const accountMatch = content.match(/^account_id\s*=\s*"([^"]+)"/m);
+  const accountMatch = envBlock?.match(/^account_id\s*=\s*"([^"]+)"/m)
+    ?? content.match(/^account_id\s*=\s*"([^"]+)"/m);
   if (accountMatch) result.accountId = accountMatch[1];
 
   // KV namespace with binding = "VINEXT_CACHE"
   // Look for [[kv_namespaces]] blocks
-  const kvBlocks = content.split(/\[\[kv_namespaces\]\]/);
+  const kvBlocks = (envBlock ?? content).split(/\[\[kv_namespaces\]\]/);
   for (let i = 1; i < kvBlocks.length; i++) {
     const block = kvBlocks[i].split(/\[\[/)[0]; // Take until next section
     const bindingMatch = block.match(/binding\s*=\s*"([^"]+)"/);
@@ -284,7 +316,8 @@ function extractFromTOML(content: string): WranglerConfig {
 
   // routes — both string and table forms
   // route = "example.com/*"
-  const routeMatch = content.match(/^route\s*=\s*"([^"]+)"/m);
+  const routeMatch = envBlock?.match(/^route\s*=\s*"([^"]+)"/m)
+    ?? content.match(/^route\s*=\s*"([^"]+)"/m);
   if (routeMatch) {
     const domain = cleanDomain(routeMatch[1]);
     if (domain && !domain.includes("workers.dev")) {
@@ -294,7 +327,7 @@ function extractFromTOML(content: string): WranglerConfig {
 
   // [[routes]] blocks
   if (!result.customDomain) {
-    const routeBlocks = content.split(/\[\[routes\]\]/);
+    const routeBlocks = (envBlock ?? content).split(/\[\[routes\]\]/);
     for (let i = 1; i < routeBlocks.length; i++) {
       const block = routeBlocks[i].split(/\[\[/)[0];
       const patternMatch = block.match(/pattern\s*=\s*"([^"]+)"/);
@@ -309,6 +342,21 @@ function extractFromTOML(content: string): WranglerConfig {
   }
 
   return result;
+}
+
+function getTOMLEnvBlock(content: string, targetEnv?: string): string | null {
+  if (!targetEnv) return null;
+
+  const sectionHeader = `[env.${targetEnv}]`;
+  const start = content.indexOf(sectionHeader);
+  if (start === -1) return null;
+
+  const nextSection = content.slice(start + sectionHeader.length).search(/^\[/m);
+  if (nextSection === -1) {
+    return content.slice(start + sectionHeader.length);
+  }
+
+  return content.slice(start + sectionHeader.length, start + sectionHeader.length + nextSection);
 }
 
 // ─── Cloudflare API ──────────────────────────────────────────────────────────

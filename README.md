@@ -72,7 +72,7 @@ Options: `-p / --port <port>`, `-H / --hostname <host>`, `--turbopack` (accepted
 
 Run `npm create next-app@latest` to create a new Next.js project, and then follow these instructions to migrate it to vinext.
 
-In the future, we will have a proper `npm create vinext` new project workflow. 
+In the future, we will have a proper `npm create vinext` new project workflow.
 
 ### Migrating an existing Next.js project
 
@@ -152,7 +152,7 @@ Both. File-system routing, SSR, client hydration, and deployment to Cloudflare W
 Next.js 16.x. No support for deprecated APIs from older versions.
 
 **Can I deploy to AWS/Netlify/other platforms?**
-Yes. Add the [Nitro](https://v3.nitro.build/) Vite plugin alongside vinext, and you can deploy to Vercel, Netlify, AWS Amplify, Deno Deploy, Azure, and [many more](https://v3.nitro.build/deploy). See [Other platforms (via Nitro)](#other-platforms-via-nitro) for setup. For Cloudflare Workers, the native integration (`vinext deploy`) gives you the smoothest experience. Native adapters for more platforms are [planned](https://github.com/cloudflare/vinext/issues/80).
+Yes. Add the [Nitro](https://v3.nitro.build/) Vite plugin alongside vinext, and you can deploy to Vercel, Netlify, AWS Amplify, Deno Deploy, Azure, Node.js, and [many more](https://v3.nitro.build/deploy). `vinext deploy` itself is Cloudflare-only; for other targets, use Nitro. See [Other platforms (via Nitro)](#other-platforms-via-nitro) for setup. For Cloudflare Workers, the native integration (`vinext deploy`) gives you the smoothest experience. Native adapters for more platforms are [planned](https://github.com/cloudflare/vinext/issues/80).
 
 **What happens when Next.js releases a new feature?**
 We track the public Next.js API surface and add support for new stable features. Experimental or unstable Next.js features are lower priority. The plan is to add commit-level tracking of the Next.js repo so we can stay current as new versions are released.
@@ -169,12 +169,12 @@ Before running `vinext deploy` for the first time you need to authenticate with 
 
 **Authentication — pick one:**
 
-- **`wrangler login`** (recommended for local development) — opens a browser window to authenticate. Run it once and wrangler caches the token.
-- **`CLOUDFLARE_API_TOKEN` env var** (CI / non-interactive) — create a token at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens) using the **Edit Cloudflare Workers** template. That template grants all the permissions `vinext deploy` needs.
+- **`wrangler login`** (recommended for local development) — opens a browser window to authenticate. In an interactive terminal, `vinext deploy` will reuse your saved Wrangler session and prompt you through `wrangler login` if needed. Docs: <https://developers.cloudflare.com/workers/wrangler/commands/#login>
+- **`CLOUDFLARE_API_TOKEN` env var** (CI / non-interactive) — use Cloudflare's **Edit Cloudflare Workers** template. Docs: <https://developers.cloudflare.com/fundamentals/api/get-started/create-token/> and <https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/>
 
 **Account ID:**
 
-wrangler needs to know which Cloudflare account to deploy to. Add your account ID to `wrangler.jsonc`:
+wrangler needs to know which Cloudflare account to deploy to. Set `CLOUDFLARE_ACCOUNT_ID`, or add `account_id` to `wrangler.jsonc` / `wrangler.toml` either at the top level or inside the selected env block:
 
 ```jsonc
 {
@@ -183,9 +183,7 @@ wrangler needs to know which Cloudflare account to deploy to. Add your account I
 }
 ```
 
-Find your account ID in the Cloudflare dashboard URL (`dash.cloudflare.com/<account-id>`) or by running `wrangler whoami` after logging in.
-
-Alternatively, set the `CLOUDFLARE_ACCOUNT_ID` environment variable instead of hardcoding it in the config file.
+Find your account ID in the Cloudflare dashboard URL (`dash.cloudflare.com/<account-id>`) or by running `wrangler whoami` after logging in. Account ID docs: <https://developers.cloudflare.com/fundamentals/account/find-account-and-zone-ids/>
 
 `vinext deploy` auto-generates the necessary configuration files (`vite.config.ts`, `wrangler.jsonc`, `worker/index.ts`) if they don't exist, builds the application, and deploys to Workers.
 
@@ -260,7 +258,7 @@ setCacheHandler(new KVCacheHandler(env.MY_KV_NAMESPACE));
 
 #### Custom Vite configuration
 
-If you need to customize the Vite config, create a `vite.config.ts`. vinext will merge its config with yours. This is required for Cloudflare Workers deployment with the App Router (RSC needs explicit plugin configuration):
+If you need to customize the Vite config, create a `vite.config.ts`. vinext will merge its config with yours. For Cloudflare Workers, adding `@cloudflare/vite-plugin` yourself is recommended when you want Cloudflare-specific local behavior such as `cloudflare:workers` bindings in dev. If an existing config is missing the plugin, `vinext deploy` can inject it for the deploy build:
 
 ```ts
 import { defineConfig } from "vite";
@@ -289,7 +287,11 @@ See the [examples](#live-examples) for complete working configurations.
 
 ### Other platforms (via Nitro)
 
-For deploying to platforms other than Cloudflare, vinext works with [Nitro](https://v3.nitro.build/) as a Vite plugin. Add `nitro` alongside `vinext` in your Vite config and deploy to any [Nitro-supported platform](https://v3.nitro.build/deploy).
+`vinext deploy` is Cloudflare-only. For other targets, use vinext with the [Nitro](https://v3.nitro.build/) Vite plugin and deploy to any [Nitro-supported platform](https://v3.nitro.build/deploy).
+
+```bash
+npm install nitro
+```
 
 ```ts
 import { defineConfig } from "vite";
@@ -301,19 +303,16 @@ export default defineConfig({
 });
 ```
 
-```bash
-npm install nitro
-```
-
 Nitro auto-detects the deployment platform in most CI/CD environments (Vercel, Netlify, AWS Amplify, Azure, and others), so you typically don't need to set a preset. For local builds, set the `NITRO_PRESET` environment variable:
 
 ```bash
 NITRO_PRESET=vercel npx vite build
 NITRO_PRESET=netlify npx vite build
 NITRO_PRESET=deno_deploy npx vite build
+NITRO_PRESET=node npx vite build
 ```
 
-> **Deploying to Cloudflare?** You can use Nitro, but the native integration (`vinext deploy` / `@cloudflare/vite-plugin`) is recommended. It provides the best developer experience with `cloudflare:workers` bindings, KV caching, image optimization, and one-command deploys.
+> **Deploying to Cloudflare?** You can use Nitro, but the native integration (`vinext deploy` / `@cloudflare/vite-plugin`) is recommended. It provides the best developer experience with Wrangler auth, `cloudflare:workers` bindings, KV caching, image optimization, and one-command deploys.
 
 <details>
 <summary>Vercel</summary>
