@@ -17,6 +17,8 @@ import {
   parseDeployArgs,
   isPackageResolvable,
   viteConfigHasCloudflarePlugin,
+  hasWranglerConfig,
+  formatMissingCloudflarePluginError,
 } from "../packages/vinext/src/deploy.js";
 import {
   detectPackageManager,
@@ -952,6 +954,69 @@ export default { plugins: [cloudflare()] };
   it("returns false when no vite config file exists", () => {
     // tmpDir has no vite config
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(false);
+  });
+});
+
+// ─── hasWranglerConfig ───────────────────────────────────────────────────────
+
+describe("hasWranglerConfig", () => {
+  it("returns true when wrangler.jsonc exists", () => {
+    writeFile(tmpDir, "wrangler.jsonc", "{}");
+    expect(hasWranglerConfig(tmpDir)).toBe(true);
+  });
+
+  it("returns true when wrangler.json exists", () => {
+    writeFile(tmpDir, "wrangler.json", "{}");
+    expect(hasWranglerConfig(tmpDir)).toBe(true);
+  });
+
+  it("returns true when wrangler.toml exists", () => {
+    writeFile(tmpDir, "wrangler.toml", "");
+    expect(hasWranglerConfig(tmpDir)).toBe(true);
+  });
+
+  it("returns false when none exist", () => {
+    expect(hasWranglerConfig(tmpDir)).toBe(false);
+  });
+});
+
+// ─── formatMissingCloudflarePluginError ─────────────────────────────────────
+
+describe("formatMissingCloudflarePluginError", () => {
+  it("includes viteEnvironment config when isAppRouter is true", () => {
+    const msg = formatMissingCloudflarePluginError({ isAppRouter: true });
+    expect(msg).toContain("viteEnvironment");
+    expect(msg).toContain('childEnvironments: ["ssr"]');
+  });
+
+  it("omits viteEnvironment config when isAppRouter is false", () => {
+    const msg = formatMissingCloudflarePluginError({ isAppRouter: false });
+    expect(msg).not.toContain("viteEnvironment");
+  });
+
+  it("includes actual config file path when configFile is provided", () => {
+    const msg = formatMissingCloudflarePluginError({
+      isAppRouter: false,
+      configFile: "/project/vite.config.mts",
+    });
+    expect(msg).toContain("/project/vite.config.mts");
+  });
+
+  it("uses generic 'your Vite config' when configFile is undefined", () => {
+    const msg = formatMissingCloudflarePluginError({ isAppRouter: false });
+    expect(msg).toContain("your Vite config");
+  });
+
+  it("never hardcodes vite.config.ts when no configFile given", () => {
+    const msg = formatMissingCloudflarePluginError({ isAppRouter: false });
+    expect(msg).not.toMatch(/vite\.config\.ts/);
+    expect(msg).not.toMatch(/vite\.config\.js/);
+    expect(msg).not.toMatch(/vite\.config\.mjs/);
+  });
+
+  it("always starts with the [vinext] prefix", () => {
+    const msg = formatMissingCloudflarePluginError({ isAppRouter: false });
+    expect(msg).toMatch(/^\[vinext\] Missing @cloudflare\/vite-plugin/);
   });
 });
 

@@ -114,6 +114,45 @@ interface ProjectInfo {
 
 // ─── Detection ───────────────────────────────────────────────────────────────
 
+/** Check whether a wrangler config file exists in the given directory. */
+export function hasWranglerConfig(root: string): boolean {
+  return (
+    fs.existsSync(path.join(root, "wrangler.jsonc")) ||
+    fs.existsSync(path.join(root, "wrangler.json")) ||
+    fs.existsSync(path.join(root, "wrangler.toml"))
+  );
+}
+
+/**
+ * Build the error message thrown when cloudflare() is missing from the Vite config.
+ * Shared between the build-time guard (index.ts configResolved) and the
+ * deploy-time guard (deploy.ts deploy()).
+ */
+export function formatMissingCloudflarePluginError(options: {
+  isAppRouter: boolean;
+  configFile?: string;
+}): string {
+  const cfArg = options.isAppRouter
+    ? "{\n      viteEnvironment: { name: \"rsc\", childEnvironments: [\"ssr\"] },\n    }"
+    : "";
+  const configRef = options.configFile
+    ? options.configFile
+    : "your Vite config";
+  return (
+    `[vinext] Missing @cloudflare/vite-plugin in ${configRef}.\n\n` +
+    `  Cloudflare Workers builds require the cloudflare() plugin.\n` +
+    `  Add it to ${configRef}:\n\n` +
+    `    import { cloudflare } from "@cloudflare/vite-plugin";\n\n` +
+    `    export default defineConfig({\n` +
+    `      plugins: [\n` +
+    `        vinext(),\n` +
+    `        cloudflare(${cfArg}),\n` +
+    `      ],\n` +
+    `    });\n\n` +
+    `  Or delete ${configRef} and re-run \`vinext deploy\` to auto-generate it.`
+  );
+}
+
 export function detectProject(root: string): ProjectInfo {
   const hasApp =
     fs.existsSync(path.join(root, "app")) ||
@@ -131,10 +170,7 @@ export function detectProject(root: string): ProjectInfo {
     fs.existsSync(path.join(root, "vite.config.js")) ||
     fs.existsSync(path.join(root, "vite.config.mjs"));
 
-  const hasWranglerConfig =
-    fs.existsSync(path.join(root, "wrangler.jsonc")) ||
-    fs.existsSync(path.join(root, "wrangler.json")) ||
-    fs.existsSync(path.join(root, "wrangler.toml"));
+  const wranglerConfigExists = hasWranglerConfig(root);
 
   const hasWorkerEntry =
     fs.existsSync(path.join(root, "worker", "index.ts")) ||
@@ -204,7 +240,7 @@ export function detectProject(root: string): ProjectInfo {
     isAppRouter,
     isPagesRouter,
     hasViteConfig,
-    hasWranglerConfig,
+    hasWranglerConfig: wranglerConfigExists,
     hasWorkerEntry,
     hasCloudflarePlugin,
     hasRscPlugin,
@@ -1145,17 +1181,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // errors — `vinext init` generates a minimal local-dev config without it.
   if (info.hasViteConfig && !viteConfigHasCloudflarePlugin(root)) {
     throw new Error(
-      `[vinext] Missing @cloudflare/vite-plugin in your Vite config.\n\n` +
-      `  Cloudflare Workers deployment requires the cloudflare() plugin.\n` +
-      `  Add it to your vite.config.ts:\n\n` +
-      `    import { cloudflare } from "@cloudflare/vite-plugin";\n\n` +
-      `    export default defineConfig({\n` +
-      `      plugins: [\n` +
-      `        vinext(),\n` +
-      `        cloudflare(${info.isAppRouter ? `{\n          viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },\n        }` : ""}),\n` +
-      `      ],\n` +
-      `    });\n\n` +
-      `  Or delete vite.config.ts and re-run \`vinext deploy\` to auto-generate it.`,
+      formatMissingCloudflarePluginError({ isAppRouter: info.isAppRouter }),
     );
   }
 
