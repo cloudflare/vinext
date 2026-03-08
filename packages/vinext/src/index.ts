@@ -3664,7 +3664,9 @@ hydrate();
               `})()`,
             ].join("");
 
-            newCode = newCode.replace(fullMatch, inlined);
+            // Use split().join() instead of replace() to handle all occurrences —
+            // String.replace(string, ...) only replaces the first match.
+            newCode = newCode.split(fullMatch).join(inlined);
             didReplace = true;
           }
         }
@@ -3692,7 +3694,9 @@ hydrate();
             // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
             const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
 
-            newCode = newCode.replace(fullMatch, inlined);
+            // Use split().join() instead of replace() to handle all occurrences —
+            // String.replace(string, ...) only replaces the first match.
+            newCode = newCode.split(fullMatch).join(inlined);
             didReplace = true;
           }
         }
@@ -3944,48 +3948,25 @@ hydrate();
     {
       // @vercel/og patch for workerd (cloudflare-dev + cloudflare-workers)
       //
-      // @vercel/og/dist/index.edge.js has two dynamic WASM/fetch issues in workerd:
+      // @vercel/og/dist/index.edge.js has one remaining workerd issue after the
+      // generic vinext:og-inline-fetch-assets plugin runs (which already handles
+      // the font fetch pattern):
       //
-      // 1. FONT FETCH: top-level fetch(new URL(..., import.meta.url)) for the fallback
-      //    font fails because import.meta.url is a file:// URL in Vite's module runner,
-      //    and workerd cannot fetch file:// URLs.
-      //    Fix: inline the font bytes as base64 and resolve synchronously.
-      //
-      // 2. YOGA WASM: yoga-layout embeds its WASM as a base64 data URL and instantiates
-      //    it via WebAssembly.instantiate(bytes) at runtime.
-      //    workerd forbids dynamic WASM compilation from bytes — WASM must be loaded
-      //    through the module system as a pre-compiled WebAssembly.Module.
-      //    Fix: extract the yoga WASM bytes at Vite transform time (Node.js), write
-      //    yoga.wasm to @vercel/og/dist/, import it via `?module` so @cloudflare/vite-plugin
-      //    can serve it through the module system, and inject h2.instantiateWasm to
-      //    use the pre-compiled module instead of bytes.
+      // YOGA WASM: yoga-layout embeds its WASM as a base64 data URL and instantiates
+      // it via WebAssembly.instantiate(bytes) at runtime.
+      // workerd forbids dynamic WASM compilation from bytes — WASM must be loaded
+      // through the module system as a pre-compiled WebAssembly.Module.
+      // Fix: extract the yoga WASM bytes at Vite transform time (Node.js), write
+      // yoga.wasm to @vercel/og/dist/, import it via `?module` so @cloudflare/vite-plugin
+      // can serve it through the module system, and inject h2.instantiateWasm to
+      // use the pre-compiled module instead of bytes.
       name: "vinext:og-font-patch",
       enforce: "pre" as const,
       transform(code: string, id: string) {
         if (!id.includes("@vercel/og") || !id.includes("index.edge.js")) return null;
         let result = code;
 
-        // ── Fix 1: Inline the fallback Noto Sans font ─────────────────────────────────
-        const FETCH_PATTERN = `var fallbackFont = fetch(\n  new URL("./noto-sans-v27-latin-regular.ttf", import.meta.url)\n).then((res) => res.arrayBuffer());`;
-        if (result.includes(FETCH_PATTERN)) {
-          const fontPath = path.join(path.dirname(id), "noto-sans-v27-latin-regular.ttf");
-          let fontBytes: Buffer | null = null;
-          try { fontBytes = fs.readFileSync(fontPath); } catch { /* not found */ }
-          if (fontBytes) {
-            const fontBase64 = fontBytes.toString("base64");
-            const fontReplacement =
-              `var fallbackFont = (function() {` +
-              ` var b64 = ${JSON.stringify(fontBase64)};` +
-              ` var bin = atob(b64);` +
-              ` var buf = new Uint8Array(bin.length);` +
-              ` for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);` +
-              ` return Promise.resolve(buf.buffer);` +
-              ` })();`;
-            result = result.replace(FETCH_PATTERN, fontReplacement);
-          }
-        }
-
-        // ── Fix 2: Extract yoga WASM and import via ?module ───────────────────────────
+        // ── Extract yoga WASM and import via ?module ──────────────────────────────────
         // yoga-layout's emscripten bundle sets H to a data URL containing the yoga WASM,
         // then later calls WebAssembly.instantiate(bytes, imports), which workerd rejects.
         // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch
