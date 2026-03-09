@@ -202,9 +202,10 @@ export async function handleImageOptimization(
   handlers: ImageHandlers,
   allowedWidths?: number[],
   imageConfig?: ImageConfig,
+  allowedQualities?: number[],
 ): Promise<Response> {
   const url = new URL(request.url);
-  const params = parseImageParams(url, allowedWidths);
+  const params = parseImageParams(url, allowedWidths, allowedQualities);
 
   if (!params) {
     return new Response("Bad Request", { status: 400 });
@@ -246,8 +247,7 @@ export async function handleImageOptimization(
     try {
       // AVIF encodes more efficiently, so use a lower quality value for
       // equivalent perceptual quality. Matches Next.js 16 behavior.
-      const adjustedQuality =
-        format === "image/avif" ? Math.max(quality - 20, 1) : quality;
+      const adjustedQuality = format === "image/avif" ? Math.max(quality - 20, 1) : quality;
       const transformed = await handlers.transformImage(source.body, {
         width,
         format,

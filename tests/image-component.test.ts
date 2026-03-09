@@ -13,6 +13,7 @@ import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Image, {
   getImageProps,
+  findClosestQuality,
   type StaticImageData,
   type StaticImport,
   type StaticRequire,
@@ -678,5 +679,45 @@ describe("type exports", () => {
   it("exports ImageProps type", () => {
     const imgProps: ImageProps = { src: "/test.png", alt: "test" };
     expect(imgProps.src).toBe("/test.png");
+  });
+});
+
+describe("findClosestQuality", () => {
+  it("returns input quality when no qualities array provided", () => {
+    expect(findClosestQuality(42)).toBe(42);
+  });
+
+  it("returns input quality when qualities array is empty", () => {
+    expect(findClosestQuality(42, [])).toBe(42);
+  });
+
+  it("returns closest allowed quality for low input (not 0)", () => {
+    // quality=10 with qualities=[25,50,75,100] should yield 25, not 0
+    expect(findClosestQuality(10, [25, 50, 75, 100])).toBe(25);
+  });
+
+  it("returns exact match when quality matches an allowed value", () => {
+    expect(findClosestQuality(75, [25, 50, 75, 100])).toBe(75);
+  });
+
+  it("rounds to nearest allowed value", () => {
+    // 60 is closer to 50 (diff=10) than to 75 (diff=15)
+    expect(findClosestQuality(60, [25, 50, 75, 100])).toBe(50);
+    // 90 is closer to 100 (diff=10) than to 75 (diff=15)
+    expect(findClosestQuality(90, [25, 50, 75, 100])).toBe(100);
+  });
+
+  it("picks earlier value when equidistant (reduce left-to-right)", () => {
+    // 50 is equidistant from 25 (diff=25) and 75 (diff=25) — reduce keeps first
+    // Actually 50 is exact match in [25,50,75,100], use different values
+    // 37 is equidistant from 25 (diff=12) and 50 (diff=13) — picks 25
+    expect(findClosestQuality(37, [25, 50, 75, 100])).toBe(25);
+    // 38 is equidistant from 25 (diff=13) and 50 (diff=12) — picks 50
+    expect(findClosestQuality(38, [25, 50, 75, 100])).toBe(50);
+  });
+
+  it("handles single-element qualities array", () => {
+    expect(findClosestQuality(1, [75])).toBe(75);
+    expect(findClosestQuality(100, [75])).toBe(75);
   });
 });

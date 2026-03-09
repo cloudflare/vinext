@@ -162,7 +162,7 @@ export interface NextConfig {
     unoptimized?: boolean;
     /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
     deviceSizes?: number[];
-    /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [16, 32, 48, 64, 96, 128, 256, 384] */
+    /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [32, 48, 64, 96, 128, 256, 384] */
     imageSizes?: number[];
     /** Allow SVG images through the image optimization endpoint. SVG can contain scripts, so only enable if you trust all image sources. */
     dangerouslyAllowSVG?: boolean;

@@ -135,9 +135,12 @@ function validateRemoteUrl(src: string): { allowed: boolean; reason?: string } {
  * Find the closest allowed quality value.
  * Matches Next.js 16 behavior: rounds to nearest value in the qualities array.
  */
-function findClosestQuality(quality: number, qualities?: number[]): number {
+export function findClosestQuality(quality: number, qualities?: number[]): number {
   if (!qualities?.length) return quality;
-  return qualities.reduce((prev, cur) => (Math.abs(cur - quality) < Math.abs(prev - quality) ? cur : prev), 0);
+  return qualities.reduce(
+    (prev, cur) => (Math.abs(cur - quality) < Math.abs(prev - quality) ? cur : prev),
+    qualities[0],
+  );
 }
 
 /**
