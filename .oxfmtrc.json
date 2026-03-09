@@ -6,5 +6,5 @@
   "semi": true,
   "singleQuote": false,
   "trailingComma": "all",
-  "ignorePatterns": ["fixtures/ecosystem/**", "tests/fixtures/ecosystem/**", "examples/**"]
+  "ignorePatterns": ["tests/fixtures/ecosystem/**", "examples/**"]
 }
