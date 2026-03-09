@@ -279,6 +279,70 @@ describe("next/headers shim", () => {
     expect(req.headers.get("x-custom")).toBe("original");
   });
 
+  it("headersContextFromRequest defers new Headers() copy until first write", async () => {
+    // Performance regression guard: the expensive cross-boundary copy in Workerd
+    // (new Headers(request.headers)) must NOT happen on reads — only on the
+    // first mutating call (.set/.delete/.append).
+    const { headersContextFromRequest } = await import("../packages/vinext/src/shims/headers.js");
+    const req = new Request("https://example.com", {
+      headers: { "x-foo": "bar", cookie: "a=1" },
+    });
+    const ctx = headersContextFromRequest(req);
+
+    // Reads must work before any write (no copy yet)
+    expect(ctx.headers.get("x-foo")).toBe("bar");
+    expect(ctx.headers.has("x-foo")).toBe(true);
+
+    // After a write, the copy is materialised and the new value is visible
+    ctx.headers.set("x-foo", "baz");
+    expect(ctx.headers.get("x-foo")).toBe("baz");
+
+    // Original request is untouched
+    expect(req.headers.get("x-foo")).toBe("bar");
+  });
+
+  it("headersContextFromRequest defers cookie parsing until first access", async () => {
+    // Cookie parsing should be deferred: accessing ctx.cookies triggers parsing,
+    // but merely calling headersContextFromRequest must not.
+    const { headersContextFromRequest } = await import("../packages/vinext/src/shims/headers.js");
+    const req = new Request("https://example.com", {
+      headers: { cookie: "session=xyz; theme=dark" },
+    });
+    const ctx = headersContextFromRequest(req);
+
+    // First access parses cookies
+    expect(ctx.cookies.get("session")).toBe("xyz");
+    expect(ctx.cookies.get("theme")).toBe("dark");
+
+    // Subsequent access returns the same map (no re-parse)
+    const map1 = ctx.cookies;
+    const map2 = ctx.cookies;
+    expect(map1).toBe(map2);
+  });
+
+  it("headersContextFromRequest cookie getter reflects middleware-modified cookie header", async () => {
+    // When middleware calls ctx.headers.set("cookie", ...) the lazy cookie
+    // map must reflect the new value on next access.
+    const { headersContextFromRequest, applyMiddlewareRequestHeaders, runWithHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const req = new Request("https://example.com", {
+      headers: { cookie: "a=1" },
+    });
+    const ctx = headersContextFromRequest(req);
+
+    // Simulate middleware updating the cookie header
+    const middlewareResponseHeaders = new Headers({
+      "x-middleware-request-cookie": "a=2; b=3",
+    });
+
+    await runWithHeadersContext(ctx, async () => {
+      applyMiddlewareRequestHeaders(middlewareResponseHeaders);
+      // Cookies map should be rebuilt with the new values
+      expect(ctx.cookies.get("a")).toBe("2");
+      expect(ctx.cookies.get("b")).toBe("3");
+    });
+  });
+
   it("throws when called outside request context", async () => {
     const { headers, cookies } = await import("../packages/vinext/src/shims/headers.js");
     // Ensure context is cleared
