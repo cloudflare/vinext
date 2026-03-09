@@ -186,6 +186,55 @@ Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET
 | `appDir` | `string` | project root | Custom base directory for `app/` and `pages/` |
 | `rsc` | `boolean` | `true` | Auto-register `@vitejs/plugin-rsc` for App Router |
 
+## Known-Safe Migration Checklist (App Router)
+
+Use this checklist to avoid common real-world regressions during vinext migration.
+
+### 1) Auth guard must bypass vinext assets
+
+If you use request-wide auth (`proxy.ts`), treat `/assets/*` as internal/static just like `/_next/*`.
+
+```ts
+function isInternalRequest(request: Request): boolean {
+  const pathname = new URL(request.url).pathname;
+  if (pathname.startsWith("/_next/")) return true;
+  if (pathname.startsWith("/assets/")) return true; // vinext static assets
+  if (request.headers.has("rsc")) return true;
+  if (request.headers.has("next-action")) return true;
+  return false;
+}
+```
+
+### 2) Prefer API route handlers for high-volume client mutations
+
+Avoid looped server actions for workloads like "AI parsed N entries".
+
+Use:
+- one client request to `/api/.../batch`
+- server-side validation/auth in the route
+- one batch write/update flow
+
+```ts
+// client
+await fetch("/api/dashboard/work-blocks/batch", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ entries }),
+});
+```
+
+### 3) Keep dependency optimization defaults unless proven otherwise
+
+Do not broadly add libraries to `optimizeDeps.exclude` unless you have a verified reason.
+This can trigger ESM/CJS runtime mismatches in dev.
+
+### 4) Better Auth + SIWE should use persistent/shared DB
+
+For SIWE nonce verification reliability:
+- use shared DB-backed auth storage
+- ensure Better Auth tables exist (`verification` in particular)
+- run explicit bootstrap migration scripts rather than relying on per-request introspection
+
 ## vinext deploy flags
 
 | Flag | Description |

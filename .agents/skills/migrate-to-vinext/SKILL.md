@@ -190,6 +190,23 @@ See [references/troubleshooting.md](references/troubleshooting.md) for common mi
 | `runtime` / `preferredRegion` | Route segment configs ignored |
 | PPR (Partial Prerendering) | Use `"use cache"` directive instead (Next.js 16 approach) |
 
+## Field Learnings (From Real Migrations)
+
+1. Auth/session behavior can regress even when pages appear to load.
+   - In request-wide auth guards (`proxy.ts` / middleware equivalents), treat vinext static asset paths (`/assets/*`) as internal like `/_next/*`. Redirecting these to sign-in breaks anonymous/public rendering.
+   - When calling auth APIs server-side, do not rely only on `headers()`. Merge cookie-store cookies into the request headers so RSC/server-action paths consistently see session cookies.
+   - For any DB-backed auth stack, use persistent/shared storage (not in-memory) and ensure required schema exists before first request. Keep stack-specific details in troubleshooting docs.
+2. Avoid server actions for high-frequency client mutations.
+   - If a UI action creates many records (for example AI parsing into many day/category entries), use one route handler (`/api/...`) batch request instead of looped server actions.
+   - Reason: server actions trigger RSC replay and layout re-execution; with auth-protected layouts this can surface `NEXT_REDIRECT` noise and UX churn. This pattern also applies to Next.js generally, but often becomes more visible during migration.
+3. Be careful with `optimizeDeps.exclude`.
+   - Excluding broad component libraries can cause ESM/CJS runtime mismatches (for example `react/jsx-runtime` named export errors in dev).
+   - Prefer default optimization unless there is a proven incompatibility.
+4. Route segment `error.tsx` can expose shim/runtime gaps.
+   - If adding segment error boundaries triggers runtime import errors from vinext shims, remove that segment `error.tsx` and rely on the nearest parent or root error boundary until upstream fix is available.
+5. Some dev warnings are plugin/internal noise.
+   - Example: `<link rel=preload> must have a valid as value` can be emitted by current RSC tooling and may be non-blocking.
+
 ## Anti-patterns
 
 - **Do not modify `app/`, `pages/`, or application code.** vinext shims all `next/*` imports — no import rewrites needed.
