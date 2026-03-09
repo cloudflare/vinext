@@ -29,6 +29,12 @@ const configMatchersPath = fileURLToPath(
 const requestPipelinePath = fileURLToPath(
   new URL("../server/request-pipeline.js", import.meta.url),
 ).replace(/\\/g, "/");
+const sharpUtilPath = fileURLToPath(
+  new URL("../utils/sharp.js", import.meta.url),
+).replace(/\\/g, "/");
+const imageOptPath = fileURLToPath(
+  new URL("../server/image-optimization.js", import.meta.url),
+).replace(/\\/g, "/");
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -48,6 +54,8 @@ export interface AppRouterConfig {
   allowedDevOrigins?: string[];
   /** Body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). */
   bodySizeLimit?: number;
+  /** Vite project root directory (for resolving image paths in dev). */
+  root?: string;
 }
 
 /**
@@ -75,6 +83,7 @@ export function generateRscEntry(
   const headers = config?.headers ?? [];
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
+  const projectRoot = config?.root ?? "";
   // Build import map for all page and layout files
   const imports: string[] = [];
   const importMap: Map<string, string> = new Map();
@@ -255,6 +264,8 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+const __projectRoot = ${JSON.stringify(projectRoot)};
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -1523,7 +1534,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (cleanPathname === "/_vinext/image") {
     const __imgResult = validateImageUrl(url.searchParams.get("url"), request.url);
     if (__imgResult instanceof Response) return __imgResult;
-    // In dev, redirect to the original asset URL so Vite's static serving handles it.
+    // Try sharp-based optimization
+    const { tryRequireSharp } = await import(${JSON.stringify(sharpUtilPath)} /* @vite-ignore */);
+    const { negotiateImageFormat } = await import(${JSON.stringify(imageOptPath)} /* @vite-ignore */);
+    const __sharpMod = await tryRequireSharp();
+    const __w = parseInt(url.searchParams.get("w") || "0", 10);
+    const __q = parseInt(url.searchParams.get("q") || "75", 10);
+    const __acceptHdr = request.headers.get("accept");
+    const __fmt = negotiateImageFormat(__acceptHdr);
+
+    if (__sharpMod && __w > 0 && !__imgResult.endsWith(".svg")) {
+      try {
+        // Resolve path against project root
+        const __fsPath = new URL(__imgResult, "file://" + __projectRoot).pathname;
+        const { readFileSync, existsSync } = await import("node:fs");
+        if (existsSync(__fsPath)) {
+          const __raw = readFileSync(__fsPath);
+          const __meta = await __sharpMod(__raw).metadata();
+          if (!(__meta.pages && __meta.pages > 1)) {
+            const __sharpPipe = __sharpMod(__raw)
+              .resize(__w, undefined, { withoutEnlargement: true });
+            const __buf = await (
+              __fmt === "image/avif" ? __sharpPipe.avif({ quality: __q }) :
+              __fmt === "image/webp" ? __sharpPipe.webp({ quality: __q }) :
+              __sharpPipe.jpeg({ quality: __q })
+            ).toBuffer();
+            return new Response(__buf, {
+              status: 200,
+              headers: {
+                "Content-Type": __fmt,
+                "Content-Length": __buf.length.toString(),
+                "Cache-Control": "public, max-age=60",
+              },
+            });
+          }
+        }
+      } catch {
+        // Sharp failed — fall through to redirect
+      }
+    }
+
+    // Fallback: redirect to original
     return Response.redirect(new URL(__imgResult, url.origin).href, 302);
   }
 

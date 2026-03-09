@@ -45,6 +45,7 @@ import {
 } from "./image-optimization.js";
 import { normalizePath } from "./normalize-path.js";
 import { computeLazyChunks } from "../index.js";
+import { tryRequireSharp } from "../utils/sharp.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -600,6 +601,57 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         "X-Content-Type-Options": "nosniff",
         "Content-Disposition": imageConfig?.contentDispositionType ?? "inline",
       };
+      // Try sharp-based image optimization (Node.js prod only)
+      const __sharp = await tryRequireSharp();
+      if (__sharp && params.width > 0 && ext !== ".svg") {
+        try {
+          const imageFsPath = path.join(clientDir, params.imageUrl);
+          if (fs.existsSync(imageFsPath)) {
+            // Check filesystem cache first
+            const cacheDir = path.join(clientDir, ".vinext-image-cache");
+            const cacheKey = `${params.imageUrl.replace(/\//g, "__")}-w${params.width}-q${params.quality}.webp`;
+            const cachePath = path.join(cacheDir, cacheKey);
+
+            let optimizedBuf: Buffer;
+            if (fs.existsSync(cachePath)) {
+              optimizedBuf = fs.readFileSync(cachePath);
+            } else {
+              const rawBuffer = fs.readFileSync(imageFsPath);
+              // Skip animated images
+              const meta = await __sharp(rawBuffer).metadata();
+              if (meta.pages && meta.pages > 1) {
+                // Animated — fall through to serve original
+              } else {
+                optimizedBuf = await __sharp(rawBuffer)
+                  .resize(params.width, undefined, { withoutEnlargement: true })
+                  .webp({ quality: params.quality })
+                  .toBuffer();
+
+                // Write to filesystem cache
+                if (!fs.existsSync(cacheDir)) {
+                  fs.mkdirSync(cacheDir, { recursive: true });
+                }
+                fs.writeFileSync(cachePath, optimizedBuf);
+              }
+            }
+
+            if (optimizedBuf!) {
+              const headers: Record<string, string> = {
+                "Content-Type": "image/webp",
+                "Content-Length": optimizedBuf.length.toString(),
+                "Cache-Control": "public, max-age=31536000, immutable",
+                ...imageSecurityHeaders,
+              };
+              res.writeHead(200, headers);
+              res.end(optimizedBuf);
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn("[vinext] Sharp optimization failed:", e);
+          // Fall through to serve original
+        }
+      }
       if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
       }
@@ -774,6 +826,57 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         "X-Content-Type-Options": "nosniff",
         "Content-Disposition": pagesImageConfig?.contentDispositionType ?? "inline",
       };
+      // Try sharp-based image optimization
+      const __pagesSharp = await tryRequireSharp();
+      if (__pagesSharp && params.width > 0 && ext !== ".svg") {
+        try {
+          const imageFsPath = path.join(clientDir, params.imageUrl);
+          if (fs.existsSync(imageFsPath)) {
+            const cacheDir = path.join(clientDir, ".vinext-image-cache");
+            const cacheKey = `${params.imageUrl.replace(/\//g, "__")}-w${params.width}-q${params.quality}.webp`;
+            const cachePath = path.join(cacheDir, cacheKey);
+
+            let optimizedBuf: Buffer;
+            if (fs.existsSync(cachePath)) {
+              optimizedBuf = fs.readFileSync(cachePath);
+            } else {
+              const rawBuffer = fs.readFileSync(imageFsPath);
+              const meta = await __pagesSharp(rawBuffer).metadata();
+              if (meta.pages && meta.pages > 1) {
+                // Animated — fall through
+              } else {
+                optimizedBuf = await __pagesSharp(rawBuffer)
+                  .resize(params.width, undefined, { withoutEnlargement: true })
+                  .webp({ quality: params.quality })
+                  .toBuffer();
+
+                if (!fs.existsSync(cacheDir)) {
+                  fs.mkdirSync(cacheDir, { recursive: true });
+                }
+                fs.writeFileSync(cachePath, optimizedBuf);
+              }
+            }
+
+            if (optimizedBuf!) {
+              const pagesImageSecHeaders: Record<string, string> = {
+                "Content-Security-Policy": pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
+                "X-Content-Type-Options": "nosniff",
+                "Content-Disposition": pagesImageConfig?.contentDispositionType ?? "inline",
+              };
+              res.writeHead(200, {
+                "Content-Type": "image/webp",
+                "Content-Length": optimizedBuf.length.toString(),
+                "Cache-Control": "public, max-age=31536000, immutable",
+                ...pagesImageSecHeaders,
+              });
+              res.end(optimizedBuf);
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn("[vinext] Sharp optimization failed:", e);
+        }
+      }
       if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
       }

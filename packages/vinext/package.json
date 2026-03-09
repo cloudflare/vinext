@@ -75,7 +75,13 @@
   "peerDependencies": {
     "react": ">=19.2.0",
     "react-dom": ">=19.2.0",
-    "vite": "^7.0.0"
+    "vite": "^7.0.0",
+    "sharp": ">=0.33.0"
+  },
+  "peerDependenciesMeta": {
+    "sharp": {
+      "optional": true
+    }
   },
   "engines": {
     "node": ">=22"

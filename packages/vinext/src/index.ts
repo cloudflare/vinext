@@ -44,6 +44,7 @@ import {
 import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
 import { detectPackageManager } from "./utils/project.js";
+import { tryRequireSharp } from "./utils/sharp.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -707,6 +708,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   }
 
   const imageImportDimCache = new Map<string, { width: number; height: number }>();
+  let _isBuildMode = false;
+  let _devImageCache: Map<string, Buffer> | null = null;
 
   // Shared state for the MDX proxy plugin. Populated during config() if MDX
   // files are detected and @mdx-js/rollup is installed.
@@ -1408,6 +1411,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
               allowedDevOrigins: nextConfig?.allowedDevOrigins,
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
+              root,
             },
             instrumentationPath,
           );
@@ -1846,6 +1850,63 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   res.end("Only relative URLs allowed");
                   return;
                 }
+                // Try sharp-based optimization if available
+                const __sharpModule = await (await import("./utils/sharp.js")).tryRequireSharp();
+                const __imgWidth = parseInt(new URLSearchParams(url.split("?")[1] ?? "").get("w") || "0", 10);
+                const __imgQuality = parseInt(new URLSearchParams(url.split("?")[1] ?? "").get("q") || "75", 10);
+
+                if (__sharpModule && __imgWidth > 0 && !imgUrl.endsWith(".svg")) {
+                  // Dev image optimization cache (memory-backed, capped at 500 entries)
+                  const __cacheKey = `${imgUrl}:${__imgWidth}:${__imgQuality}`;
+                  if (!_devImageCache) {
+                    _devImageCache = new Map<string, Buffer>();
+                  }
+
+                  let __optimizedBuf = _devImageCache.get(__cacheKey);
+                  if (!__optimizedBuf) {
+                    try {
+                      // Resolve image path through Vite's dev server
+                      const __imageFsPath = path.join(server.config.root, imgUrl);
+                      if (fs.existsSync(__imageFsPath)) {
+                        const __rawBuffer = fs.readFileSync(__imageFsPath);
+                        // Skip animated images
+                        const __meta = await __sharpModule(__rawBuffer).metadata();
+                        if (__meta.pages && __meta.pages > 1) {
+                          // Animated — redirect to original
+                          res.writeHead(302, { Location: imgUrl });
+                          res.end();
+                          return;
+                        }
+                        const __result = await __sharpModule(__rawBuffer)
+                          .resize(__imgWidth, undefined, { withoutEnlargement: true })
+                          .webp({ quality: __imgQuality })
+                          .toBuffer();
+                        __optimizedBuf = __result;
+
+                        // Cap cache at 500 entries
+                        if (_devImageCache.size >= 500) {
+                          const firstKey = _devImageCache.keys().next().value;
+                          if (firstKey) _devImageCache.delete(firstKey);
+                        }
+                        _devImageCache.set(__cacheKey, __result);
+                      }
+                    } catch {
+                      // Sharp failed — fall through to redirect
+                    }
+                  }
+
+                  if (__optimizedBuf) {
+                    res.writeHead(200, {
+                      "Content-Type": "image/webp",
+                      "Content-Length": __optimizedBuf.length.toString(),
+                      "Cache-Control": "public, max-age=60",
+                    });
+                    res.end(__optimizedBuf);
+                    return;
+                  }
+                }
+
+                // Fallback: redirect to original asset
                 res.writeHead(302, { Location: imgUrl });
                 res.end();
                 return;
@@ -2224,36 +2285,101 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // Cache of image dimensions to avoid re-reading files
       _dimCache: imageImportDimCache,
 
+      configResolved(config) {
+        _isBuildMode = config.command === 'build';
+      },
+
       resolveId: {
-        filter: { id: /\?vinext-meta$/ },
+        filter: { id: /\?vinext-(meta|opt)/ },
         handler(source, _importer) {
-          if (!source.endsWith("?vinext-meta")) return null;
-          // Resolve the real image path from the importer
-          const realPath = source.replace("?vinext-meta", "");
-          return `\0vinext-image-meta:${realPath}`;
+          if (source.endsWith("?vinext-meta")) {
+            const realPath = source.replace("?vinext-meta", "");
+            return `\0vinext-image-meta:${realPath}`;
+          }
+          // ?vinext-opt&w=WIDTH — build-time sharp optimization
+          const optMatch = source.match(/^(.+)\?vinext-opt&w=(\d+)$/);
+          if (optMatch) {
+            return `\0vinext-image-opt:${optMatch[1]}:${optMatch[2]}`;
+          }
+          return null;
         },
       },
 
       async load(id) {
-        if (!id.startsWith("\0vinext-image-meta:")) return null;
-        const imagePath = id.replace("\0vinext-image-meta:", "");
+        if (id.startsWith("\0vinext-image-meta:")) {
+          const imagePath = id.replace("\0vinext-image-meta:", "");
 
-        // Read from cache first
-        const cache = imageImportDimCache;
-        let dims = cache.get(imagePath);
-        if (!dims) {
+          // Read from cache first
+          const cache = imageImportDimCache;
+          let dims = cache.get(imagePath);
+          if (!dims) {
+            try {
+              const { imageSize } = await import("image-size");
+              const buffer = fs.readFileSync(imagePath);
+              const result = imageSize(buffer);
+              dims = { width: result.width ?? 0, height: result.height ?? 0 };
+              cache.set(imagePath, dims);
+            } catch {
+              dims = { width: 0, height: 0 };
+            }
+          }
+
+          return `export default ${JSON.stringify(dims)};`;
+        }
+
+        // Build-time image optimization: resize + convert to WebP
+        if (id.startsWith("\0vinext-image-opt:")) {
+          const rest = id.replace("\0vinext-image-opt:", "");
+          const lastColon = rest.lastIndexOf(":");
+          const imagePath = rest.slice(0, lastColon);
+          const width = parseInt(rest.slice(lastColon + 1), 10);
+
+          const sharp = await tryRequireSharp();
+          if (!sharp) {
+            // Fallback: just re-export the original image URL
+            return `export default ${JSON.stringify(imagePath)};`;
+          }
+
           try {
-            const { imageSize } = await import("image-size");
             const buffer = fs.readFileSync(imagePath);
-            const result = imageSize(buffer);
-            dims = { width: result.width ?? 0, height: result.height ?? 0 };
-            cache.set(imagePath, dims);
-          } catch {
-            dims = { width: 0, height: 0 };
+            // Skip animated images (GIF with multiple frames)
+            const metadata = await sharp(buffer).metadata();
+            if (metadata.pages && metadata.pages > 1) {
+              // Animated image — emit original, no optimization
+              const refId = this.emitFile({
+                type: 'asset',
+                name: path.basename(imagePath),
+                source: buffer,
+              });
+              return `export default "__VITE_ASSET__${refId}__";`;
+            }
+
+            const optimized = await sharp(buffer)
+              .resize(width, undefined, { withoutEnlargement: true })
+              .webp({ quality: 75 })
+              .toBuffer();
+
+            const baseName = path.basename(imagePath, path.extname(imagePath));
+            const refId = this.emitFile({
+              type: 'asset',
+              name: `${baseName}-${width}.webp`,
+              source: optimized,
+            });
+            return `export default "__VITE_ASSET__${refId}__";`;
+          } catch (e) {
+            console.warn(`[vinext] Sharp optimization failed for ${imagePath}:`, e);
+            // Fallback: emit original
+            const buffer = fs.readFileSync(imagePath);
+            const refId = this.emitFile({
+              type: 'asset',
+              name: path.basename(imagePath),
+              source: buffer,
+            });
+            return `export default "__VITE_ASSET__${refId}__";`;
           }
         }
 
-        return `export default ${JSON.stringify(dims)};`;
+        return null;
       },
 
       transform: {
@@ -2295,16 +2421,63 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
             if (!fs.existsSync(absImagePath)) continue;
 
-            // Replace the single import with two:
-            // 1. Original import (Vite gives us the URL string)
-            // 2. Meta import (we provide { width, height })
-            // Combined into a StaticImageData object
             const urlVar = `__vinext_img_url_${varName}`;
             const metaVar = `__vinext_img_meta_${varName}`;
-            const replacement =
-              `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
-              `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
-              `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
+
+            let replacement: string;
+
+            // In build mode with sharp, generate optimized variants
+            const isSvg = importPath.endsWith('.svg');
+            if (_isBuildMode && !isSvg && await tryRequireSharp()) {
+              // Get dimensions for width filtering
+              let dims = imageImportDimCache.get(absImagePath);
+              if (!dims) {
+                try {
+                  const { imageSize } = await import("image-size");
+                  const buffer = fs.readFileSync(absImagePath);
+                  const result = imageSize(buffer);
+                  dims = { width: result.width ?? 0, height: result.height ?? 0 };
+                  imageImportDimCache.set(absImagePath, dims);
+                } catch {
+                  dims = { width: 0, height: 0 };
+                }
+              }
+
+              const deviceSizes = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+              const qualifyingWidths = dims.width > 0
+                ? deviceSizes.filter(w => w <= dims!.width * 2)
+                : deviceSizes;
+
+              if (qualifyingWidths.length > 0) {
+                const optImports = qualifyingWidths.map(w => {
+                  const optVar = `__vinext_img_opt_${varName}_${w}`;
+                  return `import ${optVar} from ${JSON.stringify(absImagePath + `?vinext-opt&w=${w}`)};`;
+                }).join('\n');
+
+                const srcSetEntries = qualifyingWidths.map(w => {
+                  const optVar = `__vinext_img_opt_${varName}_${w}`;
+                  return `${w}: ${optVar}`;
+                }).join(', ');
+
+                replacement =
+                  `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
+                  `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
+                  optImports + '\n' +
+                  `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height, optimizedSrcSet: { ${srcSetEntries} } };`;
+              } else {
+                // No qualifying widths (image too small for any device size)
+                replacement =
+                  `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
+                  `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
+                  `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
+              }
+            } else {
+              // Dev mode or no sharp — keep existing behavior
+              replacement =
+                `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
+                `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
+                `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
+            }
 
             s.overwrite(matchStart, matchEnd, replacement);
             hasChanges = true;

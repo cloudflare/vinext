@@ -477,3 +477,132 @@ describe("blurDataURL CSS injection prevention", () => {
     expect(html).toContain(validURL);
   });
 });
+
+// ─── optimizedSrcSet support ─────────────────────────────────────────
+
+describe("Image with optimizedSrcSet (build-time optimization)", () => {
+  it("renders pre-built srcSet URLs instead of /_vinext/image", () => {
+    const staticImage: StaticImageData = {
+      src: "/assets/hero.abc123.png",
+      width: 1200,
+      height: 800,
+      optimizedSrcSet: {
+        640: "/assets/hero-640.def456.webp",
+        828: "/assets/hero-828.ghi789.webp",
+        1080: "/assets/hero-1080.jkl012.webp",
+      },
+    };
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "optimized hero",
+        src: staticImage,
+      }),
+    );
+    // Should use pre-built URLs, not /_vinext/image
+    expect(html).not.toContain("/_vinext/image");
+    expect(html).toContain("/assets/hero-640.def456.webp");
+    expect(html).toContain("/assets/hero-828.ghi789.webp");
+    expect(html).toContain("/assets/hero-1080.jkl012.webp");
+    expect(html).toContain("640w");
+    expect(html).toContain("828w");
+    expect(html).toContain("1080w");
+  });
+
+  it("uses closest width match as src attribute", () => {
+    const staticImage: StaticImageData = {
+      src: "/assets/photo.png",
+      width: 800,
+      height: 600,
+      optimizedSrcSet: {
+        640: "/assets/photo-640.webp",
+        828: "/assets/photo-828.webp",
+        1080: "/assets/photo-1080.webp",
+      },
+    };
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "photo",
+        src: staticImage,
+      }),
+    );
+    // src should be closest width >= 800 → 828
+    expect(html).toContain('src="/assets/photo-828.webp"');
+  });
+
+  it("falls back to /_vinext/image when unoptimized is true", () => {
+    const staticImage: StaticImageData = {
+      src: "/assets/hero.png",
+      width: 800,
+      height: 600,
+      optimizedSrcSet: {
+        640: "/assets/hero-640.webp",
+        828: "/assets/hero-828.webp",
+      },
+    };
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "unoptimized",
+        src: staticImage,
+        unoptimized: true,
+      }),
+    );
+    // With unoptimized, should use original src, not pre-built
+    expect(html).not.toContain("/assets/hero-640.webp");
+    expect(html).toContain('src="/assets/hero.png"');
+  });
+
+  it("falls back to /_vinext/image when no optimizedSrcSet", () => {
+    const staticImage: StaticImageData = {
+      src: "/assets/hero.png",
+      width: 800,
+      height: 600,
+    };
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "no optimization",
+        src: staticImage,
+      }),
+    );
+    // Without optimizedSrcSet, should use /_vinext/image
+    expect(html).toContain("/_vinext/image");
+  });
+});
+
+describe("getImageProps with optimizedSrcSet", () => {
+  it("returns pre-built URLs in srcSet", () => {
+    const staticImage: StaticImageData = {
+      src: "/assets/photo.png",
+      width: 1200,
+      height: 800,
+      optimizedSrcSet: {
+        640: "/assets/photo-640.webp",
+        1080: "/assets/photo-1080.webp",
+      },
+    };
+    const { props } = getImageProps({
+      alt: "optimized",
+      src: staticImage,
+    });
+    expect(props.srcSet).toContain("/assets/photo-640.webp 640w");
+    expect(props.srcSet).toContain("/assets/photo-1080.webp 1080w");
+    expect(props.srcSet).not.toContain("/_vinext/image");
+  });
+
+  it("ignores optimizedSrcSet when unoptimized", () => {
+    const staticImage: StaticImageData = {
+      src: "/assets/photo.png",
+      width: 800,
+      height: 600,
+      optimizedSrcSet: {
+        640: "/assets/photo-640.webp",
+      },
+    };
+    const { props } = getImageProps({
+      alt: "unoptimized",
+      src: staticImage,
+      unoptimized: true,
+    });
+    expect(props.src).toBe("/assets/photo.png");
+    expect(props.srcSet).toBeUndefined();
+  });
+});
