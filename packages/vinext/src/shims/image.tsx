@@ -27,6 +27,8 @@ export interface StaticImageData {
   height: number;
   width: number;
   blurDataURL?: string;
+  // TODO: blurWidth/blurHeight are declared but not consumed by normalizeProps.
+  // Next.js 16 passes them to getImageBlurSvg() for placeholder generation.
   blurWidth?: number;
   blurHeight?: number;
 }
@@ -693,7 +695,12 @@ function normalizeProps(
     decoding,
     loading: isLazy ? "lazy" : loading,
     fetchPriority,
-    onLoad,
+    onLoad: onLoadingComplete
+      ? (e: React.SyntheticEvent<HTMLImageElement>) => {
+          onLoad?.(e);
+          onLoadingComplete(e.currentTarget);
+        }
+      : onLoad,
     style: imgStyle,
     sizes: imgAttributes.sizes,
     srcSet: imgAttributes.srcSet,

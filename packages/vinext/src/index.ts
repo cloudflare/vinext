@@ -364,6 +364,8 @@ const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = "\0" + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = "\0" + VIRTUAL_APP_BROWSER_ENTRY;
+const VIRTUAL_IMAGE_CONFIG = "virtual:vinext-image-config";
+const RESOLVED_IMAGE_CONFIG = "\0" + VIRTUAL_IMAGE_CONFIG;
 
 /** Image file extensions handled by the vinext:image-imports plugin.
  *  Shared between the Rolldown hook filter and the transform handler regex. */
@@ -1390,6 +1392,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           ) {
             return RESOLVED_APP_BROWSER_ENTRY;
           }
+          // Image config virtual module
+          if (cleanId === VIRTUAL_IMAGE_CONFIG) return RESOLVED_IMAGE_CONFIG;
+          if (
+            cleanId.endsWith("/" + VIRTUAL_IMAGE_CONFIG) ||
+            cleanId.endsWith("\\" + VIRTUAL_IMAGE_CONFIG)
+          ) {
+            return RESOLVED_IMAGE_CONFIG;
+          }
         },
       },
 
@@ -1431,6 +1441,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
         if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
           return generateBrowserEntry();
+        }
+        if (id === RESOLVED_IMAGE_CONFIG) {
+          const images = nextConfig?.images ?? {};
+          return `export default ${JSON.stringify(images)};`;
         }
       },
     },

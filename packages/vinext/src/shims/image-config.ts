@@ -68,7 +68,7 @@ export const imageConfigDefault: ImageConfigComplete = {
   loaderFile: "",
   domains: [],
   disableStaticImages: false,
-  minimumCacheTTL: 14_400,
+  minimumCacheTTL: 14_400, // 4 hours — matches Next.js 16 default (image-config.ts:160)
   formats: ["image/webp"],
   maximumDiskCacheSize: undefined,
   maximumRedirects: 3,

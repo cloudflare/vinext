@@ -315,3 +315,48 @@ describe("next/image shim", () => {
     ).toThrow(/images\.localPatterns/);
   });
 });
+
+describe("findClosestQuality", () => {
+  // Ported from Next.js: test/unit/image-optimizer/find-closest-quality.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/unit/image-optimizer/find-closest-quality.test.ts
+  it("returns input quality when no qualities array", async () => {
+    const { findClosestQuality } = await loadImageModule();
+    expect(findClosestQuality(75)).toBe(75);
+  });
+
+  it("returns input quality when empty qualities array", async () => {
+    const { findClosestQuality } = await loadImageModule();
+    expect(findClosestQuality(75, [])).toBe(75);
+  });
+
+  it("returns single quality regardless of input", async () => {
+    const { findClosestQuality } = await loadImageModule();
+    expect(findClosestQuality(50, [80])).toBe(80);
+  });
+
+  it("returns exact match", async () => {
+    const { findClosestQuality } = await loadImageModule();
+    expect(findClosestQuality(75, [25, 50, 75, 100])).toBe(75);
+  });
+
+  it("returns closest lower quality", async () => {
+    const { findClosestQuality } = await loadImageModule();
+    expect(findClosestQuality(60, [25, 50, 75, 100])).toBe(50);
+  });
+
+  it("returns closest upper quality", async () => {
+    const { findClosestQuality } = await loadImageModule();
+    expect(findClosestQuality(70, [25, 50, 75, 100])).toBe(75);
+  });
+
+  it("returns first encountered when equidistant", async () => {
+    const { findClosestQuality } = await loadImageModule();
+    // 62 is equidistant from 50 and 75 — reduce keeps the earlier winner
+    expect(findClosestQuality(62, [25, 50, 75, 100])).toBe(50);
+  });
+
+  it("snaps default quality 75 to configured qualities", async () => {
+    const { findClosestQuality } = await loadImageModule();
+    expect(findClosestQuality(75, [25, 50, 80])).toBe(80);
+  });
+});

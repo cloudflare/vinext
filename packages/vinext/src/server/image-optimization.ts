@@ -215,6 +215,7 @@ function parseIpv4(hostname: string): [number, number, number, number] | null {
 function isBlockedIpv4(octets: [number, number, number, number]): boolean {
   const [a, b] = octets;
   return (
+    a === 0 ||
     a === 10 ||
     a === 127 ||
     (a === 169 && b === 254) ||
@@ -289,9 +290,6 @@ function streamFromArrayBuffer(buffer: ArrayBuffer): ReadableStream {
 function isBlockedLocalHost(hostname: string): boolean {
   const lower = stripIpv6Brackets(hostname).toLowerCase();
   if (lower === "localhost" || lower.endsWith(".localhost") || lower.endsWith(".local")) {
-    return true;
-  }
-  if (lower === "0.0.0.0") {
     return true;
   }
   const ipv4 = parseIpv4(lower);
