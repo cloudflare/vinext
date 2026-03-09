@@ -514,7 +514,7 @@ Conducted a full audit of vinext's feature surface against 25 Next.js capabiliti
 | useSearchParams/usePathname/useParams | YES            | Unit + existing e2e       | 11            | —              |
 | Middleware                            | YES            | Existing e2e              | —             | —              |
 | Rewrites/Redirects config             | YES            | Existing e2e              | —             | —              |
-| next/image                            | PARTIAL        | **Unit (55 tests)**       | —             | **P5-2, P5-3** |
+| next/image                            | PARTIAL        | **Unit (82 tests)**       | —             | **P5-2, P5-3** |
 | next/link (prefetch)                  | YES            | **Unit (24 tests) + e2e** | —             | **P5-1**       |
 | next/script                           | YES            | **Unit (9 tests) + e2e**  | —             | **P5-10**      |
 | Catch-all routes                      | YES            | Unit + e2e                | —             | —              |
@@ -1065,8 +1065,17 @@ tests are either entirely new coverage or complementary to existing integration/
 | 8     | className and custom style                                                                                          | PASS   |       |
 | 9-12  | srcSet generation (responsive widths, large images, small fallback, fill mode)                                      | PASS   |       |
 | 13-22 | `getImageProps()` API: basic, priority, fill, loader, blur, style merge, passthrough, static, srcSet, loading=eager | PASS   |       |
+| 23-29 | blurDataURL CSS injection prevention (7 tests)                                                                      | PASS   |       |
+| 30    | StaticImageData Next.js 16 fields (blurWidth, blurHeight)                                                           | PASS   |       |
+| 31-32 | preload prop (Next.js 16): Image + getImageProps                                                                    | PASS   |       |
+| 33-34 | deprecated props compat (onLoadingComplete, layout, objectFit, etc.)                                                | PASS   |       |
+| 35-36 | width/height string support (Next.js 16)                                                                            | PASS   |       |
+| 37-38 | placeholder data URL (Next.js 16): local + remote                                                                   | PASS   |       |
+| 39-40 | StaticImport / StaticRequire support                                                                                | PASS   |       |
+| 41-42 | type exports (ImageLoaderProps, ImageProps)                                                                         | PASS   |       |
+| 43-49 | findClosestQuality (7 tests + 1 equidistant)                                                                        | PASS   |       |
 
-**Result: 22/22 pass**
+**Result: 49/49 pass**
 
 ### P5-3: Image remote pattern matching (SSRF prevention) ✅
 
@@ -1203,7 +1212,7 @@ tests are either entirely new coverage or complementary to existing integration/
 | Chunk                       | Tests   | Pass    | Skip  | Fail  |
 | --------------------------- | ------- | ------- | ----- | ----- |
 | P5-1. next/link             | 24      | 24      | 0     | 0     |
-| P5-2. next/image component  | 22      | 22      | 0     | 0     |
+| P5-2. next/image component  | 49      | 49      | 0     | 0     |
 | P5-3. Image remote patterns | 33      | 33      | 0     | 0     |
 | P5-4. next/head             | 26      | 26      | 0     | 0     |
 | P5-5. Metadata routes       | 43      | 43      | 0     | 0     |
@@ -1213,7 +1222,7 @@ tests are either entirely new coverage or complementary to existing integration/
 | P5-9. next/dynamic          | 11      | 11      | 0     | 0     |
 | P5-10. next/script          | 9       | 9       | 0     | 0     |
 | P5-11. next/form            | 6       | 6       | 0     | 0     |
-| **Total**                   | **230** | **230** | **0** | **0** |
+| **Total**                   | **257** | **257** | **0** | **0** |
 
 ### Redundancy Cleanup
 

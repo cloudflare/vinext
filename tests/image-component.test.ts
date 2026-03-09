@@ -620,6 +620,21 @@ describe("placeholder data URL (Next.js 16)", () => {
     });
     expect((props.style as any)?.backgroundImage).toContain("data:image/png;base64,abc123");
   });
+
+  it("applies data:image/ placeholder for remote images", () => {
+    const validDataUrl = "data:image/png;base64,abc123";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote data placeholder",
+        src: "https://example.com/photo.jpg",
+        width: 400,
+        height: 300,
+        placeholder: validDataUrl as PlaceholderValue,
+      }),
+    );
+    // Remote images pass background to @unpic/react, which renders it as inline style
+    expect(html).toContain("data:image/png;base64,abc123");
+  });
 });
 
 describe("StaticImport / StaticRequire support", () => {

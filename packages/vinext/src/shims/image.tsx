@@ -361,8 +361,16 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       }
     }
 
-    const sanitizedBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
-    const bg = placeholder === "blur" && sanitizedBlur ? `url(${sanitizedBlur})` : undefined;
+    const isDataPlaceholder =
+      typeof placeholder === "string" && placeholder.startsWith("data:image/");
+    const effectiveBlurDataURL = isDataPlaceholder ? placeholder : imgBlurDataURL;
+    const sanitizedBlur = effectiveBlurDataURL
+      ? sanitizeBlurDataURL(effectiveBlurDataURL)
+      : undefined;
+    const bg =
+      (placeholder === "blur" || isDataPlaceholder) && sanitizedBlur
+        ? `url(${sanitizedBlur})`
+        : undefined;
 
     if (fill) {
       return (

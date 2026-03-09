@@ -4,31 +4,31 @@
 
 All of these resolve automatically to vinext shims. Do not rewrite imports in application code.
 
-| Import              | Status  | Notes                                                            |
-| ------------------- | ------- | ---------------------------------------------------------------- |
-| `next/link`         | Full    |                                                                  |
-| `next/image`        | Partial | Remote images via @unpic; no build-time optimization             |
-| `next/head`         | Full    |                                                                  |
-| `next/router`       | Full    | Pages Router                                                     |
-| `next/navigation`   | Full    | App Router                                                       |
-| `next/server`       | Full    | NextRequest, NextResponse, cookies, userAgent, after, connection |
-| `next/headers`      | Full    |                                                                  |
-| `next/dynamic`      | Full    |                                                                  |
-| `next/script`       | Full    |                                                                  |
-| `next/font/google`  | Partial | CDN-loaded, not self-hosted                                      |
-| `next/font/local`   | Partial | Runtime injection                                                |
-| `next/og`           | Full    | Via @vercel/og                                                   |
-| `next/cache`        | Full    | Pluggable CacheHandler                                           |
-| `next/form`         | Full    |                                                                  |
-| `next/legacy/image` | Full    |                                                                  |
-| `next/error`        | Full    |                                                                  |
-| `next/config`       | Full    |                                                                  |
-| `next/document`     | Full    | Pages Router                                                     |
-| `next/constants`    | Full    |                                                                  |
-| `next/amp`          | Stub    | No-op; AMP deprecated since Next.js 13                           |
-| `next/web-vitals`   | Stub    | No-op                                                            |
-| `server-only`       | Full    |                                                                  |
-| `client-only`       | Full    |                                                                  |
+| Import              | Status  | Notes                                                                                           |
+| ------------------- | ------- | ----------------------------------------------------------------------------------------------- |
+| `next/link`         | Full    |                                                                                                 |
+| `next/image`        | Partial | Remote via @unpic; local via /\_vinext/image. Full Next.js 16 props. No build-time optimization |
+| `next/head`         | Full    |                                                                                                 |
+| `next/router`       | Full    | Pages Router                                                                                    |
+| `next/navigation`   | Full    | App Router                                                                                      |
+| `next/server`       | Full    | NextRequest, NextResponse, cookies, userAgent, after, connection                                |
+| `next/headers`      | Full    |                                                                                                 |
+| `next/dynamic`      | Full    |                                                                                                 |
+| `next/script`       | Full    |                                                                                                 |
+| `next/font/google`  | Partial | CDN-loaded, not self-hosted                                                                     |
+| `next/font/local`   | Partial | Runtime injection                                                                               |
+| `next/og`           | Full    | Via @vercel/og                                                                                  |
+| `next/cache`        | Full    | Pluggable CacheHandler                                                                          |
+| `next/form`         | Full    |                                                                                                 |
+| `next/legacy/image` | Full    |                                                                                                 |
+| `next/error`        | Full    |                                                                                                 |
+| `next/config`       | Full    |                                                                                                 |
+| `next/document`     | Full    | Pages Router                                                                                    |
+| `next/constants`    | Full    |                                                                                                 |
+| `next/amp`          | Stub    | No-op; AMP deprecated since Next.js 13                                                          |
+| `next/web-vitals`   | Stub    | No-op                                                                                           |
+| `server-only`       | Full    |                                                                                                 |
+| `client-only`       | Full    |                                                                                                 |
 
 ## Routing Features
 

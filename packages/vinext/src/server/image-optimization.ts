@@ -62,7 +62,6 @@ const ABSOLUTE_MAX_WIDTH = 3840;
 export function parseImageParams(
   url: URL,
   allowedWidths?: number[],
-  allowedQualities?: number[],
 ): { imageUrl: string; width: number; quality: number } | null {
   const imageUrl = url.searchParams.get("url");
   if (!imageUrl) return null;
@@ -76,7 +75,6 @@ export function parseImageParams(
   if (allowedWidths && w !== 0 && !allowedWidths.includes(w)) return null;
   // Validate quality (1-100)
   if (Number.isNaN(q) || q < 1 || q > 100) return null;
-  if (allowedQualities && !allowedQualities.includes(q)) return null;
 
   // Prevent open redirect / SSRF — only allow path-relative URLs.
   // Normalize backslashes to forward slashes first: browsers and the URL
@@ -202,10 +200,9 @@ export async function handleImageOptimization(
   handlers: ImageHandlers,
   allowedWidths?: number[],
   imageConfig?: ImageConfig,
-  allowedQualities?: number[],
 ): Promise<Response> {
   const url = new URL(request.url);
-  const params = parseImageParams(url, allowedWidths, allowedQualities);
+  const params = parseImageParams(url, allowedWidths);
 
   if (!params) {
     return new Response("Bad Request", { status: 400 });
