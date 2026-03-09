@@ -3459,7 +3459,14 @@ describe("checkHasConditions condition value cache", () => {
   // Regression test: safeRegExp(condition.value) was called on every request
   // for every has/missing condition. The result is now cached in
   // _compiledConditionCache keyed by value so isSafeRegex runs at most once.
-  function makeCtx(overrides: { headers?: Record<string, string>; cookies?: Record<string, string>; query?: Record<string, string>; host?: string } = {}) {
+  function makeCtx(
+    overrides: {
+      headers?: Record<string, string>;
+      cookies?: Record<string, string>;
+      query?: Record<string, string>;
+      host?: string;
+    } = {},
+  ) {
     return {
       headers: new Headers(overrides.headers ?? {}),
       cookies: overrides.cookies ?? {},
@@ -3473,13 +3480,19 @@ describe("checkHasConditions condition value cache", () => {
     const has = [{ type: "header" as const, key: "x-tier", value: "pro|enterprise" }];
 
     // First call — populates _compiledConditionCache for "pro|enterprise".
-    expect(checkHasConditions(has, undefined, makeCtx({ headers: { "x-tier": "pro" } }))).toBe(true);
+    expect(checkHasConditions(has, undefined, makeCtx({ headers: { "x-tier": "pro" } }))).toBe(
+      true,
+    );
 
     // Second call — must hit the cache.
-    expect(checkHasConditions(has, undefined, makeCtx({ headers: { "x-tier": "enterprise" } }))).toBe(true);
+    expect(
+      checkHasConditions(has, undefined, makeCtx({ headers: { "x-tier": "enterprise" } })),
+    ).toBe(true);
 
     // Non-matching value.
-    expect(checkHasConditions(has, undefined, makeCtx({ headers: { "x-tier": "free" } }))).toBe(false);
+    expect(checkHasConditions(has, undefined, makeCtx({ headers: { "x-tier": "free" } }))).toBe(
+      false,
+    );
   });
 
   it("caches condition values across all condition types (header, cookie, query, host)", async () => {
@@ -3488,13 +3501,21 @@ describe("checkHasConditions condition value cache", () => {
 
     // header
     const hasHeader = [{ type: "header" as const, key: "x-version", value: sharedPattern }];
-    expect(checkHasConditions(hasHeader, undefined, makeCtx({ headers: { "x-version": "v3" } }))).toBe(true);
-    expect(checkHasConditions(hasHeader, undefined, makeCtx({ headers: { "x-version": "v3" } }))).toBe(true);
+    expect(
+      checkHasConditions(hasHeader, undefined, makeCtx({ headers: { "x-version": "v3" } })),
+    ).toBe(true);
+    expect(
+      checkHasConditions(hasHeader, undefined, makeCtx({ headers: { "x-version": "v3" } })),
+    ).toBe(true);
 
     // cookie — same pattern string, should hit cache populated by header call above
     const hasCookie = [{ type: "cookie" as const, key: "ver", value: sharedPattern }];
-    expect(checkHasConditions(hasCookie, undefined, makeCtx({ cookies: { ver: "v1" } }))).toBe(true);
-    expect(checkHasConditions(hasCookie, undefined, makeCtx({ cookies: { ver: "beta" } }))).toBe(false);
+    expect(checkHasConditions(hasCookie, undefined, makeCtx({ cookies: { ver: "v1" } }))).toBe(
+      true,
+    );
+    expect(checkHasConditions(hasCookie, undefined, makeCtx({ cookies: { ver: "beta" } }))).toBe(
+      false,
+    );
 
     // query
     const hasQuery = [{ type: "query" as const, key: "v", value: sharedPattern }];
