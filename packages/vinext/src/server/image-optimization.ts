@@ -27,7 +27,7 @@ export const IMAGE_OPTIMIZATION_PATH = "/_vinext/image";
 export interface ImageConfig {
   /** Allow SVG through the image optimization endpoint. Default: false. */
   dangerouslyAllowSVG?: boolean;
-  /** Content-Disposition header value. Default: "inline". */
+  /** Content-Disposition header value. Default: "attachment". */
   contentDispositionType?: "inline" | "attachment";
   /** Content-Security-Policy header value. Default: "script-src 'none'; frame-src 'none'; sandbox;" */
   contentSecurityPolicy?: string;
@@ -39,7 +39,7 @@ export interface ImageConfig {
  * config is provided. Matches Next.js defaults exactly.
  */
 export const DEFAULT_DEVICE_SIZES = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
-export const DEFAULT_IMAGE_SIZES = [16, 32, 48, 64, 96, 128, 256, 384];
+export const DEFAULT_IMAGE_SIZES = [32, 48, 64, 96, 128, 256, 384];
 
 /**
  * Absolute maximum image width. Even if custom deviceSizes/imageSizes are
@@ -62,6 +62,7 @@ const ABSOLUTE_MAX_WIDTH = 3840;
 export function parseImageParams(
   url: URL,
   allowedWidths?: number[],
+  allowedQualities?: number[],
 ): { imageUrl: string; width: number; quality: number } | null {
   const imageUrl = url.searchParams.get("url");
   if (!imageUrl) return null;
@@ -75,6 +76,7 @@ export function parseImageParams(
   if (allowedWidths && w !== 0 && !allowedWidths.includes(w)) return null;
   // Validate quality (1-100)
   if (Number.isNaN(q) || q < 1 || q > 100) return null;
+  if (allowedQualities && !allowedQualities.includes(q)) return null;
 
   // Prevent open redirect / SSRF — only allow path-relative URLs.
   // Normalize backslashes to forward slashes first: browsers and the URL
@@ -171,7 +173,7 @@ function setImageSecurityHeaders(headers: Headers, config?: ImageConfig): void {
     config?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
   );
   headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("Content-Disposition", config?.contentDispositionType ?? "inline");
+  headers.set("Content-Disposition", config?.contentDispositionType ?? "attachment");
 }
 
 /**
@@ -242,10 +244,14 @@ export async function handleImageOptimization(
   // Transform if handler provided, otherwise serve original
   if (handlers.transformImage) {
     try {
+      // AVIF encodes more efficiently, so use a lower quality value for
+      // equivalent perceptual quality. Matches Next.js 16 behavior.
+      const adjustedQuality =
+        format === "image/avif" ? Math.max(quality - 20, 1) : quality;
       const transformed = await handlers.transformImage(source.body, {
         width,
         format,
-        quality,
+        quality: adjustedQuality,
       });
       const headers = new Headers(transformed.headers);
       headers.set("Cache-Control", IMAGE_CACHE_CONTROL);

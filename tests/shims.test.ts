@@ -5929,7 +5929,7 @@ describe("image optimization request parsing", () => {
     const { DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } =
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(DEFAULT_DEVICE_SIZES).toEqual([640, 750, 828, 1080, 1200, 1920, 2048, 3840]);
-    expect(DEFAULT_IMAGE_SIZES).toEqual([16, 32, 48, 64, 96, 128, 256, 384]);
+    expect(DEFAULT_IMAGE_SIZES).toEqual([32, 48, 64, 96, 128, 256, 384]);
   });
 });
 
@@ -6178,7 +6178,7 @@ describe("handleImageOptimization", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-    expect(response.headers.get("Content-Disposition")).toBe("inline");
+    expect(response.headers.get("Content-Disposition")).toBe("attachment");
   });
 
   it("sets Content-Security-Policy header on transformed responses", async () => {
@@ -6206,7 +6206,7 @@ describe("handleImageOptimization", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-    expect(response.headers.get("Content-Disposition")).toBe("inline");
+    expect(response.headers.get("Content-Disposition")).toBe("attachment");
   });
 
   it("overrides unsafe Content-Type from transform handler", async () => {
@@ -6311,7 +6311,7 @@ describe("handleImageOptimization", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-    expect(response.headers.get("Content-Disposition")).toBe("inline");
+    expect(response.headers.get("Content-Disposition")).toBe("attachment");
   });
 
   it("applies custom contentDispositionType", async () => {
@@ -6326,10 +6326,10 @@ describe("handleImageOptimization", () => {
         }),
     };
     const response = await handleImageOptimization(request, handlers, undefined, {
-      contentDispositionType: "attachment",
+      contentDispositionType: "inline",
     });
     expect(response.status).toBe(200);
-    expect(response.headers.get("Content-Disposition")).toBe("attachment");
+    expect(response.headers.get("Content-Disposition")).toBe("inline");
   });
 
   it("applies custom contentSecurityPolicy", async () => {
@@ -6367,7 +6367,7 @@ describe("handleImageOptimization", () => {
     expect(response.headers.get("Content-Security-Policy")).toBe(
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
-    expect(response.headers.get("Content-Disposition")).toBe("inline");
+    expect(response.headers.get("Content-Disposition")).toBe("attachment");
   });
 });
 

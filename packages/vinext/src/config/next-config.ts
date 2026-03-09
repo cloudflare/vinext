@@ -166,10 +166,12 @@ export interface NextConfig {
     imageSizes?: number[];
     /** Allow SVG images through the image optimization endpoint. SVG can contain scripts, so only enable if you trust all image sources. */
     dangerouslyAllowSVG?: boolean;
-    /** Content-Disposition header for image responses. Defaults to "inline". */
+    /** Content-Disposition header for image responses. Defaults to "attachment". */
     contentDispositionType?: "inline" | "attachment";
     /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
     contentSecurityPolicy?: string;
+    /** Allowed quality values for image optimization. When set, quality is rounded to the nearest value. */
+    qualities?: number[];
   };
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
   output?: "export" | "standalone";

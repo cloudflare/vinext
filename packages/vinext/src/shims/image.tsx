@@ -14,12 +14,34 @@ import React, { forwardRef } from "react";
 import { Image as UnpicImage } from "@unpic/react";
 import { hasRemoteMatch, type RemotePattern } from "./image-config.js";
 
+// ─── Type exports (Next.js 16 compat) ────────────────────────────────────
+
 export interface StaticImageData {
   src: string;
   height: number;
   width: number;
   blurDataURL?: string;
+  blurWidth?: number;
+  blurHeight?: number;
 }
+
+export interface StaticRequire {
+  default: StaticImageData;
+}
+
+export type StaticImport = StaticRequire | StaticImageData;
+
+export interface ImageLoaderProps {
+  src: string;
+  width: number;
+  quality?: number;
+}
+
+export type ImageLoader = (props: ImageLoaderProps) => string;
+
+export type PlaceholderValue = "blur" | "empty" | `data:image/${string}`;
+
+// ─── Build-time config ───────────────────────────────────────────────────
 
 /**
  * Image config injected at build time via Vite define.
@@ -51,6 +73,20 @@ const __imageDeviceSizes: number[] = (() => {
   }
 })();
 /**
+ * Allowed quality values from next.config.js `images.qualities`.
+ * When set, quality is rounded to the nearest allowed value.
+ */
+const __imageQualities: number[] | undefined = (() => {
+  try {
+    const raw = process.env.__VINEXT_IMAGE_QUALITIES;
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) && parsed.length > 0 ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+})();
+/**
  * Whether dangerouslyAllowSVG is enabled in next.config.js.
  * When false (default), .svg sources auto-skip the optimization endpoint
  * and are served directly, matching Next.js behavior.
@@ -58,6 +94,9 @@ const __imageDeviceSizes: number[] = (() => {
  * with security headers).
  */
 const __dangerouslyAllowSVG = process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG === "true";
+
+// ─── Helpers ─────────────────────────────────────────────────────────────
+
 /**
  * Validate that a remote URL is allowed by the configured remote patterns.
  * Returns true if the URL is allowed, false otherwise.
@@ -92,28 +131,13 @@ function validateRemoteUrl(src: string): { allowed: boolean; reason?: string } {
   };
 }
 
-interface ImageProps {
-  src: string | StaticImageData;
-  alt: string;
-  width?: number;
-  height?: number;
-  fill?: boolean;
-  priority?: boolean;
-  quality?: number;
-  placeholder?: "blur" | "empty";
-  blurDataURL?: string;
-  loader?: (params: { src: string; width: number; quality?: number }) => string;
-  sizes?: string;
-  className?: string;
-  style?: React.CSSProperties;
-  onLoad?: React.ReactEventHandler<HTMLImageElement>;
-  onError?: React.ReactEventHandler<HTMLImageElement>;
-  onClick?: React.MouseEventHandler<HTMLImageElement>;
-  id?: string;
-  // Accept and ignore Next.js-specific props that don't apply
-  unoptimized?: boolean;
-  overrideSrc?: string;
-  loading?: "lazy" | "eager";
+/**
+ * Find the closest allowed quality value.
+ * Matches Next.js 16 behavior: rounds to nearest value in the qualities array.
+ */
+function findClosestQuality(quality: number, qualities?: number[]): number {
+  if (!qualities?.length) return quality;
+  return qualities.reduce((prev, cur) => (Math.abs(cur - quality) < Math.abs(prev - quality) ? cur : prev), 0);
 }
 
 /**
@@ -158,6 +182,67 @@ function isRemoteUrl(src: string): boolean {
 const RESPONSIVE_WIDTHS = __imageDeviceSizes;
 
 /**
+ * Parse a string number to a number. Next.js 16 accepts `width` and `height`
+ * as `number | \`${number}\``.
+ */
+function toNumber(value: number | `${number}` | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === "number") return value;
+  return parseInt(value, 10);
+}
+
+/**
+ * Unwrap a StaticImport to get the StaticImageData.
+ * Handles both `{ default: StaticImageData }` and `StaticImageData` directly.
+ */
+function unwrapStaticImport(src: string | StaticImport): string | StaticImageData {
+  if (typeof src === "string") return src;
+  if ("default" in src) return src.default;
+  return src;
+}
+
+// ─── ImageProps ───────────────────────────────────────────────────────────
+
+export interface ImageProps {
+  src: string | StaticImport;
+  alt: string;
+  width?: number | `${number}`;
+  height?: number | `${number}`;
+  fill?: boolean;
+  priority?: boolean;
+  preload?: boolean;
+  quality?: number;
+  placeholder?: PlaceholderValue;
+  blurDataURL?: string;
+  loader?: ImageLoader;
+  sizes?: string;
+  className?: string;
+  style?: React.CSSProperties;
+  onLoad?: React.ReactEventHandler<HTMLImageElement>;
+  onError?: React.ReactEventHandler<HTMLImageElement>;
+  onClick?: React.MouseEventHandler<HTMLImageElement>;
+  id?: string;
+  // Accept and ignore Next.js-specific props that don't apply
+  unoptimized?: boolean;
+  overrideSrc?: string;
+  loading?: "lazy" | "eager";
+  /** @deprecated Use onLoad instead */
+  onLoadingComplete?: (img: HTMLImageElement) => void;
+  /** @deprecated Use fill instead */
+  layout?: string;
+  /** @deprecated Use style instead */
+  objectFit?: string;
+  /** @deprecated Use style instead */
+  objectPosition?: string;
+  /** @deprecated This prop does not do anything */
+  lazyBoundary?: string;
+  /** @deprecated This prop does not do anything */
+  lazyRoot?: string;
+}
+
+// ─── URL building ────────────────────────────────────────────────────────
+
+/**
  * Build a `/_vinext/image` optimization URL.
  *
  * In production (Cloudflare Workers), the worker intercepts this path and uses
@@ -165,7 +250,8 @@ const RESPONSIVE_WIDTHS = __imageDeviceSizes;
  * server handles it as a passthrough (serves the original file).
  */
 export function imageOptimizationUrl(src: string, width: number, quality: number = 75): string {
-  return `/_vinext/image?url=${encodeURIComponent(src)}&w=${width}&q=${quality}`;
+  const q = findClosestQuality(quality, __imageQualities);
+  return `/_vinext/image?url=${encodeURIComponent(src)}&w=${width}&q=${q}`;
 }
 
 /**
@@ -182,14 +268,17 @@ function generateSrcSet(src: string, originalWidth: number, quality: number = 75
   return widths.map((w) => `${imageOptimizationUrl(src, w, quality)} ${w}w`).join(", ");
 }
 
+// ─── Image component ─────────────────────────────────────────────────────
+
 const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   {
     src: srcProp,
     alt,
-    width,
-    height,
+    width: widthProp,
+    height: heightProp,
     fill,
     priority,
+    preload,
     quality,
     placeholder,
     blurDataURL,
@@ -200,16 +289,29 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     unoptimized: _unoptimized,
     overrideSrc: _overrideSrc,
     loading,
+    // Destructure deprecated props so they don't leak into ...rest
+    onLoadingComplete: _onLoadingComplete,
+    layout: _layout,
+    objectFit: _objectFit,
+    objectPosition: _objectPosition,
+    lazyBoundary: _lazyBoundary,
+    lazyRoot: _lazyRoot,
     ...rest
   },
   ref,
 ) {
-  // Handle StaticImageData (import result)
-  const src = typeof srcProp === "string" ? srcProp : srcProp.src;
-  const imgWidth = width ?? (typeof srcProp === "object" ? srcProp.width : undefined);
-  const imgHeight = height ?? (typeof srcProp === "object" ? srcProp.height : undefined);
+  // Handle StaticImageData / StaticImport (import result)
+  const unwrapped = unwrapStaticImport(srcProp);
+  const src = typeof unwrapped === "string" ? unwrapped : unwrapped.src;
+  const width = toNumber(widthProp);
+  const height = toNumber(heightProp);
+  const imgWidth = width ?? (typeof unwrapped === "object" ? unwrapped.width : undefined);
+  const imgHeight = height ?? (typeof unwrapped === "object" ? unwrapped.height : undefined);
   const imgBlurDataURL =
-    blurDataURL ?? (typeof srcProp === "object" ? srcProp.blurDataURL : undefined);
+    blurDataURL ?? (typeof unwrapped === "object" ? unwrapped.blurDataURL : undefined);
+
+  // Both priority and preload trigger eager loading (Next.js 16 compat)
+  const isEager = priority || preload;
 
   // If a custom loader is provided, use basic img with loader URL
   if (loader) {
@@ -221,7 +323,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
         alt={alt}
         width={fill ? undefined : imgWidth}
         height={fill ? undefined : imgHeight}
-        loading={priority ? "eager" : (loading ?? "lazy")}
+        loading={isEager ? "eager" : (loading ?? "lazy")}
         decoding="async"
         sizes={sizes}
         className={className}
@@ -265,7 +367,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           src={src}
           alt={alt}
           layout="fullWidth"
-          priority={priority}
+          priority={isEager}
           sizes={sizes}
           className={className}
           background={bg}
@@ -281,7 +383,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           width={imgWidth}
           height={imgHeight}
           layout="constrained"
-          priority={priority}
+          priority={isEager}
           sizes={sizes}
           className={className}
           background={bg}
@@ -301,6 +403,11 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   const imgQuality = quality ?? 75;
   const isSvg = src.endsWith(".svg");
   const skipOptimization = _unoptimized === true || (isSvg && !__dangerouslyAllowSVG);
+
+  // Handle data: URL placeholder used directly as placeholder value
+  const isDataPlaceholder =
+    typeof placeholder === "string" && placeholder.startsWith("data:image/");
+  const effectiveBlurDataURL = isDataPlaceholder ? placeholder : imgBlurDataURL;
 
   // Build srcSet for responsive local images (common breakpoints).
   // Each entry points to /_vinext/image with the appropriate width.
@@ -323,16 +430,18 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
 
   // Blur placeholder: show a low-quality background while the image loads.
   // Sanitize blurDataURL to prevent CSS injection via crafted data URLs.
-  const sanitizedLocalBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
-  const blurStyle =
-    placeholder === "blur" && sanitizedLocalBlur
-      ? {
-          backgroundImage: `url(${sanitizedLocalBlur})`,
-          backgroundSize: "cover",
-          backgroundRepeat: "no-repeat",
-          backgroundPosition: "center",
-        }
-      : undefined;
+  const sanitizedLocalBlur = effectiveBlurDataURL
+    ? sanitizeBlurDataURL(effectiveBlurDataURL)
+    : undefined;
+  const showBlur = (placeholder === "blur" || isDataPlaceholder) && sanitizedLocalBlur;
+  const blurStyle = showBlur
+    ? {
+        backgroundImage: `url(${sanitizedLocalBlur})`,
+        backgroundSize: "cover",
+        backgroundRepeat: "no-repeat",
+        backgroundPosition: "center",
+      }
+    : undefined;
 
   // For local images, render a standard <img> tag with srcSet and blur support.
   // The src and srcSet point to the /_vinext/image optimization endpoint.
@@ -343,8 +452,8 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       alt={alt}
       width={fill ? undefined : imgWidth}
       height={fill ? undefined : imgHeight}
-      loading={priority ? "eager" : (loading ?? "lazy")}
-      fetchPriority={priority ? "high" : undefined}
+      loading={isEager ? "eager" : (loading ?? "lazy")}
+      fetchPriority={isEager ? "high" : undefined}
       decoding="async"
       srcSet={srcSet}
       sizes={sizes ?? (fill ? "100vw" : undefined)}
@@ -368,6 +477,8 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   );
 });
 
+// ─── getImageProps ────────────────────────────────────────────────────────
+
 /**
  * getImageProps — for advanced use cases (picture elements, background images).
  * Returns the props that would be passed to the underlying <img> element.
@@ -378,10 +489,11 @@ export function getImageProps(props: ImageProps): {
   const {
     src: srcProp,
     alt,
-    width,
-    height,
+    width: widthProp,
+    height: heightProp,
     fill,
     priority,
+    preload,
     quality: _quality,
     placeholder,
     blurDataURL: blurDataURLProp,
@@ -392,14 +504,27 @@ export function getImageProps(props: ImageProps): {
     unoptimized: _unoptimized,
     overrideSrc: _overrideSrc,
     loading,
+    // Destructure deprecated props so they don't leak into ...rest
+    onLoadingComplete: _onLoadingComplete,
+    layout: _layout,
+    objectFit: _objectFit,
+    objectPosition: _objectPosition,
+    lazyBoundary: _lazyBoundary,
+    lazyRoot: _lazyRoot,
     ...rest
   } = props;
 
-  const src = typeof srcProp === "string" ? srcProp : srcProp.src;
-  const imgWidth = width ?? (typeof srcProp === "object" ? srcProp.width : undefined);
-  const imgHeight = height ?? (typeof srcProp === "object" ? srcProp.height : undefined);
+  const unwrapped = unwrapStaticImport(srcProp);
+  const src = typeof unwrapped === "string" ? unwrapped : unwrapped.src;
+  const width = toNumber(widthProp);
+  const height = toNumber(heightProp);
+  const imgWidth = width ?? (typeof unwrapped === "object" ? unwrapped.width : undefined);
+  const imgHeight = height ?? (typeof unwrapped === "object" ? unwrapped.height : undefined);
   const imgBlurDataURL =
-    blurDataURLProp ?? (typeof srcProp === "object" ? srcProp.blurDataURL : undefined);
+    blurDataURLProp ?? (typeof unwrapped === "object" ? unwrapped.blurDataURL : undefined);
+
+  // Both priority and preload trigger eager loading (Next.js 16 compat)
+  const isEager = priority || preload;
 
   // Validate remote URLs against configured patterns
   let blockedInProd = false;
@@ -445,17 +570,24 @@ export function getImageProps(props: ImageProps): {
       ? generateSrcSet(resolvedSrc, imgWidth, imgQuality)
       : undefined;
 
+  // Handle data: URL placeholder used directly as placeholder value
+  const isDataPlaceholder =
+    typeof placeholder === "string" && placeholder.startsWith("data:image/");
+  const effectiveBlurDataURL = isDataPlaceholder ? placeholder : imgBlurDataURL;
+
   // Blur placeholder styles — sanitize to prevent CSS injection
-  const sanitizedBlurURL = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
-  const blurStyle =
-    placeholder === "blur" && sanitizedBlurURL
-      ? {
-          backgroundImage: `url(${sanitizedBlurURL})`,
-          backgroundSize: "cover",
-          backgroundRepeat: "no-repeat" as const,
-          backgroundPosition: "center" as const,
-        }
-      : undefined;
+  const sanitizedBlurURL = effectiveBlurDataURL
+    ? sanitizeBlurDataURL(effectiveBlurDataURL)
+    : undefined;
+  const showBlur = (placeholder === "blur" || isDataPlaceholder) && sanitizedBlurURL;
+  const blurStyle = showBlur
+    ? {
+        backgroundImage: `url(${sanitizedBlurURL})`,
+        backgroundSize: "cover",
+        backgroundRepeat: "no-repeat" as const,
+        backgroundPosition: "center" as const,
+      }
+    : undefined;
 
   return {
     props: {
@@ -463,8 +595,8 @@ export function getImageProps(props: ImageProps): {
       alt,
       width: fill ? undefined : imgWidth,
       height: fill ? undefined : imgHeight,
-      loading: priority ? "eager" : (loading ?? "lazy"),
-      fetchPriority: priority ? ("high" as const) : undefined,
+      loading: isEager ? "eager" : (loading ?? "lazy"),
+      fetchPriority: isEager ? ("high" as const) : undefined,
       decoding: "async" as const,
       srcSet,
       sizes: sizes ?? (fill ? "100vw" : undefined),

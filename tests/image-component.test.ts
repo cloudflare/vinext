@@ -11,7 +11,15 @@
 import { describe, it, expect } from "vitest";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
-import Image, { getImageProps, type StaticImageData } from "../packages/vinext/src/shims/image.js";
+import Image, {
+  getImageProps,
+  type StaticImageData,
+  type StaticImport,
+  type StaticRequire,
+  type ImageLoaderProps,
+  type PlaceholderValue,
+  type ImageProps,
+} from "../packages/vinext/src/shims/image.js";
 
 /** Helper: expected optimization URL matching what the image shim produces. */
 function optUrl(src: string, w: number, q = 75): string {
@@ -475,5 +483,200 @@ describe("blurDataURL CSS injection prevention", () => {
     );
     expect(html).toContain("background-image");
     expect(html).toContain(validURL);
+  });
+});
+
+// ─── Next.js 16 API surface alignment ────────────────────────────────
+
+describe("StaticImageData (Next.js 16 fields)", () => {
+  it("accepts blurWidth and blurHeight optional fields", () => {
+    const staticImage: StaticImageData = {
+      src: "/static/test.png",
+      width: 800,
+      height: 600,
+      blurDataURL: "data:image/png;base64,xyz",
+      blurWidth: 8,
+      blurHeight: 6,
+    };
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "static with blur dims",
+        src: staticImage,
+        placeholder: "blur",
+      }),
+    );
+    expect(html).toContain('width="800"');
+    expect(html).toContain('height="600"');
+    expect(html).toContain("data:image/png;base64,xyz");
+  });
+});
+
+describe("preload prop (Next.js 16)", () => {
+  it("triggers eager loading like priority", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "preloaded image",
+        src: "/hero.png",
+        width: 800,
+        height: 600,
+        preload: true,
+      }),
+    );
+    expect(html).toContain('loading="eager"');
+    expect(html).toContain('fetchPriority="high"');
+  });
+
+  it("works in getImageProps", () => {
+    const { props } = getImageProps({
+      alt: "preloaded",
+      src: "/hero.png",
+      width: 800,
+      height: 600,
+      preload: true,
+    });
+    expect(props.loading).toBe("eager");
+    expect(props.fetchPriority).toBe("high");
+  });
+});
+
+describe("deprecated props (Next.js 16 compat)", () => {
+  it("accepts and ignores onLoadingComplete", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "test",
+        src: "/test.png",
+        width: 100,
+        height: 100,
+        onLoadingComplete: () => {},
+      }),
+    );
+    // Should render normally without crashing
+    expect(html).toContain('alt="test"');
+    // Should not leak onLoadingComplete into HTML attributes
+    expect(html).not.toContain("onLoadingComplete");
+  });
+
+  it("accepts and ignores layout, objectFit, objectPosition, lazyBoundary, lazyRoot", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "deprecated props",
+        src: "/test.png",
+        width: 100,
+        height: 100,
+        layout: "fill",
+        objectFit: "contain",
+        objectPosition: "top",
+        lazyBoundary: "200px",
+        lazyRoot: "#root",
+      }),
+    );
+    expect(html).toContain('alt="deprecated props"');
+    // None of these should appear in rendered HTML
+    expect(html).not.toContain("objectFit");
+    expect(html).not.toContain("objectPosition");
+    expect(html).not.toContain("lazyBoundary");
+    expect(html).not.toContain("lazyRoot");
+  });
+});
+
+describe("width/height string support (Next.js 16)", () => {
+  it("accepts string number width and height", () => {
+    const { props } = getImageProps({
+      alt: "string dims",
+      src: "/test.png",
+      width: "200" as `${number}`,
+      height: "150" as `${number}`,
+    });
+    expect(props.width).toBe(200);
+    expect(props.height).toBe(150);
+  });
+
+  it("renders correctly with string dimensions in SSR", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "string dims",
+        src: "/test.png",
+        width: "300" as `${number}`,
+        height: "200" as `${number}`,
+      }),
+    );
+    expect(html).toContain('width="300"');
+    expect(html).toContain('height="200"');
+  });
+});
+
+describe("placeholder data URL (Next.js 16)", () => {
+  it("accepts data:image/ URL as placeholder value", () => {
+    // data:image/ placeholder with special chars gets rejected by sanitizer,
+    // but a valid base64 one works
+    const validDataUrl = "data:image/png;base64,abc123";
+    const { props } = getImageProps({
+      alt: "data placeholder",
+      src: "/photo.jpg",
+      width: 400,
+      height: 300,
+      placeholder: validDataUrl as PlaceholderValue,
+    });
+    expect((props.style as any)?.backgroundImage).toContain("data:image/png;base64,abc123");
+  });
+});
+
+describe("StaticImport / StaticRequire support", () => {
+  it("handles StaticRequire (default export pattern)", () => {
+    const staticRequire: StaticRequire = {
+      default: {
+        src: "/static/photo.png",
+        width: 1920,
+        height: 1080,
+      },
+    };
+    const { props } = getImageProps({
+      alt: "require import",
+      src: staticRequire,
+    });
+    expect(props.src).toBe(optUrl("/static/photo.png", 1920));
+    expect(props.width).toBe(1920);
+    expect(props.height).toBe(1080);
+  });
+
+  it("handles StaticImport union type", () => {
+    // StaticImageData directly
+    const directImport: StaticImport = {
+      src: "/static/direct.png",
+      width: 640,
+      height: 480,
+    };
+    const { props: directProps } = getImageProps({
+      alt: "direct",
+      src: directImport,
+    });
+    expect(directProps.src).toBe(optUrl("/static/direct.png", 640));
+
+    // StaticRequire wrapper
+    const requireImport: StaticImport = {
+      default: {
+        src: "/static/require.png",
+        width: 320,
+        height: 240,
+      },
+    };
+    const { props: requireProps } = getImageProps({
+      alt: "require",
+      src: requireImport,
+    });
+    expect(requireProps.src).toBe(optUrl("/static/require.png", 320));
+  });
+});
+
+describe("type exports", () => {
+  it("exports ImageLoaderProps type", () => {
+    // Type-only check: the import would fail at compile time if not exported
+    const loaderProps: ImageLoaderProps = { src: "/test.png", width: 100, quality: 75 };
+    expect(loaderProps.src).toBe("/test.png");
+  });
+
+  it("exports ImageProps type", () => {
+    const imgProps: ImageProps = { src: "/test.png", alt: "test" };
+    expect(imgProps.src).toBe("/test.png");
   });
 });
