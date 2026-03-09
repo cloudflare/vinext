@@ -415,6 +415,27 @@ describe("Next.js compat: metadata", () => {
     expect(res.status).toBe(200);
   });
 
+  // ── generateMetadata with searchParams ───────────────────────
+  // Regression test: searchParams was not forwarded to the page's generateMetadata()
+  // call (undefined was always passed). Verify that query-string values are
+  // accessible inside generateMetadata via the searchParams argument.
+
+  it("should pass searchParams to page generateMetadata()", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-generate-searchparams?q=hello",
+    );
+    expect(html).toContain("<title>search: hello</title>");
+  });
+
+  it("generateMetadata searchParams defaults to empty when no query string", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-generate-searchparams",
+    );
+    expect(html).toContain("<title>search: (none)</title>");
+  });
+
   // ── Browser-only tests (documented, not ported) ──────────────
   //
   // N/A: 'should apply metadata when navigating client-side'

@@ -880,18 +880,14 @@ async function buildPageElement(route, params, opts, searchParams) {
 
   // Build the parent promise chain and kick off metadata resolution in one pass.
   // Each layout module is called exactly once. layoutMetaPromises[i] is the
-  // promise for layout[i]'s own metadata result. layoutParentPromises[i] is a
-  // promise that resolves to the merged metadata of layouts[0..i-1] — which is
-  // what layout[i] receives as its "parent" argument.
+  // promise for layout[i]'s own metadata result.
   //
   // All calls are kicked off immediately (concurrent I/O), but each layout's
   // "parent" promise only resolves after the preceding layout's metadata is done.
-  const layoutParentPromises = [];
   const layoutMetaPromises = [];
   let accumulatedMetaPromise = Promise.resolve({});
   for (let i = 0; i < layoutMods.length; i++) {
     const parentForThisLayout = accumulatedMetaPromise;
-    layoutParentPromises.push(parentForThisLayout);
     // Kick off this layout's metadata resolution now (concurrent with others).
     const metaPromise = resolveModuleMetadata(layoutMods[i], params, undefined, parentForThisLayout)
       .catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; });
@@ -904,10 +900,26 @@ async function buildPageElement(route, params, opts, searchParams) {
   // Page's parent is the fully-accumulated layout metadata.
   const pageParentPromise = accumulatedMetaPromise;
 
+  // Convert URLSearchParams → plain object so we can pass it to
+  // resolveModuleMetadata (which expects Record<string, string | string[]>).
+  // This same object is reused for pageProps.searchParams below.
+  const spObj = {};
+  let hasSearchParams = false;
+  if (searchParams && searchParams.forEach) {
+    searchParams.forEach(function(v, k) {
+      hasSearchParams = true;
+      if (k in spObj) {
+        spObj[k] = Array.isArray(spObj[k]) ? spObj[k].concat(v) : [spObj[k], v];
+      } else {
+        spObj[k] = v;
+      }
+    });
+  }
+
   const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
     Promise.all(layoutMetaPromises),
     Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
-    route.page ? resolveModuleMetadata(route.page, params, undefined, pageParentPromise) : Promise.resolve(null),
+    route.page ? resolveModuleMetadata(route.page, params, spObj, pageParentPromise) : Promise.resolve(null),
     route.page ? resolveModuleViewport(route.page, params) : Promise.resolve(null),
   ]);
 
@@ -922,18 +934,7 @@ async function buildPageElement(route, params, opts, searchParams) {
   // makeThenableParams() normalises null-prototype + preserves both patterns.
   const asyncParams = makeThenableParams(params);
   const pageProps = { params: asyncParams };
-  if (searchParams) {
-    const spObj = {};
-    let hasSearchParams = false;
-    if (searchParams.forEach) searchParams.forEach(function(v, k) {
-      hasSearchParams = true;
-      if (k in spObj) {
-        // Multi-value: promote to array (Next.js returns string[] for duplicate keys)
-        spObj[k] = Array.isArray(spObj[k]) ? spObj[k].concat(v) : [spObj[k], v];
-      } else {
-        spObj[k] = v;
-      }
-    });
+  if (hasSearchParams) {
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug
@@ -942,7 +943,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // read searchParams. Checking for non-empty query params is a safe
     // approximation: pages with query params in the URL are almost always
     // dynamic, and this avoids false positives from React internals.
-    if (hasSearchParams) markDynamicUsage();
+    markDynamicUsage();
     pageProps.searchParams = makeThenableParams(spObj);
   }
   let element = createElement(PageComponent, pageProps);
