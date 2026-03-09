@@ -1483,10 +1483,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
   const url = new URL(request.url);
 
-  // ── Cross-origin request protection ─────────────────────────────────
+  // ── Cross-origin request protection (dev only) ─────────────────────
   // Block requests from non-localhost origins to prevent data exfiltration.
-  const __originBlock = __validateDevRequestOrigin(request);
-  if (__originBlock) return __originBlock;
+  // Skipped in production — Vite replaces NODE_ENV at build time.
+  if (process.env.NODE_ENV !== "production") {
+    const __originBlock = __validateDevRequestOrigin(request);
+    if (__originBlock) return __originBlock;
+  }
 
   // Guard against protocol-relative URL open redirects.
   // Paths like //example.com/ would be redirected to //example.com by the
