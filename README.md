@@ -650,6 +650,8 @@ pnpm test             # Vitest unit + integration tests
 pnpm run test:e2e     # Playwright E2E tests (5 projects)
 pnpm run typecheck    # TypeScript checking (tsgo)
 pnpm run lint         # Linting (oxlint)
+pnpm run fmt          # Formatting (oxfmt)
+pnpm run fmt:check    # Check formatting without writing
 ```
 
 E2E tests cover Pages Router (dev + production), App Router (dev), and both routers on Cloudflare Workers via `wrangler dev`.

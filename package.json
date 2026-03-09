@@ -8,6 +8,8 @@
     "test:watch": "vitest",
     "generate:google-fonts": "node scripts/generate-google-fonts.js",
     "typecheck": "tsgo --noEmit",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
     "lint": "oxlint --deny-warnings",
     "test:e2e": "playwright test"
   },
@@ -20,6 +22,7 @@
     "@vitejs/plugin-rsc": "^0.5.19",
     "image-size": "2.0.2",
     "next": "^16.1.6",
+    "oxfmt": "^0.36.0",
     "oxlint": "^1.47.0",
     "playwright": "^1.52.0",
     "react": "^19.2.4",

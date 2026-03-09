@@ -23,6 +23,8 @@ pnpm test tests/shims.test.ts tests/link.test.ts # Run specific files
 pnpm run test:e2e                                # Playwright E2E tests (all projects, use PLAYWRIGHT_PROJECT=<name> to target one)
 pnpm run typecheck                               # TypeScript via tsgo (fast)
 pnpm run lint                                    # oxlint
+pnpm run fmt                                     # oxfmt (format)
+pnpm run fmt:check                               # oxfmt (check only, no writes)
 pnpm run build                                   # Build the vinext package
 ```
 

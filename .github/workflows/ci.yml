@@ -23,6 +23,14 @@ jobs:
       - uses: ./.github/actions/setup-node-pnpm
       - run: pnpm run lint
 
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-pnpm
+      - run: pnpm run fmt:check
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest

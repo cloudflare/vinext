@@ -10,7 +10,7 @@ We use [OpenCode](https://opencode.ai) with Claude Opus 4.6, set to max thinking
 
 1. **Run the test suite.** `pnpm test` runs Vitest. `pnpm run test:e2e` runs Playwright.
 2. **Add tests for new functionality.** Unit tests go in `tests/*.test.ts`. Browser-level tests go in `tests/e2e/`.
-3. **Run the linter and type checker.** `pnpm run lint` (oxlint) and `pnpm run typecheck` (tsgo).
+3. **Run the formatter, linter, and type checker.** `pnpm run fmt:check` (oxfmt), `pnpm run lint` (oxlint), and `pnpm run typecheck` (tsgo).
 4. **Read `AGENTS.md`.** It has the architecture context, key gotchas, and development workflow that will save you (and your AI) time.
 
 ## AI code review

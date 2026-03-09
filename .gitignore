@@ -30,7 +30,6 @@ coverage/
 # OS / editor
 .DS_Store
 .idea/
-.vscode/
 
 # Nix
 result
