@@ -49,6 +49,113 @@ const _compiledHeaderSourceCache = new Map<string, RegExp | null>();
  */
 const _compiledConditionCache = new Map<string, RegExp | null>();
 
+/**
+ * Redirect index for O(1) locale-static rule lookup.
+ *
+ * Many Next.js apps generate 50-100 redirect rules of the form:
+ *   /:locale(en|es|fr|...)?/some-static-path  →  /some-destination
+ *
+ * The compiled regex for each is like:
+ *   ^/(en|es|fr|...)?/some-static-path$
+ *
+ * When no redirect matches (the common case for ordinary page loads),
+ * matchRedirect previously ran exec() on every one of those regexes —
+ * ~2ms per call, ~2992ms total self-time in profiles.
+ *
+ * The index splits rules into two buckets:
+ *
+ *   localeStatic — rules whose source is exactly /:paramName(alt1|alt2|...)?/suffix
+ *     where `suffix` is a static path with no further params or regex groups.
+ *     These are indexed in a Map<suffix, entry[]> for O(1) lookup after a
+ *     single fast strip of the optional locale prefix.
+ *
+ *   linear — all other rules. Matched with the original O(n) loop.
+ *
+ * The index is stored in a WeakMap keyed by the redirects array so it is
+ * computed once per config load and GC'd when the array is no longer live.
+ *
+ * ## Ordering invariant
+ *
+ * Redirect rules must be evaluated in their original order (first match wins).
+ * Each locale-static entry stores its `originalIndex` so that, when a
+ * locale-static fast-path match is found, any linear rules that appear earlier
+ * in the array are still checked first.
+ */
+
+/** Matches `/:param(alternation)?/static/suffix` — the locale-static pattern. */
+const _LOCALE_STATIC_RE = /^\/:[\w-]+\(([^)]+)\)\?\/([a-zA-Z0-9_~.%@!$&'*+,;=:/-]+)$/;
+
+type LocaleStaticEntry = {
+  /** The param name extracted from the source (e.g. "locale"). */
+  paramName: string;
+  /** The compiled regex matching just the alternation, used at match time. */
+  altRe: RegExp;
+  /** The original redirect rule. */
+  redirect: NextRedirect;
+  /** Position of this rule in the original redirects array. */
+  originalIndex: number;
+};
+
+type RedirectIndex = {
+  /** Fast-path map: strippedPath (e.g. "/security") → matching entries. */
+  localeStatic: Map<string, LocaleStaticEntry[]>;
+  /**
+   * Linear fallback for rules that couldn't be indexed.
+   * Each entry is [originalIndex, redirect].
+   */
+  linear: Array<[number, NextRedirect]>;
+};
+
+const _redirectIndexCache = new WeakMap<NextRedirect[], RedirectIndex>();
+
+/**
+ * Build (or retrieve from cache) the redirect index for a given redirects array.
+ *
+ * Called once per config load from matchRedirect. The WeakMap ensures the index
+ * is recomputed if the config is reloaded (new array reference) and GC'd when
+ * the array is collected.
+ */
+function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
+  let index = _redirectIndexCache.get(redirects);
+  if (index !== undefined) return index;
+
+  const localeStatic = new Map<string, LocaleStaticEntry[]>();
+  const linear: Array<[number, NextRedirect]> = [];
+
+  for (let i = 0; i < redirects.length; i++) {
+    const redirect = redirects[i];
+    const m = _LOCALE_STATIC_RE.exec(redirect.source);
+    if (m) {
+      const paramName = redirect.source.slice(2, redirect.source.indexOf("("));
+      const alternation = m[1];
+      const suffix = "/" + m[2]; // e.g. "/security"
+      // Build a small regex to validate the captured locale value against the
+      // alternation. Using anchored match to avoid partial matches.
+      // The alternation comes from user config; run it through safeRegExp to
+      // guard against ReDoS in pathological configs.
+      const altRe = safeRegExp("^(?:" + alternation + ")$");
+      if (!altRe) {
+        // Unsafe alternation — fall back to linear scan for this rule.
+        linear.push([i, redirect]);
+        continue;
+      }
+      const entry: LocaleStaticEntry = { paramName, altRe, redirect, originalIndex: i };
+      const bucket = localeStatic.get(suffix);
+      if (bucket) {
+        bucket.push(entry);
+      } else {
+        localeStatic.set(suffix, [entry]);
+      }
+    } else {
+      linear.push([i, redirect]);
+    }
+  }
+
+  index = { localeStatic, linear };
+  _redirectIndexCache.set(redirects, index);
+  return index;
+}
+
 /** Hop-by-hop headers that should not be forwarded through a proxy. */
 const HOP_BY_HOP_HEADERS = new Set([
   "connection",
@@ -605,13 +712,117 @@ export function matchConfigPattern(
  * `ctx` provides the request context (cookies, headers, query, host) used
  * to evaluate has/missing conditions. Next.js always has request context
  * when evaluating redirects, so this parameter is required.
+ *
+ * ## Performance
+ *
+ * Rules with a locale-capture-group prefix (the dominant pattern in large
+ * Next.js apps — e.g. `/:locale(en|es|fr|...)?/some-path`) are handled via
+ * a pre-built index. Instead of running exec() on each locale regex
+ * individually, we:
+ *
+ *   1. Strip the optional locale prefix from the pathname with one cheap
+ *      string-slice check (no regex exec on the hot path).
+ *   2. Look up the stripped suffix in a Map<suffix, entry[]>.
+ *   3. For each matching entry, validate the captured locale string against
+ *      a small, anchored alternation regex.
+ *
+ * This reduces the per-request cost from O(n × regex) to O(1) map lookup +
+ * O(matches × tiny-regex), eliminating the ~2992ms self-time reported in
+ * profiles for apps with 63+ locale-prefixed rules.
+ *
+ * Rules that don't fit the locale-static pattern fall back to the original
+ * linear matchConfigPattern scan.
+ *
+ * ## Ordering invariant
+ *
+ * First match wins, preserving the original redirect array order. When a
+ * locale-static fast-path match is found at position N, all linear rules with
+ * an original index < N are checked via matchConfigPattern first — they are
+ * few in practice (typically zero) so this is not a hot-path concern.
  */
 export function matchRedirect(
   pathname: string,
   redirects: NextRedirect[],
   ctx: RequestContext,
 ): { destination: string; permanent: boolean } | null {
-  for (const redirect of redirects) {
+  if (redirects.length === 0) return null;
+
+  const index = _getRedirectIndex(redirects);
+
+  // --- Locate the best locale-static candidate ---
+  //
+  // We look for the locale-static entry with the LOWEST originalIndex that
+  // matches this pathname (and passes has/missing conditions).
+  //
+  // Strategy: try both the full pathname (locale omitted, e.g. "/security")
+  // and the pathname with the first segment stripped (locale present, e.g.
+  // "/en/security" → suffix "/security", locale "en").
+  //
+  // We do NOT use a regex here — just a single indexOf('/') to locate the
+  // second slash, which is O(n) on the path length but far cheaper than
+  // running 63 compiled regexes.
+
+  let localeMatch: { destination: string; permanent: boolean } | null = null;
+  let localeMatchIndex = Infinity;
+
+  if (index.localeStatic.size > 0) {
+    // Case 1: no locale prefix — pathname IS the suffix.
+    const noLocaleBucket = index.localeStatic.get(pathname);
+    if (noLocaleBucket) {
+      for (const entry of noLocaleBucket) {
+        if (entry.originalIndex >= localeMatchIndex) continue; // already have a better match
+        const redirect = entry.redirect;
+        if (redirect.has || redirect.missing) {
+          if (!checkHasConditions(redirect.has, redirect.missing, ctx)) continue;
+        }
+        // Locale was omitted (the `?` made it optional) — param value is "".
+        let dest = redirect.destination;
+        dest = dest.replace(`:${entry.paramName}`, "");
+        dest = sanitizeDestination(dest);
+        localeMatch = { destination: dest, permanent: redirect.permanent };
+        localeMatchIndex = entry.originalIndex;
+        break; // bucket entries are in insertion order = original order
+      }
+    }
+
+    // Case 2: locale prefix present — first path segment is the locale.
+    // Find the second slash: pathname = "/locale/rest/of/path"
+    //                                         ^--- slashTwo
+    const slashTwo = pathname.indexOf("/", 1);
+    if (slashTwo !== -1) {
+      const suffix = pathname.slice(slashTwo); // e.g. "/security"
+      const localePart = pathname.slice(1, slashTwo); // e.g. "en"
+      const localeBucket = index.localeStatic.get(suffix);
+      if (localeBucket) {
+        for (const entry of localeBucket) {
+          if (entry.originalIndex >= localeMatchIndex) continue;
+          // Validate that `localePart` is one of the allowed alternation values.
+          if (!entry.altRe.test(localePart)) continue;
+          const redirect = entry.redirect;
+          if (redirect.has || redirect.missing) {
+            if (!checkHasConditions(redirect.has, redirect.missing, ctx)) continue;
+          }
+          let dest = redirect.destination;
+          dest = dest.replace(`:${entry.paramName}`, localePart);
+          dest = sanitizeDestination(dest);
+          localeMatch = { destination: dest, permanent: redirect.permanent };
+          localeMatchIndex = entry.originalIndex;
+          break; // bucket entries are in insertion order = original order
+        }
+      }
+    }
+  }
+
+  // --- Linear fallback: all non-locale-static rules ---
+  //
+  // We only need to check linear rules whose originalIndex < localeMatchIndex.
+  // If localeMatchIndex is Infinity (no locale match), we check all of them.
+  for (const [origIdx, redirect] of index.linear) {
+    if (origIdx >= localeMatchIndex) {
+      // This linear rule comes after the best locale-static match —
+      // the locale-static match wins. Stop scanning.
+      break;
+    }
     const params = matchConfigPattern(pathname, redirect.source);
     if (params) {
       if (redirect.has || redirect.missing) {
@@ -632,7 +843,9 @@ export function matchRedirect(
       return { destination: dest, permanent: redirect.permanent };
     }
   }
-  return null;
+
+  // Return the locale-static match if found (no earlier linear rule matched).
+  return localeMatch;
 }
 
 /**

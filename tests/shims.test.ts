@@ -3169,6 +3169,153 @@ describe("matchConfigPattern compiled pattern cache", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// matchRedirect locale-static index tests
+// Verifies the O(1) locale-prefix optimization in matchRedirect.
+
+describe("matchRedirect locale-static index", () => {
+  const emptyCtx = {
+    headers: new Headers(),
+    cookies: {},
+    query: new URLSearchParams(),
+    host: "localhost",
+  };
+
+  // 63 locale-prefix rules — matches the profiled bottleneck scenario.
+  const locales = "en|es|fr|id|ja|ko|pt-br|pt|ro|ta|tr|uk|zh-cn|zh-tw|";
+  function makeLocaleRules(suffixes: string[]) {
+    return suffixes.map((s) => ({
+      source: `/:locale(${locales})?${s}`,
+      destination: `/:locale${s}-dest`,
+      permanent: false as const,
+    }));
+  }
+
+  it("matches a locale-prefixed pathname (locale present)", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = makeLocaleRules(["/security", "/advisory-board"]);
+    const result = matchRedirect("/en/security", redirects, emptyCtx);
+    expect(result).not.toBeNull();
+    expect(result!.destination).toBe("/en/security-dest");
+    expect(result!.permanent).toBe(false);
+  });
+
+  it("matches a locale-prefixed pathname (locale omitted)", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = makeLocaleRules(["/security", "/advisory-board"]);
+    // When locale is omitted the destination :locale param substitutes to "".
+    // sanitizeDestination collapses the leading double slash.
+    const result = matchRedirect("/security", redirects, emptyCtx);
+    expect(result).not.toBeNull();
+    expect(result!.destination).toBe("/security-dest");
+  });
+
+  it("returns null when pathname does not match any rule", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = makeLocaleRules(["/security", "/advisory-board"]);
+    // /blog is not in any indexed suffix
+    expect(matchRedirect("/blog", redirects, emptyCtx)).toBeNull();
+    expect(matchRedirect("/en/blog", redirects, emptyCtx)).toBeNull();
+  });
+
+  it("returns null when locale segment is not in the alternation", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = makeLocaleRules(["/security"]);
+    // "de" is not in the locales alternation
+    expect(matchRedirect("/de/security", redirects, emptyCtx)).toBeNull();
+  });
+
+  it("matches multi-segment locale codes like pt-br and zh-cn", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = makeLocaleRules(["/security"]);
+    const ptBr = matchRedirect("/pt-br/security", redirects, emptyCtx);
+    expect(ptBr).not.toBeNull();
+    expect(ptBr!.destination).toBe("/pt-br/security-dest");
+
+    const zhCn = matchRedirect("/zh-cn/security", redirects, emptyCtx);
+    expect(zhCn).not.toBeNull();
+    expect(zhCn!.destination).toBe("/zh-cn/security-dest");
+  });
+
+  it("preserves ordering: linear rule earlier than locale-static wins", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Rule 0 is a linear catch-all; rule 1 is locale-static.
+    // For /en/security, the linear rule (index 0) matches first.
+    const redirects = [
+      { source: "/:path*", destination: "/catchall", permanent: false as const },
+      ...makeLocaleRules(["/security"]),
+    ];
+    const result = matchRedirect("/en/security", redirects, emptyCtx);
+    expect(result).not.toBeNull();
+    expect(result!.destination).toBe("/catchall");
+  });
+
+  it("preserves ordering: locale-static rule earlier than linear wins", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Rule 0 is locale-static; rule 1 is linear.
+    // For /en/security, the locale-static rule (index 0) matches first.
+    const redirects = [
+      ...makeLocaleRules(["/security"]),
+      { source: "/:path*", destination: "/catchall", permanent: false as const },
+    ];
+    const result = matchRedirect("/en/security", redirects, emptyCtx);
+    expect(result).not.toBeNull();
+    expect(result!.destination).toBe("/en/security-dest");
+  });
+
+  it("returns null efficiently for 63 rules on a non-matching path (no regex exec on hot path)", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Construct 63 locale-prefixed rules (matches the profiled bottleneck).
+    const suffixes = Array.from({ length: 63 }, (_, i) => `/page-${i}`);
+    const redirects = makeLocaleRules(suffixes);
+    // /blog does not match any rule.
+    const result = matchRedirect("/blog", redirects, emptyCtx);
+    expect(result).toBeNull();
+    // /en/blog also does not match.
+    const result2 = matchRedirect("/en/blog", redirects, emptyCtx);
+    expect(result2).toBeNull();
+  });
+
+  it("respects has/missing conditions on locale-static rules", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: `/:locale(en|fr)?/gated`,
+        destination: `/:locale/gated-dest`,
+        permanent: false as const,
+        has: [{ type: "header" as const, key: "x-auth", value: "1" }],
+      },
+    ];
+
+    // Without the header — should NOT match.
+    const noHeader = matchRedirect("/en/gated", redirects, emptyCtx);
+    expect(noHeader).toBeNull();
+
+    // With the header — should match.
+    const withHeader = matchRedirect("/en/gated", redirects, {
+      headers: new Headers({ "x-auth": "1" }),
+      cookies: {},
+      query: new URLSearchParams(),
+      host: "localhost",
+    });
+    expect(withHeader).not.toBeNull();
+    expect(withHeader!.destination).toBe("/en/gated-dest");
+  });
+
+  it("falls back to linear matching for rules that are not locale-static", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    // A mix: some locale-static rules and one catch-all that matches /other.
+    const redirects = [
+      ...makeLocaleRules(["/security", "/advisory-board"]),
+      { source: "/other", destination: "/other-dest", permanent: true as const },
+    ];
+    const result = matchRedirect("/other", redirects, emptyCtx);
+    expect(result).not.toBeNull();
+    expect(result!.destination).toBe("/other-dest");
+    expect(result!.permanent).toBe(true);
+  });
+});
+
 describe("matchConfigPattern handles parameterized suffix patterns", () => {
   it("matches :path* with literal suffix (e.g. /:path*.md)", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
