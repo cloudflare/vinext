@@ -83,12 +83,12 @@ These are the most commonly reported issue categories. When triaging, check whet
 > This is the #1 source of blocking review feedback. When you modify any file listed below, check every other file in this list for the same logic.
 
 **The four server files** — if you modify one, check the other three:
-- `server/app-dev-server.ts` — App Router dev (generates the RSC entry)
+- `entries/app-rsc-entry.ts` — App Router dev (generates the RSC entry)
 - `server/dev-server.ts` — Pages Router dev
 - `server/prod-server.ts` — Pages Router production (independent middleware/routing/SSR)
 - `cloudflare/worker-entry.ts` — Workers entry
 
-App Router prod delegates to the built RSC entry, so it inherits fixes from `app-dev-server.ts`. Pages Router prod does not — it has its own logic that must be updated separately.
+App Router prod delegates to the built RSC entry, so it inherits fixes from `entries/app-rsc-entry.ts`. Pages Router prod does not — it has its own logic that must be updated separately.
 
 **Other parity pairs:**
 - **`cli.ts` ↔ `index.ts`** — the CLI build has its own Rollup/Vite config. When you add a build option to `index.ts`, add the same option to `cli.ts`.
@@ -97,10 +97,10 @@ App Router prod delegates to the built RSC entry, so it inherits fixes from `app
 
 ## Generated code and templates
 
-Several files generate JavaScript as template strings (`deploy.ts`, `app-dev-server.ts`, parts of `index.ts`). These are the highest-risk code for logic drift.
+Several files generate JavaScript as template strings (`deploy.ts`, `entries/app-rsc-entry.ts`, parts of `index.ts`). These are the highest-risk code for logic drift.
 
 - **Worker entry templates in `deploy.ts`** generate two nearly-identical entry points (App Router and Pages Router). When you modify one, check the other. Functions like `handleImageOptimization()` are copy-pasted between them.
-- **`app-dev-server.ts` generates the RSC entry** as a string. Functions inlined there (e.g., `isSafeRegex`, `matchConfigPattern`, `proxyExternalRequest`) must exactly match their counterparts in shared modules (`config-matchers.ts`, `image-optimization.ts`, etc.). When the shared module gets a fix, update the template too.
+- **`entries/app-rsc-entry.ts` generates the RSC entry** as a string. Functions inlined there (e.g., `isSafeRegex`, `matchConfigPattern`, `proxyExternalRequest`) must exactly match their counterparts in shared modules (`config-matchers.ts`, `image-optimization.ts`, etc.). When the shared module gets a fix, update the template too.
 - **Escaping differs between contexts.** Template literals inside template literals need different escaping than regular code. After modifying generated code, verify the output is syntactically valid by reading the generated file or checking the build output.
 - **Prefer imports over duplication.** When a template can import a shared module at runtime, do that. When it cannot (generated string context), extract the function body into a const string and interpolate it into both templates.
 

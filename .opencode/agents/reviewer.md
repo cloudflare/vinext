@@ -26,7 +26,7 @@ You are a senior code reviewer for **vinext** — a Vite plugin that reimplement
 
 1. **Correctness first.** Does the code handle all cases? What breaks at the edges?
 2. **Dev/prod server parity.** Request handling exists in multiple files that must stay in sync:
-   - `server/app-dev-server.ts` — App Router dev
+   - `entries/app-rsc-entry.ts` — App Router RSC entry generator
    - `server/dev-server.ts` — Pages Router dev
    - `server/prod-server.ts` — Pages Router production (has its own middleware/routing/SSR)
    - `cloudflare/worker-entry.ts` — Workers entry

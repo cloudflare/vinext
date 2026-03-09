@@ -52,7 +52,7 @@ examples/               # User-facing demo apps
 | `index.ts` | Vite plugin — resolves `next/*` imports, generates virtual modules |
 | `shims/*.ts` | Reimplementations of `next/link`, `next/navigation`, etc. |
 | `server/dev-server.ts` | Pages Router SSR handler |
-| `server/app-dev-server.ts` | App Router RSC entry generator |
+| `entries/app-rsc-entry.ts` | App Router RSC entry generator |
 | `routing/pages-router.ts` | Scans `pages/` directory |
 | `routing/app-router.ts` | Scans `app/` directory |
 
@@ -118,7 +118,7 @@ pnpm test -t "middleware"
 |-------------------|----------------|
 | A shim (`shims/*.ts`) | `tests/shims.test.ts` + the specific shim test (e.g., `tests/link.test.ts`) |
 | Routing (`routing/*.ts`) | `tests/routing.test.ts`, `tests/route-sorting.test.ts` |
-| App Router server (`server/app-dev-server.ts`) | `tests/app-router.test.ts`, `tests/features.test.ts` |
+| App Router server (`entries/app-rsc-entry.ts`) | `tests/app-router.test.ts`, `tests/features.test.ts` |
 | Pages Router server (`server/dev-server.ts`) | `tests/pages-router.test.ts` |
 | Caching/ISR | `tests/isr-cache.test.ts`, `tests/fetch-cache.test.ts`, `tests/kv-cache-handler.test.ts` |
 | Build/deploy | `tests/deploy.test.ts`, `tests/build-optimization.test.ts` |
@@ -132,12 +132,12 @@ pnpm test -t "middleware"
 
 **Always check dev and prod server parity.** Request handling logic exists in multiple places that must stay in sync:
 
-- `server/app-dev-server.ts` — App Router dev (generates the RSC entry)
+- `entries/app-rsc-entry.ts` — App Router dev (generates the RSC entry)
 - `server/dev-server.ts` — Pages Router dev
 - `server/prod-server.ts` — Pages Router production (handles middleware, routing, SSR directly)
 - `cloudflare/worker-entry.ts` — Cloudflare Workers entry
 
-The App Router production server delegates to the built RSC entry, so it inherits fixes from `app-dev-server.ts`. But the Pages Router production server has its own middleware/routing/SSR logic that must be updated separately.
+The App Router production server delegates to the built RSC entry, so it inherits fixes from `entries/app-rsc-entry.ts`. But the Pages Router production server has its own middleware/routing/SSR logic that must be updated separately.
 
 When fixing a bug in any of these files, check whether the same bug exists in the others. Do not leave known bugs as "follow-ups" — fix them in the same PR.
 

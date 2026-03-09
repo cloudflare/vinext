@@ -77,7 +77,7 @@ Ported from: https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir
 
 | # | Next.js Test | Vinext Status | Notes |
 |---|---|---|---|
-| 1 | error-server-test: server component throw caught by error.tsx | **SKIP** | Vinext returns 500 instead of rendering error.tsx boundary (200). RSC error propagates to HTTP handler instead of being caught at segment level. Fix: `packages/vinext/src/server/app-dev-server.ts` — SSR layer needs to handle RSC error chunks by rendering error boundary. |
+| 1 | error-server-test: server component throw caught by error.tsx | **SKIP** | Vinext returns 500 instead of rendering error.tsx boundary (200). RSC error propagates to HTTP handler instead of being caught at segment level. Fix: `packages/vinext/src/entries/app-rsc-entry.ts` — SSR layer needs to handle RSC error chunks by rendering error boundary. |
 | 2 | error-nested-test: nested error caught by inner error.tsx | **SKIP** | Same root cause as #1. |
 | 3 | Server component throw without local error.tsx returns a response | PASS | Returns a response (500) — server doesn't crash. Next.js would render global-error.tsx with 200. |
 | 4 | Client component SSR throw without local error.tsx returns a response | PASS | Same — returns response, server stays up. |
@@ -392,13 +392,13 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 - **2 new issues found** in Phase 3: duplicate title with Suspense layout, external redirect in server actions
 
 ### Issues Found (Fix Backlog)
-1. **RSC module caching across requests** — `Date.now()` cached in dev. Fix: `packages/vinext/src/server/app-dev-server.ts`
-2. ~~**Server component errors return 500 instead of rendering error.tsx**~~ — **FIXED**. Added `renderErrorBoundaryPage()` in `app-dev-server.ts` that renders the nearest error.tsx wrapped in layouts when a server component throws. Catches errors in `buildPageElement` catch (metadata errors) and SSR catch (render errors). Returns 200 with error boundary HTML.
+1. **RSC module caching across requests** — `Date.now()` cached in dev. Fix: `packages/vinext/src/entries/app-rsc-entry.ts`
+2. ~~**Server component errors return 500 instead of rendering error.tsx**~~ — **FIXED**. Added `renderErrorBoundaryPage()` in `entries/app-rsc-entry.ts` that renders the nearest error.tsx wrapped in layouts when a server component throws. Catches errors in `buildPageElement` catch (metadata errors) and SSR catch (render errors). Returns 200 with error boundary HTML.
 3. ~~**generateMetadata() errors bypass error.tsx**~~ — **FIXED**. Same fix as #2 — the `buildPageElement` catch now calls `renderErrorBoundaryPage()` for non-special errors from `generateMetadata()`.
-4. ~~**React `use()` hook warning**~~ — **FIXED**. Not duplicate React — the pre-render check (`app-dev-server.ts:1268`) calls `PageComponent()` directly outside React's render cycle, triggering "Invalid hook call" for components using `use()`. Fix: suppress the expected warning during the pre-render test.
+4. ~~**React `use()` hook warning**~~ — **FIXED**. Not duplicate React — the pre-render check (`entries/app-rsc-entry.ts:1268`) calls `PageComponent()` directly outside React's render cycle, triggering "Invalid hook call" for components using `use()`. Fix: suppress the expected warning during the pre-render test.
 5. ~~**Keywords separator formatting**~~ — **FIXED**. Changed `metadata.keywords.join(", ")` to `.join(",")` in `metadata.tsx:338` to match Next.js behavior.
 6. ~~**Client-side notFound() crashes React tree**~~ — **FIXED**. Added `NotFoundBoundary` class component to `error-boundary.tsx` that catches `NEXT_NOT_FOUND`/`NEXT_HTTP_ERROR_FALLBACK;404` errors. Wrapped in `buildPageElement()` above `ErrorBoundary`, with pre-rendered not-found.tsx element as fallback. Playwright test now passes.
-7. ~~**useParams() returns empty on client after hydration**~~ — **FIXED**. Root cause: `setClientParams()` was never called in the browser. Fix: server now sends `X-Vinext-Params` header in RSC responses (`app-dev-server.ts:1295`), browser entry reads it during hydration and client-side navigation (`app-dev-server.ts:1594-1597, 1612-1617`). All 3 Playwright useParams tests now pass.
+7. ~~**useParams() returns empty on client after hydration**~~ — **FIXED**. Root cause: `setClientParams()` was never called in the browser. Fix: server now sends `X-Vinext-Params` header in RSC responses (`entries/app-rsc-entry.ts:1295`), browser entry reads it during hydration and client-side navigation (`entries/app-rsc-entry.ts:1594-1597, 1612-1617`). All 3 Playwright useParams tests now pass.
 8. ~~**Client-side error.tsx boundary doesn't activate during navigation**~~ — **FIXED**. Added `onCaughtError: function() {}` to `hydrateRoot()` call in `generateBrowserEntry()` to suppress Vite dev overlay for errors caught by React error boundaries. Combined with PR #51's `renderErrorBoundaryPage()` for SSR-side error rendering.
 
 ---
@@ -587,7 +587,7 @@ Metadata renders correctly in `<head>` when the layout wraps children in
 
 **1 skipped**: Duplicate `<title>` tags. Vinext emits the metadata twice — once in
 the shell and again when the Suspense boundary resolves. Fix: metadata should be
-hoisted above Suspense boundaries in `app-dev-server.ts:buildPageElement()`.
+hoisted above Suspense boundaries in `entries/app-rsc-entry.ts:buildPageElement()`.
 
 ### Chunk 23: revalidate-dynamic — revalidatePath/Tag via route handlers ✅
 
@@ -643,8 +643,8 @@ Next.js-specific and requires `createRouterAct` test infrastructure.
 
 ### New Issues Found
 
-9. **Duplicate `<title>` tags with Suspense layout** — When a layout wraps children in `<Suspense>`, metadata `<title>` tag appears twice. Fix: `packages/vinext/src/server/app-dev-server.ts` — hoist metadata rendering above Suspense boundaries.
-10. **External redirect in server actions** — `redirect('https://example.com')` inside a server action does client-side RSC navigation instead of full page navigation. Fix: `packages/vinext/src/server/app-dev-server.ts` browser entry — detect external origin and use `window.location.href`.
+9. **Duplicate `<title>` tags with Suspense layout** — When a layout wraps children in `<Suspense>`, metadata `<title>` tag appears twice. Fix: `packages/vinext/src/entries/app-rsc-entry.ts` — hoist metadata rendering above Suspense boundaries.
+10. **External redirect in server actions** — `redirect('https://example.com')` inside a server action does client-side RSC navigation instead of full page navigation. Fix: `packages/vinext/src/entries/app-rsc-entry.ts` browser entry — detect external origin and use `window.location.href`.
 
 ---
 
@@ -966,7 +966,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 **Config headers crash on redirect responses**: `Response.redirect()` creates immutable headers.
 When `next.config.ts` defines custom headers via `headers()`, the dev server tried to set them
 on all responses, including redirects from trailing slash normalization. This threw at runtime.
-Fix: skip applying config headers to 3xx redirect responses in `app-dev-server.ts`.
+Fix: skip applying config headers to 3xx redirect responses in `entries/app-rsc-entry.ts`.
 
 ### New Files Created (ON-11 through ON-15)
 
@@ -983,7 +983,7 @@ Fix: skip applying config headers to 3xx redirect responses in `app-dev-server.t
 
 **Modified files:**
 - `tests/fixtures/app-basic/middleware.ts` — Added redirect-with-cookie, rewrite, block, search-params paths
-- `packages/vinext/src/server/app-dev-server.ts` — Bug fix: skip config headers on redirect responses
+- `packages/vinext/src/entries/app-rsc-entry.ts` — Bug fix: skip config headers on redirect responses
 - `tests/app-router.test.ts` — Removed dynamic next.config.mjs writing (uses permanent next.config.ts)
 
 ---

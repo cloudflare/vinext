@@ -609,9 +609,14 @@ packages/vinext/
     routing/
       pages-router.ts     # Pages Router file-system scanner
       app-router.ts       # App Router file-system scanner
+    entries/
+      app-rsc-entry.ts    # App Router RSC entry generator
+      app-ssr-entry.ts    # App Router SSR entry generator
+      app-browser-entry.ts # App Router browser entry generator
+      pages-server-entry.ts # Pages Router SSR entry generator
+      pages-client-entry.ts # Pages Router client entry generator
     server/
       dev-server.ts       # Pages Router SSR request handler
-      app-dev-server.ts   # App Router RSC entry generator
       prod-server.ts      # Production server with compression
       api-handler.ts      # Pages Router API routes
       isr-cache.ts        # ISR cache layer

@@ -31,7 +31,7 @@ Work in `../vinext-fix-$ARGUMENTS/`:
 1. Research the codebase to understand the problem area
 2. Implement the fix following the patterns described in AGENTS.md
 3. **If touching server code**, check dev/prod parity across:
-   - `server/app-dev-server.ts`
+   - `entries/app-rsc-entry.ts`
    - `server/dev-server.ts`
    - `server/prod-server.ts`
    - `cloudflare/worker-entry.ts`
