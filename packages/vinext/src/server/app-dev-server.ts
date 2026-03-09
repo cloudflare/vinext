@@ -451,21 +451,35 @@ function createRscOnErrorHandler(request, pathname, routePath) {
 
 ${imports.join("\n")}
 
-${instrumentationPath ? `// Run instrumentation register() once at module evaluation time — before any
-// requests are handled. This runs inside the Worker process (or RSC environment),
-// which is exactly where request handling happens. Matches Next.js semantics:
-// register() is called once on startup in the process that handles requests.
-if (typeof _instrumentation.register === "function") {
-  await _instrumentation.register();
-}
-// Store the onRequestError handler on globalThis so it is visible to
-// reportRequestError() (imported as _reportRequestError above) regardless
-// of which Vite environment module graph it is called from. With
-// @vitejs/plugin-rsc the RSC and SSR environments run in the same Node.js
-// process and share globalThis. With @cloudflare/vite-plugin everything
-// runs inside the Worker so globalThis is the Worker's global — also correct.
-if (typeof _instrumentation.onRequestError === "function") {
-  globalThis.__VINEXT_onRequestErrorHandler__ = _instrumentation.onRequestError;
+${instrumentationPath ? `// Run instrumentation register() exactly once, lazily on the first request.
+// Previously this was a top-level await, which blocked the entire module graph
+// from finishing initialization until register() resolved — adding that latency
+// to every cold start. Moving it here preserves the "runs before any request is
+// handled" guarantee while not blocking V8 isolate initialization.
+// On Cloudflare Workers, module evaluation happens synchronously in the isolate
+// startup phase; a top-level await extends that phase and increases cold-start
+// wall time for all requests, not just the first.
+let __instrumentationInitialized = false;
+let __instrumentationInitPromise = null;
+async function __ensureInstrumentation() {
+  if (__instrumentationInitialized) return;
+  if (__instrumentationInitPromise) return __instrumentationInitPromise;
+  __instrumentationInitPromise = (async () => {
+    if (typeof _instrumentation.register === "function") {
+      await _instrumentation.register();
+    }
+    // Store the onRequestError handler on globalThis so it is visible to
+    // reportRequestError() (imported as _reportRequestError above) regardless
+    // of which Vite environment module graph it is called from. With
+    // @vitejs/plugin-rsc the RSC and SSR environments run in the same Node.js
+    // process and share globalThis. With @cloudflare/vite-plugin everything
+    // runs inside the Worker so globalThis is the Worker's global — also correct.
+    if (typeof _instrumentation.onRequestError === "function") {
+      globalThis.__VINEXT_onRequestErrorHandler__ = _instrumentation.onRequestError;
+    }
+    __instrumentationInitialized = true;
+  })();
+  return __instrumentationInitPromise;
 }` : ""}
 
 const routes = [
@@ -1179,6 +1193,10 @@ async function __readFormDataWithLimit(request, maxBytes) {
 }
 
 export default async function handler(request) {
+  ${instrumentationPath ? `// Ensure instrumentation.register() has run before handling the first request.
+  // This is a no-op after the first call (guarded by __instrumentationInitialized).
+  await __ensureInstrumentation();
+  ` : ""}
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
