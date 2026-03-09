@@ -143,8 +143,8 @@ export function safeRegExp(pattern: string, flags?: string): RegExp | null {
   if (!isSafeRegex(pattern)) {
     console.warn(
       `[vinext] Ignoring potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
-      `  Patterns with nested quantifiers (e.g. (a+)+) can cause catastrophic backtracking.\n` +
-      `  Simplify the pattern to avoid nested repetition.`,
+        `  Patterns with nested quantifiers (e.g. (a+)+) can cause catastrophic backtracking.\n` +
+        `  Simplify the pattern to avoid nested repetition.`,
     );
     return null;
   }
@@ -206,11 +206,21 @@ export function escapeHeaderSource(source: string): string {
       }
     } else {
       switch (m[0]) {
-        case ".": result += "\\."; break;
-        case "+": result += "\\+"; break;
-        case "?": result += "\\?"; break;
-        case "*": result += ".*"; break;
-        default: result += m[0]; break;
+        case ".":
+          result += "\\.";
+          break;
+        case "+":
+          result += "\\+";
+          break;
+        case "?":
+          result += "\\?";
+          break;
+        case "*":
+          result += ".*";
+          break;
+        default:
+          result += m[0];
+          break;
       }
     }
   }
@@ -711,7 +721,7 @@ export async function proxyExternalRequest(
   // decompression on the already-decoded body, resulting in
   // ERR_CONTENT_DECODING_FAILED. Strip both headers on Node.js only.
   // On Workers, fetch() preserves wire encoding, so the headers stay accurate.
-  const isNodeRuntime = typeof process !== "undefined" && !!(process.versions?.node);
+  const isNodeRuntime = typeof process !== "undefined" && !!process.versions?.node;
   const responseHeaders = new Headers();
   upstreamResponse.headers.forEach((value, key) => {
     const lower = key.toLowerCase();

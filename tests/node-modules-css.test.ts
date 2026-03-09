@@ -61,13 +61,7 @@ describe("node_modules CSS import (Pages Router)", () => {
     // Symlinking only what's needed (rather than all entries) keeps the test
     // hermetic and avoids touching unrelated packages.
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
-    const requiredPackages = [
-      "react",
-      "react-dom",
-      "vite",
-      "@vitejs",
-      "vinext",
-    ];
+    const requiredPackages = ["react", "react-dom", "vite", "@vitejs", "vinext"];
     for (const pkg of requiredPackages) {
       const src = path.join(rootNodeModules, pkg);
       const dest = path.join(nmDir, pkg);
@@ -83,10 +77,7 @@ describe("node_modules CSS import (Pages Router)", () => {
       path.join(fakeCssDir, "package.json"),
       JSON.stringify({ name: "fake-css-lib", version: "1.0.0", type: "module", main: "index.js" }),
     );
-    await fs.writeFile(
-      path.join(fakeCssDir, "styles.css"),
-      `.fake-css-lib { color: red; }`,
-    );
+    await fs.writeFile(path.join(fakeCssDir, "styles.css"), `.fake-css-lib { color: red; }`);
     await fs.writeFile(
       path.join(fakeCssDir, "index.js"),
       `import "./styles.css";\nexport function FakeComponent() { return "fake-css-lib-rendered"; }\n`,
@@ -96,7 +87,12 @@ describe("node_modules CSS import (Pages Router)", () => {
     await fs.mkdir(fakeCssModuleDir, { recursive: true });
     await fs.writeFile(
       path.join(fakeCssModuleDir, "package.json"),
-      JSON.stringify({ name: "fake-css-module-lib", version: "1.0.0", type: "module", main: "index.js" }),
+      JSON.stringify({
+        name: "fake-css-module-lib",
+        version: "1.0.0",
+        type: "module",
+        main: "index.js",
+      }),
     );
     await fs.writeFile(
       path.join(fakeCssModuleDir, "styles.module.css"),

@@ -22,8 +22,14 @@ describe("pageExtensions route discovery", () => {
     const appDir = path.join(tmpRoot, "app");
     try {
       await fs.mkdir(path.join(appDir, "about"), { recursive: true });
-      await fs.writeFile(path.join(appDir, "layout.tsx"), "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }");
-      await fs.writeFile(path.join(appDir, "page.tsx"), "export default function Page() { return <div>home</div>; }");
+      await fs.writeFile(
+        path.join(appDir, "layout.tsx"),
+        "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "page.tsx"),
+        "export default function Page() { return <div>home</div>; }",
+      );
       await fs.writeFile(path.join(appDir, "about", "page.mdx"), "# About");
 
       invalidateAppRouteCache();
@@ -41,8 +47,14 @@ describe("pageExtensions route discovery", () => {
     const appDir = path.join(tmpRoot, "app");
     try {
       await fs.mkdir(path.join(appDir, "about"), { recursive: true });
-      await fs.writeFile(path.join(appDir, "layout.tsx"), "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }");
-      await fs.writeFile(path.join(appDir, "page.tsx"), "export default function Page() { return <div>home</div>; }");
+      await fs.writeFile(
+        path.join(appDir, "layout.tsx"),
+        "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "page.tsx"),
+        "export default function Page() { return <div>home</div>; }",
+      );
       await fs.writeFile(path.join(appDir, "about", "page.mdx"), "# About");
 
       invalidateAppRouteCache();
@@ -60,25 +72,19 @@ describe("pageExtensions route discovery", () => {
     const pagesDir = path.join(tmpRoot, "pages");
     try {
       await fs.mkdir(path.join(pagesDir, "api"), { recursive: true });
-      await fs.writeFile(path.join(pagesDir, "index.tsx"), "export default function Page() { return <div>home</div>; }");
+      await fs.writeFile(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return <div>home</div>; }",
+      );
       await fs.writeFile(path.join(pagesDir, "about.mdx"), "# About");
-      await fs.writeFile(path.join(pagesDir, "api", "hello.mdx"), "export default function handler() {}");
+      await fs.writeFile(
+        path.join(pagesDir, "api", "hello.mdx"),
+        "export default function handler() {}",
+      );
 
       invalidateRouteCache(pagesDir);
-      const pageRoutes = await pagesRouter(pagesDir, [
-        "tsx",
-        "ts",
-        "jsx",
-        "js",
-        "mdx",
-      ]);
-      const apiRoutes = await apiRouter(pagesDir, [
-        "tsx",
-        "ts",
-        "jsx",
-        "js",
-        "mdx",
-      ]);
+      const pageRoutes = await pagesRouter(pagesDir, ["tsx", "ts", "jsx", "js", "mdx"]);
+      const apiRoutes = await apiRouter(pagesDir, ["tsx", "ts", "jsx", "js", "mdx"]);
 
       expect(pageRoutes.map((r) => r.pattern)).toContain("/about");
       expect(apiRoutes.map((r) => r.pattern)).toContain("/api/hello");

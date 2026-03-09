@@ -171,10 +171,7 @@ describe("KVCacheHandler", () => {
     });
 
     it("rejects entry with unknown value kind", async () => {
-      store.set(
-        "cache:bad-kind",
-        validEntry({ kind: "UNKNOWN_KIND", data: {} }),
-      );
+      store.set("cache:bad-kind", validEntry({ kind: "UNKNOWN_KIND", data: {} }));
       const result = await handler.get("bad-kind");
       expect(result).toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:bad-kind");
@@ -196,10 +193,7 @@ describe("KVCacheHandler", () => {
     });
 
     it("rejects entry where value has no kind field", async () => {
-      store.set(
-        "cache:no-kind",
-        validEntry({ html: "<html></html>" }),
-      );
+      store.set("cache:no-kind", validEntry({ html: "<html></html>" }));
       const result = await handler.get("no-kind");
       expect(result).toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:no-kind");

@@ -27,6 +27,7 @@ Review pull request #$ARGUMENTS on cloudflare/vinext.
    - `--comment --body "..."` if there are only suggestions
 
    For inline comments on specific files/lines, use:
+
    ```
    gh api repos/cloudflare/vinext/pulls/$ARGUMENTS/comments -f body="..." -f path="..." -F line=N -f side="RIGHT"
    ```

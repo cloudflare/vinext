@@ -13,25 +13,25 @@ Confirm `next` is in `dependencies` or `devDependencies` in `package.json`. If n
 
 Detect the package manager from the lockfile:
 
-| Lockfile | Manager | Install | Uninstall |
-|----------|---------|---------|-----------|
-| `pnpm-lock.yaml` | pnpm | `pnpm add` | `pnpm remove` |
-| `yarn.lock` | yarn | `yarn add` | `yarn remove` |
-| `bun.lockb` / `bun.lock` | bun | `bun add` | `bun remove` |
-| `package-lock.json` or none | npm | `npm install` | `npm uninstall` |
+| Lockfile                    | Manager | Install       | Uninstall       |
+| --------------------------- | ------- | ------------- | --------------- |
+| `pnpm-lock.yaml`            | pnpm    | `pnpm add`    | `pnpm remove`   |
+| `yarn.lock`                 | yarn    | `yarn add`    | `yarn remove`   |
+| `bun.lockb` / `bun.lock`    | bun     | `bun add`     | `bun remove`    |
+| `package-lock.json` or none | npm     | `npm install` | `npm uninstall` |
 
 Detect the router: if an `app/` directory exists at root or under `src/`, it's App Router. If only `pages/` exists, it's Pages Router. Both can coexist.
 
 ## Quick Reference
 
-| Command | Purpose |
-|---------|---------|
-| `vinext check` | Scan project for compatibility issues, produce scored report |
-| `vinext init` | Automated migration — installs deps, generates config, converts to ESM |
-| `vinext dev` | Development server with HMR |
-| `vinext build` | Production build (multi-environment for App Router) |
-| `vinext start` | Local production server |
-| `vinext deploy` | Build and deploy to Cloudflare Workers |
+| Command         | Purpose                                                                |
+| --------------- | ---------------------------------------------------------------------- |
+| `vinext check`  | Scan project for compatibility issues, produce scored report           |
+| `vinext init`   | Automated migration — installs deps, generates config, converts to ESM |
+| `vinext dev`    | Development server with HMR                                            |
+| `vinext build`  | Production build (multi-environment for App Router)                    |
+| `vinext start`  | Local production server                                                |
+| `vinext deploy` | Build and deploy to Cloudflare Workers                                 |
 
 ## Phase 1: Check Compatibility
 
@@ -73,12 +73,12 @@ npm install -D @vitejs/plugin-rsc
 
 Replace all `next` commands in `package.json` scripts:
 
-| Before | After | Notes |
-|--------|-------|-------|
-| `next dev` | `vinext dev` | Dev server with HMR |
-| `next build` | `vinext build` | Production build |
-| `next start` | `vinext start` | Local production server |
-| `next lint` | `vinext lint` | Delegates to eslint/oxlint |
+| Before       | After          | Notes                      |
+| ------------ | -------------- | -------------------------- |
+| `next dev`   | `vinext dev`   | Dev server with HMR        |
+| `next build` | `vinext build` | Production build           |
+| `next start` | `vinext start` | Local production server    |
+| `next lint`  | `vinext lint`  | Delegates to eslint/oxlint |
 
 Preserve flags: `next dev --port 3001` → `vinext dev --port 3001`.
 
@@ -95,6 +95,7 @@ Add `"type": "module"` to package.json. Rename any CJS config files:
 See [references/config-examples.md](references/config-examples.md) for config variants per router and deployment target.
 
 **Pages Router (minimal):**
+
 ```ts
 import vinext from "vinext";
 import { defineConfig } from "vite";
@@ -102,6 +103,7 @@ export default defineConfig({ plugins: [vinext()] });
 ```
 
 **App Router (minimal):**
+
 ```ts
 import vinext from "vinext";
 import { defineConfig } from "vite";
@@ -180,15 +182,15 @@ See [references/troubleshooting.md](references/troubleshooting.md) for common mi
 
 ## Known Limitations
 
-| Feature | Status |
-|---------|--------|
-| `next/image` optimization | Remote images via @unpic; no build-time optimization |
-| `next/font/google` | CDN-loaded, not self-hosted |
-| Domain-based i18n | Not supported; path-prefix i18n works |
-| `next/jest` | Not supported; use Vitest |
-| Turbopack/webpack config | Ignored; use Vite plugins instead |
-| `runtime` / `preferredRegion` | Route segment configs ignored |
-| PPR (Partial Prerendering) | Use `"use cache"` directive instead (Next.js 16 approach) |
+| Feature                       | Status                                                    |
+| ----------------------------- | --------------------------------------------------------- |
+| `next/image` optimization     | Remote images via @unpic; no build-time optimization      |
+| `next/font/google`            | CDN-loaded, not self-hosted                               |
+| Domain-based i18n             | Not supported; path-prefix i18n works                     |
+| `next/jest`                   | Not supported; use Vitest                                 |
+| Turbopack/webpack config      | Ignored; use Vite plugins instead                         |
+| `runtime` / `preferredRegion` | Route segment configs ignored                             |
+| PPR (Partial Prerendering)    | Use `"use cache"` directive instead (Next.js 16 approach) |
 
 ## Anti-patterns
 

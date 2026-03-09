@@ -8,12 +8,7 @@
 import { describe, it, expect } from "vitest";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
-import Document, {
-  Html,
-  Head,
-  Main,
-  NextScript,
-} from "../packages/vinext/src/shims/document.js";
+import Document, { Html, Head, Main, NextScript } from "../packages/vinext/src/shims/document.js";
 
 function render(el: React.ReactElement): string {
   return ReactDOMServer.renderToString(el);
@@ -45,11 +40,7 @@ describe("Head", () => {
 
   it("preserves custom children alongside defaults", () => {
     const html = render(
-      React.createElement(
-        Head,
-        null,
-        React.createElement("title", null, "My App"),
-      ),
+      React.createElement(Head, null, React.createElement("title", null, "My App")),
     );
     // Custom content rendered
     expect(html).toContain("<title>My App</title>");

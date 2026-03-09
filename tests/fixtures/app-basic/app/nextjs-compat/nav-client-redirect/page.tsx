@@ -8,10 +8,7 @@ export default function Page() {
   return (
     <div>
       <h1 id="redirect-page">Client Redirect Page</h1>
-      <button
-        id="redirect-btn"
-        onClick={() => router.push("/nextjs-compat/nav-redirect-result")}
-      >
+      <button id="redirect-btn" onClick={() => router.push("/nextjs-compat/nav-redirect-result")}>
         Redirect
       </button>
     </div>

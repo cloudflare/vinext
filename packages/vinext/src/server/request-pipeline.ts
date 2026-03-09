@@ -129,9 +129,7 @@ export function validateCsrfOrigin(
   // and would allow the check to be bypassed if it matched a spoofed
   // Origin. The prod server's resolveHost() handles trusted proxy
   // scenarios separately.
-  const hostHeader = (
-    request.headers.get("host") || ""
-  ).split(",")[0].trim().toLowerCase();
+  const hostHeader = (request.headers.get("host") || "").split(",")[0].trim().toLowerCase();
 
   if (!hostHeader) return null;
 
@@ -176,17 +174,16 @@ function isOriginAllowed(origin: string, allowed: string[]): boolean {
  * @param requestUrl - The full request URL for origin comparison
  * @returns An error Response if validation fails, or the normalized image URL
  */
-export function validateImageUrl(
-  rawUrl: string | null,
-  requestUrl: string,
-): Response | string {
+export function validateImageUrl(rawUrl: string | null, requestUrl: string): Response | string {
   // Normalize backslashes: browsers and the URL constructor treat
   // /\evil.com as protocol-relative (//evil.com), bypassing the // check.
   const imgUrl = rawUrl?.replaceAll("\\", "/") ?? null;
   // Allowlist: must start with "/" but not "//" — blocks absolute URLs,
   // protocol-relative, backslash variants, and exotic schemes.
   if (!imgUrl || !imgUrl.startsWith("/") || imgUrl.startsWith("//")) {
-    return new Response(!rawUrl ? "Missing url parameter" : "Only relative URLs allowed", { status: 400 });
+    return new Response(!rawUrl ? "Missing url parameter" : "Only relative URLs allowed", {
+      status: 400,
+    });
   }
   // Defense-in-depth origin check. Resolving a root-relative path against
   // the request's own origin is tautologically same-origin today, but this

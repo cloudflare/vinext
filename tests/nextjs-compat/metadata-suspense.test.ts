@@ -26,18 +26,13 @@ describe("Next.js compat: metadata-suspense", () => {
   });
 
   it("should render metadata in head when layout is wrapped with Suspense", async () => {
-    const { html } = await fetchHtml(
-      ctx.baseUrl,
-      "/nextjs-compat/metadata-suspense-test",
-    );
+    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/metadata-suspense-test");
 
     // Title should be present
     expect(html).toContain("<title>Suspense Metadata Title</title>");
 
     // Application name meta tag
-    expect(html).toMatch(
-      /<meta\s+name="application-name"\s+content="suspense-app"/,
-    );
+    expect(html).toMatch(/<meta\s+name="application-name"\s+content="suspense-app"/);
 
     // Description meta tag
     expect(html).toMatch(
@@ -50,19 +45,13 @@ describe("Next.js compat: metadata-suspense", () => {
   // duplicate titles. Keep this assertion live so metadata fixtures rely on
   // the Metadata API rather than manual <head> tags.
   it("should not produce duplicate title tags with Suspense layout", async () => {
-    const { html } = await fetchHtml(
-      ctx.baseUrl,
-      "/nextjs-compat/metadata-suspense-test",
-    );
+    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/metadata-suspense-test");
     const titleMatches = html.match(/<title>/g);
     expect(titleMatches).toHaveLength(1);
   });
 
   it("should render page content inside Suspense boundary", async () => {
-    const { html } = await fetchHtml(
-      ctx.baseUrl,
-      "/nextjs-compat/metadata-suspense-test",
-    );
+    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/metadata-suspense-test");
 
     // Page content should be rendered (not loading fallback)
     expect(html).toContain("Suspense Metadata Page");

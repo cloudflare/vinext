@@ -24,7 +24,14 @@ describe("safeJsonStringify", () => {
     it("serializes objects and arrays", () => {
       const result = safeJsonStringify({ a: 1, b: [2, 3] });
       // Should be valid JSON when unescaped
-      expect(JSON.parse(result.replace(/\\u003c/g, "<").replace(/\\u003e/g, ">").replace(/\\u0026/g, "&"))).toEqual({
+      expect(
+        JSON.parse(
+          result
+            .replace(/\\u003c/g, "<")
+            .replace(/\\u003e/g, ">")
+            .replace(/\\u0026/g, "&"),
+        ),
+      ).toEqual({
         a: 1,
         b: [2, 3],
       });
@@ -65,11 +72,7 @@ describe("safeJsonStringify", () => {
     });
 
     it("escapes </SCRIPT> (case variations)", () => {
-      const payloads = [
-        "</SCRIPT>",
-        "</Script>",
-        "</ScRiPt>",
-      ];
+      const payloads = ["</SCRIPT>", "</Script>", "</ScRiPt>"];
       for (const payload of payloads) {
         const result = safeJsonStringify(payload);
         // All < and > should be escaped regardless of case
@@ -152,7 +155,7 @@ describe("safeJsonStringify", () => {
     });
 
     it("blocks payload with multiple closing tags", () => {
-      const payload = '</script></script></script><script>alert(1)//';
+      const payload = "</script></script></script><script>alert(1)//";
       const result = safeJsonStringify(payload);
       expect(result).not.toContain("</script>");
     });
@@ -192,11 +195,7 @@ describe("safeJsonStringify", () => {
 
     it("handles array values with XSS payloads", () => {
       const data = {
-        items: [
-          "safe",
-          '</script><script>alert(1)</script>',
-          "also safe",
-        ],
+        items: ["safe", "</script><script>alert(1)</script>", "also safe"],
       };
       const result = safeJsonStringify(data);
       expect(result).not.toContain("</script>");
@@ -352,7 +351,7 @@ describe("safeJsonStringify", () => {
 
     it("produces safe output for RSC embed data", () => {
       const embedData = {
-        rsc: ['chunk with </script> in it', '<script>alert(1)</script>'],
+        rsc: ["chunk with </script> in it", "<script>alert(1)</script>"],
         params: { id: "123" },
       };
 

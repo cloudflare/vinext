@@ -91,7 +91,7 @@ describe("Script SSR rendering", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Script, {
         strategy: "beforeInteractive",
-        dangerouslySetInnerHTML: { __html: 'window.x = 1' },
+        dangerouslySetInnerHTML: { __html: "window.x = 1" },
       } as ScriptProps),
     );
     expect(html).toContain("<script");

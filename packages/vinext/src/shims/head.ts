@@ -19,7 +19,9 @@ interface HeadProps {
 let _ssrHeadElements: string[] = [];
 
 let _getSSRHeadElements = (): string[] => _ssrHeadElements;
-let _resetSSRHeadImpl = (): void => { _ssrHeadElements = []; };
+let _resetSSRHeadImpl = (): void => {
+  _ssrHeadElements = [];
+};
 
 /**
  * Register ALS-backed state accessors. Called by head-state.ts on import.
@@ -47,9 +49,7 @@ export function getSSRHeadHTML(): string {
  * Tags allowed inside <head>. Anything else is silently dropped.
  * This prevents injection of dangerous elements like <iframe>, <object>, etc.
  */
-const ALLOWED_HEAD_TAGS = new Set([
-  "title", "meta", "link", "style", "script", "base", "noscript",
-]);
+const ALLOWED_HEAD_TAGS = new Set(["title", "meta", "link", "style", "script", "base", "noscript"]);
 
 /**
  * Convert a React element to an HTML string for SSR head injection.
@@ -62,7 +62,7 @@ function reactElementToHTML(child: React.ReactElement): string {
     if (process.env.NODE_ENV !== "production") {
       console.warn(
         `[vinext] <Head> ignoring disallowed tag <${tag}>. ` +
-        `Only ${[...ALLOWED_HEAD_TAGS].join(", ")} are allowed.`,
+          `Only ${[...ALLOWED_HEAD_TAGS].join(", ")} are allowed.`,
       );
     }
     return "";
@@ -116,7 +116,11 @@ function escapeHTML(s: string): string {
 }
 
 export function escapeAttr(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 /**
@@ -155,9 +159,7 @@ function Head({ children }: HeadProps): null {
     const elements: Element[] = [];
 
     // Remove previous vinext-managed head elements
-    document
-      .querySelectorAll("[data-vinext-head]")
-      .forEach((el) => el.remove());
+    document.querySelectorAll("[data-vinext-head]").forEach((el) => el.remove());
 
     Children.forEach(children, (child) => {
       if (!isValidElement(child)) return;

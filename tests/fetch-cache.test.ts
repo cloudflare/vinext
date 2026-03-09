@@ -15,9 +15,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 // We need to mock fetch at the module level BEFORE fetch-cache.ts captures
 // `originalFetch`. Use vi.stubGlobal to intercept at import time.
 let requestCount = 0;
-const defaultFetchMockImplementation = async (input: string | URL | Request, _init?: RequestInit) => {
+const defaultFetchMockImplementation = async (
+  input: string | URL | Request,
+  _init?: RequestInit,
+) => {
   requestCount++;
-  const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+  const url =
+    typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
   return new Response(JSON.stringify({ url, count: requestCount }), {
     status: 200,
     headers: { "content-type": "application/json" },
@@ -29,8 +33,10 @@ const fetchMock = vi.fn(defaultFetchMockImplementation);
 vi.stubGlobal("fetch", fetchMock);
 
 // Now import — these will capture fetchMock as "originalFetch"
-const { withFetchCache, runWithFetchCache, getCollectedFetchTags, getOriginalFetch } = await import("../packages/vinext/src/shims/fetch-cache.js");
-const { getCacheHandler, revalidateTag, MemoryCacheHandler, setCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+const { withFetchCache, runWithFetchCache, getCollectedFetchTags, getOriginalFetch } =
+  await import("../packages/vinext/src/shims/fetch-cache.js");
+const { getCacheHandler, revalidateTag, MemoryCacheHandler, setCacheHandler } =
+  await import("../packages/vinext/src/shims/cache.js");
 
 describe("fetch cache shim", () => {
   let cleanup: (() => void) | null = null;
@@ -232,7 +238,8 @@ describe("fetch cache shim", () => {
     const seenBodies: string[] = [];
     fetchMock.mockImplementation(async (input: string | URL | Request, _init?: RequestInit) => {
       requestCount++;
-      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       const body = input instanceof Request ? await input.clone().text() : "";
       seenBodies.push(body);
       return new Response(JSON.stringify({ url, count: requestCount, body }), {
@@ -241,11 +248,12 @@ describe("fetch cache shim", () => {
       });
     });
 
-    const makeRequest = () => new Request("https://api.example.com/stale-request-body", {
-      method: "POST",
-      body: "request-body-content",
-      headers: { "content-type": "text/plain" },
-    });
+    const makeRequest = () =>
+      new Request("https://api.example.com/stale-request-body", {
+        method: "POST",
+        body: "request-body-content",
+        headers: { "content-type": "text/plain" },
+      });
 
     const res1 = await fetch(makeRequest(), { next: { revalidate: 1 } });
     const data1 = await res1.json();
@@ -366,7 +374,7 @@ describe("fetch cache shim", () => {
     });
 
     const tags = getCollectedFetchTags();
-    expect(tags.filter(t => t === "data")).toHaveLength(1);
+    expect(tags.filter((t) => t === "data")).toHaveLength(1);
   });
 
   // ── Only caches successful responses ────────────────────────────────
@@ -517,18 +525,19 @@ describe("fetch cache shim", () => {
   });
 
   it("same multipart Request bodies hit the same cache entry even with different boundaries", async () => {
-    const makeMultipartRequest = (boundary: string) => new Request("https://api.example.com/req-form-boundary", {
-      method: "POST",
-      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
-      body: [
-        `--${boundary}`,
-        'Content-Disposition: form-data; name="name"',
-        "",
-        "same-value",
-        `--${boundary}--`,
-        "",
-      ].join("\r\n"),
-    });
+    const makeMultipartRequest = (boundary: string) =>
+      new Request("https://api.example.com/req-form-boundary", {
+        method: "POST",
+        headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+        body: [
+          `--${boundary}`,
+          'Content-Disposition: form-data; name="name"',
+          "",
+          "same-value",
+          `--${boundary}--`,
+          "",
+        ].join("\r\n"),
+      });
 
     const res1 = await fetch(makeMultipartRequest("boundary-a"), { next: { revalidate: 60 } });
     const data1 = await res1.json();
@@ -541,18 +550,19 @@ describe("fetch cache shim", () => {
   });
 
   it("malformed multipart Request bodies bypass cache instead of hashing raw bytes", async () => {
-    const makeMalformedMultipartRequest = () => new Request("https://api.example.com/req-form-malformed", {
-      method: "POST",
-      headers: { "content-type": "multipart/form-data; boundary=expected" },
-      body: [
-        "--actual",
-        'Content-Disposition: form-data; name="name"',
-        "",
-        "value",
-        "--actual--",
-        "",
-      ].join("\r\n"),
-    });
+    const makeMalformedMultipartRequest = () =>
+      new Request("https://api.example.com/req-form-malformed", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=expected" },
+        body: [
+          "--actual",
+          'Content-Disposition: form-data; name="name"',
+          "",
+          "value",
+          "--actual--",
+          "",
+        ].join("\r\n"),
+      });
 
     const res1 = await fetch(makeMalformedMultipartRequest(), { next: { revalidate: 60 } });
     const data1 = await res1.json();
@@ -565,11 +575,12 @@ describe("fetch cache shim", () => {
   });
 
   it("urlencoded Request bodies with different charset headers get separate cache entries", async () => {
-    const makeRequest = (charset: string) => new Request("https://api.example.com/req-form-charset", {
-      method: "POST",
-      headers: { "content-type": `application/x-www-form-urlencoded; charset=${charset}` },
-      body: "name=value",
-    });
+    const makeRequest = (charset: string) =>
+      new Request("https://api.example.com/req-form-charset", {
+        method: "POST",
+        headers: { "content-type": `application/x-www-form-urlencoded; charset=${charset}` },
+        body: "name=value",
+      });
 
     const res1 = await fetch(makeRequest("utf-8"), { next: { revalidate: 60 } });
     const data1 = await res1.json();
@@ -1362,7 +1373,9 @@ describe("fetch cache shim", () => {
       });
       await request.text();
 
-      await expect(fetch(request, { next: { revalidate: 60 } })).rejects.toThrow("body already used");
+      await expect(fetch(request, { next: { revalidate: 60 } })).rejects.toThrow(
+        "body already used",
+      );
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
@@ -1390,12 +1403,13 @@ describe("fetch cache shim", () => {
     });
 
     it("oversized ReadableStream body bypasses cache and preserves stream body", async () => {
-      const makeLargeStream = () => new ReadableStream({
-        start(controller) {
-          controller.enqueue(new Uint8Array(1024 * 1024 + 1));
-          controller.close();
-        },
-      });
+      const makeLargeStream = () =>
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(1024 * 1024 + 1));
+            controller.close();
+          },
+        });
 
       await fetch("https://api.example.com/large-stream", {
         method: "POST",
@@ -1490,14 +1504,15 @@ describe("fetch cache shim", () => {
       const chunkSize = 64 * 1024; // 64 KiB per chunk
       const numChunks = 17; // 17 * 64 KiB = 1088 KiB > 1 MiB
 
-      const makeLargeMultiChunkStream = () => new ReadableStream({
-        start(controller) {
-          for (let i = 0; i < numChunks; i++) {
-            controller.enqueue(new Uint8Array(chunkSize));
-          }
-          controller.close();
-        },
-      });
+      const makeLargeMultiChunkStream = () =>
+        new ReadableStream({
+          start(controller) {
+            for (let i = 0; i < numChunks; i++) {
+              controller.enqueue(new Uint8Array(chunkSize));
+            }
+            controller.close();
+          },
+        });
 
       const res1 = await fetch("https://api.example.com/large-multi-chunk", {
         method: "POST",
@@ -1541,7 +1556,6 @@ describe("fetch cache shim", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
   });
-
 
   // ── URLSearchParams body ──────────────────────────────────────────
 

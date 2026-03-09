@@ -7,61 +7,53 @@
     "type": "git",
     "url": "git+https://github.com/cloudflare/vinext.git"
   },
-  "type": "module",
-  "engines": {
-    "node": ">=22"
-  },
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "bin": {
     "vinext": "dist/cli.js"
-  },
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    },
-    "./shims/*": {
-      "import": "./dist/shims/*.js",
-      "types": "./dist/shims/*.d.ts"
-    },
-    "./server/prod-server": {
-      "import": "./dist/server/prod-server.js",
-      "types": "./dist/server/prod-server.d.ts"
-    },
-    "./cloudflare": {
-      "import": "./dist/cloudflare/index.js",
-      "types": "./dist/cloudflare/index.d.ts"
-    },
-    "./server/image-optimization": {
-      "import": "./dist/server/image-optimization.js",
-      "types": "./dist/server/image-optimization.d.ts"
-    },
-    "./server/app-router-entry": {
-      "import": "./dist/server/app-router-entry.js",
-      "types": "./dist/server/app-router-entry.d.ts"
-    },
-    "./config/config-matchers": {
-      "import": "./dist/config/config-matchers.js",
-      "types": "./dist/config/config-matchers.d.ts"
-    },
-    "./server/worker-utils": {
-      "import": "./dist/server/worker-utils.js",
-      "types": "./dist/server/worker-utils.d.ts"
-    }
   },
   "files": [
     "dist"
   ],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./shims/*": {
+      "types": "./dist/shims/*.d.ts",
+      "import": "./dist/shims/*.js"
+    },
+    "./server/prod-server": {
+      "types": "./dist/server/prod-server.d.ts",
+      "import": "./dist/server/prod-server.js"
+    },
+    "./cloudflare": {
+      "types": "./dist/cloudflare/index.d.ts",
+      "import": "./dist/cloudflare/index.js"
+    },
+    "./server/image-optimization": {
+      "types": "./dist/server/image-optimization.d.ts",
+      "import": "./dist/server/image-optimization.js"
+    },
+    "./server/app-router-entry": {
+      "types": "./dist/server/app-router-entry.d.ts",
+      "import": "./dist/server/app-router-entry.js"
+    },
+    "./config/config-matchers": {
+      "types": "./dist/config/config-matchers.d.ts",
+      "import": "./dist/config/config-matchers.js"
+    },
+    "./server/worker-utils": {
+      "types": "./dist/server/worker-utils.d.ts",
+      "import": "./dist/server/worker-utils.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
     "prepack": "cp ../../README.md README.md && pnpm run build",
     "dev": "tsc --watch"
-  },
-  "peerDependencies": {
-    "react": ">=19.2.0",
-    "react-dom": ">=19.2.0",
-    "vite": "^7.0.0"
   },
   "dependencies": {
     "@unpic/react": "^1.0.2",
@@ -79,5 +71,13 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "vite": "^7.3.1"
+  },
+  "peerDependencies": {
+    "react": ">=19.2.0",
+    "react-dom": ">=19.2.0",
+    "vite": "^7.0.0"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

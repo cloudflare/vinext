@@ -13,14 +13,22 @@ import type { AppRoute } from "../routing/app-router.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import type { NextRedirect, NextRewrite, NextHeader } from "../config/next-config.js";
 import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
-import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormalizePathCode } from "../server/middleware-codegen.js";
+import {
+  generateSafeRegExpCode,
+  generateMiddlewareMatcherCode,
+  generateNormalizePathCode,
+} from "../server/middleware-codegen.js";
 import { isProxyFile } from "../server/middleware.js";
 
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
 // resolve these at code-generation time and embed them as absolute paths.
-const configMatchersPath = fileURLToPath(new URL("../config/config-matchers.js", import.meta.url)).replace(/\\/g, "/");
-const requestPipelinePath = fileURLToPath(new URL("../server/request-pipeline.js", import.meta.url)).replace(/\\/g, "/");
+const configMatchersPath = fileURLToPath(
+  new URL("../config/config-matchers.js", import.meta.url),
+).replace(/\\/g, "/");
+const requestPipelinePath = fileURLToPath(
+  new URL("../server/request-pipeline.js", import.meta.url),
+).replace(/\\/g, "/");
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -89,9 +97,14 @@ export function generateRscEntry(
     for (const tmpl of route.templates) getImportVar(tmpl);
     if (route.loadingPath) getImportVar(route.loadingPath);
     if (route.errorPath) getImportVar(route.errorPath);
-    if (route.layoutErrorPaths) for (const ep of route.layoutErrorPaths) { if (ep) getImportVar(ep); }
+    if (route.layoutErrorPaths)
+      for (const ep of route.layoutErrorPaths) {
+        if (ep) getImportVar(ep);
+      }
     if (route.notFoundPath) getImportVar(route.notFoundPath);
-    for (const nfp of route.notFoundPaths || []) { if (nfp) getImportVar(nfp); }
+    for (const nfp of route.notFoundPaths || []) {
+      if (nfp) getImportVar(nfp);
+    }
     if (route.forbiddenPath) getImportVar(route.forbiddenPath);
     if (route.unauthorizedPath) getImportVar(route.unauthorizedPath);
     // Register parallel slot modules
@@ -112,7 +125,7 @@ export function generateRscEntry(
   const routeEntries = routes.map((route) => {
     const layoutVars = route.layouts.map((l) => getImportVar(l));
     const templateVars = route.templates.map((t) => getImportVar(t));
-    const notFoundVars = (route.notFoundPaths || []).map((nf) => nf ? getImportVar(nf) : "null");
+    const notFoundVars = (route.notFoundPaths || []).map((nf) => (nf ? getImportVar(nf) : "null"));
     const slotEntries = route.parallelSlots.map((slot) => {
       const interceptEntries = slot.interceptingRoutes.map((ir) => {
         return `        {
@@ -134,7 +147,9 @@ ${interceptEntries.join(",\n")}
         ],
       }`;
     });
-    const layoutErrorVars = (route.layoutErrorPaths || []).map((ep) => ep ? getImportVar(ep) : "null");
+    const layoutErrorVars = (route.layoutErrorPaths || []).map((ep) =>
+      ep ? getImportVar(ep) : "null",
+    );
     return `  {
     pattern: ${JSON.stringify(route.pattern)},
     isDynamic: ${route.isDynamic},
@@ -160,18 +175,12 @@ ${slotEntries.join(",\n")}
 
   // Find root not-found/forbidden/unauthorized pages and root layouts for global error handling
   const rootRoute = routes.find((r) => r.pattern === "/");
-  const rootNotFoundVar = rootRoute?.notFoundPath
-    ? getImportVar(rootRoute.notFoundPath)
-    : null;
-  const rootForbiddenVar = rootRoute?.forbiddenPath
-    ? getImportVar(rootRoute.forbiddenPath)
-    : null;
+  const rootNotFoundVar = rootRoute?.notFoundPath ? getImportVar(rootRoute.notFoundPath) : null;
+  const rootForbiddenVar = rootRoute?.forbiddenPath ? getImportVar(rootRoute.forbiddenPath) : null;
   const rootUnauthorizedVar = rootRoute?.unauthorizedPath
     ? getImportVar(rootRoute.unauthorizedPath)
     : null;
-  const rootLayoutVars = rootRoute
-    ? rootRoute.layouts.map((l) => getImportVar(l))
-    : [];
+  const rootLayoutVars = rootRoute ? rootRoute.layouts.map((l) => getImportVar(l)) : [];
 
   // Global error boundary (app/global-error.tsx)
   const globalErrorVar = globalErrorPath ? getImportVar(globalErrorPath) : null;
@@ -452,7 +461,9 @@ function createRscOnErrorHandler(request, pathname, routePath) {
 
 ${imports.join("\n")}
 
-${instrumentationPath ? `// Run instrumentation register() exactly once, lazily on the first request.
+${
+  instrumentationPath
+    ? `// Run instrumentation register() exactly once, lazily on the first request.
 // Previously this was a top-level await, which blocked the entire module graph
 // from finishing initialization until register() resolved — adding that latency
 // to every cold start. Moving it here preserves the "runs before any request is
@@ -481,7 +492,9 @@ async function __ensureInstrumentation() {
     __instrumentationInitialized = true;
   })();
   return __instrumentationInitPromise;
-}` : ""}
+}`
+    : ""
+}
 
 const routes = [
 ${routeEntries.join(",\n")}
@@ -577,7 +590,9 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
         element = createElement(LayoutSegmentProvider, { childSegments: _cs }, element);
       }
     }
-    ${globalErrorVar ? `
+    ${
+      globalErrorVar
+        ? `
     const _GlobalErrorComponent = ${globalErrorVar}.default;
     if (_GlobalErrorComponent) {
       element = createElement(ErrorBoundary, {
@@ -585,7 +600,9 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
         children: element,
       });
     }
-    ` : ""}
+    `
+        : ""
+    }
     const _pathname = new URL(request.url).pathname;
     const onRenderError = createRscOnErrorHandler(
       request,
@@ -665,12 +682,16 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
       }
     }
   }
-  ${globalErrorVar ? `
+  ${
+    globalErrorVar
+      ? `
   if (!ErrorComponent) {
     ErrorComponent = ${globalErrorVar}?.default ?? null;
     _isGlobalError = !!ErrorComponent;
   }
-  ` : ""}
+  `
+      : ""
+  }
   if (!ErrorComponent) return null;
 
   const rawError = error instanceof Error ? error : new Error(String(error));
@@ -708,7 +729,9 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
           element = createElement(LayoutSegmentProvider, { childSegments: _ecs }, element);
         }
       }
-      ${globalErrorVar ? `
+      ${
+        globalErrorVar
+          ? `
       const _ErrGlobalComponent = ${globalErrorVar}.default;
       if (_ErrGlobalComponent) {
         element = createElement(ErrorBoundary, {
@@ -716,7 +739,9 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
           children: element,
         });
       }
-      ` : ""}
+      `
+          : ""
+      }
     } else {
       // For HTML (full page load) responses, wrap with layouts only.
       const _errParamsHtml = matchedParams ?? route?.params ?? {};
@@ -1126,7 +1151,9 @@ async function buildPageElement(route, params, opts, searchParams) {
   // For HTML requests (initial page load), the ErrorBoundary catches during SSR
   // but produces double <html>/<body> (root layout + global-error). The request
   // handler detects this via the rscOnError flag and re-renders without layouts.
-  ${globalErrorVar ? `
+  ${
+    globalErrorVar
+      ? `
   const GlobalErrorComponent = ${globalErrorVar}.default;
   if (GlobalErrorComponent) {
     element = createElement(ErrorBoundary, {
@@ -1134,7 +1161,9 @@ async function buildPageElement(route, params, opts, searchParams) {
       children: element,
     });
   }
-  ` : ""}
+  `
+      : ""
+  }
 
   return element;
 }
@@ -1252,10 +1281,14 @@ async function __readFormDataWithLimit(request, maxBytes) {
 }
 
 export default async function handler(request) {
-  ${instrumentationPath ? `// Ensure instrumentation.register() has run before handling the first request.
+  ${
+    instrumentationPath
+      ? `// Ensure instrumentation.register() has run before handling the first request.
   // This is a no-op after the first call (guarded by __instrumentationInitialized).
   await __ensureInstrumentation();
-  ` : ""}
+  `
+      : ""
+  }
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -1337,10 +1370,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
   let pathname = __normalizePath(decodedUrlPathname);
 
-  ${bp ? `
+  ${
+    bp
+      ? `
   // Strip basePath prefix
   pathname = stripBasePath(pathname, __basePath);
-  ` : ""}
+  `
+      : ""
+  }
 
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
@@ -1373,7 +1410,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // _mwCtx (per-request container) so handler() can merge them into
   // every response path without module-level state that races on Workers.
 
-  ${middlewarePath ? `
+  ${
+    middlewarePath
+      ? `
    // Run proxy/middleware if present and path matches.
    // Validate exports match the file type (proxy.ts vs middleware.ts), matching Next.js behavior.
    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
@@ -1455,7 +1494,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     applyMiddlewareRequestHeaders(_mwCtx.headers);
     processMiddlewareHeaders(_mwCtx.headers);
   }
-  ` : ""}
+  `
+      : ""
+  }
 
   // Build post-middleware request context for afterFiles/fallback rewrites.
   // These run after middleware in the App Router execution order and should
@@ -2292,7 +2333,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // the HTML output has double <html>/<body> (root layout + global-error.tsx).
   // Discard it and re-render using renderErrorBoundaryPage which skips layouts
   // when the error falls through to global-error.tsx.
-  ${globalErrorVar ? `
+  ${
+    globalErrorVar
+      ? `
   if (_rscErrorForRerender && !isRscRequest) {
     const _hasLocalBoundary = !!(route?.error?.default) || !!(route?.errors && route.errors.some(function(e) { return e?.default; }));
     if (!_hasLocalBoundary) {
@@ -2300,7 +2343,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       if (cleanResp) return cleanResp;
     }
   }
-  ` : ""}
+  `
+      : ""
+  }
 
   // Check for draftMode Set-Cookie header (from draftMode().enable()/disable())
   const draftCookie = getDraftModeCookieHeader();

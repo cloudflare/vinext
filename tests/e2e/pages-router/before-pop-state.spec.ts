@@ -3,17 +3,13 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4173";
 
 test.describe("router.beforePopState (Pages Router)", () => {
-  test("blocking callback prevents route change on back navigation", async ({
-    page,
-  }) => {
+  test("blocking callback prevents route change on back navigation", async ({ page }) => {
     await page.goto(`${BASE}/before-pop-state-test`);
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 
     // Enable blocking BEFORE navigating away
     await page.click('[data-testid="enable-blocking"]');
-    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText(
-      "Blocking: ON",
-    );
+    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText("Blocking: ON");
 
     // Navigate to about (this is a client-side navigation via Link, not popstate)
     await page.click('[data-testid="link-about"]');
@@ -41,9 +37,7 @@ test.describe("router.beforePopState (Pages Router)", () => {
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 
     // Blocking is OFF by default — verify
-    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText(
-      "Blocking: OFF",
-    );
+    await expect(page.locator('[data-testid="toggle-blocking"]')).toHaveText("Blocking: OFF");
 
     // Navigate to about
     await page.click('[data-testid="link-about"]');
@@ -52,8 +46,6 @@ test.describe("router.beforePopState (Pages Router)", () => {
     // Go back — should be allowed (beforePopState returns true)
     await page.goBack();
     await expect(page.locator("h1")).toHaveText("Before Pop State Test");
-    await expect(page.locator('[data-testid="current-path"]')).toHaveText(
-      "/before-pop-state-test",
-    );
+    await expect(page.locator('[data-testid="current-path"]')).toHaveText("/before-pop-state-test");
   });
 });

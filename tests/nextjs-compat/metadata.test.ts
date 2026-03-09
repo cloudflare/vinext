@@ -44,21 +44,13 @@ describe("Next.js compat: metadata", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L25-L32
 
   it("should render title in <head>", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-title",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title");
     expect(html).toContain("<title>this is the page title</title>");
   });
 
   it("should render description meta tag", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-title",
-    );
-    expect(html).toMatch(
-      /meta\s+name="description"\s+content="this is the layout description"/,
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title");
+    expect(html).toMatch(/meta\s+name="description"\s+content="this is the layout description"/);
   });
 
   // ── Title template ───────────────────────────────────────────
@@ -66,10 +58,7 @@ describe("Next.js compat: metadata", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L34-L38
 
   it("should apply title template from layout", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-title-template",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template");
     // Layout has template "%s | Layout", page has title "Page"
     // Result should be "Page | Layout"
     expect(html).toContain("<title>Page | Layout</title>");
@@ -79,10 +68,7 @@ describe("Next.js compat: metadata", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L40-L44
 
   it("should apply title template to child page", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-title-template/child",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/child");
     // Layout template "%s | Layout", child page title "Extra Page"
     expect(html).toContain("<title>Extra Page | Layout</title>");
   });
@@ -92,78 +78,49 @@ describe("Next.js compat: metadata", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L52-L89
 
   it("should render generator meta tag", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-basic",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-basic");
     expect(html).toMatch(/meta\s+name="generator"\s+content="next\.js"/);
   });
 
   it("should render application-name meta tag", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-basic",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-basic");
     expect(html).toMatch(/meta\s+name="application-name"\s+content="test"/);
   });
 
   it("should render referrer meta tag", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-basic",
-    );
-    expect(html).toMatch(
-      /meta\s+name="referrer"\s+content="origin-when-cross-origin"/,
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-basic");
+    expect(html).toMatch(/meta\s+name="referrer"\s+content="origin-when-cross-origin"/);
   });
 
   it("should render keywords meta tag", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-basic",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-basic");
     // Next.js joins keywords with "," (no space) — match that exactly
     expect(html).toMatch(/meta\s+name="keywords"\s+content="next\.js,react,javascript"/);
   });
 
   it("should render author meta tags", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-basic",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-basic");
     expect(html).toMatch(/meta\s+name="author"\s+content="huozhi"/);
     expect(html).toMatch(/meta\s+name="author"\s+content="tree"/);
   });
 
   it("should render creator meta tag", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-basic",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-basic");
     expect(html).toMatch(/meta\s+name="creator"\s+content="shu"/);
   });
 
   it("should render publisher meta tag", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-basic",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-basic");
     expect(html).toMatch(/meta\s+name="publisher"\s+content="vercel"/);
   });
 
   it("should render robots meta tag", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-basic",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-basic");
     expect(html).toMatch(/meta\s+name="robots"\s+content="index, follow"/);
   });
 
   it("should render format-detection meta tag", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-basic",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-basic");
     expect(html).toMatch(/meta\s+name="format-detection"/);
     expect(html).toMatch(/telephone=no/);
   });
@@ -173,66 +130,39 @@ describe("Next.js compat: metadata", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L175-L211
 
   it("should render og:title", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-opengraph",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph");
     expect(html).toMatch(/meta\s+property="og:title"\s+content="My custom title"/);
   });
 
   it("should render og:description", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-opengraph",
-    );
-    expect(html).toMatch(
-      /meta\s+property="og:description"\s+content="My custom description"/,
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph");
+    expect(html).toMatch(/meta\s+property="og:description"\s+content="My custom description"/);
   });
 
   it("should render og:url", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-opengraph",
-    );
-    expect(html).toMatch(
-      /meta\s+property="og:url"\s+content="https:\/\/example\.com"/,
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph");
+    expect(html).toMatch(/meta\s+property="og:url"\s+content="https:\/\/example\.com"/);
   });
 
   it("should render og:site_name", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-opengraph",
-    );
-    expect(html).toMatch(
-      /meta\s+property="og:site_name"\s+content="My custom site name"/,
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph");
+    expect(html).toMatch(/meta\s+property="og:site_name"\s+content="My custom site name"/);
   });
 
   it("should render og:type", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-opengraph",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph");
     expect(html).toMatch(/meta\s+property="og:type"\s+content="website"/);
   });
 
   it("should render og:image", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-opengraph",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph");
     expect(html).toMatch(
       /meta\s+property="og:image"\s+content="https:\/\/example\.com\/image\.png"/,
     );
   });
 
   it("should render og:image:width and og:image:height", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-opengraph",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph");
     expect(html).toMatch(/meta\s+property="og:image:width"\s+content="800"/);
     expect(html).toMatch(/meta\s+property="og:image:height"\s+content="600"/);
   });
@@ -242,38 +172,22 @@ describe("Next.js compat: metadata", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L308-L323
 
   it("should render twitter:card", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-twitter",
-    );
-    expect(html).toMatch(
-      /meta\s+name="twitter:card"\s+content="summary_large_image"/,
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-twitter");
+    expect(html).toMatch(/meta\s+name="twitter:card"\s+content="summary_large_image"/);
   });
 
   it("should render twitter:title", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-twitter",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-twitter");
     expect(html).toMatch(/meta\s+name="twitter:title"\s+content="Twitter Title"/);
   });
 
   it("should render twitter:description", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-twitter",
-    );
-    expect(html).toMatch(
-      /meta\s+name="twitter:description"\s+content="Twitter Description"/,
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-twitter");
+    expect(html).toMatch(/meta\s+name="twitter:description"\s+content="Twitter Description"/);
   });
 
   it("should render twitter:image", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-twitter",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-twitter");
     expect(html).toMatch(
       /meta\s+name="twitter:image"\s+content="https:\/\/twitter\.com\/image\.png"/,
     );
@@ -284,10 +198,7 @@ describe("Next.js compat: metadata", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L113-L121
 
   it("should render complex robots meta tag", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-robots",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-robots");
     expect(html).toMatch(/meta\s+name="robots"/);
     // Should contain noindex and follow
     expect(html).toMatch(/noindex/);
@@ -295,10 +206,7 @@ describe("Next.js compat: metadata", () => {
   });
 
   it("should render googlebot meta tag", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-robots",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-robots");
     expect(html).toMatch(/meta\s+name="googlebot"/);
   });
 
@@ -307,20 +215,12 @@ describe("Next.js compat: metadata", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L129-L152
 
   it("should render canonical link", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-alternates",
-    );
-    expect(html).toMatch(
-      /link\s+rel="canonical"\s+href="https:\/\/example\.com\/alternates"/,
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-alternates");
+    expect(html).toMatch(/link\s+rel="canonical"\s+href="https:\/\/example\.com\/alternates"/);
   });
 
   it("should render hreflang alternate links", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-alternates",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-alternates");
     // React JSX renders as hrefLang (camelCase) in HTML output
     expect(html).toMatch(/hrefLang="en-US"/i);
     expect(html).toMatch(/hrefLang="de-DE"/i);
@@ -331,21 +231,13 @@ describe("Next.js compat: metadata", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L174-L184
 
   it("should render title from generateMetadata with params", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-generate/my-slug",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-generate/my-slug");
     expect(html).toContain("<title>params - my-slug</title>");
   });
 
   it("should render description from generateMetadata with params", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-generate/test-page",
-    );
-    expect(html).toMatch(
-      /meta\s+name="description"\s+content="Description for test-page"/,
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-generate/test-page");
+    expect(html).toMatch(/meta\s+name="description"\s+content="Description for test-page"/);
   });
 
   // ── Default charset and viewport injection ────────────────────
@@ -354,26 +246,17 @@ describe("Next.js compat: metadata", () => {
   // on every page, even when no metadata or viewport is exported.
 
   it("should always include charset meta tag in SSR output", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-title",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title");
     expect(html).toMatch(/meta\s+charSet="utf-8"|meta\s+charset="utf-8"/i);
   });
 
   it("should always include viewport meta tag in SSR output", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-title",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title");
     expect(html).toMatch(/meta\s+name="viewport"\s+content="width=device-width, initial-scale=1"/);
   });
 
   it("should include charset and viewport even on pages with only OG metadata", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-opengraph",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph");
     expect(html).toMatch(/meta\s+charSet="utf-8"|meta\s+charset="utf-8"/i);
     expect(html).toMatch(/meta\s+name="viewport"/);
   });
@@ -389,10 +272,7 @@ describe("Next.js compat: metadata", () => {
   //   "should support generateMetadata with parent parameter"
 
   it("should pass parent metadata to generateMetadata via parent parameter", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-parent-generate",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-parent-generate");
     // The layout's generateMetadata() returns openGraph.images: ['/base-image.jpg'].
     // The page's generateMetadata() prepends '/new-image.jpg' to the parent images.
     // Both images must appear in the HTML.
@@ -401,10 +281,7 @@ describe("Next.js compat: metadata", () => {
   });
 
   it("should render page title from generateMetadata that uses parent", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-parent-generate",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-parent-generate");
     expect(html).toContain("<title>parent-generate page</title>");
   });
 
@@ -429,10 +306,7 @@ describe("Next.js compat: metadata", () => {
   });
 
   it("generateMetadata searchParams defaults to empty when no query string", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-generate-searchparams",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-generate-searchparams");
     expect(html).toContain("<title>search: (none)</title>");
   });
 

@@ -15,10 +15,7 @@
  * listening, the e2e test for register() being called will never pass.
  */
 
-import {
-  markRegisterCalled,
-  recordRequestError,
-} from "./instrumentation-state";
+import { markRegisterCalled, recordRequestError } from "./instrumentation-state";
 
 export async function register(): Promise<void> {
   markRegisterCalled();

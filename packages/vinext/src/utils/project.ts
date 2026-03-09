@@ -189,10 +189,7 @@ function checkLockFiles(dir: string): PackageManagerName | null {
   if (fs.existsSync(path.join(dir, "pnpm-lock.yaml"))) return "pnpm";
   if (fs.existsSync(path.join(dir, "yarn.lock"))) return "yarn";
   // bun.lock = text format (Bun v1.0+); bun.lockb = legacy binary format
-  if (
-    fs.existsSync(path.join(dir, "bun.lock")) ||
-    fs.existsSync(path.join(dir, "bun.lockb"))
-  ) {
+  if (fs.existsSync(path.join(dir, "bun.lock")) || fs.existsSync(path.join(dir, "bun.lockb"))) {
     return "bun";
   }
   if (
@@ -275,8 +272,5 @@ export function hasViteConfig(root: string): boolean {
  * Check if the project uses App Router (has an app/ directory).
  */
 export function hasAppDir(root: string): boolean {
-  return (
-    fs.existsSync(path.join(root, "app")) ||
-    fs.existsSync(path.join(root, "src", "app"))
-  );
+  return fs.existsSync(path.join(root, "app")) || fs.existsSync(path.join(root, "src", "app"));
 }

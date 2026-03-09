@@ -1,7 +1,6 @@
 {
   "name": "vinext-monorepo",
   "private": true,
-  "packageManager": "pnpm@10.30.0",
   "scripts": {
     "build": "pnpm --filter vinext run build",
     "test": "vitest run",
@@ -12,6 +11,11 @@
     "fmt:check": "oxfmt --check",
     "lint": "oxlint --deny-warnings",
     "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@mdx-js/react": "^3.1.1",
+    "@mdx-js/rollup": "^3.1.1",
+    "@unpic/react": "^1.0.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
@@ -31,11 +35,7 @@
     "vite": "^7.3.1",
     "vitest": "^3.2.1"
   },
-  "dependencies": {
-    "@mdx-js/react": "^3.1.1",
-    "@mdx-js/rollup": "^3.1.1",
-    "@unpic/react": "^1.0.2"
-  },
+  "packageManager": "pnpm@10.30.0",
   "pnpm": {
     "peerDependencyRules": {
       "ignoreMissing": [

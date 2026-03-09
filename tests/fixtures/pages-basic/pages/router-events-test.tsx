@@ -59,16 +59,10 @@ export default function RouterEventsTest() {
       <Link href="/about">
         <span data-testid="link-about">Go to About</span>
       </Link>
-      <button
-        data-testid="push-about"
-        onClick={() => router.push("/about")}
-      >
+      <button data-testid="push-about" onClick={() => router.push("/about")}>
         Push About
       </button>
-      <button
-        data-testid="push-ssr"
-        onClick={() => router.push("/ssr")}
-      >
+      <button data-testid="push-ssr" onClick={() => router.push("/ssr")}>
         Push SSR
       </button>
       <button

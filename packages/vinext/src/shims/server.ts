@@ -33,11 +33,12 @@ export class NextRequest extends Request {
     } else {
       super(input, init);
     }
-    const url = typeof input === "string"
-      ? new URL(input, "http://localhost")
-      : input instanceof URL
-        ? input
-        : new URL(input.url, "http://localhost");
+    const url =
+      typeof input === "string"
+        ? new URL(input, "http://localhost")
+        : input instanceof URL
+          ? input
+          : new URL(input.url, "http://localhost");
     this._nextUrl = new NextURL(url);
     this._cookies = new RequestCookies(this.headers);
   }
@@ -55,26 +56,38 @@ export class NextRequest extends Request {
    * over the spoofable X-Forwarded-For. Returns undefined if unavailable.
    */
   get ip(): string | undefined {
-    return this.headers.get("cf-connecting-ip")
-      ?? this.headers.get("x-real-ip")
-      ?? this.headers.get("x-forwarded-for")?.split(",")[0]?.trim()
-      ?? undefined;
+    return (
+      this.headers.get("cf-connecting-ip") ??
+      this.headers.get("x-real-ip") ??
+      this.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+      undefined
+    );
   }
 
   /**
    * Geolocation data. Platform-dependent (e.g., Cloudflare, Vercel).
    * Returns undefined if not available.
    */
-  get geo(): { city?: string; country?: string; region?: string; latitude?: string; longitude?: string } | undefined {
+  get geo():
+    | { city?: string; country?: string; region?: string; latitude?: string; longitude?: string }
+    | undefined {
     // Check Cloudflare-style headers, Vercel-style headers
-    const country = this.headers.get("cf-ipcountry") ?? this.headers.get("x-vercel-ip-country") ?? undefined;
+    const country =
+      this.headers.get("cf-ipcountry") ?? this.headers.get("x-vercel-ip-country") ?? undefined;
     if (!country) return undefined;
     return {
       country,
       city: this.headers.get("cf-ipcity") ?? this.headers.get("x-vercel-ip-city") ?? undefined,
-      region: this.headers.get("cf-region") ?? this.headers.get("x-vercel-ip-country-region") ?? undefined,
-      latitude: this.headers.get("cf-iplatitude") ?? this.headers.get("x-vercel-ip-latitude") ?? undefined,
-      longitude: this.headers.get("cf-iplongitude") ?? this.headers.get("x-vercel-ip-longitude") ?? undefined,
+      region:
+        this.headers.get("cf-region") ??
+        this.headers.get("x-vercel-ip-country-region") ??
+        undefined,
+      latitude:
+        this.headers.get("cf-iplatitude") ?? this.headers.get("x-vercel-ip-latitude") ?? undefined,
+      longitude:
+        this.headers.get("cf-iplongitude") ??
+        this.headers.get("x-vercel-ip-longitude") ??
+        undefined,
     };
   }
 }
@@ -113,7 +126,7 @@ export class NextResponse<_Body = unknown> extends Response {
    * Create a redirect response.
    */
   static redirect(url: string | URL, init?: number | ResponseInit): NextResponse {
-    const status = typeof init === "number" ? init : init?.status ?? 307;
+    const status = typeof init === "number" ? init : (init?.status ?? 307);
     const destination = typeof url === "string" ? url : url.toString();
     const headers = new Headers(typeof init === "object" ? init?.headers : undefined);
     headers.set("Location", destination);
@@ -148,8 +161,6 @@ export class NextResponse<_Body = unknown> extends Response {
   }
 }
 
-
-
 // ---------------------------------------------------------------------------
 // NextURL — lightweight URL wrapper with pathname helpers
 // ---------------------------------------------------------------------------
@@ -161,39 +172,83 @@ export class NextURL {
     this._url = new URL(input.toString(), base);
   }
 
-  get href(): string { return this._url.href; }
-  set href(value: string) { this._url.href = value; }
+  get href(): string {
+    return this._url.href;
+  }
+  set href(value: string) {
+    this._url.href = value;
+  }
 
-  get origin(): string { return this._url.origin; }
+  get origin(): string {
+    return this._url.origin;
+  }
 
-  get protocol(): string { return this._url.protocol; }
-  set protocol(value: string) { this._url.protocol = value; }
+  get protocol(): string {
+    return this._url.protocol;
+  }
+  set protocol(value: string) {
+    this._url.protocol = value;
+  }
 
-  get username(): string { return this._url.username; }
-  set username(value: string) { this._url.username = value; }
+  get username(): string {
+    return this._url.username;
+  }
+  set username(value: string) {
+    this._url.username = value;
+  }
 
-  get password(): string { return this._url.password; }
-  set password(value: string) { this._url.password = value; }
+  get password(): string {
+    return this._url.password;
+  }
+  set password(value: string) {
+    this._url.password = value;
+  }
 
-  get host(): string { return this._url.host; }
-  set host(value: string) { this._url.host = value; }
+  get host(): string {
+    return this._url.host;
+  }
+  set host(value: string) {
+    this._url.host = value;
+  }
 
-  get hostname(): string { return this._url.hostname; }
-  set hostname(value: string) { this._url.hostname = value; }
+  get hostname(): string {
+    return this._url.hostname;
+  }
+  set hostname(value: string) {
+    this._url.hostname = value;
+  }
 
-  get port(): string { return this._url.port; }
-  set port(value: string) { this._url.port = value; }
+  get port(): string {
+    return this._url.port;
+  }
+  set port(value: string) {
+    this._url.port = value;
+  }
 
-  get pathname(): string { return this._url.pathname; }
-  set pathname(value: string) { this._url.pathname = value; }
+  get pathname(): string {
+    return this._url.pathname;
+  }
+  set pathname(value: string) {
+    this._url.pathname = value;
+  }
 
-  get search(): string { return this._url.search; }
-  set search(value: string) { this._url.search = value; }
+  get search(): string {
+    return this._url.search;
+  }
+  set search(value: string) {
+    this._url.search = value;
+  }
 
-  get searchParams(): URLSearchParams { return this._url.searchParams; }
+  get searchParams(): URLSearchParams {
+    return this._url.searchParams;
+  }
 
-  get hash(): string { return this._url.hash; }
-  set hash(value: string) { this._url.hash = value; }
+  get hash(): string {
+    return this._url.hash;
+  }
+  set hash(value: string) {
+    this._url.hash = value;
+  }
 
   clone(): NextURL {
     return new NextURL(this._url.href);
@@ -256,7 +311,8 @@ export class RequestCookies {
  * RFC 6265 §4.1.1: cookie-name is a token (RFC 2616 §2.2).
  * Allowed: any visible ASCII (0x21-0x7E) except separators: ()<>@,;:\"/[]?={}
  */
-const VALID_COOKIE_NAME_RE = /^[\x21\x23-\x27\x2A\x2B\x2D\x2E\x30-\x39\x41-\x5A\x5E-\x7A\x7C\x7E]+$/;
+const VALID_COOKIE_NAME_RE =
+  /^[\x21\x23-\x27\x2A\x2B\x2D\x2E\x30-\x39\x41-\x5A\x5E-\x7A\x7C\x7E]+$/;
 
 function validateCookieName(name: string): void {
   if (!name || !VALID_COOKIE_NAME_RE.test(name)) {
@@ -267,7 +323,7 @@ function validateCookieName(name: string): void {
 function validateCookieAttributeValue(value: string, attributeName: string): void {
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
-    if (code <= 0x1F || code === 0x7F || value[i] === ";") {
+    if (code <= 0x1f || code === 0x7f || value[i] === ";") {
       throw new Error(`Invalid cookie ${attributeName} value: ${JSON.stringify(value)}`);
     }
   }
@@ -309,7 +365,11 @@ export class ResponseCookies {
         const semi = header.indexOf(";", eq);
         const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
         let value: string;
-        try { value = decodeURIComponent(raw); } catch { value = raw; }
+        try {
+          value = decodeURIComponent(raw);
+        } catch {
+          value = raw;
+        }
         return { name, value };
       }
     }
@@ -325,7 +385,11 @@ export class ResponseCookies {
       const semi = header.indexOf(";", eq);
       const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
       let value: string;
-      try { value = decodeURIComponent(raw); } catch { value = raw; }
+      try {
+        value = decodeURIComponent(raw);
+      } catch {
+        value = raw;
+      }
       entries.push({ name: cookieName, value });
     }
     return entries;
@@ -345,7 +409,11 @@ export class ResponseCookies {
       const semi = header.indexOf(";", eq);
       const raw = header.slice(eq + 1, semi === -1 ? undefined : semi);
       let value: string;
-      try { value = decodeURIComponent(raw); } catch { value = raw; }
+      try {
+        value = decodeURIComponent(raw);
+      } catch {
+        value = raw;
+      }
       entries.push([cookieName, { name: cookieName, value }]);
     }
     return entries[Symbol.iterator]();

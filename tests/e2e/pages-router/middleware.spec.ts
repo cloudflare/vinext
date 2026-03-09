@@ -96,9 +96,7 @@ test.describe("Middleware (Pages Router)", () => {
     );
 
     // __NEXT_DATA__ should be present for hydration
-    const nextData = await page.evaluate(
-      () => (window as any).__NEXT_DATA__,
-    );
+    const nextData = await page.evaluate(() => (window as any).__NEXT_DATA__);
     expect(nextData).toBeDefined();
     expect(nextData.props.pageProps).toBeDefined();
   });

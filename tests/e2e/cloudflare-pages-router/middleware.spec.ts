@@ -29,7 +29,7 @@ test.describe("middleware.ts on Pages Router Cloudflare Workers (prod build)", (
   test("API route still returns correct JSON after middleware runs", async ({ request }) => {
     const res = await request.get(`${BASE}/api/hello`);
     expect(res.status()).toBe(200);
-    const data = await res.json() as { message: string; runtime: string };
+    const data = (await res.json()) as { message: string; runtime: string };
     expect(data.message).toBe("Hello from Pages Router API on Workers!");
     expect(data.runtime).toBe("Cloudflare-Workers");
   });

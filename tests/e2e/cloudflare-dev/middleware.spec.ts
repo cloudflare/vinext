@@ -49,9 +49,7 @@ test.describe("middleware.ts with @cloudflare/vite-plugin", () => {
     expect(res.status()).toBe(200);
   });
 
-  test("subsequent requests are served normally after middleware runs", async ({
-    request,
-  }) => {
+  test("subsequent requests are served normally after middleware runs", async ({ request }) => {
     const res1 = await request.get(`${BASE}/api/hello`);
     expect(res1.status()).toBe(200);
 
@@ -66,9 +64,9 @@ test.describe("middleware.ts with @cloudflare/vite-plugin", () => {
     // miniflare. Any other value means the route ran outside the Worker.
     const res = await request.get(`${BASE}/api/hello`);
     expect(res.status()).toBe(200);
-    expect(res.headers()['x-mw-ran']).toBe('true');
+    expect(res.headers()["x-mw-ran"]).toBe("true");
 
-    const data = await res.json() as { message: string; runtime: string };
+    const data = (await res.json()) as { message: string; runtime: string };
     expect(data.runtime).toBe("Cloudflare-Workers");
   });
 

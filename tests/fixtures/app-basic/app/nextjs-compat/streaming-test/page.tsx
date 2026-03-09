@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 async function SlowContent() {
-  await new Promise(resolve => setTimeout(resolve, 500));
+  await new Promise((resolve) => setTimeout(resolve, 500));
   return <p id="streamed-content">Streamed content loaded</p>;
 }
 export default function Page() {

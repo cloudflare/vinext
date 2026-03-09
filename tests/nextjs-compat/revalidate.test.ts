@@ -29,35 +29,23 @@ describe("Next.js compat: revalidation", () => {
 
   describe("revalidatePath via route handler", () => {
     it("should return { revalidated: true } from revalidate-path endpoint", async () => {
-      const { data, res } = await fetchJson(
-        ctx.baseUrl,
-        "/nextjs-compat/api/revalidate-path",
-      );
+      const { data, res } = await fetchJson(ctx.baseUrl, "/nextjs-compat/api/revalidate-path");
       expect(res.status).toBe(200);
       expect(data).toEqual({ revalidated: true });
     });
 
     it("should produce different timestamps after revalidatePath", async () => {
       // First request — get initial timestamp
-      const { html: html1 } = await fetchHtml(
-        ctx.baseUrl,
-        "/nextjs-compat/action-revalidate",
-      );
+      const { html: html1 } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/action-revalidate");
       const match1 = html1.match(/<div id="time">(\d+)<\/div>/);
       expect(match1).toBeTruthy();
 
       // Trigger revalidation
-      const { data } = await fetchJson(
-        ctx.baseUrl,
-        "/nextjs-compat/api/revalidate-path",
-      );
+      const { data } = await fetchJson(ctx.baseUrl, "/nextjs-compat/api/revalidate-path");
       expect(data).toEqual({ revalidated: true });
 
       // Second request — timestamp should differ (page re-rendered)
-      const { html: html2 } = await fetchHtml(
-        ctx.baseUrl,
-        "/nextjs-compat/action-revalidate",
-      );
+      const { html: html2 } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/action-revalidate");
       const match2 = html2.match(/<div id="time">(\d+)<\/div>/);
       expect(match2).toBeTruthy();
       const time2 = match2![1];
@@ -72,10 +60,7 @@ describe("Next.js compat: revalidation", () => {
 
   describe("revalidateTag via route handler", () => {
     it("should return { revalidated: true } from revalidate-tag endpoint", async () => {
-      const { data, res } = await fetchJson(
-        ctx.baseUrl,
-        "/nextjs-compat/api/revalidate-tag",
-      );
+      const { data, res } = await fetchJson(ctx.baseUrl, "/nextjs-compat/api/revalidate-tag");
       expect(res.status).toBe(200);
       expect(data).toEqual({ revalidated: true });
     });
@@ -83,10 +68,7 @@ describe("Next.js compat: revalidation", () => {
 
   describe("revalidatePath page rendering", () => {
     it("should render the revalidate page with timestamp and form", async () => {
-      const { html, res } = await fetchHtml(
-        ctx.baseUrl,
-        "/nextjs-compat/action-revalidate",
-      );
+      const { html, res } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/action-revalidate");
       expect(res.status).toBe(200);
       expect(html).toContain("Revalidate Test");
       expect(html).toMatch(/<div id="time">\d+<\/div>/);

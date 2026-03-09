@@ -6,8 +6,7 @@ async function disableViteErrorOverlay(page: import("@playwright/test").Page) {
   // Vite's dev error overlay can sometimes appear and intercept clicks.
   await page
     .addStyleTag({
-      content:
-        "vite-error-overlay{display:none !important; pointer-events:none !important;}",
+      content: "vite-error-overlay{display:none !important; pointer-events:none !important;}",
     })
     .catch(() => {
       // best effort
@@ -19,9 +18,7 @@ async function disableViteErrorOverlay(page: import("@playwright/test").Page) {
  */
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 
@@ -65,9 +62,7 @@ test.describe("next/form GET interception", () => {
     });
 
     // URL should include query parameter
-    await expect
-      .poll(() => page.url(), { timeout: 10_000 })
-      .toContain("/search?q=vite");
+    await expect.poll(() => page.url(), { timeout: 10_000 }).toContain("/search?q=vite");
 
     // Verify no full page reload (marker should survive)
     const marker = await page.evaluate(() => (window as any).__FORM_MARKER__);
@@ -84,10 +79,9 @@ test.describe("next/form GET interception", () => {
     await expect(page.locator("#search-button")).toBeEnabled();
     await page.locator("#search-button").click({ noWaitAfter: true });
 
-    await expect(page.locator("#search-result")).toHaveText(
-      "Results for: react",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator("#search-result")).toHaveText("Results for: react", {
+      timeout: 10_000,
+    });
     const url = new URL(page.url());
     expect(url.pathname).toBe("/search");
     expect(url.searchParams.get("q")).toBe("react");
@@ -106,26 +100,20 @@ test.describe("next/form GET interception", () => {
     await expect(page.locator("#search-input")).toHaveValue("first");
     await expect(page.locator("#search-button")).toBeEnabled();
     await page.locator("#search-button").click({ noWaitAfter: true });
-    await expect(page.locator("#search-result")).toHaveText(
-      "Results for: first",
-      { timeout: 10_000 },
-    );
-    await expect
-      .poll(() => page.url(), { timeout: 10_000 })
-      .toContain("/search?q=first");
+    await expect(page.locator("#search-result")).toHaveText("Results for: first", {
+      timeout: 10_000,
+    });
+    await expect.poll(() => page.url(), { timeout: 10_000 }).toContain("/search?q=first");
 
     // Second search
     await page.fill("#search-input", "second");
     await expect(page.locator("#search-input")).toHaveValue("second");
     await expect(page.locator("#search-button")).toBeEnabled();
     await page.locator("#search-button").click({ noWaitAfter: true });
-    await expect(page.locator("#search-result")).toHaveText(
-      "Results for: second",
-      { timeout: 10_000 },
-    );
-    await expect
-      .poll(() => page.url(), { timeout: 10_000 })
-      .toContain("/search?q=second");
+    await expect(page.locator("#search-result")).toHaveText("Results for: second", {
+      timeout: 10_000,
+    });
+    await expect.poll(() => page.url(), { timeout: 10_000 }).toContain("/search?q=second");
 
     // No full page reload across both
     const marker = await page.evaluate(() => (window as any).__FORM_MARKER__);

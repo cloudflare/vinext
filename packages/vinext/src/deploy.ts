@@ -59,16 +59,16 @@ export interface DeployOptions {
 
 /** Deploy command flag definitions for util.parseArgs. */
 const deployArgOptions = {
-  help:               { type: "boolean", short: "h", default: false },
-  preview:            { type: "boolean", default: false },
-  env:                { type: "string" },
-  name:               { type: "string" },
-  "skip-build":       { type: "boolean", default: false },
-  "dry-run":          { type: "boolean", default: false },
+  help: { type: "boolean", short: "h", default: false },
+  preview: { type: "boolean", default: false },
+  env: { type: "string" },
+  name: { type: "string" },
+  "skip-build": { type: "boolean", default: false },
+  "dry-run": { type: "boolean", default: false },
   "experimental-tpr": { type: "boolean", default: false },
-  "tpr-coverage":     { type: "string" },
-  "tpr-limit":        { type: "string" },
-  "tpr-window":       { type: "string" },
+  "tpr-coverage": { type: "string" },
+  "tpr-limit": { type: "string" },
+  "tpr-window": { type: "string" },
 } as const;
 
 export function parseDeployArgs(args: string[]) {
@@ -133,11 +133,9 @@ export function formatMissingCloudflarePluginError(options: {
   configFile?: string;
 }): string {
   const cfArg = options.isAppRouter
-    ? "{\n      viteEnvironment: { name: \"rsc\", childEnvironments: [\"ssr\"] },\n    }"
+    ? '{\n      viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },\n    }'
     : "";
-  const configRef = options.configFile
-    ? options.configFile
-    : "your Vite config";
+  const configRef = options.configFile ? options.configFile : "your Vite config";
   return (
     `[vinext] Missing @cloudflare/vite-plugin in ${configRef}.\n\n` +
     `  Cloudflare Workers builds require the cloudflare() plugin.\n` +
@@ -155,11 +153,9 @@ export function formatMissingCloudflarePluginError(options: {
 
 export function detectProject(root: string): ProjectInfo {
   const hasApp =
-    fs.existsSync(path.join(root, "app")) ||
-    fs.existsSync(path.join(root, "src", "app"));
+    fs.existsSync(path.join(root, "app")) || fs.existsSync(path.join(root, "src", "app"));
   const hasPages =
-    fs.existsSync(path.join(root, "pages")) ||
-    fs.existsSync(path.join(root, "src", "pages"));
+    fs.existsSync(path.join(root, "pages")) || fs.existsSync(path.join(root, "src", "pages"));
 
   // Prefer App Router if both exist
   const isAppRouter = hasApp;
@@ -180,8 +176,8 @@ export function detectProject(root: string): ProjectInfo {
   // Walk up ancestor directories so that monorepo-hoisted packages are found
   // even when node_modules lives at the workspace root rather than app root.
   const hasCloudflarePlugin = _findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
-  const hasRscPlugin        = _findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
-  const hasWrangler         = _findInNodeModules(root, ".bin/wrangler") !== null;
+  const hasRscPlugin = _findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
+  const hasWrangler = _findInNodeModules(root, ".bin/wrangler") !== null;
 
   // Derive project name from package.json or directory name
   let projectName = path.basename(root);
@@ -193,7 +189,7 @@ export function detectProject(root: string): ProjectInfo {
         // Sanitize: Workers names must be lowercase alphanumeric + hyphens
         projectName = pkg.name
           .replace(/^@[^/]+\//, "") // strip npm scope
-          .toLowerCase()            // lowercase BEFORE stripping invalid chars
+          .toLowerCase() // lowercase BEFORE stripping invalid chars
           .replace(/[^a-z0-9-]/g, "-")
           .replace(/-+/g, "-")
           .replace(/^-|-$/g, "");
@@ -1068,7 +1064,9 @@ export interface WranglerDeployArgs {
   env: string | undefined;
 }
 
-export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" | "env">): WranglerDeployArgs {
+export function buildWranglerDeployArgs(
+  options: Pick<DeployOptions, "preview" | "env">,
+): WranglerDeployArgs {
   const args = ["deploy"];
   const env = options.env || (options.preview ? "preview" : undefined);
   if (env) {
@@ -1080,7 +1078,8 @@ export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" |
 function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string {
   // Walk up ancestor directories so the binary is found even when node_modules
   // is hoisted to the workspace root in a monorepo.
-  const wranglerBin = _findInNodeModules(root, ".bin/wrangler") ??
+  const wranglerBin =
+    _findInNodeModules(root, ".bin/wrangler") ??
     path.join(root, "node_modules", ".bin", "wrangler"); // fallback for error message clarity
 
   const execOpts: ExecSyncOptions = {
@@ -1149,7 +1148,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
     if (reactUpgrade.length > 0) {
       const installCmd = detectPackageManager(root).replace(/ -D$/, "");
       const [pm, ...pmArgs] = installCmd.split(" ");
-      console.log(`  Upgrading ${reactUpgrade.map(d => d.replace(/@latest$/, "")).join(", ")}...`);
+      console.log(
+        `  Upgrading ${reactUpgrade.map((d) => d.replace(/@latest$/, "")).join(", ")}...`,
+      );
       execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: root, stdio: "inherit" });
     }
   }
@@ -1186,9 +1187,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // This is the most common cause of "could not resolve virtual:vinext-rsc-entry"
   // errors — `vinext init` generates a minimal local-dev config without it.
   if (info.hasViteConfig && !viteConfigHasCloudflarePlugin(root)) {
-    throw new Error(
-      formatMissingCloudflarePluginError({ isAppRouter: info.isAppRouter }),
-    );
+    throw new Error(formatMissingCloudflarePluginError({ isAppRouter: info.isAppRouter }));
   }
 
   if (options.dryRun) {

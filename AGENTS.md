@@ -49,14 +49,14 @@ examples/               # User-facing demo apps
 
 ### Key Files
 
-| File | Purpose |
-|------|---------|
-| `index.ts` | Vite plugin — resolves `next/*` imports, generates virtual modules |
-| `shims/*.ts` | Reimplementations of `next/link`, `next/navigation`, etc. |
-| `server/dev-server.ts` | Pages Router SSR handler |
-| `entries/app-rsc-entry.ts` | App Router RSC entry generator |
-| `routing/pages-router.ts` | Scans `pages/` directory |
-| `routing/app-router.ts` | Scans `app/` directory |
+| File                       | Purpose                                                            |
+| -------------------------- | ------------------------------------------------------------------ |
+| `index.ts`                 | Vite plugin — resolves `next/*` imports, generates virtual modules |
+| `shims/*.ts`               | Reimplementations of `next/link`, `next/navigation`, etc.          |
+| `server/dev-server.ts`     | Pages Router SSR handler                                           |
+| `entries/app-rsc-entry.ts` | App Router RSC entry generator                                     |
+| `routing/pages-router.ts`  | Scans `pages/` directory                                           |
+| `routing/app-router.ts`    | Scans `app/` directory                                             |
 
 ---
 
@@ -76,6 +76,7 @@ examples/               # User-facing demo apps
 **This is a required step for all feature work and bug fixes.** Before writing code, search the Next.js repo's `test/e2e/` and `test/unit/` directories for tests related to whatever you're working on. Search broadly, not just for exact feature names.
 
 For example, when working on middleware:
+
 - Search for `middleware` and `proxy` in test directory names
 - Search for error messages like `"must export"` to find validation tests
 - Check for edge cases like missing exports, misspelled names, invalid configs
@@ -83,12 +84,14 @@ For example, when working on middleware:
 **Why this matters:** vinext aims to match Next.js behavior exactly. If Next.js has a test for it, we should have an equivalent test. Missing this step has caused silent behavioral differences, like middleware failing open on invalid exports instead of throwing an error (which Next.js tests explicitly).
 
 When you find relevant Next.js tests, port the test cases to our test suite and include a comment linking back to the original Next.js test file:
+
 ```ts
 // Ported from Next.js: test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
 ```
 
 **Use `gh search code` for efficient searching:**
+
 ```bash
 gh search code "middleware" --repo vercel/next.js --filename "*.test.*" --limit 20
 gh search code "must export" --repo vercel/next.js --filename "*.test.*" --limit 10
@@ -116,15 +119,15 @@ pnpm test -t "middleware"
 
 **Which test files to run** depends on what you changed:
 
-| If you changed... | Run these tests |
-|-------------------|----------------|
-| A shim (`shims/*.ts`) | `tests/shims.test.ts` + the specific shim test (e.g., `tests/link.test.ts`) |
-| Routing (`routing/*.ts`) | `tests/routing.test.ts`, `tests/route-sorting.test.ts` |
-| App Router server (`entries/app-rsc-entry.ts`) | `tests/app-router.test.ts`, `tests/features.test.ts` |
-| Pages Router server (`server/dev-server.ts`) | `tests/pages-router.test.ts` |
-| Caching/ISR | `tests/isr-cache.test.ts`, `tests/fetch-cache.test.ts`, `tests/kv-cache-handler.test.ts` |
-| Build/deploy | `tests/deploy.test.ts`, `tests/build-optimization.test.ts` |
-| Next.js compat features | `tests/nextjs-compat/` (the relevant file) |
+| If you changed...                              | Run these tests                                                                          |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| A shim (`shims/*.ts`)                          | `tests/shims.test.ts` + the specific shim test (e.g., `tests/link.test.ts`)              |
+| Routing (`routing/*.ts`)                       | `tests/routing.test.ts`, `tests/route-sorting.test.ts`                                   |
+| App Router server (`entries/app-rsc-entry.ts`) | `tests/app-router.test.ts`, `tests/features.test.ts`                                     |
+| Pages Router server (`server/dev-server.ts`)   | `tests/pages-router.test.ts`                                                             |
+| Caching/ISR                                    | `tests/isr-cache.test.ts`, `tests/fetch-cache.test.ts`, `tests/kv-cache-handler.test.ts` |
+| Build/deploy                                   | `tests/deploy.test.ts`, `tests/build-optimization.test.ts`                               |
+| Next.js compat features                        | `tests/nextjs-compat/` (the relevant file)                                               |
 
 **Let CI run the full suite.** The full `pnpm test` and all 5 Playwright E2E projects run in CI on every PR. You do not need to run the full suite locally before pushing. CI will catch any cross-cutting regressions.
 
@@ -162,15 +165,15 @@ Add new test pages to fixtures, not to examples. Examples are for user-facing de
 
 The `examples/` directory contains real-world Next.js apps ported to run on vinext. These are deployed to Cloudflare Workers on every push to main (see `.github/workflows/deploy-examples.yml`).
 
-| Example | Type | URL |
-|---------|------|-----|
-| `app-router-cloudflare` | App Router basics | `app-router-cloudflare.vinext.workers.dev` |
-| `pages-router-cloudflare` | Pages Router basics | `pages-router-cloudflare.vinext.workers.dev` |
-| `app-router-playground` | Next.js playground (MDX, Tailwind) | `app-router-playground.vinext.workers.dev` |
-| `realworld-api-rest` | RealWorld spec (Pages Router) | `realworld-api-rest.vinext.workers.dev` |
-| `nextra-docs-template` | Nextra docs site (MDX, App Router) | `nextra-docs-template.vinext.workers.dev` |
-| `benchmarks` | Performance benchmarks | `benchmarks.vinext.workers.dev` |
-| `hackernews` | HN clone (App Router, RSC) | `hackernews.vinext.workers.dev` |
+| Example                   | Type                               | URL                                          |
+| ------------------------- | ---------------------------------- | -------------------------------------------- |
+| `app-router-cloudflare`   | App Router basics                  | `app-router-cloudflare.vinext.workers.dev`   |
+| `pages-router-cloudflare` | Pages Router basics                | `pages-router-cloudflare.vinext.workers.dev` |
+| `app-router-playground`   | Next.js playground (MDX, Tailwind) | `app-router-playground.vinext.workers.dev`   |
+| `realworld-api-rest`      | RealWorld spec (Pages Router)      | `realworld-api-rest.vinext.workers.dev`      |
+| `nextra-docs-template`    | Nextra docs site (MDX, App Router) | `nextra-docs-template.vinext.workers.dev`    |
+| `benchmarks`              | Performance benchmarks             | `benchmarks.vinext.workers.dev`              |
+| `hackernews`              | HN clone (App Router, RSC)         | `hackernews.vinext.workers.dev`              |
 
 #### Adding a New Example
 
@@ -196,9 +199,11 @@ The `examples/` directory contains real-world Next.js apps ported to run on vine
 ```
 
 When adding a new example, always add a corresponding smoke test entry. The format is:
+
 ```
 "worker-name  /path  expected-text"
 ```
+
 where `expected-text` is a case-insensitive string that must appear in the response body.
 
 #### Porting Strategy
@@ -220,11 +225,13 @@ The examples in `.github/repos.json` are the ecosystem of Next.js apps we want t
 Context7 provides fast access to up-to-date documentation and source code for libraries. Use it liberally when researching how to implement something or debugging behavior.
 
 **Key library IDs for this project:**
+
 - `/vercel/next.js` — Next.js source code and docs
 - `/llmstxt/nextjs_llms_txt` — Extended Next.js documentation
 - `/vitejs/vite-plugin-react` — Vite RSC plugin docs
 
 **Example queries:**
+
 - How Next.js implements `headers()` and `cookies()` internally
 - AsyncLocalStorage patterns for request-scoped context
 - RSC streaming and rendering lifecycle
@@ -233,6 +240,7 @@ Context7 provides fast access to up-to-date documentation and source code for li
 ### EXA Search
 
 Use EXA for web search when you need to find recent discussions, blog posts, GitHub issues, or documentation that isn't in Context7. Particularly useful for:
+
 - Finding workarounds for edge cases
 - Understanding how other frameworks solved similar problems
 - Locating relevant GitHub issues and discussions
@@ -284,21 +292,25 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
 CI is split into safe checks (no secrets) and deploy previews (requires secrets). This lets external contributors get feedback on their PRs without exposing credentials.
 
 **Safe CI (`ci.yml`)** runs for all PRs after first-time contributor approval:
+
 - Lint, Typecheck, Vitest, Playwright E2E
 - Uses zero secrets and read-only permissions
 - First-time contributors need one manual approval, then subsequent PRs run automatically
 
 **Deploy previews (`deploy-examples.yml`)** run automatically only for same-repo branches:
+
 - The entire workflow is skipped for fork PRs via a job-level `if` condition
 - Cloudflare employees should push branches to the main repo (not fork), so previews deploy automatically
 - For fork PRs, a maintainer can comment `/deploy-preview` to trigger the deploy (see `deploy-preview-command.yml`)
 
 **`/deploy-preview` slash command** (`deploy-preview-command.yml`):
+
 - Triggered by commenting `/deploy-preview` on any PR
 - Restricted to org members, collaborators, and repo owners via `author_association`
 - Builds all examples, deploys previews, runs smoke tests, and posts preview URLs
 
 When modifying CI workflows, keep these rules in mind:
+
 - `ci.yml` must never use secrets. It runs untrusted code from forks.
 - `deploy-examples.yml` must skip entirely for fork PRs. Don't remove the job-level `if` guard.
 - The `/deploy-preview` slash command gates secret usage behind the `author_association` check.
@@ -320,6 +332,7 @@ Per-request state (pathname, searchParams, params, headers, cookies) must be **e
 ### What `@vitejs/plugin-rsc` Does vs What vinext Does
 
 The RSC plugin handles:
+
 - Bundler transforms for `"use client"` / `"use server"` directives
 - RSC stream serialization (wraps `react-server-dom-webpack`)
 - Multi-environment builds (RSC/SSR/Client)
@@ -328,6 +341,7 @@ The RSC plugin handles:
 - Bootstrap script injection for client hydration
 
 vinext handles everything else:
+
 - File-system routing (scanning `app/` and `pages/` directories)
 - Request lifecycle (middleware, headers, redirects, rewrites, then route handling)
 - Layout nesting and React tree construction
@@ -352,7 +366,7 @@ You **must** use `createBuilder()` + `builder.buildApp()` for production builds,
 Next.js 15 changed `params` and `searchParams` to Promises. For backward compatibility with pre-15 code, vinext creates "thenable objects":
 
 ```js
-Object.assign(Promise.resolve(params), params)
+Object.assign(Promise.resolve(params), params);
 ```
 
 This works both as `await params` (new style) and `params.id` (old style). The same pattern applies to `generateMetadata` and `generateViewport`.

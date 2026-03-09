@@ -20,6 +20,7 @@ git worktree add ../vinext-fix-$ARGUMENTS -b fix/$ARGUMENTS-<slug> origin/main
 **All subsequent commands must target the worktree directory.** Use the bash tool's workdir parameter or explicit paths. Do NOT modify the main worktree.
 
 Install dependencies in the worktree:
+
 ```
 pnpm install
 ```
@@ -40,6 +41,7 @@ Work in `../vinext-fix-$ARGUMENTS/`:
 ## Step 4: Verify
 
 Run all checks from the worktree:
+
 ```
 pnpm run build
 pnpm test
@@ -54,6 +56,7 @@ Fix any failures before proceeding.
 1. Stage and commit with a clear message: `fix: <description> (#$ARGUMENTS)`
 2. Push: `git push -u origin fix/$ARGUMENTS-<slug>`
 3. Create PR:
+
 ```
 gh pr create \
   --title "fix: <description>" \

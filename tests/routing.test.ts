@@ -1,12 +1,13 @@
 import { describe, it, expect } from "vitest";
 import path from "node:path";
 import { pagesRouter, matchRoute } from "../packages/vinext/src/routing/pages-router.js";
-import { appRouter, matchAppRoute, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
+import {
+  appRouter,
+  matchAppRoute,
+  invalidateAppRouteCache,
+} from "../packages/vinext/src/routing/app-router.js";
 
-const FIXTURE_DIR = path.resolve(
-  import.meta.dirname,
-  "./fixtures/pages-basic/pages",
-);
+const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
 
 describe("pagesRouter - route discovery", () => {
   it("discovers pages from the fixture directory", async () => {
@@ -37,12 +38,8 @@ describe("pagesRouter - route discovery", () => {
     const dynamicRoutes = routes.filter((r) => r.isDynamic);
 
     // All static routes should come before dynamic routes
-    const lastStaticIndex = routes.findIndex(
-      (r) => r === staticRoutes[staticRoutes.length - 1],
-    );
-    const firstDynamicIndex = routes.findIndex(
-      (r) => r === dynamicRoutes[0],
-    );
+    const lastStaticIndex = routes.findIndex((r) => r === staticRoutes[staticRoutes.length - 1]);
+    const firstDynamicIndex = routes.findIndex((r) => r === dynamicRoutes[0]);
 
     if (staticRoutes.length > 0 && dynamicRoutes.length > 0) {
       expect(lastStaticIndex).toBeLessThan(firstDynamicIndex);
@@ -144,10 +141,7 @@ describe("matchRoute - URL matching", () => {
 // App Router routing tests
 // ---------------------------------------------------------------
 
-const APP_FIXTURE_DIR = path.resolve(
-  import.meta.dirname,
-  "./fixtures/app-basic/app",
-);
+const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
 
 describe("appRouter - route discovery", () => {
   it("discovers page routes from the app directory", async () => {

@@ -193,11 +193,7 @@ function extractFromJSON(config: Record<string, unknown>): WranglerConfig {
       (ns: Record<string, unknown>) =>
         ns && typeof ns === "object" && ns.binding === "VINEXT_CACHE",
     );
-    if (
-      vinextKV &&
-      typeof vinextKV.id === "string" &&
-      vinextKV.id !== "<your-kv-namespace-id>"
-    ) {
+    if (vinextKV && typeof vinextKV.id === "string" && vinextKV.id !== "<your-kv-namespace-id>") {
       result.kvNamespaceId = vinextKV.id;
     }
   }
@@ -314,10 +310,7 @@ function extractFromTOML(content: string): WranglerConfig {
 // ─── Cloudflare API ──────────────────────────────────────────────────────────
 
 /** Resolve zone ID from a domain name via the Cloudflare API. */
-async function resolveZoneId(
-  domain: string,
-  apiToken: string,
-): Promise<string | null> {
+async function resolveZoneId(domain: string, apiToken: string): Promise<string | null> {
   // Extract the registrable domain (e.g., "shop.example.com" → "example.com").
   // TODO: This doesn't handle multi-part TLDs like .co.uk, .com.br, .com.au.
   // For those, we'd need a public suffix list. For now, we try the simple
@@ -325,7 +318,20 @@ async function resolveZoneId(
   // lookup fails. Cloudflare's zone API will match on the correct registrable
   // domain regardless.
   const parts = domain.split(".");
-  const MULTI_PART_TLDS = ["co.uk", "com.br", "com.au", "co.jp", "co.kr", "co.nz", "co.za", "com.mx", "com.ar", "com.cn", "org.uk", "net.au"];
+  const MULTI_PART_TLDS = [
+    "co.uk",
+    "com.br",
+    "com.au",
+    "co.jp",
+    "co.kr",
+    "co.nz",
+    "co.za",
+    "com.mx",
+    "com.ar",
+    "com.cn",
+    "org.uk",
+    "net.au",
+  ];
   const lastTwo = parts.slice(-2).join(".");
   let rootDomain: string;
   if (MULTI_PART_TLDS.includes(lastTwo) && parts.length > 2) {
@@ -357,15 +363,12 @@ async function resolveZoneId(
 
 /** Resolve the account ID associated with the API token. */
 async function resolveAccountId(apiToken: string): Promise<string | null> {
-  const response = await fetch(
-    "https://api.cloudflare.com/client/v4/accounts?per_page=1",
-    {
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        "Content-Type": "application/json",
-      },
+  const response = await fetch("https://api.cloudflare.com/client/v4/accounts?per_page=1", {
+    headers: {
+      Authorization: `Bearer ${apiToken}`,
+      "Content-Type": "application/json",
     },
-  );
+  });
 
   if (!response.ok) return null;
 
@@ -421,9 +424,7 @@ async function queryTraffic(
   });
 
   if (!response.ok) {
-    throw new Error(
-      `Zone analytics query failed: ${response.status} ${response.statusText}`,
-    );
+    throw new Error(`Zone analytics query failed: ${response.status} ${response.statusText}`);
   }
 
   const data = (await response.json()) as {
@@ -658,9 +659,7 @@ async function waitForServer(port: number, timeoutMs: number): Promise<void> {
       await new Promise<void>((r) => setTimeout(r, 300));
     }
   }
-  throw new Error(
-    `Local production server failed to start within ${timeoutMs / 1000}s`,
-  );
+  throw new Error(`Local production server failed to start within ${timeoutMs / 1000}s`);
 }
 
 // ─── KV Upload ───────────────────────────────────────────────────────────────
@@ -695,8 +694,7 @@ async function uploadToKV(
         ? Number(revalidateHeader)
         : defaultRevalidateSeconds;
 
-    const revalidateAt =
-      revalidateSeconds > 0 ? now + revalidateSeconds * 1000 : null;
+    const revalidateAt = revalidateSeconds > 0 ? now + revalidateSeconds * 1000 : null;
 
     // KV TTL: 10x the revalidation period, clamped to [60s, 30d]
     // (matches the logic in KVCacheHandler.set)
@@ -806,9 +804,7 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
 
   const zoneId = await resolveZoneId(wranglerConfig.customDomain, apiToken);
   if (!zoneId) {
-    return skip(
-      `could not resolve zone for ${wranglerConfig.customDomain}`,
-    );
+    return skip(`could not resolve zone for ${wranglerConfig.customDomain}`);
   }
 
   // ── 7. Query traffic data ─────────────────────────────────────
@@ -816,9 +812,7 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   try {
     traffic = await queryTraffic(zoneId, apiToken, windowHours);
   } catch (err) {
-    return skip(
-      `analytics query failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    return skip(`analytics query failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   if (traffic.length === 0) {
@@ -851,9 +845,7 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
   try {
     rendered = await prerenderRoutes(routePaths, root, wranglerConfig.customDomain);
   } catch (err) {
-    return skip(
-      `pre-rendering failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    return skip(`pre-rendering failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   if (rendered.size === 0) {
@@ -876,9 +868,7 @@ export async function runTPR(options: TPROptions): Promise<TPRResult> {
       DEFAULT_REVALIDATE_SECONDS,
     );
   } catch (err) {
-    return skip(
-      `KV upload failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    return skip(`KV upload failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   const durationMs = Date.now() - startTime;

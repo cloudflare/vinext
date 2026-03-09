@@ -10,8 +10,7 @@ const projectServers = {
     testDir: "./tests/e2e/pages-router",
     use: { baseURL: "http://localhost:4173" },
     server: {
-      command:
-        "npx tsc -p ../../../packages/vinext/tsconfig.json && npx vite --port 4173",
+      command: "npx tsc -p ../../../packages/vinext/tsconfig.json && npx vite --port 4173",
       cwd: "./tests/fixtures/pages-basic",
       port: 4173,
       reuseExistingServer: !process.env.CI,
@@ -20,10 +19,7 @@ const projectServers = {
   },
   "app-router": {
     testDir: "./tests/e2e",
-    testMatch: [
-      "**/app-router/**/*.spec.ts",
-      "**/og-image.spec.ts",
-    ],
+    testMatch: ["**/app-router/**/*.spec.ts", "**/og-image.spec.ts"],
     use: { baseURL: "http://localhost:4174" },
     server: {
       command: "npx vite --port 4174",
@@ -71,8 +67,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4176" },
     server: {
       // Build app-router-cloudflare with Vite, then serve with wrangler dev (miniflare)
-      command:
-        "npx vite build && npx wrangler dev --config dist/server/wrangler.json --port 4176",
+      command: "npx vite build && npx wrangler dev --config dist/server/wrangler.json --port 4176",
       cwd: "./examples/app-router-cloudflare",
       port: 4176,
       reuseExistingServer: !process.env.CI,

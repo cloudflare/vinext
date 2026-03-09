@@ -29,9 +29,7 @@ const BASE = "http://localhost:4174";
 
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
@@ -44,9 +42,10 @@ test.describe("layout params in fallback render (renderHTTPAccessFallbackPage)",
     await page.goto(`${BASE}/nextjs-compat/layout-params-notfound/hello`);
     await waitForHydration(page);
 
-    await expect(
-      page.locator("#layout-params-notfound-wrapper"),
-    ).toHaveAttribute("data-slug", "hello");
+    await expect(page.locator("#layout-params-notfound-wrapper")).toHaveAttribute(
+      "data-slug",
+      "hello",
+    );
     await expect(page.locator("#layout-params-notfound-page")).toHaveText(
       "Page content for: hello",
     );
@@ -63,33 +62,29 @@ test.describe("layout params in fallback render (renderHTTPAccessFallbackPage)",
     await page.goto(`${BASE}/nextjs-compat/layout-params-notfound/bad-slug`);
 
     // Not-found boundary must be rendered
-    await expect(
-      page.locator("#layout-params-notfound-boundary"),
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator("#layout-params-notfound-boundary")).toBeVisible({ timeout: 10_000 });
 
     // The layout wrapper must have data-slug="bad-slug" — proves renderHTTPAccessFallbackPage
     // forwarded the real matched params to the layout, not {}.
-    await expect(
-      page.locator("#layout-params-notfound-wrapper"),
-    ).toHaveAttribute("data-slug", "bad-slug");
+    await expect(page.locator("#layout-params-notfound-wrapper")).toHaveAttribute(
+      "data-slug",
+      "bad-slug",
+    );
   });
 
   /**
    * Different invalid slug — confirms the actual param value is forwarded,
    * not just that some truthy object was passed.
    */
-  test("another invalid slug: wrapper has correct data-slug", async ({
-    page,
-  }) => {
+  test("another invalid slug: wrapper has correct data-slug", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/layout-params-notfound/nope`);
 
-    await expect(
-      page.locator("#layout-params-notfound-boundary"),
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator("#layout-params-notfound-boundary")).toBeVisible({ timeout: 10_000 });
 
-    await expect(
-      page.locator("#layout-params-notfound-wrapper"),
-    ).toHaveAttribute("data-slug", "nope");
+    await expect(page.locator("#layout-params-notfound-wrapper")).toHaveAttribute(
+      "data-slug",
+      "nope",
+    );
   });
 
   /**
@@ -102,18 +97,18 @@ test.describe("layout params in fallback render (renderHTTPAccessFallbackPage)",
     await page.goto(`${BASE}/nextjs-compat/layout-params-notfound/hello`);
     await waitForHydration(page);
 
-    await expect(
-      page.locator("#layout-params-notfound-wrapper"),
-    ).toHaveAttribute("data-slug", "hello");
+    await expect(page.locator("#layout-params-notfound-wrapper")).toHaveAttribute(
+      "data-slug",
+      "hello",
+    );
 
     await page.goto(`${BASE}/nextjs-compat/layout-params-notfound/bad-slug`);
 
-    await expect(
-      page.locator("#layout-params-notfound-boundary"),
-    ).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator("#layout-params-notfound-boundary")).toBeVisible({ timeout: 10_000 });
 
-    await expect(
-      page.locator("#layout-params-notfound-wrapper"),
-    ).toHaveAttribute("data-slug", "bad-slug");
+    await expect(page.locator("#layout-params-notfound-wrapper")).toHaveAttribute(
+      "data-slug",
+      "bad-slug",
+    );
   });
 });

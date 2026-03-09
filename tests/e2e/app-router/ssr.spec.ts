@@ -47,9 +47,7 @@ test.describe("App Router SSR", () => {
 
     // Dashboard layout should be present
     await expect(page.locator("#dashboard-layout")).toBeVisible();
-    await expect(page.locator("#dashboard-layout > nav span")).toHaveText(
-      "Dashboard Nav",
-    );
+    await expect(page.locator("#dashboard-layout > nav span")).toHaveText("Dashboard Nav");
     await expect(page.locator("h1")).toHaveText("Dashboard");
   });
 
@@ -58,15 +56,11 @@ test.describe("App Router SSR", () => {
 
     // Same dashboard layout should wrap settings page
     await expect(page.locator("#dashboard-layout")).toBeVisible();
-    await expect(page.locator("#dashboard-layout > nav span")).toHaveText(
-      "Dashboard Nav",
-    );
+    await expect(page.locator("#dashboard-layout > nav span")).toHaveText("Dashboard Nav");
     await expect(page.locator("h1")).toHaveText("Settings");
   });
 
-  test("interactive page SSR includes client component HTML", async ({
-    page,
-  }) => {
+  test("interactive page SSR includes client component HTML", async ({ page }) => {
     // Block JS to verify the "use client" Counter still renders HTML via SSR
     await page.route("**/*.js", (route) => route.abort());
     await page.route("**/*.mjs", (route) => route.abort());
@@ -75,9 +69,7 @@ test.describe("App Router SSR", () => {
 
     await expect(page.locator("h1")).toHaveText("Interactive Page");
     // Counter should be SSR-rendered with initial count
-    await expect(page.locator('[data-testid="count"]')).toContainText(
-      "Count:",
-    );
+    await expect(page.locator('[data-testid="count"]')).toContainText("Count:");
   });
 
   test("custom 404 page renders for unknown routes", async ({ page }) => {

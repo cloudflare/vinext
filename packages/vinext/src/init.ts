@@ -250,10 +250,12 @@ export function updateGitignore(root: string): boolean {
 export async function init(options: InitOptions): Promise<InitResult> {
   const root = path.resolve(options.root);
   const port = options.port ?? 3001;
-  const exec = options._exec ?? ((cmd: string, opts: { cwd: string; stdio: string }) => {
-    const [program, ...args] = cmd.split(" ");
-    execFileSync(program, args, { ...opts, shell: true } as Parameters<typeof execFileSync>[2]);
-  });
+  const exec =
+    options._exec ??
+    ((cmd: string, opts: { cwd: string; stdio: string }) => {
+      const [program, ...args] = cmd.split(" ");
+      execFileSync(program, args, { ...opts, shell: true } as Parameters<typeof execFileSync>[2]);
+    });
 
   // ── Pre-flight checks ──────────────────────────────────────────────────
 
@@ -292,7 +294,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (isApp && missingDeps.includes("react-server-dom-webpack")) {
     const reactUpgrade = getReactUpgradeDeps(root);
     if (reactUpgrade.length > 0) {
-      console.log(`  Upgrading ${reactUpgrade.map(d => d.replace(/@latest$/, "")).join(", ")}...`);
+      console.log(
+        `  Upgrading ${reactUpgrade.map((d) => d.replace(/@latest$/, "")).join(", ")}...`,
+      );
       installDeps(root, reactUpgrade, exec, { dev: false });
     }
   }

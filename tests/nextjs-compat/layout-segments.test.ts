@@ -47,20 +47,12 @@ describe("Next.js compat: useSelectedLayoutSegment(s)", () => {
 
   describe("useSelectedLayoutSegments", () => {
     it("returns correct segments for simple path (outer layout)", async () => {
-      const { html } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/hooks-segments/first",
-      );
-      expect(html).toContain(
-        `<p id="outer-layout">[${Q}first${Q}]</p>`,
-      );
+      const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-segments/first");
+      expect(html).toContain(`<p id="outer-layout">[${Q}first${Q}]</p>`);
     });
 
     it("returns empty segments for simple path (inner layout)", async () => {
-      const { html } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/hooks-segments/first",
-      );
+      const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-segments/first");
       expect(html).toContain('<p id="inner-layout">[]</p>');
     });
 
@@ -95,13 +87,8 @@ describe("Next.js compat: useSelectedLayoutSegment(s)", () => {
     });
 
     it("returns dynamic param segments (inner layout)", async () => {
-      const { html } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/hooks-segments/first/slug1",
-      );
-      expect(html).toContain(
-        `<p id="inner-layout">[${Q}slug1${Q}]</p>`,
-      );
+      const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-segments/first/slug1");
+      expect(html).toContain(`<p id="inner-layout">[${Q}slug1${Q}]</p>`);
     });
   });
 
@@ -111,20 +98,12 @@ describe("Next.js compat: useSelectedLayoutSegment(s)", () => {
 
   describe("useSelectedLayoutSegment", () => {
     it("returns first child segment (outer layout, simple path)", async () => {
-      const { html } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/hooks-segments/first",
-      );
-      expect(html).toContain(
-        `<p id="outer-layout-segment">${Q}first${Q}</p>`,
-      );
+      const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-segments/first");
+      expect(html).toContain(`<p id="outer-layout-segment">${Q}first${Q}</p>`);
     });
 
     it("returns null when at leaf (inner layout, simple path)", async () => {
-      const { html } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/hooks-segments/first",
-      );
+      const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-segments/first");
       expect(html).toContain('<p id="inner-layout-segment">null</p>');
     });
 
@@ -133,9 +112,7 @@ describe("Next.js compat: useSelectedLayoutSegment(s)", () => {
         baseUrl,
         "/nextjs-compat/hooks-segments/first/slug2/second/a/b",
       );
-      expect(html).toContain(
-        `<p id="outer-layout-segment">${Q}first${Q}</p>`,
-      );
+      expect(html).toContain(`<p id="outer-layout-segment">${Q}first${Q}</p>`);
     });
 
     it("returns null in leaf page", async () => {

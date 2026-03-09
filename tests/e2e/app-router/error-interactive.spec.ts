@@ -7,8 +7,7 @@ async function disableViteErrorOverlay(page: import("@playwright/test").Page) {
   // and intercept pointer events, causing flaky click failures.
   await page
     .addStyleTag({
-      content:
-        "vite-error-overlay{display:none !important; pointer-events:none !important;}",
+      content: "vite-error-overlay{display:none !important; pointer-events:none !important;}",
     })
     .catch(() => {
       // best effort
@@ -26,9 +25,7 @@ async function triggerError(page: import("@playwright/test").Page) {
   });
 
   await expect(async () => {
-    await page
-      .locator('[data-testid="trigger-error"]')
-      .click({ noWaitAfter: true });
+    await page.locator('[data-testid="trigger-error"]').click({ noWaitAfter: true });
     await expect(page.locator("#error-boundary")).toBeVisible({
       timeout: 10_000,
     });
@@ -82,9 +79,7 @@ test.describe("Error boundary interactive behavior", () => {
     );
   });
 
-  test("error boundary catches error without crashing the page", async ({
-    page,
-  }) => {
+  test("error boundary catches error without crashing the page", async ({ page }) => {
     await page.goto(`${BASE}/error-test`);
     await expect(page.locator('[data-testid="error-content"]')).toBeVisible();
 

@@ -12,11 +12,7 @@ import { headers } from "next/headers";
  * wiped before this layout's async body ran during stream consumption, causing
  * headers() to throw or return null.
  */
-export default async function Layout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default async function Layout({ children }: { children: React.ReactNode }) {
   const h = await headers();
   const requestId = h.get("x-rsc-context-test") ?? "missing";
 

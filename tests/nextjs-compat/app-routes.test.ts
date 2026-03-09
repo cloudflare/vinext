@@ -48,28 +48,23 @@ describe("Next.js compat: app-routes", () => {
   // Next.js: describe.each(['GET', 'POST', 'PUT', 'DELETE', 'PATCH'])
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L30-L47
 
-  describe.each(["GET", "POST", "PUT", "DELETE", "PATCH"])(
-    "%s method",
-    (method) => {
-      it("responds with 200 and correct content", async () => {
-        const res = await fetch(`${baseUrl}/nextjs-compat/api/methods`, {
-          method,
-        });
-        expect(res.status).toBe(200);
-        expect(await res.text()).toContain("hello, world");
-        expect(res.headers.get("x-method")).toBe(method);
+  describe.each(["GET", "POST", "PUT", "DELETE", "PATCH"])("%s method", (method) => {
+    it("responds with 200 and correct content", async () => {
+      const res = await fetch(`${baseUrl}/nextjs-compat/api/methods`, {
+        method,
       });
-    },
-  );
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("hello, world");
+      expect(res.headers.get("x-method")).toBe(method);
+    });
+  });
 
   // ── Query parameters ─────────────────────────────────────────
   // Next.js: 'can read query parameters'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L69-L77
 
   it("can read query parameters", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/query?ping=pong`,
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/query?ping=pong`);
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ping).toBe("pong");
@@ -80,12 +75,9 @@ describe("Next.js compat: app-routes", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L121-L131
 
   it("can read request headers via headers()", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/headers-read`,
-      {
-        headers: { "x-test-ping": "pong" },
-      },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/headers-read`, {
+      headers: { "x-test-ping": "pong" },
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ping).toBe("pong");
@@ -96,12 +88,9 @@ describe("Next.js compat: app-routes", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L134-L144
 
   it("can read cookies via cookies()", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/cookies-read`,
-      {
-        headers: { cookie: "ping=pong" },
-      },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/cookies-read`, {
+      headers: { cookie: "ping=pong" },
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.ping).toBe("pong");
@@ -113,14 +102,11 @@ describe("Next.js compat: app-routes", () => {
 
   it("can read a JSON encoded body", async () => {
     const body = { ping: "pong" };
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/body-json`,
-      {
-        method: "POST",
-        body: JSON.stringify(body),
-        headers: { "content-type": "application/json" },
-      },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/body-json`, {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.body).toEqual(body);
@@ -131,14 +117,11 @@ describe("Next.js compat: app-routes", () => {
 
   it("can read a JSON encoded body for DELETE requests", async () => {
     const body = { name: "foo" };
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/body-json`,
-      {
-        method: "DELETE",
-        body: JSON.stringify(body),
-        headers: { "content-type": "application/json" },
-      },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/body-json`, {
+      method: "DELETE",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    });
     expect(res.status).toBe(200);
     expect(await res.text()).toBe("delete foo");
   });
@@ -149,13 +132,10 @@ describe("Next.js compat: app-routes", () => {
 
   it("can read the text body", async () => {
     const body = "hello, world";
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/body-text`,
-      {
-        method: "POST",
-        body,
-      },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/body-text`, {
+      method: "POST",
+      body,
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.body).toBe(body);
@@ -166,10 +146,9 @@ describe("Next.js compat: app-routes", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L94-L104
 
   it("supports NextResponse.redirect()", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/redirect-response`,
-      { redirect: "manual" },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/redirect-response`, {
+      redirect: "manual",
+    });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toBe("https://nextjs.org/");
   });
@@ -179,9 +158,7 @@ describe("Next.js compat: app-routes", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L106-L115
 
   it("supports NextResponse.json()", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/json-response?ping=hello`,
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/json-response?ping=hello`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("application/json");
     const data = await res.json();
@@ -274,9 +251,7 @@ describe("Next.js compat: app-routes", () => {
     const res = await fetch(`${baseUrl}/api/set-cookie`);
     expect(res.status).toBe(200);
     const setCookies = res.headers.getSetCookie();
-    const sessionCookie = setCookies.find((c: string) =>
-      c.startsWith("session="),
-    );
+    const sessionCookie = setCookies.find((c: string) => c.startsWith("session="));
     expect(sessionCookie).toBeDefined();
     expect(sessionCookie).toContain("abc123");
   });
@@ -288,9 +263,7 @@ describe("Next.js compat: app-routes", () => {
     });
     expect(res.status).toBe(200);
     const setCookies = res.headers.getSetCookie();
-    const sessionCookie = setCookies.find((c: string) =>
-      c.startsWith("session="),
-    );
+    const sessionCookie = setCookies.find((c: string) => c.startsWith("session="));
     expect(sessionCookie).toBeDefined();
     expect(sessionCookie).toContain("Max-Age=0");
   });

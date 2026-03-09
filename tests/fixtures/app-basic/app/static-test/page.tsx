@@ -7,7 +7,9 @@ export default function StaticTestPage() {
   return (
     <div data-testid="static-test-page">
       <h1>Force Static Page</h1>
-      <p>Rendered at: <span data-testid="timestamp">{timestamp}</span></p>
+      <p>
+        Rendered at: <span data-testid="timestamp">{timestamp}</span>
+      </p>
     </div>
   );
 }

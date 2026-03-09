@@ -109,10 +109,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
@@ -150,10 +147,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       path.join(tmpDir, "app", "page.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
@@ -198,10 +192,7 @@ describe("process.env.NODE_ENV define", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     return { mainPlugin: mainPlugin as any, tmpDir, fsp };
   }
@@ -210,10 +201,7 @@ describe("process.env.NODE_ENV define", () => {
     const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await mainPlugin.config(
-        mockConfig,
-        { command: "build", mode: "production" },
-      );
+      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
 
       expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("production"));
     } finally {
@@ -228,10 +216,7 @@ describe("process.env.NODE_ENV define", () => {
     const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await mainPlugin.config(
-        mockConfig,
-        { command: "build" },
-      );
+      const result = await mainPlugin.config(mockConfig, { command: "build" });
 
       expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("production"));
     } finally {
@@ -243,10 +228,7 @@ describe("process.env.NODE_ENV define", () => {
     const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
-      const result = await mainPlugin.config(
-        mockConfig,
-        { command: "serve", mode: "development" },
-      );
+      const result = await mainPlugin.config(mockConfig, { command: "serve", mode: "development" });
 
       expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("development"));
     } finally {
@@ -263,10 +245,7 @@ describe("process.env.NODE_ENV define", () => {
         plugins: [],
         define: { "process.env.NODE_ENV": JSON.stringify("staging") },
       };
-      const result = await mainPlugin.config(
-        mockConfig,
-        { command: "build", mode: "production" },
-      );
+      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
 
       // Should NOT override the user's explicit define
       expect(result.define?.["process.env.NODE_ENV"]).toBeUndefined();
@@ -303,10 +282,7 @@ describe("treeshake config integration", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = {
@@ -348,10 +324,7 @@ describe("treeshake config integration", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = {
@@ -398,10 +371,7 @@ describe("treeshake config integration", () => {
       path.join(tmpDir, "app", "page.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = {
@@ -450,10 +420,7 @@ describe("treeshake config integration", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = {
@@ -505,10 +472,7 @@ describe("treeshake config integration", () => {
       path.join(tmpDir, "app", "page.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       // Simulate having the Cloudflare plugin in the plugin list.
@@ -527,11 +491,14 @@ describe("treeshake config integration", () => {
       expect(result.environments.client.build.manifest).toBe(true);
 
       // Without Cloudflare plugin, manifest should NOT be set (standard App Router)
-      const resultNoCf = await (mainPlugin as any).config({
-        root: tmpDir,
-        build: {},
-        plugins: [],
-      }, { command: "build" });
+      const resultNoCf = await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [],
+        },
+        { command: "build" },
+      );
 
       expect(resultNoCf.environments.client.build.manifest).toBeUndefined();
     } finally {
@@ -827,10 +794,7 @@ describe("collectAssetTags lazy chunk filtering", () => {
    *
    * Must match the actual collectAssetTags implementation in index.ts.
    */
-  function simulateAssetTagFiltering(
-    ssrManifestFiles: string[],
-    lazyChunks: string[],
-  ): string[] {
+  function simulateAssetTagFiltering(ssrManifestFiles: string[], lazyChunks: string[]): string[] {
     const lazySet = new Set(lazyChunks);
     const tags: string[] = [];
     const seen = new Set<string>();
@@ -1001,8 +965,8 @@ describe("collectAssetTags lazy chunk filtering", () => {
     // them ("/assets/entry.js"). After normalization, both should resolve
     // to the same key and the entry should appear only once.
     const ssrFiles = [
-      "assets/entry.js",      // added first (e.g. from client entry)
-      "/assets/entry.js",     // same file from SSR manifest with leading slash
+      "assets/entry.js", // added first (e.g. from client entry)
+      "/assets/entry.js", // same file from SSR manifest with leading slash
       "/assets/framework.js",
     ];
 
@@ -1025,12 +989,18 @@ describe("vinext:async-hooks-stub", () => {
   // The resolveId handler uses `this.environment?.name`, so we call it with a
   // mock context to control which environment is being simulated.
   function resolveId(id: string, environmentName: string | undefined): string | undefined {
-    const handler = (_asyncHooksStubPlugin.resolveId as { handler: (id: string) => string | undefined }).handler;
-    return handler.call({ environment: environmentName ? { name: environmentName } : undefined }, id);
+    const handler = (
+      _asyncHooksStubPlugin.resolveId as { handler: (id: string) => string | undefined }
+    ).handler;
+    return handler.call(
+      { environment: environmentName ? { name: environmentName } : undefined },
+      id,
+    );
   }
 
   function load(id: string): string | undefined {
-    const handler = (_asyncHooksStubPlugin.load as { handler: (id: string) => string | undefined }).handler;
+    const handler = (_asyncHooksStubPlugin.load as { handler: (id: string) => string | undefined })
+      .handler;
     return handler.call({}, id);
   }
 
@@ -1332,7 +1302,7 @@ export async function getServerSideProps() {
     const result = _stripServerExports(code);
     expect(result).not.toBeNull();
     expect(result).toContain("export function getServerSideProps()");
-    expect(result).not.toContain('Hello {world}');
+    expect(result).not.toContain("Hello {world}");
   });
 
   it("handles regex literals in function body", () => {

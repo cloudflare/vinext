@@ -15,9 +15,7 @@ const BASE = "http://localhost:4174";
 
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
@@ -32,9 +30,7 @@ test.describe("Next.js compat: metadata (browser)", () => {
 
   test("description meta tag is present in DOM", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/metadata-title`);
-    const content = await page
-      .locator('meta[name="description"]')
-      .getAttribute("content");
+    const content = await page.locator('meta[name="description"]').getAttribute("content");
     expect(content).toBe("this is the layout description");
   });
 
@@ -54,19 +50,13 @@ test.describe("Next.js compat: metadata (browser)", () => {
   // Source: metadata.test.ts#L175-L211
   test("OpenGraph meta tags present in DOM", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/metadata-opengraph`);
-    const ogTitle = await page
-      .locator('meta[property="og:title"]')
-      .getAttribute("content");
+    const ogTitle = await page.locator('meta[property="og:title"]').getAttribute("content");
     expect(ogTitle).toBe("My custom title");
 
-    const ogDesc = await page
-      .locator('meta[property="og:description"]')
-      .getAttribute("content");
+    const ogDesc = await page.locator('meta[property="og:description"]').getAttribute("content");
     expect(ogDesc).toBe("My custom description");
 
-    const ogType = await page
-      .locator('meta[property="og:type"]')
-      .getAttribute("content");
+    const ogType = await page.locator('meta[property="og:type"]').getAttribute("content");
     expect(ogType).toBe("website");
   });
 
@@ -74,22 +64,16 @@ test.describe("Next.js compat: metadata (browser)", () => {
   // Source: metadata.test.ts#L308-L323
   test("Twitter card meta tags present in DOM", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/metadata-twitter`);
-    const card = await page
-      .locator('meta[name="twitter:card"]')
-      .getAttribute("content");
+    const card = await page.locator('meta[name="twitter:card"]').getAttribute("content");
     expect(card).toBe("summary_large_image");
 
-    const title = await page
-      .locator('meta[name="twitter:title"]')
-      .getAttribute("content");
+    const title = await page.locator('meta[name="twitter:title"]').getAttribute("content");
     expect(title).toBe("Twitter Title");
   });
 
   // Next.js: 'should support generateMetadata dynamic props'
   // Source: metadata.test.ts#L174-L184
-  test("generateMetadata renders correct title for dynamic route", async ({
-    page,
-  }) => {
+  test("generateMetadata renders correct title for dynamic route", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/metadata-generate/my-slug`);
     await expect(page).toHaveTitle("params - my-slug");
   });

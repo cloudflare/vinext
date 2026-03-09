@@ -26,11 +26,7 @@
  *   }
  */
 
-import type {
-  CacheHandler,
-  CacheHandlerValue,
-  IncrementalCacheValue,
-} from "../shims/cache.js";
+import type { CacheHandler, CacheHandlerValue, IncrementalCacheValue } from "../shims/cache.js";
 
 // Cloudflare KV namespace interface (matches Workers types)
 interface KVNamespace {
@@ -42,11 +38,7 @@ interface KVNamespace {
     options?: { expirationTtl?: number; metadata?: Record<string, unknown> },
   ): Promise<void>;
   delete(key: string): Promise<void>;
-  list(options?: {
-    prefix?: string;
-    limit?: number;
-    cursor?: string;
-  }): Promise<{
+  list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
     keys: Array<{ name: string; metadata?: Record<string, unknown> }>;
     list_complete: boolean;
     cursor?: string;
@@ -93,10 +85,7 @@ export class KVCacheHandler implements CacheHandler {
     this.prefix = options?.appPrefix ? `${options.appPrefix}:` : "";
   }
 
-  async get(
-    key: string,
-    _ctx?: Record<string, unknown>,
-  ): Promise<CacheHandlerValue | null> {
+  async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const kvKey = this.prefix + ENTRY_PREFIX + key;
     const raw = await this.kv.get(kvKey);
     if (!raw) return null;
@@ -186,8 +175,7 @@ export class KVCacheHandler implements CacheHandler {
     // Determine revalidation time
     let revalidateAt: number | null = null;
     if (ctx) {
-      const revalidate =
-        (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
+      const revalidate = (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
       if (typeof revalidate === "number" && revalidate > 0) {
         revalidateAt = Date.now() + revalidate * 1000;
       }
@@ -228,10 +216,7 @@ export class KVCacheHandler implements CacheHandler {
     });
   }
 
-  async revalidateTag(
-    tags: string | string[],
-    _durations?: { expire?: number },
-  ): Promise<void> {
+  async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     const validTags = tagList.filter((t) => validateTag(t) !== null);
@@ -255,14 +240,7 @@ export class KVCacheHandler implements CacheHandler {
 // Validation helpers
 // ---------------------------------------------------------------------------
 
-const VALID_KINDS = new Set([
-  "FETCH",
-  "APP_PAGE",
-  "PAGES",
-  "APP_ROUTE",
-  "REDIRECT",
-  "IMAGE",
-]);
+const VALID_KINDS = new Set(["FETCH", "APP_PAGE", "PAGES", "APP_ROUTE", "REDIRECT", "IMAGE"]);
 
 /**
  * Validate that a parsed JSON value has the expected KVCacheEntry shape.
@@ -276,18 +254,13 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   // Required fields
   if (typeof obj.lastModified !== "number") return null;
   if (!Array.isArray(obj.tags)) return null;
-  if (
-    obj.revalidateAt !== null &&
-    typeof obj.revalidateAt !== "number"
-  )
-    return null;
+  if (obj.revalidateAt !== null && typeof obj.revalidateAt !== "number") return null;
 
   // value must be null or a valid cache value object with a known kind
   if (obj.value !== null) {
     if (!obj.value || typeof obj.value !== "object") return null;
     const value = obj.value as Record<string, unknown>;
-    if (typeof value.kind !== "string" || !VALID_KINDS.has(value.kind))
-      return null;
+    if (typeof value.kind !== "string" || !VALID_KINDS.has(value.kind)) return null;
   }
 
   return raw as KVCacheEntry;
@@ -305,9 +278,7 @@ function serializeForJSON(value: IncrementalCacheValue): IncrementalCacheValue {
   if (value.kind === "APP_PAGE") {
     return {
       ...value,
-      rscData: value.rscData
-        ? (arrayBufferToBase64(value.rscData) as any)
-        : undefined,
+      rscData: value.rscData ? (arrayBufferToBase64(value.rscData) as any) : undefined,
     };
   }
   if (value.kind === "APP_ROUTE") {

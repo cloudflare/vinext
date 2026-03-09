@@ -60,9 +60,7 @@ async function startFixture(
     proc.on("exit", (code) => {
       if (code !== null && code !== 0) {
         clearTimeout(timeoutId);
-        reject(
-          new Error(`Fixture "${name}" exited with code ${code}: ${output}`),
-        );
+        reject(new Error(`Fixture "${name}" exited with code ${code}: ${output}`));
       }
     });
   });

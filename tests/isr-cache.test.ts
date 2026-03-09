@@ -142,13 +142,15 @@ describe("triggerBackgroundRegeneration", () => {
     const renderFn = vi.fn().mockResolvedValue(undefined);
     triggerBackgroundRegeneration("regen-test-1", renderFn);
     // Wait for the async operation
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(renderFn).toHaveBeenCalledOnce();
   });
 
   it("deduplicates concurrent regeneration for same key", async () => {
     let resolveFirst: () => void;
-    const firstPromise = new Promise<void>(r => { resolveFirst = r; });
+    const firstPromise = new Promise<void>((r) => {
+      resolveFirst = r;
+    });
     const renderFn1 = vi.fn().mockReturnValue(firstPromise);
     const renderFn2 = vi.fn().mockResolvedValue(undefined);
 
@@ -161,19 +163,19 @@ describe("triggerBackgroundRegeneration", () => {
 
     // Complete the first
     resolveFirst!();
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
   });
 
   it("allows regeneration after previous completes", async () => {
     const renderFn1 = vi.fn().mockResolvedValue(undefined);
     triggerBackgroundRegeneration("regen-test-3", renderFn1);
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(renderFn1).toHaveBeenCalledOnce();
 
     // After completion, a new regeneration should be allowed
     const renderFn2 = vi.fn().mockResolvedValue(undefined);
     triggerBackgroundRegeneration("regen-test-3", renderFn2);
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(renderFn2).toHaveBeenCalledOnce();
   });
 
@@ -182,7 +184,7 @@ describe("triggerBackgroundRegeneration", () => {
     const renderFn = vi.fn().mockRejectedValue(new Error("render failed"));
 
     triggerBackgroundRegeneration("regen-test-4", renderFn);
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
 
     expect(renderFn).toHaveBeenCalledOnce();
     expect(consoleError).toHaveBeenCalled();
@@ -190,7 +192,7 @@ describe("triggerBackgroundRegeneration", () => {
     // After error, key should be cleared so new regeneration is possible
     const renderFn2 = vi.fn().mockResolvedValue(undefined);
     triggerBackgroundRegeneration("regen-test-4", renderFn2);
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(renderFn2).toHaveBeenCalledOnce();
 
     consoleError.mockRestore();
@@ -203,7 +205,7 @@ describe("triggerBackgroundRegeneration", () => {
     triggerBackgroundRegeneration("regen-test-5a", renderFnA);
     triggerBackgroundRegeneration("regen-test-5b", renderFnB);
 
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(renderFnA).toHaveBeenCalledOnce();
     expect(renderFnB).toHaveBeenCalledOnce();
   });

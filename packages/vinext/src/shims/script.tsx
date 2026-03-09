@@ -55,7 +55,16 @@ const loadedScripts = new Set<string>();
  * Load a script imperatively (outside of React).
  */
 export function handleClientScriptLoad(props: ScriptProps): void {
-  const { src, id, onLoad, onError, strategy: _strategy, onReady: _onReady, children, ...rest } = props;
+  const {
+    src,
+    id,
+    onLoad,
+    onError,
+    strategy: _strategy,
+    onReady: _onReady,
+    children,
+    ...rest
+  } = props;
   if (typeof window === "undefined") return;
 
   const key = id ?? src ?? "";

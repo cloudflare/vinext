@@ -2,10 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import {
-  loadDotenv,
-  getDotenvFiles,
-} from "../packages/vinext/src/config/dotenv.js";
+import { loadDotenv, getDotenvFiles } from "../packages/vinext/src/config/dotenv.js";
 
 let tmpDir: string;
 
@@ -44,11 +41,7 @@ describe("getDotenvFiles", () => {
 
   it("skips .env.local for test mode", () => {
     const files = getDotenvFiles("test");
-    expect(files).toEqual([
-      ".env.test.local",
-      ".env.test",
-      ".env",
-    ]);
+    expect(files).toEqual([".env.test.local", ".env.test", ".env"]);
     expect(files).not.toContain(".env.local");
   });
 });
@@ -139,10 +132,7 @@ describe("loadDotenv", () => {
   });
 
   it("expands variables using $VAR syntax", () => {
-    writeFile(
-      ".env",
-      "BASE_URL=https://example.com\nAPI_URL=$BASE_URL/v1\n",
-    );
+    writeFile(".env", "BASE_URL=https://example.com\nAPI_URL=$BASE_URL/v1\n");
 
     const env: NodeJS.ProcessEnv = {};
     const result = loadDotenv({
@@ -156,10 +146,7 @@ describe("loadDotenv", () => {
   });
 
   it("expands variables using ${VAR} syntax", () => {
-    writeFile(
-      ".env",
-      "HOST=localhost\nPORT=3000\nURL=http://${HOST}:${PORT}\n",
-    );
+    writeFile(".env", "HOST=localhost\nPORT=3000\nURL=http://${HOST}:${PORT}\n");
 
     const env: NodeJS.ProcessEnv = {};
     loadDotenv({ root: tmpDir, mode: "development", processEnv: env });
@@ -238,10 +225,7 @@ describe("loadDotenv", () => {
   });
 
   it("handles multi-line quoted values", () => {
-    writeFile(
-      ".env",
-      'MULTI="line1\nline2\nline3"\nSINGLE=plain\n',
-    );
+    writeFile(".env", 'MULTI="line1\nline2\nline3"\nSINGLE=plain\n');
 
     const env: NodeJS.ProcessEnv = {};
     loadDotenv({ root: tmpDir, mode: "development", processEnv: env });

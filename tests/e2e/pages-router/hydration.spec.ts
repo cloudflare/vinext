@@ -6,10 +6,7 @@ test.describe("Hydration", () => {
   // The consoleErrors fixture automatically fails tests if any console errors occur.
   // This catches React hydration mismatches, runtime errors, etc.
 
-  test("interactive counter works after hydration", async ({
-    page,
-    consoleErrors,
-  }) => {
+  test("interactive counter works after hydration", async ({ page, consoleErrors }) => {
     await page.goto(`${BASE}/counter`);
 
     // SSR should render the initial count
@@ -36,15 +33,10 @@ test.describe("Hydration", () => {
 
     // Even without JS, the page content should be there from SSR
     await expect(page.locator("h1")).toHaveText("Hello, vinext!");
-    await expect(page.locator("p")).toContainText(
-      "This is a Pages Router app running on Vite.",
-    );
+    await expect(page.locator("p")).toContainText("This is a Pages Router app running on Vite.");
   });
 
-  test("_app.tsx wrapper persists across client navigations", async ({
-    page,
-    consoleErrors,
-  }) => {
+  test("_app.tsx wrapper persists across client navigations", async ({ page, consoleErrors }) => {
     await page.goto(`${BASE}/`);
 
     // App wrapper should be present
@@ -62,10 +54,7 @@ test.describe("Hydration", () => {
     void consoleErrors;
   });
 
-  test("state is preserved within client navigation", async ({
-    page,
-    consoleErrors,
-  }) => {
+  test("state is preserved within client navigation", async ({ page, consoleErrors }) => {
     // Start at counter page, increment, then navigate away and back
     await page.goto(`${BASE}/counter`);
     await page.click('[data-testid="increment"]');

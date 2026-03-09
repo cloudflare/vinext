@@ -8,9 +8,7 @@ const BASE = "http://localhost:4174";
  */
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
@@ -31,9 +29,7 @@ test.describe("App Router Client-side Navigation", () => {
 
     // Wait for the About content to appear
     await expect(page.locator("h1")).toHaveText("About");
-    await expect(page.locator("main > p")).toContainText(
-      "This is the about page.",
-    );
+    await expect(page.locator("main > p")).toContainText("This is the about page.");
 
     // Verify no full reload (marker should survive)
     const marker = await page.evaluate(() => (window as any).__NAV_MARKER__);
@@ -60,9 +56,7 @@ test.describe("App Router Client-side Navigation", () => {
     expect(page.url()).toBe(`${BASE}/`);
   });
 
-  test("browser back/forward buttons work after client navigation", async ({
-    page,
-  }) => {
+  test("browser back/forward buttons work after client navigation", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
     await waitForHydration(page);
@@ -82,9 +76,7 @@ test.describe("App Router Client-side Navigation", () => {
     expect(page.url()).toBe(`${BASE}/about`);
   });
 
-  test("multiple sequential navigations work without reload", async ({
-    page,
-  }) => {
+  test("multiple sequential navigations work without reload", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
     await waitForHydration(page);
@@ -111,9 +103,7 @@ test.describe("App Router Client-side Navigation", () => {
     expect(marker).toBe(true);
   });
 
-  test("navigation to dynamic route renders correct params", async ({
-    page,
-  }) => {
+  test("navigation to dynamic route renders correct params", async ({ page }) => {
     await page.goto(`${BASE}/`);
     await expect(page.locator("h1")).toHaveText("Welcome to App Router");
     await waitForHydration(page);
@@ -132,9 +122,7 @@ test.describe("App Router Client-side Navigation", () => {
     await page.click('a[href="/dashboard"]');
     await expect(page.locator("h1")).toHaveText("Dashboard");
     await expect(page.locator("#dashboard-layout")).toBeVisible();
-    await expect(page.locator("#dashboard-layout > nav span")).toHaveText(
-      "Dashboard Nav",
-    );
+    await expect(page.locator("#dashboard-layout > nav span")).toHaveText("Dashboard Nav");
   });
 
   test("scroll-to-top happens after new content renders", async ({ page }) => {

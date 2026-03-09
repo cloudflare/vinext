@@ -83,10 +83,9 @@ let _baseUrl: string;
 
 // Module-level beforeAll / afterAll manage the shared server lifetime.
 beforeAll(async () => {
-  ({ server: _server, baseUrl: _baseUrl } = await startFixtureServer(
-    APP_FIXTURE_DIR,
-    { appRouter: true },
-  ));
+  ({ server: _server, baseUrl: _baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, {
+    appRouter: true,
+  }));
 
   // Warm up both fixtures so the first real test in each suite doesn't pay
   // the cold-start compilation cost.
@@ -253,21 +252,21 @@ describe("__VINEXT_RSC_NAV__: nav context embedded for hydration snapshot consis
     expect(nav.pathname).toBe(NAV_ROUTE);
   });
 
-   // ── 3. searchParams are correct (no query string) ─────────────────────────
+  // ── 3. searchParams are correct (no query string) ─────────────────────────
 
-   it("__VINEXT_RSC_NAV__ searchParams is empty array when no query string", async () => {
-     const res = await fetch(`${_baseUrl}${NAV_ROUTE}`);
-     const html = await res.text();
+  it("__VINEXT_RSC_NAV__ searchParams is empty array when no query string", async () => {
+    const res = await fetch(`${_baseUrl}${NAV_ROUTE}`);
+    const html = await res.text();
 
-     const match = html.match(/self\.__VINEXT_RSC_NAV__=(\{[^<]+\})/);
-     expect(match).toBeTruthy();
-     const nav = JSON.parse(match![1]);
+    const match = html.match(/self\.__VINEXT_RSC_NAV__=(\{[^<]+\})/);
+    expect(match).toBeTruthy();
+    const nav = JSON.parse(match![1]);
 
-     // searchParams is serialised as [...urlSearchParams.entries()] — an array of
-     // [key, value] pairs — to preserve duplicate keys (e.g. ?tag=a&tag=b).
-     // With no query string it should be an empty array.
-     expect(nav.searchParams).toEqual([]);
-   });
+    // searchParams is serialised as [...urlSearchParams.entries()] — an array of
+    // [key, value] pairs — to preserve duplicate keys (e.g. ?tag=a&tag=b).
+    // With no query string it should be an empty array.
+    expect(nav.searchParams).toEqual([]);
+  });
 
   it("SSR-rendered useSearchParams() returns empty string when no query string", async () => {
     const res = await fetch(`${_baseUrl}${NAV_ROUTE}`);
@@ -288,21 +287,24 @@ describe("__VINEXT_RSC_NAV__: nav context embedded for hydration snapshot consis
   //
   // With __VINEXT_RSC_NAV__:
   //   - SSR renders: <span id="nav-search-q">hello</span>
-   //   - browser entry calls setNavigationContext with new URLSearchParams([["q","hello"]])
+  //   - browser entry calls setNavigationContext with new URLSearchParams([["q","hello"]])
   //   - getServerSnapshot returns: "hello"
   //   → React sees "hello" = "hello" → no mismatch
 
-   it("__VINEXT_RSC_NAV__ searchParams carries query params from request URL", async () => {
-     const res = await fetch(`${_baseUrl}${NAV_ROUTE}?q=hello&page=3`);
-     const html = await res.text();
+  it("__VINEXT_RSC_NAV__ searchParams carries query params from request URL", async () => {
+    const res = await fetch(`${_baseUrl}${NAV_ROUTE}?q=hello&page=3`);
+    const html = await res.text();
 
-     const match = html.match(/self\.__VINEXT_RSC_NAV__=(\{[^<]+\})/);
-     expect(match).toBeTruthy();
-     const nav = JSON.parse(match![1]);
+    const match = html.match(/self\.__VINEXT_RSC_NAV__=(\{[^<]+\})/);
+    expect(match).toBeTruthy();
+    const nav = JSON.parse(match![1]);
 
-     // Serialised as array of [key, value] pairs to preserve duplicates.
-     expect(nav.searchParams).toEqual([["q", "hello"], ["page", "3"]]);
-   });
+    // Serialised as array of [key, value] pairs to preserve duplicates.
+    expect(nav.searchParams).toEqual([
+      ["q", "hello"],
+      ["page", "3"],
+    ]);
+  });
 
   it("__VINEXT_RSC_NAV__ searchParams agrees with SSR-rendered useSearchParams() output", async () => {
     const res = await fetch(`${_baseUrl}${NAV_ROUTE}?q=hello&page=3`);
@@ -344,9 +346,7 @@ describe("__VINEXT_RSC_NAV__: nav context embedded for hydration snapshot consis
     // that could break out of a <script> tag if embedded raw.
     // The server uses safeJsonStringify which encodes < > & / to unicode escapes.
     const specialQ = "foo<bar>&baz";
-    const res = await fetch(
-      `${_baseUrl}${NAV_ROUTE}?q=${encodeURIComponent(specialQ)}`,
-    );
+    const res = await fetch(`${_baseUrl}${NAV_ROUTE}?q=${encodeURIComponent(specialQ)}`);
     const html = await res.text();
 
     // The raw string must NOT appear literally inside the <script> tag —

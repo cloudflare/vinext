@@ -73,10 +73,7 @@ const pendingRegenerations = new Map<string, Promise<void>>();
  * If a regeneration for this key is already in progress, this is a no-op.
  * The renderFn should produce the new cache value and call isrSet internally.
  */
-export function triggerBackgroundRegeneration(
-  key: string,
-  renderFn: () => Promise<void>,
-): void {
+export function triggerBackgroundRegeneration(key: string, renderFn: () => Promise<void>): void {
   if (pendingRegenerations.has(key)) return;
 
   const promise = renderFn()

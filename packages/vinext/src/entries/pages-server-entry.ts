@@ -33,88 +33,88 @@ export async function generateServerEntry(
   middlewarePath: string | null,
   instrumentationPath: string | null,
 ): Promise<string> {
-    const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
-    const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+  const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+  const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
-    // Generate import statements using absolute paths since virtual
-    // modules don't have a real file location for relative resolution.
-    const pageImports = pageRoutes.map((r: Route, i: number) => {
-      const absPath = r.filePath.replace(/\\/g, "/");
-      return `import * as page_${i} from ${JSON.stringify(absPath)};`;
-    });
+  // Generate import statements using absolute paths since virtual
+  // modules don't have a real file location for relative resolution.
+  const pageImports = pageRoutes.map((r: Route, i: number) => {
+    const absPath = r.filePath.replace(/\\/g, "/");
+    return `import * as page_${i} from ${JSON.stringify(absPath)};`;
+  });
 
-    const apiImports = apiRoutes.map((r: Route, i: number) => {
-      const absPath = r.filePath.replace(/\\/g, "/");
-      return `import * as api_${i} from ${JSON.stringify(absPath)};`;
-    });
+  const apiImports = apiRoutes.map((r: Route, i: number) => {
+    const absPath = r.filePath.replace(/\\/g, "/");
+    return `import * as api_${i} from ${JSON.stringify(absPath)};`;
+  });
 
-    // Build the route table — include filePath for SSR manifest lookup
-    const pageRouteEntries = pageRoutes.map((r: Route, i: number) => {
-      const absPath = r.filePath.replace(/\\/g, "/");
-      return `  { pattern: ${JSON.stringify(r.pattern)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)} }`;
-    });
+  // Build the route table — include filePath for SSR manifest lookup
+  const pageRouteEntries = pageRoutes.map((r: Route, i: number) => {
+    const absPath = r.filePath.replace(/\\/g, "/");
+    return `  { pattern: ${JSON.stringify(r.pattern)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)} }`;
+  });
 
-    const apiRouteEntries = apiRoutes.map((r: Route, i: number) => {
-      return `  { pattern: ${JSON.stringify(r.pattern)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`;
-    });
+  const apiRouteEntries = apiRoutes.map((r: Route, i: number) => {
+    return `  { pattern: ${JSON.stringify(r.pattern)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`;
+  });
 
-    // Check for _app and _document
-    const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
-    const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
-    const hasApp = appFilePath !== null;
-    const hasDoc = docFilePath !== null;
+  // Check for _app and _document
+  const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
+  const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
+  const hasApp = appFilePath !== null;
+  const hasDoc = docFilePath !== null;
 
-    const appImportCode = hasApp
-      ? `import { default as AppComponent } from ${JSON.stringify(appFilePath!.replace(/\\/g, "/"))};`
-      : `const AppComponent = null;`;
+  const appImportCode = hasApp
+    ? `import { default as AppComponent } from ${JSON.stringify(appFilePath!.replace(/\\/g, "/"))};`
+    : `const AppComponent = null;`;
 
-    const docImportCode = hasDoc
-      ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath!.replace(/\\/g, "/"))};`
-      : `const DocumentComponent = null;`;
+  const docImportCode = hasDoc
+    ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath!.replace(/\\/g, "/"))};`
+    : `const DocumentComponent = null;`;
 
-    // Serialize i18n config for embedding in the server entry
-    const i18nConfigJson = nextConfig?.i18n
-      ? JSON.stringify({
-          locales: nextConfig.i18n.locales,
-          defaultLocale: nextConfig.i18n.defaultLocale,
-          localeDetection: nextConfig.i18n.localeDetection,
-        })
-      : "null";
+  // Serialize i18n config for embedding in the server entry
+  const i18nConfigJson = nextConfig?.i18n
+    ? JSON.stringify({
+        locales: nextConfig.i18n.locales,
+        defaultLocale: nextConfig.i18n.defaultLocale,
+        localeDetection: nextConfig.i18n.localeDetection,
+      })
+    : "null";
 
-    // Serialize the full resolved config for the production server.
-    // This embeds redirects, rewrites, headers, basePath, trailingSlash
-    // so prod-server.ts can apply them without loading next.config.js at runtime.
-    const vinextConfigJson = JSON.stringify({
-      basePath: nextConfig?.basePath ?? "",
-      trailingSlash: nextConfig?.trailingSlash ?? false,
-      redirects: nextConfig?.redirects ?? [],
-      rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
-      headers: nextConfig?.headers ?? [],
-      i18n: nextConfig?.i18n ?? null,
-      images: {
-        deviceSizes: nextConfig?.images?.deviceSizes,
-        imageSizes: nextConfig?.images?.imageSizes,
-        dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
-        contentDispositionType: nextConfig?.images?.contentDispositionType,
-        contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
-      },
-    });
+  // Serialize the full resolved config for the production server.
+  // This embeds redirects, rewrites, headers, basePath, trailingSlash
+  // so prod-server.ts can apply them without loading next.config.js at runtime.
+  const vinextConfigJson = JSON.stringify({
+    basePath: nextConfig?.basePath ?? "",
+    trailingSlash: nextConfig?.trailingSlash ?? false,
+    redirects: nextConfig?.redirects ?? [],
+    rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
+    headers: nextConfig?.headers ?? [],
+    i18n: nextConfig?.i18n ?? null,
+    images: {
+      deviceSizes: nextConfig?.images?.deviceSizes,
+      imageSizes: nextConfig?.images?.imageSizes,
+      dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
+      contentDispositionType: nextConfig?.images?.contentDispositionType,
+      contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+    },
+  });
 
-    // Generate instrumentation code if instrumentation.ts exists.
-    // For production (Cloudflare Workers), instrumentation.ts is bundled into the
-    // Worker and register() is called as a top-level await at module evaluation time —
-    // before any request is handled. This mirrors App Router behavior (generateRscEntry)
-    // and matches Next.js semantics: register() runs once on startup in the process
-    // that handles requests.
-    //
-    // The onRequestError handler is stored on globalThis so it is visible across
-    // all code within the Worker (same global scope).
-    const instrumentationImportCode = instrumentationPath
-      ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};`
-      : "";
+  // Generate instrumentation code if instrumentation.ts exists.
+  // For production (Cloudflare Workers), instrumentation.ts is bundled into the
+  // Worker and register() is called as a top-level await at module evaluation time —
+  // before any request is handled. This mirrors App Router behavior (generateRscEntry)
+  // and matches Next.js semantics: register() runs once on startup in the process
+  // that handles requests.
+  //
+  // The onRequestError handler is stored on globalThis so it is visible across
+  // all code within the Worker (same global scope).
+  const instrumentationImportCode = instrumentationPath
+    ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};`
+    : "";
 
-    const instrumentationInitCode = instrumentationPath
-      ? `// Run instrumentation register() once at module evaluation time — before any
+  const instrumentationInitCode = instrumentationPath
+    ? `// Run instrumentation register() once at module evaluation time — before any
 // requests are handled. Matches Next.js semantics: register() is called once
 // on startup in the process that handles requests.
 if (typeof _instrumentation.register === "function") {
@@ -125,18 +125,18 @@ if (typeof _instrumentation.register === "function") {
 if (typeof _instrumentation.onRequestError === "function") {
   globalThis.__VINEXT_onRequestErrorHandler__ = _instrumentation.onRequestError;
 }`
-      : "";
+    : "";
 
-    // Generate middleware code if middleware.ts exists
-    const middlewareImportCode = middlewarePath
-      ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};
+  // Generate middleware code if middleware.ts exists
+  const middlewareImportCode = middlewarePath
+    ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};
 import { NextRequest, NextFetchEvent } from "next/server";`
-      : "";
+    : "";
 
-    // The matcher config is read from the middleware module at import time.
-    // We inline the matching + execution logic so the prod server can call it.
-    const middlewareExportCode = middlewarePath
-      ? `
+  // The matcher config is read from the middleware module at import time.
+  // We inline the matching + execution logic so the prod server can call it.
+  const middlewareExportCode = middlewarePath
+    ? `
 // --- Middleware support (generated from middleware-codegen.ts) ---
 ${generateNormalizePathCode("es5")}
 ${generateSafeRegExpCode("es5")}
@@ -227,13 +227,13 @@ export async function runMiddleware(request, ctx) {
   return { continue: false, response: response };
 }
 `
-      : `
+    : `
 export async function runMiddleware() { return { continue: true }; }
 `;
 
-    // The server entry is a self-contained module that uses Web-standard APIs
-    // (Request/Response, renderToReadableStream) so it runs on Cloudflare Workers.
-    return `
+  // The server entry is a self-contained module that uses Web-standard APIs
+  // (Request/Response, renderToReadableStream) so it runs on Cloudflare Workers.
+  return `
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";

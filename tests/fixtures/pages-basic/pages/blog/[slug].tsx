@@ -16,10 +16,7 @@ export default function BlogPost({ slug, title }: BlogPostProps) {
 
 export async function getStaticPaths() {
   return {
-    paths: [
-      { params: { slug: "hello-world" } },
-      { params: { slug: "getting-started" } },
-    ],
+    paths: [{ params: { slug: "hello-world" } }, { params: { slug: "getting-started" } }],
     fallback: false,
   };
 }

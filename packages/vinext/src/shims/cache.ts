@@ -121,10 +121,7 @@ export interface CacheHandlerContext {
 }
 
 export interface CacheHandler {
-  get(
-    key: string,
-    ctx?: Record<string, unknown>,
-  ): Promise<CacheHandlerValue | null>;
+  get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null>;
 
   set(
     key: string,
@@ -132,10 +129,7 @@ export interface CacheHandler {
     ctx?: Record<string, unknown>,
   ): Promise<void>;
 
-  revalidateTag(
-    tags: string | string[],
-    durations?: { expire?: number },
-  ): Promise<void>;
+  revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
 
   resetRequestCache?(): void;
 }
@@ -156,10 +150,7 @@ export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
   private tagRevalidatedAt = new Map<string, number>();
 
-  async get(
-    key: string,
-    _ctx?: Record<string, unknown>,
-  ): Promise<CacheHandlerValue | null> {
+  async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const entry = this.store.get(key);
     if (!entry) return null;
 
@@ -204,8 +195,7 @@ export class MemoryCacheHandler implements CacheHandler {
     let revalidateAt: number | null = null;
     if (ctx) {
       // Handle both old-style { revalidate } and new-style { cacheControl: { revalidate } }
-      const revalidate =
-        (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
+      const revalidate = (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
       if (typeof revalidate === "number" && revalidate > 0) {
         revalidateAt = Date.now() + revalidate * 1000;
       }
@@ -222,10 +212,7 @@ export class MemoryCacheHandler implements CacheHandler {
     });
   }
 
-  async revalidateTag(
-    tags: string | string[],
-    _durations?: { expire?: number },
-  ): Promise<void> {
+  async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     for (const tag of tagList) {
@@ -307,10 +294,7 @@ export async function revalidateTag(
  * Under the hood, Next.js converts paths to internal tags.
  * We use a `_N_T_/path` prefix convention for path-based tags.
  */
-export async function revalidatePath(
-  path: string,
-  _type?: "page" | "layout",
-): Promise<void> {
+export async function revalidatePath(path: string, _type?: "page" | "layout"): Promise<void> {
   // Next.js internally converts paths to tags with a prefix
   const pathTag = `_N_T_${path}`;
   await activeHandler.revalidateTag([path, pathTag]);
@@ -383,7 +367,8 @@ interface CacheState {
 const _ALS_KEY = Symbol.for("vinext.cache.als");
 const _FALLBACK_KEY = Symbol.for("vinext.cache.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _cacheAls = (_g[_ALS_KEY] ??= new AsyncLocalStorage<CacheState>()) as AsyncLocalStorage<CacheState>;
+const _cacheAls = (_g[_ALS_KEY] ??=
+  new AsyncLocalStorage<CacheState>()) as AsyncLocalStorage<CacheState>;
 
 const _cacheFallbackState = (_g[_FALLBACK_KEY] ??= {
   requestScopedCacheLife: null,
@@ -432,19 +417,22 @@ export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
   } else {
     // Minimum-wins rule
     if (config.stale !== undefined) {
-      state.requestScopedCacheLife.stale = state.requestScopedCacheLife.stale !== undefined
-        ? Math.min(state.requestScopedCacheLife.stale, config.stale)
-        : config.stale;
+      state.requestScopedCacheLife.stale =
+        state.requestScopedCacheLife.stale !== undefined
+          ? Math.min(state.requestScopedCacheLife.stale, config.stale)
+          : config.stale;
     }
     if (config.revalidate !== undefined) {
-      state.requestScopedCacheLife.revalidate = state.requestScopedCacheLife.revalidate !== undefined
-        ? Math.min(state.requestScopedCacheLife.revalidate, config.revalidate)
-        : config.revalidate;
+      state.requestScopedCacheLife.revalidate =
+        state.requestScopedCacheLife.revalidate !== undefined
+          ? Math.min(state.requestScopedCacheLife.revalidate, config.revalidate)
+          : config.revalidate;
     }
     if (config.expire !== undefined) {
-      state.requestScopedCacheLife.expire = state.requestScopedCacheLife.expire !== undefined
-        ? Math.min(state.requestScopedCacheLife.expire, config.expire)
-        : config.expire;
+      state.requestScopedCacheLife.expire =
+        state.requestScopedCacheLife.expire !== undefined
+          ? Math.min(state.requestScopedCacheLife.expire, config.expire)
+          : config.expire;
     }
   }
 }
@@ -521,9 +509,7 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
       profile.revalidate !== undefined &&
       profile.expire < profile.revalidate
     ) {
-      console.warn(
-        "[vinext] cacheLife: expire must be >= revalidate",
-      );
+      console.warn("[vinext] cacheLife: expire must be >= revalidate");
     }
     resolvedConfig = { ...profile };
   } else {
@@ -578,15 +564,12 @@ export function cacheTag(...tags: string[]): void {
  * a direct import (avoiding circular dependencies).
  */
 const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
-const _unstableCacheAls = (
-  (_g[_UNSTABLE_CACHE_ALS_KEY] ??= new AsyncLocalStorage<boolean>()) as AsyncLocalStorage<boolean>
-);
+const _unstableCacheAls = (_g[_UNSTABLE_CACHE_ALS_KEY] ??=
+  new AsyncLocalStorage<boolean>()) as AsyncLocalStorage<boolean>;
 const UNSTABLE_CACHE_UNDEFINED_SENTINEL = "__vinext_unstable_cache_undefined__";
 
 function serializeUnstableCacheResult(value: unknown): string {
-  return value === undefined
-    ? UNSTABLE_CACHE_UNDEFINED_SENTINEL
-    : JSON.stringify(value);
+  return value === undefined ? UNSTABLE_CACHE_UNDEFINED_SENTINEL : JSON.stringify(value);
 }
 
 function deserializeUnstableCacheResult(body: string): unknown {
@@ -622,9 +605,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   keyParts?: string[],
   options?: UnstableCacheOptions,
 ): T {
-  const baseKey = keyParts
-    ? keyParts.join(":")
-    : fnv1a64(fn.toString());
+  const baseKey = keyParts ? keyParts.join(":") : fnv1a64(fn.toString());
   const tags = options?.tags ?? [];
   const revalidateSeconds = options?.revalidate;
 

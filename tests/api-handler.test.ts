@@ -114,18 +114,14 @@ function mockRes(): http.ServerResponse & {
  */
 function route(pattern: string, filePath = "/fake/api/handler.ts"): Route {
   const isDynamic = pattern.includes(":");
-  const params = isDynamic
-    ? [...pattern.matchAll(/:(\w+)/g)].map((m) => m[1])
-    : [];
+  const params = isDynamic ? [...pattern.matchAll(/:(\w+)/g)].map((m) => m[1]) : [];
   return { pattern, filePath, isDynamic, params };
 }
 
 /**
  * Build a minimal mock ViteDevServer with configurable ssrLoadModule behavior.
  */
-function mockServer(
-  moduleExport: Record<string, unknown>,
-): ViteDevServer {
+function mockServer(moduleExport: Record<string, unknown>): ViteDevServer {
   return {
     ssrLoadModule: vi.fn().mockResolvedValue(moduleExport),
     ssrFixStacktrace: vi.fn(),
@@ -144,13 +140,9 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/nonexistent");
       const res = mockRes();
 
-      const handled = await handleApiRoute(
-        server,
-        req,
-        res,
-        "/api/nonexistent",
-        [route("/api/users")],
-      );
+      const handled = await handleApiRoute(server, req, res, "/api/nonexistent", [
+        route("/api/users"),
+      ]);
 
       expect(handled).toBe(false);
       expect(handler).not.toHaveBeenCalled();
@@ -162,13 +154,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      const handled = await handleApiRoute(
-        server,
-        req,
-        res,
-        "/api/users",
-        [route("/api/users")],
-      );
+      const handled = await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(handled).toBe(true);
       expect(handler).toHaveBeenCalledOnce();
@@ -190,9 +176,7 @@ describe("handleApiRoute", () => {
       });
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedBody).toEqual({ name: "Alice", age: 30 });
     });
@@ -208,9 +192,7 @@ describe("handleApiRoute", () => {
       });
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedBody).toBe("{not json");
     });
@@ -226,9 +208,7 @@ describe("handleApiRoute", () => {
       });
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedBody).toEqual({ name: "Alice", role: "admin" });
     });
@@ -244,9 +224,7 @@ describe("handleApiRoute", () => {
       });
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedBody).toBe("plain text body");
     });
@@ -260,9 +238,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedBody).toBeUndefined();
     });
@@ -276,9 +252,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("POST", "/api/users", "some data");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedBody).toBe("some data");
     });
@@ -329,9 +303,7 @@ describe("handleApiRoute", () => {
         }
       });
 
-      await handleApiRoute(server, req, res, "/api/upload", [
-        route("/api/upload"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/upload", [route("/api/upload")]);
 
       expect(handler).not.toHaveBeenCalled();
       expect(res._statusCode).toBe(413);
@@ -352,9 +324,7 @@ describe("handleApiRoute", () => {
       });
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/upload", [
-        route("/api/upload"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/upload", [route("/api/upload")]);
 
       expect(handler).toHaveBeenCalledOnce();
       expect(capturedBody).toBe(body);
@@ -375,9 +345,7 @@ describe("handleApiRoute", () => {
       });
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedCookies).toEqual({ session: "abc123" });
     });
@@ -393,9 +361,7 @@ describe("handleApiRoute", () => {
       });
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedCookies).toEqual({
         session: "abc123",
@@ -415,9 +381,7 @@ describe("handleApiRoute", () => {
       });
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedCookies).toEqual({ token: "abc=def=ghi" });
     });
@@ -431,9 +395,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedCookies).toEqual({});
     });
@@ -452,9 +414,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("POST", "/api/users");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(res._statusCode).toBe(201);
       expect(res._headers["content-type"]).toBe("application/json");
@@ -471,9 +431,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(res._headers["content-type"]).toBe("application/json");
       expect(JSON.parse(res._body)).toEqual({ message: "hello" });
@@ -488,9 +446,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(JSON.parse(res._body)).toEqual(data);
     });
@@ -505,9 +461,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(res._headers["content-type"]).toBe("application/json");
       expect(JSON.parse(res._body)).toEqual({ key: "value" });
@@ -521,9 +475,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(res._headers["content-type"]).toBe("text/plain");
       expect(res._body).toBe("hello world");
@@ -537,9 +489,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(res._headers["content-type"]).toBe("text/plain");
       expect(res._body).toBe("42");
@@ -554,9 +504,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/page");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/page", [
-        route("/api/page"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/page", [route("/api/page")]);
 
       expect(res._headers["content-type"]).toBe("text/html");
       expect(res._body).toBe("<h1>Hello</h1>");
@@ -572,9 +520,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(res._headers["content-type"]).toBe("text/plain");
       expect(res._body).toBe("null");
@@ -590,9 +536,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/login");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/login", [
-        route("/api/login"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/login", [route("/api/login")]);
 
       expect(res._statusCode).toBe(307);
       expect(res._headers["location"]).toBe("/dashboard");
@@ -607,9 +551,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/old");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/old", [
-        route("/api/old"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/old", [route("/api/old")]);
 
       expect(res._statusCode).toBe(301);
       expect(res._headers["location"]).toBe("/new-location");
@@ -623,9 +565,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/external");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/external", [
-        route("/api/external"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/external", [route("/api/external")]);
 
       expect(res._statusCode).toBe(302);
       expect(res._headers["location"]).toBe("https://external.com");
@@ -644,9 +584,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users?page=2&limit=10");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users?page=2&limit=10", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users?page=2&limit=10", [route("/api/users")]);
 
       expect(capturedQuery.page).toBe("2");
       expect(capturedQuery.limit).toBe("10");
@@ -661,9 +599,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users/42");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users/42", [
-        route("/api/users/:id"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users/42", [route("/api/users/:id")]);
 
       expect(capturedQuery.id).toBe("42");
     });
@@ -677,13 +613,9 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users/42?fields=name,email");
       const res = mockRes();
 
-      await handleApiRoute(
-        server,
-        req,
-        res,
-        "/api/users/42?fields=name,email",
-        [route("/api/users/:id")],
-      );
+      await handleApiRoute(server, req, res, "/api/users/42?fields=name,email", [
+        route("/api/users/:id"),
+      ]);
 
       expect(capturedQuery.id).toBe("42");
       expect(capturedQuery.fields).toBe("name,email");
@@ -698,9 +630,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users?tag=a&tag=b");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users?tag=a&tag=b", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users?tag=a&tag=b", [route("/api/users")]);
 
       expect(capturedQuery.tag).toEqual(["a", "b"]);
     });
@@ -714,9 +644,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedQuery).toEqual({});
     });
@@ -730,9 +658,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      const handled = await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      const handled = await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(handled).toBe(true);
       expect(res._statusCode).toBe(500);
@@ -744,9 +670,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      const handled = await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      const handled = await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(handled).toBe(true);
       expect(res._statusCode).toBe(500);
@@ -761,9 +685,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      const handled = await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      const handled = await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(handled).toBe(true);
       expect(res._statusCode).toBe(500);
@@ -779,9 +701,7 @@ describe("handleApiRoute", () => {
       const req = mockReq("GET", "/api/users");
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/users", [
-        route("/api/users"),
-      ]);
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(server.ssrFixStacktrace).toHaveBeenCalledWith(error);
     });

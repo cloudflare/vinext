@@ -45,11 +45,7 @@ describe("Link rendering", () => {
 
   it("renders with object href", () => {
     const html = ReactDOMServer.renderToString(
-      React.createElement(
-        Link,
-        { href: { pathname: "/search", query: { q: "test" } } },
-        "Search",
-      ),
+      React.createElement(Link, { href: { pathname: "/search", query: { q: "test" } } }, "Search"),
     );
     // resolveHref({ pathname: "/search", query: { q: "test" } }) -> "/search?q=test"
     expect(html).toContain('href="/search?q=test"');
@@ -57,11 +53,7 @@ describe("Link rendering", () => {
 
   it("renders object href with only query (defaults to /)", () => {
     const html = ReactDOMServer.renderToString(
-      React.createElement(
-        Link,
-        { href: { query: { tab: "settings" } } },
-        "Settings",
-      ),
+      React.createElement(Link, { href: { query: { tab: "settings" } } }, "Settings"),
     );
     expect(html).toContain('href="/?tab=settings"');
   });
@@ -69,11 +61,7 @@ describe("Link rendering", () => {
   it("renders with as prop overriding href", () => {
     // Legacy pattern: href is the route pattern, as is the actual URL
     const html = ReactDOMServer.renderToString(
-      React.createElement(
-        Link,
-        { href: "/user/[id]", as: "/user/42" },
-        "User 42",
-      ),
+      React.createElement(Link, { href: "/user/[id]", as: "/user/42" }, "User 42"),
     );
     expect(html).toContain('href="/user/42"');
   });
@@ -90,7 +78,7 @@ describe("Link rendering", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Link, { href: "/test", locale: "fr" } as any, "Test"),
     );
-    expect(html).not.toContain('locale=');
+    expect(html).not.toContain("locale=");
   });
 
   it("passes through standard anchor attributes", () => {
@@ -137,9 +125,7 @@ describe("useLinkStatus", () => {
 
 describe("Link resolveHref", () => {
   it("string href passes through unchanged", () => {
-    const html = ReactDOMServer.renderToString(
-      React.createElement(Link, { href: "/about" }, "x"),
-    );
+    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/about" }, "x"));
     expect(html).toContain('href="/about"');
   });
 
@@ -157,11 +143,7 @@ describe("Link resolveHref", () => {
 
   it("object href with only pathname", () => {
     const html = ReactDOMServer.renderToString(
-      React.createElement(
-        Link,
-        { href: { pathname: "/dashboard" } },
-        "x",
-      ),
+      React.createElement(Link, { href: { pathname: "/dashboard" } }, "x"),
     );
     expect(html).toContain('href="/dashboard"');
   });
@@ -218,9 +200,7 @@ describe("Link locale handling", () => {
   });
 
   it("locale=undefined keeps href as-is", () => {
-    const html = ReactDOMServer.renderToString(
-      React.createElement(Link, { href: "/about" }, "x"),
-    );
+    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/about" }, "x"));
     expect(html).toContain('href="/about"');
   });
 
@@ -285,7 +265,9 @@ describe("toSameOriginPath", () => {
     });
 
     it("returns pathname + search + hash for same-origin URL", () => {
-      expect(toSameOriginPath("http://localhost:3000/search?q=test#results")).toBe("/search?q=test#results");
+      expect(toSameOriginPath("http://localhost:3000/search?q=test#results")).toBe(
+        "/search?q=test#results",
+      );
     });
 
     it("returns null for cross-origin URL", () => {

@@ -87,24 +87,14 @@ describe("Static export — Pages Router (served via HTTP)", () => {
     viteServer = vite.server;
 
     // 2. Run static export
-    const { staticExportPages } = await import(
-      "../packages/vinext/src/build/static-export.js"
-    );
-    const { pagesRouter } = await import(
-      "../packages/vinext/src/routing/pages-router.js"
-    );
-    const { resolveNextConfig } = await import(
-      "../packages/vinext/src/config/next-config.js"
-    );
+    const { staticExportPages } = await import("../packages/vinext/src/build/static-export.js");
+    const { pagesRouter } = await import("../packages/vinext/src/routing/pages-router.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
 
     const pagesDir = path.resolve(PAGES_FIXTURE, "pages");
     const routes = await pagesRouter(pagesDir);
-    const pageRoutes = routes.filter(
-      (r: any) => !r.filePath.includes("/api/"),
-    );
-    const apiRoutes = routes.filter((r: any) =>
-      r.filePath.includes("/api/"),
-    );
+    const pageRoutes = routes.filter((r: any) => !r.filePath.includes("/api/"));
+    const apiRoutes = routes.filter((r: any) => r.filePath.includes("/api/"));
     const config = await resolveNextConfig({ output: "export" });
 
     await staticExportPages({
@@ -163,9 +153,7 @@ describe("Static export — Pages Router (served via HTTP)", () => {
     const html = await res.text();
     expect(html).toContain("__NEXT_DATA__");
     // Verify it's valid JSON inside the script tag
-    const match = html.match(
-      /window\.__NEXT_DATA__\s*=\s*({[^<]+})/,
-    );
+    const match = html.match(/window\.__NEXT_DATA__\s*=\s*({[^<]+})/);
     expect(match).toBeTruthy();
     const data = JSON.parse(match![1]);
     expect(data.props).toBeDefined();
@@ -187,9 +175,7 @@ describe("Static export — Pages Router (served via HTTP)", () => {
   it("getStaticProps pages have correct data in __NEXT_DATA__", async () => {
     const res = await fetch(`${baseUrl}/blog/hello-world`);
     const html = await res.text();
-    const match = html.match(
-      /window\.__NEXT_DATA__\s*=\s*({[^<]+})/,
-    );
+    const match = html.match(/window\.__NEXT_DATA__\s*=\s*({[^<]+})/);
     expect(match).toBeTruthy();
     const data = JSON.parse(match![1]);
     expect(data.props.pageProps).toBeDefined();
@@ -214,15 +200,9 @@ describe("Static export — App Router (served via HTTP)", () => {
     viteBaseUrl = vite.baseUrl;
 
     // 2. Run static export
-    const { staticExportApp } = await import(
-      "../packages/vinext/src/build/static-export.js"
-    );
-    const { appRouter } = await import(
-      "../packages/vinext/src/routing/app-router.js"
-    );
-    const { resolveNextConfig } = await import(
-      "../packages/vinext/src/config/next-config.js"
-    );
+    const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
+    const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
 
     const appDir = path.resolve(APP_FIXTURE, "app");
     const routes = await appRouter(appDir);

@@ -50,14 +50,9 @@ export function isProxyFile(filePath: string): boolean {
  * @see https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/middleware.ts
  * @see https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
  */
-export function resolveMiddlewareHandler(
-  mod: Record<string, unknown>,
-  filePath: string,
-): Function {
+export function resolveMiddlewareHandler(mod: Record<string, unknown>, filePath: string): Function {
   const isProxy = isProxyFile(filePath);
-  const handler = isProxy
-    ? (mod.proxy ?? mod.default)
-    : (mod.middleware ?? mod.default);
+  const handler = isProxy ? (mod.proxy ?? mod.default) : (mod.middleware ?? mod.default);
 
   if (typeof handler !== "function") {
     const fileType = isProxy ? "Proxy" : "Middleware";
@@ -133,10 +128,7 @@ type MatcherConfig =
  * If no matcher is configured, middleware runs on all paths
  * except static files and internal Next.js paths.
  */
-export function matchesMiddleware(
-  pathname: string,
-  matcher: MatcherConfig | undefined,
-): boolean {
+export function matchesMiddleware(pathname: string, matcher: MatcherConfig | undefined): boolean {
   if (!matcher) {
     // Next.js default: middleware runs on ALL paths when no matcher is configured.
     // Users opt out of specific paths by configuring a matcher pattern.
@@ -241,7 +233,7 @@ export async function runMiddleware(
   // Load the middleware module via the direct-call ModuleRunner.
   // This bypasses the hot channel entirely and is safe with all Vite plugin
   // combinations, including @cloudflare/vite-plugin.
-  const mod = await runner.import(middlewarePath) as Record<string, unknown>;
+  const mod = (await runner.import(middlewarePath)) as Record<string, unknown>;
 
   // Resolve the handler based on file type (proxy.ts vs middleware.ts).
   // Throws if the file doesn't export a valid function, matching Next.js behavior.
@@ -268,8 +260,8 @@ export async function runMiddleware(
     return { continue: true };
   }
 
-   // Construct a new Request with the fully decoded + normalized pathname so
-   // middleware always sees the same canonical path that the router uses.
+  // Construct a new Request with the fully decoded + normalized pathname so
+  // middleware always sees the same canonical path that the router uses.
   let mwRequest = request;
   if (normalizedPathname !== url.pathname) {
     const mwUrl = new URL(url);

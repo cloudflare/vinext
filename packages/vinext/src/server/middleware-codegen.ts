@@ -141,9 +141,10 @@ function __normalizePath(pathname) {
 export function generateMiddlewareMatcherCode(style: "modern" | "es5" = "modern"): string {
   const v = style === "modern" ? "const" : "var";
   const l = style === "modern" ? "let" : "var";
-  const fn = style === "modern"
-    ? (params: string, body: string) => `(${params}) => { ${body} }`
-    : (params: string, body: string) => `function(${params}) { ${body} }`;
+  const fn =
+    style === "modern"
+      ? (params: string, body: string) => `(${params}) => { ${body} }`
+      : (params: string, body: string) => `function(${params}) { ${body} }`;
 
   // The pattern matching logic must be identical to matchPattern() in
   // packages/vinext/src/server/middleware.ts. Any changes here must be
@@ -188,5 +189,3 @@ function matchesMiddleware(pathname, matcher) {
   return patterns.some(${fn("p", "return matchMiddlewarePattern(pathname, p);")});
 }`;
 }
-
-

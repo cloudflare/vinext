@@ -37,7 +37,9 @@ declare global {
      * Written and read by `shims/router.ts` to avoid re-importing on every
      * client-side navigation.
      */
-    __VINEXT_APP__: React.ComponentType<{ Component: React.ComponentType<unknown>; pageProps: unknown }> | undefined;
+    __VINEXT_APP__:
+      | React.ComponentType<{ Component: React.ComponentType<unknown>; pageProps: unknown }>
+      | undefined;
 
     /**
      * The current active locale for Pages Router internationalisation.
@@ -151,9 +153,7 @@ declare global {
    * preserve duplicate keys (e.g. `?tag=a&tag=b`).
    */
   // eslint-disable-next-line no-var
-  var __VINEXT_RSC_NAV__:
-    | { pathname: string; searchParams: [string, string][] }
-    | undefined;
+  var __VINEXT_RSC_NAV__: { pathname: string; searchParams: [string, string][] } | undefined;
 
   /**
    * Legacy RSC embed format (pre-progressive-streaming).
@@ -166,9 +166,7 @@ declare global {
    *   `__VINEXT_RSC_PARAMS__` instead.
    */
   // eslint-disable-next-line no-var
-  var __VINEXT_RSC__:
-    | { rsc: string[]; params: Record<string, string | string[]> }
-    | undefined;
+  var __VINEXT_RSC__: { rsc: string[]; params: Record<string, string | string[]> } | undefined;
 
   // ── globalThis globals — server-side / Cloudflare Workers ─────────────────
   //
@@ -227,7 +225,7 @@ declare global {
    * is not yet available (e.g. during SSR of Link components).
    */
   // eslint-disable-next-line no-var
-	var __VINEXT_DEFAULT_LOCALE__: string | undefined;
+  var __VINEXT_DEFAULT_LOCALE__: string | undefined;
 
   /**
    * The onRequestError handler registered by instrumentation.ts.
@@ -238,8 +236,8 @@ declare global {
    * `@cloudflare/vite-plugin` it runs entirely inside the Worker, so
    * `globalThis` is the Worker's global — also correct.
    */
-	// eslint-disable-next-line no-var
-	var __VINEXT_onRequestErrorHandler__: OnRequestErrorHandler | undefined;
+  // eslint-disable-next-line no-var
+  var __VINEXT_onRequestErrorHandler__: OnRequestErrorHandler | undefined;
 }
 
 // ---------------------------------------------------------------------------

@@ -127,9 +127,12 @@ describe("parseDeployArgs", () => {
   it("parses numeric TPR flags from string values", () => {
     const parsed = parseDeployArgs([
       "--experimental-tpr",
-      "--tpr-coverage", "95",
-      "--tpr-limit", "500",
-      "--tpr-window", "48",
+      "--tpr-coverage",
+      "95",
+      "--tpr-limit",
+      "500",
+      "--tpr-window",
+      "48",
     ]);
     expect(parsed.experimentalTPR).toBe(true);
     expect(parsed.tprCoverage).toBe(95);
@@ -313,7 +316,11 @@ describe("generateWranglerConfig", () => {
 
   it("includes KV namespace when ISR detected", () => {
     mkdir(tmpDir, "app");
-    writeFile(tmpDir, "app/page.tsx", "export const revalidate = 30;\nexport default function() { return <div/> }");
+    writeFile(
+      tmpDir,
+      "app/page.tsx",
+      "export const revalidate = 30;\nexport default function() { return <div/> }",
+    );
     const info = detectProject(tmpDir);
     const config = generateWranglerConfig(info);
     const parsed = JSON.parse(config);
@@ -423,8 +430,12 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(content).toContain("runMiddleware");
     expect(content).toContain("vinextConfig");
     // Both should come from the same virtual import
-    expect(content).toMatch(/import\s*\{[^}]*runMiddleware[^}]*\}\s*from\s*"virtual:vinext-server-entry"/);
-    expect(content).toMatch(/import\s*\{[^}]*vinextConfig[^}]*\}\s*from\s*"virtual:vinext-server-entry"/);
+    expect(content).toMatch(
+      /import\s*\{[^}]*runMiddleware[^}]*\}\s*from\s*"virtual:vinext-server-entry"/,
+    );
+    expect(content).toMatch(
+      /import\s*\{[^}]*vinextConfig[^}]*\}\s*from\s*"virtual:vinext-server-entry"/,
+    );
   });
 
   it("imports config matchers from vinext/config/config-matchers", () => {
@@ -674,9 +685,7 @@ describe("getMissingDeps", () => {
     info.hasRscPlugin = true;
 
     const missing = getMissingDeps(info);
-    expect(missing).toContainEqual(
-      expect.objectContaining({ name: "@cloudflare/vite-plugin" }),
-    );
+    expect(missing).toContainEqual(expect.objectContaining({ name: "@cloudflare/vite-plugin" }));
   });
 
   it("reports missing wrangler", () => {
@@ -687,9 +696,7 @@ describe("getMissingDeps", () => {
     info.hasRscPlugin = true;
 
     const missing = getMissingDeps(info);
-    expect(missing).toContainEqual(
-      expect.objectContaining({ name: "wrangler" }),
-    );
+    expect(missing).toContainEqual(expect.objectContaining({ name: "wrangler" }));
   });
 
   it("reports missing @vitejs/plugin-rsc for App Router", () => {
@@ -700,9 +707,7 @@ describe("getMissingDeps", () => {
     info.hasRscPlugin = false;
 
     const missing = getMissingDeps(info);
-    expect(missing).toContainEqual(
-      expect.objectContaining({ name: "@vitejs/plugin-rsc" }),
-    );
+    expect(missing).toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-rsc" }));
   });
 
   it("does not require @vitejs/plugin-rsc for Pages Router", () => {
@@ -713,9 +718,7 @@ describe("getMissingDeps", () => {
     info.hasRscPlugin = false;
 
     const missing = getMissingDeps(info);
-    expect(missing).not.toContainEqual(
-      expect.objectContaining({ name: "@vitejs/plugin-rsc" }),
-    );
+    expect(missing).not.toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-rsc" }));
   });
 
   it("reports missing react-server-dom-webpack for App Router", () => {
@@ -730,9 +733,7 @@ describe("getMissingDeps", () => {
     // on filesystem isolation in tmpdir.)
     const notResolvable = () => false;
     const missing = getMissingDeps(info, notResolvable);
-    expect(missing).toContainEqual(
-      expect.objectContaining({ name: "react-server-dom-webpack" }),
-    );
+    expect(missing).toContainEqual(expect.objectContaining({ name: "react-server-dom-webpack" }));
   });
 
   it("does not require react-server-dom-webpack for Pages Router", () => {
@@ -905,60 +906,84 @@ describe("getFilesToGenerate", () => {
 
 describe("viteConfigHasCloudflarePlugin", () => {
   it("returns true when vite.config.ts imports @cloudflare/vite-plugin", () => {
-    writeFile(tmpDir, "vite.config.ts", `
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `
 import { cloudflare } from "@cloudflare/vite-plugin";
 import { defineConfig } from "vite";
 export default defineConfig({ plugins: [cloudflare()] });
-`);
+`,
+    );
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(true);
   });
 
   it("returns true for App Router config with viteEnvironment", () => {
-    writeFile(tmpDir, "vite.config.ts", `
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `
 import { cloudflare } from "@cloudflare/vite-plugin";
 import vinext from "vinext";
 import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [vinext(), cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } })],
 });
-`);
+`,
+    );
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(true);
   });
 
   it("returns false when vite.config.ts does not import @cloudflare/vite-plugin", () => {
-    writeFile(tmpDir, "vite.config.ts", `
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `
 import vinext from "vinext";
 import { defineConfig } from "vite";
 export default defineConfig({ plugins: [vinext()] });
-`);
+`,
+    );
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(false);
   });
 
   it("returns false for the minimal config generated by vinext init", () => {
     // init generates a local-dev-only config without the cloudflare plugin
-    writeFile(tmpDir, "vite.config.ts", `import vinext from "vinext";
+    writeFile(
+      tmpDir,
+      "vite.config.ts",
+      `import vinext from "vinext";
 import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [vinext()],
 });
-`);
+`,
+    );
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(false);
   });
 
   it("returns true for vite.config.js", () => {
-    writeFile(tmpDir, "vite.config.js", `
+    writeFile(
+      tmpDir,
+      "vite.config.js",
+      `
 import { cloudflare } from "@cloudflare/vite-plugin";
 export default { plugins: [cloudflare()] };
-`);
+`,
+    );
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(true);
   });
 
   it("returns true for vite.config.mjs", () => {
-    writeFile(tmpDir, "vite.config.mjs", `
+    writeFile(
+      tmpDir,
+      "vite.config.mjs",
+      `
 import { cloudflare } from "@cloudflare/vite-plugin";
 export default { plugins: [cloudflare()] };
-`);
+`,
+    );
     expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(true);
   });
 
@@ -1090,7 +1115,11 @@ describe("renameCJSConfigs", () => {
   });
 
   it("renames tailwind.config.js using require() to .cjs", () => {
-    writeFile(tmpDir, "tailwind.config.js", `const plugin = require("tailwindcss/plugin");\nmodule.exports = {};`);
+    writeFile(
+      tmpDir,
+      "tailwind.config.js",
+      `const plugin = require("tailwindcss/plugin");\nmodule.exports = {};`,
+    );
 
     const renamed = renameCJSConfigs(tmpDir);
     expect(renamed).toEqual([["tailwind.config.js", "tailwind.config.cjs"]]);
@@ -1127,7 +1156,11 @@ describe("renameCJSConfigs", () => {
 describe("detectProject — src/ directory convention", () => {
   it("detects App Router when src/app/ exists", () => {
     mkdir(tmpDir, "src/app");
-    writeFile(tmpDir, "src/app/page.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      tmpDir,
+      "src/app/page.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
     const info = detectProject(tmpDir);
     expect(info.isAppRouter).toBe(true);
     expect(info.isPagesRouter).toBe(false);
@@ -1135,7 +1168,11 @@ describe("detectProject — src/ directory convention", () => {
 
   it("detects Pages Router when only src/pages/ exists", () => {
     mkdir(tmpDir, "src/pages");
-    writeFile(tmpDir, "src/pages/index.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      tmpDir,
+      "src/pages/index.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
     const info = detectProject(tmpDir);
     expect(info.isAppRouter).toBe(false);
     expect(info.isPagesRouter).toBe(true);
@@ -1185,7 +1222,11 @@ describe("detectProject — src/ directory convention", () => {
 
   it("does not detect ISR when src/app/ has no revalidate exports", () => {
     mkdir(tmpDir, "src/app");
-    writeFile(tmpDir, "src/app/page.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      tmpDir,
+      "src/app/page.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
     const info = detectProject(tmpDir);
     expect(info.isAppRouter).toBe(true);
     expect(info.hasISR).toBe(false);
@@ -1209,7 +1250,11 @@ describe("detectProject — src/ directory convention", () => {
 
   it("generates correct files for src/app/ project", () => {
     mkdir(tmpDir, "src/app");
-    writeFile(tmpDir, "src/app/page.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      tmpDir,
+      "src/app/page.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
     const info = detectProject(tmpDir);
     const files = getFilesToGenerate(info);
 
@@ -1226,7 +1271,11 @@ describe("detectProject — src/ directory convention", () => {
 
   it("generates correct files for src/pages/ project", () => {
     mkdir(tmpDir, "src/pages");
-    writeFile(tmpDir, "src/pages/index.tsx", "export default function Home() { return <div>hi</div> }");
+    writeFile(
+      tmpDir,
+      "src/pages/index.tsx",
+      "export default function Home() { return <div>hi</div> }",
+    );
     const info = detectProject(tmpDir);
     const files = getFilesToGenerate(info);
 
@@ -1578,7 +1627,9 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
         const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
         const lazy = computeLazyChunks(buildManifest);
         if (lazy.length > 0) lazyChunksData = lazy;
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     // Read SSR manifest
@@ -1587,7 +1638,9 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     if (fs.existsSync(ssrManifestPath)) {
       try {
         ssrManifestData = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8"));
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     // App Router: inject into dist/server/index.js (NOT __VINEXT_CLIENT_ENTRY__)
@@ -1622,8 +1675,10 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     for (const entry of fs.readdirSync(distDir)) {
       const candidate = path.join(distDir, entry);
       if (entry === "client") continue;
-      if (fs.statSync(candidate).isDirectory() &&
-          fs.existsSync(path.join(candidate, "wrangler.json"))) {
+      if (
+        fs.statSync(candidate).isDirectory() &&
+        fs.existsSync(path.join(candidate, "wrangler.json"))
+      ) {
         workerOutDir = candidate;
         break;
       }
@@ -1648,7 +1703,9 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
         }
         const lazy = computeLazyChunks(buildManifest);
         if (lazy.length > 0) lazyChunksData = lazy;
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     // Read SSR manifest
@@ -1657,7 +1714,9 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     if (fs.existsSync(ssrManifestPath)) {
       try {
         ssrManifestData = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8"));
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
 
     // Pages Router: inject all three globals
@@ -1896,10 +1955,7 @@ describe("Cloudflare closeBundle lazy chunk injection", () => {
     // Set up worker dir without wrangler.json
     const workerDir = path.join(tmpDir, "dist", "worker");
     fs.mkdirSync(workerDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(workerDir, "index.js"),
-      "// unmodified",
-    );
+    fs.writeFileSync(path.join(workerDir, "index.js"), "// unmodified");
     fs.mkdirSync(path.join(tmpDir, "dist", "client", ".vite"), { recursive: true });
     fs.writeFileSync(
       path.join(tmpDir, "dist", "client", ".vite", "manifest.json"),
@@ -2077,11 +2133,7 @@ describe("findInNodeModules", () => {
 
 describe("ensureViteConfigCompatibility — issue #184", () => {
   it("renames CJS configs and adds type:module when vite.config.ts exists", () => {
-    writeFile(
-      tmpDir,
-      "package.json",
-      JSON.stringify({ name: "web", version: "1.0.0" }),
-    );
+    writeFile(tmpDir, "package.json", JSON.stringify({ name: "web", version: "1.0.0" }));
     writeFile(
       tmpDir,
       "vite.config.ts",
@@ -2106,11 +2158,7 @@ describe("ensureViteConfigCompatibility — issue #184", () => {
   });
 
   it("returns null when no vite.config exists", () => {
-    writeFile(
-      tmpDir,
-      "package.json",
-      JSON.stringify({ name: "web", version: "1.0.0" }),
-    );
+    writeFile(tmpDir, "package.json", JSON.stringify({ name: "web", version: "1.0.0" }));
 
     const result = ensureViteConfigCompatibility(tmpDir);
     expect(result).toBeNull();
@@ -2121,11 +2169,7 @@ describe("ensureViteConfigCompatibility — issue #184", () => {
   });
 
   it("returns null when package.json already has type:module", () => {
-    writeFile(
-      tmpDir,
-      "package.json",
-      JSON.stringify({ name: "web", type: "module" }),
-    );
+    writeFile(tmpDir, "package.json", JSON.stringify({ name: "web", type: "module" }));
     writeFile(tmpDir, "vite.config.ts", "export default {};");
 
     const result = ensureViteConfigCompatibility(tmpDir);
@@ -2133,11 +2177,7 @@ describe("ensureViteConfigCompatibility — issue #184", () => {
   });
 
   it("does not override explicit 'type': 'commonjs'", () => {
-    writeFile(
-      tmpDir,
-      "package.json",
-      JSON.stringify({ name: "web", type: "commonjs" }),
-    );
+    writeFile(tmpDir, "package.json", JSON.stringify({ name: "web", type: "commonjs" }));
     writeFile(tmpDir, "vite.config.ts", "export default {};");
     writeFile(tmpDir, "postcss.config.js", "module.exports = {};");
 
@@ -2160,11 +2200,7 @@ describe("ensureViteConfigCompatibility — issue #184", () => {
   });
 
   it("detects vite.config.js (not only .ts)", () => {
-    writeFile(
-      tmpDir,
-      "package.json",
-      JSON.stringify({ name: "web", version: "1.0.0" }),
-    );
+    writeFile(tmpDir, "package.json", JSON.stringify({ name: "web", version: "1.0.0" }));
     writeFile(tmpDir, "vite.config.js", "export default {};");
 
     const result = ensureViteConfigCompatibility(tmpDir);

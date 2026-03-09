@@ -147,7 +147,10 @@ const SAFE_IMAGE_CONTENT_TYPES = new Set([
  * Check if a Content-Type header value is a safe image type.
  * Returns false for SVG (unless dangerouslyAllowSVG is true), HTML, or any non-image type.
  */
-export function isSafeImageContentType(contentType: string | null, dangerouslyAllowSVG = false): boolean {
+export function isSafeImageContentType(
+  contentType: string | null,
+  dangerouslyAllowSVG = false,
+): boolean {
   if (!contentType) return false;
   // Extract the media type, ignoring parameters (e.g., charset)
   const mediaType = contentType.split(";")[0].trim().toLowerCase();
@@ -163,7 +166,10 @@ export function isSafeImageContentType(contentType: string | null, dangerouslyAl
  * When an ImageConfig is provided, uses its values for CSP and Content-Disposition.
  */
 function setImageSecurityHeaders(headers: Headers, config?: ImageConfig): void {
-  headers.set("Content-Security-Policy", config?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY);
+  headers.set(
+    "Content-Security-Policy",
+    config?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
+  );
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Content-Disposition", config?.contentDispositionType ?? "inline");
 }
@@ -178,7 +184,7 @@ export interface ImageHandlers {
   /** Optional: Transform the image (resize, format, quality). */
   transformImage?: (
     body: ReadableStream,
-    options: { width: number; format: string; quality: number }
+    options: { width: number; format: string; quality: number },
   ) => Promise<Response>;
 }
 

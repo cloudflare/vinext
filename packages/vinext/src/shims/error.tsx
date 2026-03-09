@@ -15,9 +15,7 @@ interface ErrorProps {
 
 function ErrorComponent({ statusCode, title }: ErrorProps): React.ReactElement {
   const defaultTitle =
-    statusCode === 404
-      ? "This page could not be found"
-      : "Internal Server Error";
+    statusCode === 404 ? "This page could not be found" : "Internal Server Error";
 
   const displayTitle = title ?? defaultTitle;
 

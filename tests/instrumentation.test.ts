@@ -148,11 +148,7 @@ describe("reportRequestError", () => {
     const error = new Error("boom");
     await reportRequestError(error, sampleRequest, sampleContext);
 
-    expect(onRequestError).toHaveBeenCalledWith(
-      error,
-      sampleRequest,
-      sampleContext,
-    );
+    expect(onRequestError).toHaveBeenCalledWith(error, sampleRequest, sampleContext);
   });
 
   it("no-ops when no handler is registered", async () => {

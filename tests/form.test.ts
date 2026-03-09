@@ -63,7 +63,9 @@ describe("Form SSR rendering", () => {
       React.createElement(
         Form,
         { action: "/search" },
-        React.createElement("div", { className: "form-group" },
+        React.createElement(
+          "div",
+          { className: "form-group" },
           React.createElement("label", null, "Query"),
           React.createElement("input", { name: "q" }),
         ),
@@ -77,11 +79,7 @@ describe("Form SSR rendering", () => {
 
   it("renders without method (defaults to GET in behavior)", () => {
     const html = ReactDOMServer.renderToString(
-      React.createElement(
-        Form,
-        { action: "/search" },
-        React.createElement("input", { name: "q" }),
-      ),
+      React.createElement(Form, { action: "/search" }, React.createElement("input", { name: "q" })),
     );
     // No explicit method attribute in HTML — browser defaults to GET
     expect(html).toContain('action="/search"');

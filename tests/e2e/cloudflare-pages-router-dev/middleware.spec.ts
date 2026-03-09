@@ -34,9 +34,7 @@ test.describe("middleware.ts with @cloudflare/vite-plugin (vite dev)", () => {
     expect(res.status()).toBe(200);
   });
 
-  test("subsequent requests are served normally after middleware runs", async ({
-    request,
-  }) => {
+  test("subsequent requests are served normally after middleware runs", async ({ request }) => {
     // Ensures the crash doesn't manifest on the second request either (e.g. if
     // runner state is corrupted after the first call).
     const res1 = await request.get(`${BASE}/api/hello`);
@@ -74,7 +72,7 @@ test.describe("middleware.ts with @cloudflare/vite-plugin (vite dev)", () => {
     // the route handler and doesn't swallow or corrupt the response.
     const res = await request.get(`${BASE}/api/hello`);
     expect(res.status()).toBe(200);
-    const data = await res.json() as { message: string; runtime: string };
+    const data = (await res.json()) as { message: string; runtime: string };
     expect(data.message).toBe("Hello from Pages Router API on Workers!");
     // GSSP and API routes run inside miniflare — navigator.userAgent is
     // "Cloudflare-Workers" only if the request reached the Worker.

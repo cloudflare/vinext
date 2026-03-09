@@ -33,9 +33,7 @@ export interface Viewport {
   /** Whether user can scale */
   userScalable?: boolean;
   /** Theme color — single color or array of { media, color } */
-  themeColor?:
-    | string
-    | Array<{ media?: string; color: string }>;
+  themeColor?: string | Array<{ media?: string; color: string }>;
   /** Color scheme: 'light' | 'dark' | 'light dark' | 'normal' */
   colorScheme?: string;
 }
@@ -89,20 +87,17 @@ export function ViewportHead({ viewport }: { viewport: Viewport }) {
   if (viewport.initialScale !== undefined) parts.push(`initial-scale=${viewport.initialScale}`);
   if (viewport.minimumScale !== undefined) parts.push(`minimum-scale=${viewport.minimumScale}`);
   if (viewport.maximumScale !== undefined) parts.push(`maximum-scale=${viewport.maximumScale}`);
-  if (viewport.userScalable !== undefined) parts.push(`user-scalable=${viewport.userScalable ? "yes" : "no"}`);
+  if (viewport.userScalable !== undefined)
+    parts.push(`user-scalable=${viewport.userScalable ? "yes" : "no"}`);
 
   if (parts.length > 0) {
-    elements.push(
-      <meta key={key++} name="viewport" content={parts.join(", ")} />,
-    );
+    elements.push(<meta key={key++} name="viewport" content={parts.join(", ")} />);
   }
 
   // Theme color
   if (viewport.themeColor) {
     if (typeof viewport.themeColor === "string") {
-      elements.push(
-        <meta key={key++} name="theme-color" content={viewport.themeColor} />,
-      );
+      elements.push(<meta key={key++} name="theme-color" content={viewport.themeColor} />);
     } else if (Array.isArray(viewport.themeColor)) {
       for (const entry of viewport.themeColor) {
         elements.push(
@@ -119,9 +114,7 @@ export function ViewportHead({ viewport }: { viewport: Viewport }) {
 
   // Color scheme
   if (viewport.colorScheme) {
-    elements.push(
-      <meta key={key++} name="color-scheme" content={viewport.colorScheme} />,
-    );
+    elements.push(<meta key={key++} name="color-scheme" content={viewport.colorScheme} />);
   }
 
   return <>{elements}</>;
@@ -141,7 +134,14 @@ export interface Metadata {
   authors?: Array<{ name?: string; url?: string }> | { name?: string; url?: string };
   creator?: string;
   publisher?: string;
-  robots?: string | { index?: boolean; follow?: boolean; googleBot?: string | { index?: boolean; follow?: boolean; [key: string]: unknown }; [key: string]: unknown };
+  robots?:
+    | string
+    | {
+        index?: boolean;
+        follow?: boolean;
+        googleBot?: string | { index?: boolean; follow?: boolean; [key: string]: unknown };
+        [key: string]: unknown;
+      };
   openGraph?: {
     title?: string;
     description?: string;
@@ -162,7 +162,10 @@ export interface Metadata {
     siteId?: string;
     title?: string;
     description?: string;
-    images?: string | string[] | Array<{ url: string; alt?: string; width?: number; height?: number }>;
+    images?:
+      | string
+      | string[]
+      | Array<{ url: string; alt?: string; width?: number; height?: number }>;
     creator?: string;
     creatorId?: string;
   };
@@ -333,9 +336,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
 
   // Description
   if (metadata.description) {
-    elements.push(
-      <meta key={key++} name="description" content={metadata.description} />,
-    );
+    elements.push(<meta key={key++} name="description" content={metadata.description} />);
   }
 
   // Generator
@@ -355,17 +356,13 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
 
   // Keywords
   if (metadata.keywords) {
-    const kw = Array.isArray(metadata.keywords)
-      ? metadata.keywords.join(",")
-      : metadata.keywords;
+    const kw = Array.isArray(metadata.keywords) ? metadata.keywords.join(",") : metadata.keywords;
     elements.push(<meta key={key++} name="keywords" content={kw} />);
   }
 
   // Authors
   if (metadata.authors) {
-    const authorList = Array.isArray(metadata.authors)
-      ? metadata.authors
-      : [metadata.authors];
+    const authorList = Array.isArray(metadata.authors) ? metadata.authors : [metadata.authors];
     for (const author of authorList) {
       if (author.name) {
         elements.push(<meta key={key++} name="author" content={author.name} />);
@@ -439,22 +436,23 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
   // Open Graph
   if (metadata.openGraph) {
     const og = metadata.openGraph;
-    if (og.title)
-      elements.push(<meta key={key++} property="og:title" content={og.title} />);
+    if (og.title) elements.push(<meta key={key++} property="og:title" content={og.title} />);
     if (og.description)
       elements.push(<meta key={key++} property="og:description" content={og.description} />);
     if (og.url)
       elements.push(<meta key={key++} property="og:url" content={resolveUrl(og.url) ?? og.url} />);
     if (og.siteName)
       elements.push(<meta key={key++} property="og:site_name" content={og.siteName} />);
-    if (og.type)
-      elements.push(<meta key={key++} property="og:type" content={og.type} />);
-    if (og.locale)
-      elements.push(<meta key={key++} property="og:locale" content={og.locale} />);
+    if (og.type) elements.push(<meta key={key++} property="og:type" content={og.type} />);
+    if (og.locale) elements.push(<meta key={key++} property="og:locale" content={og.locale} />);
     if (og.publishedTime)
-      elements.push(<meta key={key++} property="article:published_time" content={og.publishedTime} />);
+      elements.push(
+        <meta key={key++} property="article:published_time" content={og.publishedTime} />,
+      );
     if (og.modifiedTime)
-      elements.push(<meta key={key++} property="article:modified_time" content={og.modifiedTime} />);
+      elements.push(
+        <meta key={key++} property="article:modified_time" content={og.modifiedTime} />,
+      );
     if (og.authors) {
       for (const author of og.authors) {
         elements.push(<meta key={key++} property="article:author" content={author} />);
@@ -464,12 +462,18 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
       const imgList = typeof og.images === "string" ? [{ url: og.images }] : og.images;
       for (const img of imgList) {
         const imgUrl = typeof img === "string" ? img : img.url;
-        elements.push(<meta key={key++} property="og:image" content={resolveUrl(imgUrl) ?? imgUrl} />);
+        elements.push(
+          <meta key={key++} property="og:image" content={resolveUrl(imgUrl) ?? imgUrl} />,
+        );
         if (typeof img !== "string") {
           if (img.width)
-            elements.push(<meta key={key++} property="og:image:width" content={String(img.width)} />);
+            elements.push(
+              <meta key={key++} property="og:image:width" content={String(img.width)} />,
+            );
           if (img.height)
-            elements.push(<meta key={key++} property="og:image:height" content={String(img.height)} />);
+            elements.push(
+              <meta key={key++} property="og:image:height" content={String(img.height)} />,
+            );
           if (img.alt)
             elements.push(<meta key={key++} property="og:image:alt" content={img.alt} />);
         }
@@ -477,14 +481,24 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     if (og.videos) {
       for (const video of og.videos) {
-        elements.push(<meta key={key++} property="og:video" content={resolveUrl(video.url) ?? video.url} />);
-        if (video.width) elements.push(<meta key={key++} property="og:video:width" content={String(video.width)} />);
-        if (video.height) elements.push(<meta key={key++} property="og:video:height" content={String(video.height)} />);
+        elements.push(
+          <meta key={key++} property="og:video" content={resolveUrl(video.url) ?? video.url} />,
+        );
+        if (video.width)
+          elements.push(
+            <meta key={key++} property="og:video:width" content={String(video.width)} />,
+          );
+        if (video.height)
+          elements.push(
+            <meta key={key++} property="og:video:height" content={String(video.height)} />,
+          );
       }
     }
     if (og.audio) {
       for (const audio of og.audio) {
-        elements.push(<meta key={key++} property="og:audio" content={resolveUrl(audio.url) ?? audio.url} />);
+        elements.push(
+          <meta key={key++} property="og:audio" content={resolveUrl(audio.url) ?? audio.url} />,
+        );
       }
     }
   }
@@ -492,27 +506,23 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
   // Twitter
   if (metadata.twitter) {
     const tw = metadata.twitter;
-    if (tw.card)
-      elements.push(<meta key={key++} name="twitter:card" content={tw.card} />);
-    if (tw.site)
-      elements.push(<meta key={key++} name="twitter:site" content={tw.site} />);
-    if (tw.siteId)
-      elements.push(<meta key={key++} name="twitter:site:id" content={tw.siteId} />);
-    if (tw.title)
-      elements.push(<meta key={key++} name="twitter:title" content={tw.title} />);
+    if (tw.card) elements.push(<meta key={key++} name="twitter:card" content={tw.card} />);
+    if (tw.site) elements.push(<meta key={key++} name="twitter:site" content={tw.site} />);
+    if (tw.siteId) elements.push(<meta key={key++} name="twitter:site:id" content={tw.siteId} />);
+    if (tw.title) elements.push(<meta key={key++} name="twitter:title" content={tw.title} />);
     if (tw.description)
       elements.push(<meta key={key++} name="twitter:description" content={tw.description} />);
-    if (tw.creator)
-      elements.push(<meta key={key++} name="twitter:creator" content={tw.creator} />);
+    if (tw.creator) elements.push(<meta key={key++} name="twitter:creator" content={tw.creator} />);
     if (tw.creatorId)
       elements.push(<meta key={key++} name="twitter:creator:id" content={tw.creatorId} />);
     if (tw.images) {
-      const imgList = typeof tw.images === "string"
-        ? [tw.images]
-        : Array.isArray(tw.images) ? tw.images : [];
+      const imgList =
+        typeof tw.images === "string" ? [tw.images] : Array.isArray(tw.images) ? tw.images : [];
       for (const img of imgList) {
         const imgUrl = typeof img === "string" ? img : img.url;
-        elements.push(<meta key={key++} name="twitter:image" content={resolveUrl(imgUrl) ?? imgUrl} />);
+        elements.push(
+          <meta key={key++} name="twitter:image" content={resolveUrl(imgUrl) ?? imgUrl} />,
+        );
         if (typeof img !== "string" && img.alt) {
           elements.push(<meta key={key++} name="twitter:image:alt" content={img.alt} />);
         }
@@ -565,7 +575,12 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     if (other) {
       for (const o of other) {
         elements.push(
-          <link key={key++} rel={o.rel} href={resolveUrl(o.url) ?? o.url} {...(o.sizes ? { sizes: o.sizes } : {})} />,
+          <link
+            key={key++}
+            rel={o.rel}
+            href={resolveUrl(o.url) ?? o.url}
+            {...(o.sizes ? { sizes: o.sizes } : {})}
+          />,
         );
       }
     }
@@ -573,28 +588,38 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
 
   // Manifest
   if (metadata.manifest) {
-    elements.push(<link key={key++} rel="manifest" href={resolveUrl(metadata.manifest) ?? metadata.manifest} />);
+    elements.push(
+      <link key={key++} rel="manifest" href={resolveUrl(metadata.manifest) ?? metadata.manifest} />,
+    );
   }
 
   // Alternates
   if (metadata.alternates) {
     const alt = metadata.alternates;
     if (alt.canonical) {
-      elements.push(<link key={key++} rel="canonical" href={resolveUrl(alt.canonical) ?? alt.canonical} />);
+      elements.push(
+        <link key={key++} rel="canonical" href={resolveUrl(alt.canonical) ?? alt.canonical} />,
+      );
     }
     if (alt.languages) {
       for (const [lang, href] of Object.entries(alt.languages)) {
-        elements.push(<link key={key++} rel="alternate" hrefLang={lang} href={resolveUrl(href) ?? href} />);
+        elements.push(
+          <link key={key++} rel="alternate" hrefLang={lang} href={resolveUrl(href) ?? href} />,
+        );
       }
     }
     if (alt.media) {
       for (const [media, href] of Object.entries(alt.media)) {
-        elements.push(<link key={key++} rel="alternate" media={media} href={resolveUrl(href) ?? href} />);
+        elements.push(
+          <link key={key++} rel="alternate" media={media} href={resolveUrl(href) ?? href} />,
+        );
       }
     }
     if (alt.types) {
       for (const [type, href] of Object.entries(alt.types)) {
-        elements.push(<link key={key++} rel="alternate" type={type} href={resolveUrl(href) ?? href} />);
+        elements.push(
+          <link key={key++} rel="alternate" type={type} href={resolveUrl(href) ?? href} />,
+        );
       }
     }
   }
@@ -602,7 +627,8 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
   // Verification
   if (metadata.verification) {
     const v = metadata.verification;
-    if (v.google) elements.push(<meta key={key++} name="google-site-verification" content={v.google} />);
+    if (v.google)
+      elements.push(<meta key={key++} name="google-site-verification" content={v.google} />);
     if (v.yahoo) elements.push(<meta key={key++} name="y_key" content={v.yahoo} />);
     if (v.yandex) elements.push(<meta key={key++} name="yandex-verification" content={v.yandex} />);
     if (v.other) {
@@ -625,10 +651,17 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
       elements.push(<meta key={key++} name="apple-mobile-web-app-title" content={awa.title} />);
     }
     if (awa.statusBarStyle) {
-      elements.push(<meta key={key++} name="apple-mobile-web-app-status-bar-style" content={awa.statusBarStyle} />);
+      elements.push(
+        <meta
+          key={key++}
+          name="apple-mobile-web-app-status-bar-style"
+          content={awa.statusBarStyle}
+        />,
+      );
     }
     if (awa.startupImage) {
-      const imgs = typeof awa.startupImage === "string" ? [{ url: awa.startupImage }] : awa.startupImage;
+      const imgs =
+        typeof awa.startupImage === "string" ? [{ url: awa.startupImage }] : awa.startupImage;
       for (const img of imgs) {
         elements.push(
           <link

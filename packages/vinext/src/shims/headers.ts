@@ -36,7 +36,8 @@ type VinextHeadersShimState = {
 const _ALS_KEY = Symbol.for("vinext.nextHeadersShim.als");
 const _FALLBACK_KEY = Symbol.for("vinext.nextHeadersShim.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<VinextHeadersShimState>()) as AsyncLocalStorage<VinextHeadersShimState>;
+const _als = (_g[_ALS_KEY] ??=
+  new AsyncLocalStorage<VinextHeadersShimState>()) as AsyncLocalStorage<VinextHeadersShimState>;
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   headersContext: null,
@@ -204,9 +205,7 @@ export function runWithHeadersContext<T>(
  * replaces the corresponding entries on the live `HeadersContext` so that
  * subsequent calls to `headers()` / `cookies()` see the middleware changes.
  */
-export function applyMiddlewareRequestHeaders(
-  middlewareResponseHeaders: Headers,
-): void {
+export function applyMiddlewareRequestHeaders(middlewareResponseHeaders: Headers): void {
   const state = _getState();
   if (!state.headersContext) return;
 
@@ -287,8 +286,7 @@ export async function cookies(): Promise<RequestCookies> {
   const state = _getState();
   if (!state.headersContext) {
     throw new Error(
-      "cookies() can only be called from a Server Component, Route Handler, " +
-        "or Server Action.",
+      "cookies() can only be called from a Server Component, Route Handler, " + "or Server Action.",
     );
   }
   markDynamicUsage();
@@ -373,17 +371,17 @@ export async function draftMode(): Promise<DraftModeResult> {
       if (state.headersContext) {
         state.headersContext.cookies.set(DRAFT_MODE_COOKIE, secret);
       }
-      const secure = typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
-      state.draftModeCookieHeader =
-        `${DRAFT_MODE_COOKIE}=${secret}; Path=/; HttpOnly; SameSite=Lax${secure}`;
+      const secure =
+        typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
+      state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; Path=/; HttpOnly; SameSite=Lax${secure}`;
     },
     disable(): void {
       if (state.headersContext) {
         state.headersContext.cookies.delete(DRAFT_MODE_COOKIE);
       }
-      const secure = typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
-      state.draftModeCookieHeader =
-        `${DRAFT_MODE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`;
+      const secure =
+        typeof process !== "undefined" && process.env?.NODE_ENV === "production" ? "; Secure" : "";
+      state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax${secure}; Max-Age=0`;
     },
   };
 }
@@ -396,7 +394,8 @@ export async function draftMode(): Promise<DraftModeResult> {
  * RFC 6265 §4.1.1: cookie-name is a token (RFC 2616 §2.2).
  * Allowed: any visible ASCII (0x21-0x7E) except separators: ()<>@,;:\"/[]?={}
  */
-const VALID_COOKIE_NAME_RE = /^[\x21\x23-\x27\x2A\x2B\x2D\x2E\x30-\x39\x41-\x5A\x5E-\x7A\x7C\x7E]+$/;
+const VALID_COOKIE_NAME_RE =
+  /^[\x21\x23-\x27\x2A\x2B\x2D\x2E\x30-\x39\x41-\x5A\x5E-\x7A\x7C\x7E]+$/;
 
 function validateCookieName(name: string): void {
   if (!name || !VALID_COOKIE_NAME_RE.test(name)) {
@@ -411,7 +410,7 @@ function validateCookieName(name: string): void {
 function validateCookieAttributeValue(value: string, attributeName: string): void {
   for (let i = 0; i < value.length; i++) {
     const code = value.charCodeAt(i);
-    if (code <= 0x1F || code === 0x7F || value[i] === ";") {
+    if (code <= 0x1f || code === 0x7f || value[i] === ";") {
       throw new Error(`Invalid cookie ${attributeName} value: ${JSON.stringify(value)}`);
     }
   }
@@ -451,9 +450,29 @@ class RequestCookies {
    * a Set-Cookie header on the response.
    */
   set(
-    nameOrOptions: string | { name: string; value: string; path?: string; domain?: string; maxAge?: number; expires?: Date; httpOnly?: boolean; secure?: boolean; sameSite?: "Strict" | "Lax" | "None" },
+    nameOrOptions:
+      | string
+      | {
+          name: string;
+          value: string;
+          path?: string;
+          domain?: string;
+          maxAge?: number;
+          expires?: Date;
+          httpOnly?: boolean;
+          secure?: boolean;
+          sameSite?: "Strict" | "Lax" | "None";
+        },
     value?: string,
-    options?: { path?: string; domain?: string; maxAge?: number; expires?: Date; httpOnly?: boolean; secure?: boolean; sameSite?: "Strict" | "Lax" | "None" },
+    options?: {
+      path?: string;
+      domain?: string;
+      maxAge?: number;
+      expires?: Date;
+      httpOnly?: boolean;
+      secure?: boolean;
+      sameSite?: "Strict" | "Lax" | "None";
+    },
   ): this {
     let cookieName: string;
     let cookieValue: string;
@@ -511,7 +530,9 @@ class RequestCookies {
   [Symbol.iterator](): IterableIterator<[string, { name: string; value: string }]> {
     const entries = this._cookies.entries();
     const iter: IterableIterator<[string, { name: string; value: string }]> = {
-      [Symbol.iterator]() { return iter; },
+      [Symbol.iterator]() {
+        return iter;
+      },
       next() {
         const { value, done } = entries.next();
         if (done) return { value: undefined, done: true };

@@ -12,7 +12,7 @@ export type CapturedRequestError = {
   routerKind: string;
   routePath: string;
   routeType: string;
-}
+};
 
 /**
  * Set to true when instrumentation.ts register() is called.

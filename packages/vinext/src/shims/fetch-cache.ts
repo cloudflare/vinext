@@ -19,10 +19,7 @@
  *   await runWithFetchCache(async () => { ... render ... });
  */
 
-import {
-  getCacheHandler,
-  type CachedFetchValue,
-} from "./cache.js";
+import { getCacheHandler, type CachedFetchValue } from "./cache.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 // ---------------------------------------------------------------------------
@@ -62,15 +59,18 @@ function collectHeaders(input: string | URL | Request, init?: RequestInit): Reco
 
   // Start with headers from Request object (if any)
   if (input instanceof Request && input.headers) {
-    input.headers.forEach((v, k) => { merged[k] = v; });
+    input.headers.forEach((v, k) => {
+      merged[k] = v;
+    });
   }
 
   // Override with headers from init (init takes precedence per fetch spec)
   if (init?.headers) {
-    const headers = init.headers instanceof Headers
-      ? init.headers
-      : new Headers(init.headers as HeadersInit);
-    headers.forEach((v, k) => { merged[k] = v; });
+    const headers =
+      init.headers instanceof Headers ? init.headers : new Headers(init.headers as HeadersInit);
+    headers.forEach((v, k) => {
+      merged[k] = v;
+    });
   }
 
   // Remove blocklisted headers
@@ -103,21 +103,31 @@ async function serializeFormData(
       pushBodyChunk(JSON.stringify([key, { kind: "string", value: val }]));
       continue;
     }
-    if (val.size > MAX_CACHE_KEY_BODY_BYTES || getTotalBodyBytes() + val.size > MAX_CACHE_KEY_BODY_BYTES) {
+    if (
+      val.size > MAX_CACHE_KEY_BODY_BYTES ||
+      getTotalBodyBytes() + val.size > MAX_CACHE_KEY_BODY_BYTES
+    ) {
       throw new BodyTooLargeForCacheKeyError();
     }
-    pushBodyChunk(JSON.stringify([key, {
-      kind: "file",
-      name: val.name,
-      type: val.type,
-      value: await val.text(),
-    }]));
+    pushBodyChunk(
+      JSON.stringify([
+        key,
+        {
+          kind: "file",
+          name: val.name,
+          type: val.type,
+          value: await val.text(),
+        },
+      ]),
+    );
   }
 }
 
 type ParsedFormContentType = "multipart/form-data" | "application/x-www-form-urlencoded";
 
-function getParsedFormContentType(contentType: string | undefined): ParsedFormContentType | undefined {
+function getParsedFormContentType(
+  contentType: string | undefined,
+): ParsedFormContentType | undefined {
   const mediaType = contentType?.split(";")[0]?.trim().toLowerCase();
   if (mediaType === "multipart/form-data" || mediaType === "application/x-www-form-urlencoded") {
     return mediaType;
@@ -132,9 +142,7 @@ function stripMultipartBoundary(contentType: string): string {
     .filter(Boolean)
     .filter((param) => !/^boundary\s*=/i.test(param));
   const normalizedType = type.trim().toLowerCase();
-  return keptParams.length > 0
-    ? `${normalizedType}; ${keptParams.join("; ")}`
-    : normalizedType;
+  return keptParams.length > 0 ? `${normalizedType}; ${keptParams.join("; ")}` : normalizedType;
 }
 
 interface SerializedBodyResult {
@@ -191,7 +199,10 @@ async function readRequestBodyChunksWithinLimit(request: Request): Promise<{
  * Returns the serialized body chunks and optionally stashes the original body
  * on init as `_ogBody` so it can still be used after stream consumption.
  */
-async function serializeBody(input: string | URL | Request, init?: RequestInit): Promise<SerializedBodyResult> {
+async function serializeBody(
+  input: string | URL | Request,
+  init?: RequestInit,
+): Promise<SerializedBodyResult> {
   if (!init?.body && !(input instanceof Request && input.body)) {
     return { bodyChunks: [] };
   }
@@ -299,9 +310,10 @@ async function serializeBody(input: string | URL | Request, init?: RequestInit):
         });
         const formData = await boundedRequest.formData();
         await serializeFormData(formData, pushBodyChunk, getTotalBodyBytes);
-        canonicalizedContentType = formContentType === "multipart/form-data" && contentType
-          ? stripMultipartBoundary(contentType)
-          : undefined;
+        canonicalizedContentType =
+          formContentType === "multipart/form-data" && contentType
+            ? stripMultipartBoundary(contentType)
+            : undefined;
         return { bodyChunks, canonicalizedContentType };
       } catch (err) {
         if (err instanceof BodyTooLargeForCacheKeyError) {
@@ -330,7 +342,10 @@ async function serializeBody(input: string | URL | Request, init?: RequestInit):
  * containing URL, method, all headers (minus blocklist), all RequestInit
  * options, and the serialized body.
  */
-async function buildFetchCacheKey(input: string | URL | Request, init?: RequestInit & { next?: NextFetchOptions }): Promise<string> {
+async function buildFetchCacheKey(
+  input: string | URL | Request,
+  init?: RequestInit & { next?: NextFetchOptions },
+): Promise<string> {
   let url: string;
   let method = "GET";
 
@@ -399,7 +414,8 @@ declare global {
 // multi-environment module instances via Symbol.for().
 const _ORIG_FETCH_KEY = Symbol.for("vinext.fetchCache.originalFetch");
 const _gFetch = globalThis as unknown as Record<PropertyKey, unknown>;
-const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??= globalThis.fetch) as typeof globalThis.fetch;
+const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??=
+  globalThis.fetch) as typeof globalThis.fetch;
 
 // ---------------------------------------------------------------------------
 // AsyncLocalStorage for request-scoped fetch cache state.
@@ -413,7 +429,8 @@ interface FetchCacheState {
 const _ALS_KEY = Symbol.for("vinext.fetchCache.als");
 const _FALLBACK_KEY = Symbol.for("vinext.fetchCache.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<FetchCacheState>()) as AsyncLocalStorage<FetchCacheState>;
+const _als = (_g[_ALS_KEY] ??=
+  new AsyncLocalStorage<FetchCacheState>()) as AsyncLocalStorage<FetchCacheState>;
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   currentRequestTags: [],
@@ -472,7 +489,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     // Explicit no-store or no-cache — bypass cache entirely
-    if (cacheDirective === "no-store" || cacheDirective === "no-cache" || nextOpts?.revalidate === false || nextOpts?.revalidate === 0) {
+    if (
+      cacheDirective === "no-store" ||
+      cacheDirective === "no-cache" ||
+      nextOpts?.revalidate === false ||
+      nextOpts?.revalidate === 0
+    ) {
       // Strip the `next` property before passing to real fetch
       const cleanInit = stripNextFromInit(init);
       return originalFetch(input, cleanInit);
@@ -495,9 +517,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
     let revalidateSeconds: number;
     if (cacheDirective === "force-cache") {
       // force-cache means cache indefinitely (we use a very large number)
-      revalidateSeconds = nextOpts?.revalidate && typeof nextOpts.revalidate === "number"
-        ? nextOpts.revalidate
-        : 31536000; // 1 year
+      revalidateSeconds =
+        nextOpts?.revalidate && typeof nextOpts.revalidate === "number"
+          ? nextOpts.revalidate
+          : 31536000; // 1 year
     } else if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
       revalidateSeconds = nextOpts.revalidate;
     } else {
@@ -518,7 +541,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
     try {
       cacheKey = await buildFetchCacheKey(input, init);
     } catch (err) {
-      if (err instanceof BodyTooLargeForCacheKeyError || err instanceof SkipCacheKeyGenerationError) {
+      if (
+        err instanceof BodyTooLargeForCacheKeyError ||
+        err instanceof SkipCacheKeyGenerationError
+      ) {
         const cleanInit = stripNextFromInit(init);
         return originalFetch(input, cleanInit);
       }
@@ -556,30 +582,39 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
         // Background refetch
         const cleanInit = stripNextFromInit(init);
-        originalFetch(input, cleanInit).then(async (freshResp) => {
-          const freshBody = await freshResp.text();
-          const freshHeaders: Record<string, string> = {};
-          freshResp.headers.forEach((v, k) => { freshHeaders[k] = v; });
+        originalFetch(input, cleanInit)
+          .then(async (freshResp) => {
+            const freshBody = await freshResp.text();
+            const freshHeaders: Record<string, string> = {};
+            freshResp.headers.forEach((v, k) => {
+              freshHeaders[k] = v;
+            });
 
-          const freshValue: CachedFetchValue = {
-            kind: "FETCH",
-            data: {
-              headers: freshHeaders,
-              body: freshBody,
-              url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
-              status: freshResp.status,
-            },
-            tags,
-            revalidate: revalidateSeconds,
-          };
-          await handler.set(cacheKey, freshValue, {
-            fetchCache: true,
-            tags,
-            revalidate: revalidateSeconds,
+            const freshValue: CachedFetchValue = {
+              kind: "FETCH",
+              data: {
+                headers: freshHeaders,
+                body: freshBody,
+                url:
+                  typeof input === "string"
+                    ? input
+                    : input instanceof URL
+                      ? input.toString()
+                      : input.url,
+                status: freshResp.status,
+              },
+              tags,
+              revalidate: revalidateSeconds,
+            };
+            await handler.set(cacheKey, freshValue, {
+              fetchCache: true,
+              tags,
+              revalidate: revalidateSeconds,
+            });
+          })
+          .catch((err) => {
+            console.error("[vinext] fetch cache background revalidation failed:", err);
           });
-        }).catch((err) => {
-          console.error("[vinext] fetch cache background revalidation failed:", err);
-        });
 
         // Return stale data immediately
         return new Response(staleData.body, {
@@ -602,14 +637,17 @@ function createPatchedFetch(): typeof globalThis.fetch {
       const cloned = response.clone();
       const body = await cloned.text();
       const headers: Record<string, string> = {};
-      cloned.headers.forEach((v, k) => { headers[k] = v; });
+      cloned.headers.forEach((v, k) => {
+        headers[k] = v;
+      });
 
       const cacheValue: CachedFetchValue = {
         kind: "FETCH",
         data: {
           headers,
           body,
-          url: typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
+          url:
+            typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url,
           status: cloned.status,
         },
         tags,
@@ -617,13 +655,15 @@ function createPatchedFetch(): typeof globalThis.fetch {
       };
 
       // Store in cache (fire-and-forget)
-      handler.set(cacheKey, cacheValue, {
-        fetchCache: true,
-        tags,
-        revalidate: revalidateSeconds,
-      }).catch((err) => {
-        console.error("[vinext] fetch cache write error:", err);
-      });
+      handler
+        .set(cacheKey, cacheValue, {
+          fetchCache: true,
+          tags,
+          revalidate: revalidateSeconds,
+        })
+        .catch((err) => {
+          console.error("[vinext] fetch cache write error:", err);
+        });
     }
 
     return response;

@@ -35,13 +35,26 @@ export function parseBodySizeLimit(value: string | number | undefined | null): n
   const unit = (match[2] ?? "b").toLowerCase();
   let bytes: number;
   switch (unit) {
-    case "b": bytes = Math.floor(num); break;
-    case "kb": bytes = Math.floor(num * 1024); break;
-    case "mb": bytes = Math.floor(num * 1024 * 1024); break;
-    case "gb": bytes = Math.floor(num * 1024 * 1024 * 1024); break;
-    case "tb": bytes = Math.floor(num * 1024 * 1024 * 1024 * 1024); break;
-    case "pb": bytes = Math.floor(num * 1024 * 1024 * 1024 * 1024 * 1024); break;
-    default: return 1 * 1024 * 1024;
+    case "b":
+      bytes = Math.floor(num);
+      break;
+    case "kb":
+      bytes = Math.floor(num * 1024);
+      break;
+    case "mb":
+      bytes = Math.floor(num * 1024 * 1024);
+      break;
+    case "gb":
+      bytes = Math.floor(num * 1024 * 1024 * 1024);
+      break;
+    case "tb":
+      bytes = Math.floor(num * 1024 * 1024 * 1024 * 1024);
+      break;
+    case "pb":
+      bytes = Math.floor(num * 1024 * 1024 * 1024 * 1024 * 1024);
+      break;
+    default:
+      return 1 * 1024 * 1024;
   }
   if (bytes < 1) throw new Error(`Body size limit must be a positive number, got ${bytes}`);
   return bytes;
@@ -209,12 +222,7 @@ export interface ResolvedNextConfig {
   serverActionsBodySizeLimit: number;
 }
 
-const CONFIG_FILES = [
-  "next.config.ts",
-  "next.config.mjs",
-  "next.config.js",
-  "next.config.cjs",
-];
+const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
 
 /**
  * Check whether an error indicates a CJS module was loaded in an ESM context
@@ -245,9 +253,7 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
     stack.includes("next-intl/plugin") ||
     stack.includes("next-intl/dist");
 
-  console.warn(
-    `[vinext] Failed to load ${filename}: ${msg}`,
-  );
+  console.warn(`[vinext] Failed to load ${filename}: ${msg}`);
   if (isNextIntlPlugin) {
     console.warn(
       "[vinext] Hint: createNextIntlPlugin() is not needed with vinext. " +
@@ -395,21 +401,17 @@ export async function resolveNextConfig(
     ...webpackProbe.aliases,
   };
 
-  const allowedDevOrigins = Array.isArray(config.allowedDevOrigins)
-    ? config.allowedDevOrigins
-    : [];
+  const allowedDevOrigins = Array.isArray(config.allowedDevOrigins) ? config.allowedDevOrigins : [];
 
   // Resolve serverActions.allowedOrigins and bodySizeLimit from experimental config
   const experimental = config.experimental as Record<string, unknown> | undefined;
-  const serverActionsConfig = experimental?.serverActions as
-    | Record<string, unknown>
-    | undefined;
-  const serverActionsAllowedOrigins = Array.isArray(
-    serverActionsConfig?.allowedOrigins,
-  )
+  const serverActionsConfig = experimental?.serverActions as Record<string, unknown> | undefined;
+  const serverActionsAllowedOrigins = Array.isArray(serverActionsConfig?.allowedOrigins)
     ? (serverActionsConfig.allowedOrigins as string[])
     : [];
-  const serverActionsBodySizeLimit = parseBodySizeLimit(serverActionsConfig?.bodySizeLimit as string | number | undefined);
+  const serverActionsBodySizeLimit = parseBodySizeLimit(
+    serverActionsConfig?.bodySizeLimit as string | number | undefined,
+  );
 
   // Warn about unsupported webpack usage. We preserve alias injection and
   // extract MDX settings, but all other webpack customization is still ignored.
@@ -484,10 +486,7 @@ function normalizeAliasEntries(
   return normalized;
 }
 
-function extractTurboAliases(
-  config: NextConfig,
-  root: string,
-): Record<string, string> {
+function extractTurboAliases(config: NextConfig, root: string): Record<string, string> {
   const experimental = config.experimental as Record<string, unknown> | undefined;
   const experimentalTurbo = experimental?.turbo as Record<string, unknown> | undefined;
   const topLevelTurbopack = config.turbopack as Record<string, unknown> | undefined;
@@ -593,10 +592,7 @@ const I18N_REQUEST_CANDIDATES = [
  *
  * Mutates `resolved.aliases` and `resolved.env` in place.
  */
-export function detectNextIntlConfig(
-  root: string,
-  resolved: ResolvedNextConfig,
-): void {
+export function detectNextIntlConfig(root: string, resolved: ResolvedNextConfig): void {
   // Explicit alias wins — user or plugin already set it
   if (resolved.aliases["next-intl/config"]) return;
 
@@ -675,15 +671,9 @@ function isMdxLoader(loaderPath: string): boolean {
 function extractPluginsFromOptions(opts: any): MdxOptions | null {
   if (!opts || typeof opts !== "object") return null;
 
-  const remarkPlugins = Array.isArray(opts.remarkPlugins)
-    ? opts.remarkPlugins
-    : undefined;
-  const rehypePlugins = Array.isArray(opts.rehypePlugins)
-    ? opts.rehypePlugins
-    : undefined;
-  const recmaPlugins = Array.isArray(opts.recmaPlugins)
-    ? opts.recmaPlugins
-    : undefined;
+  const remarkPlugins = Array.isArray(opts.remarkPlugins) ? opts.remarkPlugins : undefined;
+  const rehypePlugins = Array.isArray(opts.rehypePlugins) ? opts.rehypePlugins : undefined;
+  const recmaPlugins = Array.isArray(opts.recmaPlugins) ? opts.recmaPlugins : undefined;
 
   // Only return if at least one plugin array is non-empty
   if (

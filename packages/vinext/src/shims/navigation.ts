@@ -95,9 +95,13 @@ let _serverInsertedHTMLCallbacks: Array<() => unknown> = [];
 
 // These are overridden by navigation-state.ts on the server to use ALS.
 let _getServerContext = (): NavigationContext | null => _serverContext;
-let _setServerContext = (ctx: NavigationContext | null): void => { _serverContext = ctx; };
+let _setServerContext = (ctx: NavigationContext | null): void => {
+  _serverContext = ctx;
+};
 let _getInsertedHTMLCallbacks = (): Array<() => unknown> => _serverInsertedHTMLCallbacks;
-let _clearInsertedHTMLCallbacks = (): void => { _serverInsertedHTMLCallbacks = []; };
+let _clearInsertedHTMLCallbacks = (): void => {
+  _serverInsertedHTMLCallbacks = [];
+};
 
 /**
  * Register ALS-backed state accessors. Called by navigation-state.ts on import.
@@ -180,9 +184,8 @@ export function toRscUrl(href: string): string {
   const pathname = qIdx === -1 ? beforeHash : beforeHash.slice(0, qIdx);
   const query = qIdx === -1 ? "" : beforeHash.slice(qIdx);
   // Strip trailing slash (but preserve "/" root) for consistent cache keys
-  const normalizedPath = pathname.length > 1 && pathname.endsWith("/")
-    ? pathname.slice(0, -1)
-    : pathname;
+  const normalizedPath =
+    pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
   return normalizedPath + ".rsc" + query;
 }
 
@@ -298,8 +301,13 @@ export function usePathname(): string {
     return _getServerContext()?.pathname ?? "/";
   }
   // Client-side: use the hook system for reactivity
-   return React.useSyncExternalStore(
-    (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
+  return React.useSyncExternalStore(
+    (cb: () => void) => {
+      _listeners.add(cb);
+      return () => {
+        _listeners.delete(cb);
+      };
+    },
     getPathnameSnapshot,
     () => _getServerContext()?.pathname ?? "/",
   );
@@ -314,8 +322,13 @@ export function useSearchParams(): URLSearchParams {
     // Return a safe fallback — the client will hydrate with the real value.
     return _getServerContext()?.searchParams ?? new URLSearchParams();
   }
-   return React.useSyncExternalStore(
-    (cb: () => void) => { _listeners.add(cb); return () => { _listeners.delete(cb); }; },
+  return React.useSyncExternalStore(
+    (cb: () => void) => {
+      _listeners.add(cb);
+      return () => {
+        _listeners.delete(cb);
+      };
+    },
     getSearchParamsSnapshot,
     getServerSearchParamsSnapshot,
   );
@@ -560,17 +573,19 @@ const _appRouter = {
       headers: { Accept: "text/x-component" },
       credentials: "include",
       priority: "low" as RequestInit["priority"],
-    }).then((response) => {
-      if (response.ok) {
-        storePrefetchResponse(rscUrl, response);
-      } else {
-        // Non-ok response: allow retry on next prefetch() call
+    })
+      .then((response) => {
+        if (response.ok) {
+          storePrefetchResponse(rscUrl, response);
+        } else {
+          // Non-ok response: allow retry on next prefetch() call
+          prefetched.delete(rscUrl);
+        }
+      })
+      .catch(() => {
+        // Network error: allow retry on next prefetch() call
         prefetched.delete(rscUrl);
-      }
-    }).catch(() => {
-      // Network error: allow retry on next prefetch() call
-      prefetched.delete(rscUrl);
-    });
+      });
   },
 };
 

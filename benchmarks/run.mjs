@@ -43,7 +43,10 @@ function exec(cmd, opts = {}) {
 
 function getGitHash() {
   try {
-    return execSync("git rev-parse --short HEAD", { encoding: "utf-8", cwd: join(__dirname, "..") }).trim();
+    return execSync("git rev-parse --short HEAD", {
+      encoding: "utf-8",
+      cwd: join(__dirname, ".."),
+    }).trim();
   } catch {
     return "unknown";
   }
@@ -235,18 +238,30 @@ async function main() {
 
   // Detect actual installed versions for reproducibility
   try {
-    const njsPkg = JSON.parse(readFileSync(join(nextjsDir, "node_modules", "next", "package.json"), "utf-8"));
+    const njsPkg = JSON.parse(
+      readFileSync(join(nextjsDir, "node_modules", "next", "package.json"), "utf-8"),
+    );
     results.system.nextjsVersion = njsPkg.version;
-  } catch { /* deps not installed yet */ }
+  } catch {
+    /* deps not installed yet */
+  }
   try {
-    const vitePkg = JSON.parse(readFileSync(join(vinextDir, "node_modules", "vite", "package.json"), "utf-8"));
+    const vitePkg = JSON.parse(
+      readFileSync(join(vinextDir, "node_modules", "vite", "package.json"), "utf-8"),
+    );
     results.system.viteVersion = vitePkg.version;
-  } catch { /* deps not installed yet */ }
+  } catch {
+    /* deps not installed yet */
+  }
   if (hasRolldown) {
     try {
-      const rdPkg = JSON.parse(readFileSync(join(vinextRolldownDir, "node_modules", "vite", "package.json"), "utf-8"));
+      const rdPkg = JSON.parse(
+        readFileSync(join(vinextRolldownDir, "node_modules", "vite", "package.json"), "utf-8"),
+      );
       results.system.viteRolldownVersion = rdPkg.version;
-    } catch { /* deps not installed yet */ }
+    } catch {
+      /* deps not installed yet */
+    }
   }
 
   // ─── 1. Production Build Time ──────────────────────────────────────────────
@@ -260,7 +275,9 @@ async function main() {
 
     // Ensure plugin is built
     console.log("  Building vinext plugin...");
-    exec("./node_modules/.bin/tsc -p packages/vinext/tsconfig.json", { cwd: join(__dirname, "..") });
+    exec("./node_modules/.bin/tsc -p packages/vinext/tsconfig.json", {
+      cwd: join(__dirname, ".."),
+    });
 
     // Warmup run for all (not measured)
     console.log("  Warmup: Next.js build...");
@@ -299,14 +316,14 @@ async function main() {
       ];
       if (hasRolldown) {
         cmds.push(
-          `--command-name rolldown 'rm -rf ${vinextRolldownDir}/dist && ./node_modules/.bin/vite build --root ${vinextRolldownDir}'`
+          `--command-name rolldown 'rm -rf ${vinextRolldownDir}/dist && ./node_modules/.bin/vite build --root ${vinextRolldownDir}'`,
         );
       }
 
       console.log("  Timing all builds (shuffled)...");
       const hfJson = exec(
         `hyperfine --runs ${RUNS} --shuffle ${cmds.join(" ")} --export-json /dev/stdout 2>/dev/null`,
-        { cwd: __dirname, timeout: 600000 }
+        { cwd: __dirname, timeout: 600000 },
       );
       const hf = JSON.parse(hfJson);
 
@@ -346,15 +363,20 @@ async function main() {
           },
         },
         ...(hasRolldown
-          ? [{
-              key: "rolldown",
-              run: () => {
-                exec("rm -rf dist", { cwd: vinextRolldownDir });
-                const start = performance.now();
-                exec("./node_modules/.bin/vite build", { cwd: vinextRolldownDir, timeout: 120000 });
-                buildTimes.rolldown.push(performance.now() - start);
+          ? [
+              {
+                key: "rolldown",
+                run: () => {
+                  exec("rm -rf dist", { cwd: vinextRolldownDir });
+                  const start = performance.now();
+                  exec("./node_modules/.bin/vite build", {
+                    cwd: vinextRolldownDir,
+                    timeout: 120000,
+                  });
+                  buildTimes.rolldown.push(performance.now() - start);
+                },
               },
-            }]
+            ]
           : []),
       ];
 
@@ -415,12 +437,16 @@ async function main() {
     // Next.js: client bundles are in .next/static
     const njsSize = bundleSize(join(nextjsDir, ".next", "static"));
     results.nextjs.bundleSize = njsSize;
-    console.log(`  Next.js:     ${njsSize.files} files, ${formatBytes(njsSize.raw)} raw, ${formatBytes(njsSize.gzip)} gzip`);
+    console.log(
+      `  Next.js:     ${njsSize.files} files, ${formatBytes(njsSize.raw)} raw, ${formatBytes(njsSize.gzip)} gzip`,
+    );
 
     // vinext (Rollup): client bundles are in dist/client
     const ncSize = bundleSize(join(vinextDir, "dist", "client"));
     results.vinext.bundleSize = ncSize;
-    console.log(`  vinext (Rollup):    ${ncSize.files} files, ${formatBytes(ncSize.raw)} raw, ${formatBytes(ncSize.gzip)} gzip`);
+    console.log(
+      `  vinext (Rollup):    ${ncSize.files} files, ${formatBytes(ncSize.raw)} raw, ${formatBytes(ncSize.gzip)} gzip`,
+    );
 
     // vinext (Rolldown): client bundles are in dist/client
     if (hasRolldown) {
@@ -428,7 +454,9 @@ async function main() {
       exec("./node_modules/.bin/vite build", { cwd: vinextRolldownDir, timeout: 120000 });
       const rdSize = bundleSize(join(vinextRolldownDir, "dist", "client"));
       results.vinextRolldown.bundleSize = rdSize;
-      console.log(`  vinext (Rolldown):  ${rdSize.files} files, ${formatBytes(rdSize.raw)} raw, ${formatBytes(rdSize.gzip)} gzip`);
+      console.log(
+        `  vinext (Rolldown):  ${rdSize.files} files, ${formatBytes(rdSize.raw)} raw, ${formatBytes(rdSize.gzip)} gzip`,
+      );
     }
   }
 
@@ -446,7 +474,12 @@ async function main() {
         label: "Next.js",
         run: async () => {
           exec("rm -rf .next", { cwd: nextjsDir });
-          return startAndMeasure("./node_modules/.bin/next", ["dev", "--turbopack", "-p", "4100"], nextjsDir, "http://localhost:4100");
+          return startAndMeasure(
+            "./node_modules/.bin/next",
+            ["dev", "--turbopack", "-p", "4100"],
+            nextjsDir,
+            "http://localhost:4100",
+          );
         },
       },
       {
@@ -454,7 +487,12 @@ async function main() {
         label: "vinext (Rollup)",
         run: async () => {
           exec("rm -rf node_modules/.vite", { cwd: vinextDir });
-          return startAndMeasure("./node_modules/.bin/vite", ["--port", "4101"], vinextDir, "http://localhost:4101");
+          return startAndMeasure(
+            "./node_modules/.bin/vite",
+            ["--port", "4101"],
+            vinextDir,
+            "http://localhost:4101",
+          );
         },
       },
       ...(hasRolldown
@@ -464,7 +502,12 @@ async function main() {
               label: "vinext (Rolldown)",
               run: async () => {
                 exec("rm -rf node_modules/.vite", { cwd: vinextRolldownDir });
-                return startAndMeasure("./node_modules/.bin/vite", ["--port", "4102"], vinextRolldownDir, "http://localhost:4102");
+                return startAndMeasure(
+                  "./node_modules/.bin/vite",
+                  ["--port", "4102"],
+                  vinextRolldownDir,
+                  "http://localhost:4102",
+                );
               },
             },
           ]
@@ -482,8 +525,13 @@ async function main() {
       for (const runner of order) {
         console.log(`    Starting ${runner.label} dev server...`);
         const result = await runner.run();
-        devResults[runner.key].push({ coldStartMs: result.coldStartMs, peakRssKb: result.peakRssKb });
-        console.log(`    ${runner.label}: ${formatMs(result.coldStartMs)}, ${Math.round(result.peakRssKb / 1024)} MB RSS`);
+        devResults[runner.key].push({
+          coldStartMs: result.coldStartMs,
+          peakRssKb: result.peakRssKb,
+        });
+        console.log(
+          `    ${runner.label}: ${formatMs(result.coldStartMs)}, ${Math.round(result.peakRssKb / 1024)} MB RSS`,
+        );
         kill(result.process);
         await new Promise((r) => setTimeout(r, 2000)); // cooldown
       }
@@ -539,12 +587,14 @@ async function main() {
   md += `- **Dev cold start runs**: ${results.devRuns}\n`;
   if (results.system.nextjsVersion) md += `- **Next.js**: ${results.system.nextjsVersion}\n`;
   if (results.system.viteVersion) md += `- **Vite (Rollup)**: ${results.system.viteVersion}\n`;
-  if (results.system.viteRolldownVersion) md += `- **Vite (Rolldown)**: ${results.system.viteRolldownVersion}\n`;
+  if (results.system.viteRolldownVersion)
+    md += `- **Vite (Rolldown)**: ${results.system.viteRolldownVersion}\n`;
   md += "\n";
   md += `> **Note:** TypeScript type checking is disabled for the Next.js build (\`typescript.ignoreBuildErrors: true\`) so that build timings measure bundler/compilation speed only. Vite does not type-check during build.\n\n`;
   md += `> **Methodology:** Build and dev cold start runs are executed in randomized order to eliminate positional bias from filesystem caches, CPU thermal state, and residual process state.\n\n`;
 
-  const hasRolldownResults = results.vinextRolldown && Object.keys(results.vinextRolldown).length > 0;
+  const hasRolldownResults =
+    results.vinextRolldown && Object.keys(results.vinextRolldown).length > 0;
 
   // Format a speed ratio comparison: "2.1x faster" or "1.3x slower"
   function fmtSpeedup(baseline, value) {

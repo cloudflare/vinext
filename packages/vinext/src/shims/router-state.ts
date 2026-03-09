@@ -31,7 +31,8 @@ interface RouterState {
 const _ALS_KEY = Symbol.for("vinext.router.als");
 const _FALLBACK_KEY = Symbol.for("vinext.router.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<RouterState>()) as AsyncLocalStorage<RouterState>;
+const _als = (_g[_ALS_KEY] ??=
+  new AsyncLocalStorage<RouterState>()) as AsyncLocalStorage<RouterState>;
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   ssrContext: null,

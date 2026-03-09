@@ -61,10 +61,7 @@ export async function pagesRouter(
   return routes;
 }
 
-async function scanPageRoutes(
-  pagesDir: string,
-  matcher: ValidFileMatcher,
-): Promise<Route[]> {
+async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
   const routes: Route[] = [];
 
   // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
@@ -87,11 +84,7 @@ async function scanPageRoutes(
 /**
  * Convert a file path relative to pages/ into a Route.
  */
-function fileToRoute(
-  file: string,
-  pagesDir: string,
-  matcher: ValidFileMatcher,
-): Route | null {
+function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher): Route | null {
   // Remove extension
   const withoutExt = matcher.stripExtension(file);
   if (withoutExt === file) return null;
@@ -157,9 +150,12 @@ export function matchRoute(
 ): { route: Route; params: Record<string, string | string[]> } | null {
   // Normalize: strip query string and trailing slash
   const pathname = url.split("?")[0];
-  let normalizedUrl =
-    pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  try { normalizedUrl = decodeURIComponent(normalizedUrl); } catch { /* malformed percent-encoding — match as-is */ }
+  let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
+  try {
+    normalizedUrl = decodeURIComponent(normalizedUrl);
+  } catch {
+    /* malformed percent-encoding — match as-is */
+  }
 
   for (const route of routes) {
     const params = matchPattern(normalizedUrl, route.pattern);
@@ -196,19 +192,12 @@ export async function apiRouter(
   return routes;
 }
 
-async function scanApiRoutes(
-  pagesDir: string,
-  matcher: ValidFileMatcher,
-): Promise<Route[]> {
+async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promise<Route[]> {
   const apiDir = path.join(pagesDir, "api");
   let files: string[];
   try {
     files = [];
-    for await (const file of scanWithExtensions(
-      "**/*",
-      apiDir,
-      matcher.extensions,
-    )) {
+    for await (const file of scanWithExtensions("**/*", apiDir, matcher.extensions)) {
       files.push(file);
     }
   } catch {
@@ -231,10 +220,7 @@ async function scanApiRoutes(
   return routes;
 }
 
-function matchPattern(
-  url: string,
-  pattern: string,
-): Record<string, string | string[]> | null {
+function matchPattern(url: string, pattern: string): Record<string, string | string[]> | null {
   const urlParts = url.split("/").filter(Boolean);
   const patternParts = pattern.split("/").filter(Boolean);
 
@@ -285,7 +271,7 @@ function matchPattern(
  */
 export function patternToNextFormat(pattern: string): string {
   return pattern
-    .replace(/:([\w-]+)\*/g, "[[...$1]]")   // optional catch-all :slug* -> [[...slug]]
-    .replace(/:([\w-]+)\+/g, "[...$1]")     // catch-all :slug+ -> [...slug]
-    .replace(/:([\w-]+)/g, "[$1]");          // dynamic :id -> [id]
+    .replace(/:([\w-]+)\*/g, "[[...$1]]") // optional catch-all :slug* -> [[...slug]]
+    .replace(/:([\w-]+)\+/g, "[...$1]") // catch-all :slug+ -> [...slug]
+    .replace(/:([\w-]+)/g, "[$1]"); // dynamic :id -> [id]
 }

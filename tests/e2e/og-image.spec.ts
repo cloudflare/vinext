@@ -20,11 +20,7 @@ import { test, expect } from "@playwright/test";
 /** Read a big-endian uint32 from a Buffer at the given offset. */
 function readUint32BE(buf: Buffer, offset: number): number {
   return (
-    ((buf[offset] << 24) |
-      (buf[offset + 1] << 16) |
-      (buf[offset + 2] << 8) |
-      buf[offset + 3]) >>>
-    0
+    ((buf[offset] << 24) | (buf[offset + 1] << 16) | (buf[offset + 2] << 8) | buf[offset + 3]) >>> 0
   );
 }
 
@@ -37,9 +33,7 @@ test.describe("OG Image Generation (@next/og)", () => {
     expect(contentType).toContain("image/png");
   });
 
-  test("GET /api/og returns a PNG with correct dimensions (1200×630)", async ({
-    request,
-  }) => {
+  test("GET /api/og returns a PNG with correct dimensions (1200×630)", async ({ request }) => {
     const response = await request.get("/api/og");
     expect(response.status()).toBe(200);
 
@@ -72,9 +66,7 @@ test.describe("OG Image Generation (@next/og)", () => {
     expect(buffer[1]).toBe(0x50);
   });
 
-  test("GET /api/og?title=Hello renders with custom title", async ({
-    request,
-  }) => {
+  test("GET /api/og?title=Hello renders with custom title", async ({ request }) => {
     const response = await request.get("/api/og?title=Hello");
     expect(response.status()).toBe(200);
 
@@ -85,9 +77,7 @@ test.describe("OG Image Generation (@next/og)", () => {
     expect(buffer.length).toBeGreaterThan(1000);
   });
 
-  test("different title params produce different images", async ({
-    request,
-  }) => {
+  test("different title params produce different images", async ({ request }) => {
     const [res1, res2] = await Promise.all([
       request.get("/api/og?title=Hello"),
       request.get("/api/og?title=World"),
@@ -107,9 +97,7 @@ test.describe("OG Image Generation (@next/og)", () => {
     expect(buf1.equals(buf2)).toBe(false);
   });
 
-  test("same title param produces identical images (deterministic)", async ({
-    request,
-  }) => {
+  test("same title param produces identical images (deterministic)", async ({ request }) => {
     const [res1, res2] = await Promise.all([
       request.get("/api/og?title=Deterministic"),
       request.get("/api/og?title=Deterministic"),

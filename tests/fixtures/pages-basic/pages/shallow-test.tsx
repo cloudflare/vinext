@@ -13,7 +13,7 @@ export async function getServerSideProps(ctx: any) {
   gsspCallCount++;
   const serverQuery: Record<string, string> = {};
   for (const [k, v] of Object.entries(ctx.query)) {
-    serverQuery[k] = Array.isArray(v) ? v[0] : v ?? "";
+    serverQuery[k] = Array.isArray(v) ? v[0] : (v ?? "");
   }
   return {
     props: {
@@ -21,7 +21,7 @@ export async function getServerSideProps(ctx: any) {
       serverQuery,
     },
   };
-};
+}
 
 export default function ShallowTestPage({ gsspCallId, serverQuery }: ShallowTestProps) {
   const router = useRouter();
@@ -40,10 +40,7 @@ export default function ShallowTestPage({ gsspCallId, serverQuery }: ShallowTest
       >
         Shallow Push
       </button>
-      <button
-        data-testid="deep-push"
-        onClick={() => router.push("/shallow-test?tab=profile")}
-      >
+      <button data-testid="deep-push" onClick={() => router.push("/shallow-test?tab=profile")}>
         Deep Push
       </button>
       <button

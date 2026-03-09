@@ -1,2 +1,4 @@
 import "./styles.css";
-export function FakeComponent() { return "fake-css-lib-rendered"; }
+export function FakeComponent() {
+  return "fake-css-lib-rendered";
+}

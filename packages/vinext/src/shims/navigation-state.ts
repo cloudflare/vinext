@@ -12,10 +12,7 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import {
-  _registerStateAccessors,
-  type NavigationContext,
-} from "./navigation.js";
+import { _registerStateAccessors, type NavigationContext } from "./navigation.js";
 
 // ---------------------------------------------------------------------------
 // ALS setup — same pattern as headers.ts
@@ -29,7 +26,8 @@ interface NavigationState {
 const _ALS_KEY = Symbol.for("vinext.navigation.als");
 const _FALLBACK_KEY = Symbol.for("vinext.navigation.fallback");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<NavigationState>()) as AsyncLocalStorage<NavigationState>;
+const _als = (_g[_ALS_KEY] ??=
+  new AsyncLocalStorage<NavigationState>()) as AsyncLocalStorage<NavigationState>;
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   serverContext: null,

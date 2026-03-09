@@ -131,8 +131,12 @@ describe("vinext:local-fonts plugin", () => {
     const result = transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     // Two imports should be added
-    expect(result.code).toContain(`import __vinext_local_font_0 from "./fonts/InterVariable.woff2";`);
-    expect(result.code).toContain(`import __vinext_local_font_1 from "./fonts/InterVariable-Italic.woff2";`);
+    expect(result.code).toContain(
+      `import __vinext_local_font_0 from "./fonts/InterVariable.woff2";`,
+    );
+    expect(result.code).toContain(
+      `import __vinext_local_font_1 from "./fonts/InterVariable-Italic.woff2";`,
+    );
     // Both paths should be replaced
     expect(result.code).toContain("path: __vinext_local_font_0");
     expect(result.code).toContain("path: __vinext_local_font_1");
@@ -272,7 +276,9 @@ describe("vinext:local-fonts plugin", () => {
     ].join("\n");
     const result = transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
-    expect(result.code).toContain(`import __vinext_local_font_0 from "./assets/fonts/my-font.woff2";`);
+    expect(result.code).toContain(
+      `import __vinext_local_font_0 from "./assets/fonts/my-font.woff2";`,
+    );
   });
 
   it("handles parent-relative paths", () => {
@@ -446,8 +452,12 @@ describe("vinext:local-fonts plugin", () => {
     const result = transform.call(plugin, code, "/app/layout.tsx");
     expect(result).not.toBeNull();
     // Should add two font imports
-    expect(result.code).toContain(`import __vinext_local_font_0 from "./fonts/InterVariable.woff2";`);
-    expect(result.code).toContain(`import __vinext_local_font_1 from "./fonts/InterVariable-Italic.woff2";`);
+    expect(result.code).toContain(
+      `import __vinext_local_font_0 from "./fonts/InterVariable.woff2";`,
+    );
+    expect(result.code).toContain(
+      `import __vinext_local_font_1 from "./fonts/InterVariable-Italic.woff2";`,
+    );
     // Paths should be replaced
     expect(result.code).toContain("path: __vinext_local_font_0");
     expect(result.code).toContain("path: __vinext_local_font_1");

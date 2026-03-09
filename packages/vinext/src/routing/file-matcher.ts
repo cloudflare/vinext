@@ -6,9 +6,7 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-export function normalizePageExtensions(
-  pageExtensions?: readonly string[] | null,
-): string[] {
+export function normalizePageExtensions(pageExtensions?: readonly string[] | null): string[] {
   if (!Array.isArray(pageExtensions) || pageExtensions.length === 0) {
     return [...DEFAULT_PAGE_EXTENSIONS];
   }
@@ -52,8 +50,7 @@ export function createValidFileMatcher(
 
   const extensionRegex = new RegExp(`\\.${extPattern}$`);
   const createLeafPattern = (fileNames: readonly string[]): RegExp => {
-    const names =
-      fileNames.length === 1 ? fileNames[0] : `(${fileNames.join("|")})`;
+    const names = fileNames.length === 1 ? fileNames[0] : `(${fileNames.join("|")})`;
     return new RegExp(`(^${names}|[\\\\/]${names})\\.${extPattern}$`);
   };
 

@@ -1,15 +1,8 @@
 "use client";
 
-import {
-  useSelectedLayoutSegments,
-  useSelectedLayoutSegment,
-} from "next/navigation";
+import { useSelectedLayoutSegments, useSelectedLayoutSegment } from "next/navigation";
 
-export default function InnerLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function InnerLayout({ children }: { children: React.ReactNode }) {
   const selectedLayoutSegments = useSelectedLayoutSegments();
   const selectedLayoutSegment = useSelectedLayoutSegment();
 

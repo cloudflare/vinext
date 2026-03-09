@@ -46,9 +46,7 @@ describe("Next.js compat: app-css", () => {
     // The h1 should have a scoped class name, NOT the literal "heading"
     // Vite CSS modules produce class names like `_heading_xxxxx_x`
     // Match an id="css-page" element with a class attribute that is NOT just "heading"
-    const classMatch = html.match(
-      /id="css-page"\s+class="([^"]*)"/,
-    );
+    const classMatch = html.match(/id="css-page"\s+class="([^"]*)"/);
     expect(classMatch).not.toBeNull();
     const className = classMatch![1];
     // The scoped class name should NOT be the literal unscoped name
@@ -66,18 +64,12 @@ describe("Next.js compat: app-css", () => {
   // Next.js: global CSS class names should be preserved in SSR
 
   it("global CSS page renders content", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/css-test/global",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/css-test/global");
     expect(html).toContain("Global CSS Test");
   });
 
   it("global CSS class name is preserved in SSR", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/css-test/global",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/css-test/global");
     // Global CSS class names are NOT scoped — should appear as-is
     expect(html).toContain('class="global-heading"');
   });

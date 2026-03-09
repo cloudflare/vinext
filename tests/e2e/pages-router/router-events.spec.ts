@@ -11,9 +11,7 @@ test.describe("router.events (Pages Router)", () => {
     await page.click('[data-testid="clear-events"]');
   });
 
-  test("routeChangeStart and routeChangeComplete fire on Link click", async ({
-    page,
-  }) => {
+  test("routeChangeStart and routeChangeComplete fire on Link click", async ({ page }) => {
     // Click the Link to About
     await page.click('[data-testid="link-about"]');
     await expect(page.locator("h1")).toHaveText("About");
@@ -28,9 +26,7 @@ test.describe("router.events (Pages Router)", () => {
     expect(events).toContain("complete:/about");
   });
 
-  test("routeChangeStart fires before routeChangeComplete", async ({
-    page,
-  }) => {
+  test("routeChangeStart fires before routeChangeComplete", async ({ page }) => {
     await page.click('[data-testid="push-ssr"]');
     await expect(page.locator("h1")).toHaveText("Server-Side Rendered");
 
@@ -40,9 +36,7 @@ test.describe("router.events (Pages Router)", () => {
     }, STORAGE_KEY);
 
     const startIdx = events.findIndex((e) => e.startsWith("start:/ssr"));
-    const completeIdx = events.findIndex((e) =>
-      e.startsWith("complete:/ssr"),
-    );
+    const completeIdx = events.findIndex((e) => e.startsWith("complete:/ssr"));
     expect(startIdx).toBeGreaterThanOrEqual(0);
     expect(completeIdx).toBeGreaterThan(startIdx);
   });
@@ -60,9 +54,7 @@ test.describe("router.events (Pages Router)", () => {
     expect(events).toContain("complete:/about");
   });
 
-  test("multiple navigations produce multiple event pairs", async ({
-    page,
-  }) => {
+  test("multiple navigations produce multiple event pairs", async ({ page }) => {
     // Navigate to about
     await page.click('[data-testid="push-about"]');
     await expect(page.locator("h1")).toHaveText("About");

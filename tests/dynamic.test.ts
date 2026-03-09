@@ -29,9 +29,7 @@ describe("next/dynamic SSR", () => {
   it("renders dynamically imported component on server (mirrors Next.js test)", async () => {
     // Next.js test: dynamic(() => import('./fixtures/stub-components/hello'))
     // Verifies that next/dynamic doesn't crash
-    const DynamicHello = dynamic(
-      () => Promise.resolve({ default: Hello }),
-    );
+    const DynamicHello = dynamic(() => Promise.resolve({ default: Hello }));
 
     // On server, this uses React.lazy + Suspense
     // renderToString will resolve the lazy component synchronously for simple promises
@@ -39,17 +37,13 @@ describe("next/dynamic SSR", () => {
   });
 
   it("sets correct displayName for server component", () => {
-    const DynamicComponent = dynamic(
-      () => Promise.resolve({ default: Hello }),
-    );
+    const DynamicComponent = dynamic(() => Promise.resolve({ default: Hello }));
     expect(DynamicComponent.displayName).toBe("DynamicServer");
   });
 
   it("handles modules exporting bare component (no default)", async () => {
     // Some dynamic imports export the component directly
-    const DynamicComponent = dynamic(
-      () => Promise.resolve(Hello as any),
-    );
+    const DynamicComponent = dynamic(() => Promise.resolve(Hello as any));
     expect(DynamicComponent.displayName).toBe("DynamicServer");
   });
 });
@@ -58,35 +52,25 @@ describe("next/dynamic SSR", () => {
 
 describe("next/dynamic ssr: false", () => {
   it("renders loading component on server when ssr: false", () => {
-    const DynamicNoSSR = dynamic(
-      () => Promise.resolve({ default: Hello }),
-      { ssr: false, loading: LoadingSpinner },
-    );
+    const DynamicNoSSR = dynamic(() => Promise.resolve({ default: Hello }), {
+      ssr: false,
+      loading: LoadingSpinner,
+    });
 
-    const html = ReactDOMServer.renderToString(
-      React.createElement(DynamicNoSSR),
-    );
+    const html = ReactDOMServer.renderToString(React.createElement(DynamicNoSSR));
     expect(html).toContain("Loading...");
     expect(html).not.toContain("Hello from dynamic");
   });
 
   it("renders nothing on server when ssr: false and no loading", () => {
-    const DynamicNoSSR = dynamic(
-      () => Promise.resolve({ default: Hello }),
-      { ssr: false },
-    );
+    const DynamicNoSSR = dynamic(() => Promise.resolve({ default: Hello }), { ssr: false });
 
-    const html = ReactDOMServer.renderToString(
-      React.createElement(DynamicNoSSR),
-    );
+    const html = ReactDOMServer.renderToString(React.createElement(DynamicNoSSR));
     expect(html).toBe("");
   });
 
   it("sets DynamicSSRFalse displayName on server", () => {
-    const DynamicNoSSR = dynamic(
-      () => Promise.resolve({ default: Hello }),
-      { ssr: false },
-    );
+    const DynamicNoSSR = dynamic(() => Promise.resolve({ default: Hello }), { ssr: false });
     expect(DynamicNoSSR.displayName).toBe("DynamicSSRFalse");
   });
 });
@@ -101,14 +85,12 @@ describe("next/dynamic loading component", () => {
       return React.createElement("div", null, "tracking");
     }
 
-    const DynamicWithTracking = dynamic(
-      () => Promise.resolve({ default: Hello }),
-      { ssr: false, loading: TrackingLoader },
-    );
+    const DynamicWithTracking = dynamic(() => Promise.resolve({ default: Hello }), {
+      ssr: false,
+      loading: TrackingLoader,
+    });
 
-    ReactDOMServer.renderToString(
-      React.createElement(DynamicWithTracking),
-    );
+    ReactDOMServer.renderToString(React.createElement(DynamicWithTracking));
 
     expect(receivedProps).toEqual({
       isLoading: true,
@@ -122,18 +104,13 @@ describe("next/dynamic loading component", () => {
 
 describe("next/dynamic defaults", () => {
   it("defaults ssr to true", () => {
-    const DynamicDefault = dynamic(
-      () => Promise.resolve({ default: Hello }),
-    );
+    const DynamicDefault = dynamic(() => Promise.resolve({ default: Hello }));
     // If ssr defaults to true, we get DynamicServer, not DynamicSSRFalse
     expect(DynamicDefault.displayName).toBe("DynamicServer");
   });
 
   it("handles undefined options", () => {
-    const DynamicNoOpts = dynamic(
-      () => Promise.resolve({ default: Hello }),
-      undefined,
-    );
+    const DynamicNoOpts = dynamic(() => Promise.resolve({ default: Hello }), undefined);
     expect(DynamicNoOpts.displayName).toBe("DynamicServer");
   });
 });

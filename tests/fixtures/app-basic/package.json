@@ -3,13 +3,13 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@vitejs/plugin-rsc": "^0.5.19",
+    "fake-css-lib": "file:./__test_packages__/fake-css-lib",
+    "fake-css-module-lib": "file:./__test_packages__/fake-css-module-lib",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "vite": "^7.3.1",
-    "vinext": "workspace:*",
-    "@vitejs/plugin-rsc": "^0.5.19",
     "react-server-dom-webpack": "^19.2.4",
-    "fake-css-lib": "file:./__test_packages__/fake-css-lib",
-    "fake-css-module-lib": "file:./__test_packages__/fake-css-module-lib"
+    "vinext": "workspace:*",
+    "vite": "^7.3.1"
   }
 }

@@ -38,18 +38,14 @@ test.describe("next/dynamic", () => {
 
     await expect(page.locator("h1")).toHaveText("Dynamic Import Page");
     // The heavy component should be SSR-rendered (ssr: true by default)
-    await expect(
-      page.getByRole("heading", { level: 2, name: "Heavy Component" }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Heavy Component" })).toBeVisible();
   });
 
   test("dynamically imported component is interactive after hydration", async ({ page }) => {
     await page.goto(`${BASE}/dynamic-page`);
 
     await expect(page.locator("h1")).toHaveText("Dynamic Import Page");
-    await expect(
-      page.getByRole("heading", { level: 2, name: "Heavy Component" }),
-    ).toBeVisible();
+    await expect(page.getByRole("heading", { level: 2, name: "Heavy Component" })).toBeVisible();
     await expect(page.locator("text=Loaded dynamically")).toBeVisible();
   });
 });

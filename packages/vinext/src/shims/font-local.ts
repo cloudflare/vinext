@@ -54,9 +54,19 @@ function sanitizeCSSVarName(name: string): string | undefined {
 function sanitizeFallback(name: string): string {
   // CSS generic font families — safe to use unquoted
   const generics = new Set([
-    "serif", "sans-serif", "monospace", "cursive", "fantasy",
-    "system-ui", "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded",
-    "emoji", "math", "fangsong",
+    "serif",
+    "sans-serif",
+    "monospace",
+    "cursive",
+    "fantasy",
+    "system-ui",
+    "ui-serif",
+    "ui-sans-serif",
+    "ui-monospace",
+    "ui-rounded",
+    "emoji",
+    "math",
+    "fangsong",
   ]);
   const trimmed = name.trim();
   if (generics.has(trimmed)) return trimmed;
@@ -114,10 +124,7 @@ interface FontResult {
   variable?: string;
 }
 
-function generateFontFaceCSS(
-  family: string,
-  options: LocalFontOptions,
-): string {
+function generateFontFaceCSS(family: string, options: LocalFontOptions): string {
   const sources = normalizeSources(options);
 
   const display = options.display ?? "swap";
@@ -151,7 +158,9 @@ function generateFontFaceCSS(
       const safeProp = sanitizeCSSProperty(decl.prop);
       const safeValue = sanitizeCSSValue(decl.value);
       if (safeProp && safeValue) {
-        rules.push(`@font-face { font-family: '${escapeCSSString(family)}'; ${safeProp}: ${safeValue}; }`);
+        rules.push(
+          `@font-face { font-family: '${escapeCSSString(family)}'; ${safeProp}: ${safeValue}; }`,
+        );
       }
     }
   }
@@ -211,10 +220,7 @@ const injectedClassRules = new Set<string>();
  * In Next.js, the .className class ONLY sets font-family — it does NOT
  * set CSS variables. CSS variables are handled separately by the .variable class.
  */
-function injectClassNameRule(
-  className: string,
-  fontFamily: string,
-): void {
+function injectClassNameRule(className: string, fontFamily: string): void {
   if (injectedClassRules.has(className)) return;
   injectedClassRules.add(className);
 

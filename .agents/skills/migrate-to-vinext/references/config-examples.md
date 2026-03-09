@@ -87,8 +87,8 @@ Minimal config for deployment:
   "compatibility_flags": ["nodejs_compat"],
   "main": "vinext/server/app-router-entry",
   "assets": {
-    "not_found_handling": "none"
-  }
+    "not_found_handling": "none",
+  },
 }
 ```
 
@@ -103,9 +103,9 @@ For custom worker entries (e.g., adding KV cache, image optimization bindings):
   "main": "./worker/index.ts",
   "assets": {
     "not_found_handling": "none",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
   },
-  "images": { "binding": "IMAGES" }
+  "images": { "binding": "IMAGES" },
 }
 ```
 
@@ -144,7 +144,7 @@ Define bindings in `wrangler.jsonc`:
   "d1_databases": [{ "binding": "DB", "database_name": "my-db", "database_id": "..." }],
   "kv_namespaces": [{ "binding": "CACHE", "id": "..." }],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "my-bucket" }],
-  "ai": { "binding": "AI" }
+  "ai": { "binding": "AI" },
 }
 ```
 
@@ -181,17 +181,17 @@ Nitro auto-detects the platform in most CI/CD environments, so the `NITRO_PRESET
 
 ## VinextOptions
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `appDir` | `string` | project root | Custom base directory for `app/` and `pages/` |
-| `rsc` | `boolean` | `true` | Auto-register `@vitejs/plugin-rsc` for App Router |
+| Option   | Type      | Default      | Description                                       |
+| -------- | --------- | ------------ | ------------------------------------------------- |
+| `appDir` | `string`  | project root | Custom base directory for `app/` and `pages/`     |
+| `rsc`    | `boolean` | `true`       | Auto-register `@vitejs/plugin-rsc` for App Router |
 
 ## vinext deploy flags
 
-| Flag | Description |
-|------|-------------|
-| `--preview` | Deploy to preview environment |
-| `--name <name>` | Override worker name |
-| `--skip-build` | Skip build step (deploy existing output) |
-| `--dry-run` | Generate config without deploying |
-| `--experimental-tpr` | Enable Traffic-aware Pre-Rendering |
+| Flag                 | Description                              |
+| -------------------- | ---------------------------------------- |
+| `--preview`          | Deploy to preview environment            |
+| `--name <name>`      | Override worker name                     |
+| `--skip-build`       | Skip build step (deploy existing output) |
+| `--dry-run`          | Generate config without deploying        |
+| `--experimental-tpr` | Enable Traffic-aware Pre-Rendering       |

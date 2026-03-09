@@ -18,12 +18,7 @@
  *   </Form>
  */
 
-import {
-  forwardRef,
-  useActionState,
-  type FormHTMLAttributes,
-  type ForwardedRef,
-} from "react";
+import { forwardRef, useActionState, type FormHTMLAttributes, type ForwardedRef } from "react";
 import { isDangerousScheme } from "./url-safety.js";
 
 // Re-export useActionState from React 19 to match Next.js's next/form module
@@ -59,10 +54,7 @@ interface FormProps extends FormHTMLAttributes<HTMLFormElement> {
   scroll?: boolean;
 }
 
-const Form = forwardRef(function Form(
-  props: FormProps,
-  ref: ForwardedRef<HTMLFormElement>,
-) {
+const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFormElement>) {
   const { action, replace = false, scroll = true, onSubmit, ...rest } = props;
 
   // If action is a function (server action), pass it directly to React
@@ -126,14 +118,7 @@ const Form = forwardRef(function Form(
     }
   }
 
-  return (
-    <form
-      ref={ref}
-      action={action}
-      onSubmit={handleSubmit}
-      {...rest}
-    />
-  );
+  return <form ref={ref} action={action} onSubmit={handleSubmit} {...rest} />;
 });
 
 export default Form;

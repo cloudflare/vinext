@@ -14,10 +14,8 @@ import { describe, it, expect } from "vitest";
 
 describe("ALS per-request isolation", () => {
   it("concurrent requests see their own headers context (no cross-request leakage)", async () => {
-    const {
-      runWithHeadersContext,
-      headersContextFromRequest,
-    } = await import("../../packages/vinext/src/shims/headers.js");
+    const { runWithHeadersContext, headersContextFromRequest } =
+      await import("../../packages/vinext/src/shims/headers.js");
 
     // We need to dynamically import headers() since it reads from ALS
     const { headers: headersFn } = await import("../../packages/vinext/src/shims/headers.js");
@@ -58,15 +56,13 @@ describe("ALS per-request isolation", () => {
   it("concurrent requests see their own navigation context", async () => {
     // Import the navigation-state module to register ALS-backed accessors
     await import("../../packages/vinext/src/shims/navigation-state.js");
-    const { runWithNavigationContext } = await import(
-      "../../packages/vinext/src/shims/navigation-state.js"
-    );
+    const { runWithNavigationContext } =
+      await import("../../packages/vinext/src/shims/navigation-state.js");
 
     // After navigation-state registers its accessors, getNavigationContext
     // reads from the ALS-backed store
-    const { setNavigationContext, getNavigationContext } = await import(
-      "../../packages/vinext/src/shims/navigation.js"
-    );
+    const { setNavigationContext, getNavigationContext } =
+      await import("../../packages/vinext/src/shims/navigation.js");
 
     const CONCURRENCY = 20;
     const results: { pathname: string; sawPathname: string }[] = [];
@@ -99,9 +95,8 @@ describe("ALS per-request isolation", () => {
   });
 
   it("concurrent fetch cache scopes are independent", async () => {
-    const { runWithFetchCache, getCollectedFetchTags } = await import(
-      "../../packages/vinext/src/shims/fetch-cache.js"
-    );
+    const { runWithFetchCache, getCollectedFetchTags } =
+      await import("../../packages/vinext/src/shims/fetch-cache.js");
 
     const CONCURRENCY = 20;
     const results: string[][] = [];
@@ -126,13 +121,9 @@ describe("ALS per-request isolation", () => {
   });
 
   it("cookies from one request don't leak into another", async () => {
-    const {
-      runWithHeadersContext,
-      headersContextFromRequest,
-    } = await import("../../packages/vinext/src/shims/headers.js");
-    const { cookies: cookiesFn } = await import(
-      "../../packages/vinext/src/shims/headers.js"
-    );
+    const { runWithHeadersContext, headersContextFromRequest } =
+      await import("../../packages/vinext/src/shims/headers.js");
+    const { cookies: cookiesFn } = await import("../../packages/vinext/src/shims/headers.js");
 
     const CONCURRENCY = 20;
     const results: { session: string; sawSession: string }[] = [];

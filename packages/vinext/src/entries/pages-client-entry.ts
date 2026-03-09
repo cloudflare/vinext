@@ -9,7 +9,11 @@
  *
  * Extracted from index.ts.
  */
-import { pagesRouter, patternToNextFormat as pagesPatternToNextFormat, type Route } from "../routing/pages-router.js";
+import {
+  pagesRouter,
+  patternToNextFormat as pagesPatternToNextFormat,
+  type Route,
+} from "../routing/pages-router.js";
 import { createValidFileMatcher } from "../routing/file-matcher.js";
 import { type ResolvedNextConfig } from "../config/next-config.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
@@ -72,7 +76,9 @@ async function hydrate() {
   }
 
   let element;
-  ${hasApp ? `
+  ${
+    hasApp
+      ? `
   try {
     const appModule = await import(${JSON.stringify(appFileBase!)});
     const AppComponent = appModule.default;
@@ -81,9 +87,11 @@ async function hydrate() {
   } catch {
     element = React.createElement(PageComponent, pageProps);
   }
-  ` : `
+  `
+      : `
   element = React.createElement(PageComponent, pageProps);
-  `}
+  `
+  }
 
   // Wrap with RouterContext.Provider so next/compat/router works during hydration
   const { wrapWithRouterContext } = await import("next/router");

@@ -114,10 +114,7 @@ const minimalAppRoutes: AppRoute[] = [
 // NOTE: Adding, removing, or renaming pages in this fixture will break the
 // Pages Router snapshots below. Run `pnpm test tests/entry-templates.test.ts -u`
 // to update them after intentional fixture changes.
-const PAGES_FIXTURE_DIR = path.resolve(
-  import.meta.dirname,
-  "./fixtures/pages-basic",
-);
+const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 
 // ── App Router entry templates ────────────────────────────────────────
 
@@ -126,10 +123,10 @@ describe("App Router entry templates", () => {
     const code = generateRscEntry(
       "/tmp/test/app",
       minimalAppRoutes,
-      null,  // no middleware
-      [],    // no metadata routes
-      null,  // no global error
-      "",    // no basePath
+      null, // no middleware
+      [], // no metadata routes
+      null, // no global error
+      "", // no basePath
       false, // no trailingSlash
     );
     expect(stabilize(code)).toMatchSnapshot();
@@ -178,13 +175,9 @@ describe("App Router entry templates", () => {
 
   it("generateRscEntry snapshot (with config)", () => {
     const config: AppRouterConfig = {
-      redirects: [
-        { source: "/old", destination: "/new", permanent: true },
-      ],
+      redirects: [{ source: "/old", destination: "/new", permanent: true }],
       rewrites: {
-        beforeFiles: [
-          { source: "/api/:path*", destination: "/backend/:path*" },
-        ],
+        beforeFiles: [{ source: "/api/:path*", destination: "/backend/:path*" }],
         afterFiles: [],
         fallback: [],
       },

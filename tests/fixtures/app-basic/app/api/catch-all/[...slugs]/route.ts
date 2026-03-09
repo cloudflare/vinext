@@ -6,10 +6,7 @@
  *
  * Tests that catch-all routes with hyphens and multiple segments work.
  */
-export async function GET(
-  _request: Request,
-  { params }: { params: Promise<{ slugs: string[] }> },
-) {
+export async function GET(_request: Request, { params }: { params: Promise<{ slugs: string[] }> }) {
   const { slugs } = await params;
   return Response.json({ slugs });
 }
