@@ -449,7 +449,11 @@ describe("KVCacheHandler", () => {
         headers: undefined,
         status: 200,
       });
-      expect(kv.put).toHaveBeenCalledWith("cache:no-ctx-put", expect.any(String), expect.any(Object));
+      expect(kv.put).toHaveBeenCalledWith(
+        "cache:no-ctx-put",
+        expect.any(String),
+        expect.any(Object),
+      );
     });
   });
 });
