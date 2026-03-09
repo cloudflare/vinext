@@ -523,11 +523,12 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   // pages inherit title, description, OG tags etc. — matching Next.js behavior.
   // Build the serial parent chain for layout metadata (same as buildPageElement).
   const _filteredLayouts = layouts.filter(Boolean);
+  const _fallbackParams = opts?.matchedParams ?? route?.params ?? {};
   const _layoutMetaPromises = [];
   let _accumulatedMeta = Promise.resolve({});
   for (let _i = 0; _i < _filteredLayouts.length; _i++) {
     const _parentForLayout = _accumulatedMeta;
-    const _metaP = resolveModuleMetadata(_filteredLayouts[_i], {}, undefined, _parentForLayout)
+    const _metaP = resolveModuleMetadata(_filteredLayouts[_i], _fallbackParams, undefined, _parentForLayout)
       .catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; });
     _layoutMetaPromises.push(_metaP);
     _accumulatedMeta = _metaP.then(async (_r) =>

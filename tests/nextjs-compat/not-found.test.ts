@@ -194,6 +194,38 @@ describe("Next.js compat: not-found", () => {
     expect(html).toContain("<title>Metadata Not Found Layout Title</title>");
   });
 
+  // ── generateMetadata in fallback layout receives real params ──
+  // Regression test for: renderHTTPAccessFallbackPage was passing {} for params
+  // to resolveModuleMetadata(), so generateMetadata() would get undefined for
+  // all dynamic route params (e.g. params.slug === undefined).
+  //
+  // Fixture: nextjs-compat/layout-params-notfound/[slug]/layout.tsx exports
+  // generateMetadata({ params }) that returns title "not-found: <slug>".
+  // The page calls notFound() for invalid slugs, triggering the fallback render.
+
+  it("layout generateMetadata() in not-found fallback receives actual route params", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-params-notfound/bad-slug",
+    );
+    expect(res.status).toBe(404);
+    // The not-found boundary must render
+    expect(html).toContain("layout-params-notfound-boundary");
+    // The title must include the actual slug -- proves params were forwarded correctly.
+    // If renderHTTPAccessFallbackPage passed {} instead of {slug:"bad-slug"},
+    // the title would be "not-found: undefined" instead.
+    expect(html).toContain("<title>not-found: bad-slug</title>");
+  });
+
+  it("layout generateMetadata() in not-found fallback uses actual slug value", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-params-notfound/my-other-slug",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain("<title>not-found: my-other-slug</title>");
+  });
+
   // ── notFound() from layout components ───────────────────────
   // Tests that notFound() thrown from a layout component is caught by the
   // parent layout's NotFoundBoundary (per-layout boundary matching Next.js).

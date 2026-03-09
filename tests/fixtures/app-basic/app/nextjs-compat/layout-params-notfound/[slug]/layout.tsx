@@ -1,3 +1,18 @@
+import type { Metadata } from "next";
+
+// Regression fixture for: generateMetadata in a layout wrapping a not-found boundary
+// should receive the actual route params (e.g. { slug }) not an empty object {}.
+// Previously renderHTTPAccessFallbackPage always passed {} for params to
+// resolveModuleMetadata(), so params.slug would be undefined inside generateMetadata.
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ slug: string }>;
+}): Promise<Metadata> {
+  const { slug } = await params;
+  return { title: `not-found: ${slug}` };
+}
+
 export default async function Layout({
   params,
   children,
