@@ -3394,6 +3394,119 @@ describe("matchHeaders", () => {
   });
 });
 
+describe("matchHeaders compiled source cache", () => {
+  // Regression test: escapeHeaderSource() + safeRegExp() were re-run on every
+  // request for every header rule. The result is now cached in _compiledHeaderSourceCache
+  // keyed by rule.source so subsequent calls skip the tokeniser and isSafeRegex.
+  function makeCtx(h: Record<string, string> = {}) {
+    return {
+      headers: new Headers(h),
+      cookies: {},
+      query: new URLSearchParams(),
+      host: "localhost",
+    };
+  }
+
+  it("returns consistent results when the same source is matched multiple times", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules: any[] = [
+      {
+        source: "/blog/:slug",
+        headers: [{ key: "x-content-type", value: "article" }],
+      },
+    ];
+
+    // First call — populates _compiledHeaderSourceCache.
+    const first = matchHeaders("/blog/hello-world", rules, makeCtx());
+    expect(first).toEqual([{ key: "x-content-type", value: "article" }]);
+
+    // Second call — must hit the cache and return the same result.
+    const second = matchHeaders("/blog/hello-world", rules, makeCtx());
+    expect(second).toEqual(first);
+
+    // Different matching pathname, same rule — still uses cached regex.
+    const third = matchHeaders("/blog/another-post", rules, makeCtx());
+    expect(third).toEqual([{ key: "x-content-type", value: "article" }]);
+
+    // Non-matching pathname.
+    const fourth = matchHeaders("/about", rules, makeCtx());
+    expect(fourth).toEqual([]);
+  });
+
+  it("caches regex-bearing source patterns (containing `(`)", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rules: any[] = [
+      {
+        source: "/:locale(en|fr|de)/blog",
+        headers: [{ key: "x-locale-blog", value: "1" }],
+      },
+    ];
+
+    const first = matchHeaders("/en/blog", rules, makeCtx());
+    expect(first).toEqual([{ key: "x-locale-blog", value: "1" }]);
+
+    // Cache hit — same source pattern, different matching pathname.
+    const second = matchHeaders("/fr/blog", rules, makeCtx());
+    expect(second).toEqual([{ key: "x-locale-blog", value: "1" }]);
+
+    // Non-matching locale.
+    const third = matchHeaders("/zh/blog", rules, makeCtx());
+    expect(third).toEqual([]);
+  });
+});
+
+describe("checkHasConditions condition value cache", () => {
+  // Regression test: safeRegExp(condition.value) was called on every request
+  // for every has/missing condition. The result is now cached in
+  // _compiledConditionCache keyed by value so isSafeRegex runs at most once.
+  function makeCtx(overrides: { headers?: Record<string, string>; cookies?: Record<string, string>; query?: Record<string, string>; host?: string } = {}) {
+    return {
+      headers: new Headers(overrides.headers ?? {}),
+      cookies: overrides.cookies ?? {},
+      query: new URLSearchParams(overrides.query ?? {}),
+      host: overrides.host ?? "localhost",
+    };
+  }
+
+  it("returns consistent results when the same condition value is evaluated multiple times", async () => {
+    const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");
+    const has = [{ type: "header" as const, key: "x-tier", value: "pro|enterprise" }];
+
+    // First call — populates _compiledConditionCache for "pro|enterprise".
+    expect(checkHasConditions(has, undefined, makeCtx({ headers: { "x-tier": "pro" } }))).toBe(true);
+
+    // Second call — must hit the cache.
+    expect(checkHasConditions(has, undefined, makeCtx({ headers: { "x-tier": "enterprise" } }))).toBe(true);
+
+    // Non-matching value.
+    expect(checkHasConditions(has, undefined, makeCtx({ headers: { "x-tier": "free" } }))).toBe(false);
+  });
+
+  it("caches condition values across all condition types (header, cookie, query, host)", async () => {
+    const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");
+    const sharedPattern = "^v\\d+$"; // a pattern that will be cached once and reused
+
+    // header
+    const hasHeader = [{ type: "header" as const, key: "x-version", value: sharedPattern }];
+    expect(checkHasConditions(hasHeader, undefined, makeCtx({ headers: { "x-version": "v3" } }))).toBe(true);
+    expect(checkHasConditions(hasHeader, undefined, makeCtx({ headers: { "x-version": "v3" } }))).toBe(true);
+
+    // cookie — same pattern string, should hit cache populated by header call above
+    const hasCookie = [{ type: "cookie" as const, key: "ver", value: sharedPattern }];
+    expect(checkHasConditions(hasCookie, undefined, makeCtx({ cookies: { ver: "v1" } }))).toBe(true);
+    expect(checkHasConditions(hasCookie, undefined, makeCtx({ cookies: { ver: "beta" } }))).toBe(false);
+
+    // query
+    const hasQuery = [{ type: "query" as const, key: "v", value: sharedPattern }];
+    expect(checkHasConditions(hasQuery, undefined, makeCtx({ query: { v: "v2" } }))).toBe(true);
+
+    // host
+    const hasHost = [{ type: "host" as const, key: "", value: sharedPattern }];
+    expect(checkHasConditions(hasHost, undefined, makeCtx({ host: "v9" }))).toBe(true);
+    expect(checkHasConditions(hasHost, undefined, makeCtx({ host: "prod" }))).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // isExternalUrl unit tests (external rewrite detection)
 
