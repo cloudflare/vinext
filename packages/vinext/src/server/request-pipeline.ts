@@ -1,8 +1,8 @@
 /**
  * Shared request pipeline utilities.
  *
- * Extracted from the App Router RSC entry (app-dev-server.ts) to enable
- * reuse across entry points. Currently consumed by app-dev-server.ts;
+ * Extracted from the App Router RSC entry (entries/app-rsc-entry.ts) to enable
+ * reuse across entry points. Currently consumed by app-rsc-entry.ts;
  * dev-server.ts, prod-server.ts, and index.ts still have inline versions
  * that should be migrated in follow-up work.
  *

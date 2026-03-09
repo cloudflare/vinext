@@ -6,7 +6,7 @@ import os from "node:os";
 import zlib from "node:zlib";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES, startFixtureServer, fetchHtml } from "./helpers.js";
-import { generateRscEntry } from "../packages/vinext/src/server/app-dev-server.js";
+import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 
 describe("App Router integration", () => {
   let server: ViteDevServer;
@@ -1585,7 +1585,7 @@ describe("App Router Production server (startProdServer)", () => {
 
 // ---------------------------------------------------------------------------
 // Malformed percent-encoded URL regression tests — App Router dev server
-// (covers app-dev-server.ts generated RSC handler decodeURIComponent)
+// (covers entries/app-rsc-entry.ts generated RSC handler decodeURIComponent)
 // ---------------------------------------------------------------------------
 
 describe("App Router dev server malformed URL handling", () => {
@@ -2676,14 +2676,14 @@ describe("App Router middleware with NextRequest", () => {
 
 describe("SSR entry CSS preload fix", () => {
   it("generateSsrEntry includes fixPreloadAs function", async () => {
-    const { generateSsrEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const { generateSsrEntry } = await import("../packages/vinext/src/entries/app-ssr-entry.js");
     const code = generateSsrEntry();
     expect(code).toContain("fixPreloadAs");
     expect(code).toContain('as="style"');
   });
 
   it("generateSsrEntry includes fixFlightHints in RSC embed transform", async () => {
-    const { generateSsrEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const { generateSsrEntry } = await import("../packages/vinext/src/entries/app-ssr-entry.js");
     const code = generateSsrEntry();
     // The RSC embed stream should fix HL hint "stylesheet" → "style" before
     // chunks are embedded as __VINEXT_RSC_CHUNKS__ for client-side processing
@@ -2779,7 +2779,7 @@ describe("SSR entry CSS preload fix", () => {
 
 describe("Tick-buffered RSC delivery", () => {
   it("generateSsrEntry uses setTimeout-based tick buffering for RSC scripts", async () => {
-    const { generateSsrEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const { generateSsrEntry } = await import("../packages/vinext/src/entries/app-ssr-entry.js");
     const code = generateSsrEntry();
     // Should use setTimeout(0) for tick buffering instead of emitting
     // RSC scripts synchronously between HTML chunks
@@ -2795,7 +2795,7 @@ describe("Tick-buffered RSC delivery", () => {
   });
 
   it("generateBrowserEntry uses monkey-patched push() instead of polling", async () => {
-    const { generateBrowserEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const { generateBrowserEntry } = await import("../packages/vinext/src/entries/app-browser-entry.js");
     const code = generateBrowserEntry();
     // Should override push() for immediate chunk delivery
     expect(code).toContain("arr.push = function");

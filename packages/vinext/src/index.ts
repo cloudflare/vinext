@@ -8,11 +8,9 @@ import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
 import { createDirectRunner } from "./server/dev-module-runner.js";
-import {
-  generateRscEntry,
-  generateSsrEntry,
-  generateBrowserEntry,
-} from "./server/app-dev-server.js";
+import { generateRscEntry } from "./entries/app-rsc-entry.js";
+import { generateSsrEntry } from "./entries/app-ssr-entry.js";
+import { generateBrowserEntry } from "./entries/app-browser-entry.js";
 import {
   loadNextConfig,
   resolveNextConfig,

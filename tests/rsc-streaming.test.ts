@@ -1,7 +1,7 @@
 /**
  * Behavioral tests for tick-buffered RSC streaming.
  *
- * The tick-buffered TransformStream in app-dev-server.ts interleaves RSC
+ * The tick-buffered TransformStream in entries/app-ssr-entry.ts interleaves RSC
  * <script> tags into the HTML stream between React Fizz flush cycles. These
  * tests exercise the actual TransformStream algorithm (replicated from the
  * generated SSR entry) to verify:
@@ -88,7 +88,7 @@ function createRscEmbedTransform(embedStream: ReadableStream<Uint8Array>) {
 /**
  * Create the tick-buffered TransformStream that interleaves RSC scripts
  * between HTML flush cycles. Replicated from the generated SSR entry
- * in app-dev-server.ts.
+ * in entries/app-ssr-entry.ts.
  */
 function createTickBufferedTransform(
   rscEmbed: ReturnType<typeof createRscEmbedTransform>,

@@ -12,7 +12,7 @@ import React from "react";
 
 /**
  * Normalize null-prototype objects from matchPattern() into thenable objects.
- * See app-dev-server.ts makeThenableParams() for full explanation.
+ * See entries/app-rsc-entry.ts makeThenableParams() for full explanation.
  */
 function makeThenableParams<T extends Record<string, unknown>>(obj: T): Promise<T> & T {
   const plain = { ...obj } as T;

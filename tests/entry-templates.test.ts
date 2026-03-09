@@ -12,12 +12,10 @@
 import path from "node:path";
 import { describe, it, expect, afterAll } from "vitest";
 import { createServer, type ViteDevServer } from "vite";
-import {
-  generateRscEntry,
-  generateSsrEntry,
-  generateBrowserEntry,
-} from "../packages/vinext/src/server/app-dev-server.js";
-import type { AppRouterConfig } from "../packages/vinext/src/server/app-dev-server.js";
+import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import type { AppRouterConfig } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import { generateSsrEntry } from "../packages/vinext/src/entries/app-ssr-entry.js";
+import { generateBrowserEntry } from "../packages/vinext/src/entries/app-browser-entry.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import vinext from "../packages/vinext/src/index.js";

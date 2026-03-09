@@ -4,7 +4,7 @@
  * ## Why plain module-level variables work here
  *
  * register() is now emitted as a top-level `await` inside the generated RSC
- * entry module (see `generateRscEntry` in `app-dev-server.ts`). This means it
+ * entry module (see `generateRscEntry` in `entries/app-rsc-entry.ts`). This means it
  * runs inside the Cloudflare Worker process — the same process and module graph
  * as the API routes. Plain module-level variables are therefore visible to both
  * the instrumentation code and the API route that reads them.

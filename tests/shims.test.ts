@@ -1397,7 +1397,7 @@ describe('"use cache" runtime', () => {
 
     const cached = registerCachedFunction(fn, "test:thenable-params");
 
-    // Create Promise-augmented params (same pattern as app-dev-server.ts)
+    // Create Promise-augmented params (same pattern as entries/app-rsc-entry.ts)
     const electronicsParams = { section: "electronics" };
     const asyncElectronics = Object.assign(
       Promise.resolve(electronicsParams),
@@ -2191,7 +2191,7 @@ describe("double-encoded path handling in middleware", () => {
     // Verify that matchRoute no longer calls decodeURIComponent internally.
     // The generated RSC entry code is a string — we check it directly.
     const { generateRscEntry } = await import(
-      "../packages/vinext/src/server/app-dev-server.js"
+      "../packages/vinext/src/entries/app-rsc-entry.js"
     );
     const code = generateRscEntry("/tmp/app", [
       {
@@ -2225,7 +2225,7 @@ describe("double-encoded path handling in middleware", () => {
 
   it("middleware always receives a Request with the decoded pathname (not raw URL)", async () => {
     const { generateRscEntry } = await import(
-      "../packages/vinext/src/server/app-dev-server.js"
+      "../packages/vinext/src/entries/app-rsc-entry.js"
     );
     const code = generateRscEntry(
       "/tmp/app",

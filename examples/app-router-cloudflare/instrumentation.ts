@@ -6,7 +6,7 @@
  * ## How it works (new approach)
  *
  * register() is emitted as a top-level `await` inside the generated RSC entry
- * module by `generateRscEntry` in `app-dev-server.ts`. This means it runs:
+ * module by `generateRscEntry` in `entries/app-rsc-entry.ts`. This means it runs:
  *
  *   - Inside the Cloudflare Worker subprocess (miniflare) when
  *     @cloudflare/vite-plugin is present — the same process as the API routes.

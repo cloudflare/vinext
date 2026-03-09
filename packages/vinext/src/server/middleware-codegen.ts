@@ -1,7 +1,7 @@
 /**
  * Shared middleware matching code generator.
  *
- * Both the App Router RSC entry (app-dev-server.ts) and the Pages Router
+ * Both the App Router RSC entry (entries/app-rsc-entry.ts) and the Pages Router
  * production entry (index.ts) need middleware matching logic inlined as
  * generated JavaScript strings. This module provides a single source of
  * truth to prevent the implementations from diverging.

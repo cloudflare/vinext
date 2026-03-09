@@ -4,7 +4,7 @@
  * ── Bug 1: RSC lazy stream context-clear ────────────────────────────────────
  *
  * renderHTTPAccessFallbackPage() and renderErrorBoundaryPage() in
- * app-dev-server.ts called setHeadersContext(null) / setNavigationContext(null)
+ * entries/app-rsc-entry.ts called setHeadersContext(null) / setNavigationContext(null)
  * immediately after renderToReadableStream() returned — before the RSC stream
  * was consumed by the client.
  *

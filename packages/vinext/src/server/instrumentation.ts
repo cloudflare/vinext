@@ -15,7 +15,7 @@
  * ## App Router
  *
  * For App Router, `register()` is baked directly into the generated RSC entry
- * as a top-level `await` at module evaluation time (see `app-dev-server.ts`
+ * as a top-level `await` at module evaluation time (see `entries/app-rsc-entry.ts`
  * `generateRscEntry`). This means it runs inside the Worker process (or RSC
  * Vite environment) — the same process that handles requests — before any
  * request is served. `runInstrumentation()` is NOT called from `configureServer`

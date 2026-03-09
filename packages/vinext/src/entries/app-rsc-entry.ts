@@ -5,7 +5,7 @@
  * The RSC entry does route matching and renders the component tree,
  * then delegates to the SSR entry for HTML generation.
  *
- * Extracted from server/app-dev-server.ts.
+ * Previously housed in server/app-dev-server.ts.
  */
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
