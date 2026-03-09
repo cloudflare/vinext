@@ -521,10 +521,21 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
 
   // Resolve metadata and viewport from parent layouts so that not-found/error
   // pages inherit title, description, OG tags etc. — matching Next.js behavior.
-  // Run all resolutions in parallel — generateMetadata() can do async I/O.
+  // Build the serial parent chain for layout metadata (same as buildPageElement).
   const _filteredLayouts = layouts.filter(Boolean);
+  const _layoutMetaPromises = [];
+  let _accumulatedMeta = Promise.resolve({});
+  for (let _i = 0; _i < _filteredLayouts.length; _i++) {
+    const _parentForLayout = _accumulatedMeta;
+    const _metaP = resolveModuleMetadata(_filteredLayouts[_i], {}, undefined, _parentForLayout)
+      .catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; });
+    _layoutMetaPromises.push(_metaP);
+    _accumulatedMeta = _metaP.then(async (_r) =>
+      _r ? mergeMetadata([await _parentForLayout, _r]) : await _parentForLayout
+    );
+  }
   const [_metaResults, _vpResults] = await Promise.all([
-    Promise.all(_filteredLayouts.map((mod) => resolveModuleMetadata(mod).catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; }))),
+    Promise.all(_layoutMetaPromises),
     Promise.all(_filteredLayouts.map((mod) => resolveModuleViewport(mod).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
   ]);
   const metadataList = _metaResults.filter(Boolean);
@@ -841,11 +852,24 @@ async function buildPageElement(route, params, opts, searchParams) {
     return createElement("div", null, "Page has no default export");
   }
 
-  // Resolve metadata and viewport from layouts and page — all in parallel.
-  // generateMetadata() can do async I/O (KV reads, fetches, DB queries).
-  // Running them serially made each layout's metadata block the next one.
-  // Promise.all fires all resolutions concurrently so the total wait is
-  // max(individual times) instead of sum(individual times).
+  // Resolve metadata and viewport from layouts and page.
+  //
+  // generateMetadata() accepts a "parent" (Promise of ResolvedMetadata) as its
+  // second argument (Next.js 13+). The parent resolves to the accumulated
+  // merged metadata of all ancestor segments, enabling patterns like:
+  //
+  //   const previousImages = (await parent).openGraph?.images ?? []
+  //   return { openGraph: { images: ['/new-image.jpg', ...previousImages] } }
+  //
+  // Next.js uses an eager-execution-with-serial-resolution approach:
+  // all generateMetadata() calls are kicked off concurrently, but each
+  // segment's "parent" promise resolves only after the preceding segment's
+  // metadata is resolved and merged. This preserves concurrency for I/O-bound
+  // work while guaranteeing that parent data is available when needed.
+  //
+  // We build a chain: layoutParentPromises[0] = Promise.resolve({}) (no parent
+  // for root layout), layoutParentPromises[i+1] resolves to merge(layouts[0..i]),
+  // and pageParentPromise resolves to merge(all layouts).
   //
   // IMPORTANT: Layout metadata errors are swallowed (.catch(() => null)) because
   // a layout's generateMetadata() failing should not crash the page.
@@ -853,12 +877,40 @@ async function buildPageElement(route, params, opts, searchParams) {
   // throws, the error propagates out of buildPageElement() so the caller can
   // route it to the nearest error.tsx boundary (or global-error.tsx).
   const layoutMods = route.layouts.filter(Boolean);
+
+  // Build the parent promise chain and kick off metadata resolution in one pass.
+  // Each layout module is called exactly once. layoutMetaPromises[i] is the
+  // promise for layout[i]'s own metadata result. layoutParentPromises[i] is a
+  // promise that resolves to the merged metadata of layouts[0..i-1] — which is
+  // what layout[i] receives as its "parent" argument.
+  //
+  // All calls are kicked off immediately (concurrent I/O), but each layout's
+  // "parent" promise only resolves after the preceding layout's metadata is done.
+  const layoutParentPromises = [];
+  const layoutMetaPromises = [];
+  let accumulatedMetaPromise = Promise.resolve({});
+  for (let i = 0; i < layoutMods.length; i++) {
+    const parentForThisLayout = accumulatedMetaPromise;
+    layoutParentPromises.push(parentForThisLayout);
+    // Kick off this layout's metadata resolution now (concurrent with others).
+    const metaPromise = resolveModuleMetadata(layoutMods[i], params, undefined, parentForThisLayout)
+      .catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; });
+    layoutMetaPromises.push(metaPromise);
+    // Advance accumulator: resolves to merged(layouts[0..i]) once layout[i] is done.
+    accumulatedMetaPromise = metaPromise.then(async (result) =>
+      result ? mergeMetadata([await parentForThisLayout, result]) : await parentForThisLayout
+    );
+  }
+  // Page's parent is the fully-accumulated layout metadata.
+  const pageParentPromise = accumulatedMetaPromise;
+
   const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
-    Promise.all(layoutMods.map((mod) => resolveModuleMetadata(mod, params).catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; }))),
+    Promise.all(layoutMetaPromises),
     Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
-    route.page ? resolveModuleMetadata(route.page, params) : Promise.resolve(null),
+    route.page ? resolveModuleMetadata(route.page, params, undefined, pageParentPromise) : Promise.resolve(null),
     route.page ? resolveModuleViewport(route.page, params) : Promise.resolve(null),
   ]);
+
   const metadataList = [...layoutMetaResults.filter(Boolean), ...(pageMeta ? [pageMeta] : [])];
   const viewportList = [...layoutVpResults.filter(Boolean), ...(pageVp ? [pageVp] : [])];
   const resolvedMetadata = metadataList.length > 0 ? mergeMetadata(metadataList) : null;

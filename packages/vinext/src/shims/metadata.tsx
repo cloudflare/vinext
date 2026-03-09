@@ -272,11 +272,18 @@ export function mergeMetadata(metadataList: Metadata[]): Metadata {
 /**
  * Resolve metadata from a module. Handles both static `metadata` export
  * and async `generateMetadata()` function.
+ *
+ * @param parent - A Promise that resolves to the accumulated (merged) metadata
+ *   from all ancestor segments. Passed as the second argument to
+ *   `generateMetadata()`, matching Next.js's eager-execution-with-serial-
+ *   resolution approach. If not provided, defaults to a promise that resolves
+ *   to an empty object (so `await parent` never throws).
  */
 export async function resolveModuleMetadata(
   mod: Record<string, unknown>,
-  params: Record<string, string | string[]>,
+  params: Record<string, string | string[]> = {},
   searchParams?: Record<string, string>,
+  parent: Promise<Metadata> = Promise.resolve({}),
 ): Promise<Metadata | null> {
   if (typeof mod.generateMetadata === "function") {
     // Next.js 16 passes params/searchParams as Promises (async pattern).
@@ -284,7 +291,7 @@ export async function resolveModuleMetadata(
     const asyncParams = makeThenableParams(params);
     const sp = searchParams ?? {};
     const asyncSp = makeThenableParams(sp);
-    return await mod.generateMetadata({ params: asyncParams, searchParams: asyncSp });
+    return await mod.generateMetadata({ params: asyncParams, searchParams: asyncSp }, parent);
   }
   if (mod.metadata && typeof mod.metadata === "object") {
     return mod.metadata as Metadata;
