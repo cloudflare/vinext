@@ -832,13 +832,21 @@ async function buildPageElement(route, params, opts, searchParams) {
   // Running them serially made each layout's metadata block the next one.
   // Promise.all fires all resolutions concurrently so the total wait is
   // max(individual times) instead of sum(individual times).
-  const allMods = [...route.layouts.filter(Boolean), ...(route.page ? [route.page] : [])];
-  const [metaResults, vpResults] = await Promise.all([
-    Promise.all(allMods.map((mod) => resolveModuleMetadata(mod, params).catch(() => null))),
-    Promise.all(allMods.map((mod) => resolveModuleViewport(mod, params).catch(() => null))),
+  //
+  // IMPORTANT: Layout metadata errors are swallowed (.catch(() => null)) because
+  // a layout's generateMetadata() failing should not crash the page.
+  // Page metadata errors are NOT swallowed — if the page's generateMetadata()
+  // throws, the error propagates out of buildPageElement() so the caller can
+  // route it to the nearest error.tsx boundary (or global-error.tsx).
+  const layoutMods = route.layouts.filter(Boolean);
+  const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
+    Promise.all(layoutMods.map((mod) => resolveModuleMetadata(mod, params).catch(() => null))),
+    Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch(() => null))),
+    route.page ? resolveModuleMetadata(route.page, params) : Promise.resolve(null),
+    route.page ? resolveModuleViewport(route.page, params) : Promise.resolve(null),
   ]);
-  const metadataList = metaResults.filter(Boolean);
-  const viewportList = vpResults.filter(Boolean);
+  const metadataList = [...layoutMetaResults.filter(Boolean), ...(pageMeta ? [pageMeta] : [])];
+  const viewportList = [...layoutVpResults.filter(Boolean), ...(pageVp ? [pageVp] : [])];
   const resolvedMetadata = metadataList.length > 0 ? mergeMetadata(metadataList) : null;
   const resolvedViewport = mergeViewport(viewportList);
 
