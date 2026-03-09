@@ -105,18 +105,11 @@ declare global {
 
     // ── Next.js conventional globals ────────────────────────────────────────
     //
-    /**
-     * Next.js bootstrap payload injected into the document by the Pages Router.
-     * Vinext reads this in its router shims during hydration and navigation.
-     */
-    __NEXT_DATA__:
-      | {
-          page?: string;
-          query?: Record<string, unknown>;
-          isFallback?: boolean;
-          [key: string]: unknown;
-        }
-      | undefined;
+    // `__NEXT_DATA__` is already declared by `next/dist/client/index.d.ts` as
+    // `NEXT_DATA` from `next/dist/shared/lib/utils`. We intentionally do NOT
+    // re-declare it here to avoid type conflicts. vinext-specific extensions
+    // (__vinext, __pageModule, __appModule) are accessed via the
+    // `VinextNextData` type in `client/vinext-next-data.ts`.
   }
 
   // ── self globals used inside server-injected inline scripts ───────────────

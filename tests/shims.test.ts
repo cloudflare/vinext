@@ -6199,6 +6199,235 @@ describe("handleImageOptimization", () => {
     expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="img.png"');
   });
 
+  it("falls back to the original image after transform consumes the stream and throws", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75");
+    const handlers = {
+      fetchAsset: async () =>
+        new Response("original-stream-body", {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        }),
+      transformImage: async (body: ReadableStream) => {
+        const reader = body.getReader();
+        await reader.read();
+        throw new Error("transform failed after reading");
+      },
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("original-stream-body");
+    expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="img.jpg"');
+  });
+
+  // Ported from Next.js: test/integration/image-optimizer/test/util.ts
+  // https://github.com/vercel/next.js/blob/canary/test/integration/image-optimizer/test/util.ts
+  it("forwards only the Accept header when fetching remote images", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const remoteUrl = "https://images.example.com/photo.jpg?token=secret";
+    const request = new Request(
+      `http://localhost/_vinext/image?url=${encodeURIComponent(remoteUrl)}&w=800&q=75`,
+      {
+        headers: {
+          Accept: "image/avif,image/webp",
+          Cookie: "session=secret",
+          Authorization: "Bearer secret",
+          "X-Api-Key": "secret",
+        },
+      },
+    );
+
+    const originalFetch = globalThis.fetch;
+    let capturedHeaders: Headers | undefined;
+    globalThis.fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedHeaders = new Headers(init?.headers);
+      return new Response("remote-image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        request,
+        {
+          fetchAsset: async () => new Response("unused", { status: 500 }),
+        },
+        undefined,
+        {
+          remotePatterns: [new URL(remoteUrl)],
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("remote-image-data");
+      expect(capturedHeaders).toBeDefined();
+      expect(capturedHeaders!.get("accept")).toBe("image/avif,image/webp");
+      expect(capturedHeaders!.get("cookie")).toBeNull();
+      expect(capturedHeaders!.get("authorization")).toBeNull();
+      expect(capturedHeaders!.get("x-api-key")).toBeNull();
+      expect([...capturedHeaders!.keys()]).toEqual(["accept"]);
+      expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="photo.jpg"');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("derives a remote filename extension from the upstream content type", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const remoteUrl = "https://images.example.com/assets/photo?download=1";
+    const request = new Request(
+      `http://localhost/_vinext/image?url=${encodeURIComponent(remoteUrl)}&w=800&q=75`,
+    );
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("remote-image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/png" },
+      });
+
+    try {
+      const response = await handleImageOptimization(
+        request,
+        {
+          fetchAsset: async () => new Response("unused", { status: 500 }),
+        },
+        undefined,
+        {
+          remotePatterns: [new URL(remoteUrl)],
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="photo.png"');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("blocks common local IP literal bypasses for remote images", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const blockedUrls = [
+      "http://0.0.0.0/image.jpg",
+      "http://[::ffff:127.0.0.1]/image.jpg",
+      "http://[::ffff:10.0.0.1]/image.jpg",
+    ];
+
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      return new Response("unexpected", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      });
+    };
+
+    try {
+      for (const remoteUrl of blockedUrls) {
+        const response = await handleImageOptimization(
+          new Request(
+            `http://localhost/_vinext/image?url=${encodeURIComponent(remoteUrl)}&w=800&q=75`,
+          ),
+          {
+            fetchAsset: async () => new Response("unused", { status: 500 }),
+          },
+          undefined,
+          {
+            remotePatterns: [new URL(remoteUrl)],
+          },
+        );
+        expect(response.status).toBe(400);
+        expect(await response.text()).toBe('"url" parameter is not allowed');
+      }
+
+      expect(fetchCalls).toBe(0);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("does not falsely block public hostnames that start with fc", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const remoteUrl = "https://fcbarcelona.com/image.jpg";
+    const request = new Request(
+      `http://localhost/_vinext/image?url=${encodeURIComponent(remoteUrl)}&w=800&q=75`,
+    );
+
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      return new Response("public-image", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        request,
+        {
+          fetchAsset: async () => new Response("unused", { status: 500 }),
+        },
+        undefined,
+        {
+          remotePatterns: [new URL(remoteUrl)],
+        },
+      );
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("public-image");
+      expect(fetchCalls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("blocks redirects from public hosts to blocked local IP literals", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const remoteUrl = "https://images.example.com/photo.jpg";
+    const request = new Request(
+      `http://localhost/_vinext/image?url=${encodeURIComponent(remoteUrl)}&w=800&q=75`,
+    );
+
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      return new Response(null, {
+        status: 301,
+        headers: { Location: "http://0.0.0.0/private.jpg" },
+      });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        request,
+        {
+          fetchAsset: async () => new Response("unused", { status: 500 }),
+        },
+        undefined,
+        {
+          remotePatterns: [new URL(remoteUrl)],
+        },
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe('"url" parameter is not allowed');
+      expect(fetchCalls).toBe(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("returns 400 for backslash open redirect (/\\evil.com)", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");

@@ -178,6 +178,12 @@ function setImageSecurityHeaders(
   );
 }
 
+function buildUpstreamRequestHeaders(request: Request): Headers {
+  return new Headers({
+    Accept: request.headers.get("Accept") ?? "*/*",
+  });
+}
+
 export function isSafeImageContentType(
   contentType: string | null,
   dangerouslyAllowSVG = false,
@@ -189,17 +195,25 @@ export function isSafeImageContentType(
   return false;
 }
 
-function isBlockedLocalHost(hostname: string): boolean {
-  const lower = hostname.toLowerCase();
-  if (lower === "localhost" || lower.endsWith(".localhost") || lower.endsWith(".local")) {
-    return true;
+function stripIpv6Brackets(hostname: string): string {
+  if (hostname.startsWith("[") && hostname.endsWith("]")) {
+    return hostname.slice(1, -1);
   }
-  if (lower === "::1" || lower.startsWith("fc") || lower.startsWith("fd")) {
-    return true;
+  return hostname;
+}
+
+function parseIpv4(hostname: string): [number, number, number, number] | null {
+  const match = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!match) return null;
+  const octets = match.slice(1).map((part) => parseInt(part, 10));
+  if (octets.some((octet) => Number.isNaN(octet) || octet < 0 || octet > 255)) {
+    return null;
   }
-  const ipv4 = lower.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
-  if (!ipv4) return false;
-  const [a, b] = [parseInt(ipv4[1], 10), parseInt(ipv4[2], 10)];
+  return octets as [number, number, number, number];
+}
+
+function isBlockedIpv4(octets: [number, number, number, number]): boolean {
+  const [a, b] = octets;
   return (
     a === 10 ||
     a === 127 ||
@@ -207,6 +221,96 @@ function isBlockedLocalHost(hostname: string): boolean {
     (a === 172 && b >= 16 && b <= 31) ||
     (a === 192 && b === 168)
   );
+}
+
+function parseIpv6(hostname: string): number[] | null {
+  let normalized = stripIpv6Brackets(hostname).toLowerCase();
+  if (!normalized.includes(":")) return null;
+
+  const zoneIndex = normalized.indexOf("%");
+  if (zoneIndex !== -1) {
+    normalized = normalized.slice(0, zoneIndex);
+  }
+
+  if (normalized.indexOf("::") !== normalized.lastIndexOf("::")) {
+    return null;
+  }
+
+  if (normalized.includes(".")) {
+    const lastColon = normalized.lastIndexOf(":");
+    if (lastColon === -1) return null;
+    const ipv4 = parseIpv4(normalized.slice(lastColon + 1));
+    if (!ipv4) return null;
+    normalized =
+      normalized.slice(0, lastColon) +
+      ":" +
+      ((ipv4[0] << 8) | ipv4[1]).toString(16) +
+      ":" +
+      ((ipv4[2] << 8) | ipv4[3]).toString(16);
+  }
+
+  const hasCompression = normalized.includes("::");
+  const [left, right = ""] = normalized.split("::");
+  const leftParts = left ? left.split(":") : [];
+  const rightParts = hasCompression && right ? right.split(":") : [];
+  const parsePart = (part: string): number | null =>
+    /^[0-9a-f]{1,4}$/.test(part) ? parseInt(part, 16) : null;
+
+  const parsedLeft = leftParts.map(parsePart);
+  const parsedRight = rightParts.map(parsePart);
+  if (parsedLeft.some((part) => part === null) || parsedRight.some((part) => part === null)) {
+    return null;
+  }
+
+  if (!hasCompression) {
+    return parsedLeft.length === 8 ? (parsedLeft as number[]) : null;
+  }
+
+  const missing = 8 - (parsedLeft.length + parsedRight.length);
+  if (missing < 1) return null;
+  return [...(parsedLeft as number[]), ...Array(missing).fill(0), ...(parsedRight as number[])];
+}
+
+function getIpv4MappedAddress(ipv6: number[]): string | null {
+  if (!ipv6.slice(0, 5).every((part) => part === 0) || ipv6[5] !== 0xffff) {
+    return null;
+  }
+  return `${ipv6[6] >> 8}.${ipv6[6] & 0xff}.${ipv6[7] >> 8}.${ipv6[7] & 0xff}`;
+}
+
+function streamFromArrayBuffer(buffer: ArrayBuffer): ReadableStream {
+  const body = new Response(buffer.slice(0)).body;
+  if (!body) {
+    throw new Error("Failed to create response body");
+  }
+  return body;
+}
+
+function isBlockedLocalHost(hostname: string): boolean {
+  const lower = stripIpv6Brackets(hostname).toLowerCase();
+  if (lower === "localhost" || lower.endsWith(".localhost") || lower.endsWith(".local")) {
+    return true;
+  }
+  if (lower === "0.0.0.0") {
+    return true;
+  }
+  const ipv4 = parseIpv4(lower);
+  if (ipv4) {
+    return isBlockedIpv4(ipv4);
+  }
+
+  const ipv6 = parseIpv6(lower);
+  if (!ipv6) return false;
+
+  if (ipv6.every((part) => part === 0)) return true;
+  if (ipv6.slice(0, 7).every((part) => part === 0) && ipv6[7] === 1) return true;
+
+  const mappedIpv4 = getIpv4MappedAddress(ipv6);
+  if (mappedIpv4) {
+    return isBlockedLocalHost(mappedIpv4);
+  }
+
+  return (ipv6[0] & 0xfe00) === 0xfc00 || (ipv6[0] & 0xffc0) === 0xfe80;
 }
 
 async function fetchRemoteImage(
@@ -226,7 +330,7 @@ async function fetchRemoteImage(
     }
 
     const response = await fetch(currentUrl, {
-      headers: request.headers,
+      headers: buildUpstreamRequestHeaders(request),
       redirect: "manual",
     });
 
@@ -323,10 +427,11 @@ export async function handleImageOptimization(
 
   const outputFormat = negotiateImageFormat(request.headers.get("Accept"), imageConfig?.formats);
   if (handlers.transformImage) {
+    const sourceBuffer = await source.arrayBuffer();
     const adjustedQuality =
       outputFormat === "image/avif" ? Math.max(params.quality - 20, 1) : params.quality;
     try {
-      const transformed = await handlers.transformImage(source.body, {
+      const transformed = await handlers.transformImage(streamFromArrayBuffer(sourceBuffer), {
         width: params.width,
         format: outputFormat,
         quality: adjustedQuality,
@@ -345,7 +450,7 @@ export async function handleImageOptimization(
       headers.set("Cache-Control", getCacheControl(imageConfig));
       headers.set("Vary", "Accept");
       setImageSecurityHeaders(headers, params.imageUrl, sourceMediaType ?? null, imageConfig);
-      return new Response(source.body, { status: 200, headers });
+      return new Response(sourceBuffer.slice(0), { status: 200, headers });
     }
   }
 
