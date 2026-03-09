@@ -934,7 +934,11 @@ async function buildPageElement(route, params, opts, searchParams) {
   // makeThenableParams() normalises null-prototype + preserves both patterns.
   const asyncParams = makeThenableParams(params);
   const pageProps = { params: asyncParams };
-  if (hasSearchParams) {
+  if (searchParams) {
+    // Always provide searchParams prop when the URL object is available, even
+    // when the query string is empty -- pages that do "await searchParams" need
+    // it to be a thenable rather than undefined.
+    pageProps.searchParams = makeThenableParams(spObj);
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug
@@ -943,8 +947,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // read searchParams. Checking for non-empty query params is a safe
     // approximation: pages with query params in the URL are almost always
     // dynamic, and this avoids false positives from React internals.
-    markDynamicUsage();
-    pageProps.searchParams = makeThenableParams(spObj);
+    if (hasSearchParams) markDynamicUsage();
   }
   let element = createElement(PageComponent, pageProps);
 
