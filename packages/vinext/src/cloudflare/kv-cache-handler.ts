@@ -97,9 +97,15 @@ export class KVCacheHandler implements CacheHandler {
     key: string,
     _ctx?: Record<string, unknown>,
   ): Promise<CacheHandlerValue | null> {
+    const _t0 = performance.now();
     const kvKey = this.prefix + ENTRY_PREFIX + key;
     const raw = await this.kv.get(kvKey);
-    if (!raw) return null;
+    const _entryMs = Math.round(performance.now() - _t0);
+
+    if (!raw) {
+      console.log("[vinext:kv] key=" + key + " result=MISS entry_get=" + _entryMs + "ms");
+      return null;
+    }
 
     let parsed: unknown;
     try {
@@ -130,9 +136,11 @@ export class KVCacheHandler implements CacheHandler {
 
     // Check tag-based invalidation (parallel for lower latency)
     if (entry.tags.length > 0) {
+      const _t1 = performance.now();
       const tagResults = await Promise.all(
         entry.tags.map((tag) => this.kv.get(this.prefix + TAG_PREFIX + tag)),
       );
+      const _tagMs = Math.round(performance.now() - _t1);
       for (let i = 0; i < entry.tags.length; i++) {
         const tagTime = tagResults[i];
         if (tagTime) {
@@ -140,22 +148,38 @@ export class KVCacheHandler implements CacheHandler {
           if (Number.isNaN(tagTimestamp) || tagTimestamp >= entry.lastModified) {
             // Tag was invalidated after this entry, or timestamp is corrupted
             // — treat as miss to force re-render
+            console.log("[vinext:kv] key=" + key + " result=TAG_INVALIDATED entry_get=" + _entryMs + "ms tag_check=" + _tagMs + "ms tags=" + entry.tags.length);
             await this.kv.delete(kvKey);
             return null;
           }
         }
       }
+      // Check time-based expiry — return stale with cacheState
+      if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
+        console.log("[vinext:kv] key=" + key + " result=STALE entry_get=" + _entryMs + "ms tag_check=" + _tagMs + "ms tags=" + entry.tags.length);
+        return {
+          lastModified: entry.lastModified,
+          value: entry.value,
+          cacheState: "stale",
+        };
+      }
+      console.log("[vinext:kv] key=" + key + " result=HIT entry_get=" + _entryMs + "ms tag_check=" + _tagMs + "ms tags=" + entry.tags.length);
+      return {
+        lastModified: entry.lastModified,
+        value: entry.value,
+      };
     }
 
-    // Check time-based expiry — return stale with cacheState
+    // No tags — just check time-based expiry
     if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
+      console.log("[vinext:kv] key=" + key + " result=STALE entry_get=" + _entryMs + "ms tag_check=0ms tags=0");
       return {
         lastModified: entry.lastModified,
         value: entry.value,
         cacheState: "stale",
       };
     }
-
+    console.log("[vinext:kv] key=" + key + " result=HIT entry_get=" + _entryMs + "ms tag_check=0ms tags=0");
     return {
       lastModified: entry.lastModified,
       value: entry.value,

@@ -1508,12 +1508,39 @@ export default async function handler(request) {
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {
-  const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
+  const __reqStart = performance.now();
+  let __mwEnd;
+  let __routeMatchEnd;
+  let __isrCheckEnd;
+  let __buildPageEnd;
   let __compileEnd;
   let __renderEnd;
   // __reqStart is included in the timing header so the Node logging middleware
   // can compute true compile time as: handlerStart - middlewareStart.
   // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
+
+  // Emit a structured timing log line in production so \`wrangler tail\` shows
+  // per-phase wall-clock latency for every request. No-ops in dev (dev logging
+  // uses the x-vinext-timing response header path instead).
+  function __logTiming(cacheState) {
+    if (process.env.NODE_ENV !== "production") return;
+    const _t = performance.now();
+    const _r = (v) => v !== undefined ? Math.round(v - __reqStart) + "ms" : "-";
+    const parts = [
+      request.method,
+      url.pathname,
+      "total=" + Math.round(_t - __reqStart) + "ms",
+      "mw=" + _r(__mwEnd),
+      "route_match=" + _r(__routeMatchEnd),
+      "isr_check=" + _r(__isrCheckEnd),
+      "build_page=" + _r(__buildPageEnd),
+      "compile=" + _r(__compileEnd),
+      "render=" + _r(__renderEnd),
+      cacheState ? "cache=" + cacheState : null,
+    ].filter(Boolean).join(" ");
+    console.log("[vinext:timing] " + parts);
+  }
+
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -1672,6 +1699,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
   }
   ` : ""}
+  if (__mwEnd === undefined) __mwEnd = performance.now();
 
   // Build post-middleware request context for afterFiles/fallback rewrites.
   // These run after middleware in the App Router execution order and should
@@ -1963,6 +1991,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const { route, params } = match;
+  __routeMatchEnd = performance.now();
 
   // Update navigation context with matched params
   setNavigationContext({
@@ -2201,6 +2230,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
     if (!_isInterceptingRsc) {
       const _earlyCached = await isrGet(_earlyIsrKey);
+      __isrCheckEnd = performance.now();
       if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
         const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
         const _earlyIsStale = _earlyCached.isStale;
@@ -2272,6 +2302,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 controller.close();
               }
             });
+            __logTiming(_earlyIsStale ? "STALE" : "HIT");
             return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
           }
           // RSC HIT but no rscData — fall through to render (will populate it)
@@ -2321,6 +2352,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               _earlyHtmlResp.headers.append(key, value);
             }
           }
+          __logTiming(_earlyIsStale ? "STALE" : "HIT");
           return _earlyHtmlResp;
         }
       }
@@ -2542,9 +2574,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return null;
   });
   if (_pageProbeResult instanceof Response) return _pageProbeResult;
+  __buildPageEnd = performance.now();
 
   // Mark end of compile phase: route matching, middleware, tree building are done.
-  if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
+  __compileEnd = performance.now();
 
   // Render to RSC stream.
   // Track non-navigation RSC errors so we can detect when the in-tree global
@@ -2701,7 +2734,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
      const ssrEntry = await _loadSSREntry();
      htmlStream = await ssrEntry.handleSsr(_rscStreamForSsr, _getNavigationContext(), fontData);
      // Shell render complete; Suspense boundaries stream asynchronously
-     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
+     __renderEnd = performance.now();
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
@@ -2770,6 +2803,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         : -1;
       response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
     }
+    const __cacheStateForLog = response.headers.get("X-Vinext-Cache") ?? response.headers.get("x-vinext-cache") ?? undefined;
+    __logTiming(__cacheStateForLog);
     // Apply custom status code from middleware rewrite
     if (_mwCtx.status) {
       return new Response(response.body, {
