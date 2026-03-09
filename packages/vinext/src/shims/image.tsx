@@ -490,12 +490,12 @@ function normalizeProps(
     if (!src) {
       throw new Error(`Image is missing required "src" property.`);
     }
-    if (/^[\x00-\x20]/.test(src)) {
+    if (src.length > 0 && src.charCodeAt(0) <= 0x20) {
       throw new Error(
         `Image with src "${src}" cannot start with a space or control character. Use src.trimStart() to remove it or encodeURIComponent(src) to keep it.`,
       );
     }
-    if (/[\x00-\x20]$/.test(src)) {
+    if (src.length > 0 && src.charCodeAt(src.length - 1) <= 0x20) {
       throw new Error(
         `Image with src "${src}" cannot end with a space or control character. Use src.trimEnd() to remove it or encodeURIComponent(src) to keep it.`,
       );

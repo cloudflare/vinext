@@ -612,7 +612,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       const response = await handleImageOptimization(
         request,
         {
-          fetchAsset: (imagePath, incomingRequest) => fetchLocalImageResponse(clientDir, imagePath),
+          fetchAsset: (imagePath, _incomingRequest) =>
+            fetchLocalImageResponse(clientDir, imagePath),
         },
         allowedWidths,
         imageConfig,
