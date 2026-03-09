@@ -856,8 +856,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // instances (e.g. multiple Cloudflare Workers isolates).
         defines["process.env.__VINEXT_DRAFT_SECRET"] = JSON.stringify(crypto.randomUUID());
 
-        // Build the shim alias map — used by both resolve.alias and resolveId
-        // (resolveId handles .js extension variants for libraries like nuqs)
+        // Build the shim alias map — used by both resolve.alias and resolveId.
+        // Add `.js` variants for extensionless specifiers so dependency code
+        // importing `next/navigation.js` or `next/compat/router.js` resolves
+        // through the same shim entrypoints.
         nextShimMap = {
           ...nextConfig.aliases,
           "next/link": path.join(shimsDir, "link"),
@@ -941,6 +943,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
           "vinext/html": path.resolve(__dirname, "server", "html"),
         };
+        for (const [key, value] of Object.entries({ ...nextShimMap })) {
+          if (
+            !key.endsWith(".js") &&
+            !key.endsWith(".mjs") &&
+            !key.endsWith(".cjs") &&
+            !key.endsWith(".json") &&
+            nextShimMap[`${key}.js`] === undefined
+          ) {
+            nextShimMap[`${key}.js`] = value;
+          }
+        }
 
         // Detect if Cloudflare's vite plugin is present — if so, skip
         // SSR externals (Workers bundle everything, can't have Node.js externals).
@@ -1326,71 +1339,86 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
       },
 
-      resolveId: {
-        // Hook filter: only invoke JS for next/* imports and virtual:vinext-* modules.
-        // Matches "next/navigation", "next/router.js", "virtual:vinext-rsc-entry",
-        // and \0-prefixed re-imports from @vitejs/plugin-rsc.
-        filter: {
-          id: /(?:next\/|virtual:vinext-)/,
-        },
-        handler(id) {
-          // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
-          // browser entry imports our virtual module using the already-resolved
-          // ID (with \0 prefix). We need to re-resolve it so the client
-          // environment's import-analysis can find it.
-          const cleanId = id.startsWith("\0") ? id.slice(1) : id;
+      resolveId(id, importer) {
+        // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
+        // browser entry imports our virtual module using the already-resolved
+        // ID (with \0 prefix). We need to re-resolve it so the client
+        // environment's import-analysis can find it.
+        const cleanId = id.startsWith("\0") ? id.slice(1) : id;
 
-          // Handle next/* imports with .js extension (e.g. "next/navigation.js")
-          // Libraries like nuqs import "next/navigation.js" which doesn't match
-          // our resolve.alias for "next/navigation". Strip the .js and resolve
-          // through our shim map, appending .js to the resolved path.
-          if (cleanId.startsWith("next/") && cleanId.endsWith(".js")) {
-            const withoutExt = cleanId.slice(0, -3);
-            if (nextShimMap[withoutExt]) {
-              const shimPath = nextShimMap[withoutExt];
-              // Alias values don't include .js — append it for resolveId
-              return shimPath.endsWith(".js") ? shimPath : shimPath + ".js";
+        // Resolve shim and user aliases directly here instead of relying only
+        // on Vite's alias plugin. The dev module runner can otherwise fall
+        // back to native package resolution for dependency imports, which
+        // breaks ecosystem packages like nuqs and next-intl.
+        const directAlias = nextShimMap[cleanId];
+        if (directAlias) {
+          return directAlias;
+        }
+
+        // Handle extensionless relative imports inside node_modules packages.
+        // Some ESM packages (validator/es) publish `./foo` imports without an
+        // extension, which Node rejects during SSR if the module runner lets
+        // them escape Vite's resolver.
+        if (
+          importer &&
+          cleanId.startsWith(".") &&
+          path.extname(cleanId) === "" &&
+          importer.includes("node_modules")
+        ) {
+          const importerPath = importer.startsWith("\0") ? importer.slice(1) : importer;
+          const importerFile = importerPath.split("?")[0];
+          if (path.isAbsolute(importerFile)) {
+            const basePath = path.resolve(path.dirname(importerFile), cleanId);
+            for (const ext of [".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".json"]) {
+              const fileCandidate = basePath + ext;
+              if (fs.existsSync(fileCandidate)) {
+                return fileCandidate;
+              }
+              const indexCandidate = path.join(basePath, `index${ext}`);
+              if (fs.existsSync(indexCandidate)) {
+                return indexCandidate;
+              }
             }
           }
+        }
 
-          // Pages Router virtual modules
-          if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
-          if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
-          if (
-            cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY) ||
-            cleanId.endsWith("\\" + VIRTUAL_SERVER_ENTRY)
-          ) {
-            return RESOLVED_SERVER_ENTRY;
-          }
-          if (
-            cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY) ||
-            cleanId.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)
-          ) {
-            return RESOLVED_CLIENT_ENTRY;
-          }
-          // App Router virtual modules
-          if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
-          if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
-          if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
-          if (
-            cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY) ||
-            cleanId.endsWith("\\" + VIRTUAL_RSC_ENTRY)
-          ) {
-            return RESOLVED_RSC_ENTRY;
-          }
-          if (
-            cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY) ||
-            cleanId.endsWith("\\" + VIRTUAL_APP_SSR_ENTRY)
-          ) {
-            return RESOLVED_APP_SSR_ENTRY;
-          }
-          if (
-            cleanId.endsWith("/" + VIRTUAL_APP_BROWSER_ENTRY) ||
-            cleanId.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)
-          ) {
-            return RESOLVED_APP_BROWSER_ENTRY;
-          }
-        },
+        // Pages Router virtual modules
+        if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
+        if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
+        if (
+          cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY) ||
+          cleanId.endsWith("\\" + VIRTUAL_SERVER_ENTRY)
+        ) {
+          return RESOLVED_SERVER_ENTRY;
+        }
+        if (
+          cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY) ||
+          cleanId.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)
+        ) {
+          return RESOLVED_CLIENT_ENTRY;
+        }
+        // App Router virtual modules
+        if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
+        if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
+        if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
+        if (
+          cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY) ||
+          cleanId.endsWith("\\" + VIRTUAL_RSC_ENTRY)
+        ) {
+          return RESOLVED_RSC_ENTRY;
+        }
+        if (
+          cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY) ||
+          cleanId.endsWith("\\" + VIRTUAL_APP_SSR_ENTRY)
+        ) {
+          return RESOLVED_APP_SSR_ENTRY;
+        }
+        if (
+          cleanId.endsWith("/" + VIRTUAL_APP_BROWSER_ENTRY) ||
+          cleanId.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)
+        ) {
+          return RESOLVED_APP_BROWSER_ENTRY;
+        }
       },
 
       async load(id) {

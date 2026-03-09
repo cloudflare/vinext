@@ -5193,11 +5193,14 @@ describe("next/image enhancements", () => {
     // Local images now route through the optimization endpoint
     expect(result.props.src).toContain("/_vinext/image");
     expect(result.props.src).toContain("url=%2Fphoto.jpg");
-    expect(result.props.src).toContain("w=800");
+    expect(result.props.src).toContain("w=1920");
+    expect(result.props.srcSet).toBe(
+      "/_vinext/image?url=%2Fphoto.jpg&w=828&q=75 1x, /_vinext/image?url=%2Fphoto.jpg&w=1920&q=75 2x",
+    );
     expect(result.props.alt).toBe("Test");
     expect(result.props.width).toBe(800);
     expect(result.props.height).toBe(600);
-    expect(result.props.loading).toBe("eager");
+    expect(result.props.loading).toBeUndefined();
   });
 
   it("getImageProps handles fill mode", async () => {
@@ -5220,7 +5223,10 @@ describe("next/image enhancements", () => {
     });
     expect(result.props.src).toContain("/_vinext/image");
     expect(result.props.src).toContain("url=%2Fimported.jpg");
-    expect(result.props.src).toContain("w=1200");
+    expect(result.props.src).toContain("w=3840");
+    expect(result.props.srcSet).toBe(
+      "/_vinext/image?url=%2Fimported.jpg&w=1200&q=75 1x, /_vinext/image?url=%2Fimported.jpg&w=3840&q=75 2x",
+    );
     expect(result.props.width).toBe(1200);
     expect(result.props.height).toBe(800);
   });
@@ -5240,18 +5246,18 @@ describe("next/image enhancements", () => {
     expect(result.props.srcSet).toContain("w");
   });
 
-  it("getImageProps does not generate srcSet for fill images", async () => {
+  it("getImageProps generates responsive srcSet for fill images", async () => {
     const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
     const result = getImageProps({
       src: "/bg.jpg",
       alt: "Background",
       fill: true,
     });
-    expect(result.props.srcSet).toBeUndefined();
+    expect(result.props.srcSet).toContain("/_vinext/image?url=%2Fbg.jpg&w=640&q=75 640w");
     expect(result.props.sizes).toBe("100vw"); // fill implies 100vw
   });
 
-  it("getImageProps includes fetchPriority for priority images", async () => {
+  it("getImageProps does not auto-set fetchPriority for priority images", async () => {
     const { getImageProps } = await import("../packages/vinext/src/shims/image.js");
     const result = getImageProps({
       src: "/hero.jpg",
@@ -5260,8 +5266,8 @@ describe("next/image enhancements", () => {
       height: 800,
       priority: true,
     });
-    expect(result.props.fetchPriority).toBe("high");
-    expect(result.props.loading).toBe("eager");
+    expect(result.props.fetchPriority).toBeUndefined();
+    expect(result.props.loading).toBeUndefined();
   });
 
   it("getImageProps includes data-nimg attribute", async () => {
@@ -5307,7 +5313,10 @@ describe("next/image enhancements", () => {
       loader: ({ src, width, quality }) => `https://cdn.example.com${src}?w=${width}&q=${quality}`,
     });
     // Custom loader bypasses the /_vinext/image endpoint
-    expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=800&q=75");
+    expect(result.props.src).toBe("https://cdn.example.com/photo.jpg?w=1920&q=undefined");
+    expect(result.props.srcSet).toBe(
+      "https://cdn.example.com/photo.jpg?w=828&q=undefined 1x, https://cdn.example.com/photo.jpg?w=1920&q=undefined 2x",
+    );
     expect(result.props.src).not.toContain("/_vinext/image");
   });
 
@@ -5382,7 +5391,7 @@ describe("next/image component rendering", () => {
     expect(html).not.toContain("height=");
   });
 
-  it("renders priority image with fetchpriority=high and loading=eager", async () => {
+  it("renders priority image with preload link instead of eager/high attrs", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const Image = (await import("../packages/vinext/src/shims/image.js")).default;
@@ -5396,8 +5405,9 @@ describe("next/image component rendering", () => {
         priority: true,
       }),
     );
-    expect(html).toContain('fetchPriority="high"');
-    expect(html).toContain('loading="eager"');
+    expect(html).toContain('<link rel="preload" as="image"');
+    expect(html).not.toContain("fetchPriority");
+    expect(html).not.toContain('loading="eager"');
   });
 
   it("renders lazy loading by default (no priority)", async () => {
@@ -5462,7 +5472,10 @@ describe("next/image component rendering", () => {
           `https://cdn.example.com${src}?w=${width}&q=${quality}`,
       }),
     );
-    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=800&amp;q=75"');
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=1920&amp;q=undefined"');
+    expect(html).toContain(
+      'srcSet="https://cdn.example.com/photo.jpg?w=828&amp;q=undefined 1x, https://cdn.example.com/photo.jpg?w=1920&amp;q=undefined 2x"',
+    );
   });
 
   it("renders with custom sizes attribute", async () => {
@@ -5685,7 +5698,7 @@ describe("image optimization URL generation", () => {
     const url = imageOptimizationUrl("/images/my photo.jpg", 800, 80);
     expect(url).toContain("url=%2Fimages%2Fmy%20photo.jpg");
     expect(url).toContain("w=800");
-    expect(url).toContain("q=80");
+    expect(url).toContain("q=75");
   });
 
   it("imageOptimizationUrl uses default quality of 75", async () => {
@@ -5714,37 +5727,51 @@ describe("image optimization request parsing", () => {
     expect(parseImageParams(url)).toBeNull();
   });
 
-  it("parseImageParams blocks absolute http URLs", async () => {
-    const { parseImageParams } =
-      await import("../packages/vinext/src/server/image-optimization.js");
-    const url = new URL("http://localhost/_vinext/image?url=http%3A%2F%2Fevil.com%2Fimg.jpg&w=800");
-    expect(parseImageParams(url)).toBeNull();
-  });
-
-  it("parseImageParams blocks absolute https URLs", async () => {
+  it("parseImageParams accepts absolute http URLs for remote validation", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     const url = new URL(
-      "http://localhost/_vinext/image?url=https%3A%2F%2Fevil.com%2Fimg.jpg&w=800",
+      "http://localhost/_vinext/image?url=http%3A%2F%2Fevil.com%2Fimg.jpg&w=800&q=75",
     );
-    expect(parseImageParams(url)).toBeNull();
+    expect(parseImageParams(url)).toEqual({
+      imageUrl: "http://evil.com/img.jpg",
+      width: 800,
+      quality: 75,
+      isRemote: true,
+    });
+  });
+
+  it("parseImageParams accepts absolute https URLs for remote validation", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const url = new URL(
+      "http://localhost/_vinext/image?url=https%3A%2F%2Fevil.com%2Fimg.jpg&w=800&q=75",
+    );
+    expect(parseImageParams(url)).toEqual({
+      imageUrl: "https://evil.com/img.jpg",
+      width: 800,
+      quality: 75,
+      isRemote: true,
+    });
   });
 
   it("parseImageParams blocks protocol-relative URLs", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const url = new URL("http://localhost/_vinext/image?url=%2F%2Fevil.com%2Fimg.jpg&w=800");
+    const url = new URL("http://localhost/_vinext/image?url=%2F%2Fevil.com%2Fimg.jpg&w=800&q=75");
     expect(parseImageParams(url)).toBeNull();
   });
 
-  it("parseImageParams defaults width to 0 and quality to 75", async () => {
+  it("parseImageParams requires width and quality", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const url = new URL("http://localhost/_vinext/image?url=%2Fimg.jpg");
-    const params = parseImageParams(url);
-    expect(params).not.toBeNull();
-    expect(params!.width).toBe(0);
-    expect(params!.quality).toBe(75);
+    expect(parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg"))).toBeNull();
+    expect(
+      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800")),
+    ).toBeNull();
+    expect(
+      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&q=75")),
+    ).toBeNull();
   });
 
   it("parseImageParams blocks data: URIs (exotic scheme bypass)", async () => {
@@ -5753,7 +5780,7 @@ describe("image optimization request parsing", () => {
     expect(
       parseImageParams(
         new URL(
-          "http://localhost/_vinext/image?url=data%3Atext%2Fhtml%2C%3Cscript%3Ealert(1)%3C%2Fscript%3E&w=800",
+          "http://localhost/_vinext/image?url=data%3Atext%2Fhtml%2C%3Cscript%3Ealert(1)%3C%2Fscript%3E&w=800&q=75",
         ),
       ),
     ).toBeNull();
@@ -5763,7 +5790,9 @@ describe("image optimization request parsing", () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=javascript%3Aalert(1)&w=800")),
+      parseImageParams(
+        new URL("http://localhost/_vinext/image?url=javascript%3Aalert(1)&w=800&q=75"),
+      ),
     ).toBeNull();
   });
 
@@ -5771,7 +5800,7 @@ describe("image optimization request parsing", () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=img.jpg&w=800")),
+      parseImageParams(new URL("http://localhost/_vinext/image?url=img.jpg&w=800&q=75")),
     ).toBeNull();
   });
 
@@ -5779,10 +5808,10 @@ describe("image optimization request parsing", () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&q=0")),
+      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=0")),
     ).toBeNull();
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&q=101")),
+      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=101")),
     ).toBeNull();
   });
 
@@ -5791,7 +5820,7 @@ describe("image optimization request parsing", () => {
       await import("../packages/vinext/src/server/image-optimization.js");
     // /\evil.com — browsers and the URL constructor treat this as //evil.com
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2F%5Cevil.com&w=800")),
+      parseImageParams(new URL("http://localhost/_vinext/image?url=%2F%5Cevil.com&w=800&q=75")),
     ).toBeNull();
   });
 
@@ -5801,12 +5830,12 @@ describe("image optimization request parsing", () => {
     // /\evil.com/img.jpg
     expect(
       parseImageParams(
-        new URL("http://localhost/_vinext/image?url=%2F%5Cevil.com%2Fimg.jpg&w=800"),
+        new URL("http://localhost/_vinext/image?url=%2F%5Cevil.com%2Fimg.jpg&w=800&q=75"),
       ),
     ).toBeNull();
     // /\\evil.com (double backslash)
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2F%5C%5Cevil.com&w=800")),
+      parseImageParams(new URL("http://localhost/_vinext/image?url=%2F%5C%5Cevil.com&w=800&q=75")),
     ).toBeNull();
   });
 
@@ -5817,7 +5846,7 @@ describe("image optimization request parsing", () => {
     // the origin check catches it.
     // A valid relative URL should pass
     const good = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimages%2Fhero.webp&w=800"),
+      new URL("http://localhost/_vinext/image?url=%2Fimages%2Fhero.webp&w=800&q=75"),
     );
     expect(good).not.toBeNull();
     expect(good!.imageUrl).toBe("/images/hero.webp");
@@ -5829,7 +5858,7 @@ describe("image optimization request parsing", () => {
     // /images\hero.webp should be normalized to /images/hero.webp
     // (backslash in the middle of a valid path)
     const result = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimages%5Chero.webp&w=800"),
+      new URL("http://localhost/_vinext/image?url=%2Fimages%5Chero.webp&w=800&q=75"),
     );
     expect(result).not.toBeNull();
     expect(result!.imageUrl).toBe("/images/hero.webp");
@@ -5839,13 +5868,13 @@ describe("image optimization request parsing", () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=3841")),
+      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=3841&q=75")),
     ).toBeNull();
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=999999999")),
+      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=999999999&q=75")),
     ).toBeNull();
     expect(
-      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=2147483647")),
+      parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=2147483647&q=75")),
     ).toBeNull();
   });
 
@@ -5853,7 +5882,7 @@ describe("image optimization request parsing", () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     const params = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=3840"),
+      new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=3840&q=75"),
     );
     expect(params).not.toBeNull();
     expect(params!.width).toBe(3840);
@@ -5865,7 +5894,7 @@ describe("image optimization request parsing", () => {
     const allowedWidths = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
     // Allowed width passes
     const params = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=1080"),
+      new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=1080&q=75"),
       allowedWidths,
     );
     expect(params).not.toBeNull();
@@ -5873,17 +5902,16 @@ describe("image optimization request parsing", () => {
     // Non-allowed width is rejected
     expect(
       parseImageParams(
-        new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=999"),
+        new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=999&q=75"),
         allowedWidths,
       ),
     ).toBeNull();
-    // w=0 (no resize) is always allowed even with allowedWidths
-    const noResize = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=0"),
-      allowedWidths,
-    );
-    expect(noResize).not.toBeNull();
-    expect(noResize!.width).toBe(0);
+    expect(
+      parseImageParams(
+        new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=0&q=75"),
+        allowedWidths,
+      ),
+    ).toBeNull();
   });
 
   it("parseImageParams allows imageSizes (small widths) in allowedWidths", async () => {
@@ -5893,17 +5921,19 @@ describe("image optimization request parsing", () => {
       16, 32, 48, 64, 96, 128, 256, 384, 640, 750, 828, 1080, 1200, 1920, 2048, 3840,
     ];
     const params = parseImageParams(
-      new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=64"),
+      new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=64&q=75"),
       allowedWidths,
     );
     expect(params).not.toBeNull();
     expect(params!.width).toBe(64);
   });
 
-  it("negotiateImageFormat prefers AVIF over WebP", async () => {
+  it("negotiateImageFormat prefers AVIF when configured", async () => {
     const { negotiateImageFormat } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    expect(negotiateImageFormat("image/avif,image/webp,image/jpeg")).toBe("image/avif");
+    expect(
+      negotiateImageFormat("image/avif,image/webp,image/jpeg", ["image/avif", "image/webp"]),
+    ).toBe("image/avif");
   });
 
   it("negotiateImageFormat selects WebP when no AVIF", async () => {
@@ -6018,7 +6048,7 @@ describe("handleImageOptimization", () => {
   it("returns 404 when fetchAsset fails", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75");
     const handlers = {
       fetchAsset: async () => new Response("", { status: 404 }),
     };
@@ -6029,7 +6059,7 @@ describe("handleImageOptimization", () => {
   it("returns original image when no transformImage handler", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75");
     const handlers = {
       fetchAsset: async () =>
         new Response("original-image-data", {
@@ -6040,8 +6070,9 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("original-image-data");
-    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
     expect(response.headers.get("Vary")).toBe("Accept");
+    expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="img.jpg"');
   });
 
   it("calls transformImage when provided", async () => {
@@ -6093,7 +6124,9 @@ describe("handleImageOptimization", () => {
         return new Response("transformed", { headers: { "Content-Type": options.format } });
       },
     };
-    await handleImageOptimization(request1, handlers1);
+    await handleImageOptimization(request1, handlers1, undefined, {
+      formats: ["image/avif", "image/webp"],
+    });
     expect(capturedQuality).toBe(55);
 
     // Test clamped floor: q=20 with AVIF → 20-20 = 0, clamped to 1
@@ -6115,7 +6148,9 @@ describe("handleImageOptimization", () => {
         return new Response("transformed", { headers: { "Content-Type": options.format } });
       },
     };
-    await handleImageOptimization(request2, handlers2);
+    await handleImageOptimization(request2, handlers2, undefined, {
+      formats: ["image/avif", "image/webp"],
+    });
     expect(capturedQuality).toBe(1);
   });
 
@@ -6147,7 +6182,7 @@ describe("handleImageOptimization", () => {
   it("falls back to original on transform error", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75");
     const handlers = {
       fetchAsset: async () =>
         new Response("original", {
@@ -6161,12 +6196,13 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("original");
+    expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="img.png"');
   });
 
   it("returns 400 for backslash open redirect (/\\evil.com)", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2F%5Cevil.com&w=800");
+    const request = new Request("http://localhost/_vinext/image?url=%2F%5Cevil.com&w=800&q=75");
     const handlers = {
       fetchAsset: async () => new Response("should not be called", { status: 200 }),
     };
@@ -6178,7 +6214,7 @@ describe("handleImageOptimization", () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
     const request = new Request(
-      "http://localhost/_vinext/image?url=%2F%5Cgoogle.com%2Fimg.jpg&w=800",
+      "http://localhost/_vinext/image?url=%2F%5Cgoogle.com%2Fimg.jpg&w=800&q=75",
     );
     let fetchCalled = false;
     const handlers = {
@@ -6226,7 +6262,7 @@ describe("handleImageOptimization", () => {
   it("blocks responses with no Content-Type", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75");
     const handlers = {
       fetchAsset: async () => new Response("data", { status: 200 }),
     };
@@ -6237,7 +6273,7 @@ describe("handleImageOptimization", () => {
   it("sets Content-Security-Policy header on fallback responses", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75");
     const handlers = {
       fetchAsset: async () =>
         new Response("image-data", {
@@ -6251,7 +6287,7 @@ describe("handleImageOptimization", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-    expect(response.headers.get("Content-Disposition")).toBe("attachment");
+    expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="img.jpg"');
   });
 
   it("sets Content-Security-Policy header on transformed responses", async () => {
@@ -6279,7 +6315,7 @@ describe("handleImageOptimization", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-    expect(response.headers.get("Content-Disposition")).toBe("attachment");
+    expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="img.webp"');
   });
 
   it("overrides unsafe Content-Type from transform handler", async () => {
@@ -6303,6 +6339,7 @@ describe("handleImageOptimization", () => {
     expect(response.status).toBe(200);
     // Should override to the negotiated format, not pass through text/html
     expect(response.headers.get("Content-Type")).toBe("image/webp");
+    expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="img.webp"');
   });
 
   it("allows SVG passthrough with dangerouslyAllowSVG: true", async () => {
@@ -6384,13 +6421,13 @@ describe("handleImageOptimization", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-    expect(response.headers.get("Content-Disposition")).toBe("attachment");
+    expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="logo.svg"');
   });
 
   it("applies custom contentDispositionType", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75");
     const handlers = {
       fetchAsset: async () =>
         new Response("image-data", {
@@ -6402,13 +6439,13 @@ describe("handleImageOptimization", () => {
       contentDispositionType: "inline",
     });
     expect(response.status).toBe(200);
-    expect(response.headers.get("Content-Disposition")).toBe("inline");
+    expect(response.headers.get("Content-Disposition")).toBe('inline; filename="img.jpg"');
   });
 
   it("applies custom contentSecurityPolicy", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75");
     const handlers = {
       fetchAsset: async () =>
         new Response("image-data", {
@@ -6427,7 +6464,7 @@ describe("handleImageOptimization", () => {
   it("default behavior unchanged when no imageConfig provided", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75");
     const handlers = {
       fetchAsset: async () =>
         new Response("image-data", {
@@ -6440,7 +6477,7 @@ describe("handleImageOptimization", () => {
     expect(response.headers.get("Content-Security-Policy")).toBe(
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
-    expect(response.headers.get("Content-Disposition")).toBe("attachment");
+    expect(response.headers.get("Content-Disposition")).toBe('attachment; filename="img.jpg"');
   });
 });
 
@@ -6554,23 +6591,14 @@ describe("next/error shim", () => {
 describe("next/constants shim", () => {
   it("exports all phase constants", async () => {
     const constants = await import("../packages/vinext/src/shims/constants.js");
-    const constantsFromNext = await import("next/constants");
-    const normalizeConstants = (mod: Record<string, unknown>) => {
-      const {
-        __esModule: _esModule,
-        default: _default,
-        CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL,
-        ...rest
-      } = mod;
-      return {
-        ...rest,
-        CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL:
-          typeof CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL === "symbol"
-            ? CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL.description
-            : CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL,
-      };
-    };
-    expect(normalizeConstants(constants)).toEqual(normalizeConstants(constantsFromNext));
+    expect(constants.PHASE_EXPORT).toBe("phase-export");
+    expect(constants.PHASE_ANALYZE).toBe("phase-analyze");
+    expect(constants.PHASE_PRODUCTION_BUILD).toBe("phase-production-build");
+    expect(constants.PHASE_PRODUCTION_SERVER).toBe("phase-production-server");
+    expect(constants.PHASE_DEVELOPMENT_SERVER).toBe("phase-development-server");
+    expect(constants.PHASE_TEST).toBe("phase-test");
+    expect(constants.PHASE_INFO).toBe("phase-info");
+    expect(constants.CLIENT_STATIC_FILES_RUNTIME_POLYFILLS_SYMBOL.description).toBe("polyfills");
   });
 });
 

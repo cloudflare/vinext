@@ -637,7 +637,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("checks image optimization after basePath stripping", () => {
     const content = generatePagesRouterWorkerEntry();
     const basePathPos = content.indexOf("pathname.startsWith(basePath)");
-    const imagePos = content.indexOf('pathname === "/_vinext/image"');
+    const imagePos = content.indexOf('pathname === (imageConfig?.path ?? "/_vinext/image")');
     expect(basePathPos).toBeGreaterThan(-1);
     expect(imagePos).toBeGreaterThan(-1);
     expect(basePathPos).toBeLessThan(imagePos);

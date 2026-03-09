@@ -117,17 +117,55 @@ function getCacheControl(imageConfig?: ImageConfig): string {
   return `public, max-age=${ttl}, must-revalidate`;
 }
 
-function toContentDispositionFilename(imageUrl: string): string {
+function extensionFromContentType(contentType: string | null): string | null {
+  if (!contentType) return null;
+  const mediaType = contentType.split(";")[0].trim().toLowerCase();
+  switch (mediaType) {
+    case "image/jpeg":
+      return "jpg";
+    case "image/png":
+      return "png";
+    case "image/gif":
+      return "gif";
+    case "image/webp":
+      return "webp";
+    case "image/avif":
+      return "avif";
+    case "image/x-icon":
+    case "image/vnd.microsoft.icon":
+      return "ico";
+    case "image/bmp":
+      return "bmp";
+    case "image/tiff":
+      return "tiff";
+    case "image/svg+xml":
+      return "svg";
+    default:
+      return null;
+  }
+}
+
+function toContentDispositionFilename(imageUrl: string, contentType: string | null): string {
   try {
     const pathname = /^https?:\/\//i.test(imageUrl) ? new URL(imageUrl).pathname : imageUrl;
-    const basename = pathname.split("/").filter(Boolean).pop() || "image";
-    return basename.replace(/["\\\r\n]/g, "_");
+    const basename = pathname.split("/").filter(Boolean).pop();
+    const extension = extensionFromContentType(contentType);
+    if (!basename || !extension) {
+      return (basename || "image").replace(/["\\\r\n]/g, "_");
+    }
+    const [name] = basename.split(".", 1);
+    return `${name || "image"}.${extension}`.replace(/["\\\r\n]/g, "_");
   } catch {
     return "image";
   }
 }
 
-function setImageSecurityHeaders(headers: Headers, imageUrl: string, config?: ImageConfig): void {
+function setImageSecurityHeaders(
+  headers: Headers,
+  imageUrl: string,
+  contentType: string | null,
+  config?: ImageConfig,
+): void {
   headers.set(
     "Content-Security-Policy",
     config?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
@@ -136,7 +174,7 @@ function setImageSecurityHeaders(headers: Headers, imageUrl: string, config?: Im
   const disposition = config?.contentDispositionType ?? imageConfigDefault.contentDispositionType;
   headers.set(
     "Content-Disposition",
-    `${disposition}; filename="${toContentDispositionFilename(imageUrl)}"`,
+    `${disposition}; filename="${toContentDispositionFilename(imageUrl, contentType)}"`,
   );
 }
 
@@ -279,7 +317,7 @@ export async function handleImageOptimization(
     const headers = new Headers(source.headers);
     headers.set("Cache-Control", getCacheControl(imageConfig));
     headers.set("Vary", "Accept");
-    setImageSecurityHeaders(headers, params.imageUrl, imageConfig);
+    setImageSecurityHeaders(headers, params.imageUrl, sourceMediaType, imageConfig);
     return new Response(source.body, { status: 200, headers });
   }
 
@@ -294,24 +332,26 @@ export async function handleImageOptimization(
         quality: adjustedQuality,
       });
       const headers = new Headers(transformed.headers);
-      if (!isSafeImageContentType(headers.get("Content-Type"), imageConfig?.dangerouslyAllowSVG)) {
-        return new Response("Invalid image content type", { status: 500 });
-      }
+      headers.set("Content-Type", outputFormat);
       headers.set("Cache-Control", getCacheControl(imageConfig));
       headers.set("Vary", "Accept");
-      setImageSecurityHeaders(headers, params.imageUrl, imageConfig);
+      setImageSecurityHeaders(headers, params.imageUrl, outputFormat, imageConfig);
       return new Response(transformed.body, {
         status: transformed.status,
         headers,
       });
     } catch {
-      return new Response("Image transformation failed", { status: 500 });
+      const headers = new Headers(source.headers);
+      headers.set("Cache-Control", getCacheControl(imageConfig));
+      headers.set("Vary", "Accept");
+      setImageSecurityHeaders(headers, params.imageUrl, sourceMediaType ?? null, imageConfig);
+      return new Response(source.body, { status: 200, headers });
     }
   }
 
   const headers = new Headers(source.headers);
   headers.set("Cache-Control", getCacheControl(imageConfig));
   headers.set("Vary", "Accept");
-  setImageSecurityHeaders(headers, params.imageUrl, imageConfig);
+  setImageSecurityHeaders(headers, params.imageUrl, sourceMediaType ?? null, imageConfig);
   return new Response(source.body, { status: 200, headers });
 }
