@@ -2994,6 +2994,51 @@ describe("matchConfigPattern rejects ReDoS patterns", () => {
   });
 });
 
+describe("matchConfigPattern compiled pattern cache", () => {
+  it("returns consistent results when the same pattern is called multiple times", async () => {
+    // Regression test for the per-request recompilation bug: patterns that
+    // enter the regex branch (containing `(`, `\`, or param suffixes) were
+    // previously re-running isSafeRegex + new RegExp() on every call, which
+    // dominated CPU profiles on apps with many locale-prefixed redirect rules.
+    // After the fix the compiled RegExp is cached at module level.
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
+
+    // Locale capture-group pattern — the kind that triggered the bottleneck.
+    const localePattern = "/:locale(en|es|fr|id|ja|ko|pt-br|pt|ro|ta|tr|uk|zh-cn|zh-tw)?/security";
+
+    // First call — populates the cache.
+    const first = matchConfigPattern("/en/security", localePattern);
+    expect(first).not.toBeNull();
+    expect(first!.locale).toBe("en");
+
+    // Second call — must hit the cache and return the same result.
+    const second = matchConfigPattern("/en/security", localePattern);
+    expect(second).toEqual(first);
+
+    // Different pathname, same pattern — still uses the cached RegExp.
+    const third = matchConfigPattern("/fr/security", localePattern);
+    expect(third).not.toBeNull();
+    expect(third!.locale).toBe("fr");
+
+    // Non-matching pathname — cache must not corrupt the null path.
+    const fourth = matchConfigPattern("/de/security", localePattern);
+    expect(fourth).toBeNull();
+
+    // Plain no-match when locale omitted and path wrong.
+    const fifth = matchConfigPattern("/security/extra", localePattern);
+    expect(fifth).toBeNull();
+  });
+
+  it("caches rejection for unsafe (ReDoS) patterns and returns null on repeat calls", async () => {
+    const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
+    // lgtm[js/redos] — deliberate pathological regex to test cache-of-null path
+    const unsafe = "/:id((a+)+b)";
+    expect(matchConfigPattern("/x", unsafe)).toBeNull();
+    // Second call must not re-run isSafeRegex — just return null from cache.
+    expect(matchConfigPattern("/x", unsafe)).toBeNull();
+  });
+});
+
 describe("matchConfigPattern handles parameterized suffix patterns", () => {
   it("matches :path* with literal suffix (e.g. /:path*.md)", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
