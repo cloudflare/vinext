@@ -20,10 +20,7 @@ import type { NextRedirect, NextRewrite, NextHeader, HasCondition } from "./next
  * Value is `null` when safeRegExp rejected the pattern (ReDoS risk), so we
  * skip it on subsequent requests too without re-running the scanner.
  */
-const _compiledPatternCache = new Map<
-  string,
-  { re: RegExp; paramNames: string[] } | null
->();
+const _compiledPatternCache = new Map<string, { re: RegExp; paramNames: string[] } | null>();
 
 /** Hop-by-hop headers that should not be forwarded through a proxy. */
 const HOP_BY_HOP_HEADERS = new Set([
