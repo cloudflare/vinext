@@ -253,6 +253,19 @@ console.error = (...args) => {
   _origConsoleError.apply(console, args);
 };
 
+// Cached SSR environment module handle — avoids the per-request Vite module
+// runner IPC round-trip (transport.invoke("fetchModule", ...)) that adds
+// wall-clock latency even when the module is already evaluated and cached.
+// Reset to null by import.meta.hot.accept() when the RSC entry is invalidated
+// due to HMR (file changes), so the next request reloads a fresh copy.
+let _ssrEntryCache = null;
+async function _loadSSREntry() {
+  if (!_ssrEntryCache) {
+    _ssrEntryCache = await import.meta.viteRsc.loadModule("ssr", "index");
+  }
+  return _ssrEntryCache;
+}
+
 // Set navigation context in the ALS-backed store. "use client" components
 // rendered during SSR need the pathname/searchParams/params but the SSR
 // environment has a separate module instance of next/navigation.
@@ -614,7 +627,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     styles: _getSSRFontStyles(),
     preloads: _getSSRFontPreloads(),
   };
-  const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+  const ssrEntry = await _loadSSREntry();
   const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
   setHeadersContext(null);
   setNavigationContext(null);
@@ -746,7 +759,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     styles: _getSSRFontStyles(),
     preloads: _getSSRFontPreloads(),
   };
-  const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+  const ssrEntry = await _loadSSREntry();
   const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
   setHeadersContext(null);
   setNavigationContext(null);
@@ -2209,7 +2222,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                triggerBackgroundRegeneration(_earlyIsrKey, async () => {
                  let _earlyEl;
                  try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-                 const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+                 const ssrEntry2 = await _loadSSREntry();
                  const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
                  // Capture font data after render starts (fonts are populated during RSC rendering).
                  const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
@@ -2271,7 +2284,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
                let _earlyEl;
                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-               const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+               const ssrEntry2 = await _loadSSREntry();
                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
                // Capture font data after render starts (fonts are populated during RSC rendering).
                const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
@@ -2594,7 +2607,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           // requests also get a HIT after an RSC-first visit populates the cache).
           let _bgEl;
           try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-          const ssrEntry2 = await import.meta.viteRsc.loadModule("ssr", "index");
+          const ssrEntry2 = await _loadSSREntry();
           const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
           const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
           const [, htmlStream2] = await Promise.all([
@@ -2685,7 +2698,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
    }
    let htmlStream;
    try {
-     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+     const ssrEntry = await _loadSSREntry();
      htmlStream = await ssrEntry.handleSsr(_rscStreamForSsr, _getNavigationContext(), fontData);
      // Shell render complete; Suspense boundaries stream asynchronously
      if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
@@ -2879,7 +2892,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 }
 
 if (import.meta.hot) {
-  import.meta.hot.accept();
+  import.meta.hot.accept(() => {
+    // Reset the cached SSR entry so the next request re-loads the fresh module.
+    _ssrEntryCache = null;
+  });
 }
 `;
 }
@@ -3314,13 +3330,21 @@ export async function handleSsr(rscStream, navContext, fontData) {
   }); // end _runWithNavCtx
 }
 
+// Cached RSC environment module handle — avoids the per-request Vite module
+// runner IPC round-trip on every incoming request. Reset by HMR accept below
+// when this module (the browser/SSR entry) is re-evaluated due to file changes.
+let _cachedRscModule = null;
+
 export default {
   async fetch(request) {
     const url = new URL(request.url);
     if (url.pathname.startsWith("//")) {
       return new Response("404 Not Found", { status: 404 });
     }
-    const rscModule = await import.meta.viteRsc.loadModule("rsc", "index");
+    if (!_cachedRscModule) {
+      _cachedRscModule = await import.meta.viteRsc.loadModule("rsc", "index");
+    }
+    const rscModule = _cachedRscModule;
     const result = await rscModule.default(request);
     if (result instanceof Response) {
       return result;
@@ -3331,6 +3355,13 @@ export default {
     return new Response(String(result), { status: 200 });
   },
 };
+
+if (import.meta.hot) {
+  import.meta.hot.accept(() => {
+    // Reset the cached RSC module so the next request re-loads the fresh module.
+    _cachedRscModule = null;
+  });
+}
 `;
 }
 
