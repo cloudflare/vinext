@@ -6071,6 +6071,79 @@ describe("handleImageOptimization", () => {
     expect(capturedOptions).toEqual({ width: 800, format: "image/webp", quality: 90 });
   });
 
+  it("applies AVIF quality offset (-20, clamped to 1)", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    // Test normal offset: q=75 with AVIF → 75-20 = 55
+    const request1 = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75", {
+      headers: { Accept: "image/avif" },
+    });
+    let capturedQuality: number | null = null;
+    const handlers1 = {
+      fetchAsset: async () =>
+        new Response("original", {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        }),
+      transformImage: async (
+        _body: ReadableStream,
+        options: { width: number; format: string; quality: number },
+      ) => {
+        capturedQuality = options.quality;
+        return new Response("transformed", { headers: { "Content-Type": options.format } });
+      },
+    };
+    await handleImageOptimization(request1, handlers1);
+    expect(capturedQuality).toBe(55);
+
+    // Test clamped floor: q=20 with AVIF → 20-20 = 0, clamped to 1
+    const request2 = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=20", {
+      headers: { Accept: "image/avif" },
+    });
+    capturedQuality = null;
+    const handlers2 = {
+      fetchAsset: async () =>
+        new Response("original", {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        }),
+      transformImage: async (
+        _body: ReadableStream,
+        options: { width: number; format: string; quality: number },
+      ) => {
+        capturedQuality = options.quality;
+        return new Response("transformed", { headers: { "Content-Type": options.format } });
+      },
+    };
+    await handleImageOptimization(request2, handlers2);
+    expect(capturedQuality).toBe(1);
+  });
+
+  it("does not apply AVIF offset for WebP", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75", {
+      headers: { Accept: "image/webp" },
+    });
+    let capturedQuality: number | null = null;
+    const handlers = {
+      fetchAsset: async () =>
+        new Response("original", {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        }),
+      transformImage: async (
+        _body: ReadableStream,
+        options: { width: number; format: string; quality: number },
+      ) => {
+        capturedQuality = options.quality;
+        return new Response("transformed", { headers: { "Content-Type": options.format } });
+      },
+    };
+    await handleImageOptimization(request, handlers);
+    expect(capturedQuality).toBe(75);
+  });
+
   it("falls back to original on transform error", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");

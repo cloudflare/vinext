@@ -540,6 +540,61 @@ describe("preload prop (Next.js 16)", () => {
   });
 });
 
+describe("combined preload + priority", () => {
+  it("renders eager loading and fetchPriority=high without conflict", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "combined flags",
+        src: "/hero.png",
+        width: 800,
+        height: 600,
+        preload: true,
+        priority: true,
+      }),
+    );
+    expect(html).toContain('loading="eager"');
+    expect(html).toContain('fetchPriority="high"');
+    expect(html).not.toContain('loading="lazy"');
+  });
+
+  it("custom loader with priority sets fetchPriority=high", () => {
+    const loader = ({ src, width }: { src: string; width: number }) =>
+      `https://cdn.example.com${src}?w=${width}`;
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cdn priority",
+        src: "/photo.jpg",
+        width: 200,
+        height: 150,
+        loader,
+        priority: true,
+      }),
+    );
+    expect(html).toContain('loading="eager"');
+    expect(html).toContain('fetchPriority="high"');
+    expect(html).toContain('src="https://cdn.example.com/photo.jpg?w=200"');
+  });
+
+  it("custom loader with preload sets fetchPriority=high", () => {
+    const loader = ({ src, width }: { src: string; width: number }) =>
+      `https://cdn.example.com${src}?w=${width}`;
+
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cdn preload",
+        src: "/photo.jpg",
+        width: 200,
+        height: 150,
+        loader,
+        preload: true,
+      }),
+    );
+    expect(html).toContain('loading="eager"');
+    expect(html).toContain('fetchPriority="high"');
+  });
+});
+
 describe("deprecated props (Next.js 16 compat)", () => {
   it("accepts and ignores onLoadingComplete", () => {
     const html = ReactDOMServer.renderToString(

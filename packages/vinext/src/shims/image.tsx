@@ -327,6 +327,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
         width={fill ? undefined : imgWidth}
         height={fill ? undefined : imgHeight}
         loading={isEager ? "eager" : (loading ?? "lazy")}
+        fetchPriority={isEager ? "high" : undefined}
         decoding="async"
         sizes={sizes}
         className={className}
