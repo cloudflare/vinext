@@ -537,7 +537,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   }
   const [_metaResults, _vpResults] = await Promise.all([
     Promise.all(_layoutMetaPromises),
-    Promise.all(_filteredLayouts.map((mod) => resolveModuleViewport(mod).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
+    Promise.all(_filteredLayouts.map((mod) => resolveModuleViewport(mod, _fallbackParams).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
   ]);
   const metadataList = _metaResults.filter(Boolean);
   const viewportList = _vpResults.filter(Boolean);

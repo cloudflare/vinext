@@ -226,6 +226,37 @@ describe("Next.js compat: not-found", () => {
     expect(html).toContain("<title>not-found: my-other-slug</title>");
   });
 
+  // ── generateViewport in fallback layout receives real params ──
+  // Regression test for: renderHTTPAccessFallbackPage was passing {} for params
+  // to resolveModuleViewport(), so generateViewport() would get undefined for
+  // all dynamic route params (e.g. params.slug === undefined).
+  //
+  // Fixture: nextjs-compat/layout-params-notfound/[slug]/layout.tsx exports
+  // generateViewport({ params }) that returns themeColor "slug-<slug>".
+
+  it("layout generateViewport() in not-found fallback receives actual route params", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-params-notfound/bad-slug",
+    );
+    expect(res.status).toBe(404);
+    // The not-found boundary must render
+    expect(html).toContain("layout-params-notfound-boundary");
+    // The theme-color must include the actual slug -- proves params were forwarded.
+    // If renderHTTPAccessFallbackPage passed {} instead of {slug:"bad-slug"},
+    // the themeColor would be "slug-undefined" instead of "slug-bad-slug".
+    expect(html).toContain('content="slug-bad-slug"');
+  });
+
+  it("layout generateViewport() in not-found fallback uses actual slug value", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-params-notfound/my-other-slug",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain('content="slug-my-other-slug"');
+  });
+
   // ── notFound() from layout components ───────────────────────
   // Tests that notFound() thrown from a layout component is caught by the
   // parent layout's NotFoundBoundary (per-layout boundary matching Next.js).
