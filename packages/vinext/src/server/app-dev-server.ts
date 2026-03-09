@@ -524,8 +524,8 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   // Run all resolutions in parallel — generateMetadata() can do async I/O.
   const _filteredLayouts = layouts.filter(Boolean);
   const [_metaResults, _vpResults] = await Promise.all([
-    Promise.all(_filteredLayouts.map((mod) => resolveModuleMetadata(mod).catch(() => null))),
-    Promise.all(_filteredLayouts.map((mod) => resolveModuleViewport(mod).catch(() => null))),
+    Promise.all(_filteredLayouts.map((mod) => resolveModuleMetadata(mod).catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; }))),
+    Promise.all(_filteredLayouts.map((mod) => resolveModuleViewport(mod).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
   ]);
   const metadataList = _metaResults.filter(Boolean);
   const viewportList = _vpResults.filter(Boolean);
@@ -854,8 +854,8 @@ async function buildPageElement(route, params, opts, searchParams) {
   // route it to the nearest error.tsx boundary (or global-error.tsx).
   const layoutMods = route.layouts.filter(Boolean);
   const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
-    Promise.all(layoutMods.map((mod) => resolveModuleMetadata(mod, params).catch(() => null))),
-    Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch(() => null))),
+    Promise.all(layoutMods.map((mod) => resolveModuleMetadata(mod, params).catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; }))),
+    Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
     route.page ? resolveModuleMetadata(route.page, params) : Promise.resolve(null),
     route.page ? resolveModuleViewport(route.page, params) : Promise.resolve(null),
   ]);
