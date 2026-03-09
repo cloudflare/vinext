@@ -293,7 +293,7 @@ CI is split into safe checks (no secrets) and deploy previews (requires secrets)
 
 **Safe CI (`ci.yml`)** runs for all PRs after first-time contributor approval:
 
-- Lint, Typecheck, Vitest, Playwright E2E
+- Format, Lint, Typecheck, Vitest, Playwright E2E
 - Uses zero secrets and read-only permissions
 - First-time contributors need one manual approval, then subsequent PRs run automatically
 
