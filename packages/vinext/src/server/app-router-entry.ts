@@ -16,7 +16,7 @@
 import rscHandler from "virtual:vinext-rsc-entry";
 
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, _env: unknown, ctx?: { waitUntil(p: Promise<unknown>): void }): Promise<Response> {
     const url = new URL(request.url);
 
     // Normalize backslashes (browsers treat /\ as //) before any other checks.
@@ -45,7 +45,7 @@ export default {
      // matching between middleware and routing.
 
     // Delegate to RSC handler (which decodes + normalizes the pathname itself)
-    const result = await rscHandler(request);
+    const result = await rscHandler(request, ctx);
 
     if (result instanceof Response) {
       return result;

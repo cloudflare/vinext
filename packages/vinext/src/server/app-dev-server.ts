@@ -1455,7 +1455,7 @@ function __applyConfigHeaders(pathname, ctx) {
   return result;
 }
 
-export default async function handler(request) {
+export default async function handler(request, ctx) {
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -1472,7 +1472,7 @@ export default async function handler(request) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -1507,7 +1507,7 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx) {
+async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   const __reqStart = performance.now();
   let __mwEnd;
   let __routeMatchEnd;
@@ -2249,11 +2249,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             if (_earlyIsStale) {
               // Background regeneration: re-render and update cache
               const _earlyFrozenNavCtx = _getNavigationContext();
-               triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-                 let _earlyEl;
-                 try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-                 const ssrEntry2 = await _loadSSREntry();
-                 const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                  let _earlyEl;
+                  try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                  const ssrEntry2 = await _loadSSREntry();
+                  const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+
                  // Capture font data after render starts (fonts are populated during RSC rendering).
                  const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
                  const [rscBytesCollected, htmlStream2] = await Promise.all([
@@ -2269,9 +2270,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                  }
                  // Include path tags so revalidatePath() can invalidate this entry.
                  const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-               });
+                  await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                  setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                }, ctx);
              }
              if (_mwCtx.headers) {
                for (const [key, value] of _mwCtx.headers) {
@@ -2332,9 +2333,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                }
                // Include path tags so revalidatePath() can invalidate this entry.
                const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-               await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-               setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-             });
+                await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+              }, ctx);
            }
            setHeadersContext(null);
           setNavigationContext(null);
@@ -2656,9 +2657,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           }
           const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
           // Cache with the original RSC bytes (from the first render, already served to client).
-          await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
-          setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
-        });
+           await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
+           setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
+         }, ctx);
       }
 
      // Merge middleware response headers into the RSC response.
@@ -2897,10 +2898,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
              ? await collectStreamAsArrayBuffer(_rscStreamForCache)
              : undefined;
             const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-           setRevalidateDuration(cacheKey, revalidateSeconds);
-         }
-       });
+            await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+            setRevalidateDuration(cacheKey, revalidateSeconds);
+          }
+        }, ctx);
        return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",

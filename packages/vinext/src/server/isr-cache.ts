@@ -67,15 +67,27 @@ export async function isrSet(
 
 const pendingRegenerations = new Map<string, Promise<void>>();
 
+/** Minimal ExecutionContext interface — matches both Workers and Node.js adapters. */
+interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
 /**
  * Trigger a background regeneration for a cache key.
  *
  * If a regeneration for this key is already in progress, this is a no-op.
  * The renderFn should produce the new cache value and call isrSet internally.
+ *
+ * Pass `ctx` (the Workers ExecutionContext) so the promise is registered with
+ * ctx.waitUntil(). This tells the runtime that the isolate must stay alive
+ * until regeneration completes, and — critically — decouples it from the
+ * response stream so the browser receives the response immediately instead of
+ * waiting for the background render to finish.
  */
 export function triggerBackgroundRegeneration(
   key: string,
   renderFn: () => Promise<void>,
+  ctx?: ExecutionContext,
 ): void {
   if (pendingRegenerations.has(key)) return;
 
@@ -88,6 +100,10 @@ export function triggerBackgroundRegeneration(
     });
 
   pendingRegenerations.set(key, promise);
+
+  // Register with the platform's waitUntil so the runtime knows the isolate
+  // must stay alive, and so the response is not held until regen completes.
+  if (ctx) ctx.waitUntil(promise);
 }
 
 // ---------------------------------------------------------------------------
