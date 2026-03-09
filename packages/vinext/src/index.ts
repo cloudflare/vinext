@@ -1,6 +1,6 @@
 import type { Plugin, PluginOption, UserConfig, ViteDevServer } from "vite";
 import { loadEnv, parseAst } from "vite";
-import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, patternToNextFormat as pagesPatternToNextFormat, type Route } from "./routing/pages-router.js";
+import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute } from "./routing/pages-router.js";
 import { generateServerEntry as _generateServerEntry } from "./entries/pages-server-entry.js";
 import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
@@ -22,9 +22,8 @@ import {
   type NextHeader,
 } from "./config/next-config.js";
 
-import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
+import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
 import { logRequest, now } from "./server/request-log.js";
-import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormalizePathCode } from "./server/middleware-codegen.js";
 import { normalizePath } from "./server/normalize-path.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
 import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "./shims/constants.js";
