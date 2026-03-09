@@ -728,7 +728,7 @@ export default {
       // ── 9. Page routes ────────────────────────────────────────────
       let response: Response | undefined;
       if (typeof renderPage === "function") {
-        response = await renderPage(request, resolvedUrl, null);
+        response = await renderPage(request, resolvedUrl, null, ctx);
 
         // ── 10. Fallback rewrites (if SSR returned 404) ─────────────
         if (response && response.status === 404 && configRewrites.fallback?.length) {
@@ -737,7 +737,7 @@ export default {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
             }
-            response = await renderPage(request, fallbackRewrite, null);
+            response = await renderPage(request, fallbackRewrite, null, ctx);
           }
         }
       }

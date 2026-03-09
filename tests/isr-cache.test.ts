@@ -209,4 +209,31 @@ describe("triggerBackgroundRegeneration", () => {
     expect(renderFnA).toHaveBeenCalledOnce();
     expect(renderFnB).toHaveBeenCalledOnce();
   });
+
+  it("calls ctx.waitUntil with the regen promise when ctx is provided", async () => {
+    const waitUntil = vi.fn();
+    const ctx = { waitUntil };
+
+    let resolveRender: () => void;
+    const renderPromise = new Promise<void>((r) => {
+      resolveRender = r;
+    });
+    const renderFn = vi.fn().mockReturnValue(renderPromise);
+
+    triggerBackgroundRegeneration("regen-ctx-1", renderFn, ctx);
+
+    expect(waitUntil).toHaveBeenCalledOnce();
+    expect(waitUntil).toHaveBeenCalledWith(expect.any(Promise));
+
+    resolveRender!();
+    await renderPromise;
+  });
+
+  it("does not require ctx — works without it", async () => {
+    const renderFn = vi.fn().mockResolvedValue(undefined);
+    // No ctx passed — should not throw
+    triggerBackgroundRegeneration("regen-no-ctx", renderFn);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(renderFn).toHaveBeenCalledOnce();
+  });
 });

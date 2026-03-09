@@ -272,12 +272,15 @@ async function isrSet(key, data, revalidateSeconds, tags) {
   await handler.set(key, data, { revalidate: revalidateSeconds, tags: tags || [] });
 }
 const pendingRegenerations = new Map();
-function triggerBackgroundRegeneration(key, renderFn) {
+function triggerBackgroundRegeneration(key, renderFn, ctx) {
   if (pendingRegenerations.has(key)) return;
   const promise = renderFn()
     .catch((err) => console.error("[vinext] ISR regen failed for " + key + ":", err))
     .finally(() => pendingRegenerations.delete(key));
   pendingRegenerations.set(key, promise);
+  // Register with the Workers ExecutionContext so the isolate is kept alive
+  // until the regeneration finishes, even after the Response has been sent.
+  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
 }
 
 async function renderToStringAsync(element) {
@@ -630,7 +633,7 @@ async function readBodyWithLimit(request, maxBytes) {
   return chunks.join("");
 }
 
-export async function renderPage(request, url, manifest) {
+export async function renderPage(request, url, manifest, ctx) {
   const localeInfo = extractLocale(url);
   const locale = localeInfo.locale;
   const routeUrl = localeInfo.url;
@@ -776,7 +779,7 @@ export async function renderPage(request, url, manifest) {
           if (freshResult && freshResult.props && typeof freshResult.revalidate === "number" && freshResult.revalidate > 0) {
             await isrSet(cacheKey, { kind: "PAGES", html: cached.value.value.html, pageData: freshResult.props, headers: undefined, status: undefined }, freshResult.revalidate);
           }
-        });
+        }, ctx);
         var _staleHeaders = {
           "Content-Type": "text/html", "X-Vinext-Cache": "STALE",
           "Cache-Control": "s-maxage=0, stale-while-revalidate",
