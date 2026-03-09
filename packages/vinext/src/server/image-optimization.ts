@@ -105,10 +105,15 @@ export function parseImageParams(
  * Negotiate the best output format based on the Accept header.
  * Returns an IANA media type.
  */
-export function negotiateImageFormat(acceptHeader: string | null): string {
+export function negotiateImageFormat(
+  acceptHeader: string | null,
+  configuredFormats?: string[],
+): string {
   if (!acceptHeader) return "image/jpeg";
-  if (acceptHeader.includes("image/avif")) return "image/avif";
-  if (acceptHeader.includes("image/webp")) return "image/webp";
+  const formats = configuredFormats ?? ["image/webp"];
+  // Check formats in order of preference (AVIF > WebP)
+  if (formats.includes("image/avif") && acceptHeader.includes("image/avif")) return "image/avif";
+  if (formats.includes("image/webp") && acceptHeader.includes("image/webp")) return "image/webp";
   return "image/jpeg";
 }
 
@@ -209,6 +214,29 @@ export async function handleImageOptimization(
   }
 
   const { imageUrl, width, quality } = params;
+
+  // Check pre-built image manifest (populated during build via vinext:cloudflare-build)
+  const manifest = (globalThis as Record<string, unknown>).__VINEXT_IMAGE_MANIFEST__ as
+    | Record<string, Record<string, string>>
+    | undefined;
+  if (manifest) {
+    const format = negotiateImageFormat(request.headers.get("Accept"));
+    const manifestKey = `${width}:${quality}:${format}`;
+    const variants = manifest[imageUrl];
+    if (variants?.[manifestKey]) {
+      const prebuiltUrl = variants[manifestKey];
+      const prebuiltResponse = await handlers.fetchAsset(prebuiltUrl, request);
+      if (prebuiltResponse.ok) {
+        const headers = new Headers(prebuiltResponse.headers);
+        headers.set("Content-Type", format);
+        headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
+        headers.set("Vary", "Accept");
+        setImageSecurityHeaders(headers, imageConfig);
+        return new Response(prebuiltResponse.body, { status: 200, headers });
+      }
+      // Pre-built fetch failed — fall through to dynamic optimization
+    }
+  }
 
   // Fetch source image
   const source = await handlers.fetchAsset(imageUrl, request);

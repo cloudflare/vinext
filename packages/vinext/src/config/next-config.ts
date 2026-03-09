@@ -170,6 +170,8 @@ export interface NextConfig {
     contentDispositionType?: "inline" | "attachment";
     /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
     contentSecurityPolicy?: string;
+    /** Supported output formats for image optimization. Defaults to ["image/webp"]. Matches Next.js images.formats config. */
+    formats?: ("image/webp" | "image/avif")[];
   };
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
   output?: "export" | "standalone";

@@ -711,6 +711,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let _isBuildMode = false;
   let _devImageCache: Map<string, Buffer> | null = null;
 
+  // Maps "absPath:width:format" → buffer + metadata for manifest generation.
+  // Populated during the load hook, consumed by closeBundle to write optimized
+  // assets and the _vinext-image-manifest.json.
+  const _optimizedImages = new Map<
+    string,
+    {
+      buffer: Buffer;
+      baseName: string;
+      width: number;
+      quality: number;
+      format: string;
+      absSourcePath: string;
+    }
+  >();
+
+  let _imageFormats: string[] = ["image/webp"];
+
   // Shared state for the MDX proxy plugin. Populated during config() if MDX
   // files are detected and @mdx-js/rollup is installed.
   let mdxDelegate: Plugin | null = null;
@@ -840,6 +857,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG"] = JSON.stringify(
           String(nextConfig.images?.dangerouslyAllowSVG ?? false),
         );
+        // Expose configured image formats for format negotiation.
+        // Default: ["image/webp"] — matches Next.js default.
+        defines["process.env.__VINEXT_IMAGE_FORMATS"] = JSON.stringify(
+          JSON.stringify(nextConfig.images?.formats ?? ["image/webp"]),
+        );
+        _imageFormats = nextConfig.images?.formats ?? ["image/webp"];
         // Draft mode secret — generated once at build time so the
         // __prerender_bypass cookie is consistent across all server
         // instances (e.g. multiple Cloudflare Workers isolates).
@@ -1852,12 +1875,27 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
                 // Try sharp-based optimization if available
                 const __sharpModule = await (await import("./utils/sharp.js")).tryRequireSharp();
-                const __imgWidth = parseInt(new URLSearchParams(url.split("?")[1] ?? "").get("w") || "0", 10);
-                const __imgQuality = parseInt(new URLSearchParams(url.split("?")[1] ?? "").get("q") || "75", 10);
+                const __imgWidth = parseInt(
+                  new URLSearchParams(url.split("?")[1] ?? "").get("w") || "0",
+                  10,
+                );
+                const __imgQuality = parseInt(
+                  new URLSearchParams(url.split("?")[1] ?? "").get("q") || "75",
+                  10,
+                );
 
                 if (__sharpModule && __imgWidth > 0 && !imgUrl.endsWith(".svg")) {
+                  const { negotiateImageFormat } = await import("./server/image-optimization.js");
+                  const __acceptHeader = req.headers["accept"] || null;
+                  const __format = negotiateImageFormat(__acceptHeader);
+                  const __formatExt =
+                    __format === "image/avif"
+                      ? "avif"
+                      : __format === "image/webp"
+                        ? "webp"
+                        : "jpeg";
                   // Dev image optimization cache (memory-backed, capped at 500 entries)
-                  const __cacheKey = `${imgUrl}:${__imgWidth}:${__imgQuality}`;
+                  const __cacheKey = `${imgUrl}:${__imgWidth}:${__imgQuality}:${__formatExt}`;
                   if (!_devImageCache) {
                     _devImageCache = new Map<string, Buffer>();
                   }
@@ -1877,10 +1915,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                           res.end();
                           return;
                         }
-                        const __result = await __sharpModule(__rawBuffer)
-                          .resize(__imgWidth, undefined, { withoutEnlargement: true })
-                          .webp({ quality: __imgQuality })
-                          .toBuffer();
+                        const __sharpPipeline = __sharpModule(__rawBuffer).resize(
+                          __imgWidth,
+                          undefined,
+                          { withoutEnlargement: true },
+                        );
+                        const __result = await (
+                          __format === "image/avif"
+                            ? __sharpPipeline.avif({ quality: __imgQuality })
+                            : __format === "image/webp"
+                              ? __sharpPipeline.webp({ quality: __imgQuality })
+                              : __sharpPipeline.jpeg({ quality: __imgQuality })
+                        ).toBuffer();
                         __optimizedBuf = __result;
 
                         // Cap cache at 500 entries
@@ -1897,7 +1943,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
                   if (__optimizedBuf) {
                     res.writeHead(200, {
-                      "Content-Type": "image/webp",
+                      "Content-Type": __format,
                       "Content-Length": __optimizedBuf.length.toString(),
                       "Cache-Control": "public, max-age=60",
                     });
@@ -2286,7 +2332,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       _dimCache: imageImportDimCache,
 
       configResolved(config) {
-        _isBuildMode = config.command === 'build';
+        _isBuildMode = config.command === "build";
       },
 
       resolveId: {
@@ -2296,10 +2342,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const realPath = source.replace("?vinext-meta", "");
             return `\0vinext-image-meta:${realPath}`;
           }
-          // ?vinext-opt&w=WIDTH — build-time sharp optimization
-          const optMatch = source.match(/^(.+)\?vinext-opt&w=(\d+)$/);
+          // ?vinext-opt&w=WIDTH&f=FORMAT — build-time sharp optimization
+          const optMatch = source.match(/^(.+)\?vinext-opt&w=(\d+)&f=(\w+)$/);
           if (optMatch) {
-            return `\0vinext-image-opt:${optMatch[1]}:${optMatch[2]}`;
+            return `\0vinext-image-opt:${optMatch[1]}:${optMatch[2]}:${optMatch[3]}`;
           }
           return null;
         },
@@ -2327,17 +2373,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           return `export default ${JSON.stringify(dims)};`;
         }
 
-        // Build-time image optimization: resize + convert to WebP
+        // Build-time image optimization: resize + convert to target format
         if (id.startsWith("\0vinext-image-opt:")) {
           const rest = id.replace("\0vinext-image-opt:", "");
-          const lastColon = rest.lastIndexOf(":");
-          const imagePath = rest.slice(0, lastColon);
-          const width = parseInt(rest.slice(lastColon + 1), 10);
+          // Parse "absPath:width:format"
+          const parts = rest.split(":");
+          const format = parts.pop()!;
+          const width = parseInt(parts.pop()!, 10);
+          const imagePath = parts.join(":"); // rejoin in case path contains colons (e.g. Windows C:\...)
 
           const sharp = await tryRequireSharp();
           if (!sharp) {
-            // Fallback: just re-export the original image URL
-            return `export default ${JSON.stringify(imagePath)};`;
+            return `export {};`;
+          }
+
+          const mapKey = `${imagePath}:${width}:${format}`;
+          if (_optimizedImages.has(mapKey)) {
+            // Already processed (same image imported by multiple environments)
+            return `export {};`;
           }
 
           try {
@@ -2345,38 +2398,35 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // Skip animated images (GIF with multiple frames)
             const metadata = await sharp(buffer).metadata();
             if (metadata.pages && metadata.pages > 1) {
-              // Animated image — emit original, no optimization
-              const refId = this.emitFile({
-                type: 'asset',
-                name: path.basename(imagePath),
-                source: buffer,
-              });
-              return `export default "__VITE_ASSET__${refId}__";`;
+              return `export {};`;
             }
 
-            const optimized = await sharp(buffer)
-              .resize(width, undefined, { withoutEnlargement: true })
-              .webp({ quality: 75 })
-              .toBuffer();
+            const pipeline = sharp(buffer).resize(width, undefined, { withoutEnlargement: true });
+
+            const quality = 75;
+            const optimized = await (
+              format === "avif"
+                ? pipeline.avif({ quality })
+                : format === "webp"
+                  ? pipeline.webp({ quality })
+                  : pipeline.jpeg({ quality })
+            ).toBuffer();
 
             const baseName = path.basename(imagePath, path.extname(imagePath));
-            const refId = this.emitFile({
-              type: 'asset',
-              name: `${baseName}-${width}.webp`,
-              source: optimized,
+            _optimizedImages.set(mapKey, {
+              buffer: optimized,
+              baseName,
+              width,
+              quality,
+              format,
+              absSourcePath: imagePath,
             });
-            return `export default "__VITE_ASSET__${refId}__";`;
           } catch (e) {
             console.warn(`[vinext] Sharp optimization failed for ${imagePath}:`, e);
-            // Fallback: emit original
-            const buffer = fs.readFileSync(imagePath);
-            const refId = this.emitFile({
-              type: 'asset',
-              name: path.basename(imagePath),
-              source: buffer,
-            });
-            return `export default "__VITE_ASSET__${refId}__";`;
           }
+
+          // No-op module — the optimization trigger is a side-effect import
+          return `export {};`;
         }
 
         return null;
@@ -2426,9 +2476,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
             let replacement: string;
 
-            // In build mode with sharp, generate optimized variants
-            const isSvg = importPath.endsWith('.svg');
-            if (_isBuildMode && !isSvg && await tryRequireSharp()) {
+            // In build mode with sharp, generate side-effect imports for optimization
+            const isSvg = importPath.endsWith(".svg");
+            if (_isBuildMode && !isSvg && (await tryRequireSharp())) {
               // Get dimensions for width filtering
               let dims = imageImportDimCache.get(absImagePath);
               if (!dims) {
@@ -2444,33 +2494,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               }
 
               const deviceSizes = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
-              const qualifyingWidths = dims.width > 0
-                ? deviceSizes.filter(w => w <= dims!.width * 2)
-                : deviceSizes;
+              const qualifyingWidths =
+                dims.width > 0 ? deviceSizes.filter((w) => w <= dims!.width * 2) : deviceSizes;
 
-              if (qualifyingWidths.length > 0) {
-                const optImports = qualifyingWidths.map(w => {
-                  const optVar = `__vinext_img_opt_${varName}_${w}`;
-                  return `import ${optVar} from ${JSON.stringify(absImagePath + `?vinext-opt&w=${w}`)};`;
-                }).join('\n');
+              // Generate side-effect imports for each width × format combination.
+              // These trigger the load hook which stores optimized buffers in _optimizedImages.
+              // The StaticImageData object stays simple: { src, width, height } — identical to dev mode.
+              const formatExts = _imageFormats.map((f) =>
+                f === "image/avif" ? "avif" : f === "image/webp" ? "webp" : "jpeg",
+              );
+              const optImports = qualifyingWidths
+                .flatMap((w) =>
+                  formatExts.map(
+                    (f) => `import ${JSON.stringify(absImagePath + `?vinext-opt&w=${w}&f=${f}`)};`,
+                  ),
+                )
+                .join("\n");
 
-                const srcSetEntries = qualifyingWidths.map(w => {
-                  const optVar = `__vinext_img_opt_${varName}_${w}`;
-                  return `${w}: ${optVar}`;
-                }).join(', ');
-
-                replacement =
-                  `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
-                  `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
-                  optImports + '\n' +
-                  `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height, optimizedSrcSet: { ${srcSetEntries} } };`;
-              } else {
-                // No qualifying widths (image too small for any device size)
-                replacement =
-                  `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
-                  `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
-                  `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
-              }
+              replacement =
+                `import ${urlVar} from ${JSON.stringify(importPath)};\n` +
+                `import ${metaVar} from ${JSON.stringify(absImagePath + "?vinext-meta")};\n` +
+                (qualifyingWidths.length > 0 ? optImports + "\n" : "") +
+                `const ${varName} = { src: ${urlVar}, width: ${metaVar}.width, height: ${metaVar}.height };`;
             } else {
               // Dev mode or no sharp — keep existing behavior
               replacement =
@@ -3041,6 +3086,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
             contentDispositionType: nextConfig?.images?.contentDispositionType,
             contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
+            formats: nextConfig?.images?.formats ?? ["image/webp"],
           };
 
           fs.writeFileSync(path.join(outDir, "image-config.json"), JSON.stringify(imageConfig));
@@ -3210,6 +3256,94 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ].join("\n");
             fs.mkdirSync(clientDir, { recursive: true });
             fs.writeFileSync(headersPath, headersContent);
+          }
+
+          // ── Image optimization manifest ─────────────────────────────────
+          // Write pre-built optimized images to dist/client/assets/ and
+          // generate _vinext-image-manifest.json mapping original URLs to
+          // their pre-built variants.
+          if (_optimizedImages.size > 0) {
+            const crypto = await import("node:crypto");
+            const manifest: Record<string, Record<string, string>> = {};
+
+            // Read Vite's build manifest to map absolute source paths → output URLs
+            const buildManifest = fs.existsSync(buildManifestPath)
+              ? JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"))
+              : {};
+
+            // Build a map of absSourcePath → Vite output URL
+            const sourceToOutputUrl = new Map<string, string>();
+            for (const [key, value] of Object.entries(buildManifest) as [string, any][]) {
+              if (value?.file) {
+                // Vite manifest keys are relative to root; resolve to absolute
+                const absKey = path.isAbsolute(key) ? key : path.resolve(buildRoot, key);
+                sourceToOutputUrl.set(absKey, "/" + value.file);
+              }
+            }
+
+            const assetsOutDir = path.join(clientDir, "assets");
+            if (!fs.existsSync(assetsOutDir)) {
+              fs.mkdirSync(assetsOutDir, { recursive: true });
+            }
+
+            for (const [, entry] of _optimizedImages) {
+              const { buffer, baseName, width, quality, format, absSourcePath } = entry;
+
+              // Find the original image's output URL from the build manifest
+              const originalUrl = sourceToOutputUrl.get(absSourcePath);
+              if (!originalUrl) continue;
+
+              // Content-addressed filename
+              const hash = crypto.createHash("sha256").update(buffer).digest("hex").slice(0, 8);
+              const outFilename = `${baseName}-${width}.${hash}.${format}`;
+              const outPath = path.join(assetsOutDir, outFilename);
+              const outUrl = `/assets/${outFilename}`;
+
+              // Write optimized file
+              fs.writeFileSync(outPath, buffer);
+
+              // Add to manifest
+              const manifestKey = `${width}:${quality}:image/${format}`;
+              if (!manifest[originalUrl]) manifest[originalUrl] = {};
+              manifest[originalUrl][manifestKey] = outUrl;
+            }
+
+            // Write manifest JSON
+            const manifestPath = path.join(clientDir, "_vinext-image-manifest.json");
+            fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+
+            // Inject manifest global into worker entry (same pattern as __VINEXT_LAZY_CHUNKS__)
+            const manifestGlobal = `globalThis.__VINEXT_IMAGE_MANIFEST__ = ${JSON.stringify(manifest)};`;
+
+            if (hasAppDir) {
+              const workerEntry = path.resolve(distDir, "server", "index.js");
+              if (fs.existsSync(workerEntry)) {
+                let code = fs.readFileSync(workerEntry, "utf-8");
+                code = manifestGlobal + "\n" + code;
+                fs.writeFileSync(workerEntry, code);
+              }
+            } else {
+              // Pages Router: find worker output directory
+              for (const entry of fs.readdirSync(distDir)) {
+                const candidate = path.join(distDir, entry);
+                if (entry === "client") continue;
+                if (
+                  fs.statSync(candidate).isDirectory() &&
+                  fs.existsSync(path.join(candidate, "wrangler.json"))
+                ) {
+                  const workerEntry = path.join(candidate, "index.js");
+                  if (fs.existsSync(workerEntry)) {
+                    let code = fs.readFileSync(workerEntry, "utf-8");
+                    code = manifestGlobal + "\n" + code;
+                    fs.writeFileSync(workerEntry, code);
+                  }
+                  break;
+                }
+              }
+            }
+
+            // Clear the map to free memory
+            _optimizedImages.clear();
           }
         },
       },

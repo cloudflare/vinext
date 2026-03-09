@@ -29,9 +29,10 @@ const configMatchersPath = fileURLToPath(
 const requestPipelinePath = fileURLToPath(
   new URL("../server/request-pipeline.js", import.meta.url),
 ).replace(/\\/g, "/");
-const sharpUtilPath = fileURLToPath(
-  new URL("../utils/sharp.js", import.meta.url),
-).replace(/\\/g, "/");
+const sharpUtilPath = fileURLToPath(new URL("../utils/sharp.js", import.meta.url)).replace(
+  /\\/g,
+  "/",
+);
 const imageOptPath = fileURLToPath(
   new URL("../server/image-optimization.js", import.meta.url),
 ).replace(/\\/g, "/");

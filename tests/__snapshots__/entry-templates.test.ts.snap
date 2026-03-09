@@ -365,6 +365,8 @@ import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getS
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
 
+const __projectRoot = "";
+
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
 // console.error once at module load (instead of per-request) avoids the
@@ -1684,7 +1686,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (cleanPathname === "/_vinext/image") {
     const __imgResult = validateImageUrl(url.searchParams.get("url"), request.url);
     if (__imgResult instanceof Response) return __imgResult;
-    // In dev, redirect to the original asset URL so Vite's static serving handles it.
+    // Try sharp-based optimization
+    const { tryRequireSharp } = await import("<ROOT>/packages/vinext/src/utils/sharp.js" /* @vite-ignore */);
+    const { negotiateImageFormat } = await import("<ROOT>/packages/vinext/src/server/image-optimization.js" /* @vite-ignore */);
+    const __sharpMod = await tryRequireSharp();
+    const __w = parseInt(url.searchParams.get("w") || "0", 10);
+    const __q = parseInt(url.searchParams.get("q") || "75", 10);
+    const __acceptHdr = request.headers.get("accept");
+    const __fmt = negotiateImageFormat(__acceptHdr);
+
+    if (__sharpMod && __w > 0 && !__imgResult.endsWith(".svg")) {
+      try {
+        // Resolve path against project root
+        const __fsPath = new URL(__imgResult, "file://" + __projectRoot).pathname;
+        const { readFileSync, existsSync } = await import("node:fs");
+        if (existsSync(__fsPath)) {
+          const __raw = readFileSync(__fsPath);
+          const __meta = await __sharpMod(__raw).metadata();
+          if (!(__meta.pages && __meta.pages > 1)) {
+            const __sharpPipe = __sharpMod(__raw)
+              .resize(__w, undefined, { withoutEnlargement: true });
+            const __buf = await (
+              __fmt === "image/avif" ? __sharpPipe.avif({ quality: __q }) :
+              __fmt === "image/webp" ? __sharpPipe.webp({ quality: __q }) :
+              __sharpPipe.jpeg({ quality: __q })
+            ).toBuffer();
+            return new Response(__buf, {
+              status: 200,
+              headers: {
+                "Content-Type": __fmt,
+                "Content-Length": __buf.length.toString(),
+                "Cache-Control": "public, max-age=60",
+              },
+            });
+          }
+        }
+      } catch {
+        // Sharp failed — fall through to redirect
+      }
+    }
+
+    // Fallback: redirect to original
     return Response.redirect(new URL(__imgResult, url.origin).href, 302);
   }
 
@@ -2658,6 +2700,8 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+const __projectRoot = "";
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -3981,7 +4025,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (cleanPathname === "/_vinext/image") {
     const __imgResult = validateImageUrl(url.searchParams.get("url"), request.url);
     if (__imgResult instanceof Response) return __imgResult;
-    // In dev, redirect to the original asset URL so Vite's static serving handles it.
+    // Try sharp-based optimization
+    const { tryRequireSharp } = await import("<ROOT>/packages/vinext/src/utils/sharp.js" /* @vite-ignore */);
+    const { negotiateImageFormat } = await import("<ROOT>/packages/vinext/src/server/image-optimization.js" /* @vite-ignore */);
+    const __sharpMod = await tryRequireSharp();
+    const __w = parseInt(url.searchParams.get("w") || "0", 10);
+    const __q = parseInt(url.searchParams.get("q") || "75", 10);
+    const __acceptHdr = request.headers.get("accept");
+    const __fmt = negotiateImageFormat(__acceptHdr);
+
+    if (__sharpMod && __w > 0 && !__imgResult.endsWith(".svg")) {
+      try {
+        // Resolve path against project root
+        const __fsPath = new URL(__imgResult, "file://" + __projectRoot).pathname;
+        const { readFileSync, existsSync } = await import("node:fs");
+        if (existsSync(__fsPath)) {
+          const __raw = readFileSync(__fsPath);
+          const __meta = await __sharpMod(__raw).metadata();
+          if (!(__meta.pages && __meta.pages > 1)) {
+            const __sharpPipe = __sharpMod(__raw)
+              .resize(__w, undefined, { withoutEnlargement: true });
+            const __buf = await (
+              __fmt === "image/avif" ? __sharpPipe.avif({ quality: __q }) :
+              __fmt === "image/webp" ? __sharpPipe.webp({ quality: __q }) :
+              __sharpPipe.jpeg({ quality: __q })
+            ).toBuffer();
+            return new Response(__buf, {
+              status: 200,
+              headers: {
+                "Content-Type": __fmt,
+                "Content-Length": __buf.length.toString(),
+                "Cache-Control": "public, max-age=60",
+              },
+            });
+          }
+        }
+      } catch {
+        // Sharp failed — fall through to redirect
+      }
+    }
+
+    // Fallback: redirect to original
     return Response.redirect(new URL(__imgResult, url.origin).href, 302);
   }
 
@@ -4955,6 +5039,8 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+const __projectRoot = "";
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -6305,7 +6391,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (cleanPathname === "/_vinext/image") {
     const __imgResult = validateImageUrl(url.searchParams.get("url"), request.url);
     if (__imgResult instanceof Response) return __imgResult;
-    // In dev, redirect to the original asset URL so Vite's static serving handles it.
+    // Try sharp-based optimization
+    const { tryRequireSharp } = await import("<ROOT>/packages/vinext/src/utils/sharp.js" /* @vite-ignore */);
+    const { negotiateImageFormat } = await import("<ROOT>/packages/vinext/src/server/image-optimization.js" /* @vite-ignore */);
+    const __sharpMod = await tryRequireSharp();
+    const __w = parseInt(url.searchParams.get("w") || "0", 10);
+    const __q = parseInt(url.searchParams.get("q") || "75", 10);
+    const __acceptHdr = request.headers.get("accept");
+    const __fmt = negotiateImageFormat(__acceptHdr);
+
+    if (__sharpMod && __w > 0 && !__imgResult.endsWith(".svg")) {
+      try {
+        // Resolve path against project root
+        const __fsPath = new URL(__imgResult, "file://" + __projectRoot).pathname;
+        const { readFileSync, existsSync } = await import("node:fs");
+        if (existsSync(__fsPath)) {
+          const __raw = readFileSync(__fsPath);
+          const __meta = await __sharpMod(__raw).metadata();
+          if (!(__meta.pages && __meta.pages > 1)) {
+            const __sharpPipe = __sharpMod(__raw)
+              .resize(__w, undefined, { withoutEnlargement: true });
+            const __buf = await (
+              __fmt === "image/avif" ? __sharpPipe.avif({ quality: __q }) :
+              __fmt === "image/webp" ? __sharpPipe.webp({ quality: __q }) :
+              __sharpPipe.jpeg({ quality: __q })
+            ).toBuffer();
+            return new Response(__buf, {
+              status: 200,
+              headers: {
+                "Content-Type": __fmt,
+                "Content-Length": __buf.length.toString(),
+                "Cache-Control": "public, max-age=60",
+              },
+            });
+          }
+        }
+      } catch {
+        // Sharp failed — fall through to redirect
+      }
+    }
+
+    // Fallback: redirect to original
     return Response.redirect(new URL(__imgResult, url.origin).href, 302);
   }
 
@@ -7287,6 +7413,8 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+const __projectRoot = "";
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -8639,7 +8767,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (cleanPathname === "/_vinext/image") {
     const __imgResult = validateImageUrl(url.searchParams.get("url"), request.url);
     if (__imgResult instanceof Response) return __imgResult;
-    // In dev, redirect to the original asset URL so Vite's static serving handles it.
+    // Try sharp-based optimization
+    const { tryRequireSharp } = await import("<ROOT>/packages/vinext/src/utils/sharp.js" /* @vite-ignore */);
+    const { negotiateImageFormat } = await import("<ROOT>/packages/vinext/src/server/image-optimization.js" /* @vite-ignore */);
+    const __sharpMod = await tryRequireSharp();
+    const __w = parseInt(url.searchParams.get("w") || "0", 10);
+    const __q = parseInt(url.searchParams.get("q") || "75", 10);
+    const __acceptHdr = request.headers.get("accept");
+    const __fmt = negotiateImageFormat(__acceptHdr);
+
+    if (__sharpMod && __w > 0 && !__imgResult.endsWith(".svg")) {
+      try {
+        // Resolve path against project root
+        const __fsPath = new URL(__imgResult, "file://" + __projectRoot).pathname;
+        const { readFileSync, existsSync } = await import("node:fs");
+        if (existsSync(__fsPath)) {
+          const __raw = readFileSync(__fsPath);
+          const __meta = await __sharpMod(__raw).metadata();
+          if (!(__meta.pages && __meta.pages > 1)) {
+            const __sharpPipe = __sharpMod(__raw)
+              .resize(__w, undefined, { withoutEnlargement: true });
+            const __buf = await (
+              __fmt === "image/avif" ? __sharpPipe.avif({ quality: __q }) :
+              __fmt === "image/webp" ? __sharpPipe.webp({ quality: __q }) :
+              __sharpPipe.jpeg({ quality: __q })
+            ).toBuffer();
+            return new Response(__buf, {
+              status: 200,
+              headers: {
+                "Content-Type": __fmt,
+                "Content-Length": __buf.length.toString(),
+                "Cache-Control": "public, max-age=60",
+              },
+            });
+          }
+        }
+      } catch {
+        // Sharp failed — fall through to redirect
+      }
+    }
+
+    // Fallback: redirect to original
     return Response.redirect(new URL(__imgResult, url.origin).href, 302);
   }
 
@@ -9613,6 +9781,8 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+const __projectRoot = "";
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -10940,7 +11110,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (cleanPathname === "/_vinext/image") {
     const __imgResult = validateImageUrl(url.searchParams.get("url"), request.url);
     if (__imgResult instanceof Response) return __imgResult;
-    // In dev, redirect to the original asset URL so Vite's static serving handles it.
+    // Try sharp-based optimization
+    const { tryRequireSharp } = await import("<ROOT>/packages/vinext/src/utils/sharp.js" /* @vite-ignore */);
+    const { negotiateImageFormat } = await import("<ROOT>/packages/vinext/src/server/image-optimization.js" /* @vite-ignore */);
+    const __sharpMod = await tryRequireSharp();
+    const __w = parseInt(url.searchParams.get("w") || "0", 10);
+    const __q = parseInt(url.searchParams.get("q") || "75", 10);
+    const __acceptHdr = request.headers.get("accept");
+    const __fmt = negotiateImageFormat(__acceptHdr);
+
+    if (__sharpMod && __w > 0 && !__imgResult.endsWith(".svg")) {
+      try {
+        // Resolve path against project root
+        const __fsPath = new URL(__imgResult, "file://" + __projectRoot).pathname;
+        const { readFileSync, existsSync } = await import("node:fs");
+        if (existsSync(__fsPath)) {
+          const __raw = readFileSync(__fsPath);
+          const __meta = await __sharpMod(__raw).metadata();
+          if (!(__meta.pages && __meta.pages > 1)) {
+            const __sharpPipe = __sharpMod(__raw)
+              .resize(__w, undefined, { withoutEnlargement: true });
+            const __buf = await (
+              __fmt === "image/avif" ? __sharpPipe.avif({ quality: __q }) :
+              __fmt === "image/webp" ? __sharpPipe.webp({ quality: __q }) :
+              __sharpPipe.jpeg({ quality: __q })
+            ).toBuffer();
+            return new Response(__buf, {
+              status: 200,
+              headers: {
+                "Content-Type": __fmt,
+                "Content-Length": __buf.length.toString(),
+                "Cache-Control": "public, max-age=60",
+              },
+            });
+          }
+        }
+      } catch {
+        // Sharp failed — fall through to redirect
+      }
+    }
+
+    // Fallback: redirect to original
     return Response.redirect(new URL(__imgResult, url.origin).href, 302);
   }
 
@@ -11914,6 +12124,8 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+const __projectRoot = "";
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -13354,7 +13566,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (cleanPathname === "/_vinext/image") {
     const __imgResult = validateImageUrl(url.searchParams.get("url"), request.url);
     if (__imgResult instanceof Response) return __imgResult;
-    // In dev, redirect to the original asset URL so Vite's static serving handles it.
+    // Try sharp-based optimization
+    const { tryRequireSharp } = await import("<ROOT>/packages/vinext/src/utils/sharp.js" /* @vite-ignore */);
+    const { negotiateImageFormat } = await import("<ROOT>/packages/vinext/src/server/image-optimization.js" /* @vite-ignore */);
+    const __sharpMod = await tryRequireSharp();
+    const __w = parseInt(url.searchParams.get("w") || "0", 10);
+    const __q = parseInt(url.searchParams.get("q") || "75", 10);
+    const __acceptHdr = request.headers.get("accept");
+    const __fmt = negotiateImageFormat(__acceptHdr);
+
+    if (__sharpMod && __w > 0 && !__imgResult.endsWith(".svg")) {
+      try {
+        // Resolve path against project root
+        const __fsPath = new URL(__imgResult, "file://" + __projectRoot).pathname;
+        const { readFileSync, existsSync } = await import("node:fs");
+        if (existsSync(__fsPath)) {
+          const __raw = readFileSync(__fsPath);
+          const __meta = await __sharpMod(__raw).metadata();
+          if (!(__meta.pages && __meta.pages > 1)) {
+            const __sharpPipe = __sharpMod(__raw)
+              .resize(__w, undefined, { withoutEnlargement: true });
+            const __buf = await (
+              __fmt === "image/avif" ? __sharpPipe.avif({ quality: __q }) :
+              __fmt === "image/webp" ? __sharpPipe.webp({ quality: __q }) :
+              __sharpPipe.jpeg({ quality: __q })
+            ).toBuffer();
+            return new Response(__buf, {
+              status: 200,
+              headers: {
+                "Content-Type": __fmt,
+                "Content-Length": __buf.length.toString(),
+                "Cache-Control": "public, max-age=60",
+              },
+            });
+          }
+        }
+      } catch {
+        // Sharp failed — fall through to redirect
+      }
+    }
+
+    // Fallback: redirect to original
     return Response.redirect(new URL(__imgResult, url.origin).href, 302);
   }
 

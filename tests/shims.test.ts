@@ -6359,7 +6359,9 @@ describe("image optimization request parsing", () => {
   it("negotiateImageFormat prefers AVIF over WebP", async () => {
     const { negotiateImageFormat } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    expect(negotiateImageFormat("image/avif,image/webp,image/jpeg")).toBe("image/avif");
+    expect(
+      negotiateImageFormat("image/avif,image/webp,image/jpeg", ["image/avif", "image/webp"]),
+    ).toBe("image/avif");
   });
 
   it("negotiateImageFormat selects WebP when no AVIF", async () => {

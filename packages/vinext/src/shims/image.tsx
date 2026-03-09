@@ -19,7 +19,6 @@ export interface StaticImageData {
   height: number;
   width: number;
   blurDataURL?: string;
-  optimizedSrcSet?: Record<number, string>; // width -> pre-built .webp URL
 }
 
 /**
@@ -303,36 +302,20 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   const isSvg = src.endsWith(".svg");
   const skipOptimization = _unoptimized === true || (isSvg && !__dangerouslyAllowSVG);
 
-  // When pre-built optimized images are available (build-time sharp processing),
-  // use them directly instead of routing through /_vinext/image endpoint.
-  const hasOptimizedSrcSet = typeof srcProp === "object" && srcProp.optimizedSrcSet && !skipOptimization;
-
-  const srcSet = hasOptimizedSrcSet
-    ? Object.entries(srcProp.optimizedSrcSet!)
-        .sort(([a], [b]) => Number(a) - Number(b))
-        .map(([w, url]) => `${url} ${w}w`)
-        .join(", ")
-    : imgWidth && !fill && !skipOptimization
+  const srcSet =
+    imgWidth && !fill && !skipOptimization
       ? generateSrcSet(src, imgWidth, imgQuality)
       : imgWidth && !fill
-        ? RESPONSIVE_WIDTHS.filter((w) => w <= imgWidth * 2).map((w) => `${src} ${w}w`).join(", ") || `${src} ${imgWidth}w`
+        ? RESPONSIVE_WIDTHS.filter((w) => w <= imgWidth * 2)
+            .map((w) => `${src} ${w}w`)
+            .join(", ") || `${src} ${imgWidth}w`
         : undefined;
 
-  // For pre-built images, use the closest width match as src; otherwise use optimization endpoint
-  const optimizedSrc = hasOptimizedSrcSet
-    ? (() => {
-        const entries = Object.entries(srcProp.optimizedSrcSet!);
-        const targetWidth = imgWidth ?? RESPONSIVE_WIDTHS[0];
-        // Find closest width that's >= target, or the largest available
-        const sorted = entries.sort(([a], [b]) => Number(a) - Number(b));
-        const match = sorted.find(([w]) => Number(w) >= targetWidth) ?? sorted[sorted.length - 1];
-        return match ? match[1] : src;
-      })()
-    : skipOptimization
-      ? src
-      : imgWidth
-        ? imageOptimizationUrl(src, imgWidth, imgQuality)
-        : imageOptimizationUrl(src, RESPONSIVE_WIDTHS[0], imgQuality);
+  const optimizedSrc = skipOptimization
+    ? src
+    : imgWidth
+      ? imageOptimizationUrl(src, imgWidth, imgQuality)
+      : imageOptimizationUrl(src, RESPONSIVE_WIDTHS[0], imgQuality);
 
   // Blur placeholder: show a low-quality background while the image loads.
   // Sanitize blurDataURL to prevent CSS injection via crafted data URLs.
@@ -440,32 +423,22 @@ export function getImageProps(props: ImageProps): {
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
   // SVG sources auto-skip unless dangerouslyAllowSVG is enabled.
   const isSvg = resolvedSrc.endsWith(".svg");
-  const skipOpt = _unoptimized === true || (isSvg && !__dangerouslyAllowSVG) || blockedInProd || !!loader || isRemoteUrl(resolvedSrc);
+  const skipOpt =
+    _unoptimized === true ||
+    (isSvg && !__dangerouslyAllowSVG) ||
+    blockedInProd ||
+    !!loader ||
+    isRemoteUrl(resolvedSrc);
 
-  // When pre-built optimized images are available, use them directly
-  const hasOptimizedSrcSet = typeof srcProp === "object" && (srcProp as StaticImageData).optimizedSrcSet && !skipOpt;
+  const optimizedSrc = skipOpt
+    ? resolvedSrc
+    : imgWidth
+      ? imageOptimizationUrl(resolvedSrc, imgWidth, imgQuality)
+      : imageOptimizationUrl(resolvedSrc, RESPONSIVE_WIDTHS[0], imgQuality);
 
-  const optimizedSrc = hasOptimizedSrcSet
-    ? (() => {
-        const entries = Object.entries((srcProp as StaticImageData).optimizedSrcSet!);
-        const targetWidth = imgWidth ?? RESPONSIVE_WIDTHS[0];
-        const sorted = entries.sort(([a], [b]) => Number(a) - Number(b));
-        const match = sorted.find(([w]) => Number(w) >= targetWidth) ?? sorted[sorted.length - 1];
-        return match ? match[1] : resolvedSrc;
-      })()
-    : skipOpt
-      ? resolvedSrc
-      : imgWidth
-        ? imageOptimizationUrl(resolvedSrc, imgWidth, imgQuality)
-        : imageOptimizationUrl(resolvedSrc, RESPONSIVE_WIDTHS[0], imgQuality);
-
-  // Build srcSet — use pre-built URLs if available, otherwise point to /_vinext/image
-  const srcSet = hasOptimizedSrcSet
-    ? Object.entries((srcProp as StaticImageData).optimizedSrcSet!)
-        .sort(([a], [b]) => Number(a) - Number(b))
-        .map(([w, url]) => `${url} ${w}w`)
-        .join(", ")
-    : imgWidth && !fill && !isRemoteUrl(resolvedSrc) && !loader && !skipOpt
+  // Build srcSet — point to /_vinext/image for local images
+  const srcSet =
+    imgWidth && !fill && !isRemoteUrl(resolvedSrc) && !loader && !skipOpt
       ? generateSrcSet(resolvedSrc, imgWidth, imgQuality)
       : undefined;
 

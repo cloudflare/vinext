@@ -53,14 +53,32 @@ describe("vinext:image-imports — build-time optimizedSrcSet", () => {
     }
   });
 
-  it("resolveId handles ?vinext-opt queries", async () => {
+  it("resolveId handles ?vinext-opt&w=WIDTH&f=FORMAT queries", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext() as any[];
     const plugin = plugins.find((p) => p.name === "vinext:image-imports");
     const resolve = unwrapHook(plugin!.resolveId);
 
-    const result = resolve.call(plugin, "/abs/path/hero.jpg?vinext-opt&w=640", "/some/file.tsx");
-    expect(result).toBe("\0vinext-image-opt:/abs/path/hero.jpg:640");
+    const result = resolve.call(
+      plugin,
+      "/abs/path/hero.jpg?vinext-opt&w=640&f=webp",
+      "/some/file.tsx",
+    );
+    expect(result).toBe("\0vinext-image-opt:/abs/path/hero.jpg:640:webp");
+  });
+
+  it("resolveId handles ?vinext-opt with avif format", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext() as any[];
+    const plugin = plugins.find((p) => p.name === "vinext:image-imports");
+    const resolve = unwrapHook(plugin!.resolveId);
+
+    const result = resolve.call(
+      plugin,
+      "/abs/path/hero.jpg?vinext-opt&w=1080&f=avif",
+      "/some/file.tsx",
+    );
+    expect(result).toBe("\0vinext-image-opt:/abs/path/hero.jpg:1080:avif");
   });
 
   it("resolveId returns null for unrelated queries", async () => {
@@ -71,5 +89,42 @@ describe("vinext:image-imports — build-time optimizedSrcSet", () => {
 
     expect(resolve.call(plugin, "./hero.jpg", "/some/file.tsx")).toBeNull();
     expect(resolve.call(plugin, "react", "/some/file.tsx")).toBeNull();
+  });
+});
+
+// ── Format negotiation with configuredFormats ──────────────────
+describe("negotiateImageFormat with configuredFormats", () => {
+  it("respects configured formats — webp only (default)", async () => {
+    const { negotiateImageFormat } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    // Client supports both, but only webp configured
+    expect(negotiateImageFormat("image/avif, image/webp", ["image/webp"])).toBe("image/webp");
+  });
+
+  it("only offers AVIF when configured", async () => {
+    const { negotiateImageFormat } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    // Both configured, client supports both — AVIF preferred
+    expect(negotiateImageFormat("image/avif, image/webp", ["image/avif", "image/webp"])).toBe(
+      "image/avif",
+    );
+  });
+
+  it("falls back to JPEG when Accept has no configured format", async () => {
+    const { negotiateImageFormat } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(negotiateImageFormat("image/png", ["image/webp"])).toBe("image/jpeg");
+  });
+
+  it("falls back to JPEG when no Accept header", async () => {
+    const { negotiateImageFormat } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(negotiateImageFormat(null)).toBe("image/jpeg");
+  });
+
+  it("does not offer AVIF when only webp configured even if client supports it", async () => {
+    const { negotiateImageFormat } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    expect(negotiateImageFormat("image/avif", ["image/webp"])).toBe("image/jpeg");
   });
 });
