@@ -36,9 +36,7 @@ import {
 import type { RequestContext } from "../config/config-matchers.js";
 import {
   IMAGE_OPTIMIZATION_PATH,
-  IMAGE_CONTENT_SECURITY_POLICY,
-  parseImageParams,
-  isSafeImageContentType,
+  handleImageOptimization,
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
   type ImageConfig,
@@ -295,6 +293,36 @@ function tryServeStatic(
   res.writeHead(200, baseHeaders);
   fs.createReadStream(staticFile).pipe(res);
   return true;
+}
+
+async function fetchLocalImageResponse(clientDir: string, imagePath: string): Promise<Response> {
+  const resolvedClient = path.resolve(clientDir);
+  let decodedPathname: string;
+  try {
+    decodedPathname = decodeURIComponent(imagePath);
+  } catch {
+    return new Response("Image not found", { status: 404 });
+  }
+  if (decodedPathname.startsWith("/.vite/") || decodedPathname === "/.vite") {
+    return new Response("Image not found", { status: 404 });
+  }
+  const staticFile = path.resolve(clientDir, "." + decodedPathname);
+  if (!staticFile.startsWith(resolvedClient + path.sep) && staticFile !== resolvedClient) {
+    return new Response("Image not found", { status: 404 });
+  }
+  if (imagePath === "/" || !fs.existsSync(staticFile) || !fs.statSync(staticFile).isFile()) {
+    return new Response("Image not found", { status: 404 });
+  }
+
+  const body = fs.readFileSync(staticFile);
+  const ext = path.extname(staticFile).toLowerCase();
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": CONTENT_TYPES[ext] ?? "application/octet-stream",
+      "Content-Length": String(body.length),
+    },
+  });
 }
 
 /**
@@ -575,36 +603,21 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
     // Image optimization passthrough (Node.js prod server has no Images binding;
     // serves the original file with cache headers and security headers)
-    if (pathname === IMAGE_OPTIMIZATION_PATH) {
-      const parsedUrl = new URL(url, "http://localhost");
-      const defaultAllowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
-      const params = parseImageParams(parsedUrl, defaultAllowedWidths);
-      if (!params) {
-        res.writeHead(400);
-        res.end("Bad Request");
-        return;
-      }
-      // Block SVG and other unsafe content types by checking the file extension.
-      // SVG is only allowed when dangerouslyAllowSVG is enabled in next.config.js.
-      const ext = path.extname(params.imageUrl).toLowerCase();
-      const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
-      if (!isSafeImageContentType(ct, imageConfig?.dangerouslyAllowSVG)) {
-        res.writeHead(400);
-        res.end("The requested resource is not an allowed image type");
-        return;
-      }
-      // Serve the original image with CSP and security headers
-      const imageSecurityHeaders: Record<string, string> = {
-        "Content-Security-Policy":
-          imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
-        "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": imageConfig?.contentDispositionType ?? "attachment",
-      };
-      if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
-        return;
-      }
-      res.writeHead(404);
-      res.end("Image not found");
+    if (pathname === (imageConfig?.path ?? IMAGE_OPTIMIZATION_PATH)) {
+      const request = nodeToWebRequest(req);
+      const allowedWidths = [
+        ...(imageConfig?.deviceSizes ?? DEFAULT_DEVICE_SIZES),
+        ...(imageConfig?.imageSizes ?? DEFAULT_IMAGE_SIZES),
+      ];
+      const response = await handleImageOptimization(
+        request,
+        {
+          fetchAsset: (imagePath, incomingRequest) => fetchLocalImageResponse(clientDir, imagePath),
+        },
+        allowedWidths,
+        imageConfig,
+      );
+      await sendWebResponse(response, req, res, false);
       return;
     }
 
@@ -703,9 +716,19 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   // Extract image security config for SVG handling and security headers
   const pagesImageConfig: ImageConfig | undefined = vinextConfig?.images
     ? {
+        domains: vinextConfig.images.domains,
+        remotePatterns: vinextConfig.images.remotePatterns,
+        localPatterns: vinextConfig.images.localPatterns,
+        qualities: vinextConfig.images.qualities,
+        formats: vinextConfig.images.formats,
+        minimumCacheTTL: vinextConfig.images.minimumCacheTTL,
+        maximumRedirects: vinextConfig.images.maximumRedirects,
+        maximumResponseBody: vinextConfig.images.maximumResponseBody,
+        dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
         dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
         contentDispositionType: vinextConfig.images.contentDispositionType,
         contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
+        path: vinextConfig.images.path,
       }
     : undefined;
 
@@ -751,34 +774,18 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     }
 
     // ── Image optimization passthrough ──────────────────────────────
-    if (pathname === IMAGE_OPTIMIZATION_PATH || staticLookupPath === IMAGE_OPTIMIZATION_PATH) {
-      const parsedUrl = new URL(rawUrl, "http://localhost");
-      const params = parseImageParams(parsedUrl, allowedImageWidths);
-      if (!params) {
-        res.writeHead(400);
-        res.end("Bad Request");
-        return;
-      }
-      // Block SVG and other unsafe content types.
-      // SVG is only allowed when dangerouslyAllowSVG is enabled.
-      const ext = path.extname(params.imageUrl).toLowerCase();
-      const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
-      if (!isSafeImageContentType(ct, pagesImageConfig?.dangerouslyAllowSVG)) {
-        res.writeHead(400);
-        res.end("The requested resource is not an allowed image type");
-        return;
-      }
-      const imageSecurityHeaders: Record<string, string> = {
-        "Content-Security-Policy":
-          pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
-        "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": pagesImageConfig?.contentDispositionType ?? "attachment",
-      };
-      if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
-        return;
-      }
-      res.writeHead(404);
-      res.end("Image not found");
+    const imagePath = pagesImageConfig?.path ?? IMAGE_OPTIMIZATION_PATH;
+    if (pathname === imagePath || staticLookupPath === imagePath) {
+      const request = nodeToWebRequest(req);
+      const response = await handleImageOptimization(
+        request,
+        {
+          fetchAsset: (imagePathname) => fetchLocalImageResponse(clientDir, imagePathname),
+        },
+        allowedImageWidths,
+        pagesImageConfig,
+      );
+      await sendWebResponse(response, req, res, false);
       return;
     }
 

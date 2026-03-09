@@ -105,11 +105,18 @@ declare global {
 
     // ── Next.js conventional globals ────────────────────────────────────────
     //
-    // `__NEXT_DATA__` is already declared by `next/dist/client/index.d.ts` as
-    // `NEXT_DATA` from `next/dist/shared/lib/utils`. We intentionally do NOT
-    // re-declare it here to avoid type conflicts. vinext-specific extensions
-    // (__vinext, __pageModule, __appModule) are accessed via the
-    // `VinextNextData` type in `client/vinext-next-data.ts`.
+    /**
+     * Next.js bootstrap payload injected into the document by the Pages Router.
+     * Vinext reads this in its router shims during hydration and navigation.
+     */
+    __NEXT_DATA__:
+      | {
+          page?: string;
+          query?: Record<string, unknown>;
+          isFallback?: boolean;
+          [key: string]: unknown;
+        }
+      | undefined;
   }
 
   // ── self globals used inside server-injected inline scripts ───────────────
@@ -277,15 +284,36 @@ declare global {
 
       /**
        * JSON-encoded array of image sizes (px) from
-       * `next.config.js` → `images.sizes`.
+       * `next.config.js` → `images.imageSizes`.
        */
       __VINEXT_IMAGE_SIZES?: string;
+
+      /**
+       * JSON-encoded array of local allowlist patterns from
+       * `next.config.js` → `images.localPatterns`.
+       */
+      __VINEXT_IMAGE_LOCAL_PATTERNS?: string;
 
       /**
        * JSON-encoded array of allowed quality values from
        * `next.config.js` → `images.qualities`.
        */
       __VINEXT_IMAGE_QUALITIES?: string;
+
+      /**
+       * The configured optimizer path from `next.config.js` → `images.path`.
+       */
+      __VINEXT_IMAGE_PATH?: string;
+
+      /**
+       * The configured loader value from `next.config.js` → `images.loader`.
+       */
+      __VINEXT_IMAGE_LOADER?: string;
+
+      /**
+       * `"true"` or `"false"` — whether images are globally unoptimized.
+       */
+      __VINEXT_IMAGE_UNOPTIMIZED?: string;
 
       /**
        * `"true"` or `"false"` — whether SVG sources are allowed through the

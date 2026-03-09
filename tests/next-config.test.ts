@@ -9,6 +9,7 @@ import {
   resolveNextConfig,
   type ResolvedNextConfig,
 } from "../packages/vinext/src/config/next-config.js";
+import { imageConfigDefault } from "../packages/vinext/src/shims/image-config.js";
 import {
   PHASE_PRODUCTION_BUILD,
   PHASE_DEVELOPMENT_SERVER,
@@ -297,6 +298,62 @@ describe("parseBodySizeLimit", () => {
   });
 });
 
+describe("resolveNextConfig images", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fills Next.js image defaults when images config is omitted", async () => {
+    tmpDir = makeTempDir();
+    const resolved = await resolveNextConfig({}, tmpDir);
+    expect(resolved.images.path).toBe("/_vinext/image");
+    expect(resolved.images.unoptimized).toBe(false);
+    expect(resolved.images.formats).toEqual(["image/webp"]);
+    expect(resolved.images.localPatterns).toBeUndefined();
+  });
+
+  it("resolves loaderFile and validates custom loader pairing", async () => {
+    tmpDir = makeTempDir();
+    const loaderFile = path.join(tmpDir, "image-loader.js");
+    fs.writeFileSync(loaderFile, "export default function loader() { return ''; }\n");
+
+    const resolved = await resolveNextConfig(
+      {
+        images: {
+          loader: "custom",
+          loaderFile: "./image-loader.js",
+        },
+      },
+      tmpDir,
+    );
+
+    expect(resolved.images.loader).toBe("custom");
+    expect(resolved.images.loaderFile).toBe(loaderFile);
+  });
+
+  it("throws when loaderFile is used without loader=custom", async () => {
+    tmpDir = makeTempDir();
+    const loaderFile = path.join(tmpDir, "image-loader.js");
+    fs.writeFileSync(loaderFile, "export default function loader() { return ''; }\n");
+
+    await expect(
+      resolveNextConfig(
+        {
+          images: {
+            loader: "imgix",
+            loaderFile: "./image-loader.js",
+          },
+        },
+        tmpDir,
+      ),
+    ).rejects.toThrow(/images\.loader property \(imgix\) cannot be used with images\.loaderFile/);
+  });
+});
+
 describe("resolveNextConfig serverActionsBodySizeLimit", () => {
   it("defaults to 1MB when no config is provided", async () => {
     const resolved = await resolveNextConfig(null);
@@ -351,7 +408,7 @@ describe("detectNextIntlConfig", () => {
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],
-      images: undefined,
+      images: imageConfigDefault,
       i18n: null,
       mdx: null,
       aliases: {},

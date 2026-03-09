@@ -119,44 +119,26 @@ declare module "next/navigation" {
 }
 
 declare module "next/image" {
-  import {
-    ForwardRefExoticComponent,
-    RefAttributes,
-    ImgHTMLAttributes,
-    CSSProperties,
-    ReactEventHandler,
-    MouseEventHandler,
-  } from "react";
+  import type { ForwardRefExoticComponent, RefAttributes, ImgHTMLAttributes } from "react";
+  import type {
+    ImageProps,
+    ImageLoader,
+    ImageLoaderProps,
+    PlaceholderValue,
+    StaticImageData,
+    StaticImport,
+    StaticRequire,
+  } from "./image.js";
 
-  export interface StaticImageData {
-    src: string;
-    height: number;
-    width: number;
-    blurDataURL?: string;
-  }
-
-  interface ImageProps {
-    src: string | StaticImageData;
-    alt: string;
-    width?: number;
-    height?: number;
-    fill?: boolean;
-    priority?: boolean;
-    quality?: number;
-    placeholder?: "blur" | "empty";
-    blurDataURL?: string;
-    loader?: (params: { src: string; width: number; quality?: number }) => string;
-    sizes?: string;
-    className?: string;
-    style?: CSSProperties;
-    onLoad?: ReactEventHandler<HTMLImageElement>;
-    onError?: ReactEventHandler<HTMLImageElement>;
-    onClick?: MouseEventHandler<HTMLImageElement>;
-    id?: string;
-    unoptimized?: boolean;
-    overrideSrc?: string;
-    loading?: "lazy" | "eager";
-  }
+  export type {
+    ImageProps,
+    ImageLoader,
+    ImageLoaderProps,
+    PlaceholderValue,
+    StaticImageData,
+    StaticImport,
+    StaticRequire,
+  };
 
   const Image: ForwardRefExoticComponent<ImageProps & RefAttributes<HTMLImageElement>>;
   export default Image;

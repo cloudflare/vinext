@@ -819,6 +819,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_IMAGE_DOMAINS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.domains ?? []),
         );
+        defines["process.env.__VINEXT_IMAGE_LOCAL_PATTERNS"] = JSON.stringify(
+          JSON.stringify(nextConfig.images?.localPatterns ?? null),
+        );
         // Expose allowed image widths (union of deviceSizes + imageSizes) for
         // server-side validation. Matches Next.js behavior: only configured
         // sizes are accepted by the image optimization endpoint.
@@ -832,6 +835,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           );
           defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(JSON.stringify(imageSizes));
         }
+        defines["process.env.__VINEXT_IMAGE_PATH"] = JSON.stringify(nextConfig.images.path);
+        defines["process.env.__VINEXT_IMAGE_LOADER"] = JSON.stringify(nextConfig.images.loader);
+        defines["process.env.__VINEXT_IMAGE_UNOPTIMIZED"] = JSON.stringify(
+          String(nextConfig.images.unoptimized),
+        );
         // Expose allowed quality values (if configured) for client-side URL building.
         if (nextConfig.images?.qualities) {
           defines["process.env.__VINEXT_IMAGE_QUALITIES"] = JSON.stringify(
@@ -2269,6 +2277,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           code: new RegExp(`import\\s+\\w+\\s+from\\s+['"][^'"]+\\.(${IMAGE_EXTS})['"]`),
         },
         async handler(code, id) {
+          if (nextConfig?.images?.disableStaticImages) return null;
           // Defensive guard — duplicates filter logic
           if (id.includes("node_modules")) return null;
           if (id.startsWith("\0")) return null;
@@ -2867,6 +2876,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (!outDir) return;
 
           const imageConfig = {
+            path: nextConfig?.images?.path,
+            deviceSizes: nextConfig?.images?.deviceSizes,
+            imageSizes: nextConfig?.images?.imageSizes,
+            domains: nextConfig?.images?.domains,
+            remotePatterns: nextConfig?.images?.remotePatterns,
+            localPatterns: nextConfig?.images?.localPatterns,
+            qualities: nextConfig?.images?.qualities,
+            formats: nextConfig?.images?.formats,
+            minimumCacheTTL: nextConfig?.images?.minimumCacheTTL,
+            maximumRedirects: nextConfig?.images?.maximumRedirects,
+            maximumResponseBody: nextConfig?.images?.maximumResponseBody,
+            dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
             dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
             contentDispositionType: nextConfig?.images?.contentDispositionType,
             contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,

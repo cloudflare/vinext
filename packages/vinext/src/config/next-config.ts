@@ -9,6 +9,14 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import { PHASE_DEVELOPMENT_SERVER } from "../shims/constants.js";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
+import {
+  imageConfigDefault,
+  VALID_LOADERS,
+  type ImageConfigComplete,
+  type LoaderValue,
+  type LocalPattern,
+  type RemotePattern,
+} from "../shims/image-config.js";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -151,26 +159,24 @@ export interface NextConfig {
   headers?: () => Promise<NextHeader[]> | NextHeader[];
   /** Image optimization config */
   images?: {
-    remotePatterns?: Array<{
-      protocol?: string;
-      hostname: string;
-      port?: string;
-      pathname?: string;
-      search?: string;
-    }>;
+    remotePatterns?: Array<URL | RemotePattern>;
+    localPatterns?: LocalPattern[];
     domains?: string[];
+    loader?: LoaderValue;
+    loaderFile?: string;
+    path?: string;
     unoptimized?: boolean;
-    /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
     deviceSizes?: number[];
-    /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [32, 48, 64, 96, 128, 256, 384] */
     imageSizes?: number[];
-    /** Allow SVG images through the image optimization endpoint. SVG can contain scripts, so only enable if you trust all image sources. */
+    disableStaticImages?: boolean;
+    minimumCacheTTL?: number;
+    formats?: ImageConfigComplete["formats"];
+    maximumRedirects?: number;
+    maximumResponseBody?: number;
+    dangerouslyAllowLocalIP?: boolean;
     dangerouslyAllowSVG?: boolean;
-    /** Content-Disposition header for image responses. Defaults to "attachment". */
     contentDispositionType?: "inline" | "attachment";
-    /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
     contentSecurityPolicy?: string;
-    /** Allowed quality values for image optimization. When set, quality is rounded to the nearest value. */
     qualities?: number[];
   };
   /** Build output mode: 'export' for full static export, 'standalone' for single server */
@@ -210,7 +216,7 @@ export interface ResolvedNextConfig {
     fallback: NextRewrite[];
   };
   headers: NextHeader[];
-  images: NextConfig["images"];
+  images: ImageConfigComplete;
   i18n: NextI18nConfig | null;
   /** MDX remark/rehype/recma plugins extracted from @next/mdx config */
   mdx: MdxOptions | null;
@@ -225,6 +231,140 @@ export interface ResolvedNextConfig {
 }
 
 const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
+
+function assertIntegerArray(
+  name: string,
+  values: number[] | undefined,
+  { min = 0, maxLength }: { min?: number; maxLength?: number } = {},
+): number[] | undefined {
+  if (values === undefined) return undefined;
+  if (!Array.isArray(values)) {
+    throw new Error(`Specified ${name} should be an array.`);
+  }
+  if (maxLength !== undefined && values.length > maxLength) {
+    throw new Error(`${name} must contain at most ${maxLength} items.`);
+  }
+  if (values.length === 0) {
+    throw new Error(`${name} must contain at least one item.`);
+  }
+  for (const value of values) {
+    if (!Number.isInteger(value) || value < min) {
+      throw new Error(`${name} must contain integers greater than or equal to ${min}.`);
+    }
+  }
+  return [...values];
+}
+
+function normalizeImageConfig(images: NextConfig["images"], root: string): ImageConfigComplete {
+  const merged: ImageConfigComplete = {
+    ...imageConfigDefault,
+    ...images,
+  };
+
+  if (!VALID_LOADERS.includes(merged.loader)) {
+    throw new Error(`Specified images.loader value "${String(merged.loader)}" is invalid.`);
+  }
+
+  if (images?.loaderFile) {
+    const resolvedLoaderFile = path.resolve(root, images.loaderFile);
+    if (merged.loader !== "custom") {
+      throw new Error(
+        `Specified images.loader property (${merged.loader}) cannot be used with images.loaderFile property. Please set images.loader to "custom".`,
+      );
+    }
+    if (!fs.existsSync(resolvedLoaderFile)) {
+      throw new Error(`Specified images.loaderFile does not exist at ${resolvedLoaderFile}`);
+    }
+    merged.loaderFile = resolvedLoaderFile;
+  }
+
+  merged.deviceSizes =
+    assertIntegerArray("images.deviceSizes", images?.deviceSizes, { min: 1 }) ??
+    imageConfigDefault.deviceSizes;
+  merged.imageSizes =
+    assertIntegerArray("images.imageSizes", images?.imageSizes, { min: 1 }) ??
+    imageConfigDefault.imageSizes;
+  merged.qualities =
+    assertIntegerArray("images.qualities", images?.qualities, { min: 1, maxLength: 20 }) ??
+    imageConfigDefault.qualities;
+
+  if (images?.minimumCacheTTL !== undefined) {
+    if (!Number.isInteger(images.minimumCacheTTL) || images.minimumCacheTTL < 0) {
+      throw new Error('Number must be greater than or equal to 0 at "images.minimumCacheTTL"');
+    }
+    merged.minimumCacheTTL = images.minimumCacheTTL;
+  }
+
+  if (images?.maximumRedirects !== undefined) {
+    if (!Number.isInteger(images.maximumRedirects) || images.maximumRedirects < 0) {
+      throw new Error('Number must be greater than or equal to 0 at "images.maximumRedirects"');
+    }
+    merged.maximumRedirects = images.maximumRedirects;
+  }
+
+  if (images?.maximumResponseBody !== undefined) {
+    if (!Number.isInteger(images.maximumResponseBody) || images.maximumResponseBody < 1) {
+      throw new Error('Number must be greater than or equal to 1 at "images.maximumResponseBody"');
+    }
+    merged.maximumResponseBody = images.maximumResponseBody;
+  }
+
+  if (images?.formats) {
+    if (
+      !Array.isArray(images.formats) ||
+      images.formats.some((value) => !["image/avif", "image/webp"].includes(value))
+    ) {
+      throw new Error('images.formats must only contain "image/avif" or "image/webp".');
+    }
+    merged.formats = [...images.formats];
+  }
+
+  if (images?.localPatterns !== undefined && !Array.isArray(images.localPatterns)) {
+    throw new Error("Specified images.localPatterns should be an Array.");
+  }
+  if (images?.remotePatterns !== undefined && !Array.isArray(images.remotePatterns)) {
+    throw new Error("Specified images.remotePatterns should be an Array.");
+  }
+
+  merged.localPatterns = images?.localPatterns?.map((pattern) => ({
+    pathname: pattern.pathname,
+    search: pattern.search,
+  }));
+  merged.remotePatterns =
+    images?.remotePatterns?.map((pattern) => {
+      if (pattern instanceof URL) return pattern;
+      if (pattern.protocol && !["http", "https", "http:", "https:"].includes(pattern.protocol)) {
+        throw new Error(
+          `Specified images.remotePatterns must have protocol "http" or "https" received "${pattern.protocol}".`,
+        );
+      }
+      return {
+        protocol: pattern.protocol?.replace(/:$/, "") as "http" | "https" | undefined,
+        hostname: pattern.hostname,
+        port: pattern.port,
+        pathname: pattern.pathname,
+        search: pattern.search,
+      };
+    }) ?? imageConfigDefault.remotePatterns;
+
+  merged.domains = Array.isArray(images?.domains)
+    ? [...images.domains]
+    : imageConfigDefault.domains;
+  merged.unoptimized = images?.unoptimized ?? imageConfigDefault.unoptimized;
+  merged.disableStaticImages =
+    images?.disableStaticImages ?? imageConfigDefault.disableStaticImages;
+  merged.dangerouslyAllowLocalIP =
+    images?.dangerouslyAllowLocalIP ?? imageConfigDefault.dangerouslyAllowLocalIP;
+  merged.dangerouslyAllowSVG =
+    images?.dangerouslyAllowSVG ?? imageConfigDefault.dangerouslyAllowSVG;
+  merged.contentDispositionType =
+    images?.contentDispositionType ?? imageConfigDefault.contentDispositionType;
+  merged.contentSecurityPolicy =
+    images?.contentSecurityPolicy ?? imageConfigDefault.contentSecurityPolicy;
+  merged.path = images?.path ?? imageConfigDefault.path;
+
+  return merged;
+}
 
 /**
  * Check whether an error indicates a CJS module was loaded in an ESM context
@@ -350,7 +490,7 @@ export async function resolveNextConfig(
       redirects: [],
       rewrites: { beforeFiles: [], afterFiles: [], fallback: [] },
       headers: [],
-      images: undefined,
+      images: imageConfigDefault,
       i18n: null,
       mdx: null,
       aliases: {},
@@ -458,7 +598,7 @@ export async function resolveNextConfig(
     redirects,
     rewrites,
     headers,
-    images: config.images,
+    images: normalizeImageConfig(config.images, root),
     i18n,
     mdx,
     aliases,
