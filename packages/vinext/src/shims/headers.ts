@@ -232,6 +232,9 @@ export function applyMiddlewareRequestHeaders(middlewareResponseHeaders: Headers
   }
 }
 
+/** Methods on `Headers` that mutate state. Hoisted to module scope — static. */
+const _HEADERS_MUTATING_METHODS = new Set(["set", "delete", "append"]);
+
 /**
  * Create a HeadersContext from a standard Request object.
  *
@@ -260,8 +263,6 @@ export function headersContextFromRequest(request: Request): HeadersContext {
   // `_mutable` holds the materialised copy once a write is needed.
   let _mutable: Headers | null = null;
 
-  const MUTATING_METHODS = new Set(["set", "delete", "append"]);
-
   const headersProxy = new Proxy(request.headers, {
     get(target, prop: string | symbol, receiver) {
       // Route to the materialised copy if it exists.
@@ -272,7 +273,7 @@ export function headersContextFromRequest(request: Request): HeadersContext {
       }
 
       // Intercept mutating methods: materialise on first write.
-      if (MUTATING_METHODS.has(prop)) {
+      if (_HEADERS_MUTATING_METHODS.has(prop)) {
         return (...args: unknown[]) => {
           if (!_mutable) {
             _mutable = new Headers(target);
