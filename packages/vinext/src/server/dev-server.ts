@@ -58,6 +58,11 @@ const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
  * stream completes (the data is known before rendering starts, but
  * deferring them reduces TTFB and lets the browser start parsing the
  * shell sooner).
+ *
+ * When `collectHtml` is true, the body stream is teed so one branch is
+ * piped to the client while the other is collected in memory. The
+ * function returns the full HTML string (prefix + body + suffix) so the
+ * caller can use it for ISR caching without a second render.
  */
 async function streamPageToResponse(
   res: ServerResponse,
@@ -72,8 +77,10 @@ async function streamPageToResponse(
     extraHeaders?: Record<string, string | string[]>;
     /** Called after renderToReadableStream resolves (shell ready) to collect head HTML */
     getHeadHTML: () => string;
+    /** When true, tee the body stream and return the full collected HTML for ISR caching. */
+    collectHtml?: boolean;
   },
-): Promise<void> {
+): Promise<string | undefined> {
   const {
     url,
     server,
@@ -83,6 +90,7 @@ async function streamPageToResponse(
     statusCode = 200,
     extraHeaders,
     getHeadHTML,
+    collectHtml = false,
   } = options;
 
   // Start the React body stream FIRST — the promise resolves when the
@@ -154,6 +162,53 @@ async function streamPageToResponse(
 
   // Write the document prefix (head, opening body)
   res.write(prefix);
+
+  if (collectHtml) {
+    // Tee the body stream: one branch goes to the client, the other is
+    // collected for ISR caching. Both consumers see identical bytes, so
+    // there is no second render — this eliminates the double-render cost.
+    const [clientBranch, cacheBranch] = bodyStream.tee();
+    const decoder = new TextDecoder();
+    const cacheChunks: string[] = [];
+
+    // Collect the cache branch concurrently while the client branch is
+    // being piped to the response below. We don't await here so that
+    // collection runs in parallel with the client write loop.
+    const collectPromise = (async () => {
+      const cacheReader = cacheBranch.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await cacheReader.read();
+          if (done) break;
+          cacheChunks.push(decoder.decode(value, { stream: true }));
+        }
+        // Flush any remaining bytes in the decoder
+        cacheChunks.push(decoder.decode());
+      } finally {
+        cacheReader.releaseLock();
+      }
+    })();
+
+    // Pipe the client branch to the response
+    const clientReader = clientBranch.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await clientReader.read();
+        if (done) break;
+        res.write(value);
+      }
+    } finally {
+      clientReader.releaseLock();
+    }
+
+    // Wait for the cache collector to finish (it should already be done
+    // since the client branch is exhausted)
+    await collectPromise;
+
+    res.end(suffix);
+
+    return prefix + cacheChunks.join("") + suffix;
+  }
 
   // Pipe the React body stream through (Suspense content streams progressively)
   const reader = bodyStream.getReader();
@@ -860,7 +915,11 @@ hydrate();
                         // Stream the page using progressive SSR.
                         // The shell (layouts, non-suspended content) arrives immediately.
                         // Suspense content streams in as it resolves.
-                        await streamPageToResponse(res, element, {
+                        // When ISR is active, ask streamPageToResponse to tee the body
+                        // stream so we get the full HTML for caching without a second render.
+                        const needsIsrCache =
+                          isrRevalidateSeconds !== null && isrRevalidateSeconds > 0;
+                        const collectedHtml = await streamPageToResponse(res, element, {
                           url,
                           server,
                           fontHeadHTML,
@@ -875,6 +934,7 @@ hydrate();
                             typeof headShim.getSSRHeadHTML === "function"
                               ? headShim.getSSRHeadHTML()
                               : "",
+                          collectHtml: needsIsrCache,
                         });
                         _renderEnd = now();
 
@@ -883,28 +943,17 @@ hydrate();
                           routerShim.setSSRContext(null);
                         }
 
-                        // If ISR is enabled, we need the full HTML for caching.
-                        // For ISR, re-render synchronously to get the complete HTML string.
-                        // This runs after the stream is already sent, so it doesn't affect TTFB.
-                        if (isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
-                          let isrElement = AppComponent
-                            ? createElement(AppComponent, {
-                                Component: pageModule.default,
-                                pageProps,
-                              })
-                            : createElement(pageModule.default, pageProps);
-                          if (wrapWithRouterContext) {
-                            isrElement = wrapWithRouterContext(isrElement);
-                          }
-                          const isrBodyHtml = await renderToStringAsync(isrElement);
-                          const isrHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
+                        // If ISR is enabled, store the collected HTML in the cache.
+                        // The body stream was teed during the first render so there is
+                        // no second renderToStringAsync — collectedHtml is already built.
+                        if (needsIsrCache && collectedHtml !== undefined) {
                           const cacheKey = isrCacheKey("pages", url.split("?")[0]);
                           await isrSet(
                             cacheKey,
-                            buildPagesCacheValue(isrHtml, pageProps),
-                            isrRevalidateSeconds,
+                            buildPagesCacheValue(collectedHtml, pageProps),
+                            isrRevalidateSeconds!,
                           );
-                          setRevalidateDuration(cacheKey, isrRevalidateSeconds);
+                          setRevalidateDuration(cacheKey, isrRevalidateSeconds!);
                         }
                       } catch (e) {
                         // Let Vite fix the stack trace for better dev experience

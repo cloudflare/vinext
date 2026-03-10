@@ -15627,22 +15627,36 @@ export async function renderPage(request, url, manifest, ctx) {
       }
     });
 
-    // Cache the rendered HTML for ISR (needs the full string — re-render synchronously)
+    // Cache the rendered HTML for ISR.
+    // Tee the composite stream so one branch is returned to the caller
+    // (streamed to the client) while the other is collected in the
+    // background for the ISR cache. No second render is required.
+    var responseStream = compositeStream;
     if (isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
-      // Tee the stream so we can cache and respond simultaneously would be ideal,
-      // but ISR responses are rare on first hit. Re-render to get complete HTML for cache.
-      var isrElement;
-      if (AppComponent) {
-        isrElement = React.createElement(AppComponent, { Component: PageComponent, pageProps });
-      } else {
-        isrElement = React.createElement(PageComponent, pageProps);
-      }
-      isrElement = wrapWithRouterContext(isrElement);
-      var isrHtml = await renderToStringAsync(isrElement);
-      var fullHtml = shellPrefix + isrHtml + shellSuffix;
+      var [responseStream, cacheStream] = compositeStream.tee();
       var isrPathname = url.split("?")[0];
       var isrCacheKey = "pages:" + (isrPathname === "/" ? "/" : isrPathname.replace(/\\/$/, ""));
-      await isrSet(isrCacheKey, { kind: "PAGES", html: fullHtml, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
+      // Collect the cache branch and write to ISR after the stream drains.
+      // This runs in the background and does NOT block the response.
+      (async () => {
+        var decoder = new TextDecoder();
+        var cacheChunks = [];
+        var cacheReader = cacheStream.getReader();
+        try {
+          for (;;) {
+            var chunk = await cacheReader.read();
+            if (chunk.done) break;
+            cacheChunks.push(decoder.decode(chunk.value, { stream: true }));
+          }
+          cacheChunks.push(decoder.decode());
+        } finally {
+          cacheReader.releaseLock();
+        }
+        var fullHtml = cacheChunks.join("");
+        await isrSet(isrCacheKey, { kind: "PAGES", html: fullHtml, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
+      })().catch((err) => {
+        console.error("[vinext] ISR cache write failed:", err);
+      });
     }
 
     // Merge headers/status/cookies set by getServerSideProps on the res object.
@@ -15671,7 +15685,7 @@ export async function renderPage(request, url, manifest, ctx) {
     if (_fontLinkHeader) {
       responseHeaders.set("Link", _fontLinkHeader);
     }
-    return new Response(compositeStream, { status: finalStatus, headers: responseHeaders });
+    return new Response(responseStream, { status: finalStatus, headers: responseHeaders });
   } catch (e) {
     console.error("[vinext] SSR error:", e);
     return new Response("Internal Server Error", { status: 500 });
