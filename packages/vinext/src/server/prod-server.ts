@@ -21,6 +21,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { Readable, pipeline } from "node:stream";
 import { pathToFileURL } from "node:url";
 import fs from "node:fs";
+import fsp from "node:fs/promises";
 import path from "node:path";
 import zlib from "node:zlib";
 import {
@@ -227,18 +228,84 @@ const CONTENT_TYPES: Record<string, string> = {
   ".map": "application/json",
 };
 
+/** Map from pathname to precompressed buffers for immutable hashed assets. */
+type PrecompressedMap = Map<string, { br: Buffer; gzip: Buffer }>;
+
+/**
+ * Precompress all compressible files under `clientDir/assets/` at startup.
+ * Returns a map keyed by URL pathname (e.g. "/assets/index-abc123.js")
+ * with brotli and gzip buffers. Only compresses files above the size
+ * threshold and with compressible content types.
+ */
+async function precompressAssets(clientDir: string): Promise<PrecompressedMap> {
+  const map: PrecompressedMap = new Map();
+  const assetsDir = path.join(clientDir, "assets");
+  let filenames: string[];
+  try {
+    filenames = await fsp.readdir(assetsDir, { recursive: true });
+  } catch {
+    return map; // assets/ doesn't exist — nothing to precompress
+  }
+
+  const compressJobs: Promise<void>[] = [];
+  for (const relative of filenames) {
+    const ext = path.extname(relative);
+    const ct = CONTENT_TYPES[ext];
+    if (!ct) continue;
+    const baseType = ct.split(";")[0].trim();
+    if (!COMPRESSIBLE_TYPES.has(baseType)) continue;
+
+    const filePath = path.join(assetsDir, relative);
+    const urlPathname = "/assets/" + relative.split(path.sep).join("/");
+
+    compressJobs.push(
+      (async () => {
+        let raw: Buffer;
+        try {
+          raw = await fsp.readFile(filePath);
+        } catch {
+          return; // file disappeared or is a directory
+        }
+        if (raw.length < COMPRESS_THRESHOLD) return;
+
+        const [br, gz] = await Promise.all([
+          new Promise<Buffer>((resolve, reject) =>
+            zlib.brotliCompress(
+              raw,
+              { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 } },
+              (err, buf) => (err ? reject(err) : resolve(buf)),
+            ),
+          ),
+          new Promise<Buffer>((resolve, reject) =>
+            zlib.gzip(raw, { level: 9 }, (err, buf) => (err ? reject(err) : resolve(buf))),
+          ),
+        ]);
+        map.set(urlPathname, { br, gzip: gz });
+      })(),
+    );
+  }
+
+  await Promise.all(compressJobs);
+  return map;
+}
+
 /**
  * Try to serve a static file from the client build directory.
  * Returns true if the file was served, false otherwise.
+ *
+ * Uses async stat (non-blocking) instead of sync existsSync/statSync.
+ * For immutable hashed assets under /assets/, serves precompressed
+ * buffers from the startup cache to avoid re-compressing per request.
  */
-function tryServeStatic(
+async function tryServeStatic(
   req: IncomingMessage,
   res: ServerResponse,
   clientDir: string,
   pathname: string,
   compress: boolean,
   extraHeaders?: Record<string, string>,
-): boolean {
+  precompressed?: PrecompressedMap,
+): Promise<boolean> {
   // Resolve the path and guard against directory traversal (e.g. /../../../etc/passwd)
   const resolvedClient = path.resolve(clientDir);
   let decodedPathname: string;
@@ -259,9 +326,16 @@ function tryServeStatic(
   if (!staticFile.startsWith(resolvedClient + path.sep) && staticFile !== resolvedClient) {
     return false;
   }
-  if (pathname === "/" || !fs.existsSync(staticFile) || !fs.statSync(staticFile).isFile()) {
-    return false;
+  if (pathname === "/") return false;
+
+  // Async stat — non-blocking, single syscall instead of existsSync + statSync
+  let stat: fs.Stats;
+  try {
+    stat = await fsp.stat(staticFile);
+  } catch {
+    return false; // ENOENT or permission error
   }
+  if (!stat.isFile()) return false;
 
   const ext = path.extname(staticFile);
   const ct = CONTENT_TYPES[ext] ?? "application/octet-stream";
@@ -274,6 +348,26 @@ function tryServeStatic(
     ...extraHeaders,
   };
 
+  // For hashed assets, serve precompressed buffers from the startup cache
+  if (compress && isHashed && precompressed) {
+    const cached = precompressed.get(pathname);
+    if (cached) {
+      const encoding = negotiateEncoding(req);
+      if (encoding === "br" || encoding === "gzip") {
+        const buf = encoding === "br" ? cached.br : cached.gzip;
+        res.writeHead(200, {
+          ...baseHeaders,
+          "Content-Encoding": encoding,
+          "Content-Length": String(buf.length),
+          Vary: "Accept-Encoding",
+        });
+        res.end(buf);
+        return true;
+      }
+    }
+  }
+
+  // Fall back to on-the-fly compression for non-hashed or uncached assets
   const baseType = ct.split(";")[0].trim();
   if (compress && COMPRESSIBLE_TYPES.has(baseType)) {
     const encoding = negotiateEncoding(req);
@@ -292,7 +386,7 @@ function tryServeStatic(
     }
   }
 
-  res.writeHead(200, baseHeaders);
+  res.writeHead(200, { ...baseHeaders, "Content-Length": String(stat.size) });
   fs.createReadStream(staticFile).pipe(res);
   return true;
 }
@@ -546,6 +640,10 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     process.exit(1);
   }
 
+  // Precompress immutable hashed assets at startup so we don't
+  // re-compress them on every request.
+  const precompressed = compress ? await precompressAssets(clientDir) : new Map();
+
   const server = createServer(async (req, res) => {
     const url = req.url ?? "/";
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
@@ -569,7 +667,10 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
 
     // Serve static assets from client build
-    if (pathname !== "/" && tryServeStatic(req, res, clientDir, pathname, compress)) {
+    if (
+      pathname !== "/" &&
+      (await tryServeStatic(req, res, clientDir, pathname, compress, undefined, precompressed))
+    ) {
       return;
     }
 
@@ -600,7 +701,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         "X-Content-Type-Options": "nosniff",
         "Content-Disposition": imageConfig?.contentDispositionType ?? "inline",
       };
-      if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
+      if (await tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
       }
       res.writeHead(404);
@@ -709,6 +810,9 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       }
     : undefined;
 
+  // Precompress immutable hashed assets at startup
+  const precompressed = compress ? await precompressAssets(clientDir) : new Map();
+
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
@@ -745,7 +849,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     if (
       staticLookupPath !== "/" &&
       !staticLookupPath.startsWith("/api/") &&
-      tryServeStatic(req, res, clientDir, staticLookupPath, compress)
+      (await tryServeStatic(
+        req,
+        res,
+        clientDir,
+        staticLookupPath,
+        compress,
+        undefined,
+        precompressed,
+      ))
     ) {
       return;
     }
@@ -774,7 +886,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         "X-Content-Type-Options": "nosniff",
         "Content-Disposition": pagesImageConfig?.contentDispositionType ?? "inline",
       };
-      if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
+      if (await tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
       }
       res.writeHead(404);
@@ -1097,4 +1209,7 @@ export {
   trustProxy,
   nodeToWebRequest,
   mergeResponseHeaders,
+  precompressAssets,
+  tryServeStatic,
 };
+export type { PrecompressedMap };
