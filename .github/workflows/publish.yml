@@ -99,9 +99,9 @@ jobs:
             SUBJECT=$(echo "$line" | cut -d' ' -f2-)
             LOGIN=$(gh api "repos/${{ github.repository }}/commits/${SHA}" --jq '.author.login // .commit.author.name' 2>/dev/null || echo "")
             if [ -n "$LOGIN" ]; then
-              echo "${SHA} ${SUBJECT} (@${LOGIN})"
+              echo "${SHA:0:7} ${SUBJECT} (@${LOGIN})"
             else
-              echo "${SHA} ${SUBJECT}"
+              echo "${SHA:0:7} ${SUBJECT}"
             fi
           done < /tmp/raw-commits.txt > /tmp/commits.txt
 
