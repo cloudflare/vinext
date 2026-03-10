@@ -340,6 +340,7 @@ async function renderStaticPage(options: RenderStaticPageOptions): Promise<strin
     props: { pageProps },
     page: route.pattern,
     query: params,
+    buildId: _config.buildId,
   })}</script>`;
 
   // Build HTML shell

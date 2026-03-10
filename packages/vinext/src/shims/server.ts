@@ -92,6 +92,15 @@ export class NextRequest extends Request {
         undefined,
     };
   }
+
+  /**
+   * The build ID of the Next.js application.
+   * Set from `generateBuildId` in next.config.js, or a random UUID if not configured.
+   * Can be used in middleware to detect deployment skew between client and server.
+   */
+  get buildId(): string | undefined {
+    return process.env.__VINEXT_BUILD_ID ?? undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------

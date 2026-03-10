@@ -7,6 +7,7 @@
 import path from "node:path";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { PHASE_DEVELOPMENT_SERVER } from "../shims/constants.js";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
 
@@ -187,6 +188,11 @@ export interface NextConfig {
   transpilePackages?: string[];
   /** Webpack config (ignored — we use Vite) */
   webpack?: unknown;
+  /**
+   * Custom build ID generator. If provided, called once at build/dev start.
+   * Must return a non-empty string, or null to use the default random ID.
+   */
+  generateBuildId?: () => string | null | Promise<string | null>;
   /** Any other options */
   [key: string]: unknown;
 }
@@ -220,6 +226,8 @@ export interface ResolvedNextConfig {
   serverActionsAllowedOrigins: string[];
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
   serverActionsBodySizeLimit: number;
+  /** Resolved build ID (from generateBuildId, or a random UUID if not provided). */
+  buildId: string;
 }
 
 const CONFIG_FILES = ["next.config.ts", "next.config.mjs", "next.config.js", "next.config.cjs"];
@@ -330,6 +338,49 @@ export async function loadNextConfig(
 }
 
 /**
+ * Call the user's generateBuildId function and validate its return value.
+ * Follows Next.js semantics: null return falls back to a random UUID; any
+ * other non-string throws. Leading/trailing whitespace is trimmed.
+ *
+ * The fallback avoids UUIDs containing "ad" to prevent false-positive ad-blocker
+ * hits (mirrors Next.js's own nanoid retry loop).
+ *
+ * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/generateBuildId
+ */
+async function resolveBuildId(
+  generate: (() => string | null | Promise<string | null>) | undefined,
+): Promise<string> {
+  if (!generate) {
+    let id = randomUUID();
+    while (/ad/i.test(id)) id = randomUUID();
+    return id;
+  }
+
+  const result = await generate();
+
+  if (result === null) {
+    let id = randomUUID();
+    while (/ad/i.test(id)) id = randomUUID();
+    return id;
+  }
+
+  if (typeof result !== "string") {
+    throw new Error(
+      "generateBuildId did not return a string. https://nextjs.org/docs/messages/generatebuildid-not-a-string",
+    );
+  }
+
+  const trimmed = result.trim();
+  if (trimmed.length === 0) {
+    throw new Error(
+      "generateBuildId returned an empty string. https://nextjs.org/docs/messages/generatebuildid-not-a-string",
+    );
+  }
+
+  return trimmed;
+}
+
+/**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
  */
@@ -338,6 +389,7 @@ export async function resolveNextConfig(
   root: string = process.cwd(),
 ): Promise<ResolvedNextConfig> {
   if (!config) {
+    const buildId = await resolveBuildId(undefined);
     const resolved: ResolvedNextConfig = {
       env: {},
       basePath: "",
@@ -355,6 +407,7 @@ export async function resolveNextConfig(
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      buildId,
     };
     detectNextIntlConfig(root, resolved);
     return resolved;
@@ -446,6 +499,10 @@ export async function resolveNextConfig(
     };
   }
 
+  const buildId = await resolveBuildId(
+    config.generateBuildId as (() => string | null | Promise<string | null>) | undefined,
+  );
+
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
@@ -463,6 +520,7 @@ export async function resolveNextConfig(
     allowedDevOrigins,
     serverActionsAllowedOrigins,
     serverActionsBodySizeLimit,
+    buildId,
   };
 
   // Auto-detect next-intl (lowest priority — explicit aliases from

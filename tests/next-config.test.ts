@@ -358,6 +358,7 @@ describe("detectNextIntlConfig", () => {
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      buildId: "test-build-id",
       ...overrides,
     };
   }
@@ -525,5 +526,73 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     const config = await resolveNextConfig(rawConfig, tmpDir);
     // Should use the explicit webpack alias, not auto-detected
     expect(config.aliases["next-intl/config"]).toBe(path.join(tmpDir, "custom", "intl.ts"));
+  });
+});
+
+// Ported from Next.js: test/integration/production-config/test/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/integration/production-config/test/index.test.ts
+describe("generateBuildId", () => {
+  it("defaults to a non-empty string when generateBuildId is not set", async () => {
+    const config = await resolveNextConfig(null);
+    expect(typeof config.buildId).toBe("string");
+    expect(config.buildId.length).toBeGreaterThan(0);
+  });
+
+  it("uses the string returned by generateBuildId", async () => {
+    const config = await resolveNextConfig({ generateBuildId: () => "my-custom-build-id" });
+    expect(config.buildId).toBe("my-custom-build-id");
+  });
+
+  it("trims whitespace from the returned build ID", async () => {
+    const config = await resolveNextConfig({ generateBuildId: () => "  trimmed  " });
+    expect(config.buildId).toBe("trimmed");
+  });
+
+  it("falls back to a random UUID when generateBuildId returns null", async () => {
+    const config = await resolveNextConfig({ generateBuildId: () => null });
+    expect(typeof config.buildId).toBe("string");
+    expect(config.buildId.length).toBeGreaterThan(0);
+  });
+
+  it("supports async generateBuildId returning a string", async () => {
+    const config = await resolveNextConfig({
+      generateBuildId: async () => "async-build-id",
+    });
+    expect(config.buildId).toBe("async-build-id");
+  });
+
+  it("supports async generateBuildId returning null (falls back)", async () => {
+    const config = await resolveNextConfig({
+      generateBuildId: async () => null,
+    });
+    expect(typeof config.buildId).toBe("string");
+    expect(config.buildId.length).toBeGreaterThan(0);
+  });
+
+  it("throws when generateBuildId returns a non-string, non-null value", async () => {
+    await expect(
+      resolveNextConfig({ generateBuildId: () => 42 as unknown as string }),
+    ).rejects.toThrow("generateBuildId did not return a string");
+  });
+
+  it("throws when generateBuildId returns an empty string", async () => {
+    await expect(resolveNextConfig({ generateBuildId: () => "   " })).rejects.toThrow(
+      "generateBuildId returned an empty string",
+    );
+  });
+
+  it("two calls with no generateBuildId produce different build IDs (random)", async () => {
+    const a = await resolveNextConfig(null);
+    const b = await resolveNextConfig(null);
+    // UUIDs are random — astronomically unlikely to collide
+    expect(a.buildId).not.toBe(b.buildId);
+  });
+
+  it("two calls with the same generateBuildId produce the same ID", async () => {
+    const fn = () => "stable-id";
+    const a = await resolveNextConfig({ generateBuildId: fn });
+    const b = await resolveNextConfig({ generateBuildId: fn });
+    expect(a.buildId).toBe("stable-id");
+    expect(b.buildId).toBe("stable-id");
   });
 });

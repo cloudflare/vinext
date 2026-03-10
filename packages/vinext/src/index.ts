@@ -843,6 +843,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // __prerender_bypass cookie is consistent across all server
         // instances (e.g. multiple Cloudflare Workers isolates).
         defines["process.env.__VINEXT_DRAFT_SECRET"] = JSON.stringify(crypto.randomUUID());
+        // Build ID — resolved from next.config generateBuildId() or random UUID.
+        // Exposed so server entries and the next/server shim can inject it.
+        defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
 
         // Build the shim alias map — used by both resolve.alias and resolveId
         // (resolveId handles .js extension variants for libraries like nuqs)
@@ -2173,6 +2176,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 pagesDir,
                 nextConfig?.i18n,
                 fileMatcher,
+                nextConfig?.buildId,
               );
               const mwStatus = (req as any).__vinextRewriteStatus as number | undefined;
 

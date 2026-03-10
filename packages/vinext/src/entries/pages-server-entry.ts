@@ -81,6 +81,9 @@ export async function generateServerEntry(
       })
     : "null";
 
+  // Embed the resolved build ID at build time
+  const buildIdJson = JSON.stringify(nextConfig?.buildId ?? null);
+
   // Serialize the full resolved config for the production server.
   // This embeds redirects, rewrites, headers, basePath, trailingSlash
   // so prod-server.ts can apply them without loading next.config.js at runtime.
@@ -257,6 +260,9 @@ ${instrumentationInitCode}
 
 // i18n config (embedded at build time)
 const i18nConfig = ${i18nConfigJson};
+
+// Build ID (embedded at build time)
+const buildId = ${buildIdJson};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
@@ -840,7 +846,7 @@ export async function renderPage(request, url, manifest, ctx) {
     const pageModuleIds = route.filePath ? [route.filePath] : [];
     const assetTags = collectAssetTags(manifest, pageModuleIds);
     const nextDataPayload = {
-      props: { pageProps }, page: patternToNextFormat(route.pattern), query: params, isFallback: false,
+      props: { pageProps }, page: patternToNextFormat(route.pattern), query: params, buildId, isFallback: false,
     };
     if (i18nConfig) {
       nextDataPayload.locale = locale;
