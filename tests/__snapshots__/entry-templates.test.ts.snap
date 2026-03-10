@@ -438,7 +438,7 @@ function __triggerBackgroundRegeneration(key, renderFn, ctx) {
 // even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
 // 32-bit rounds) to give a ~64-bit output with negligible collision probability for
 // realistic pathname lengths.
-// Keep in sync with isrCacheKey() in server/isr-cache.ts.
+// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
 function __isrFnv1a64(s) {
   // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
   let h1 = 0x811c9dc5;
@@ -3149,7 +3149,7 @@ function __triggerBackgroundRegeneration(key, renderFn, ctx) {
 // even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
 // 32-bit rounds) to give a ~64-bit output with negligible collision probability for
 // realistic pathname lengths.
-// Keep in sync with isrCacheKey() in server/isr-cache.ts.
+// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
 function __isrFnv1a64(s) {
   // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
   let h1 = 0x811c9dc5;
@@ -5863,7 +5863,7 @@ function __triggerBackgroundRegeneration(key, renderFn, ctx) {
 // even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
 // 32-bit rounds) to give a ~64-bit output with negligible collision probability for
 // realistic pathname lengths.
-// Keep in sync with isrCacheKey() in server/isr-cache.ts.
+// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
 function __isrFnv1a64(s) {
   // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
   let h1 = 0x811c9dc5;
@@ -8612,7 +8612,7 @@ function __triggerBackgroundRegeneration(key, renderFn, ctx) {
 // even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
 // 32-bit rounds) to give a ~64-bit output with negligible collision probability for
 // realistic pathname lengths.
-// Keep in sync with isrCacheKey() in server/isr-cache.ts.
+// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
 function __isrFnv1a64(s) {
   // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
   let h1 = 0x811c9dc5;
@@ -11355,7 +11355,7 @@ function __triggerBackgroundRegeneration(key, renderFn, ctx) {
 // even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
 // 32-bit rounds) to give a ~64-bit output with negligible collision probability for
 // realistic pathname lengths.
-// Keep in sync with isrCacheKey() in server/isr-cache.ts.
+// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
 function __isrFnv1a64(s) {
   // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
   let h1 = 0x811c9dc5;
@@ -14073,7 +14073,7 @@ function __triggerBackgroundRegeneration(key, renderFn, ctx) {
 // even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
 // 32-bit rounds) to give a ~64-bit output with negligible collision probability for
 // realistic pathname lengths.
-// Keep in sync with isrCacheKey() in server/isr-cache.ts.
+// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
 function __isrFnv1a64(s) {
   // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
   let h1 = 0x811c9dc5;
@@ -17574,7 +17574,7 @@ function fnv1a64(input) {
   }
   return h1.toString(36) + h2.toString(36);
 }
-// Keep in sync with isrCacheKey() in server/isr-cache.ts.
+// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
 // buildId is a top-level const in the generated entry (see "const buildId = ..." above).
 function isrCacheKey(router, pathname) {
   const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");

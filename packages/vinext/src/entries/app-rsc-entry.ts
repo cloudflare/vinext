@@ -341,7 +341,7 @@ function __triggerBackgroundRegeneration(key, renderFn, ctx) {
 // even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
 // 32-bit rounds) to give a ~64-bit output with negligible collision probability for
 // realistic pathname lengths.
-// Keep in sync with isrCacheKey() in server/isr-cache.ts.
+// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
 function __isrFnv1a64(s) {
   // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
   let h1 = 0x811c9dc5;

@@ -314,7 +314,7 @@ function fnv1a64(input) {
   }
   return h1.toString(36) + h2.toString(36);
 }
-// Keep in sync with isrCacheKey() in server/isr-cache.ts.
+// Keep prefix construction and hashing logic in sync with isrCacheKey() in server/isr-cache.ts.
 // buildId is a top-level const in the generated entry (see "const buildId = ..." above).
 function isrCacheKey(router, pathname) {
   const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
