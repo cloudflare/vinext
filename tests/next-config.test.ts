@@ -620,6 +620,8 @@ describe("resolveNextConfig external rewrite warning", () => {
     expect(externalWarning![0]).toContain("1 external rewrite");
     expect(externalWarning![0]).toContain("https://api.example.com/:path*");
     expect(externalWarning![0]).toContain("Credential headers");
+    expect(externalWarning![0]).toContain("/api/:path*");
+    expect(externalWarning![0]).toContain("→");
 
     // The internal rewrite should not appear in the warning
     expect(externalWarning![0]).not.toContain("/other");

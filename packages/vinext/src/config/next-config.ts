@@ -445,8 +445,9 @@ export async function resolveNextConfig(
     const externalRewrites = allRewrites.filter((r) => isExternalUrl(r.destination));
     if (externalRewrites.length > 0) {
       const listing = externalRewrites.map((r) => `  ${r.source} → ${r.destination}`).join("\n");
+      const noun = externalRewrites.length === 1 ? "external rewrite" : "external rewrites";
       console.warn(
-        `[vinext] Found ${externalRewrites.length} external rewrite(s) that proxy requests to third-party origins:\n` +
+        `[vinext] Found ${externalRewrites.length} ${noun} that proxy requests to third-party origins:\n` +
           `${listing}\n` +
           `Credential headers (cookie, authorization, x-api-key, proxy-authorization) are forwarded to the external origin. ` +
           `If this is unintentional, consider proxying at the CDN level instead.`,

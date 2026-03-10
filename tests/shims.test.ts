@@ -6988,6 +6988,24 @@ describe("handleImageOptimization", () => {
     expect(response.headers.get("Content-Disposition")).toBe("attachment");
   });
 
+  it("defaults Content-Disposition to inline when contentDispositionType is invalid", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    const handlers = {
+      fetchAsset: async () =>
+        new Response("image-data", {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        }),
+    };
+    const response = await handleImageOptimization(request, handlers, undefined, {
+      contentDispositionType: "bogus" as "inline",
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Disposition")).toBe("inline");
+  });
+
   it("applies custom contentSecurityPolicy", async () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
