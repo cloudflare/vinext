@@ -528,3 +528,428 @@ describe("loader: custom error path", () => {
     ).toThrow(/missing "loader" prop/);
   });
 });
+
+describe("normalizeProps dev-mode validation", () => {
+  it("throws on missing src", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "",
+        alt: "test",
+        width: 100,
+        height: 100,
+      }),
+    ).toThrow(/missing required "src"/);
+  });
+
+  it("throws on src with leading whitespace", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: " /test.png",
+        alt: "test",
+        width: 100,
+        height: 100,
+      }),
+    ).toThrow(/cannot start with a space/);
+  });
+
+  it("throws on src with trailing control character", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png\t",
+        alt: "test",
+        width: 100,
+        height: 100,
+      }),
+    ).toThrow(/cannot end with a space or control/);
+  });
+
+  it("throws on invalid loading value", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        width: 100,
+        height: 100,
+        loading: "fast" as any,
+      }),
+    ).toThrow(/invalid "loading" property/);
+  });
+
+  it("throws on priority + loading='lazy'", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        width: 100,
+        height: 100,
+        priority: true,
+        loading: "lazy",
+      }),
+    ).toThrow(/both "priority" and "loading='lazy'"/);
+  });
+
+  it("throws on blur placeholder without blurDataURL", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        width: 100,
+        height: 100,
+        placeholder: "blur",
+      }),
+    ).toThrow(/missing the "blurDataURL"/);
+  });
+
+  it("throws on fill + width", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        fill: true,
+        width: 100,
+      } as any),
+    ).toThrow(/both "width" and "fill"/);
+  });
+
+  it("throws on fill + height", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        fill: true,
+        height: 100,
+      } as any),
+    ).toThrow(/both "height" and "fill"/);
+  });
+
+  it("throws on fill + style.position (not absolute)", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        fill: true,
+        style: { position: "relative" },
+      } as any),
+    ).toThrow(/fill.*position/);
+  });
+
+  it("throws on fill + style.width (not 100%)", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        fill: true,
+        style: { width: "50%" },
+      } as any),
+    ).toThrow(/fill.*width/);
+  });
+
+  it("throws on fill + style.height (not 100%)", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        fill: true,
+        style: { height: "50%" },
+      } as any),
+    ).toThrow(/fill.*height/);
+  });
+
+  it("throws on non-fill without width", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        height: 100,
+      } as any),
+    ).toThrow(/missing required "width"/);
+  });
+
+  it("throws on non-fill without height", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        width: 100,
+      } as any),
+    ).toThrow(/missing required "height"/);
+  });
+
+  it("throws on invalid width (NaN)", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        width: "abc" as any,
+        height: 100,
+      }),
+    ).toThrow(/invalid "width"/);
+  });
+
+  it("throws on invalid height (NaN)", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "/test.png",
+        alt: "test",
+        width: 100,
+        height: "abc" as any,
+      }),
+    ).toThrow(/invalid "height"/);
+  });
+
+  it("throws on static import missing src", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: { src: "", width: 100, height: 100 },
+        alt: "test",
+      } as any),
+    ).toThrow(/must include src/);
+  });
+
+  it("throws on static import missing dimensions", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: { src: "/test.png", width: 0, height: 0 },
+        alt: "test",
+      } as any),
+    ).toThrow(/must include height and width/);
+  });
+
+  it("throws on protocol-relative src (//example.com)", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "//example.com/img.png",
+        alt: "test",
+        width: 100,
+        height: 100,
+      }),
+    ).toThrow(/protocol-relative URL/);
+  });
+
+  it("throws on unconfigured remote hostname", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "https://evil.com/img.png",
+        alt: "test",
+        width: 100,
+        height: 100,
+      }),
+    ).toThrow(/not configured/);
+  });
+
+  it("throws on relative src not starting with /", async () => {
+    const { getImageProps } = await loadImageModule();
+    expect(() =>
+      getImageProps({
+        src: "relative/img.png",
+        alt: "test",
+        width: 100,
+        height: 100,
+      }),
+    ).toThrow(/must start with a leading slash/);
+  });
+});
+
+describe("fill mode rendering", () => {
+  it("sets data-nimg='fill'", async () => {
+    const { getImageProps } = await loadImageModule();
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      fill: true,
+      sizes: "100vw",
+    } as any);
+
+    expect(props["data-nimg"]).toBe("fill");
+  });
+
+  it("sets position: absolute, width: 100%, height: 100% in style", async () => {
+    const { getImageProps } = await loadImageModule();
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      fill: true,
+      sizes: "100vw",
+    } as any);
+
+    expect(props.style.position).toBe("absolute");
+    expect(props.style.width).toBe("100%");
+    expect(props.style.height).toBe("100%");
+  });
+
+  it("width and height props are undefined", async () => {
+    const { getImageProps } = await loadImageModule();
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      fill: true,
+      sizes: "100vw",
+    } as any);
+
+    expect(props.width).toBeUndefined();
+    expect(props.height).toBeUndefined();
+  });
+
+  it("defaults sizes to '100vw' when no sizes provided", async () => {
+    const { getImageProps } = await loadImageModule();
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      fill: true,
+    } as any);
+
+    expect(props.sizes).toBe("100vw");
+  });
+});
+
+describe("legacy prop warnings", () => {
+  it("warns for lazyBoundary", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      lazyBoundary: "200px",
+    } as any);
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/legacy prop "lazyBoundary"/));
+    warnSpy.mockRestore();
+  });
+
+  it("warns for lazyRoot", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      lazyRoot: "some-id",
+    } as any);
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/legacy prop "lazyRoot"/));
+    warnSpy.mockRestore();
+  });
+
+  it("warns for layout", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      layout: "responsive",
+    } as any);
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/legacy prop "layout"/));
+    warnSpy.mockRestore();
+  });
+
+  it("warns for objectFit", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      objectFit: "cover",
+    } as any);
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/legacy prop "objectFit"/));
+    warnSpy.mockRestore();
+  });
+
+  it("warns for objectPosition", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      objectPosition: "center",
+    } as any);
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/legacy prop "objectPosition"/));
+    warnSpy.mockRestore();
+  });
+
+  it("warns for onLoadingComplete", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      onLoadingComplete: () => {},
+    } as any);
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/deprecated "onLoadingComplete"/));
+    warnSpy.mockRestore();
+  });
+});
+
+describe("static import dimension inference", () => {
+  it("infers width from height for static imports", async () => {
+    const { getImageProps } = await loadImageModule();
+    const staticImage = {
+      src: "/static/photo.png",
+      width: 1200,
+      height: 800,
+    };
+
+    const { props } = getImageProps({
+      alt: "static",
+      src: staticImage,
+      height: 400,
+    } as any);
+
+    expect(props.width).toBe(600);
+    expect(props.height).toBe(400);
+  });
+});
+
+describe("SVG auto-unoptimized", () => {
+  it(".svg files are automatically unoptimized when dangerouslyAllowSVG is false", async () => {
+    const { getImageProps } = await loadImageModule();
+    const { props } = getImageProps({
+      src: "/icon.svg",
+      alt: "test",
+      width: 100,
+      height: 100,
+    });
+
+    expect(props.srcSet).toBeUndefined();
+    expect(props.src).toBe("/icon.svg");
+  });
+});

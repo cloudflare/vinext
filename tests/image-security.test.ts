@@ -880,3 +880,516 @@ describe("AVIF quality adjustment (via handleImageOptimization)", () => {
     expect(capturedQuality).toBe(75);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TODO: Feature gaps — Next.js has these, vinext does not yet
+// ---------------------------------------------------------------------------
+
+// TODO: Recursive URL guard — Next.js blocks `/_next/image?url=/_next/image...`
+// to prevent recursive optimization loops. vinext's parseImageParams accepts it
+// as a valid local path. Implement: reject urls whose pathname matches the
+// image optimization path itself.
+
+// TODO: URL length limit — Next.js enforces a 3072-character maximum on the
+// `url` query parameter. vinext has no enforcement. Implement: return 400 if
+// url.length > 3072 in parseImageParams.
+
+// TODO: Upstream timeout — Next.js returns 504 after 7 seconds when fetching
+// a remote image. vinext's fetchRemoteImage has no timeout enforcement.
+// Implement: AbortController with 7s timeout on the fetch call.
+
+// TODO: Animated image detection — Next.js detects animated GIF/PNG/WebP
+// (by inspecting frame data / ANIM chunk) and skips optimization to preserve
+// animation. vinext does not inspect image content, so animated images may
+// be silently converted to static frames.
+
+// TODO: Magic bytes detection — Next.js detects image type from file header
+// bytes (magic numbers) rather than trusting the Content-Type header. vinext
+// relies solely on Content-Type. This means a mislabeled image could be
+// rejected or mis-processed.
+
+// TODO: ETag generation — Next.js generates ETags for optimized images and
+// validates them on conditional requests (If-None-Match). vinext does not
+// generate ETags, so clients always get full responses even when the image
+// hasn't changed.
+
+// ---------------------------------------------------------------------------
+// SSRF via redirect chain to blocked IP
+// ---------------------------------------------------------------------------
+
+describe("SSRF via redirect chain to blocked IP", () => {
+  const REMOTE_URL = "https://images.example.com/photo.jpg";
+  const makeRequest = (remoteUrl: string) =>
+    new Request(`http://localhost/_vinext/image?url=${encodeURIComponent(remoteUrl)}&w=800&q=75`);
+  const defaultHandlers = {
+    fetchAsset: async () => new Response("unused", { status: 500 }),
+  };
+
+  it("blocks redirect from safe URL to loopback 127.0.0.1", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      return new Response(null, {
+        status: 301,
+        headers: { Location: "http://127.0.0.1/admin" },
+      });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        makeRequest(REMOTE_URL),
+        defaultHandlers,
+        undefined,
+        { remotePatterns: [new URL(REMOTE_URL)] },
+      );
+
+      expect(response.status).toBe(400);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("blocks redirect from safe URL to private 10.0.0.1", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      return new Response(null, {
+        status: 301,
+        headers: { Location: "http://10.0.0.1/admin" },
+      });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        makeRequest(REMOTE_URL),
+        defaultHandlers,
+        undefined,
+        { remotePatterns: [new URL(REMOTE_URL)] },
+      );
+
+      expect(response.status).toBe(400);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("blocks redirect from safe URL to AWS metadata 169.254.169.254", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      return new Response(null, {
+        status: 301,
+        headers: { Location: "http://169.254.169.254/latest/meta-data" },
+      });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        makeRequest(REMOTE_URL),
+        defaultHandlers,
+        undefined,
+        { remotePatterns: [new URL(REMOTE_URL)] },
+      );
+
+      expect(response.status).toBe(400);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("blocks redirect from safe URL to localhost hostname", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      return new Response(null, {
+        status: 301,
+        headers: { Location: "http://localhost/admin" },
+      });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        makeRequest(REMOTE_URL),
+        defaultHandlers,
+        undefined,
+        { remotePatterns: [new URL(REMOTE_URL)] },
+      );
+
+      expect(response.status).toBe(400);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Protocol-relative URL blocking via parseImageParams
+// ---------------------------------------------------------------------------
+
+describe("parseImageParams protocol-relative URL blocking", () => {
+  it("rejects //evil.com/img.png", () => {
+    const url = new URL(
+      `http://localhost/_vinext/image?url=${encodeURIComponent("//evil.com/img.png")}&w=800&q=75`,
+    );
+    const result = parseImageParams(url);
+    expect(result).toBeNull();
+  });
+
+  it("rejects //127.0.0.1/img.png", () => {
+    const url = new URL(
+      `http://localhost/_vinext/image?url=${encodeURIComponent("//127.0.0.1/img.png")}&w=800&q=75`,
+    );
+    const result = parseImageParams(url);
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Backslash normalization in parseImageParams
+// ---------------------------------------------------------------------------
+
+describe("parseImageParams backslash normalization", () => {
+  it("normalizes backslash-prefixed URL and treats as local path", () => {
+    const url = new URL(
+      `http://localhost/_vinext/image?url=${encodeURIComponent("\\img.jpg")}&w=800&q=75`,
+    );
+    const result = parseImageParams(url);
+    expect(result).not.toBeNull();
+    expect(result!.imageUrl).toBe("/img.jpg");
+    expect(result!.isRemote).toBe(false);
+  });
+
+  it("rejects double backslash as protocol-relative after normalization", () => {
+    const url = new URL(
+      `http://localhost/_vinext/image?url=${encodeURIComponent("\\\\evil.com")}&w=800&q=75`,
+    );
+    const result = parseImageParams(url);
+    expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cookie isolation in upstream requests
+// ---------------------------------------------------------------------------
+
+describe("cookie isolation in upstream requests", () => {
+  it("does not forward Cookie header to upstream", async () => {
+    const REMOTE_URL = "https://images.example.com/photo.jpg";
+    const originalFetch = globalThis.fetch;
+    let capturedHeaders: Headers | undefined;
+
+    globalThis.fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedHeaders = new Headers(init?.headers);
+      return new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      });
+    };
+
+    try {
+      const request = new Request(
+        `http://localhost/_vinext/image?url=${encodeURIComponent(REMOTE_URL)}&w=800&q=75`,
+        {
+          headers: {
+            Cookie: "session=secret; token=abc123",
+            Accept: "image/webp,*/*",
+          },
+        },
+      );
+
+      const handlers = {
+        fetchAsset: async () => new Response("unused", { status: 500 }),
+      };
+
+      await handleImageOptimization(request, handlers, undefined, {
+        remotePatterns: [new URL(REMOTE_URL)],
+      });
+
+      expect(capturedHeaders).toBeDefined();
+      expect(capturedHeaders!.get("Cookie")).toBeNull();
+      expect(capturedHeaders!.get("Accept")).toBe("image/webp,*/*");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Redirect status code handling (302, 307, 308)
+// ---------------------------------------------------------------------------
+
+describe("redirect status code handling", () => {
+  const REMOTE_URL = "https://images.example.com/photo.jpg";
+  const makeRequest = (remoteUrl: string) =>
+    new Request(`http://localhost/_vinext/image?url=${encodeURIComponent(remoteUrl)}&w=800&q=75`);
+  const defaultHandlers = {
+    fetchAsset: async () => new Response("unused", { status: 500 }),
+  };
+
+  it("follows 302 redirect and returns image", async () => {
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      if (fetchCalls === 1) {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: "https://images.example.com/final.jpg" },
+        });
+      }
+      return new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        makeRequest(REMOTE_URL),
+        defaultHandlers,
+        undefined,
+        { remotePatterns: [new URL(REMOTE_URL)] },
+      );
+
+      expect(response.status).toBe(200);
+      expect(fetchCalls).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("follows 307 redirect and returns image", async () => {
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      if (fetchCalls === 1) {
+        return new Response(null, {
+          status: 307,
+          headers: { Location: "https://images.example.com/final.jpg" },
+        });
+      }
+      return new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        makeRequest(REMOTE_URL),
+        defaultHandlers,
+        undefined,
+        { remotePatterns: [new URL(REMOTE_URL)] },
+      );
+
+      expect(response.status).toBe(200);
+      expect(fetchCalls).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("follows 308 redirect and returns image", async () => {
+    const originalFetch = globalThis.fetch;
+    let fetchCalls = 0;
+    globalThis.fetch = async () => {
+      fetchCalls++;
+      if (fetchCalls === 1) {
+        return new Response(null, {
+          status: 308,
+          headers: { Location: "https://images.example.com/final.jpg" },
+        });
+      }
+      return new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        makeRequest(REMOTE_URL),
+        defaultHandlers,
+        undefined,
+        { remotePatterns: [new URL(REMOTE_URL)] },
+      );
+
+      expect(response.status).toBe(200);
+      expect(fetchCalls).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Non-OK upstream response codes (403, 404)
+// ---------------------------------------------------------------------------
+
+describe("non-OK upstream response codes", () => {
+  const REMOTE_URL = "https://images.example.com/photo.jpg";
+  const makeRequest = (remoteUrl: string) =>
+    new Request(`http://localhost/_vinext/image?url=${encodeURIComponent(remoteUrl)}&w=800&q=75`);
+  const defaultHandlers = {
+    fetchAsset: async () => new Response("unused", { status: 500 }),
+  };
+
+  it("returns 400 for upstream 403 Forbidden", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      return new Response("Forbidden", { status: 403 });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        makeRequest(REMOTE_URL),
+        defaultHandlers,
+        undefined,
+        { remotePatterns: [new URL(REMOTE_URL)] },
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe(
+        '"url" parameter is valid but upstream response is invalid',
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("returns 400 for upstream 404 Not Found", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      return new Response("Not Found", { status: 404 });
+    };
+
+    try {
+      const response = await handleImageOptimization(
+        makeRequest(REMOTE_URL),
+        defaultHandlers,
+        undefined,
+        { remotePatterns: [new URL(REMOTE_URL)] },
+      );
+
+      expect(response.status).toBe(400);
+      expect(await response.text()).toBe(
+        '"url" parameter is valid but upstream response is invalid',
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Vary: Accept header
+// ---------------------------------------------------------------------------
+
+describe("Vary: Accept header", () => {
+  it("sets Vary: Accept on optimized image responses", async () => {
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=75");
+    const handlers = {
+      fetchAsset: async () =>
+        new Response("image-data", {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        }),
+    };
+
+    const response = await handleImageOptimization(request, handlers);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Vary")).toBe("Accept");
+  });
+
+  it("sets Vary: Accept on SVG pass-through responses", async () => {
+    const request = new Request("http://localhost/_vinext/image?url=%2Ficon.svg&w=800&q=75");
+    const handlers = {
+      fetchAsset: async () =>
+        new Response("<svg></svg>", {
+          status: 200,
+          headers: { "Content-Type": "image/svg+xml" },
+        }),
+    };
+
+    const response = await handleImageOptimization(request, handlers, undefined, {
+      dangerouslyAllowSVG: true,
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Vary")).toBe("Accept");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Authorization header isolation in upstream requests
+// ---------------------------------------------------------------------------
+
+describe("authorization header isolation in upstream requests", () => {
+  it("does not forward Authorization header to upstream", async () => {
+    const REMOTE_URL = "https://images.example.com/photo.jpg";
+    const originalFetch = globalThis.fetch;
+    let capturedHeaders: Headers | undefined;
+
+    globalThis.fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      capturedHeaders = new Headers(init?.headers);
+      return new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      });
+    };
+
+    try {
+      const request = new Request(
+        `http://localhost/_vinext/image?url=${encodeURIComponent(REMOTE_URL)}&w=800&q=75`,
+        {
+          headers: {
+            Authorization: "Bearer eyJhbGciOiJIUzI1NiJ9.secret",
+            Accept: "image/webp,*/*",
+          },
+        },
+      );
+
+      const handlers = {
+        fetchAsset: async () => new Response("unused", { status: 500 }),
+      };
+
+      await handleImageOptimization(request, handlers, undefined, {
+        remotePatterns: [new URL(REMOTE_URL)],
+      });
+
+      expect(capturedHeaders).toBeDefined();
+      expect(capturedHeaders!.get("Authorization")).toBeNull();
+      expect(capturedHeaders!.get("Accept")).toBe("image/webp,*/*");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dangerous URL scheme rejection via parseImageParams
+// ---------------------------------------------------------------------------
+
+describe("parseImageParams dangerous URL scheme rejection", () => {
+  it("rejects javascript: scheme", () => {
+    const url = new URL(
+      `http://localhost/_vinext/image?url=${encodeURIComponent("javascript:alert(1)")}&w=800&q=75`,
+    );
+    const result = parseImageParams(url);
+    expect(result).toBeNull();
+  });
+
+  it("rejects data: URI scheme", () => {
+    const url = new URL(
+      `http://localhost/_vinext/image?url=${encodeURIComponent("data:image/png;base64,iVBOR")}&w=800&q=75`,
+    );
+    const result = parseImageParams(url);
+    expect(result).toBeNull();
+  });
+
+  it("rejects ftp: scheme", () => {
+    const url = new URL(
+      `http://localhost/_vinext/image?url=${encodeURIComponent("ftp://evil.com/img.jpg")}&w=800&q=75`,
+    );
+    const result = parseImageParams(url);
+    expect(result).toBeNull();
+  });
+});
