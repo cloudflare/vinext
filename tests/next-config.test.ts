@@ -619,7 +619,7 @@ describe("resolveNextConfig external rewrite warning", () => {
     expect(externalWarning).toBeDefined();
     expect(externalWarning![0]).toContain("1 external rewrite");
     expect(externalWarning![0]).toContain("https://api.example.com/:path*");
-    expect(externalWarning![0]).toContain("Credential headers");
+    expect(externalWarning![0]).toContain("All request headers");
     expect(externalWarning![0]).toContain("/api/:path*");
     expect(externalWarning![0]).toContain("→");
 
@@ -658,7 +658,7 @@ describe("resolveNextConfig external rewrite warning", () => {
       (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
     );
     expect(externalWarning).toBeDefined();
-    expect(externalWarning![0]).toContain("3 external rewrite");
+    expect(externalWarning![0]).toContain("3 external rewrites");
     expect(externalWarning![0]).toContain("https://one.example.com/api");
     expect(externalWarning![0]).toContain("https://two.example.com/api");
     expect(externalWarning![0]).toContain("https://three.example.com/api");

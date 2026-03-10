@@ -449,8 +449,8 @@ export async function resolveNextConfig(
       console.warn(
         `[vinext] Found ${externalRewrites.length} ${noun} that proxy requests to third-party origins:\n` +
           `${listing}\n` +
-          `Credential headers (cookie, authorization, x-api-key, proxy-authorization) are forwarded to the external origin. ` +
-          `If this is unintentional, consider proxying at the CDN level instead.`,
+          `All request headers (including cookies, authorization tokens, and other credentials) are forwarded to the external origin. ` +
+          `If this is unintentional, consider using a server-side fetch in an API route or proxying at the CDN level instead.`,
       );
     }
   }
