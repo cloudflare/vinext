@@ -237,6 +237,39 @@ describe("Next.js compat: metadata", () => {
     expect(html).toMatch(/meta\s+property="og:image:height"\s+content="600"/);
   });
 
+  // ── OpenGraph single image object ────────────────────────────
+  // Next.js allows openGraph.images to be a single object (not wrapped in an array).
+  // See: https://nextjs.org/docs/app/api-reference/functions/generate-metadata#opengraph
+
+  it("should render og:image when images is a single object", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-opengraph-single-image",
+    );
+    expect(html).toMatch(
+      /meta\s+property="og:image"\s+content="https:\/\/example\.com\/single\.png"/,
+    );
+  });
+
+  it("should render og:image dimensions for single image object", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-opengraph-single-image",
+    );
+    expect(html).toMatch(/meta\s+property="og:image:width"\s+content="1200"/);
+    expect(html).toMatch(/meta\s+property="og:image:height"\s+content="630"/);
+  });
+
+  it("should render twitter:image when images is a single object", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-opengraph-single-image",
+    );
+    expect(html).toMatch(
+      /meta\s+name="twitter:image"\s+content="https:\/\/example\.com\/twitter-single\.png"/,
+    );
+  });
+
   // ── Twitter ──────────────────────────────────────────────────
   // Next.js: 'should support twitter card summary_large_image'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L308-L323

@@ -133,7 +133,7 @@ export interface Metadata {
     description?: string;
     url?: string;
     siteName?: string;
-    images?: string | Array<{ url: string; width?: number; height?: number; alt?: string }>;
+    images?: string | { url: string; width?: number; height?: number; alt?: string } | Array<string | { url: string; width?: number; height?: number; alt?: string }>;
     videos?: Array<{ url: string; width?: number; height?: number }>;
     audio?: Array<{ url: string }>;
     locale?: string;
@@ -148,7 +148,7 @@ export interface Metadata {
     siteId?: string;
     title?: string;
     description?: string;
-    images?: string | string[] | Array<{ url: string; alt?: string; width?: number; height?: number }>;
+    images?: string | { url: string; alt?: string; width?: number; height?: number } | Array<string | { url: string; alt?: string; width?: number; height?: number }>;
     creator?: string;
     creatorId?: string;
   };
@@ -440,7 +440,9 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
       }
     }
     if (og.images) {
-      const imgList = typeof og.images === "string" ? [{ url: og.images }] : og.images;
+      const imgList = typeof og.images === "string"
+        ? [{ url: og.images }]
+        : Array.isArray(og.images) ? og.images : [og.images];
       for (const img of imgList) {
         const imgUrl = typeof img === "string" ? img : img.url;
         elements.push(<meta key={key++} property="og:image" content={resolveUrl(imgUrl) ?? imgUrl} />);
@@ -488,7 +490,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     if (tw.images) {
       const imgList = typeof tw.images === "string"
         ? [tw.images]
-        : Array.isArray(tw.images) ? tw.images : [];
+        : Array.isArray(tw.images) ? tw.images : [tw.images];
       for (const img of imgList) {
         const imgUrl = typeof img === "string" ? img : img.url;
         elements.push(<meta key={key++} name="twitter:image" content={resolveUrl(imgUrl) ?? imgUrl} />);
