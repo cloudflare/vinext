@@ -311,6 +311,16 @@ async function __isrSet(key, data, revalidateSeconds) {
   const handler = getCacheHandler();
   await handler.set(key, data, { revalidate: revalidateSeconds, tags: [] });
 }
+// Note: cache entries are written with \`headers: undefined\`. Next.js stores
+// response headers (e.g. set-cookie from cookies().set() during render) in the
+// cache entry so they can be replayed on HIT. We don't do this because:
+//   1. Pages that call cookies().set() during render trigger dynamicUsedDuringRender,
+//      which opts them out of ISR caching before we reach the write path.
+//   2. Custom response headers set via next/headers are not yet captured separately
+//      from the live Response object in vinext's server pipeline.
+// In practice this means ISR-cached responses won't replay render-time set-cookie
+// headers — but that case is already prevented by the dynamic-usage opt-out.
+// TODO: capture render-time response headers for full Next.js parity.
 const __pendingRegenerations = new Map();
 function __triggerBackgroundRegeneration(key, renderFn, ctx) {
   if (__pendingRegenerations.has(key)) return;
@@ -331,8 +341,14 @@ function __triggerBackgroundRegeneration(key, renderFn, ctx) {
 // 32-bit rounds) to give a ~64-bit output with negligible collision probability for
 // realistic pathname lengths.
 function __isrFnv1a64(s) {
+  // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
   let h1 = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) { h1 ^= s.charCodeAt(i); h1 = (h1 * 0x01000193) >>> 0; }
+  // h2 uses a different seed (0x050c5d1f — the FNV-1a hash of the string "vinext")
+  // so the two rounds are independently seeded and their outputs are decorrelated.
+  // Concatenating two independently-seeded 32-bit FNV-1a hashes gives an effective
+  // 64-bit hash. A random non-standard seed would also work; we derive it from a
+  // fixed string so the choice is auditable and deterministic across rebuilds.
   let h2 = 0x050c5d1f;
   for (let i = 0; i < s.length; i++) { h2 ^= s.charCodeAt(i); h2 = (h2 * 0x01000193) >>> 0; }
   return h1.toString(36) + h2.toString(36);
@@ -346,6 +362,12 @@ function __isrCacheKey(pathname, suffix) {
 }
 function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
 function __isrRscKey(pathname) { return __isrCacheKey(pathname, "rsc"); }
+// Verbose cache logging — opt in with NEXT_PRIVATE_DEBUG_CACHE=1.
+// Matches the env var Next.js uses for its own cache debug output so operators
+// have a single knob for all cache tracing.
+const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
+  ? console.debug.bind(console, "[vinext] ISR:")
+  : undefined;
 
 // Normalize null-prototype objects from matchPattern() into thenable objects
 // that work both as Promises (for Next.js 15+ async params) and as plain
@@ -2102,7 +2124,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         const __hasRsc = !!__cachedValue.rscData;
         const __hasHtml = typeof __cachedValue.html === "string" && __cachedValue.html.length > 0;
         if (isRscRequest && __hasRsc) {
-          console.log("[vinext] ISR HIT (RSC)", cleanPathname);
+          __isrDebug?.("HIT (RSC)", cleanPathname);
           setHeadersContext(null);
           setNavigationContext(null);
           return new Response(__cachedValue.rscData, {
@@ -2116,7 +2138,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           });
         }
         if (!isRscRequest && __hasHtml) {
-          console.log("[vinext] ISR HIT (HTML)", cleanPathname);
+          __isrDebug?.("HIT (HTML)", cleanPathname);
           setHeadersContext(null);
           setNavigationContext(null);
           return new Response(__cachedValue.html, {
@@ -2129,7 +2151,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             },
           });
         }
-        console.log("[vinext] ISR MISS (empty cached entry)", cleanPathname);
+        __isrDebug?.("MISS (empty cached entry)", cleanPathname);
       }
       if (__cached && __cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_PAGE") {
         // Stale cache hit — serve stale immediately, trigger background regeneration.
@@ -2198,10 +2220,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
             __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
           ]);
-          console.log("[vinext] ISR regen complete", cleanPathname);
+          __isrDebug?.("regen complete", cleanPathname);
         }, ctx);
         if (isRscRequest && __staleValue.rscData) {
-          console.log("[vinext] ISR STALE (RSC)", cleanPathname);
+          __isrDebug?.("STALE (RSC)", cleanPathname);
           setHeadersContext(null);
           setNavigationContext(null);
           return new Response(__staleValue.rscData, {
@@ -2215,7 +2237,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           });
         }
         if (!isRscRequest && typeof __staleValue.html === "string" && __staleValue.html.length > 0) {
-          console.log("[vinext] ISR STALE (HTML)", cleanPathname);
+          __isrDebug?.("STALE (HTML)", cleanPathname);
           setHeadersContext(null);
           setNavigationContext(null);
           return new Response(__staleValue.html, {
@@ -2229,10 +2251,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           });
         }
         // Stale entry exists but is empty for this request type — fall through to render
-        console.log("[vinext] ISR STALE MISS (empty stale entry)", cleanPathname);
+        __isrDebug?.("STALE MISS (empty stale entry)", cleanPathname);
       }
       if (!__cached) {
-        console.log("[vinext] ISR MISS (no cache entry)", cleanPathname);
+        __isrDebug?.("MISS (no cache entry)", cleanPathname);
       }
     } catch (__isrReadErr) {
       // Cache read failure — fall through to normal rendering
@@ -2610,7 +2632,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         try {
           const __rscDataForCache = await __isrRscDataPromise;
           await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc);
-          console.log("[vinext] ISR RSC cache written", __isrKeyRsc);
+          __isrDebug?.("RSC cache written", __isrKeyRsc);
         } catch (__rscWriteErr) {
           console.error("[vinext] ISR RSC cache write error:", __rscWriteErr);
         }
@@ -2830,7 +2852,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
               );
             }
             await Promise.all(__writes);
-            console.log("[vinext] ISR HTML cache written", __isrKey);
+            __isrDebug?.("HTML cache written", __isrKey);
           } catch (__cacheErr) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
           }
