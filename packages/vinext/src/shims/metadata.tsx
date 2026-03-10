@@ -147,7 +147,10 @@ export interface Metadata {
     description?: string;
     url?: string;
     siteName?: string;
-    images?: string | { url: string; width?: number; height?: number; alt?: string } | Array<string | { url: string; width?: number; height?: number; alt?: string }>;
+    images?:
+      | string
+      | { url: string; width?: number; height?: number; alt?: string }
+      | Array<string | { url: string; width?: number; height?: number; alt?: string }>;
     videos?: Array<{ url: string; width?: number; height?: number }>;
     audio?: Array<{ url: string }>;
     locale?: string;
@@ -459,9 +462,12 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
       }
     }
     if (og.images) {
-      const imgList = typeof og.images === "string"
-        ? [{ url: og.images }]
-        : Array.isArray(og.images) ? og.images : [og.images];
+      const imgList =
+        typeof og.images === "string"
+          ? [{ url: og.images }]
+          : Array.isArray(og.images)
+            ? og.images
+            : [og.images];
       for (const img of imgList) {
         const imgUrl = typeof img === "string" ? img : img.url;
         elements.push(
@@ -518,9 +524,12 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     if (tw.creatorId)
       elements.push(<meta key={key++} name="twitter:creator:id" content={tw.creatorId} />);
     if (tw.images) {
-      const imgList = typeof tw.images === "string"
-        ? [tw.images]
-        : Array.isArray(tw.images) ? tw.images : [tw.images];
+      const imgList =
+        typeof tw.images === "string"
+          ? [tw.images]
+          : Array.isArray(tw.images)
+            ? tw.images
+            : [tw.images];
       for (const img of imgList) {
         const imgUrl = typeof img === "string" ? img : img.url;
         elements.push(

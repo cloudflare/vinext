@@ -172,29 +172,20 @@ describe("Next.js compat: metadata", () => {
   // See: https://nextjs.org/docs/app/api-reference/functions/generate-metadata#opengraph
 
   it("should render og:image when images is a single object", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-opengraph-single-image",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-single-image");
     expect(html).toMatch(
       /meta\s+property="og:image"\s+content="https:\/\/example\.com\/single\.png"/,
     );
   });
 
   it("should render og:image dimensions for single image object", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-opengraph-single-image",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-single-image");
     expect(html).toMatch(/meta\s+property="og:image:width"\s+content="1200"/);
     expect(html).toMatch(/meta\s+property="og:image:height"\s+content="630"/);
   });
 
   it("should render twitter:image when images is a single object", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-opengraph-single-image",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-single-image");
     expect(html).toMatch(
       /meta\s+name="twitter:image"\s+content="https:\/\/example\.com\/twitter-single\.png"/,
     );
