@@ -559,6 +559,8 @@ export function createSSRHandler(
                           const cacheKey = isrCacheKey(
                             "pages",
                             url.split("?")[0],
+                            // __VINEXT_BUILD_ID is a compile-time define — undefined in dev,
+                            // which is fine: dev doesn't need cross-deploy cache isolation.
                             process.env.__VINEXT_BUILD_ID,
                           );
                           const cached = await isrGet(cacheKey);
@@ -906,6 +908,8 @@ hydrate();
                           const cacheKey = isrCacheKey(
                             "pages",
                             url.split("?")[0],
+                            // __VINEXT_BUILD_ID is a compile-time define — undefined in dev,
+                            // which is fine: dev doesn't need cross-deploy cache isolation.
                             process.env.__VINEXT_BUILD_ID,
                           );
                           await isrSet(
