@@ -547,13 +547,27 @@ describe("ISR (App Router)", () => {
     expect(res2.headers.get("x-vinext-cache")).toBeNull();
   });
 
-  it("dev: RSC requests (.rsc suffix) return RSC stream without cache headers", async () => {
+  it("dev: RSC requests (.rsc suffix) return RSC stream with Cache-Control but no X-Vinext-Cache", async () => {
     const res = await fetch(`${baseUrl}/isr-test.rsc`, {
       headers: { Accept: "text/x-component" },
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
-    // RSC responses are never served from the ISR cache
+    // ISR cache reads/writes are prod-only, so no X-Vinext-Cache in dev
+    expect(res.headers.get("x-vinext-cache")).toBeNull();
+    // Cache-Control IS still emitted for RSC responses on ISR pages
+    expect(res.headers.get("cache-control")).toContain("s-maxage=1");
+    expect(res.headers.get("cache-control")).toContain("stale-while-revalidate");
+  });
+
+  it("dev: RSC prefetch requests (Next-Router-Prefetch header) return RSC stream with Cache-Control", async () => {
+    const res = await fetch(`${baseUrl}/isr-test.rsc`, {
+      headers: { Accept: "text/x-component", "Next-Router-Prefetch": "1" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    // Prefetch RSC requests should also get Cache-Control (no X-Vinext-Cache in dev)
+    expect(res.headers.get("cache-control")).toContain("s-maxage=1");
     expect(res.headers.get("x-vinext-cache")).toBeNull();
   });
 

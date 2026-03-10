@@ -2077,14 +2077,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
-  // ── ISR cache read (production only, HTML requests only) ──────────────────
+  // ── ISR cache read (production only) ─────────────────────────────────────
   // Read from cache BEFORE building the component tree. This is the critical
   // performance optimization: on a cache hit we skip all rendering work entirely.
-  // RSC requests (.rsc suffix / client-side navigation) are never served from
-  // the ISR cache — they always render fresh so the client gets live data.
+  // Both HTML requests and RSC requests (client-side navigation / prefetch) are
+  // served from cache — HTML requests use cached.html, RSC requests use cached.rscData.
   if (
     process.env.NODE_ENV === "production" &&
-    !isRscRequest &&
     !isForceDynamic &&
     !isForceStatic &&
     !isDynamicError &&
@@ -2095,25 +2094,42 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const __cached = await __isrGet(__isrKey);
       if (__cached && !__cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_PAGE") {
         // Fresh cache hit — serve immediately, skip all rendering
-        const __hitHeaders = {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-          "Vary": "RSC, Accept",
-          "X-Vinext-Cache": "HIT",
-        };
         setHeadersContext(null);
         setNavigationContext(null);
-        return new Response(__cached.value.value.html, { status: __cached.value.value.status || 200, headers: __hitHeaders });
+        if (isRscRequest && __cached.value.value.rscData) {
+          // RSC request (client-side navigation or prefetch): return cached RSC wire format
+          return new Response(__cached.value.value.rscData, {
+            status: __cached.value.value.status || 200,
+            headers: {
+              "Content-Type": "text/x-component; charset=utf-8",
+              "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+              "Vary": "RSC, Accept",
+              "X-Vinext-Cache": "HIT",
+            },
+          });
+        }
+        if (!isRscRequest) {
+          return new Response(__cached.value.value.html, {
+            status: __cached.value.value.status || 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+              "Vary": "RSC, Accept",
+              "X-Vinext-Cache": "HIT",
+            },
+          });
+        }
+        // RSC request but rscData not cached yet — fall through to render
       }
       if (__cached && __cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_PAGE") {
         // Stale cache hit — serve stale immediately, trigger background regeneration
-        const __staleHtml = __cached.value.value.html;
-        const __staleStatus = __cached.value.value.status || 200;
+        const __staleValue = __cached.value.value;
+        const __staleStatus = __staleValue.status || 200;
         const __revalSecs = revalidateSeconds;
         __triggerBackgroundRegeneration(__isrKey, async function() {
-          // Re-render the page to produce fresh HTML for the cache
+          // Re-render the page to produce fresh HTML + RSC data for the cache
           const __revalHeadCtx = headersContextFromRequest(request);
-          const __freshHtml = await runWithHeadersContext(__revalHeadCtx, () =>
+          const __revalResult = await runWithHeadersContext(__revalHeadCtx, () =>
             _runWithNavigationContext(() =>
               _runWithCacheState(() =>
                 _runWithPrivateCache(() =>
@@ -2122,9 +2138,27 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
                     const __revalElement = await buildPageElement(route, params, undefined, url.searchParams);
                     const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
                     const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
+                    // Tee RSC stream: one for SSR, one to capture rscData
+                    const [__revalRscForSsr, __revalRscForCapture] = __revalRscStream.tee();
+                    // Capture rscData bytes in parallel with SSR
+                    const __rscDataPromise = (async () => {
+                      const __rscReader = __revalRscForCapture.getReader();
+                      const __rscChunks = [];
+                      let __rscTotal = 0;
+                      for (;;) {
+                        const { done, value } = await __rscReader.read();
+                        if (done) break;
+                        __rscChunks.push(value);
+                        __rscTotal += value.byteLength;
+                      }
+                      const __rscBuf = new Uint8Array(__rscTotal);
+                      let __rscOff = 0;
+                      for (const c of __rscChunks) { __rscBuf.set(c, __rscOff); __rscOff += c.byteLength; }
+                      return __rscBuf.buffer;
+                    })();
                     const __revalFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
                     const __revalSsrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-                    const __revalHtmlStream = await __revalSsrEntry.handleSsr(__revalRscStream, _getNavigationContext(), __revalFontData);
+                    const __revalHtmlStream = await __revalSsrEntry.handleSsr(__revalRscForSsr, _getNavigationContext(), __revalFontData);
                     setHeadersContext(null);
                     setNavigationContext(null);
                     // Collect the full HTML string from the stream
@@ -2137,23 +2171,41 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
                       __revalChunks.push(__revalDecoder.decode(value, { stream: true }));
                     }
                     __revalChunks.push(__revalDecoder.decode());
-                    return __revalChunks.join("");
+                    const __freshHtml = __revalChunks.join("");
+                    const __freshRscData = await __rscDataPromise;
+                    return { html: __freshHtml, rscData: __freshRscData };
                   })
                 )
               )
             )
           );
-          await __isrSet(__isrKey, { kind: "APP_PAGE", html: __freshHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs);
+          await __isrSet(__isrKey, { kind: "APP_PAGE", html: __revalResult.html, rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs);
         }, ctx);
-        const __staleHeaders = {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "s-maxage=0, stale-while-revalidate",
-          "Vary": "RSC, Accept",
-          "X-Vinext-Cache": "STALE",
-        };
         setHeadersContext(null);
         setNavigationContext(null);
-        return new Response(__staleHtml, { status: __staleStatus, headers: __staleHeaders });
+        if (isRscRequest && __staleValue.rscData) {
+          return new Response(__staleValue.rscData, {
+            status: __staleStatus,
+            headers: {
+              "Content-Type": "text/x-component; charset=utf-8",
+              "Cache-Control": "s-maxage=0, stale-while-revalidate",
+              "Vary": "RSC, Accept",
+              "X-Vinext-Cache": "STALE",
+            },
+          });
+        }
+        if (!isRscRequest) {
+          return new Response(__staleValue.html, {
+            status: __staleStatus,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "s-maxage=0, stale-while-revalidate",
+              "Vary": "RSC, Accept",
+              "X-Vinext-Cache": "STALE",
+            },
+          });
+        }
+        // RSC request but rscData not cached yet — fall through to render
       }
     } catch (__isrReadErr) {
       // Cache read failure — fall through to normal rendering
@@ -2479,11 +2531,37 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   }
   const fontLinkHeader = fontLinkHeaderParts.length > 0 ? fontLinkHeaderParts.join(", ") : "";
 
+  // For ISR pages in production (HTML requests / MISS path): tee the RSC stream so we
+  // can capture the RSC wire format bytes alongside the HTML. The captured rscData is
+  // stored in the cache entry and served directly for subsequent RSC requests (prefetch
+  // and client-side navigation) without re-rendering.
+  let rscStreamForSsr = rscStream;
+  let __isrRscDataPromise = null;
+  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0) {
+    const [__rscForSsr, __rscForCapture] = rscStream.tee();
+    rscStreamForSsr = __rscForSsr;
+    __isrRscDataPromise = (async () => {
+      const __rscReader = __rscForCapture.getReader();
+      const __rscChunks = [];
+      let __rscTotal = 0;
+      for (;;) {
+        const { done, value } = await __rscReader.read();
+        if (done) break;
+        __rscChunks.push(value);
+        __rscTotal += value.byteLength;
+      }
+      const __rscBuf = new Uint8Array(__rscTotal);
+      let __rscOff = 0;
+      for (const c of __rscChunks) { __rscBuf.set(c, __rscOff); __rscOff += c.byteLength; }
+      return __rscBuf.buffer;
+    })();
+  }
+
   // Delegate to SSR environment for HTML rendering
   let htmlStream;
   try {
     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
+    htmlStream = await ssrEntry.handleSsr(rscStreamForSsr, _getNavigationContext(), fontData);
     // Shell render complete; Suspense boundaries stream asynchronously
     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
   } catch (ssrErr) {
@@ -2616,8 +2694,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
 
   // Emit Cache-Control for ISR pages and write to ISR cache on MISS (production only).
   if (revalidateSeconds !== null && revalidateSeconds > 0) {
-    // In production, tee the response body to simultaneously stream to the
-    // client and collect the full HTML string for the ISR cache.
+    // In production, tee the HTML response body to simultaneously stream to the
+    // client and collect the full HTML string for the ISR cache. rscData was
+    // already captured above by teeing the RSC stream before SSR.
     // In dev, skip the tee and the X-Vinext-Cache header — every request renders
     // fresh (no cache reads or writes in dev mode).
     if (process.env.NODE_ENV === "production") {
@@ -2645,7 +2724,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             }
             __chunks.push(__decoder.decode());
             const __fullHtml = __chunks.join("");
-            await __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs);
+            // Await the RSC data captured by teeing the RSC stream before SSR
+            const __rscData = __isrRscDataPromise ? await __isrRscDataPromise : undefined;
+            await __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: __rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs);
           } catch (__cacheErr) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
           }

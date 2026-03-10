@@ -3221,9 +3221,35 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("ctx.waitUntil");
   });
 
-  it("generated code tees the response stream for cache population in production", () => {
+  it("generated code tees the RSC stream to capture rscData for cache", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain(".tee()");
+    // There must be at least two .tee() calls:
+    //  1) RSC stream tee (before SSR) to capture rscData
+    //  2) HTML response stream tee (to collect html while streaming to client)
+    const teeCount = (code.match(/\.tee\(\)/g) || []).length;
+    expect(teeCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("generated code stores rscData in the ISR cache entry", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The cache write must include rscData (not always undefined)
+    expect(code).toContain("rscData: __rscData");
+    // Background regen must also store rscData
+    expect(code).toContain("rscData: __freshRscData");
+  });
+
+  it("generated code serves cached rscData for RSC requests on HIT", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // ISR read block must return rscData for RSC requests
+    expect(code).toContain("rscData");
+    expect(code).toContain("text/x-component");
+    // The ISR read block must NOT have the old !isRscRequest guard
+    // (it should handle both HTML and RSC requests)
+    const isrReadBlock = code.slice(
+      code.indexOf("ISR cache read"),
+      code.indexOf("buildPageElement("),
+    );
+    expect(isrReadBlock).not.toContain("!isRscRequest");
   });
 
   it("ISR cache read fires before buildPageElement (early return on HIT)", () => {
