@@ -10,6 +10,7 @@
  */
 
 import { encodeMiddlewareRequestHeaders } from "../server/middleware-request-headers.js";
+import { parseCookieHeader } from "./internal/parse-cookie-header.js";
 
 // ---------------------------------------------------------------------------
 // NextRequest
@@ -297,16 +298,7 @@ export class RequestCookies {
   }
 
   private _parse(): Map<string, string> {
-    const map = new Map<string, string>();
-    const cookie = this._headers.get("cookie") ?? "";
-    for (const part of cookie.split(";")) {
-      const eq = part.indexOf("=");
-      if (eq === -1) continue;
-      const name = part.slice(0, eq).trim();
-      const value = part.slice(eq + 1).trim();
-      map.set(name, value);
-    }
-    return map;
+    return parseCookieHeader(this._headers.get("cookie") ?? "");
   }
 
   get(name: string): CookieEntry | undefined {
@@ -314,8 +306,11 @@ export class RequestCookies {
     return value !== undefined ? { name, value } : undefined;
   }
 
-  getAll(): CookieEntry[] {
-    return [...this._parse().entries()].map(([name, value]) => ({ name, value }));
+  getAll(nameOrOptions?: string | CookieEntry): CookieEntry[] {
+    const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions?.name;
+    return [...this._parse().entries()]
+      .filter(([cookieName]) => name === undefined || cookieName === name)
+      .map(([cookieName, value]) => ({ name: cookieName, value }));
   }
 
   has(name: string): boolean {

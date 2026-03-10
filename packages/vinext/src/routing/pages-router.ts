@@ -5,6 +5,7 @@ import {
   scanWithExtensions,
   type ValidFileMatcher,
 } from "./file-matcher.js";
+import { patternToNextFormat, validateRoutePatterns } from "./route-validation.js";
 
 export interface Route {
   /** URL pattern, e.g. "/" or "/about" or "/posts/:id" */
@@ -77,6 +78,8 @@ async function scanPageRoutes(pagesDir: string, matcher: ValidFileMatcher): Prom
     if (route) routes.push(route);
   }
 
+  validateRoutePatterns(routes.map((route) => route.pattern));
+
   // Sort: static routes first, then dynamic, then catch-all
   routes.sort(compareRoutes);
 
@@ -103,22 +106,30 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
   const params: string[] = [];
   let isDynamic = false;
 
-  // Convert Next.js dynamic segments to URL patterns
-  const urlSegments = segments.map((segment) => {
+  // Convert Next.js dynamic segments to URL patterns.
+  // Catch-all segments are only valid in terminal position.
+  const urlSegments: string[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+
     // Catch-all: [...slug] -> :slug+ (param names may contain hyphens)
     const catchAllMatch = segment.match(/^\[\.\.\.([\w-]+)\]$/);
     if (catchAllMatch) {
+      if (i !== segments.length - 1) return null;
       isDynamic = true;
       params.push(catchAllMatch[1]);
-      return `:${catchAllMatch[1]}+`;
+      urlSegments.push(`:${catchAllMatch[1]}+`);
+      continue;
     }
 
     // Optional catch-all: [[...slug]] -> :slug* (param names may contain hyphens)
     const optionalCatchAllMatch = segment.match(/^\[\[\.\.\.([\w-]+)\]\]$/);
     if (optionalCatchAllMatch) {
+      if (i !== segments.length - 1) return null;
       isDynamic = true;
       params.push(optionalCatchAllMatch[1]);
-      return `:${optionalCatchAllMatch[1]}*`;
+      urlSegments.push(`:${optionalCatchAllMatch[1]}*`);
+      continue;
     }
 
     // Dynamic segment: [id] -> :id (param names may contain hyphens)
@@ -126,11 +137,12 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
     if (dynamicMatch) {
       isDynamic = true;
       params.push(dynamicMatch[1]);
-      return `:${dynamicMatch[1]}`;
+      urlSegments.push(`:${dynamicMatch[1]}`);
+      continue;
     }
 
-    return segment;
-  });
+    urlSegments.push(segment);
+  }
 
   const pattern = "/" + urlSegments.join("/");
 
@@ -220,6 +232,8 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
     }
   }
 
+  validateRoutePatterns(routes.map((route) => route.pattern));
+
   // Sort same as page routes
   routes.sort(compareRoutes);
 
@@ -237,6 +251,7 @@ function matchPattern(
 
     // Catch-all: :slug+
     if (pp.endsWith("+")) {
+      if (i !== patternParts.length - 1) return null;
       const paramName = pp.slice(1, -1);
       const remaining = urlParts.slice(i);
       if (remaining.length === 0) return null;
@@ -246,6 +261,7 @@ function matchPattern(
 
     // Optional catch-all: :slug*
     if (pp.endsWith("*")) {
+      if (i !== patternParts.length - 1) return null;
       const paramName = pp.slice(1, -1);
       const remaining = urlParts.slice(i);
       params[paramName] = remaining;
@@ -275,9 +291,4 @@ function matchPattern(
  * to Next.js bracket format (e.g., "/posts/[id]", "/docs/[...slug]").
  * Used for __NEXT_DATA__.page which apps expect in Next.js format.
  */
-export function patternToNextFormat(pattern: string): string {
-  return pattern
-    .replace(/:([\w-]+)\*/g, "[[...$1]]") // optional catch-all :slug* -> [[...slug]]
-    .replace(/:([\w-]+)\+/g, "[...$1]") // catch-all :slug+ -> [...slug]
-    .replace(/:([\w-]+)/g, "[$1]"); // dynamic :id -> [id]
-}
+export { patternToNextFormat } from "./route-validation.js";

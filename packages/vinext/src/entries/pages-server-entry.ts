@@ -176,7 +176,7 @@ async function _runMiddleware(request) {
   }
   var normalizedPathname = __normalizePath(decodedPathname);
 
-  if (!matchesMiddleware(normalizedPathname, matcher)) return { continue: true };
+  if (!matchesMiddleware(normalizedPathname, matcher, request, i18nConfig)) return { continue: true };
 
    // Construct a new Request with the decoded + normalized pathname so middleware
    // always sees the same canonical path that the router uses.
@@ -360,6 +360,7 @@ function matchPattern(urlParts, patternParts) {
   for (let i = 0; i < patternParts.length; i++) {
     const pp = patternParts[i];
     if (pp.endsWith("+")) {
+      if (i !== patternParts.length - 1) return null;
       const paramName = pp.slice(1, -1);
       const remaining = urlParts.slice(i);
       if (remaining.length === 0) return null;
@@ -367,6 +368,7 @@ function matchPattern(urlParts, patternParts) {
       return params;
     }
     if (pp.endsWith("*")) {
+      if (i !== patternParts.length - 1) return null;
       const paramName = pp.slice(1, -1);
       params[paramName] = urlParts.slice(i);
       return params;

@@ -10,6 +10,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
+import { parseCookieHeader } from "./internal/parse-cookie-header.js";
 
 // ---------------------------------------------------------------------------
 // Request context
@@ -18,13 +19,20 @@ import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-
 interface HeadersContext {
   headers: Headers;
   cookies: Map<string, string>;
+  accessError?: Error;
+  mutableCookies?: RequestCookies;
+  readonlyCookies?: RequestCookies;
+  readonlyHeaders?: Headers;
 }
+
+export type HeadersAccessPhase = "render" | "action" | "route-handler";
 
 type VinextHeadersShimState = {
   headersContext: HeadersContext | null;
   dynamicUsageDetected: boolean;
   pendingSetCookies: string[];
   draftModeCookieHeader: string | null;
+  phase: HeadersAccessPhase;
 };
 
 // NOTE:
@@ -45,6 +53,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   dynamicUsageDetected: false,
   pendingSetCookies: [],
   draftModeCookieHeader: null,
+  phase: "render",
 } satisfies VinextHeadersShimState) as VinextHeadersShimState;
 
 function _getState(): VinextHeadersShimState {
@@ -125,6 +134,24 @@ export function consumeDynamicUsage(): boolean {
   return used;
 }
 
+function _setStatePhase(
+  state: VinextHeadersShimState,
+  phase: HeadersAccessPhase,
+): HeadersAccessPhase {
+  const previous = state.phase;
+  state.phase = phase;
+  return previous;
+}
+
+function _areCookiesMutableInCurrentPhase(): boolean {
+  const phase = _getState().phase;
+  return phase === "action" || phase === "route-handler";
+}
+
+export function setHeadersAccessPhase(phase: HeadersAccessPhase): HeadersAccessPhase {
+  return _setStatePhase(_getState(), phase);
+}
+
 /**
  * Set the headers/cookies context for the current RSC render.
  * Called by the framework's RSC entry before rendering each request.
@@ -154,11 +181,13 @@ export function setHeadersContext(ctx: HeadersContext | null): void {
       existing.dynamicUsageDetected = false;
       existing.pendingSetCookies = [];
       existing.draftModeCookieHeader = null;
+      existing.phase = "render";
     } else {
       _fallbackState.headersContext = ctx;
       _fallbackState.dynamicUsageDetected = false;
       _fallbackState.pendingSetCookies = [];
       _fallbackState.draftModeCookieHeader = null;
+      _fallbackState.phase = "render";
     }
     return;
   }
@@ -168,8 +197,10 @@ export function setHeadersContext(ctx: HeadersContext | null): void {
   const state = _als.getStore();
   if (state) {
     state.headersContext = null;
+    state.phase = "render";
   } else {
     _fallbackState.headersContext = null;
+    _fallbackState.phase = "render";
   }
 }
 
@@ -192,6 +223,7 @@ export function runWithHeadersContext<T>(
     dynamicUsageDetected: false,
     pendingSetCookies: [],
     draftModeCookieHeader: null,
+    phase: "render",
   };
 
   return _als.run(state, fn);
@@ -226,17 +258,161 @@ export function applyMiddlewareRequestHeaders(middlewareResponseHeaders: Headers
   // If middleware modified the cookie header, rebuild the cookies map.
   ctx.cookies.clear();
   if (nextCookieHeader !== null) {
-    for (const part of nextCookieHeader.split(";")) {
-      const [k, ...rest] = part.split("=");
-      if (k) {
-        ctx.cookies.set(k.trim(), rest.join("=").trim());
-      }
+    const nextCookies = parseCookieHeader(nextCookieHeader);
+    for (const [name, value] of nextCookies) {
+      ctx.cookies.set(name, value);
     }
   }
 }
 
 /** Methods on `Headers` that mutate state. Hoisted to module scope — static. */
 const _HEADERS_MUTATING_METHODS = new Set(["set", "delete", "append"]);
+
+class ReadonlyHeadersError extends Error {
+  constructor() {
+    super(
+      "Headers cannot be modified. Read more: https://nextjs.org/docs/app/api-reference/functions/headers",
+    );
+  }
+
+  static callable(): never {
+    throw new ReadonlyHeadersError();
+  }
+}
+
+class ReadonlyRequestCookiesError extends Error {
+  constructor() {
+    super(
+      "Cookies can only be modified in a Server Action or Route Handler. Read more: https://nextjs.org/docs/app/api-reference/functions/cookies#options",
+    );
+  }
+
+  static callable(): never {
+    throw new ReadonlyRequestCookiesError();
+  }
+}
+
+function _decorateRequestApiPromise<T extends object>(
+  promise: Promise<T>,
+  target: T,
+): Promise<T> & T {
+  return new Proxy(promise as Promise<T> & T, {
+    get(promiseTarget, prop) {
+      if (prop in promiseTarget) {
+        const value = Reflect.get(promiseTarget, prop, promiseTarget);
+        return typeof value === "function" ? value.bind(promiseTarget) : value;
+      }
+
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+    has(promiseTarget, prop) {
+      return prop in promiseTarget || prop in target;
+    },
+    ownKeys(promiseTarget) {
+      return Array.from(new Set([...Reflect.ownKeys(promiseTarget), ...Reflect.ownKeys(target)]));
+    },
+    getOwnPropertyDescriptor(promiseTarget, prop) {
+      return (
+        Reflect.getOwnPropertyDescriptor(promiseTarget, prop) ??
+        Reflect.getOwnPropertyDescriptor(target, prop)
+      );
+    },
+  });
+}
+
+function _decorateRejectedRequestApiPromise<T extends object>(error: unknown): Promise<T> & T {
+  const normalizedError = error instanceof Error ? error : new Error(String(error));
+  const promise = Promise.reject(normalizedError) as Promise<T>;
+  // Mark the rejection as handled so legacy sync access does not trigger
+  // spurious unhandled rejection noise before callers await/catch it.
+  promise.catch(() => {});
+
+  const throwingTarget = new Proxy({} as T, {
+    get(_target, prop) {
+      if (prop === "then" || prop === "catch" || prop === "finally") {
+        return undefined;
+      }
+      throw normalizedError;
+    },
+  });
+
+  return _decorateRequestApiPromise(promise, throwingTarget);
+}
+
+function _sealHeaders(headers: Headers): Headers {
+  return new Proxy(headers, {
+    get(target, prop) {
+      if (typeof prop === "string" && _HEADERS_MUTATING_METHODS.has(prop)) {
+        throw new ReadonlyHeadersError();
+      }
+
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as Headers;
+}
+
+function _wrapMutableCookies(cookies: RequestCookies): RequestCookies {
+  return new Proxy(cookies, {
+    get(target, prop) {
+      if (prop === "set" || prop === "delete") {
+        return (...args: unknown[]) => {
+          if (!_areCookiesMutableInCurrentPhase()) {
+            throw new ReadonlyRequestCookiesError();
+          }
+
+          return (Reflect.get(target, prop, target) as (...callArgs: unknown[]) => unknown).apply(
+            target,
+            args,
+          );
+        };
+      }
+
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as RequestCookies;
+}
+
+function _sealCookies(cookies: RequestCookies): RequestCookies {
+  return new Proxy(cookies, {
+    get(target, prop) {
+      if (prop === "set" || prop === "delete") {
+        throw new ReadonlyRequestCookiesError();
+      }
+
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as RequestCookies;
+}
+
+function _getMutableCookies(ctx: HeadersContext): RequestCookies {
+  if (!ctx.mutableCookies) {
+    ctx.mutableCookies = _wrapMutableCookies(new RequestCookies(ctx.cookies));
+  }
+
+  return ctx.mutableCookies;
+}
+
+function _getReadonlyCookies(ctx: HeadersContext): RequestCookies {
+  if (!ctx.readonlyCookies) {
+    // Keep a separate readonly wrapper so render-path reads avoid the
+    // mutable phase-checking proxy while still reflecting the shared cookie map.
+    ctx.readonlyCookies = _sealCookies(new RequestCookies(ctx.cookies));
+  }
+
+  return ctx.readonlyCookies;
+}
+
+function _getReadonlyHeaders(ctx: HeadersContext): Headers {
+  if (!ctx.readonlyHeaders) {
+    ctx.readonlyHeaders = _sealHeaders(ctx.headers);
+  }
+
+  return ctx.readonlyHeaders;
+}
 
 /**
  * Create a HeadersContext from a standard Request object.
@@ -302,15 +478,9 @@ export function headersContextFromRequest(request: Request): HeadersContext {
 
   function getCookies(): Map<string, string> {
     if (_cookies) return _cookies;
-    _cookies = new Map<string, string>();
     // Read from the proxy so middleware-modified cookie headers are respected.
     const cookieHeader = headersProxy.get("cookie") || "";
-    for (const part of cookieHeader.split(";")) {
-      const [key, ...rest] = part.split("=");
-      if (key) {
-        _cookies.set(key.trim(), rest.join("=").trim());
-      }
-    }
+    _cookies = parseCookieHeader(cookieHeader);
     return _cookies;
   }
 
@@ -334,35 +504,62 @@ export function headersContextFromRequest(request: Request): HeadersContext {
  * Returns a Promise in Next.js 15+ style (but resolves synchronously since
  * the context is already available).
  */
-export async function headers(): Promise<Headers> {
-  throwIfInsideCacheScope("headers()");
+export function headers(): Promise<Headers> & Headers {
+  try {
+    throwIfInsideCacheScope("headers()");
+  } catch (error) {
+    return _decorateRejectedRequestApiPromise<Headers>(error);
+  }
 
   const state = _getState();
   if (!state.headersContext) {
-    throw new Error(
-      "headers() can only be called from a Server Component, Route Handler, " +
-        "or Server Action. Make sure you're not calling it from a Client Component.",
+    return _decorateRejectedRequestApiPromise<Headers>(
+      new Error(
+        "headers() can only be called from a Server Component, Route Handler, " +
+          "or Server Action. Make sure you're not calling it from a Client Component.",
+      ),
     );
   }
+
+  if (state.headersContext.accessError) {
+    return _decorateRejectedRequestApiPromise<Headers>(state.headersContext.accessError);
+  }
+
   markDynamicUsage();
-  return state.headersContext.headers;
+  const readonlyHeaders = _getReadonlyHeaders(state.headersContext);
+  return _decorateRequestApiPromise(Promise.resolve(readonlyHeaders), readonlyHeaders);
 }
 
 /**
  * Cookie jar from the incoming request.
  * Returns a ReadonlyRequestCookies-like object.
  */
-export async function cookies(): Promise<RequestCookies> {
-  throwIfInsideCacheScope("cookies()");
+export function cookies(): Promise<RequestCookies> & RequestCookies {
+  try {
+    throwIfInsideCacheScope("cookies()");
+  } catch (error) {
+    return _decorateRejectedRequestApiPromise<RequestCookies>(error);
+  }
 
   const state = _getState();
   if (!state.headersContext) {
-    throw new Error(
-      "cookies() can only be called from a Server Component, Route Handler, " + "or Server Action.",
+    return _decorateRejectedRequestApiPromise<RequestCookies>(
+      new Error(
+        "cookies() can only be called from a Server Component, Route Handler, or Server Action.",
+      ),
     );
   }
+
+  if (state.headersContext.accessError) {
+    return _decorateRejectedRequestApiPromise<RequestCookies>(state.headersContext.accessError);
+  }
+
   markDynamicUsage();
-  return new RequestCookies(state.headersContext.cookies);
+  const cookieStore = _areCookiesMutableInCurrentPhase()
+    ? _getMutableCookies(state.headersContext)
+    : _getReadonlyCookies(state.headersContext);
+
+  return _decorateRequestApiPromise(Promise.resolve(cookieStore), cookieStore);
 }
 
 // ---------------------------------------------------------------------------
@@ -429,9 +626,12 @@ interface DraftModeResult {
  */
 export async function draftMode(): Promise<DraftModeResult> {
   throwIfInsideCacheScope("draftMode()");
-  markDynamicUsage();
 
   const state = _getState();
+  if (state.headersContext?.accessError) {
+    throw state.headersContext.accessError;
+  }
+  markDynamicUsage();
   const secret = getDraftSecret();
   const isEnabled = state.headersContext
     ? state.headersContext.cookies.get(DRAFT_MODE_COOKIE) === secret
@@ -440,6 +640,9 @@ export async function draftMode(): Promise<DraftModeResult> {
   return {
     isEnabled,
     enable(): void {
+      if (state.headersContext?.accessError) {
+        throw state.headersContext.accessError;
+      }
       if (state.headersContext) {
         state.headersContext.cookies.set(DRAFT_MODE_COOKIE, secret);
       }
@@ -448,6 +651,9 @@ export async function draftMode(): Promise<DraftModeResult> {
       state.draftModeCookieHeader = `${DRAFT_MODE_COOKIE}=${secret}; Path=/; HttpOnly; SameSite=Lax${secure}`;
     },
     disable(): void {
+      if (state.headersContext?.accessError) {
+        throw state.headersContext.accessError;
+      }
       if (state.headersContext) {
         state.headersContext.cookies.delete(DRAFT_MODE_COOKIE);
       }
@@ -505,10 +711,13 @@ class RequestCookies {
     return { name, value };
   }
 
-  getAll(): Array<{ name: string; value: string }> {
+  getAll(nameOrOptions?: string | { name: string }): Array<{ name: string; value: string }> {
+    const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions?.name;
     const result: Array<{ name: string; value: string }> = [];
-    for (const [name, value] of this._cookies) {
-      result.push({ name, value });
+    for (const [cookieName, value] of this._cookies) {
+      if (name === undefined || cookieName === name) {
+        result.push({ name: cookieName, value });
+      }
     }
     return result;
   }

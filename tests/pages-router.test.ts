@@ -428,6 +428,27 @@ describe("Pages Router integration", () => {
     expect(text).toContain("Access Denied");
   });
 
+  it("object-form matcher requires has and missing conditions", async () => {
+    const noHeaderRes = await fetch(`${baseUrl}/mw-object-gated`);
+    expect(noHeaderRes.status).toBe(200);
+    expect(noHeaderRes.headers.get("x-custom-middleware")).toBeNull();
+
+    const blockedRes = await fetch(`${baseUrl}/mw-object-gated`, {
+      headers: {
+        "x-mw-allow": "1",
+        Cookie: "mw-blocked=1",
+      },
+    });
+    expect(blockedRes.status).toBe(200);
+    expect(blockedRes.headers.get("x-custom-middleware")).toBeNull();
+
+    const allowedRes = await fetch(`${baseUrl}/mw-object-gated`, {
+      headers: { "x-mw-allow": "1" },
+    });
+    expect(allowedRes.status).toBe(200);
+    expect(allowedRes.headers.get("x-custom-middleware")).toBe("active");
+  });
+
   it("middleware request header overrides can delete credential headers before page handling", async () => {
     // Ported from Next.js: test/e2e/middleware-request-header-overrides/test/index.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-request-header-overrides/test/index.test.ts
@@ -1142,13 +1163,21 @@ export const config = { matcher: ["/protected"] };
     const manifestPath = path.join(outDir, "client", ".vite", "ssr-manifest.json");
     expect(fs.existsSync(manifestPath)).toBe(true);
 
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<string, string[]>;
     // Manifest should have entries (module IDs -> asset URLs)
     expect(Object.keys(manifest).length).toBeGreaterThan(0);
 
     // Verify build manifest was also produced (needed for lazy chunk computation)
     const buildManifestPath = path.join(outDir, "client", ".vite", "manifest.json");
     expect(fs.existsSync(buildManifestPath)).toBe(true);
+    const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
+      string,
+      unknown
+    >;
+    const counterBuildManifestEntries = Object.keys(buildManifest).filter(
+      (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+    );
+    expect(counterBuildManifestEntries).toEqual([]);
 
     // There should be JS files in the assets directory
     const assets = fs.readdirSync(assetsDir);
@@ -1170,6 +1199,222 @@ export const config = { matcher: ["/protected"] };
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
       expect(entrySize).toBeLessThan(20 * 1024); // < 20 KB
+    }
+
+    const counterManifestEntry = Object.entries(manifest).find(
+      ([key]) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+    );
+    expect(counterManifestEntry).toBeDefined();
+    expect(counterManifestEntry?.[1].some((file: string) => file.endsWith(".js"))).toBe(true);
+  });
+
+  it("preserves basePath on backfilled SSR manifest entries and emitted asset tags", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-basepath-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(
+        path.join(tmpRoot, "next.config.mjs"),
+        `export default { basePath: "/docs" };\n`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "counter.tsx"),
+        `import { useState } from "react";
+export default function CounterPage() {
+  const [count, setCount] = useState(0);
+  return (
+    <button data-testid="increment" onClick={() => setCount((c) => c + 1)}>
+      Count: {count}
+    </button>
+  );
+}
+`,
+      );
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: { output: { entryFileNames: "entry.js" } },
+        },
+      });
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "client"),
+          manifest: true,
+          ssrManifest: true,
+          rollupOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+
+      const buildManifestPath = path.join(fixtureOutDir, "client", ".vite", "manifest.json");
+      const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
+        string,
+        unknown
+      >;
+      const counterBuildManifestEntries = Object.keys(buildManifest).filter(
+        (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+      );
+      expect(counterBuildManifestEntries).toEqual([]);
+
+      const manifestPath = path.join(fixtureOutDir, "client", ".vite", "ssr-manifest.json");
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
+        string,
+        string[]
+      >;
+      const counterManifestEntry = Object.entries(manifest).find(
+        ([key]) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+      );
+      expect(counterManifestEntry).toBeDefined();
+      expect(counterManifestEntry?.[1].every((file: string) => file.startsWith("docs/"))).toBe(
+        true,
+      );
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const prodServer = await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir: fixtureOutDir,
+      });
+
+      try {
+        const addr = prodServer.address() as { port: number };
+        const res = await fetch(`http://127.0.0.1:${addr.port}/docs/counter`);
+        expect(res.status).toBe(200);
+        const html = await res.text();
+        expect(html).toContain('href="/docs/assets/');
+        expect(html).toContain('src="/docs/assets/');
+      } finally {
+        await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("emits stylesheet and static asset URLs for backfilled inlined pages", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-inline-assets-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(path.join(tmpRoot, "next.config.mjs"), `export default {};\n`);
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "counter.module.css"),
+        `.button { color: red; background-image: url("./dot.svg"); }\n`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "dot.svg"),
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5"/></svg>\n`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "counter.tsx"),
+        `import { useState } from "react";
+import styles from "./counter.module.css";
+export default function CounterPage() {
+  const [count, setCount] = useState(0);
+  return (
+    <button className={styles.button} data-testid="increment" onClick={() => setCount((c) => c + 1)}>
+      Count: {count}
+    </button>
+  );
+}
+`,
+      );
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: { output: { entryFileNames: "entry.js" } },
+        },
+      });
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "client"),
+          manifest: true,
+          ssrManifest: true,
+          rollupOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+
+      const buildManifestPath = path.join(fixtureOutDir, "client", ".vite", "manifest.json");
+      const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
+        string,
+        unknown
+      >;
+      const counterBuildManifestEntries = Object.keys(buildManifest).filter(
+        (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+      );
+      expect(counterBuildManifestEntries).toEqual([]);
+
+      const manifestPath = path.join(fixtureOutDir, "client", ".vite", "ssr-manifest.json");
+      const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
+        string,
+        string[]
+      >;
+      const counterManifestEntries = Object.entries(manifest).filter(
+        ([key]) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+      );
+      expect(counterManifestEntries.length).toBeGreaterThan(0);
+      const populatedCounterManifestEntry = counterManifestEntries.find(([, files]) =>
+        files.some((file: string) => file.endsWith(".css")),
+      );
+      expect(populatedCounterManifestEntry).toBeDefined();
+      const cssFile = populatedCounterManifestEntry?.[1].find((file: string) =>
+        file.endsWith(".css"),
+      );
+      expect(cssFile).toBeDefined();
+      const cssContent = fs.readFileSync(path.join(fixtureOutDir, "client", cssFile!), "utf-8");
+      expect(cssContent).toContain("url(");
+      expect(cssContent).toMatch(/data:image\/svg\+xml|\.svg/);
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const prodServer = await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir: fixtureOutDir,
+      });
+
+      try {
+        const addr = prodServer.address() as { port: number };
+        const res = await fetch(`http://127.0.0.1:${addr.port}/counter`);
+        expect(res.status).toBe(200);
+        const html = await res.text();
+        expect(html).toContain('rel="stylesheet"');
+        expect(html).toContain(".css");
+      } finally {
+        await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
 
@@ -1505,6 +1750,27 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.status).toBe(200);
     // Middleware matcher excludes /api, so no x-custom-middleware header
     expect(res.headers.get("x-custom-middleware")).toBeNull();
+  });
+
+  it("production object-form matcher requires has and missing conditions", async () => {
+    const noHeaderRes = await fetch(`${prodUrl}/mw-object-gated`);
+    expect(noHeaderRes.status).toBe(200);
+    expect(noHeaderRes.headers.get("x-custom-middleware")).toBeNull();
+
+    const blockedRes = await fetch(`${prodUrl}/mw-object-gated`, {
+      headers: {
+        "x-mw-allow": "1",
+        Cookie: "mw-blocked=1",
+      },
+    });
+    expect(blockedRes.status).toBe(200);
+    expect(blockedRes.headers.get("x-custom-middleware")).toBeNull();
+
+    const allowedRes = await fetch(`${prodUrl}/mw-object-gated`, {
+      headers: { "x-mw-allow": "1" },
+    });
+    expect(allowedRes.status).toBe(200);
+    expect(allowedRes.headers.get("x-custom-middleware")).toBe("active");
   });
 
   it("preserves binary API response bytes", async () => {

@@ -133,6 +133,21 @@ describe("App Router integration", () => {
     expect(html).toContain("Increment");
   });
 
+  // Verifies that "use client" modules from packages with internal submodules
+  // (re-exported through the package entry) share the same module instance in
+  // the browser. Without the client-reference-dedup plugin, the RSC proxy
+  // imports from the raw file path while client code uses pre-bundled deps,
+  // causing React context providers to be duplicated (createContext runs twice).
+  it("renders context provider/consumer from package with internal 'use client' submodule", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/context-dedup-test");
+    expect(res.status).toBe(200);
+    expect(html).toContain("Context Dedup Test");
+    // If module dedup is working, the consumer reads the provider's value.
+    // If broken, useContext returns null and we see "NOT_FOUND".
+    expect(html).toContain("dark-test-theme");
+    expect(html).not.toContain("NOT_FOUND");
+  });
+
   it("SSR renders 'use client' components that use usePathname/useSearchParams", async () => {
     const res = await fetch(`${baseUrl}/client-nav-test?q=hello`);
     expect(res.status).toBe(200);
@@ -2451,7 +2466,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     // Should call dev origin validation inside _handleRequest
     const callSite = code.indexOf("const __originBlock = __validateDevRequestOrigin(request)");
     const handleRequestIdx = code.indexOf(
-      "async function _handleRequest(request, __reqCtx, _mwCtx)",
+      "async function _handleRequest(request, __reqCtx, _mwCtx, ctx)",
     );
     expect(callSite).toBeGreaterThan(-1);
     expect(handleRequestIdx).toBeGreaterThan(-1);
@@ -2664,6 +2679,28 @@ describe("App Router middleware with NextRequest", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("x-mw-ran")).toBe("true");
     expect(res.headers.get("x-mw-has-session")).toBe("true");
+  });
+
+  it("object-form matcher requires has and missing conditions", async () => {
+    const noHeaderRes = await fetch(`${baseUrl}/mw-object-gated`);
+    expect(noHeaderRes.status).toBe(200);
+    expect(noHeaderRes.headers.get("x-mw-ran")).toBeNull();
+
+    const blockedRes = await fetch(`${baseUrl}/mw-object-gated`, {
+      headers: {
+        "x-mw-allow": "1",
+        Cookie: "mw-blocked=1",
+      },
+    });
+    expect(blockedRes.status).toBe(200);
+    expect(blockedRes.headers.get("x-mw-ran")).toBeNull();
+
+    const allowedRes = await fetch(`${baseUrl}/mw-object-gated`, {
+      headers: { "x-mw-allow": "1" },
+    });
+    expect(allowedRes.status).toBe(200);
+    expect(allowedRes.headers.get("x-mw-ran")).toBe("true");
+    expect(allowedRes.headers.get("x-mw-pathname")).toBe("/mw-object-gated");
   });
 
   it("middleware can redirect using NextRequest", async () => {
@@ -3108,5 +3145,177 @@ describe("App Router external rewrite proxy credential stripping", () => {
     expect(response.headers.get("content-length")).toBeNull();
     expect(response.headers.get("x-custom")).toBe("keep-me");
     expect(await response.text()).toBe("proxied gzipped body");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateRscEntry — ISR code generation assertions
+// ---------------------------------------------------------------------------
+
+describe("generateRscEntry ISR code generation", () => {
+  // Minimal route list — only the generated ISR guard logic matters here
+  const minimalRoutes = [
+    {
+      pattern: "/",
+      pagePath: "/tmp/test/app/page.tsx",
+      routePath: null,
+      layouts: ["/tmp/test/app/layout.tsx"],
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      layoutErrorPaths: [null],
+      notFoundPath: null,
+      forbiddenPath: null,
+      unauthorizedPath: null,
+      routeSegments: [],
+      layoutTreePositions: [0],
+      isDynamic: false,
+      params: [],
+    },
+  ] as any[];
+
+  it('generated code contains process.env.NODE_ENV === "production" guard for ISR cache read', () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain('process.env.NODE_ENV === "production"');
+  });
+
+  it("generated code contains ISR inline helper functions", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("async function __isrGet(");
+    expect(code).toContain("async function __isrSet(");
+    expect(code).toContain("function __triggerBackgroundRegeneration(");
+    expect(code).toContain("function __isrCacheKey(");
+    expect(code).toContain("const __pendingRegenerations = new Map()");
+  });
+
+  it("generated handler exports async function handler(request, ctx)", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The handler must accept a ctx param so ExecutionContext is threaded through
+    expect(code).toMatch(/export default async function handler\s*\(\s*request\s*,\s*ctx\s*\)/);
+  });
+
+  it("generated code imports getCacheHandler from next/cache", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("getCacheHandler");
+    expect(code).toContain('"next/cache"');
+  });
+
+  it("generated code emits X-Vinext-Cache: MISS header on first render", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain('"X-Vinext-Cache": "MISS"');
+  });
+
+  it("generated code emits X-Vinext-Cache: HIT header on cache hits", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain('"X-Vinext-Cache": "HIT"');
+  });
+
+  it("generated code emits X-Vinext-Cache: STALE header on stale hits", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain('"X-Vinext-Cache": "STALE"');
+  });
+
+  it("generated code uses ctx.waitUntil for background cache write", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("ctx.waitUntil");
+  });
+
+  it("generated code tees the RSC stream to capture rscData for cache", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // There must be at least two .tee() calls:
+    //  1) RSC stream tee (before SSR) to capture rscData
+    //  2) HTML response stream tee (to collect html while streaming to client)
+    const teeCount = (code.match(/\.tee\(\)/g) || []).length;
+    expect(teeCount).toBeGreaterThanOrEqual(2);
+  });
+
+  it("generated code stores rscData in the ISR cache entry", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The HTML-path cache write must include rscData (not always undefined)
+    expect(code).toContain("rscData: __rscData");
+    // Background regen must also store rscData
+    expect(code).toContain("rscData: __freshRscData");
+  });
+
+  it("generated code writes RSC-first partial cache entry on RSC MISS", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The RSC-path cache write must store rscData with html:"" as a partial entry.
+    // This lets subsequent RSC requests hit cache immediately without waiting
+    // for an HTML request to come in and populate a complete entry.
+    expect(code).toContain('html: ""');
+    // The RSC write must use __isrKeyRsc / __rscDataForCache variable names
+    expect(code).toContain("__rscDataForCache");
+    expect(code).toContain("__isrKeyRsc");
+  });
+
+  it("generated code treats html:'' partial entries as MISS for HTML requests", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The ISR read block must check __hasHtml before returning an HTML HIT,
+    // so that a partial entry (html:"") falls through to render.
+    expect(code).toContain("__hasHtml");
+    // Must also check __hasRsc before returning an RSC HIT
+    expect(code).toContain("__hasRsc");
+    // HTML requests must only return HIT when __hasHtml is true.
+    // Slice from the ISR cache read comment to the main render call.
+    // Use "element = await buildPageElement" (the main page render, not the fn def or regen call).
+    const isrReadBlock = code.slice(
+      code.indexOf("ISR cache read"),
+      code.indexOf("element = await buildPageElement"),
+    );
+    expect(isrReadBlock.length).toBeGreaterThan(0);
+    expect(isrReadBlock).toContain("if (isRscRequest && __hasRsc)");
+    expect(isrReadBlock).toContain("if (!isRscRequest && __hasHtml)");
+  });
+
+  it("generated code serves cached rscData for RSC requests on HIT", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // ISR read block must return rscData for RSC requests
+    expect(code).toContain("rscData");
+    expect(code).toContain("text/x-component");
+    // The ISR read block must have an explicit RSC hit path (not just an HTML path)
+    const isrReadBlock = code.slice(
+      code.indexOf("ISR cache read"),
+      code.indexOf("element = await buildPageElement"),
+    );
+    expect(isrReadBlock.length).toBeGreaterThan(0);
+    // Must serve RSC from cache using isRscRequest guard
+    expect(isrReadBlock).toContain("if (isRscRequest && __hasRsc)");
+    // Must NOT use the old bare !isRscRequest guard (HTML-only serving without data check)
+    expect(isrReadBlock).not.toContain("if (!isRscRequest) {");
+  });
+
+  it("ISR cache read fires before buildPageElement (early return on HIT)", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The ISR read block must appear before the main 'buildPageElement' render call.
+    // Use "element = await buildPageElement" to target the main call, not the fn definition.
+    const isrReadIdx = code.indexOf("__isrGet(");
+    const buildPageIdx = code.indexOf("element = await buildPageElement");
+    expect(isrReadIdx).toBeGreaterThan(-1);
+    expect(buildPageIdx).toBeGreaterThan(-1);
+    expect(isrReadIdx).toBeLessThan(buildPageIdx);
+  });
+
+  it("ISR cache read fires before generateStaticParams (skips expensive work on HIT)", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The ISR read block must appear before the generateStaticParams call so that
+    // a cache hit skips the potentially-expensive static params validation entirely.
+    const isrReadIdx = code.indexOf("__isrGet(");
+    const gspIdx = code.indexOf("generateStaticParams(");
+    expect(isrReadIdx).toBeGreaterThan(-1);
+    expect(gspIdx).toBeGreaterThan(-1);
+    expect(isrReadIdx).toBeLessThan(gspIdx);
+  });
+
+  it("RSC stream tee for rscData capture happens before the RSC response is returned", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // __rscForResponse must be assigned before the RSC response is returned so
+    // the tee branch (__rscB) is also consumed (populating the ISR cache).
+    // The RSC response is: new Response(__rscForResponse, ...)
+    const teeAssignIdx = code.indexOf("let __rscForResponse");
+    const rscResponseIdx = code.indexOf("return new Response(__rscForResponse");
+    expect(teeAssignIdx).toBeGreaterThan(-1);
+    expect(rscResponseIdx).toBeGreaterThan(-1);
+    expect(teeAssignIdx).toBeLessThan(rscResponseIdx);
   });
 });

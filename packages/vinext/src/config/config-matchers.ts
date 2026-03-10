@@ -414,8 +414,13 @@ export function requestContextFromRequest(request: Request): RequestContext {
     headers: request.headers,
     cookies: parseCookies(request.headers.get("cookie")),
     query: url.searchParams,
-    host: request.headers.get("host") ?? url.host,
+    host: normalizeHost(request.headers.get("host"), url.hostname),
   };
+}
+
+export function normalizeHost(hostHeader: string | null, fallbackHostname: string): string {
+  const host = hostHeader ?? fallbackHostname;
+  return host.split(":", 1)[0].toLowerCase();
 }
 
 /**

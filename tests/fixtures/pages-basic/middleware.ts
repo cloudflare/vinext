@@ -87,5 +87,12 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!api|_next|favicon\\.ico).*)"],
+  matcher: [
+    "/((?!api|_next|favicon\\.ico|mw-object-gated).*)",
+    {
+      source: "/mw-object-gated",
+      has: [{ type: "header", key: "x-mw-allow", value: "1" }],
+      missing: [{ type: "cookie", key: "mw-blocked" }],
+    },
+  ],
 };

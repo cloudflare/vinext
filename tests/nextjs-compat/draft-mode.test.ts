@@ -146,4 +146,14 @@ describe("Next.js compat: draft-mode", () => {
     });
     expect(data).toEqual({ isEnabled: true });
   });
+
+  it('await draftMode() preserves the dynamic = "error" failure', async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/draft-mode-dynamic-error`);
+    const html = await res.text();
+
+    expect(html).toMatch(
+      /Page with `dynamic = (?:&quot;|\\")error(?:&quot;|\\")` used a dynamic API/,
+    );
+    expect(res.headers.getSetCookie()).toEqual([]);
+  });
 });

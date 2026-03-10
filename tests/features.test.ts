@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import { createServer, type ViteDevServer } from "vite";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
-import { PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
+import { PAGES_FIXTURE_DIR, APP_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -501,6 +501,83 @@ describe("ISR (Pages Router)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.get("x-vinext-cache")).toBeNull();
     expect(res.headers.get("cache-control")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ISR (App Router)
+// ---------------------------------------------------------------------------
+
+describe("ISR (App Router)", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  // ── Dev mode ──────────────────────────────────────────────────────────────
+  // NOTE: The Vite plugin statically replaces `process.env.NODE_ENV` at
+  // transform time using `define`, so it cannot be mutated at runtime in
+  // integration tests. Production ISR cache behavior (MISS/HIT/STALE/regen) is
+  // covered by Playwright E2E tests. These integration tests verify dev-mode
+  // behavior: correct headers emitted, no ISR cache reads/writes.
+
+  it("dev: renders ISR page and emits Cache-Control header", async () => {
+    const res = await fetch(`${baseUrl}/isr-test`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("App Router ISR Test");
+    expect(html).toContain("Hello from ISR");
+    expect(res.headers.get("cache-control")).toContain("s-maxage=1");
+    expect(res.headers.get("cache-control")).toContain("stale-while-revalidate");
+  });
+
+  it("dev: does NOT write to or read from ISR cache (no X-Vinext-Cache header)", async () => {
+    // In dev mode the production guard (statically compiled) prevents cache
+    // reads and writes, so X-Vinext-Cache is absent on every request.
+    const res1 = await fetch(`${baseUrl}/isr-test`);
+    expect(res1.headers.get("x-vinext-cache")).toBeNull();
+
+    const res2 = await fetch(`${baseUrl}/isr-test`);
+    expect(res2.headers.get("x-vinext-cache")).toBeNull();
+  });
+
+  it("dev: RSC requests (.rsc suffix) return RSC stream with Cache-Control but no X-Vinext-Cache", async () => {
+    const res = await fetch(`${baseUrl}/isr-test.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    // ISR cache reads/writes are prod-only, so no X-Vinext-Cache in dev
+    expect(res.headers.get("x-vinext-cache")).toBeNull();
+    // Cache-Control IS still emitted for RSC responses on ISR pages
+    expect(res.headers.get("cache-control")).toContain("s-maxage=1");
+    expect(res.headers.get("cache-control")).toContain("stale-while-revalidate");
+  });
+
+  it("dev: RSC prefetch requests (Next-Router-Prefetch header) return RSC stream with Cache-Control", async () => {
+    const res = await fetch(`${baseUrl}/isr-test.rsc`, {
+      headers: { Accept: "text/x-component", "Next-Router-Prefetch": "1" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    // Prefetch RSC requests should also get Cache-Control (no X-Vinext-Cache in dev)
+    expect(res.headers.get("cache-control")).toContain("s-maxage=1");
+    expect(res.headers.get("x-vinext-cache")).toBeNull();
+  });
+
+  it("dev: pages without revalidate export emit no Cache-Control or X-Vinext-Cache headers", async () => {
+    // The home page does not export `revalidate`, so it is treated as dynamic
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-vinext-cache")).toBeNull();
+    // No ISR Cache-Control on dynamic pages
+    expect(res.headers.get("cache-control") ?? "").not.toContain("s-maxage");
   });
 });
 

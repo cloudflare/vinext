@@ -10,6 +10,7 @@ import {
   clientManualChunks,
   clientTreeshakeConfig,
   computeLazyChunks,
+  _augmentSsrManifestFromBundle,
   _stripServerExports,
   _asyncHooksStubPlugin,
 } from "../packages/vinext/src/index.js";
@@ -777,6 +778,104 @@ describe("computeLazyChunks", () => {
   });
 });
 
+describe("augmentSsrManifestFromBundle", () => {
+  it("backfills inlined page modules with the containing entry chunk", () => {
+    const bundle = {
+      "assets/vinext-client-entry.js": {
+        type: "chunk" as const,
+        fileName: "assets/vinext-client-entry.js",
+        imports: ["assets/vinext.js", "assets/framework.js"],
+        modules: {
+          "\0virtual:vinext-client-entry": {},
+          "/app/pages/counter.tsx": {},
+        },
+      },
+    };
+
+    const ssrManifest = {
+      "pages/counter.tsx": [],
+    };
+
+    const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, "/app");
+
+    expect(augmented["pages/counter.tsx"]).toEqual([
+      "assets/vinext-client-entry.js",
+      "assets/vinext.js",
+      "assets/framework.js",
+    ]);
+  });
+
+  it("adds CSS and asset metadata from the containing chunk", () => {
+    const bundle = {
+      "assets/about.js": {
+        type: "chunk" as const,
+        fileName: "assets/about.js",
+        imports: [],
+        modules: {
+          "/app/pages/about.tsx": {},
+        },
+        viteMetadata: {
+          importedCss: new Set(["assets/about.css"]),
+          importedAssets: new Set(["assets/logo.svg"]),
+        },
+      },
+    };
+
+    const augmented = _augmentSsrManifestFromBundle({}, bundle, "/app");
+
+    expect(augmented["pages/about.tsx"]).toEqual([
+      "assets/about.js",
+      "assets/about.css",
+      "assets/logo.svg",
+    ]);
+  });
+
+  it("preserves the configured base prefix and normalizes Windows paths", () => {
+    const bundle = {
+      "assets/counter.js": {
+        type: "chunk" as const,
+        fileName: "assets/counter.js",
+        imports: ["assets/framework.js"],
+        modules: {
+          "C:\\app\\pages\\counter.tsx": {},
+        },
+        viteMetadata: {
+          importedCss: new Set(["assets/counter.css"]),
+        },
+      },
+    };
+
+    const augmented = _augmentSsrManifestFromBundle({}, bundle, "C:\\app", "/docs/");
+
+    expect(augmented["pages/counter.tsx"]).toEqual([
+      "docs/assets/counter.js",
+      "docs/assets/framework.js",
+      "docs/assets/counter.css",
+    ]);
+  });
+
+  it("preserves existing SSR manifest files while normalizing leading slashes", () => {
+    const bundle = {
+      "assets/about.js": {
+        type: "chunk" as const,
+        fileName: "assets/about.js",
+        imports: [],
+        modules: {
+          "/app/pages/about.tsx": {},
+        },
+      },
+    };
+
+    const ssrManifest = {
+      "pages/about.tsx": ["/assets/about.js", "/assets/about.css"],
+    };
+
+    const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, "/app");
+
+    expect(augmented["pages/about.tsx"]).toEqual(["assets/about.js", "assets/about.css"]);
+  });
+});
+
 // ─── collectAssetTags lazy filtering (integration) ────────────────────────────
 
 describe("collectAssetTags lazy chunk filtering", () => {
@@ -956,6 +1055,39 @@ describe("collectAssetTags lazy chunk filtering", () => {
     expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
 
     // Page chunk is lazy — should be excluded even with leading-slash input
+    expect(tags.join("\n")).not.toContain("page-index.js");
+  });
+
+  it("filters base-prefixed lazy chunks against base-prefixed SSR manifest values", () => {
+    const buildManifest = {
+      "src/entry.ts": {
+        file: "assets/entry.js",
+        isEntry: true,
+        imports: ["node_modules/react/index.js"],
+        dynamicImports: ["src/pages/index.tsx"],
+      },
+      "node_modules/react/index.js": {
+        file: "assets/framework.js",
+      },
+      "src/pages/index.tsx": {
+        file: "assets/page-index.js",
+        isDynamicEntry: true,
+      },
+    };
+
+    const lazyChunks = computeLazyChunks(buildManifest).map((file) => `docs/${file}`);
+    const ssrFiles = [
+      "docs/assets/entry.js",
+      "docs/assets/framework.js",
+      "docs/assets/page-index.js",
+    ];
+    const tags = simulateAssetTagFiltering(ssrFiles, lazyChunks);
+
+    expect(tags).toContain('<link rel="modulepreload" href="/docs/assets/entry.js" />');
+    expect(tags).toContain(
+      '<script type="module" src="/docs/assets/entry.js" crossorigin></script>',
+    );
+    expect(tags).toContain('<link rel="modulepreload" href="/docs/assets/framework.js" />');
     expect(tags.join("\n")).not.toContain("page-index.js");
   });
 

@@ -21,8 +21,14 @@
 import type { ModuleRunner } from "vite/module-runner";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  checkHasConditions,
+  requestContextFromRequest,
+  safeRegExp,
+  type RequestContext,
+} from "../config/config-matchers.js";
+import type { HasCondition, NextI18nConfig } from "../config/next-config.js";
 import { NextRequest, NextFetchEvent } from "../shims/server.js";
-import { safeRegExp } from "../config/config-matchers.js";
 import { normalizePath } from "./normalize-path.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 
@@ -119,37 +125,128 @@ export function findMiddlewareFile(root: string): string | null {
 }
 
 /** Matcher pattern from middleware config export. */
-type MatcherConfig =
-  | string
-  | string[]
-  | { source: string; regexp?: string; locale?: boolean; has?: any[]; missing?: any[] }[];
+type MiddlewareMatcherObject = {
+  source: string;
+  locale?: false;
+  has?: HasCondition[];
+  missing?: HasCondition[];
+};
+
+type MatcherConfig = string | Array<string | MiddlewareMatcherObject>;
+
+const EMPTY_MIDDLEWARE_REQUEST_CONTEXT: RequestContext = {
+  headers: new Headers(),
+  cookies: {},
+  query: new URLSearchParams(),
+  host: "",
+};
 
 /**
  * Check if a pathname matches the middleware matcher config.
  * If no matcher is configured, middleware runs on all paths
  * except static files and internal Next.js paths.
  */
-export function matchesMiddleware(pathname: string, matcher: MatcherConfig | undefined): boolean {
+export function matchesMiddleware(
+  pathname: string,
+  matcher: MatcherConfig | undefined,
+  request?: Request,
+  i18nConfig?: NextI18nConfig | null,
+): boolean {
   if (!matcher) {
     // Next.js default: middleware runs on ALL paths when no matcher is configured.
     // Users opt out of specific paths by configuring a matcher pattern.
     return true;
   }
 
-  const patterns: string[] = [];
   if (typeof matcher === "string") {
-    patterns.push(matcher);
-  } else if (Array.isArray(matcher)) {
-    for (const m of matcher) {
-      if (typeof m === "string") {
-        patterns.push(m);
-      } else if (m && typeof m === "object" && "source" in m) {
-        patterns.push(m.source);
+    return matchMatcherPattern(pathname, matcher, i18nConfig);
+  }
+  if (!Array.isArray(matcher)) {
+    return false;
+  }
+
+  const requestContext = request
+    ? requestContextFromRequest(request)
+    : EMPTY_MIDDLEWARE_REQUEST_CONTEXT;
+
+  for (const m of matcher) {
+    if (typeof m === "string") {
+      if (matchMatcherPattern(pathname, m, i18nConfig)) {
+        return true;
       }
+      continue;
+    }
+
+    if (isValidMiddlewareMatcherObject(m)) {
+      if (!matchObjectMatcher(pathname, m, i18nConfig)) {
+        continue;
+      }
+
+      if (!checkHasConditions(m.has, m.missing, requestContext)) {
+        continue;
+      }
+
+      return true;
     }
   }
 
-  return patterns.some((pattern) => matchPattern(pathname, pattern));
+  return false;
+}
+
+// Keep this in sync with __isValidMiddlewareMatcherObject in middleware-codegen.ts.
+function isValidMiddlewareMatcherObject(value: unknown): value is MiddlewareMatcherObject {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+
+  const matcher = value as Record<string, unknown>;
+  if (typeof matcher.source !== "string") return false;
+
+  for (const key of Object.keys(matcher)) {
+    if (key !== "source" && key !== "locale" && key !== "has" && key !== "missing") {
+      return false;
+    }
+  }
+
+  if ("locale" in matcher && matcher.locale !== undefined && matcher.locale !== false) return false;
+  if ("has" in matcher && matcher.has !== undefined && !Array.isArray(matcher.has)) return false;
+  if ("missing" in matcher && matcher.missing !== undefined && !Array.isArray(matcher.missing)) {
+    return false;
+  }
+
+  return true;
+}
+
+function matchMatcherPattern(
+  pathname: string,
+  pattern: string,
+  i18nConfig?: NextI18nConfig | null,
+): boolean {
+  if (!i18nConfig) return matchPattern(pathname, pattern);
+
+  const localeStrippedPathname = stripLocalePrefix(pathname, i18nConfig);
+  return matchPattern(localeStrippedPathname ?? pathname, pattern);
+}
+
+function matchObjectMatcher(
+  pathname: string,
+  matcher: MiddlewareMatcherObject,
+  i18nConfig?: NextI18nConfig | null,
+): boolean {
+  return matcher.locale === false
+    ? matchPattern(pathname, matcher.source)
+    : matchMatcherPattern(pathname, matcher.source, i18nConfig);
+}
+
+function stripLocalePrefix(pathname: string, i18nConfig: NextI18nConfig): string | null {
+  if (pathname === "/") return null;
+
+  const segments = pathname.split("/");
+  const firstSegment = segments[1];
+  if (!firstSegment || !i18nConfig.locales.includes(firstSegment)) {
+    return null;
+  }
+
+  const stripped = "/" + segments.slice(2).join("/");
+  return stripped === "/" ? "/" : stripped.replace(/\/+$/, "") || "/";
 }
 
 /**
@@ -254,6 +351,7 @@ export async function runMiddleware(
   runner: ModuleRunner,
   middlewarePath: string,
   request: Request,
+  i18nConfig?: NextI18nConfig | null,
 ): Promise<MiddlewareResult> {
   // Load the middleware module via the direct-call ModuleRunner.
   // This bypasses the hot channel entirely and is safe with all Vite plugin
@@ -281,7 +379,7 @@ export async function runMiddleware(
   }
   const normalizedPathname = normalizePath(decodedPathname);
 
-  if (!matchesMiddleware(normalizedPathname, matcher)) {
+  if (!matchesMiddleware(normalizedPathname, matcher, request, i18nConfig)) {
     return { continue: true };
   }
 

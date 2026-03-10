@@ -46,6 +46,7 @@ import {
 import { normalizePath } from "./normalize-path.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { computeLazyChunks } from "../index.js";
+import { manifestFileWithBase } from "../utils/manifest-paths.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -659,35 +660,13 @@ interface PagesRouterServerOptions {
 async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const { port, host, clientDir, serverEntryPath, compress } = options;
 
-  // Load the SSR manifest (maps module URLs to client asset URLs)
-  let ssrManifest: Record<string, string[]> = {};
-  const manifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
-  if (fs.existsSync(manifestPath)) {
-    ssrManifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
-  }
-
-  // Load the build manifest to compute lazy chunks — chunks only reachable via
-  // dynamic imports (React.lazy, next/dynamic). These should not be
-  // modulepreloaded since they are fetched on demand.
-  const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
-  if (fs.existsSync(buildManifestPath)) {
-    try {
-      const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
-      const lazyChunks = computeLazyChunks(buildManifest);
-      if (lazyChunks.length > 0) {
-        globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
-      }
-    } catch {
-      /* ignore parse errors */
-    }
-  }
-
   // Import the server entry module (use file:// URL for reliable dynamic import)
   const serverEntry = await import(pathToFileURL(serverEntryPath).href);
   const { renderPage, handleApiRoute: handleApi, runMiddleware, vinextConfig } = serverEntry;
 
   // Extract config values (embedded at build time in the server entry)
   const basePath: string = vinextConfig?.basePath ?? "";
+  const assetBase = basePath ? `${basePath}/` : "/";
   const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
   const configRedirects = vinextConfig?.redirects ?? [];
   const configRewrites = vinextConfig?.rewrites ?? {
@@ -709,6 +688,31 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
       }
     : undefined;
+
+  // Load the SSR manifest (maps module URLs to client asset URLs)
+  let ssrManifest: Record<string, string[]> = {};
+  const manifestPath = path.join(clientDir, ".vite", "ssr-manifest.json");
+  if (fs.existsSync(manifestPath)) {
+    ssrManifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+  }
+
+  // Load the build manifest to compute lazy chunks — chunks only reachable via
+  // dynamic imports (React.lazy, next/dynamic). These should not be
+  // modulepreloaded since they are fetched on demand.
+  const buildManifestPath = path.join(clientDir, ".vite", "manifest.json");
+  if (fs.existsSync(buildManifestPath)) {
+    try {
+      const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
+      const lazyChunks = computeLazyChunks(buildManifest).map((file: string) =>
+        manifestFileWithBase(file, assetBase),
+      );
+      if (lazyChunks.length > 0) {
+        globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
+      }
+    } catch {
+      /* ignore parse errors */
+    }
+  }
 
   const server = createServer(async (req, res) => {
     const rawUrl = req.url ?? "/";

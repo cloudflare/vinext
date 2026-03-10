@@ -45,8 +45,14 @@ import { scanMetadataFiles } from "./server/metadata-routes.js";
 import { staticExportPages } from "./build/static-export.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
 import { detectPackageManager } from "./utils/project.js";
+import {
+  manifestFileWithBase,
+  manifestFilesWithBase,
+  normalizeManifestFile,
+} from "./utils/manifest-paths.js";
 import { hasBasePath } from "./utils/base-path.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
+import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import react, { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
@@ -492,6 +498,16 @@ const clientTreeshakeConfig = {
   moduleSideEffects: "no-external" as const,
 };
 
+type BuildManifestChunk = {
+  file: string;
+  isEntry?: boolean;
+  isDynamicEntry?: boolean;
+  imports?: string[];
+  dynamicImports?: string[];
+  css?: string[];
+  assets?: string[];
+};
+
 /**
  * Compute the set of chunk filenames that are ONLY reachable through dynamic
  * imports (i.e. behind React.lazy(), next/dynamic, or manual import()).
@@ -509,19 +525,7 @@ const clientTreeshakeConfig = {
  * @returns Array of chunk filenames (e.g. "assets/mermaid-NOHMQCX5.js") that
  *   should be excluded from modulepreload hints.
  */
-function computeLazyChunks(
-  buildManifest: Record<
-    string,
-    {
-      file: string;
-      isEntry?: boolean;
-      isDynamicEntry?: boolean;
-      imports?: string[];
-      dynamicImports?: string[];
-      css?: string[];
-    }
-  >,
-): string[] {
+function computeLazyChunks(buildManifest: Record<string, BuildManifestChunk>): string[] {
   // Collect all chunk files that are statically reachable from entries
   const eagerFiles = new Set<string>();
   const visited = new Set<string>();
@@ -577,6 +581,78 @@ function computeLazyChunks(
   }
 
   return lazyChunks;
+}
+
+type BundleBackfillChunk = {
+  type: "chunk";
+  fileName: string;
+  imports?: string[];
+  modules?: Record<string, unknown>;
+  viteMetadata?: {
+    importedCss?: Set<string>;
+    importedAssets?: Set<string>;
+  };
+};
+
+function normalizeManifestModuleId(moduleId: string, root: string): string {
+  const normalizedId = moduleId.replace(/\\/g, "/");
+  const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/.test(moduleId) || moduleId.startsWith("\\\\");
+  if (isWindowsAbsolute) {
+    const relativeId = path.win32.relative(root, moduleId).replace(/\\/g, "/");
+    if (!relativeId || relativeId.startsWith("../")) return normalizedId;
+    return relativeId;
+  }
+
+  if (!path.isAbsolute(moduleId)) return normalizedId;
+
+  const relativeId = path.relative(root, moduleId).replace(/\\/g, "/");
+  if (!relativeId || relativeId.startsWith("../")) return normalizedId;
+  return relativeId;
+}
+
+function augmentSsrManifestFromBundle(
+  ssrManifest: Record<string, string[]>,
+  bundle: Record<string, BundleBackfillChunk | { type: string }>,
+  root: string,
+  base = "/",
+): Record<string, string[]> {
+  const nextManifest = Object.fromEntries(
+    Object.entries(ssrManifest).map(([key, files]) => [
+      key,
+      new Set(files.map((file) => normalizeManifestFile(file))),
+    ]),
+  ) as Record<string, Set<string>>;
+
+  for (const item of Object.values(bundle)) {
+    if (item.type !== "chunk") continue;
+    const chunk = item as BundleBackfillChunk;
+
+    const files = new Set<string>();
+    files.add(manifestFileWithBase(chunk.fileName, base));
+    for (const importedFile of chunk.imports ?? []) {
+      files.add(manifestFileWithBase(importedFile, base));
+    }
+    for (const cssFile of chunk.viteMetadata?.importedCss ?? []) {
+      files.add(manifestFileWithBase(cssFile, base));
+    }
+    for (const assetFile of chunk.viteMetadata?.importedAssets ?? []) {
+      files.add(manifestFileWithBase(assetFile, base));
+    }
+
+    for (const moduleId of Object.keys(chunk.modules ?? {})) {
+      const key = normalizeManifestModuleId(moduleId, root);
+      if (key.startsWith("node_modules/") || key.includes("/node_modules/")) continue;
+      if (key.startsWith("\0")) continue;
+      if (!nextManifest[key]) nextManifest[key] = new Set<string>();
+      for (const file of files) {
+        nextManifest[key].add(file);
+      }
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(nextManifest).map(([key, files]) => [key, [...files]]),
+  ) as Record<string, string[]>;
 }
 
 export interface VinextOptions {
@@ -845,6 +921,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_DRAFT_SECRET"] = JSON.stringify(crypto.randomUUID());
         // Build ID — resolved from next.config generateBuildId() or random UUID.
         // Exposed so server entries and the next/server shim can inject it.
+        // Also used to namespace ISR cache keys so old cached entries from a
+        // previous deploy are never served by the new one.
         defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
 
         // Build the shim alias map — used by both resolve.alias and resolveId
@@ -1413,6 +1491,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
               allowedDevOrigins: nextConfig?.allowedDevOrigins,
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
+              i18n: nextConfig?.i18n,
             },
             instrumentationPath,
           );
@@ -1427,6 +1506,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
+    // Dedup client references from RSC proxy modules — see src/plugins/client-reference-dedup.ts
+    clientReferenceDedupPlugin(),
     // Proxy plugin for @mdx-js/rollup. The real MDX plugin is created lazily
     // during vinext:config's config() (when MDX files are detected), but
     // plugins returned from config() hooks run too late in the pipeline —
@@ -1974,6 +2055,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   getPagesRunner(),
                   middlewarePath,
                   middlewareRequest,
+                  nextConfig?.i18n,
                 );
 
                 if (!result.continue) {
@@ -2922,6 +3004,45 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
+    // Vite can emit empty SSR manifest entries for modules that Rollup inlines
+    // into another chunk. Pages Router looks up assets by page module path at
+    // runtime, so rebuild those mappings from the emitted client bundle.
+    {
+      name: "vinext:ssr-manifest-backfill",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(options, bundle) {
+          const outDir = options.dir;
+          if (!outDir) return;
+
+          const viteDir = path.join(outDir, ".vite");
+          const ssrManifestPath = path.join(viteDir, "ssr-manifest.json");
+          if (!fs.existsSync(ssrManifestPath)) return;
+
+          try {
+            const ssrManifest = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8")) as Record<
+              string,
+              string[]
+            >;
+            const buildRoot = this.environment?.config.root ?? process.cwd();
+            const buildBase = this.environment?.config.base ?? "/";
+            const augmentedManifest = augmentSsrManifestFromBundle(
+              ssrManifest,
+              bundle as Record<string, BundleBackfillChunk | { type: string }>,
+              buildRoot,
+              buildBase,
+            );
+            fs.writeFileSync(ssrManifestPath, JSON.stringify(augmentedManifest, null, 2));
+          } catch (err) {
+            // Leave Vite's manifest untouched if parsing fails.
+            console.warn("[vinext] Failed to augment SSR manifest:", err);
+          }
+        },
+      },
+    },
     // Cloudflare Workers production build integration:
     // After all environments are built, compute lazy chunks from the client
     // build manifest and inject globals into the worker entry.
@@ -2951,6 +3072,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (!fs.existsSync(distDir)) return;
 
           const clientDir = path.resolve(buildRoot, "dist", "client");
+          const clientBase = envConfig.base ?? "/";
 
           // Read build manifest and compute lazy chunks (only reachable via
           // dynamic imports). This runs for BOTH App Router and Pages Router.
@@ -2964,11 +3086,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
               for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
                 if (value && value.isEntry && value.file) {
-                  clientEntryFile = value.file;
+                  clientEntryFile = manifestFileWithBase(value.file, clientBase);
                   break;
                 }
               }
-              const lazy = computeLazyChunks(buildManifest);
+              const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
               if (lazy.length > 0) lazyChunksData = lazy;
             } catch {
               /* ignore parse errors */
@@ -3040,7 +3162,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) &&
                     f.endsWith(".js"),
                 );
-                if (entry) clientEntryFile = "assets/" + entry;
+                if (entry) clientEntryFile = manifestFileWithBase("assets/" + entry, clientBase);
               }
             }
 
@@ -3472,6 +3594,7 @@ export type { NextConfig } from "./config/next-config.js";
 
 // Exported for CLI and testing
 export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig, computeLazyChunks };
+export { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
 export { stripServerExports as _stripServerExports };

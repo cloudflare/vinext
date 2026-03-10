@@ -79,6 +79,42 @@ test.describe("Server Actions", () => {
     await expect(page.locator("h1")).toHaveText("About");
   });
 
+  test("server action cookie writes do not make the rerender path mutable", async ({ page }) => {
+    test.slow();
+    await page.goto(`${BASE}/nextjs-compat/action-cookie-phase`);
+    await expect(page.locator("h1")).toHaveText("Action Cookie Phase");
+    await waitForHydration(page);
+    await expect(page.locator("#cookie-value")).toHaveText("missing");
+    await expect(page.locator("#cookie-error")).toContainText(
+      "Cookies can only be modified in a Server Action or Route Handler",
+    );
+
+    await page.click("#submit-action");
+    const readActionCookie = async () =>
+      (await page.context().cookies()).find((cookie) => cookie.name === "action-cookie")?.value ??
+      null;
+
+    let cookieSet = false;
+    try {
+      await expect.poll(readActionCookie, { timeout: 5_000 }).toBe("from-action");
+      cookieSet = true;
+    } catch {
+      // Cold compile can swallow the first submit in dev; retry once after
+      // the route/action module is warm.
+    }
+
+    if (!cookieSet) {
+      await page.click("#submit-action");
+      await expect.poll(readActionCookie, { timeout: 20_000 }).toBe("from-action");
+    }
+
+    await page.reload();
+    await expect(page.locator("#cookie-value")).toHaveText("from-action");
+    await expect(page.locator("#cookie-error")).toContainText(
+      "Cookies can only be modified in a Server Action or Route Handler",
+    );
+  });
+
   test("action-redirect-test page SSR renders correctly", async ({ page }) => {
     await page.goto(`${BASE}/action-redirect-test`);
     await expect(page.locator("h1")).toHaveText("Action Redirect Test");

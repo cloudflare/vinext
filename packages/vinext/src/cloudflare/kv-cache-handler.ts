@@ -96,11 +96,16 @@ export class KVCacheHandler implements CacheHandler {
   private kv: KVNamespace;
   private prefix: string;
   private ctx: ExecutionContext | undefined;
+  private ttlSeconds: number;
 
-  constructor(kvNamespace: KVNamespace, options?: { appPrefix?: string; ctx?: ExecutionContext }) {
+  constructor(
+    kvNamespace: KVNamespace,
+    options?: { appPrefix?: string; ctx?: ExecutionContext; ttlSeconds?: number },
+  ) {
     this.kv = kvNamespace;
     this.prefix = options?.appPrefix ? `${options.appPrefix}:` : "";
     this.ctx = options?.ctx;
+    this.ttlSeconds = options?.ttlSeconds ?? 30 * 24 * 3600;
   }
 
   async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
@@ -218,17 +223,21 @@ export class KVCacheHandler implements CacheHandler {
       revalidateAt,
     };
 
-    // Calculate KV TTL — keep entries well beyond their revalidate window
-    // (10x revalidate period, clamped to 60s–30d) so stale-while-revalidate
-    // can serve stale content while background regeneration happens.
-    let expirationTtl: number | undefined;
-    if (revalidateAt !== null) {
-      const revalidateSeconds = Math.ceil((revalidateAt - Date.now()) / 1000);
-      // Keep in KV for 10x the revalidation period, up to 30 days
-      expirationTtl = Math.min(revalidateSeconds * 10, 30 * 24 * 3600);
-      // KV minimum TTL is 60 seconds
-      expirationTtl = Math.max(expirationTtl, 60);
-    }
+    // KV TTL is decoupled from the revalidation period.
+    //
+    // Staleness (when to trigger background regen) is tracked by `revalidateAt`
+    // in the stored JSON — not by KV eviction. KV eviction is purely a storage
+    // hygiene mechanism and must never be the reason a stale entry disappears.
+    //
+    // If KV TTL were tied to the revalidate window (e.g. 10x), a page with
+    // revalidate=5 would be evicted after ~50 seconds of no traffic, causing the
+    // next request to block on a fresh render instead of serving stale content.
+    //
+    // Fix: always keep entries for 30 days regardless of revalidate frequency.
+    // Background regen overwrites the key with a fresh entry + new revalidateAt,
+    // so active pages always have something to serve. Entries only disappear after
+    // 30 days of zero traffic, or when explicitly deleted via tag invalidation.
+    const expirationTtl: number | undefined = revalidateAt !== null ? this.ttlSeconds : undefined;
 
     this._putInBackground(this.prefix + ENTRY_PREFIX + key, JSON.stringify(entry), {
       expirationTtl,

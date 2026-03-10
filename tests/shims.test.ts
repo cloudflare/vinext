@@ -227,6 +227,50 @@ describe("next/headers shim", () => {
     setHeadersContext(null);
   });
 
+  it("headers() supports the legacy sync access pattern", async () => {
+    // Next.js docs: headers() temporarily supports sync property access in v15.
+    const { setHeadersContext, headers } = await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers({ "x-sync-header": "sync-value" }),
+      cookies: new Map(),
+    });
+
+    const headerStore = headers();
+    expect(typeof headerStore.get).toBe("function");
+    expect(headerStore.get("x-sync-header")).toBe("sync-value");
+
+    const awaited = await headerStore;
+    expect(awaited.get("x-sync-header")).toBe("sync-value");
+    setHeadersContext(null);
+  });
+
+  it("headers() is read-only for both sync and awaited access", async () => {
+    // Ported from Next.js:
+    // packages/next/src/server/web/spec-extension/adapters/headers.test.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/adapters/headers.test.ts
+    const { setHeadersContext, headers } = await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers({ foo: "original" }),
+      cookies: new Map(),
+    });
+
+    const syncHeaders = headers();
+    expect(() => syncHeaders.set).toThrow(/Headers cannot be modified/);
+    expect(() => syncHeaders.append).toThrow(/Headers cannot be modified/);
+    expect(() => syncHeaders.delete).toThrow(/Headers cannot be modified/);
+    expect(() => syncHeaders.set("foo", "mutated")).toThrow(/Headers cannot be modified/);
+    expect(() => syncHeaders.append("foo", "mutated")).toThrow(/Headers cannot be modified/);
+    expect(() => syncHeaders.delete("foo")).toThrow(/Headers cannot be modified/);
+    expect(syncHeaders.get("foo")).toBe("original");
+
+    const awaitedHeaders = await headers();
+    expect(() => awaitedHeaders.set).toThrow(/Headers cannot be modified/);
+    expect(() => awaitedHeaders.set("foo", "mutated")).toThrow(/Headers cannot be modified/);
+    expect(awaitedHeaders.get("foo")).toBe("original");
+    expect((await headers()).get("foo")).toBe("original");
+    setHeadersContext(null);
+  });
+
   it("cookies() returns parsed cookies from context", async () => {
     const { setHeadersContext, cookies } = await import("../packages/vinext/src/shims/headers.js");
     setHeadersContext({
@@ -246,6 +290,65 @@ describe("next/headers shim", () => {
     setHeadersContext(null);
   });
 
+  it("cookies() supports the legacy sync access pattern", async () => {
+    // Next.js docs: cookies() temporarily supports sync property access in v15.
+    const { setHeadersContext, cookies } = await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "sync-cookie"]]),
+    });
+
+    const cookieStore = cookies();
+    expect(typeof cookieStore.get).toBe("function");
+    expect(cookieStore.get("session")).toEqual({ name: "session", value: "sync-cookie" });
+
+    const awaited = await cookieStore;
+    expect(awaited.get("session")).toEqual({ name: "session", value: "sync-cookie" });
+    setHeadersContext(null);
+  });
+
+  it("cookies() is read-only during render for both sync and awaited access", async () => {
+    // Ported from Next.js:
+    // packages/next/src/server/web/spec-extension/adapters/request-cookies.test.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/adapters/request-cookies.test.ts
+    const { setHeadersContext, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "abc123"]]),
+    });
+
+    const syncCookies = cookies();
+    expect(() => syncCookies.set).toThrow(
+      /Cookies can only be modified in a Server Action or Route Handler/,
+    );
+    expect(() => syncCookies.delete).toThrow(
+      /Cookies can only be modified in a Server Action or Route Handler/,
+    );
+    expect(() => syncCookies.set("session", "mutated")).toThrow(
+      /Cookies can only be modified in a Server Action or Route Handler/,
+    );
+    expect(() => syncCookies.delete("session")).toThrow(
+      /Cookies can only be modified in a Server Action or Route Handler/,
+    );
+    expect(syncCookies.get("session")).toEqual({ name: "session", value: "abc123" });
+
+    const awaitedCookies = await cookies();
+    expect(() => awaitedCookies.set).toThrow(
+      /Cookies can only be modified in a Server Action or Route Handler/,
+    );
+    expect(() => awaitedCookies.set("session", "mutated")).toThrow(
+      /Cookies can only be modified in a Server Action or Route Handler/,
+    );
+    expect(() => awaitedCookies.delete("session")).toThrow(
+      /Cookies can only be modified in a Server Action or Route Handler/,
+    );
+
+    expect(getAndClearPendingCookies()).toEqual([]);
+    expect((await cookies()).get("session")).toEqual({ name: "session", value: "abc123" });
+    setHeadersContext(null);
+  });
+
   it("headersContextFromRequest parses cookies from Request", async () => {
     const { headersContextFromRequest } = await import("../packages/vinext/src/shims/headers.js");
     const req = new Request("https://example.com", {
@@ -256,6 +359,112 @@ describe("next/headers shim", () => {
     expect(ctx.cookies.get("a")).toBe("1");
     expect(ctx.cookies.get("b")).toBe("2");
     expect(ctx.headers.get("cookie")).toBe("a=1; b=2");
+  });
+
+  it("cookies().getAll(name) filters by name and matches upstream duplicate semantics", async () => {
+    const { headersContextFromRequest, runWithHeadersContext, cookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    // Ported from the current @edge-runtime/cookies RequestCookies behavior:
+    // duplicate names are collapsed to the last value, and getAll(name) filters.
+    const ctx = headersContextFromRequest(
+      new Request("https://example.com", {
+        headers: { cookie: "a=1; a=2; b=3" },
+      }),
+    );
+
+    await runWithHeadersContext(ctx, async () => {
+      const jar = await cookies();
+      expect(jar.get("a")).toEqual({ name: "a", value: "2" });
+      expect(jar.getAll("a")).toEqual([{ name: "a", value: "2" }]);
+      expect(jar.getAll()).toEqual([
+        { name: "a", value: "2" },
+        { name: "b", value: "3" },
+      ]);
+    });
+  });
+
+  it("cookies().getAll({ name }) supports the RequestCookie overload and missing names", async () => {
+    const { headersContextFromRequest, runWithHeadersContext, cookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    const ctx = headersContextFromRequest(
+      new Request("https://example.com", {
+        headers: { cookie: "a=1; a=2; token=abc%3D123" },
+      }),
+    );
+
+    await runWithHeadersContext(ctx, async () => {
+      const jar = await cookies();
+      expect(jar.getAll({ name: "a" })).toEqual([{ name: "a", value: "2" }]);
+      expect(jar.getAll("missing")).toEqual([]);
+      expect(jar.getAll({ name: "missing" })).toEqual([]);
+      expect(jar.get("token")).toEqual({ name: "token", value: "abc=123" });
+    });
+  });
+
+  it("cookies() ignores malformed cookie values and treats bare tokens as true", async () => {
+    const { headersContextFromRequest, runWithHeadersContext, cookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    const ctx = headersContextFromRequest(
+      new Request("https://example.com", {
+        headers: { cookie: "bad=%E0%A4%A; good=ok; flag" },
+      }),
+    );
+
+    await runWithHeadersContext(ctx, async () => {
+      const jar = await cookies();
+      expect(jar.get("bad")).toBeUndefined();
+      expect(jar.get("good")).toEqual({ name: "good", value: "ok" });
+      expect(jar.get("flag")).toEqual({ name: "flag", value: "true" });
+      expect(jar.getAll()).toEqual([
+        { name: "good", value: "ok" },
+        { name: "flag", value: "true" },
+      ]);
+    });
+  });
+
+  it("cookies() preserves explicit empty values", async () => {
+    const { headersContextFromRequest, runWithHeadersContext, cookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    const ctx = headersContextFromRequest(
+      new Request("https://example.com", {
+        headers: { cookie: "empty=; flag" },
+      }),
+    );
+
+    await runWithHeadersContext(ctx, async () => {
+      const jar = await cookies();
+      expect(jar.get("empty")).toEqual({ name: "empty", value: "" });
+      expect(jar.get("flag")).toEqual({ name: "flag", value: "true" });
+      expect(jar.getAll()).toEqual([
+        { name: "empty", value: "" },
+        { name: "flag", value: "true" },
+      ]);
+    });
+  });
+
+  it("cookies() preserves whitespace exactly like the Next.js parser", async () => {
+    const { headersContextFromRequest, runWithHeadersContext, cookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+
+    const ctx = headersContextFromRequest(
+      new Request("https://example.com", {
+        headers: { cookie: "a= 1 ; a =2" },
+      }),
+    );
+
+    await runWithHeadersContext(ctx, async () => {
+      const jar = await cookies();
+      expect(jar.get("a")).toEqual({ name: "a", value: " 1 " });
+      expect(jar.get("a ")).toEqual({ name: "a ", value: "2" });
+      expect(jar.getAll()).toEqual([
+        { name: "a", value: " 1 " },
+        { name: "a ", value: "2" },
+      ]);
+    });
   });
 
   it("headersContextFromRequest returns mutable headers (not the immutable Request.headers)", async () => {
@@ -343,6 +552,66 @@ describe("next/headers shim", () => {
     });
   });
 
+  it("cookies().getAll(name) reflects middleware cookie rewrites with duplicate names", async () => {
+    const {
+      headersContextFromRequest,
+      applyMiddlewareRequestHeaders,
+      runWithHeadersContext,
+      cookies,
+    } = await import("../packages/vinext/src/shims/headers.js");
+    const req = new Request("https://example.com", {
+      headers: { cookie: "a=1; b=2" },
+    });
+    const ctx = headersContextFromRequest(req);
+
+    await runWithHeadersContext(ctx, async () => {
+      applyMiddlewareRequestHeaders(
+        new Headers({
+          "x-middleware-request-cookie": "a=1; a=2; b=4",
+        }),
+      );
+
+      const jar = await cookies();
+      expect(jar.get("a")).toEqual({ name: "a", value: "2" });
+      expect(jar.getAll("a")).toEqual([{ name: "a", value: "2" }]);
+      expect(jar.getAll({ name: "a" })).toEqual([{ name: "a", value: "2" }]);
+      expect(jar.getAll()).toEqual([
+        { name: "a", value: "2" },
+        { name: "b", value: "4" },
+      ]);
+    });
+  });
+
+  it("cookies() preserves explicit empty values after middleware cookie rewrites", async () => {
+    const {
+      headersContextFromRequest,
+      applyMiddlewareRequestHeaders,
+      runWithHeadersContext,
+      cookies,
+    } = await import("../packages/vinext/src/shims/headers.js");
+    const ctx = headersContextFromRequest(
+      new Request("https://example.com", {
+        headers: { cookie: "start=1" },
+      }),
+    );
+
+    await runWithHeadersContext(ctx, async () => {
+      applyMiddlewareRequestHeaders(
+        new Headers({
+          "x-middleware-request-cookie": "empty=; flag",
+        }),
+      );
+
+      const jar = await cookies();
+      expect(jar.get("empty")).toEqual({ name: "empty", value: "" });
+      expect(jar.get("flag")).toEqual({ name: "flag", value: "true" });
+      expect(jar.getAll()).toEqual([
+        { name: "empty", value: "" },
+        { name: "flag", value: "true" },
+      ]);
+    });
+  });
+
   it("throws when called outside request context", async () => {
     const { headers, cookies } = await import("../packages/vinext/src/shims/headers.js");
     // Ensure context is cleared
@@ -351,6 +620,15 @@ describe("next/headers shim", () => {
 
     await expect(headers()).rejects.toThrow("Server Component");
     await expect(cookies()).rejects.toThrow("Server Component");
+  });
+
+  it("legacy sync access still throws the request-context error outside request context", async () => {
+    const { headers, cookies, setHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext(null);
+
+    expect(() => headers().get("x-test")).toThrow("Server Component");
+    expect(() => cookies().get("session")).toThrow("Server Component");
   });
 
   it("draftMode() returns isEnabled=false when no bypass cookie", async () => {
@@ -430,73 +708,157 @@ describe("next/headers shim", () => {
     expect(cookieHeader).toContain("Max-Age=0");
     setHeadersContext(null);
   });
+
+  it('draftMode() throws the dynamic = "error" access error before exposing draft controls', async () => {
+    const { setHeadersContext, draftMode, getDraftModeCookieHeader, consumeDynamicUsage } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const accessError = new Error(
+      'Page with `dynamic = "error"` used a dynamic API. This page was expected to be fully static.',
+    );
+
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+      accessError,
+    });
+
+    await expect(draftMode()).rejects.toThrow(accessError);
+    expect(consumeDynamicUsage()).toBe(false);
+    expect(getDraftModeCookieHeader()).toBeNull();
+
+    setHeadersContext(null);
+  });
 });
 
-describe("next/headers writable cookies", () => {
-  it("cookies().set() updates the cookie map and accumulates Set-Cookie headers", async () => {
-    const { setHeadersContext, cookies, getAndClearPendingCookies } =
+describe("next/headers phase-aware cookies", () => {
+  it("cookies().set() works in the route-handler phase and accumulates Set-Cookie headers", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
       await import("../packages/vinext/src/shims/headers.js");
     setHeadersContext({
       headers: new Headers(),
       cookies: new Map(),
     });
 
-    const c = await cookies();
-    c.set("token", "xyz", { path: "/", httpOnly: true, secure: true });
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const c = await cookies();
+      c.set("token", "xyz", { path: "/", httpOnly: true, secure: true });
 
-    // Cookie should now be readable
-    expect(c.get("token")).toEqual({ name: "token", value: "xyz" });
-    expect(c.has("token")).toBe(true);
+      expect(c.get("token")).toEqual({ name: "token", value: "xyz" });
+      expect(c.has("token")).toBe(true);
 
-    // Pending Set-Cookie headers should be accumulated
-    const pending = getAndClearPendingCookies();
-    expect(pending.length).toBe(1);
-    expect(pending[0]).toContain("token=xyz");
-    expect(pending[0]).toContain("Path=/");
-    expect(pending[0]).toContain("HttpOnly");
-    expect(pending[0]).toContain("Secure");
-
-    // After clearing, should be empty
-    expect(getAndClearPendingCookies().length).toBe(0);
-    setHeadersContext(null);
+      const pending = getAndClearPendingCookies();
+      expect(pending.length).toBe(1);
+      expect(pending[0]).toContain("token=xyz");
+      expect(pending[0]).toContain("Path=/");
+      expect(pending[0]).toContain("HttpOnly");
+      expect(pending[0]).toContain("Secure");
+      expect(getAndClearPendingCookies().length).toBe(0);
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
   });
 
-  it("cookies().delete() removes from map and adds Max-Age=0 header", async () => {
-    const { setHeadersContext, cookies, getAndClearPendingCookies } =
+  it("cookies().set() supports legacy sync access in the route-handler phase", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const cookieStore = cookies();
+      cookieStore.set("token", "sync-token", { httpOnly: true });
+
+      expect(cookieStore.get("token")).toEqual({ name: "token", value: "sync-token" });
+      expect(getAndClearPendingCookies()).toEqual([expect.stringContaining("token=sync-token")]);
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("cookies().delete() works in the route-handler phase", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
       await import("../packages/vinext/src/shims/headers.js");
     setHeadersContext({
       headers: new Headers(),
       cookies: new Map([["session", "abc"]]),
     });
 
-    const c = await cookies();
-    expect(c.has("session")).toBe(true);
-    c.delete("session");
-    expect(c.has("session")).toBe(false);
+    const previousPhase = setHeadersAccessPhase("route-handler");
+    try {
+      const c = await cookies();
+      expect(c.has("session")).toBe(true);
+      c.delete("session");
+      expect(c.has("session")).toBe(false);
 
-    const pending = getAndClearPendingCookies();
-    expect(pending.length).toBe(1);
-    expect(pending[0]).toContain("session=");
-    expect(pending[0]).toContain("Max-Age=0");
-    setHeadersContext(null);
+      const pending = getAndClearPendingCookies();
+      expect(pending.length).toBe(1);
+      expect(pending[0]).toContain("session=");
+      expect(pending[0]).toContain("Max-Age=0");
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
   });
 
-  it("cookies().set() with object syntax works", async () => {
-    const { setHeadersContext, cookies, getAndClearPendingCookies } =
+  it("cookies().set() with object syntax works in the action phase", async () => {
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
       await import("../packages/vinext/src/shims/headers.js");
     setHeadersContext({
       headers: new Headers(),
       cookies: new Map(),
     });
 
-    const c = await cookies();
-    c.set({ name: "pref", value: "dark", sameSite: "Lax" });
-    expect(c.get("pref")?.value).toBe("dark");
+    const previousPhase = setHeadersAccessPhase("action");
+    try {
+      const c = await cookies();
+      c.set({ name: "pref", value: "dark", sameSite: "Lax" });
+      expect(c.get("pref")?.value).toBe("dark");
 
-    const pending = getAndClearPendingCookies();
-    expect(pending[0]).toContain("pref=dark");
-    expect(pending[0]).toContain("SameSite=Lax");
-    setHeadersContext(null);
+      const pending = getAndClearPendingCookies();
+      expect(pending[0]).toContain("pref=dark");
+      expect(pending[0]).toContain("SameSite=Lax");
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
+  });
+
+  it("mutable cookie references stop accepting writes after the phase returns to render", async () => {
+    // Ported from Next.js:
+    // packages/next/src/server/web/spec-extension/adapters/request-cookies.test.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/adapters/request-cookies.test.ts
+    const { setHeadersContext, setHeadersAccessPhase, cookies, getAndClearPendingCookies } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map(),
+    });
+
+    const previousPhase = setHeadersAccessPhase("action");
+    try {
+      const c = await cookies();
+      c.set("session", "abc123");
+      expect(c.get("session")?.value).toBe("abc123");
+
+      setHeadersAccessPhase("render");
+      expect(() => c.set("session", "mutated")).toThrow(
+        /Cookies can only be modified in a Server Action or Route Handler/,
+      );
+      expect(() => c.delete("session")).toThrow(
+        /Cookies can only be modified in a Server Action or Route Handler/,
+      );
+      expect(c.get("session")?.value).toBe("abc123");
+      expect(getAndClearPendingCookies()).toEqual([expect.stringContaining("session=abc123")]);
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+      setHeadersContext(null);
+    }
   });
 });
 
@@ -1762,6 +2124,42 @@ describe("middleware matcher patterns", () => {
     const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
     expect(matchesMiddleware("/about", "/about")).toBe(true);
     expect(matchesMiddleware("/other", "/about")).toBe(false);
+    // Ported from Next.js: test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    expect(
+      matchesMiddleware("/about", "/about", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
+      matchesMiddleware("/fr/about", "/about", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
+      matchesMiddleware("/", "/", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+  });
+
+  it("matchesMiddleware: locale-prefixed negative-lookahead matchers keep internal paths excluded", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const matcher = "/((?!api|_next|favicon\\.ico).*)";
+    const i18nConfig = {
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+    };
+
+    expect(matchesMiddleware("/fr/about", matcher, undefined, i18nConfig)).toBe(true);
+    expect(matchesMiddleware("/fr/api/hello", matcher, undefined, i18nConfig)).toBe(false);
+    expect(matchesMiddleware("/fr/_next/static/chunk.js", matcher, undefined, i18nConfig)).toBe(
+      false,
+    );
+    expect(matchesMiddleware("/fr/favicon.ico", matcher, undefined, i18nConfig)).toBe(false);
   });
 
   it("matchesMiddleware: array of string matchers", async () => {
@@ -1779,6 +2177,89 @@ describe("middleware matcher patterns", () => {
     expect(matchesMiddleware("/about", matcher)).toBe(true);
     expect(matchesMiddleware("/dashboard/settings", matcher)).toBe(true);
     expect(matchesMiddleware("/other", matcher)).toBe(false);
+  });
+
+  it("matchesMiddleware: object matchers respect has and missing conditions", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const matcher: any = [
+      {
+        source: "/dashboard",
+        has: [{ type: "header", key: "x-user-tier", value: "pro" }],
+        missing: [{ type: "cookie", key: "blocked" }],
+      },
+    ];
+
+    expect(matchesMiddleware("/dashboard", matcher)).toBe(false);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        matcher,
+        new Request("https://example.com/dashboard", {
+          headers: { "x-user-tier": "pro" },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        matcher,
+        new Request("https://example.com/dashboard", {
+          headers: { "x-user-tier": "free", cookie: "blocked=1" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("matchesMiddleware: rejects a single object matcher config", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const matcher: any = {
+      source: "/dashboard",
+      has: [{ type: "header", key: "x-user-tier", value: "pro" }],
+    };
+
+    expect(matchesMiddleware("/dashboard", matcher)).toBe(false);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        matcher,
+        new Request("https://example.com/dashboard", {
+          headers: { "x-user-tier": "pro" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("matchesMiddleware: rejects object matchers with unsupported fields", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const matcher: any = [{ source: "/does-not-match", regexp: "^/dashboard(?:/.*)?$" }];
+
+    expect(matchesMiddleware("/dashboard/settings", matcher)).toBe(false);
+    expect(matchesMiddleware("/about", matcher)).toBe(false);
+  });
+
+  it("matchesMiddleware: matches default-locale and locale-prefixed paths unless locale is false", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const i18nConfig = {
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+    };
+
+    // Ported from Next.js: test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    expect(matchesMiddleware("/dashboard", [{ source: "/dashboard" }], undefined, i18nConfig)).toBe(
+      true,
+    );
+    expect(
+      matchesMiddleware("/fr/dashboard", [{ source: "/dashboard" }], undefined, i18nConfig),
+    ).toBe(true);
+    expect(
+      matchesMiddleware(
+        "/fr/dashboard",
+        [{ source: "/dashboard", locale: false }],
+        undefined,
+        i18nConfig,
+      ),
+    ).toBe(false);
   });
 
   it("matchesMiddleware: mixed array of strings and objects", async () => {
@@ -1885,10 +2366,61 @@ describe("middleware codegen parity", () => {
     // Exact match
     expect(matchMiddlewarePattern("/about", "/about")).toBe(true);
     expect(matchMiddlewarePattern("/other", "/about")).toBe(false);
+    // Ported from Next.js: test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-custom-matchers-i18n/test/index.test.ts
+    expect(
+      matchesMiddleware("/about", "/about", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
+      matchesMiddleware("/fr/about", "/about", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    // Ported from Next.js: test/e2e/middleware-matcher/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-matcher/index.test.ts
+    expect(
+      matchesMiddleware("/", "/", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
 
     // Regex pattern with groups (must NOT corrupt the regex via dot-escaping)
     expect(matchMiddlewarePattern("/about", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
     expect(matchMiddlewarePattern("/api/hello", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
+    expect(
+      matchesMiddleware("/fr/about", "/((?!api|_next|favicon\\.ico).*)", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
+      matchesMiddleware("/fr/api/hello", "/((?!api|_next|favicon\\.ico).*)", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(false);
+    expect(
+      matchesMiddleware(
+        "/fr/_next/static/chunk.js",
+        "/((?!api|_next|favicon\\.ico).*)",
+        undefined,
+        {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+        },
+      ),
+    ).toBe(false);
+    expect(
+      matchesMiddleware("/fr/favicon.ico", "/((?!api|_next|favicon\\.ico).*)", undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(false);
 
     // Named params
     expect(matchMiddlewarePattern("/user/123", "/user/:id")).toBe(true);
@@ -1896,6 +2428,44 @@ describe("middleware codegen parity", () => {
     // Wildcard
     expect(matchMiddlewarePattern("/dashboard/settings", "/dashboard/:path*")).toBe(true);
     expect(matchMiddlewarePattern("/dashboard", "/dashboard/:path*")).toBe(true);
+
+    const gatedMatcher = [
+      {
+        source: "/dashboard",
+        has: [{ type: "query", key: "preview", value: "1" }],
+        missing: [{ type: "header", key: "x-blocked" }],
+      },
+    ];
+    expect(matchesMiddleware("/dashboard", gatedMatcher)).toBe(false);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        gatedMatcher,
+        new Request("https://example.com/dashboard?preview=1"),
+      ),
+    ).toBe(true);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        gatedMatcher,
+        new Request("https://example.com/dashboard?preview=1", {
+          headers: { "x-blocked": "1" },
+        }),
+      ),
+    ).toBe(false);
+
+    expect(
+      matchesMiddleware("/dashboard", [{ source: "/dashboard" }], undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
+    expect(
+      matchesMiddleware("/fr/dashboard", [{ source: "/dashboard" }], undefined, {
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      }),
+    ).toBe(true);
   });
 
   it("generateMiddlewareMatcherCode('es5') produces working matchesMiddleware", async () => {
@@ -1912,6 +2482,40 @@ describe("middleware codegen parity", () => {
     // Regex guard (must not corrupt regex patterns via dot-escaping)
     expect(matchMiddlewarePattern("/about", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
     expect(matchMiddlewarePattern("/api/hello", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
+
+    const headerMatcher = [
+      {
+        source: "/dashboard",
+        has: [{ type: "header", key: "x-user-tier", value: "pro" }],
+      },
+    ];
+    expect(matchesMiddleware("/dashboard", headerMatcher)).toBe(false);
+    expect(
+      matchesMiddleware(
+        "/dashboard",
+        headerMatcher,
+        new Request("https://example.com/dashboard", {
+          headers: { "x-user-tier": "pro" },
+        }),
+      ),
+    ).toBe(true);
+
+    const hostMatcher = [
+      {
+        source: "/dashboard",
+        has: [{ type: "host", value: "example.com" }],
+      },
+    ];
+    const mixedCaseHostRequest = {
+      url: "https://example.com/dashboard",
+      headers: new Headers([["host", "Example.com:3000"]]),
+    };
+    const emptyHostRequest = {
+      url: "https://example.com/dashboard",
+      headers: new Headers([["host", ""]]),
+    };
+    expect(matchesMiddleware("/dashboard", hostMatcher, mixedCaseHostRequest)).toBe(true);
+    expect(matchesMiddleware("/dashboard", hostMatcher, emptyHostRequest)).toBe(false);
   });
 
   it("generateNormalizePathCode produces working __normalizePath", async () => {
@@ -2342,6 +2946,71 @@ describe("RequestCookies API", () => {
     expect(all).toContainEqual({ name: "c", value: "3" });
   });
 
+  it("getAll(name) filters by cookie name", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1; a=2; b=3" });
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.get("a")).toEqual({ name: "a", value: "2" });
+    expect(cookies.getAll("a")).toEqual([{ name: "a", value: "2" }]);
+    expect(cookies.getAll()).toEqual([
+      { name: "a", value: "2" },
+      { name: "b", value: "3" },
+    ]);
+  });
+
+  it("getAll({ name }) filters by cookie name and missing names return []", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1; a=2; token=abc=def" });
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.getAll({ name: "a", value: "ignored" })).toEqual([{ name: "a", value: "2" }]);
+    expect(cookies.getAll("missing")).toEqual([]);
+    expect(cookies.getAll({ name: "missing", value: "" })).toEqual([]);
+    expect(cookies.get("token")).toEqual({ name: "token", value: "abc=def" });
+  });
+
+  it("parses encoded values, skips malformed values, and supports bare tokens", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "token=abc%3D123; bad=%E0%A4%A; flag; ok=yes" });
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.get("token")).toEqual({ name: "token", value: "abc=123" });
+    expect(cookies.get("bad")).toBeUndefined();
+    expect(cookies.get("flag")).toEqual({ name: "flag", value: "true" });
+    expect(cookies.getAll()).toEqual([
+      { name: "token", value: "abc=123" },
+      { name: "flag", value: "true" },
+      { name: "ok", value: "yes" },
+    ]);
+  });
+
+  it("preserves explicit empty values", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "empty=; flag" });
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.get("empty")).toEqual({ name: "empty", value: "" });
+    expect(cookies.get("flag")).toEqual({ name: "flag", value: "true" });
+    expect(cookies.getAll()).toEqual([
+      { name: "empty", value: "" },
+      { name: "flag", value: "true" },
+    ]);
+  });
+
+  it("preserves whitespace exactly like the Next.js parser", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a= 1 ; a =2" });
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.get("a")).toEqual({ name: "a", value: " 1 " });
+    expect(cookies.get("a ")).toEqual({ name: "a ", value: "2" });
+    expect(cookies.getAll()).toEqual([
+      { name: "a", value: " 1 " },
+      { name: "a ", value: "2" },
+    ]);
+  });
+
   it("has() checks cookie existence", async () => {
     const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
     const headers = new Headers({ cookie: "token=abc" });
@@ -2529,56 +3198,93 @@ describe("cookie name validation", () => {
   it("RequestCookies.set() rejects names with = (injection)", async () => {
     const headersModule = await import("../packages/vinext/src/shims/headers.js");
     headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
-    const jar = await headersModule.cookies();
-    expect(() => jar.set("foo=bar; Path=/; Domain=evil.com", "val")).toThrow("Invalid cookie name");
+    const previousPhase = headersModule.setHeadersAccessPhase("route-handler");
+    try {
+      const jar = await headersModule.cookies();
+      expect(() => jar.set("foo=bar; Path=/; Domain=evil.com", "val")).toThrow(
+        "Invalid cookie name",
+      );
+    } finally {
+      headersModule.setHeadersAccessPhase(previousPhase);
+    }
   });
 
   it("RequestCookies.set() rejects names with semicolons", async () => {
     const headersModule = await import("../packages/vinext/src/shims/headers.js");
     headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
-    const jar = await headersModule.cookies();
-    expect(() => jar.set("foo; HttpOnly", "val")).toThrow("Invalid cookie name");
+    const previousPhase = headersModule.setHeadersAccessPhase("route-handler");
+    try {
+      const jar = await headersModule.cookies();
+      expect(() => jar.set("foo; HttpOnly", "val")).toThrow("Invalid cookie name");
+    } finally {
+      headersModule.setHeadersAccessPhase(previousPhase);
+    }
   });
 
   it("RequestCookies.set() rejects names with newlines", async () => {
     const headersModule = await import("../packages/vinext/src/shims/headers.js");
     headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
-    const jar = await headersModule.cookies();
-    expect(() => jar.set("foo\r\nSet-Cookie: evil=1", "val")).toThrow("Invalid cookie name");
+    const previousPhase = headersModule.setHeadersAccessPhase("route-handler");
+    try {
+      const jar = await headersModule.cookies();
+      expect(() => jar.set("foo\r\nSet-Cookie: evil=1", "val")).toThrow("Invalid cookie name");
+    } finally {
+      headersModule.setHeadersAccessPhase(previousPhase);
+    }
   });
 
   it("RequestCookies.set() rejects empty names", async () => {
     const headersModule = await import("../packages/vinext/src/shims/headers.js");
     headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
-    const jar = await headersModule.cookies();
-    expect(() => jar.set("", "val")).toThrow("Invalid cookie name");
+    const previousPhase = headersModule.setHeadersAccessPhase("route-handler");
+    try {
+      const jar = await headersModule.cookies();
+      expect(() => jar.set("", "val")).toThrow("Invalid cookie name");
+    } finally {
+      headersModule.setHeadersAccessPhase(previousPhase);
+    }
   });
 
   it("RequestCookies.set() accepts valid cookie names", async () => {
     const headersModule = await import("../packages/vinext/src/shims/headers.js");
     headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
-    const jar = await headersModule.cookies();
-    // These should not throw
-    jar.set("valid-name", "value");
-    jar.set("__Host-token", "value");
-    jar.set("session_id", "value");
-    jar.set("CSRF.Token", "value");
+    const previousPhase = headersModule.setHeadersAccessPhase("route-handler");
+    try {
+      const jar = await headersModule.cookies();
+      // These should not throw
+      jar.set("valid-name", "value");
+      jar.set("__Host-token", "value");
+      jar.set("session_id", "value");
+      jar.set("CSRF.Token", "value");
+    } finally {
+      headersModule.setHeadersAccessPhase(previousPhase);
+    }
   });
 
   it("RequestCookies.delete() rejects invalid names", async () => {
     const headersModule = await import("../packages/vinext/src/shims/headers.js");
     headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
-    const jar = await headersModule.cookies();
-    expect(() => jar.delete("foo=bar")).toThrow("Invalid cookie name");
+    const previousPhase = headersModule.setHeadersAccessPhase("route-handler");
+    try {
+      const jar = await headersModule.cookies();
+      expect(() => jar.delete("foo=bar")).toThrow("Invalid cookie name");
+    } finally {
+      headersModule.setHeadersAccessPhase(previousPhase);
+    }
   });
 
   it("RequestCookies.set() rejects path with semicolons", async () => {
     const headersModule = await import("../packages/vinext/src/shims/headers.js");
     headersModule.setHeadersContext({ headers: new Headers(), cookies: new Map() });
-    const jar = await headersModule.cookies();
-    expect(() => jar.set("name", "val", { path: "/; Domain=evil.com" })).toThrow(
-      "Invalid cookie Path",
-    );
+    const previousPhase = headersModule.setHeadersAccessPhase("route-handler");
+    try {
+      const jar = await headersModule.cookies();
+      expect(() => jar.set("name", "val", { path: "/; Domain=evil.com" })).toThrow(
+        "Invalid cookie Path",
+      );
+    } finally {
+      headersModule.setHeadersAccessPhase(previousPhase);
+    }
   });
 
   it("ResponseCookies.set() rejects names with = (injection)", async () => {
@@ -7530,8 +8236,12 @@ describe("KVCacheHandler", () => {
     const stored = kv.store.get("cache:ttl-key");
     expect(stored).toBeDefined();
     expect(stored!.expirationTtl).toBeDefined();
-    // 10x the revalidation period = 600, but minimum is 60
-    expect(stored!.expirationTtl).toBe(600);
+    // KV TTL is always 30 days (2592000s) regardless of revalidation period.
+    // Staleness is tracked via revalidateAt in the stored JSON, not KV eviction.
+    // Tying TTL to revalidation period would cause frequently-revalidated pages
+    // (e.g. revalidate=5) to be evicted quickly under low traffic, forcing a
+    // blocking fresh render on the next request instead of serving stale content.
+    expect(stored!.expirationTtl).toBe(30 * 24 * 3600);
   });
 
   it("handles multiple tag invalidation in parallel", async () => {
@@ -8129,6 +8839,22 @@ describe("cache scope guards for dynamic APIs", () => {
     setHeadersContext(null);
   });
 
+  it('headers() sync access throws the "use cache" error instead of a TypeError', async () => {
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { headers, setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+
+    setHeadersContext({
+      headers: new Headers({ "x-test": "blocked" }),
+      cookies: new Map(),
+    });
+
+    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
+      expect(() => headers().get("x-test")).toThrow(/cannot be called inside "use cache"/);
+    });
+
+    setHeadersContext(null);
+  });
+
   it('cookies() throws inside "use cache" scope', async () => {
     const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
     const { cookies, setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
@@ -8137,6 +8863,22 @@ describe("cache scope guards for dynamic APIs", () => {
 
     await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
       await expect(cookies()).rejects.toThrow(/cannot be called inside "use cache"/);
+    });
+
+    setHeadersContext(null);
+  });
+
+  it('cookies() sync access throws the "use cache" error instead of a TypeError', async () => {
+    const { cacheContextStorage } = await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { cookies, setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+
+    setHeadersContext({
+      headers: new Headers(),
+      cookies: new Map([["session", "blocked"]]),
+    });
+
+    await cacheContextStorage.run({ tags: [], lifeConfigs: [], variant: "default" }, async () => {
+      expect(() => cookies().get("session")).toThrow(/cannot be called inside "use cache"/);
     });
 
     setHeadersContext(null);
