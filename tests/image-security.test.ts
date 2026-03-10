@@ -8,6 +8,8 @@ import {
   isBlockedLocalHost,
   parseImageParams,
   handleImageOptimization,
+  negotiateImageFormat,
+  isSafeImageContentType,
 } from "../packages/vinext/src/server/image-optimization.js";
 
 describe("SSRF prevention", () => {
@@ -118,9 +120,7 @@ describe("SSRF prevention", () => {
     });
 
     it("extracts 169.254.169.254 (AWS metadata via IPv6)", () => {
-      expect(getIpv4MappedAddress([0, 0, 0, 0, 0, 0xffff, 0xa9fe, 0xa9fe])).toBe(
-        "169.254.169.254",
-      );
+      expect(getIpv4MappedAddress([0, 0, 0, 0, 0, 0xffff, 0xa9fe, 0xa9fe])).toBe("169.254.169.254");
     });
 
     it("returns null for non-IPv4-mapped address (2001:db8::1)", () => {
@@ -198,9 +198,7 @@ describe("SSRF prevention", () => {
 describe("fetchRemoteImage redirect and body-size limits", () => {
   const REMOTE_URL = "https://images.example.com/photo.jpg";
   const makeRequest = (remoteUrl: string) =>
-    new Request(
-      `http://localhost/_vinext/image?url=${encodeURIComponent(remoteUrl)}&w=800&q=75`,
-    );
+    new Request(`http://localhost/_vinext/image?url=${encodeURIComponent(remoteUrl)}&w=800&q=75`);
   const defaultHandlers = {
     fetchAsset: async () => new Response("unused", { status: 500 }),
   };
@@ -431,14 +429,9 @@ describe("fetchRemoteImage redirect and body-size limits", () => {
         },
       };
 
-      const response = await handleImageOptimization(
-        makeRequest(REMOTE_URL),
-        handlers,
-        undefined,
-        {
-          remotePatterns: [new URL(REMOTE_URL)],
-        },
-      );
+      const response = await handleImageOptimization(makeRequest(REMOTE_URL), handlers, undefined, {
+        remotePatterns: [new URL(REMOTE_URL)],
+      });
 
       expect(response.status).toBe(200);
       expect(globalFetchCalled).toBe(false);
@@ -510,5 +503,380 @@ describe("local pattern enforcement at server level", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("valid-image-data");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 1: Security-critical — isSafeImageContentType
+// ---------------------------------------------------------------------------
+
+describe("isSafeImageContentType", () => {
+  it("allows image/jpeg", () => {
+    expect(isSafeImageContentType("image/jpeg")).toBe(true);
+  });
+
+  it("allows image/png", () => {
+    expect(isSafeImageContentType("image/png")).toBe(true);
+  });
+
+  it("allows image/gif", () => {
+    expect(isSafeImageContentType("image/gif")).toBe(true);
+  });
+
+  it("allows image/webp", () => {
+    expect(isSafeImageContentType("image/webp")).toBe(true);
+  });
+
+  it("allows image/avif", () => {
+    expect(isSafeImageContentType("image/avif")).toBe(true);
+  });
+
+  it("allows image/x-icon", () => {
+    expect(isSafeImageContentType("image/x-icon")).toBe(true);
+  });
+
+  it("allows image/bmp", () => {
+    expect(isSafeImageContentType("image/bmp")).toBe(true);
+  });
+
+  it("allows image/tiff", () => {
+    expect(isSafeImageContentType("image/tiff")).toBe(true);
+  });
+
+  it("blocks text/html", () => {
+    expect(isSafeImageContentType("text/html")).toBe(false);
+  });
+
+  it("blocks application/javascript", () => {
+    expect(isSafeImageContentType("application/javascript")).toBe(false);
+  });
+
+  it("blocks image/svg+xml by default", () => {
+    expect(isSafeImageContentType("image/svg+xml")).toBe(false);
+  });
+
+  it("blocks application/pdf", () => {
+    expect(isSafeImageContentType("application/pdf")).toBe(false);
+  });
+
+  it("allows image/svg+xml when dangerouslyAllowSVG is true", () => {
+    expect(isSafeImageContentType("image/svg+xml", true)).toBe(true);
+  });
+
+  it("handles content-type with charset parameter", () => {
+    expect(isSafeImageContentType("image/jpeg; charset=utf-8")).toBe(true);
+  });
+
+  it("returns false for null content type", () => {
+    expect(isSafeImageContentType(null)).toBe(false);
+  });
+
+  it("returns false for empty string", () => {
+    expect(isSafeImageContentType("")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 1: Security-critical — security headers via handleImageOptimization
+// ---------------------------------------------------------------------------
+
+describe("setImageSecurityHeaders (via handleImageOptimization)", () => {
+  const makeLocalRequest = (path: string) =>
+    new Request(`http://localhost/_vinext/image?url=${encodeURIComponent(path)}&w=800&q=75`);
+
+  const makeHandlers = (contentType = "image/jpeg") => ({
+    fetchAsset: async () =>
+      new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": contentType },
+      }),
+  });
+
+  it("sets X-Content-Type-Options: nosniff", async () => {
+    const response = await handleImageOptimization(makeLocalRequest("/img.jpg"), makeHandlers());
+    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  });
+
+  it("sets Content-Disposition: attachment by default", async () => {
+    const response = await handleImageOptimization(makeLocalRequest("/img.jpg"), makeHandlers());
+    const disposition = response.headers.get("Content-Disposition");
+    expect(disposition).toMatch(/^attachment/);
+  });
+
+  it("sets Content-Disposition: inline when configured", async () => {
+    const response = await handleImageOptimization(
+      makeLocalRequest("/img.jpg"),
+      makeHandlers(),
+      undefined,
+      { contentDispositionType: "inline" },
+    );
+    const disposition = response.headers.get("Content-Disposition");
+    expect(disposition).toMatch(/^inline/);
+  });
+
+  it("sets Content-Security-Policy header", async () => {
+    const response = await handleImageOptimization(makeLocalRequest("/img.jpg"), makeHandlers());
+    expect(response.headers.get("Content-Security-Policy")).toBe(
+      "script-src 'none'; frame-src 'none'; sandbox;",
+    );
+  });
+
+  it("uses custom CSP from config", async () => {
+    const customCSP = "default-src 'none'; img-src 'self'";
+    const response = await handleImageOptimization(
+      makeLocalRequest("/img.jpg"),
+      makeHandlers(),
+      undefined,
+      { contentSecurityPolicy: customCSP },
+    );
+    expect(response.headers.get("Content-Security-Policy")).toBe(customCSP);
+  });
+
+  it("includes filename in Content-Disposition", async () => {
+    const response = await handleImageOptimization(
+      makeLocalRequest("/photos/landscape.jpg"),
+      makeHandlers(),
+    );
+    const disposition = response.headers.get("Content-Disposition");
+    expect(disposition).toContain("landscape.jpg");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 1: Security-critical — SVG end-to-end blocking
+// ---------------------------------------------------------------------------
+
+describe("SVG end-to-end blocking", () => {
+  const makeRequest = (path: string) =>
+    new Request(`http://localhost/_vinext/image?url=${encodeURIComponent(path)}&w=800&q=75`);
+
+  const svgHandlers = {
+    fetchAsset: async () =>
+      new Response("<svg></svg>", {
+        status: 200,
+        headers: { "Content-Type": "image/svg+xml" },
+      }),
+  };
+
+  it("returns 400 for SVG content when dangerouslyAllowSVG is false (default)", async () => {
+    const response = await handleImageOptimization(makeRequest("/icon.svg"), svgHandlers);
+    expect(response.status).toBe(400);
+  });
+
+  it("returns 200 for SVG content when dangerouslyAllowSVG is true", async () => {
+    const response = await handleImageOptimization(
+      makeRequest("/icon.svg"),
+      svgHandlers,
+      undefined,
+      { dangerouslyAllowSVG: true },
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("sets CSP header on SVG responses", async () => {
+    const response = await handleImageOptimization(
+      makeRequest("/icon.svg"),
+      svgHandlers,
+      undefined,
+      { dangerouslyAllowSVG: true },
+    );
+    expect(response.headers.get("Content-Security-Policy")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 2: Functional correctness — negotiateImageFormat
+// ---------------------------------------------------------------------------
+
+describe("negotiateImageFormat", () => {
+  it("returns image/webp when Accept includes webp (default formats=[webp])", () => {
+    expect(negotiateImageFormat("image/webp,image/avif,*/*")).toBe("image/webp");
+  });
+
+  it("returns image/avif when formats prefer avif first", () => {
+    expect(negotiateImageFormat("image/avif,image/webp,*/*", ["image/avif", "image/webp"])).toBe(
+      "image/avif",
+    );
+  });
+
+  it("picks first matching format from config order", () => {
+    expect(negotiateImageFormat("image/webp,image/avif", ["image/avif"])).toBe("image/avif");
+  });
+
+  it("returns image/jpeg when Accept has neither webp nor avif", () => {
+    expect(negotiateImageFormat("image/png,image/jpeg,*/*")).toBe("image/jpeg");
+  });
+
+  it("returns image/jpeg for null Accept header", () => {
+    expect(negotiateImageFormat(null)).toBe("image/jpeg");
+  });
+
+  it("returns image/jpeg for empty Accept header", () => {
+    expect(negotiateImageFormat("")).toBe("image/jpeg");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 2: Functional correctness — Cache-Control headers
+// ---------------------------------------------------------------------------
+
+describe("Cache-Control headers (via handleImageOptimization)", () => {
+  const makeRequest = (path: string) =>
+    new Request(`http://localhost/_vinext/image?url=${encodeURIComponent(path)}&w=800&q=75`);
+
+  const handlers = {
+    fetchAsset: async () =>
+      new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      }),
+  };
+
+  it("returns default Cache-Control with minimumCacheTTL (14400)", async () => {
+    const response = await handleImageOptimization(makeRequest("/img.jpg"), handlers);
+    const cc = response.headers.get("Cache-Control");
+    expect(cc).toBe("public, max-age=14400, must-revalidate");
+  });
+
+  it("uses custom minimumCacheTTL", async () => {
+    const response = await handleImageOptimization(makeRequest("/img.jpg"), handlers, undefined, {
+      minimumCacheTTL: 3600,
+    });
+    const cc = response.headers.get("Cache-Control");
+    expect(cc).toBe("public, max-age=3600, must-revalidate");
+  });
+
+  it("cache-control format matches expected pattern", async () => {
+    const response = await handleImageOptimization(makeRequest("/img.jpg"), handlers);
+    const cc = response.headers.get("Cache-Control");
+    expect(cc).toMatch(/^public, max-age=\d+, must-revalidate$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 2: Functional correctness — Content-Disposition filename
+// ---------------------------------------------------------------------------
+
+describe("Content-Disposition filename (via handleImageOptimization)", () => {
+  const makeRequest = (path: string) =>
+    new Request(`http://localhost/_vinext/image?url=${encodeURIComponent(path)}&w=800&q=75`);
+
+  it("uses correct extension from content-type mapping (PNG)", async () => {
+    const handlers = {
+      fetchAsset: async () =>
+        new Response("image-data", {
+          status: 200,
+          headers: { "Content-Type": "image/png" },
+        }),
+    };
+    const response = await handleImageOptimization(makeRequest("/photo.png"), handlers);
+    const disposition = response.headers.get("Content-Disposition");
+    expect(disposition).toContain(".png");
+  });
+
+  it("extracts basename from nested path for filename", async () => {
+    const handlers = {
+      fetchAsset: async () =>
+        new Response("image-data", {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        }),
+    };
+    const response = await handleImageOptimization(makeRequest("/images/hero-shot.jpg"), handlers);
+    const disposition = response.headers.get("Content-Disposition");
+    expect(disposition).toContain("hero-shot.jpg");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tier 2: Functional correctness — AVIF quality adjustment
+// ---------------------------------------------------------------------------
+
+describe("AVIF quality adjustment (via handleImageOptimization)", () => {
+  const makeRequest = (path: string, accept: string) => {
+    return new Request(
+      `http://localhost/_vinext/image?url=${encodeURIComponent(path)}&w=800&q=75`,
+      { headers: { Accept: accept } },
+    );
+  };
+
+  it("reduces quality by 20 for AVIF output (75 → 55)", async () => {
+    let capturedQuality: number | undefined;
+    const handlers = {
+      fetchAsset: async () =>
+        new Response("image-data", {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        }),
+      transformImage: async (
+        _body: ReadableStream,
+        options: { width: number; format: string; quality: number },
+      ) => {
+        capturedQuality = options.quality;
+        return new Response("transformed", { status: 200 });
+      },
+    };
+
+    await handleImageOptimization(
+      makeRequest("/img.jpg", "image/avif,image/webp,*/*"),
+      handlers,
+      undefined,
+      { formats: ["image/avif"] },
+    );
+
+    expect(capturedQuality).toBe(55);
+  });
+
+  it("clamps AVIF quality to minimum 1 (quality 15 → 1, not -5)", async () => {
+    let capturedQuality: number | undefined;
+    const handlers = {
+      fetchAsset: async () =>
+        new Response("image-data", {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        }),
+      transformImage: async (
+        _body: ReadableStream,
+        options: { width: number; format: string; quality: number },
+      ) => {
+        capturedQuality = options.quality;
+        return new Response("transformed", { status: 200 });
+      },
+    };
+
+    await handleImageOptimization(
+      new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800&q=15", {
+        headers: { Accept: "image/avif" },
+      }),
+      handlers,
+      undefined,
+      { formats: ["image/avif"] },
+    );
+
+    expect(capturedQuality).toBe(1);
+  });
+
+  it("does NOT reduce quality for non-AVIF formats", async () => {
+    let capturedQuality: number | undefined;
+    const handlers = {
+      fetchAsset: async () =>
+        new Response("image-data", {
+          status: 200,
+          headers: { "Content-Type": "image/jpeg" },
+        }),
+      transformImage: async (
+        _body: ReadableStream,
+        options: { width: number; format: string; quality: number },
+      ) => {
+        capturedQuality = options.quality;
+        return new Response("transformed", { status: 200 });
+      },
+    };
+
+    await handleImageOptimization(makeRequest("/img.jpg", "image/webp,*/*"), handlers, undefined, {
+      formats: ["image/webp"],
+    });
+
+    expect(capturedQuality).toBe(75);
   });
 });

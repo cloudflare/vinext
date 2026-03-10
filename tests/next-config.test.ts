@@ -365,16 +365,16 @@ describe("normalizeImageConfig validation", () => {
 
   it("throws on empty deviceSizes array", async () => {
     tmpDir = makeTempDir();
-    await expect(
-      resolveNextConfig({ images: { deviceSizes: [] } }, tmpDir),
-    ).rejects.toThrow(/must contain at least one item/);
+    await expect(resolveNextConfig({ images: { deviceSizes: [] } }, tmpDir)).rejects.toThrow(
+      /must contain at least one item/,
+    );
   });
 
   it("throws on non-integer deviceSizes", async () => {
     tmpDir = makeTempDir();
-    await expect(
-      resolveNextConfig({ images: { deviceSizes: [1.5] } }, tmpDir),
-    ).rejects.toThrow(/must contain integers/);
+    await expect(resolveNextConfig({ images: { deviceSizes: [1.5] } }, tmpDir)).rejects.toThrow(
+      /must contain integers/,
+    );
   });
 
   it("throws when qualities exceeds max length of 20", async () => {
@@ -386,16 +386,16 @@ describe("normalizeImageConfig validation", () => {
 
   it("throws on negative minimumCacheTTL", async () => {
     tmpDir = makeTempDir();
-    await expect(
-      resolveNextConfig({ images: { minimumCacheTTL: -1 } }, tmpDir),
-    ).rejects.toThrow(/greater than or equal to 0.*minimumCacheTTL/);
+    await expect(resolveNextConfig({ images: { minimumCacheTTL: -1 } }, tmpDir)).rejects.toThrow(
+      /greater than or equal to 0.*minimumCacheTTL/,
+    );
   });
 
   it("throws on zero maximumResponseBody", async () => {
     tmpDir = makeTempDir();
-    await expect(
-      resolveNextConfig({ images: { maximumResponseBody: 0 } }, tmpDir),
-    ).rejects.toThrow(/greater than or equal to 1.*maximumResponseBody/);
+    await expect(resolveNextConfig({ images: { maximumResponseBody: 0 } }, tmpDir)).rejects.toThrow(
+      /greater than or equal to 1.*maximumResponseBody/,
+    );
   });
 
   it("throws on invalid image format", async () => {

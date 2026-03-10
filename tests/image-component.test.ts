@@ -475,9 +475,7 @@ describe("sanitizeBlurDataURL prevents CSS injection", () => {
       blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
     });
 
-    expect(props.style.backgroundImage).toBe(
-      "url(data:image/png;base64,iVBORw0KGgo=)",
-    );
+    expect(props.style.backgroundImage).toBe("url(data:image/png;base64,iVBORw0KGgo=)");
   });
 });
 

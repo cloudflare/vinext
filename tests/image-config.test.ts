@@ -337,9 +337,7 @@ describe("hasLocalMatch", () => {
   });
 
   it("matches any of multiple patterns", () => {
-    expect(
-      hasLocalMatch([{ pathname: "/a/**" }, { pathname: "/b/**" }], "/b/img.jpg"),
-    ).toBe(true);
+    expect(hasLocalMatch([{ pathname: "/a/**" }, { pathname: "/b/**" }], "/b/img.jpg")).toBe(true);
   });
 
   it("empty array rejects everything", () => {
