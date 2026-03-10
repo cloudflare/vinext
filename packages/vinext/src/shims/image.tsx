@@ -50,6 +50,13 @@ const __imageDeviceSizes: number[] = (() => {
     return [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
   }
 })();
+const __imageImageSizes: number[] = (() => {
+  try {
+    return JSON.parse(process.env.__VINEXT_IMAGE_IMAGE_SIZES ?? "[16,32,48,64,96,128,256,384]");
+  } catch {
+    return [16, 32, 48, 64, 96, 128, 256, 384];
+  }
+})();
 /**
  * Whether dangerouslyAllowSVG is enabled in next.config.js.
  * When false (default), .svg sources auto-skip the optimization endpoint
@@ -151,6 +158,12 @@ function isRemoteUrl(src: string): boolean {
 }
 
 /**
+ * All allowed widths for srcSet generation, combining imageSizes and deviceSizes.
+ * Sorted ascending. Matches Next.js behavior where the full set of allowed
+ * widths is [...imageSizes, ...deviceSizes].sort().
+ */
+const ALL_SIZES = [...__imageImageSizes, ...__imageDeviceSizes].sort((a, b) => a - b);
+/**
  * Responsive image widths matching Next.js's device sizes config.
  * These are the breakpoints used for srcSet generation.
  * Configurable via `images.deviceSizes` in next.config.js.
@@ -171,12 +184,13 @@ export function imageOptimizationUrl(src: string, width: number, quality: number
 /**
  * Generate a srcSet string for responsive images.
  *
- * Each width points to the `/_vinext/image` optimization endpoint so the
- * server can resize and transcode the image. Only includes widths that are
+ * Uses ALL_SIZES (imageSizes + deviceSizes) and filters to widths
  * <= 2x the original image width to avoid pointless upscaling.
+ * This matches Next.js behavior where both imageSizes and deviceSizes
+ * are used for srcSet generation.
  */
 function generateSrcSet(src: string, originalWidth: number, quality: number = 75): string {
-  const widths = RESPONSIVE_WIDTHS.filter((w) => w <= originalWidth * 2);
+  const widths = ALL_SIZES.filter((w) => w <= originalWidth * 2);
   if (widths.length === 0)
     return `${imageOptimizationUrl(src, originalWidth, quality)} ${originalWidth}w`;
   return widths.map((w) => `${imageOptimizationUrl(src, w, quality)} ${w}w`).join(", ");
@@ -232,7 +246,6 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
                 inset: 0,
                 width: "100%",
                 height: "100%",
-                objectFit: "cover",
                 ...style,
               }
             : style
@@ -353,7 +366,6 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
               inset: 0,
               width: "100%",
               height: "100%",
-              objectFit: "cover",
               ...blurStyle,
               ...style,
             }
@@ -473,7 +485,6 @@ export function getImageProps(props: ImageProps): {
             inset: 0,
             width: "100%",
             height: "100%",
-            objectFit: "cover" as const,
             ...blurStyle,
             ...style,
           }

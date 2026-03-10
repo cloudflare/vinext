@@ -517,14 +517,13 @@ describe("parseImageParams — edge cases", () => {
     expect(params).toBeNull();
   });
 
-  it("defaults empty string width (w=) to 0 via || fallback", async () => {
+  it("rejects empty string width (w=) — defaults to 0 which is invalid", async () => {
     const parseImageParams = await getParser();
     const params = parseImageParams(
       new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=&q=75"),
     );
-    // w= → get("w") returns "" → "" || "0" → parseInt("0") = 0
-    expect(params).not.toBeNull();
-    expect(params!.width).toBe(0);
+    // w= → get("w") returns "" → "" || "0" → parseInt("0") = 0 → rejected (must be > 0)
+    expect(params).toBeNull();
   });
 
   it("rejects whitespace-only width (w=%20)", async () => {
@@ -548,10 +547,10 @@ describe("parseImageParams — edge cases", () => {
 
   it("accepts url=/ (minimal valid path)", async () => {
     const parseImageParams = await getParser();
-    const params = parseImageParams(new URL("http://localhost/_vinext/image?url=%2F&w=0&q=75"));
+    const params = parseImageParams(new URL("http://localhost/_vinext/image?url=%2F&w=1&q=75"));
     expect(params).not.toBeNull();
     expect(params!.imageUrl).toBe("/");
-    expect(params!.width).toBe(0);
+    expect(params!.width).toBe(1);
     expect(params!.quality).toBe(75);
   });
 
@@ -614,11 +613,11 @@ describe("parseImageParams — missing params and defaults", () => {
     expect(params!.quality).toBe(75);
   });
 
-  it("defaults width to 0 when w param is absent", async () => {
+  it("rejects request when w param is absent (defaults to 0 which is invalid)", async () => {
     const parseImageParams = await getParser();
     const params = parseImageParams(new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&q=80"));
-    expect(params).not.toBeNull();
-    expect(params!.width).toBe(0);
+    // Width must be > 0 — matches Next.js behavior
+    expect(params).toBeNull();
   });
 });
 
@@ -629,14 +628,13 @@ describe("parseImageParams — width boundary validation", () => {
     return mod.parseImageParams;
   }
 
-  // Next.js parity note: Next.js rejects w=0. vinext accepts it as "no resize".
-  it("accepts w=0 (means no resize)", async () => {
+  // Next.js parity: w=0 is rejected ("must be an integer greater than 0")
+  it("rejects w=0 (must be > 0, matches Next.js)", async () => {
     const parseImageParams = await getParser();
     const params = parseImageParams(
       new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=0&q=75"),
     );
-    expect(params).not.toBeNull();
-    expect(params!.width).toBe(0);
+    expect(params).toBeNull();
   });
 
   it("rejects w=3841 (exceeds ABSOLUTE_MAX_WIDTH)", async () => {
@@ -665,14 +663,13 @@ describe("parseImageParams — width boundary validation", () => {
     expect(params).toBeNull();
   });
 
-  it("accepts w=0 even when not in allowedWidths (bypass for no-resize)", async () => {
+  it("rejects w=0 even with allowedWidths (must be > 0, matches Next.js)", async () => {
     const parseImageParams = await getParser();
     const params = parseImageParams(
       new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=0&q=75"),
       [640, 1080],
     );
-    expect(params).not.toBeNull();
-    expect(params!.width).toBe(0);
+    expect(params).toBeNull();
   });
 
   it("accepts w=1 (smallest valid nonzero width)", async () => {
@@ -684,7 +681,7 @@ describe("parseImageParams — width boundary validation", () => {
     expect(params!.width).toBe(1);
   });
 
-  it("allowedWidths=[] rejects all nonzero widths", async () => {
+  it("allowedWidths=[] rejects all widths", async () => {
     const parseImageParams = await getParser();
     // w=640 with empty allowedWidths → rejected
     const rejected = parseImageParams(
@@ -692,13 +689,12 @@ describe("parseImageParams — width boundary validation", () => {
       [],
     );
     expect(rejected).toBeNull();
-    // w=0 always bypasses allowedWidths check
-    const accepted = parseImageParams(
+    // w=0 is also rejected (must be > 0)
+    const zero = parseImageParams(
       new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=0&q=75"),
       [],
     );
-    expect(accepted).not.toBeNull();
-    expect(accepted!.width).toBe(0);
+    expect(zero).toBeNull();
   });
 });
 
@@ -879,23 +875,21 @@ describe("parseImageParams — Next.js parity", () => {
     return mod.parseImageParams;
   }
 
-  it("does not reject URLs >3072 chars (Next.js does, vinext does not)", async () => {
+  it("rejects URLs >3072 chars (matches Next.js)", async () => {
     const parseImageParams = await getParser();
     const longPath = "/" + "a".repeat(3100) + ".jpg";
     const params = parseImageParams(
       new URL(`http://localhost/_vinext/image?url=${encodeURIComponent(longPath)}&w=640&q=75`),
     );
-    // vinext does not enforce URL length limits — documenting difference from Next.js
-    expect(params).not.toBeNull();
+    expect(params).toBeNull();
   });
 
-  it("does not reject recursive /_vinext/image URLs (Next.js does, vinext does not)", async () => {
+  it("rejects recursive /_vinext/image URLs (matches Next.js)", async () => {
     const parseImageParams = await getParser();
     const params = parseImageParams(
       new URL("http://localhost/_vinext/image?url=%2F_vinext%2Fimage%3Furl%3Dfoo&w=640&q=75"),
     );
-    // vinext does not check for recursive image endpoint URLs — documenting difference
-    expect(params).not.toBeNull();
+    expect(params).toBeNull();
   });
 
   it("accepts Unicode paths /äöüščří.png", async () => {
@@ -1315,9 +1309,8 @@ describe("handleImageOptimization — transform handler", () => {
     expect(body).toBe(transformBody);
   });
 
-  it("passes width=0 to transformImage when w=0", async () => {
+  it("rejects w=0 with 400 (width must be > 0)", async () => {
     const handleImageOptimization = await getHandler();
-    let capturedOpts: { width: number; format: string; quality: number } | undefined;
     const req = makeRequest("http://localhost/_vinext/image?url=%2Fimg.jpg&w=0&q=75");
     const res = await handleImageOptimization(req, {
       fetchAsset: async () =>
@@ -1325,15 +1318,8 @@ describe("handleImageOptimization — transform handler", () => {
           status: 200,
           headers: { "Content-Type": "image/jpeg" },
         }),
-      transformImage: async (_body, opts) => {
-        capturedOpts = opts;
-        return new Response("transformed", {
-          headers: { "Content-Type": "image/webp" },
-        });
-      },
     });
-    expect(res.status).toBe(200);
-    expect(capturedOpts!.width).toBe(0);
+    expect(res.status).toBe(400);
   });
 
   it("fallback throws when transform partially consumes stream (documents stream consumption bug)", async () => {
@@ -1749,5 +1735,280 @@ describe("handleImageOptimization — Next.js parity differences", () => {
     // Next.js detects animated GIFs and serves as-is. vinext passes to transform unconditionally.
     expect(res.status).toBe(200);
     expect(transformCalled).toBe(true);
+  });
+});
+
+// ── detectContentType (magic bytes) ──────────────────────────────
+// Ported from Next.js: test/unit/image-optimizer/detect-content-type.test.ts
+describe("detectContentType", () => {
+  async function getDetector() {
+    const mod = await import("../packages/vinext/src/server/image-optimization.js");
+    return mod.detectContentType;
+  }
+
+  it("detects JPEG from magic bytes", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+    expect(detect(buf)).toBe("image/jpeg");
+  });
+
+  it("detects PNG from magic bytes", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    expect(detect(buf)).toBe("image/png");
+  });
+
+  it("detects GIF from magic bytes", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61]);
+    expect(detect(buf)).toBe("image/gif");
+  });
+
+  it("detects WebP from magic bytes", async () => {
+    const detect = await getDetector();
+    // RIFF....WEBP
+    const buf = new Uint8Array([
+      0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+    ]);
+    expect(detect(buf)).toBe("image/webp");
+  });
+
+  it("detects AVIF from magic bytes", async () => {
+    const detect = await getDetector();
+    // ....ftypavif
+    const buf = new Uint8Array([
+      0x00, 0x00, 0x00, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66,
+    ]);
+    expect(detect(buf)).toBe("image/avif");
+  });
+
+  it("detects ICO from magic bytes", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([0x00, 0x00, 0x01, 0x00]);
+    expect(detect(buf)).toBe("image/x-icon");
+  });
+
+  it("detects BMP from magic bytes", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([0x42, 0x4d, 0x00, 0x00]);
+    expect(detect(buf)).toBe("image/bmp");
+  });
+
+  it("detects TIFF (little-endian) from magic bytes", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([0x49, 0x49, 0x2a, 0x00]);
+    expect(detect(buf)).toBe("image/tiff");
+  });
+
+  it("detects SVG from <?xml magic bytes", async () => {
+    const detect = await getDetector();
+    // <?xml
+    const buf = new Uint8Array([0x3c, 0x3f, 0x78, 0x6d, 0x6c]);
+    expect(detect(buf)).toBe("image/svg+xml");
+  });
+
+  it("detects SVG from <svg magic bytes", async () => {
+    const detect = await getDetector();
+    // <svg
+    const buf = new Uint8Array([0x3c, 0x73, 0x76, 0x67]);
+    expect(detect(buf)).toBe("image/svg+xml");
+  });
+
+  it("detects ICNS from magic bytes", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([0x69, 0x63, 0x6e, 0x73]);
+    expect(detect(buf)).toBe("image/x-icns");
+  });
+
+  it("detects JXL (codestream) from magic bytes", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([0xff, 0x0a, 0x00, 0x00]);
+    expect(detect(buf)).toBe("image/jxl");
+  });
+
+  it("detects JXL (container) from magic bytes", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([
+      0x00, 0x00, 0x00, 0x0c, 0x4a, 0x58, 0x4c, 0x20, 0x0d, 0x0a, 0x87, 0x0a,
+    ]);
+    expect(detect(buf)).toBe("image/jxl");
+  });
+
+  it("detects HEIC from magic bytes", async () => {
+    const detect = await getDetector();
+    // ....ftypheic
+    const buf = new Uint8Array([
+      0x00, 0x00, 0x00, 0x1c, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63,
+    ]);
+    expect(detect(buf)).toBe("image/heic");
+  });
+
+  it("detects PDF from magic bytes", async () => {
+    const detect = await getDetector();
+    // %PDF-
+    const buf = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d]);
+    expect(detect(buf)).toBe("application/pdf");
+  });
+
+  it("detects JP2 from magic bytes", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([
+      0x00, 0x00, 0x00, 0x0c, 0x6a, 0x50, 0x20, 0x20, 0x0d, 0x0a, 0x87, 0x0a,
+    ]);
+    expect(detect(buf)).toBe("image/jp2");
+  });
+
+  it("returns null for empty buffer", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array(0);
+    expect(detect(buf)).toBeNull();
+  });
+
+  it("returns null for unrecognized format", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);
+    expect(detect(buf)).toBeNull();
+  });
+
+  it("returns null for buffer shorter than any signature", async () => {
+    const detect = await getDetector();
+    const buf = new Uint8Array([0x00]);
+    expect(detect(buf)).toBeNull();
+  });
+});
+
+// ── BYPASS_TYPES — serve as-is without transformation ─────────────
+describe("bypass types (ICO, BMP, TIFF, etc.)", () => {
+  async function getHandler() {
+    const mod = await import("../packages/vinext/src/server/image-optimization.js");
+    return mod.handleImageOptimization;
+  }
+
+  it("serves ICO as-is without calling transformImage", async () => {
+    const handle = await getHandler();
+    let transformCalled = false;
+    // ICO magic bytes
+    const icoBytes = new Uint8Array([0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x10, 0x10]);
+    const req = new Request("http://localhost/_vinext/image?url=%2Ffavicon.ico&w=640&q=75", {
+      headers: { Accept: "image/webp" },
+    });
+    const res = await handle(req, {
+      fetchAsset: async () =>
+        new Response(icoBytes, {
+          status: 200,
+          headers: { "Content-Type": "image/x-icon" },
+        }),
+      transformImage: async (body, opts) => {
+        transformCalled = true;
+        return new Response("transformed", { headers: { "Content-Type": opts.format } });
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(transformCalled).toBe(false);
+    expect(res.headers.get("Content-Type")).toBe("image/x-icon");
+  });
+
+  it("serves BMP as-is without calling transformImage", async () => {
+    const handle = await getHandler();
+    let transformCalled = false;
+    const bmpBytes = new Uint8Array([0x42, 0x4d, 0x00, 0x00, 0x00, 0x00]);
+    const req = new Request("http://localhost/_vinext/image?url=%2Fimg.bmp&w=640&q=75", {
+      headers: { Accept: "image/webp" },
+    });
+    const res = await handle(req, {
+      fetchAsset: async () =>
+        new Response(bmpBytes, {
+          status: 200,
+          headers: { "Content-Type": "image/bmp" },
+        }),
+      transformImage: async () => {
+        transformCalled = true;
+        return new Response("transformed", { headers: { "Content-Type": "image/webp" } });
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(transformCalled).toBe(false);
+    expect(res.headers.get("Content-Type")).toBe("image/bmp");
+  });
+
+  it("serves TIFF as-is without calling transformImage", async () => {
+    const handle = await getHandler();
+    let transformCalled = false;
+    const tiffBytes = new Uint8Array([0x49, 0x49, 0x2a, 0x00, 0x08, 0x00]);
+    const req = new Request("http://localhost/_vinext/image?url=%2Fimg.tiff&w=640&q=75", {
+      headers: { Accept: "image/webp" },
+    });
+    const res = await handle(req, {
+      fetchAsset: async () =>
+        new Response(tiffBytes, {
+          status: 200,
+          headers: { "Content-Type": "image/tiff" },
+        }),
+      transformImage: async () => {
+        transformCalled = true;
+        return new Response("transformed", { headers: { "Content-Type": "image/webp" } });
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(transformCalled).toBe(false);
+    expect(res.headers.get("Content-Type")).toBe("image/tiff");
+  });
+});
+
+// ── parseImageParams validation improvements ─────────────────────
+// Ported from Next.js: packages/next/src/server/image-optimizer.ts validateParams
+describe("parseImageParams — Next.js parity validations", () => {
+  async function getParser() {
+    const mod = await import("../packages/vinext/src/server/image-optimization.js");
+    return mod.parseImageParams;
+  }
+
+  it("rejects URLs longer than 3072 characters", async () => {
+    const parse = await getParser();
+    const longUrl = "/" + "a".repeat(3072);
+    const url = new URL(
+      `http://localhost/_vinext/image?url=${encodeURIComponent(longUrl)}&w=640&q=75`,
+    );
+    expect(parse(url)).toBeNull();
+  });
+
+  it("accepts URLs at exactly 3072 characters", async () => {
+    const parse = await getParser();
+    const maxUrl = "/" + "a".repeat(3071); // total 3072 with leading /
+    const url = new URL(
+      `http://localhost/_vinext/image?url=${encodeURIComponent(maxUrl)}&w=640&q=75`,
+    );
+    expect(parse(url)).not.toBeNull();
+  });
+
+  it("rejects recursive /_vinext/image URLs", async () => {
+    const parse = await getParser();
+    const url = new URL(
+      "http://localhost/_vinext/image?url=%2F_vinext%2Fimage%3Furl%3D%252Fimg.jpg%26w%3D640%26q%3D75&w=640&q=75",
+    );
+    expect(parse(url)).toBeNull();
+  });
+
+  it("rejects recursive /_vinext/image in encoded form", async () => {
+    const parse = await getParser();
+    const recursiveUrl = "/_vinext/image?url=%2Ftest.png&w=100&q=75";
+    const url = new URL(
+      `http://localhost/_vinext/image?url=${encodeURIComponent(recursiveUrl)}&w=640&q=75`,
+    );
+    expect(parse(url)).toBeNull();
+  });
+
+  it("rejects width of 0 (must be > 0)", async () => {
+    const parse = await getParser();
+    const url = new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=0&q=75");
+    expect(parse(url)).toBeNull();
+  });
+
+  it("still accepts positive widths", async () => {
+    const parse = await getParser();
+    const url = new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=640&q=75");
+    const result = parse(url);
+    expect(result).not.toBeNull();
+    expect(result!.width).toBe(640);
   });
 });

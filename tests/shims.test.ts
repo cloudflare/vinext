@@ -6193,14 +6193,13 @@ describe("image optimization request parsing", () => {
     expect(parseImageParams(url)).toBeNull();
   });
 
-  it("parseImageParams defaults width to 0 and quality to 75", async () => {
+  it("parseImageParams rejects missing w param (defaults to 0 which is invalid)", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     const url = new URL("http://localhost/_vinext/image?url=%2Fimg.jpg");
     const params = parseImageParams(url);
-    expect(params).not.toBeNull();
-    expect(params!.width).toBe(0);
-    expect(params!.quality).toBe(75);
+    // Width must be > 0 — matches Next.js behavior
+    expect(params).toBeNull();
   });
 
   it("parseImageParams blocks data: URIs (exotic scheme bypass)", async () => {
@@ -6333,13 +6332,12 @@ describe("image optimization request parsing", () => {
         allowedWidths,
       ),
     ).toBeNull();
-    // w=0 (no resize) is always allowed even with allowedWidths
+    // w=0 is rejected (must be > 0, matches Next.js)
     const noResize = parseImageParams(
       new URL("http://localhost/_vinext/image?url=%2Fimg.jpg&w=0"),
       allowedWidths,
     );
-    expect(noResize).not.toBeNull();
-    expect(noResize!.width).toBe(0);
+    expect(noResize).toBeNull();
   });
 
   it("parseImageParams allows imageSizes (small widths) in allowedWidths", async () => {

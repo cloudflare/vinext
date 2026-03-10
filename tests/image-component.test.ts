@@ -513,3 +513,72 @@ describe("StaticImageData always uses /_vinext/image URLs", () => {
     expect(props.srcSet).not.toContain(".webp");
   });
 });
+
+// ─── Fill mode objectFit customization ────────────────────────────
+// Ported from Next.js: test/unit/next-image-get-img-props.test.ts
+describe("fill mode objectFit customization", () => {
+  it("uses style.objectFit when provided in fill mode", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "fill custom",
+        src: "/photo.jpg",
+        fill: true,
+        style: { objectFit: "contain" },
+      }),
+    );
+    expect(html).toContain("object-fit:contain");
+    expect(html).not.toContain("object-fit:cover");
+  });
+
+  it("defaults fill mode objectFit to undefined when no style given (not hardcoded cover)", () => {
+    const { props } = getImageProps({
+      alt: "fill default",
+      src: "/photo.jpg",
+      fill: true,
+    });
+    // Next.js doesn't hardcode objectFit:'cover' — it only sets it when the user provides it
+    // or via the deprecated objectFit prop. The default fill style should not include objectFit.
+    expect((props.style as any)?.objectFit).toBeUndefined();
+  });
+
+  it("respects style.objectPosition in fill mode", () => {
+    const { props } = getImageProps({
+      alt: "fill positioned",
+      src: "/photo.jpg",
+      fill: true,
+      style: { objectPosition: "top left" },
+    });
+    expect((props.style as any)?.objectPosition).toBe("top left");
+  });
+
+  it("allows style.objectFit='none' in fill mode", () => {
+    const { props } = getImageProps({
+      alt: "fill none",
+      src: "/photo.jpg",
+      fill: true,
+      style: { objectFit: "none" },
+    });
+    expect((props.style as any)?.objectFit).toBe("none");
+  });
+});
+
+// ─── imageSizes config support in srcSet ──────────────────────────
+describe("imageSizes config support in srcSet", () => {
+  it("includes imageSizes in srcSet for small images", () => {
+    // A 100px image should generate srcSet with imageSizes (32, 48, 64, 96, 128)
+    // not just deviceSizes (640, 750, ...)
+    const { props } = getImageProps({
+      alt: "small image",
+      src: "/icon.png",
+      width: 100,
+      height: 100,
+    });
+    // Should include small widths from imageSizes, not just large device widths
+    expect(props.srcSet).toBeDefined();
+    if (props.srcSet) {
+      // For a 100px image, valid widths up to 2x = 200px should be included
+      // imageSizes 32, 48, 64, 96, 128 are all <= 200
+      expect(props.srcSet).toContain("128w");
+    }
+  });
+});
