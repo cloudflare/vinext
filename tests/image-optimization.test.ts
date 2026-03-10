@@ -461,7 +461,7 @@ describe("handleImageOptimization — manifest lookup", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Security-Policy")).toBe("default-src 'none'");
-    expect(res.headers.get("Content-Disposition")).toBe("attachment");
+    expect(res.headers.get("Content-Disposition")).toContain("attachment");
   });
 });
 
@@ -1180,7 +1180,8 @@ describe("handleImageOptimization — SVG handling", () => {
       undefined,
       { dangerouslyAllowSVG: true },
     );
-    expect(res.headers.get("Content-Disposition")).toBe("inline");
+    expect(res.headers.get("Content-Disposition")).toContain("inline");
+    expect(res.headers.get("Content-Disposition")).toContain("icon.svg");
   });
 });
 
@@ -1471,17 +1472,18 @@ describe("handleImageOptimization — response headers (non-manifest)", () => {
     expect(res.headers.get("Vary")).toBe("Accept");
   });
 
-  it("Content-Disposition defaults to inline when imageConfig omitted", async () => {
+  it("Content-Disposition defaults to inline with filename when imageConfig omitted", async () => {
     const handleImageOptimization = await getHandler();
     const req = makeRequest("http://localhost/_vinext/image?url=%2Fimg.jpg&w=640&q=75");
     const res = await handleImageOptimization(req, {
       fetchAsset: async () =>
         new Response("ok", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
     });
-    expect(res.headers.get("Content-Disposition")).toBe("inline");
+    expect(res.headers.get("Content-Disposition")).toContain("inline");
+    expect(res.headers.get("Content-Disposition")).toContain("img");
   });
 
-  it("partial config — only contentSecurityPolicy set, Content-Disposition defaults", async () => {
+  it("partial config — only contentSecurityPolicy set, Content-Disposition defaults with filename", async () => {
     const handleImageOptimization = await getHandler();
     const req = makeRequest("http://localhost/_vinext/image?url=%2Fimg.jpg&w=640&q=75");
     const res = await handleImageOptimization(
@@ -1494,7 +1496,7 @@ describe("handleImageOptimization — response headers (non-manifest)", () => {
       { contentSecurityPolicy: "default-src 'none'" },
     );
     expect(res.headers.get("Content-Security-Policy")).toBe("default-src 'none'");
-    expect(res.headers.get("Content-Disposition")).toBe("inline");
+    expect(res.headers.get("Content-Disposition")).toContain("inline");
   });
 
   it("sets Cache-Control immutable on SVG passthrough", async () => {
@@ -2010,5 +2012,149 @@ describe("parseImageParams — Next.js parity validations", () => {
     const result = parse(url);
     expect(result).not.toBeNull();
     expect(result!.width).toBe(640);
+  });
+});
+
+// ── AVIF quality offset ────────────────────────────────────────────
+// Next.js applies Math.max(quality - 20, 1) for AVIF to compensate for
+// AVIF's better compression efficiency at the same perceptual quality.
+describe("AVIF quality offset", () => {
+  async function getHandler() {
+    const mod = await import("../packages/vinext/src/server/image-optimization.js");
+    return mod.handleImageOptimization;
+  }
+
+  it("applies quality offset (-20) when output format is AVIF", async () => {
+    const handle = await getHandler();
+    let capturedQuality: number | undefined;
+    const req = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=640&q=75", {
+      headers: { Accept: "image/avif, image/webp" },
+    });
+    const res = await handle(
+      req,
+      {
+        fetchAsset: async () =>
+          new Response("bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+        transformImage: async (_body, opts) => {
+          capturedQuality = opts.quality;
+          return new Response("transformed", { headers: { "Content-Type": opts.format } });
+        },
+      },
+      undefined,
+      undefined,
+      ["image/avif", "image/webp"],
+    );
+    expect(res.status).toBe(200);
+    // Quality should be max(75 - 20, 1) = 55 for AVIF
+    expect(capturedQuality).toBe(55);
+  });
+
+  it("clamps AVIF quality offset to minimum of 1", async () => {
+    const handle = await getHandler();
+    let capturedQuality: number | undefined;
+    const req = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=640&q=15", {
+      headers: { Accept: "image/avif" },
+    });
+    const res = await handle(
+      req,
+      {
+        fetchAsset: async () =>
+          new Response("bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+        transformImage: async (_body, opts) => {
+          capturedQuality = opts.quality;
+          return new Response("transformed", { headers: { "Content-Type": opts.format } });
+        },
+      },
+      undefined,
+      undefined,
+      ["image/avif"],
+    );
+    expect(res.status).toBe(200);
+    // Quality should be max(15 - 20, 1) = 1 for AVIF
+    expect(capturedQuality).toBe(1);
+  });
+
+  it("does NOT apply quality offset for WebP", async () => {
+    const handle = await getHandler();
+    let capturedQuality: number | undefined;
+    const req = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=640&q=75", {
+      headers: { Accept: "image/webp" },
+    });
+    const res = await handle(
+      req,
+      {
+        fetchAsset: async () =>
+          new Response("bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+        transformImage: async (_body, opts) => {
+          capturedQuality = opts.quality;
+          return new Response("transformed", { headers: { "Content-Type": opts.format } });
+        },
+      },
+      undefined,
+      undefined,
+      ["image/webp"],
+    );
+    expect(res.status).toBe(200);
+    // WebP should use the original quality unchanged
+    expect(capturedQuality).toBe(75);
+  });
+});
+
+// ── Content-Disposition with filename ──────────────────────────────
+// Next.js generates a Content-Disposition header with a filename derived
+// from the image URL and the output format extension.
+describe("Content-Disposition filename generation", () => {
+  async function getHandler() {
+    const mod = await import("../packages/vinext/src/server/image-optimization.js");
+    return mod.handleImageOptimization;
+  }
+
+  it("includes filename in Content-Disposition header", async () => {
+    const handle = await getHandler();
+    const req = new Request("http://localhost/_vinext/image?url=%2Fphoto.jpg&w=640&q=75", {
+      headers: { Accept: "image/webp" },
+    });
+    const res = await handle(req, {
+      fetchAsset: async () =>
+        new Response("bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+      transformImage: async (_body, opts) =>
+        new Response("transformed", { headers: { "Content-Type": opts.format } }),
+    });
+    const cd = res.headers.get("Content-Disposition");
+    expect(cd).toBeDefined();
+    expect(cd).toContain("photo.webp");
+  });
+
+  it("uses original extension when serving without transform", async () => {
+    const handle = await getHandler();
+    const req = new Request("http://localhost/_vinext/image?url=%2Fphoto.jpg&w=640&q=75", {
+      headers: { Accept: "image/webp" },
+    });
+    const res = await handle(req, {
+      fetchAsset: async () =>
+        new Response("bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+    });
+    const cd = res.headers.get("Content-Disposition");
+    expect(cd).toBeDefined();
+    // Without transform, uses original extension
+    expect(cd).toContain("photo");
+  });
+
+  it("respects contentDispositionType config (attachment vs inline)", async () => {
+    const handle = await getHandler();
+    const req = new Request("http://localhost/_vinext/image?url=%2Fphoto.jpg&w=640&q=75", {
+      headers: { Accept: "image/webp" },
+    });
+    const res = await handle(
+      req,
+      {
+        fetchAsset: async () =>
+          new Response("bytes", { status: 200, headers: { "Content-Type": "image/jpeg" } }),
+      },
+      undefined,
+      { contentDispositionType: "attachment" },
+    );
+    const cd = res.headers.get("Content-Disposition");
+    expect(cd).toContain("attachment");
   });
 });

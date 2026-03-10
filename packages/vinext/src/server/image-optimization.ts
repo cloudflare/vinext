@@ -397,18 +397,68 @@ export function isSafeImageContentType(
 }
 
 /**
+ * Map MIME types to file extensions for Content-Disposition filename generation.
+ */
+const MIME_TO_EXT: Record<string, string> = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+  "image/avif": ".avif",
+  "image/x-icon": ".ico",
+  "image/bmp": ".bmp",
+  "image/tiff": ".tiff",
+  "image/svg+xml": ".svg",
+  "image/jxl": ".jxl",
+  "image/jp2": ".jp2",
+  "image/heic": ".heic",
+  "image/x-icns": ".icns",
+};
+
+/**
+ * Generate a Content-Disposition header value with filename.
+ * Extracts the base name from the image URL path and appends the correct
+ * extension for the output format. Matches Next.js behavior.
+ */
+function getContentDisposition(
+  imageUrl: string | undefined,
+  outputFormat: string | undefined,
+  dispositionType: "inline" | "attachment" = "inline",
+): string {
+  if (!imageUrl) return dispositionType;
+  // Extract filename from path (e.g., "/photos/sunset.jpg" → "sunset")
+  const lastSegment = imageUrl.split("/").pop() ?? "";
+  const baseName = lastSegment.split("?")[0]; // strip query params
+  const nameWithoutExt = baseName.replace(/\.[^.]+$/, "");
+  if (!nameWithoutExt) return dispositionType;
+
+  const ext = outputFormat ? (MIME_TO_EXT[outputFormat] ?? "") : "";
+  const filename = nameWithoutExt + (ext || "");
+  return `${dispositionType}; filename="${filename}"`;
+}
+
+/**
  * Apply security headers to an image optimization response.
  * These headers are set on every response from the image endpoint,
  * regardless of whether the image was transformed or served as-is.
  * When an ImageConfig is provided, uses its values for CSP and Content-Disposition.
  */
-function setImageSecurityHeaders(headers: Headers, config?: ImageConfig): void {
+function setImageSecurityHeaders(
+  headers: Headers,
+  config?: ImageConfig,
+  imageUrl?: string,
+  outputFormat?: string,
+): void {
   headers.set(
     "Content-Security-Policy",
     config?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
   );
   headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("Content-Disposition", config?.contentDispositionType ?? "inline");
+  const dispositionType = config?.contentDispositionType ?? "inline";
+  headers.set(
+    "Content-Disposition",
+    getContentDisposition(imageUrl, outputFormat, dispositionType),
+  );
 }
 
 /**
@@ -437,6 +487,7 @@ export async function handleImageOptimization(
   handlers: ImageHandlers,
   allowedWidths?: number[],
   imageConfig?: ImageConfig,
+  configuredFormats?: string[],
 ): Promise<Response> {
   const url = new URL(request.url);
   const params = parseImageParams(url, allowedWidths);
@@ -452,7 +503,7 @@ export async function handleImageOptimization(
     | Record<string, Record<string, string>>
     | undefined;
   if (manifest) {
-    const format = negotiateImageFormat(request.headers.get("Accept"));
+    const format = negotiateImageFormat(request.headers.get("Accept"), configuredFormats);
     const manifestKey = `${width}:${quality}:${format}`;
     const variants = manifest[imageUrl];
     if (variants?.[manifestKey]) {
@@ -463,7 +514,7 @@ export async function handleImageOptimization(
         headers.set("Content-Type", format);
         headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
         headers.set("Vary", "Accept");
-        setImageSecurityHeaders(headers, imageConfig);
+        setImageSecurityHeaders(headers, imageConfig, imageUrl, format);
         return new Response(prebuiltResponse.body, { status: 200, headers });
       }
       // Pre-built fetch failed — fall through to dynamic optimization
@@ -477,7 +528,7 @@ export async function handleImageOptimization(
   }
 
   // Negotiate output format from Accept header
-  const format = negotiateImageFormat(request.headers.get("Accept"));
+  const format = negotiateImageFormat(request.headers.get("Accept"), configuredFormats);
 
   // Block unsafe Content-Types (e.g., SVG which can contain embedded scripts).
   // Check the source Content-Type before any processing. SVG is only allowed
@@ -500,9 +551,13 @@ export async function handleImageOptimization(
     headers.set("Content-Type", sourceMediaType);
     headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
     headers.set("Vary", "Accept");
-    setImageSecurityHeaders(headers, imageConfig);
+    setImageSecurityHeaders(headers, imageConfig, imageUrl, sourceMediaType);
     return new Response(source.body, { status: 200, headers });
   }
+
+  // Apply AVIF quality offset: AVIF has better compression efficiency, so
+  // Next.js applies Math.max(quality - 20, 1) to match perceptual quality.
+  const effectiveQuality = format === "image/avif" ? Math.max(quality - 20, 1) : quality;
 
   // Transform if handler provided, otherwise serve original
   if (handlers.transformImage) {
@@ -510,12 +565,12 @@ export async function handleImageOptimization(
       const transformed = await handlers.transformImage(source.body, {
         width,
         format,
-        quality,
+        quality: effectiveQuality,
       });
       const headers = new Headers(transformed.headers);
       headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
       headers.set("Vary", "Accept");
-      setImageSecurityHeaders(headers, imageConfig);
+      setImageSecurityHeaders(headers, imageConfig, imageUrl, format);
 
       // Verify the transformed response also has a safe Content-Type.
       // A malicious or buggy transform handler could return HTML.
@@ -534,6 +589,6 @@ export async function handleImageOptimization(
   const headers = new Headers(source.headers);
   headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
   headers.set("Vary", "Accept");
-  setImageSecurityHeaders(headers, imageConfig);
+  setImageSecurityHeaders(headers, imageConfig, imageUrl, sourceMediaType);
   return new Response(source.body, { status: 200, headers });
 }

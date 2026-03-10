@@ -6634,7 +6634,7 @@ describe("handleImageOptimization", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-    expect(response.headers.get("Content-Disposition")).toBe("inline");
+    expect(response.headers.get("Content-Disposition")).toContain("inline");
   });
 
   it("sets Content-Security-Policy header on transformed responses", async () => {
@@ -6662,7 +6662,7 @@ describe("handleImageOptimization", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-    expect(response.headers.get("Content-Disposition")).toBe("inline");
+    expect(response.headers.get("Content-Disposition")).toContain("inline");
   });
 
   it("overrides unsafe Content-Type from transform handler", async () => {
@@ -6767,7 +6767,7 @@ describe("handleImageOptimization", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-    expect(response.headers.get("Content-Disposition")).toBe("inline");
+    expect(response.headers.get("Content-Disposition")).toContain("inline");
   });
 
   it("applies custom contentDispositionType", async () => {
@@ -6785,7 +6785,7 @@ describe("handleImageOptimization", () => {
       contentDispositionType: "attachment",
     });
     expect(response.status).toBe(200);
-    expect(response.headers.get("Content-Disposition")).toBe("attachment");
+    expect(response.headers.get("Content-Disposition")).toContain("attachment");
   });
 
   it("applies custom contentSecurityPolicy", async () => {
@@ -6823,7 +6823,7 @@ describe("handleImageOptimization", () => {
     expect(response.headers.get("Content-Security-Policy")).toBe(
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
-    expect(response.headers.get("Content-Disposition")).toBe("inline");
+    expect(response.headers.get("Content-Disposition")).toContain("inline");
   });
 });
 
