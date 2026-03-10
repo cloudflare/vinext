@@ -5,7 +5,7 @@
  * the ?vinext-opt load hook, isSafeImageContentType, manifest lookup,
  * and parseImageParams edge cases.
  */
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
 import path from "node:path";
 
 // ── Sharp detection utility ──────────────────────────────────
@@ -2156,5 +2156,207 @@ describe("Content-Disposition filename generation", () => {
     );
     const cd = res.headers.get("Content-Disposition");
     expect(cd).toContain("attachment");
+  });
+});
+
+// ── isAnimated detection ─────────────────────────────────────────
+// Ported from Next.js: packages/next/src/compiled/is-animated
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/image-optimizer.ts
+describe("isAnimated", () => {
+  let isAnimated: (buffer: Uint8Array) => boolean;
+
+  beforeAll(async () => {
+    const mod = await import("../packages/vinext/src/server/image-optimization.js");
+    isAnimated = mod.isAnimated;
+  });
+
+  // ── GIF ──
+  it("detects animated GIF (multiple frame markers)", () => {
+    // Minimal animated GIF: header + 2 Image Descriptor blocks (0x2C) + trailer (0x3B)
+    const buf = new Uint8Array([
+      // GIF89a header
+      0x47, 0x49, 0x46, 0x38, 0x39, 0x61,
+      // Logical Screen Descriptor (7 bytes)
+      0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+      // First Image Descriptor marker
+      0x2c,
+      // Descriptor fields (9 bytes — left, top, width, height, flags)
+      0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+      // Minimal LZW data
+      0x02, 0x01, 0x01, 0x00,
+      // Second Image Descriptor marker (this makes it animated)
+      0x2c,
+      // Descriptor fields
+      0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00,
+      // Minimal LZW data
+      0x02, 0x01, 0x01, 0x00,
+      // Trailer
+      0x3b,
+    ]);
+    expect(isAnimated(buf)).toBe(true);
+  });
+
+  it("detects non-animated GIF (single frame)", () => {
+    // Minimal single-frame GIF
+    const buf = new Uint8Array([
+      0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+      // Single Image Descriptor
+      0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x01, 0x01, 0x00,
+      // Trailer
+      0x3b,
+    ]);
+    expect(isAnimated(buf)).toBe(false);
+  });
+
+  // ── WebP ──
+  it("detects animated WebP (ANIM chunk present)", () => {
+    // RIFF....WEBP with ANIM chunk
+    const buf = new Uint8Array([
+      // RIFF header
+      0x52, 0x49, 0x46, 0x46,
+      // File size (dummy)
+      0x00, 0x00, 0x00, 0x00,
+      // WEBP
+      0x57, 0x45, 0x42, 0x50,
+      // VP8X chunk header (extended format)
+      0x56, 0x50, 0x38, 0x58, 0x0a, 0x00, 0x00, 0x00,
+      // VP8X flags (animation bit set)
+      0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      // ANIM chunk header (0x41 0x4E 0x49 0x4D = "ANIM")
+      0x41, 0x4e, 0x49, 0x4d, 0x06, 0x00, 0x00, 0x00,
+      // ANIM payload (dummy)
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    expect(isAnimated(buf)).toBe(true);
+  });
+
+  it("detects non-animated WebP (no ANIM chunk)", () => {
+    // RIFF....WEBP with VP8 chunk (no ANIM)
+    const buf = new Uint8Array([
+      0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+      // VP8 chunk (not animated)
+      0x56, 0x50, 0x38, 0x20, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    expect(isAnimated(buf)).toBe(false);
+  });
+
+  // ── PNG (APNG) ──
+  it("detects animated PNG (acTL + IDAT + fdAT chunks)", () => {
+    // PNG signature + acTL chunk + IDAT chunk + fdAT chunk
+    const buf = new Uint8Array([
+      // PNG signature
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      // IHDR chunk (length=13, type=IHDR)
+      0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+      // IHDR data (13 bytes)
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00,
+      // IHDR CRC
+      0x00, 0x00, 0x00, 0x00,
+      // acTL chunk (length=8, type=acTL = 0x6163544C)
+      0x00, 0x00, 0x00, 0x08, 0x61, 0x63, 0x54, 0x4c,
+      // acTL data (8 bytes)
+      0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
+      // acTL CRC
+      0x00, 0x00, 0x00, 0x00,
+      // IDAT chunk (length=1, type=IDAT)
+      0x00, 0x00, 0x00, 0x01, 0x49, 0x44, 0x41, 0x54, 0x00,
+      // IDAT CRC
+      0x00, 0x00, 0x00, 0x00,
+      // fdAT chunk (length=4, type=fdAT = 0x66644154)
+      0x00, 0x00, 0x00, 0x04, 0x66, 0x64, 0x41, 0x54, 0x00, 0x00, 0x00, 0x00,
+      // fdAT CRC
+      0x00, 0x00, 0x00, 0x00,
+    ]);
+    expect(isAnimated(buf)).toBe(true);
+  });
+
+  it("detects non-animated PNG (no acTL chunk)", () => {
+    // Regular PNG — just IHDR + IDAT (no acTL or fdAT)
+    const buf = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+      // IHDR
+      0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+      0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      // IDAT
+      0x00, 0x00, 0x00, 0x01, 0x49, 0x44, 0x41, 0x54, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ]);
+    expect(isAnimated(buf)).toBe(false);
+  });
+
+  // ── Edge cases ──
+  it("returns false for non-animatable types (JPEG)", () => {
+    // JPEG can't be animated
+    const buf = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10]);
+    expect(isAnimated(buf)).toBe(false);
+  });
+
+  it("returns false for empty buffer", () => {
+    expect(isAnimated(new Uint8Array(0))).toBe(false);
+  });
+});
+
+// ── Animated image bypass in handler ───────────────────────────────
+// Ported from Next.js: packages/next/src/server/image-optimizer.ts
+// When ANIMATABLE_TYPES.includes(upstreamType) && isAnimated(buffer), skip optimization.
+describe("animated image bypass in handleImageOptimization", () => {
+  async function getHandler() {
+    const mod = await import("../packages/vinext/src/server/image-optimization.js");
+    return mod.handleImageOptimization;
+  }
+
+  it("skips transform for animated GIF and serves as-is", async () => {
+    const handle = await getHandler();
+    // Minimal animated GIF (2 frames)
+    const animatedGifBytes = new Uint8Array([
+      0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x00,
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x01, 0x01, 0x00, 0x2c, 0x00, 0x00,
+      0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x01, 0x01, 0x00, 0x3b,
+    ]);
+    let transformCalled = false;
+    const req = new Request("http://localhost/_vinext/image?url=%2Fanim.gif&w=640&q=75", {
+      headers: { Accept: "image/webp" },
+    });
+    const res = await handle(req, {
+      fetchAsset: async () =>
+        new Response(animatedGifBytes, {
+          status: 200,
+          headers: { "Content-Type": "image/gif" },
+        }),
+      transformImage: async () => {
+        transformCalled = true;
+        return new Response("transformed");
+      },
+    });
+    expect(res.status).toBe(200);
+    // Transform should NOT have been called for animated image
+    expect(transformCalled).toBe(false);
+    // Should serve the original content type
+    expect(res.headers.get("Content-Type")).toBe("image/gif");
+  });
+
+  it("still transforms non-animated GIF", async () => {
+    const handle = await getHandler();
+    // Single-frame GIF
+    const staticGifBytes = new Uint8Array([
+      0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x2c, 0x00,
+      0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x01, 0x01, 0x00, 0x3b,
+    ]);
+    let transformCalled = false;
+    const req = new Request("http://localhost/_vinext/image?url=%2Fstatic.gif&w=640&q=75", {
+      headers: { Accept: "image/webp" },
+    });
+    await handle(req, {
+      fetchAsset: async () =>
+        new Response(staticGifBytes, {
+          status: 200,
+          headers: { "Content-Type": "image/gif" },
+        }),
+      transformImage: async () => {
+        transformCalled = true;
+        return new Response("transformed", { headers: { "Content-Type": "image/webp" } });
+      },
+    });
+    // Transform SHOULD have been called for non-animated image
+    expect(transformCalled).toBe(true);
   });
 });

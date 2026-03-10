@@ -190,6 +190,99 @@ const BYPASS_CONTENT_TYPES = new Set([
 ]);
 
 /**
+ * Content types that can potentially be animated. Only these types
+ * are checked for animation before deciding to skip optimization.
+ * Matches Next.js ANIMATABLE_TYPES.
+ */
+const ANIMATABLE_TYPES = new Set(["image/gif", "image/png", "image/webp"]);
+
+/**
+ * Detect whether an image buffer contains an animated image.
+ * Checks GIF, WebP, and PNG (APNG) formats for animation markers.
+ *
+ * Ported from Next.js: packages/next/src/compiled/is-animated
+ * (which wraps the `is-animated` npm package)
+ */
+export function isAnimated(buffer: Uint8Array): boolean {
+  if (buffer.length < 4) return false;
+
+  // GIF: check for multiple Image Descriptor blocks (0x2C)
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) {
+    let frameCount = 0;
+    for (let i = 0; i < buffer.length; i++) {
+      if (buffer[i] === 0x2c) {
+        frameCount++;
+        if (frameCount >= 2) return true;
+      }
+      if (buffer[i] === 0x3b) break; // GIF trailer
+    }
+    return false;
+  }
+
+  // WebP: check for ANIM chunk (0x41 0x4E 0x49 0x4D)
+  if (
+    buffer.length >= 12 &&
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
+  ) {
+    // Scan for ANIM chunk
+    for (let i = 12; i < buffer.length - 3; i++) {
+      if (
+        buffer[i] === 0x41 &&
+        buffer[i + 1] === 0x4e &&
+        buffer[i + 2] === 0x49 &&
+        buffer[i + 3] === 0x4d
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // PNG (APNG): check for acTL + IDAT + fdAT chunks in order
+  if (
+    buffer.length >= 8 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  ) {
+    let hasAcTL = false;
+    let hasIDAT = false;
+    let hasFdAT = false;
+    let i = 8; // Skip PNG signature
+    while (i + 8 <= buffer.length) {
+      const chunkLength =
+        ((buffer[i] << 24) | (buffer[i + 1] << 16) | (buffer[i + 2] << 8) | buffer[i + 3]) >>> 0;
+      const chunkType =
+        String.fromCharCode(buffer[i + 4]) +
+        String.fromCharCode(buffer[i + 5]) +
+        String.fromCharCode(buffer[i + 6]) +
+        String.fromCharCode(buffer[i + 7]);
+
+      if (chunkType === "acTL") hasAcTL = true;
+      else if (chunkType === "IDAT") hasIDAT = true;
+      else if (chunkType === "fdAT") hasFdAT = true;
+
+      if (hasAcTL && hasIDAT && hasFdAT) return true;
+
+      // Move to next chunk: 4 (length) + 4 (type) + chunkLength (data) + 4 (CRC)
+      i += 12 + chunkLength;
+    }
+    return false;
+  }
+
+  // Not an animatable type
+  return false;
+}
+
+/**
  * Detect image content type from magic bytes (file signatures).
  * Inspects the first few bytes of a buffer to determine the image format.
  * Returns null if the format is unrecognized.
@@ -476,6 +569,57 @@ export interface ImageHandlers {
 }
 
 /**
+ * Transform (if handler provided) and build the final image response.
+ * Extracted to avoid duplicating the transform + fallback logic for
+ * animated vs non-animated code paths.
+ */
+async function transformAndRespond(
+  body: ReadableStream,
+  handlers: ImageHandlers,
+  width: number,
+  format: string,
+  quality: number,
+  imageConfig: ImageConfig | undefined,
+  imageUrl: string,
+  sourceMediaType: string | undefined,
+): Promise<Response> {
+  // Apply AVIF quality offset: AVIF has better compression efficiency, so
+  // Next.js applies Math.max(quality - 20, 1) to match perceptual quality.
+  const effectiveQuality = format === "image/avif" ? Math.max(quality - 20, 1) : quality;
+
+  if (handlers.transformImage) {
+    try {
+      const transformed = await handlers.transformImage(body, {
+        width,
+        format,
+        quality: effectiveQuality,
+      });
+      const headers = new Headers(transformed.headers);
+      headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
+      headers.set("Vary", "Accept");
+      setImageSecurityHeaders(headers, imageConfig, imageUrl, format);
+
+      if (!isSafeImageContentType(headers.get("Content-Type"), imageConfig?.dangerouslyAllowSVG)) {
+        headers.set("Content-Type", format);
+      }
+
+      return new Response(transformed.body, { status: 200, headers });
+    } catch (e) {
+      console.error("[vinext] Image optimization error:", e);
+      // Fall through to serve original
+    }
+  }
+
+  // Fallback: serve original image with cache headers
+  const headers = new Headers();
+  if (sourceMediaType) headers.set("Content-Type", sourceMediaType);
+  headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
+  headers.set("Vary", "Accept");
+  setImageSecurityHeaders(headers, imageConfig, imageUrl, sourceMediaType);
+  return new Response(body, { status: 200, headers });
+}
+
+/**
  * Handle image optimization requests.
  *
  * Parses and validates the request, fetches the source image via the provided
@@ -555,40 +699,49 @@ export async function handleImageOptimization(
     return new Response(source.body, { status: 200, headers });
   }
 
-  // Apply AVIF quality offset: AVIF has better compression efficiency, so
-  // Next.js applies Math.max(quality - 20, 1) to match perceptual quality.
-  const effectiveQuality = format === "image/avif" ? Math.max(quality - 20, 1) : quality;
-
-  // Transform if handler provided, otherwise serve original
-  if (handlers.transformImage) {
-    try {
-      const transformed = await handlers.transformImage(source.body, {
-        width,
-        format,
-        quality: effectiveQuality,
-      });
-      const headers = new Headers(transformed.headers);
+  // For animatable types (GIF, PNG, WebP), check if the image is animated.
+  // Animated images skip optimization and are served as-is, matching Next.js.
+  // This requires buffering the response body to inspect the bytes.
+  if (sourceMediaType && ANIMATABLE_TYPES.has(sourceMediaType)) {
+    const sourceBuffer = new Uint8Array(await source.arrayBuffer());
+    if (isAnimated(sourceBuffer)) {
+      const headers = new Headers(source.headers);
+      headers.set("Content-Type", sourceMediaType);
       headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
       headers.set("Vary", "Accept");
-      setImageSecurityHeaders(headers, imageConfig, imageUrl, format);
-
-      // Verify the transformed response also has a safe Content-Type.
-      // A malicious or buggy transform handler could return HTML.
-      if (!isSafeImageContentType(headers.get("Content-Type"), imageConfig?.dangerouslyAllowSVG)) {
-        headers.set("Content-Type", format);
-      }
-
-      return new Response(transformed.body, { status: 200, headers });
-    } catch (e) {
-      console.error("[vinext] Image optimization error:", e);
-      // Fall through to serve original
+      setImageSecurityHeaders(headers, imageConfig, imageUrl, sourceMediaType);
+      return new Response(sourceBuffer, { status: 200, headers });
     }
+    // Not animated — continue to transform, but use the buffered data
+    // by creating a new ReadableStream from the buffer.
+    const bufferedStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(sourceBuffer);
+        controller.close();
+      },
+    });
+
+    return transformAndRespond(
+      bufferedStream,
+      handlers,
+      width,
+      format,
+      quality,
+      imageConfig,
+      imageUrl,
+      sourceMediaType,
+    );
   }
 
-  // Fallback: serve original image with cache headers
-  const headers = new Headers(source.headers);
-  headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
-  headers.set("Vary", "Accept");
-  setImageSecurityHeaders(headers, imageConfig, imageUrl, sourceMediaType);
-  return new Response(source.body, { status: 200, headers });
+  // Non-animatable type — pass stream directly to transform
+  return transformAndRespond(
+    source.body,
+    handlers,
+    width,
+    format,
+    quality,
+    imageConfig,
+    imageUrl,
+    sourceMediaType,
+  );
 }
