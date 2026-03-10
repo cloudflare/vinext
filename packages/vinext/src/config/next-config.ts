@@ -10,6 +10,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { PHASE_DEVELOPMENT_SERVER } from "../shims/constants.js";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
+import { isExternalUrl } from "./config-matchers.js";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -435,6 +436,21 @@ export async function resolveNextConfig(
         afterFiles: result.afterFiles ?? [],
         fallback: result.fallback ?? [],
       };
+    }
+  }
+
+  // Warn about external rewrites that act as reverse proxies
+  {
+    const allRewrites = [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback];
+    const externalRewrites = allRewrites.filter((r) => isExternalUrl(r.destination));
+    if (externalRewrites.length > 0) {
+      const listing = externalRewrites.map((r) => `  ${r.source} → ${r.destination}`).join("\n");
+      console.warn(
+        `[vinext] Found ${externalRewrites.length} external rewrite(s) that proxy requests to third-party origins:\n` +
+          `${listing}\n` +
+          `Credential headers (cookie, authorization, x-api-key, proxy-authorization) are forwarded to the external origin. ` +
+          `If this is unintentional, consider proxying at the CDN level instead.`,
+      );
     }
   }
 

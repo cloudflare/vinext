@@ -599,7 +599,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         "Content-Security-Policy":
           imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": imageConfig?.contentDispositionType ?? "inline",
+        "Content-Disposition":
+          imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
       };
       if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
@@ -772,7 +773,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         "Content-Security-Policy":
           pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": pagesImageConfig?.contentDispositionType ?? "inline",
+        "Content-Disposition":
+          pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
       };
       if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
