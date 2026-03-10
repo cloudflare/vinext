@@ -182,15 +182,15 @@ See [references/troubleshooting.md](references/troubleshooting.md) for common mi
 
 ## Known Limitations
 
-| Feature                       | Status                                                    |
-| ----------------------------- | --------------------------------------------------------- |
-| `next/image` optimization     | Remote images via @unpic; no build-time optimization      |
-| `next/font/google`            | CDN-loaded, not self-hosted                               |
-| Domain-based i18n             | Not supported; path-prefix i18n works                     |
-| `next/jest`                   | Not supported; use Vitest                                 |
-| Turbopack/webpack config      | Ignored; use Vite plugins instead                         |
-| `runtime` / `preferredRegion` | Route segment configs ignored                             |
-| PPR (Partial Prerendering)    | Use `"use cache"` directive instead (Next.js 16 approach) |
+| Feature                       | Status                                                                                                       |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `next/image` optimization     | Remote images via @unpic. Local images optimized at build time via Sharp (optional). No runtime remote proxy |
+| `next/font/google`            | CDN-loaded, not self-hosted                                                                                  |
+| Domain-based i18n             | Not supported; path-prefix i18n works                                                                        |
+| `next/jest`                   | Not supported; use Vitest                                                                                    |
+| Turbopack/webpack config      | Ignored; use Vite plugins instead                                                                            |
+| `runtime` / `preferredRegion` | Route segment configs ignored                                                                                |
+| PPR (Partial Prerendering)    | Use `"use cache"` directive instead (Next.js 16 approach)                                                    |
 
 ## Anti-patterns
 

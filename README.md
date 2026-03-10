@@ -406,29 +406,29 @@ These are deployed to Cloudflare Workers and updated on every push to `main`:
 
 Every `next/*` import is shimmed to a Vite-compatible implementation.
 
-| Module              |     | Notes                                                                                                                                  |
-| ------------------- | --- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `next/link`         | ✅  | All props including `prefetch` (IntersectionObserver), `onNavigate`, scroll restoration, `basePath`, `locale`                          |
-| `next/image`        | 🟡  | Remote images via [@unpic/react](https://unpic.pics) (28 CDNs). Local images via `<img>` + srcSet. No build-time optimization/resizing |
-| `next/head`         | ✅  | SSR collection + client-side DOM manipulation                                                                                          |
-| `next/router`       | ✅  | `useRouter`, `Router` singleton, events, client-side navigation, SSR context, i18n                                                     |
-| `next/navigation`   | ✅  | `usePathname`, `useSearchParams`, `useParams`, `useRouter`, `redirect`, `notFound`, `forbidden`, `unauthorized`                        |
-| `next/server`       | ✅  | `NextRequest`, `NextResponse`, `NextURL`, cookies, `userAgent`, `after`, `connection`, `URLPattern`                                    |
-| `next/headers`      | ✅  | Async `headers()`, `cookies()`, `draftMode()`                                                                                          |
-| `next/dynamic`      | ✅  | `ssr: true`, `ssr: false`, `loading` component                                                                                         |
-| `next/script`       | ✅  | All 4 strategies (`beforeInteractive`, `afterInteractive`, `lazyOnload`, `worker`)                                                     |
-| `next/font/google`  | 🟡  | Runtime CDN loading. No self-hosting, font subsetting, or fallback metrics                                                             |
-| `next/font/local`   | 🟡  | Runtime `@font-face` injection. Not extracted at build time                                                                            |
-| `next/og`           | ✅  | OG image generation via `@vercel/og` (Satori + resvg)                                                                                  |
-| `next/cache`        | ✅  | `revalidateTag`, `revalidatePath`, `unstable_cache`, pluggable `CacheHandler`, `"use cache"` with `cacheLife()` and `cacheTag()`       |
-| `next/form`         | ✅  | GET form interception + POST server action delegation                                                                                  |
-| `next/legacy/image` | ✅  | Translates legacy props to modern Image                                                                                                |
-| `next/error`        | ✅  | Default error page component                                                                                                           |
-| `next/config`       | ✅  | `getConfig` / `setConfig`                                                                                                              |
-| `next/document`     | ✅  | `Html`, `Head`, `Main`, `NextScript`                                                                                                   |
-| `next/constants`    | ✅  | All phase constants                                                                                                                    |
-| `next/amp`          | ⬜  | No-op (AMP is deprecated)                                                                                                              |
-| `next/web-vitals`   | ⬜  | No-op (use the `web-vitals` library directly)                                                                                          |
+| Module              |     | Notes                                                                                                                                                                                              |
+| ------------------- | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `next/link`         | ✅  | All props including `prefetch` (IntersectionObserver), `onNavigate`, scroll restoration, `basePath`, `locale`                                                                                      |
+| `next/image`        | 🟡  | Remote images via [@unpic/react](https://unpic.pics) (28 CDNs). Local images route through `/_vinext/image` with build-time Sharp optimization (WebP/AVIF manifest). No runtime remote image proxy |
+| `next/head`         | ✅  | SSR collection + client-side DOM manipulation                                                                                                                                                      |
+| `next/router`       | ✅  | `useRouter`, `Router` singleton, events, client-side navigation, SSR context, i18n                                                                                                                 |
+| `next/navigation`   | ✅  | `usePathname`, `useSearchParams`, `useParams`, `useRouter`, `redirect`, `notFound`, `forbidden`, `unauthorized`                                                                                    |
+| `next/server`       | ✅  | `NextRequest`, `NextResponse`, `NextURL`, cookies, `userAgent`, `after`, `connection`, `URLPattern`                                                                                                |
+| `next/headers`      | ✅  | Async `headers()`, `cookies()`, `draftMode()`                                                                                                                                                      |
+| `next/dynamic`      | ✅  | `ssr: true`, `ssr: false`, `loading` component                                                                                                                                                     |
+| `next/script`       | ✅  | All 4 strategies (`beforeInteractive`, `afterInteractive`, `lazyOnload`, `worker`)                                                                                                                 |
+| `next/font/google`  | 🟡  | Runtime CDN loading. No self-hosting, font subsetting, or fallback metrics                                                                                                                         |
+| `next/font/local`   | 🟡  | Runtime `@font-face` injection. Not extracted at build time                                                                                                                                        |
+| `next/og`           | ✅  | OG image generation via `@vercel/og` (Satori + resvg)                                                                                                                                              |
+| `next/cache`        | ✅  | `revalidateTag`, `revalidatePath`, `unstable_cache`, pluggable `CacheHandler`, `"use cache"` with `cacheLife()` and `cacheTag()`                                                                   |
+| `next/form`         | ✅  | GET form interception + POST server action delegation                                                                                                                                              |
+| `next/legacy/image` | ✅  | Translates legacy props to modern Image                                                                                                                                                            |
+| `next/error`        | ✅  | Default error page component                                                                                                                                                                       |
+| `next/config`       | ✅  | `getConfig` / `setConfig`                                                                                                                                                                          |
+| `next/document`     | ✅  | `Html`, `Head`, `Main`, `NextScript`                                                                                                                                                               |
+| `next/constants`    | ✅  | All phase constants                                                                                                                                                                                |
+| `next/amp`          | ⬜  | No-op (AMP is deprecated)                                                                                                                                                                          |
+| `next/web-vitals`   | ⬜  | No-op (use the `web-vitals` library directly)                                                                                                                                                      |
 
 ### Routing
 
@@ -472,12 +472,12 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 
 ### Configuration
 
-| Feature                                          |     | Notes                                                               |
-| ------------------------------------------------ | --- | ------------------------------------------------------------------- |
-| `next.config.js` / `.ts` / `.mjs`                | ✅  | Function configs, phase argument                                    |
-| `rewrites` / `redirects` / `headers`             | ✅  | All phases, param interpolation                                     |
-| Environment variables (`.env*`, `NEXT_PUBLIC_*`) | ✅  | Auto-loads Next.js-style dotenv files; only public vars are inlined |
-| `images` config                                  | 🟡  | Parsed but not used for optimization                                |
+| Feature                                          |     | Notes                                                                                                                                                                |
+| ------------------------------------------------ | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `next.config.js` / `.ts` / `.mjs`                | ✅  | Function configs, phase argument                                                                                                                                     |
+| `rewrites` / `redirects` / `headers`             | ✅  | All phases, param interpolation                                                                                                                                      |
+| Environment variables (`.env*`, `NEXT_PUBLIC_*`) | ✅  | Auto-loads Next.js-style dotenv files; only public vars are inlined                                                                                                  |
+| `images` config                                  | 🟡  | `remotePatterns`, `domains`, `deviceSizes`, `imageSizes`, `formats`, `dangerouslyAllowSVG` used. Missing: `localPatterns`, `qualities`, `loader`/`loaderFile` config |
 
 ### Environment variable loading (`.env*`)
 
@@ -533,12 +533,12 @@ These are intentional exclusions:
 
 ## Known limitations
 
-- **Image optimization doesn't happen at build time.** Remote images work via `@unpic/react` (auto-detects 28 CDN providers). Local images are routed through a `/_vinext/image` endpoint that can resize and transcode on Cloudflare Workers (via the Images binding) in production, but no build-time optimization or static resizing occurs.
+- **Image optimization is build-time only for static imports.** Local images imported in code are pre-optimized to WebP/AVIF via Sharp at build time (when Sharp is installed). Remote/user-uploaded images are not optimized at runtime — use Cloudflare Images, a custom `loader`, or an external CDN for dynamic image optimization. Remote images use @unpic/react for CDN-native transforms.
 - **Google Fonts are loaded from the CDN, not self-hosted.** No `size-adjust` fallback font metrics. Local fonts work but `@font-face` CSS is injected at runtime, not extracted at build time.
 - **`useSelectedLayoutSegment(s)`** derives segments from the pathname rather than being truly layout-aware. May differ from Next.js in edge cases with parallel routes.
 - **Route segment config** — `runtime` and `preferredRegion` are ignored (everything runs in the same environment).
 - **Node.js production server (`vinext start`)** works for testing but is less complete than Workers deployment. Cloudflare Workers is the primary target.
-- **Native Node modules (sharp, resvg, satori, lightningcss, @napi-rs/canvas)** crash Vite's RSC dev environment. Dynamic OG image/icon routes using these work in production builds but not in dev mode. These are auto-stubbed during `vinext deploy`.
+- **Native Node modules (resvg, satori, lightningcss, @napi-rs/canvas)** crash Vite's RSC dev environment. Sharp is the exception — it's loaded dynamically and works in dev mode for image optimization. Dynamic OG image/icon routes using other native modules work in production builds but not in dev mode. These are auto-stubbed during `vinext deploy`.
 
 ## Benchmarks
 

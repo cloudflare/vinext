@@ -49,14 +49,16 @@ examples/               # User-facing demo apps
 
 ### Key Files
 
-| File                       | Purpose                                                            |
-| -------------------------- | ------------------------------------------------------------------ |
-| `index.ts`                 | Vite plugin — resolves `next/*` imports, generates virtual modules |
-| `shims/*.ts`               | Reimplementations of `next/link`, `next/navigation`, etc.          |
-| `server/dev-server.ts`     | Pages Router SSR handler                                           |
-| `entries/app-rsc-entry.ts` | App Router RSC entry generator                                     |
-| `routing/pages-router.ts`  | Scans `pages/` directory                                           |
-| `routing/app-router.ts`    | Scans `app/` directory                                             |
+| File                           | Purpose                                                                |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| `index.ts`                     | Vite plugin — resolves `next/*` imports, generates virtual modules     |
+| `shims/*.ts`                   | Reimplementations of `next/link`, `next/navigation`, etc.              |
+| `server/dev-server.ts`         | Pages Router SSR handler                                               |
+| `entries/app-rsc-entry.ts`     | App Router RSC entry generator                                         |
+| `routing/pages-router.ts`      | Scans `pages/` directory                                               |
+| `routing/app-router.ts`        | Scans `app/` directory                                                 |
+| `utils/sharp.ts`               | Optional Sharp module loader for image optimization                    |
+| `server/image-optimization.ts` | `/_vinext/image` endpoint handler, manifest lookup, format negotiation |
 
 ---
 
