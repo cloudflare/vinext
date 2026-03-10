@@ -2726,13 +2726,13 @@ describe("NextRequest API", () => {
     expect(req.geo).toBeUndefined();
   });
 
-  it("buildId returns process.env.__VINEXT_BUILD_ID when set", async () => {
+  it("nextUrl.buildId returns process.env.__VINEXT_BUILD_ID when set", async () => {
     const original = process.env.__VINEXT_BUILD_ID;
     try {
       process.env.__VINEXT_BUILD_ID = "test-build-123";
       const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
       const req = new NextRequest("http://localhost/");
-      expect(req.buildId).toBe("test-build-123");
+      expect(req.nextUrl.buildId).toBe("test-build-123");
     } finally {
       if (original === undefined) {
         delete process.env.__VINEXT_BUILD_ID;
@@ -2742,15 +2742,31 @@ describe("NextRequest API", () => {
     }
   });
 
-  it("buildId returns undefined when __VINEXT_BUILD_ID is not set", async () => {
+  it("nextUrl.buildId returns undefined when __VINEXT_BUILD_ID is not set", async () => {
     const original = process.env.__VINEXT_BUILD_ID;
     try {
       delete process.env.__VINEXT_BUILD_ID;
       const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
       const req = new NextRequest("http://localhost/");
-      expect(req.buildId).toBeUndefined();
+      expect(req.nextUrl.buildId).toBeUndefined();
     } finally {
       if (original !== undefined) {
+        process.env.__VINEXT_BUILD_ID = original;
+      }
+    }
+  });
+
+  it("buildId pass-through on NextRequest delegates to nextUrl.buildId", async () => {
+    const original = process.env.__VINEXT_BUILD_ID;
+    try {
+      process.env.__VINEXT_BUILD_ID = "test-build-456";
+      const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+      const req = new NextRequest("http://localhost/");
+      expect(req.buildId).toBe(req.nextUrl.buildId);
+    } finally {
+      if (original === undefined) {
+        delete process.env.__VINEXT_BUILD_ID;
+      } else {
         process.env.__VINEXT_BUILD_ID = original;
       }
     }

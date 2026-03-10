@@ -95,11 +95,11 @@ export class NextRequest extends Request {
 
   /**
    * The build ID of the Next.js application.
-   * Set from `generateBuildId` in next.config.js, or a random UUID if not configured.
+   * Delegates to `nextUrl.buildId` to match Next.js API surface.
    * Can be used in middleware to detect deployment skew between client and server.
    */
   get buildId(): string | undefined {
-    return process.env.__VINEXT_BUILD_ID ?? undefined;
+    return this._nextUrl.buildId;
   }
 }
 
@@ -267,6 +267,16 @@ export class NextURL {
 
   toString(): string {
     return this._url.toString();
+  }
+
+  /**
+   * The build ID of the Next.js application.
+   * Set from `generateBuildId` in next.config.js, or a random UUID if not configured.
+   * Can be used in middleware to detect deployment skew between client and server.
+   * Matches the Next.js API: `request.nextUrl.buildId`.
+   */
+  get buildId(): string | undefined {
+    return process.env.__VINEXT_BUILD_ID ?? undefined;
   }
 }
 
