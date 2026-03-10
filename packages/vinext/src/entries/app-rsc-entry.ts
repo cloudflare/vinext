@@ -2177,46 +2177,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (_layoutProbeResult instanceof Response) return _layoutProbeResult;
   }
 
-  // Pre-render the page component to catch redirect()/notFound() thrown synchronously.
-  // Server Components are just functions — we can call PageComponent directly to detect
-  // these special throws before starting the RSC stream.
-  //
-  // For routes with a loading.tsx Suspense boundary, we skip awaiting async components.
-  // The Suspense boundary + rscOnError will handle redirect/notFound thrown during
-  // streaming, and blocking here would defeat streaming (the slow component's delay
-  // would be hit before the RSC stream even starts).
-  //
-  // Because this calls the component outside React's render cycle, hooks like use()
-  // trigger "Invalid hook call" console.error in dev. The module-level ALS patch
-  // suppresses the warning only within this request's execution context.
-  const _hasLoadingBoundary = !!(route.loading && route.loading.default);
-  const _pageProbeResult = await _suppressHookWarningAls.run(true, async () => {
-    try {
-      const testResult = PageComponent({ params });
-      // If it's a promise (async component), only await if there's no loading boundary.
-      // With a loading boundary, the Suspense streaming pipeline handles async resolution
-      // and any redirect/notFound errors via rscOnError.
-      if (testResult && typeof testResult === "object" && typeof testResult.then === "function") {
-        if (!_hasLoadingBoundary) {
-          await testResult;
-        } else {
-          // Suppress unhandled promise rejection — with a loading boundary,
-          // redirect/notFound errors are handled by rscOnError during streaming.
-          testResult.catch(() => {});
-        }
-      }
-    } catch (preRenderErr) {
-      const specialResponse = await handleRenderError(preRenderErr);
-      if (specialResponse) return specialResponse;
-      // Non-special errors from the pre-render test are expected (e.g. use() hook
-      // fails outside React's render cycle, client references can't execute on server).
-      // Only redirect/notFound/forbidden/unauthorized are actionable here — other
-      // errors will be properly caught during actual RSC/SSR rendering below.
-    }
-    return null;
-  });
-  if (_pageProbeResult instanceof Response) return _pageProbeResult;
-
   // Mark end of compile phase: route matching, middleware, tree building are done.
   if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
 
@@ -2224,15 +2184,101 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // Track non-navigation RSC errors so we can detect when the in-tree global
   // ErrorBoundary catches during SSR (producing double <html>/<body>) and
   // re-render with renderErrorBoundaryPage (which skips layouts for global-error).
+  //
+  // Also track the first redirect/notFound/forbidden/unauthorized error thrown
+  // during rendering. Previously, a "page probe" called the page component
+  // outside React's render cycle to detect these throws before streaming.
+  // That caused double data fetching and ~2x CPU time. Instead, we now
+  // buffer the RSC stream and check onError — components execute only once
+  // during the actual RSC render.
   let _rscErrorForRerender = null;
+  let _caughtSpecialError = null;
   const _baseOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
   const onRenderError = function(error, requestInfo, errorContext) {
+    // Capture the first redirect/notFound/forbidden/unauthorized for
+    // stream-buffered detection (replaces the old page probe).
+    if (!_caughtSpecialError && error && typeof error === "object" && "digest" in error) {
+      const digest = String(error.digest);
+      if (
+        digest.startsWith("NEXT_REDIRECT;") ||
+        digest === "NEXT_NOT_FOUND" ||
+        digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")
+      ) {
+        _caughtSpecialError = error;
+      }
+    }
     if (!(error && typeof error === "object" && "digest" in error)) {
       _rscErrorForRerender = error;
     }
     return _baseOnError(error, requestInfo, errorContext);
   };
   const rscStream = renderToReadableStream(element, { onError: onRenderError });
+
+  // Detect page-level redirect/notFound/forbidden/unauthorized errors before
+  // committing to the HTTP response status code. Strategy varies by page type:
+  //
+  // 1. Routes WITH loading.tsx (Suspense): stream directly. Errors inside the
+  //    Suspense boundary flow through the RSC stream for client-side handling.
+  //
+  // 2. SYNC pages (no loading.tsx): a lightweight sync-only probe catches
+  //    redirect/notFound thrown synchronously by the page function. This is
+  //    cheap — sync server components do no data fetching. The probe result
+  //    is discarded; only the thrown error matters.
+  //
+  // 3. ASYNC pages (no loading.tsx): buffer the entire RSC stream to catch
+  //    redirect/notFound thrown after await (e.g. fetch then notFound).
+  //    This is the key optimization — the old "page probe" awaited the full
+  //    async component, causing every data fetch to run twice. Buffering the
+  //    stream instead means components execute only once. Latency is the same
+  //    because without Suspense, nothing can stream until all async work is done.
+  const _hasLoadingBoundary = !!(route.loading && route.loading.default);
+  const _isAsyncPage = PageComponent.constructor?.name === "AsyncFunction";
+  let _bufferedRscStream;
+
+  if (_hasLoadingBoundary) {
+    // Suspense route: stream directly. Errors inside the Suspense boundary
+    // (loading.tsx) flow through the RSC stream as error references.
+    _bufferedRscStream = rscStream;
+  } else if (!_isAsyncPage) {
+    // Sync page: lightweight probe catches sync redirect/notFound/forbidden/
+    // unauthorized from the page function itself. Errors from async children
+    // inside inline <Suspense> boundaries flow through the stream as before.
+    const _syncProbeResult = await _suppressHookWarningAls.run(true, async () => {
+      try {
+        PageComponent({ params });
+      } catch (syncErr) {
+        const specialResponse = await handleRenderError(syncErr);
+        if (specialResponse) return specialResponse;
+      }
+      return null;
+    });
+    if (_syncProbeResult instanceof Response) return _syncProbeResult;
+    _bufferedRscStream = rscStream;
+  } else {
+    // Async page without Suspense: buffer the entire RSC stream to catch
+    // redirect/notFound thrown after await. Components execute only once
+    // (during RSC rendering), eliminating the double data fetching that
+    // the old page probe caused.
+    const _rscReader = rscStream.getReader();
+    const _chunks = [];
+    while (true) {
+      const { value, done } = await _rscReader.read();
+      if (value) _chunks.push(value);
+      if (done) break;
+    }
+
+    if (_caughtSpecialError) {
+      const specialResponse = await handleRenderError(_caughtSpecialError);
+      if (specialResponse) return specialResponse;
+    }
+
+    _bufferedRscStream = new ReadableStream({
+      start(controller) {
+        for (let _ci = 0; _ci < _chunks.length; _ci++) controller.enqueue(_chunks[_ci]);
+        controller.close();
+      },
+    });
+  }
 
   if (isRscRequest) {
     // Direct RSC stream response (for client-side navigation)
@@ -2299,7 +2345,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
       responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
     }
-    return new Response(rscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
+    return new Response(_bufferedRscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
 
   // Collect font data from RSC environment before passing to SSR
@@ -2324,7 +2370,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   let htmlStream;
   try {
     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
+    htmlStream = await ssrEntry.handleSsr(_bufferedRscStream, _getNavigationContext(), fontData);
     // Shell render complete; Suspense boundaries stream asynchronously
     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
   } catch (ssrErr) {
