@@ -9,6 +9,8 @@ import { describe, it, expect } from "vitest";
 import {
   matchRemotePattern,
   hasRemoteMatch,
+  matchLocalPattern,
+  hasLocalMatch,
   type RemotePattern,
 } from "../packages/vinext/src/shims/image-config.js";
 
@@ -257,5 +259,90 @@ describe("matchRemotePattern glob edge cases", () => {
     expect(matchRemotePattern(pattern, new URL("http://cdn.example.com/uploads/a.png"))).toBe(
       false,
     );
+  });
+});
+
+// ─── matchLocalPattern ──────────────────────────────────────────────────
+
+describe("matchLocalPattern", () => {
+  it("matches when no pathname specified (defaults to **)", () => {
+    expect(matchLocalPattern({}, new URL("/any/path.jpg", "http://n"))).toBe(true);
+  });
+
+  it("matches exact pathname", () => {
+    expect(
+      matchLocalPattern({ pathname: "/images/hero.png" }, new URL("/images/hero.png", "http://n")),
+    ).toBe(true);
+  });
+
+  it("rejects non-matching pathname", () => {
+    expect(
+      matchLocalPattern({ pathname: "/images/hero.png" }, new URL("/other/photo.png", "http://n")),
+    ).toBe(false);
+  });
+
+  it("matches single-segment wildcard", () => {
+    expect(
+      matchLocalPattern({ pathname: "/images/*" }, new URL("/images/photo.png", "http://n")),
+    ).toBe(true);
+    expect(
+      matchLocalPattern({ pathname: "/images/*" }, new URL("/images/deep/photo.png", "http://n")),
+    ).toBe(false);
+  });
+
+  it("matches multi-segment wildcard", () => {
+    expect(
+      matchLocalPattern({ pathname: "/images/**" }, new URL("/images/a/b/c.png", "http://n")),
+    ).toBe(true);
+  });
+
+  it("matches search parameter", () => {
+    expect(matchLocalPattern({ search: "?v=1" }, new URL("/img.png?v=1", "http://n"))).toBe(true);
+    expect(matchLocalPattern({ search: "?v=1" }, new URL("/img.png?v=2", "http://n"))).toBe(false);
+  });
+
+  it("skips search check when not specified", () => {
+    expect(matchLocalPattern({}, new URL("/img.png?anything=here", "http://n"))).toBe(true);
+  });
+
+  it("combines pathname and search", () => {
+    expect(
+      matchLocalPattern(
+        { pathname: "/uploads/**", search: "?token=abc" },
+        new URL("/uploads/file.jpg?token=abc", "http://n"),
+      ),
+    ).toBe(true);
+    expect(
+      matchLocalPattern(
+        { pathname: "/uploads/**", search: "?token=abc" },
+        new URL("/uploads/file.jpg?token=xyz", "http://n"),
+      ),
+    ).toBe(false);
+  });
+});
+
+// ─── hasLocalMatch ──────────────────────────────────────────────────────
+
+describe("hasLocalMatch", () => {
+  it("returns true when localPatterns is undefined (allow all)", () => {
+    expect(hasLocalMatch(undefined, "/anything/here.jpg")).toBe(true);
+  });
+
+  it("matches when path fits a pattern", () => {
+    expect(hasLocalMatch([{ pathname: "/allowed/**" }], "/allowed/img.jpg")).toBe(true);
+  });
+
+  it("rejects when path doesn't fit any pattern", () => {
+    expect(hasLocalMatch([{ pathname: "/allowed/**" }], "/blocked/img.jpg")).toBe(false);
+  });
+
+  it("matches any of multiple patterns", () => {
+    expect(
+      hasLocalMatch([{ pathname: "/a/**" }, { pathname: "/b/**" }], "/b/img.jpg"),
+    ).toBe(true);
+  });
+
+  it("empty array rejects everything", () => {
+    expect(hasLocalMatch([], "/anything.jpg")).toBe(false);
   });
 });

@@ -354,6 +354,92 @@ describe("resolveNextConfig images", () => {
   });
 });
 
+describe("normalizeImageConfig validation", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws on empty deviceSizes array", async () => {
+    tmpDir = makeTempDir();
+    await expect(
+      resolveNextConfig({ images: { deviceSizes: [] } }, tmpDir),
+    ).rejects.toThrow(/must contain at least one item/);
+  });
+
+  it("throws on non-integer deviceSizes", async () => {
+    tmpDir = makeTempDir();
+    await expect(
+      resolveNextConfig({ images: { deviceSizes: [1.5] } }, tmpDir),
+    ).rejects.toThrow(/must contain integers/);
+  });
+
+  it("throws when qualities exceeds max length of 20", async () => {
+    tmpDir = makeTempDir();
+    await expect(
+      resolveNextConfig({ images: { qualities: Array(21).fill(75) } }, tmpDir),
+    ).rejects.toThrow(/must contain at most 20 items/);
+  });
+
+  it("throws on negative minimumCacheTTL", async () => {
+    tmpDir = makeTempDir();
+    await expect(
+      resolveNextConfig({ images: { minimumCacheTTL: -1 } }, tmpDir),
+    ).rejects.toThrow(/greater than or equal to 0.*minimumCacheTTL/);
+  });
+
+  it("throws on zero maximumResponseBody", async () => {
+    tmpDir = makeTempDir();
+    await expect(
+      resolveNextConfig({ images: { maximumResponseBody: 0 } }, tmpDir),
+    ).rejects.toThrow(/greater than or equal to 1.*maximumResponseBody/);
+  });
+
+  it("throws on invalid image format", async () => {
+    tmpDir = makeTempDir();
+    await expect(
+      resolveNextConfig({ images: { formats: ["image/gif" as any] } }, tmpDir),
+    ).rejects.toThrow(/must only contain "image\/avif" or "image\/webp"/);
+  });
+
+  it("throws on invalid remotePattern protocol", async () => {
+    tmpDir = makeTempDir();
+    await expect(
+      resolveNextConfig(
+        { images: { remotePatterns: [{ hostname: "x.com", protocol: "ftp" }] } },
+        tmpDir,
+      ),
+    ).rejects.toThrow(/must have protocol "http" or "https"/);
+  });
+
+  it("accepts a valid image config without throwing", async () => {
+    tmpDir = makeTempDir();
+    const resolved = await resolveNextConfig(
+      {
+        images: {
+          deviceSizes: [640, 1080],
+          imageSizes: [32, 64],
+          qualities: [50, 75, 100],
+          minimumCacheTTL: 0,
+          maximumResponseBody: 1,
+          formats: ["image/avif", "image/webp"],
+        },
+      },
+      tmpDir,
+    );
+
+    expect(resolved.images.deviceSizes).toEqual([640, 1080]);
+    expect(resolved.images.imageSizes).toEqual([32, 64]);
+    expect(resolved.images.qualities).toEqual([50, 75, 100]);
+    expect(resolved.images.minimumCacheTTL).toBe(0);
+    expect(resolved.images.maximumResponseBody).toBe(1);
+    expect(resolved.images.formats).toEqual(["image/avif", "image/webp"]);
+  });
+});
+
 describe("resolveNextConfig serverActionsBodySizeLimit", () => {
   it("defaults to 1MB when no config is provided", async () => {
     const resolved = await resolveNextConfig(null);

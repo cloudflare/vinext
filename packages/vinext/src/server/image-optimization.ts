@@ -202,7 +202,8 @@ function stripIpv6Brackets(hostname: string): string {
   return hostname;
 }
 
-function parseIpv4(hostname: string): [number, number, number, number] | null {
+/** @internal */
+export function parseIpv4(hostname: string): [number, number, number, number] | null {
   const match = hostname.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
   if (!match) return null;
   const octets = match.slice(1).map((part) => parseInt(part, 10));
@@ -212,7 +213,8 @@ function parseIpv4(hostname: string): [number, number, number, number] | null {
   return octets as [number, number, number, number];
 }
 
-function isBlockedIpv4(octets: [number, number, number, number]): boolean {
+/** @internal */
+export function isBlockedIpv4(octets: [number, number, number, number]): boolean {
   const [a, b] = octets;
   return (
     a === 0 ||
@@ -224,7 +226,8 @@ function isBlockedIpv4(octets: [number, number, number, number]): boolean {
   );
 }
 
-function parseIpv6(hostname: string): number[] | null {
+/** @internal */
+export function parseIpv6(hostname: string): number[] | null {
   let normalized = stripIpv6Brackets(hostname).toLowerCase();
   if (!normalized.includes(":")) return null;
 
@@ -272,7 +275,8 @@ function parseIpv6(hostname: string): number[] | null {
   return [...(parsedLeft as number[]), ...Array(missing).fill(0), ...(parsedRight as number[])];
 }
 
-function getIpv4MappedAddress(ipv6: number[]): string | null {
+/** @internal */
+export function getIpv4MappedAddress(ipv6: number[]): string | null {
   if (!ipv6.slice(0, 5).every((part) => part === 0) || ipv6[5] !== 0xffff) {
     return null;
   }
@@ -287,7 +291,8 @@ function streamFromArrayBuffer(buffer: ArrayBuffer): ReadableStream {
   return body;
 }
 
-function isBlockedLocalHost(hostname: string): boolean {
+/** @internal */
+export function isBlockedLocalHost(hostname: string): boolean {
   const lower = stripIpv6Brackets(hostname).toLowerCase();
   if (lower === "localhost" || lower.endsWith(".localhost") || lower.endsWith(".local")) {
     return true;
