@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
 import { createServer, type ViteDevServer } from "vite";
+import fs from "node:fs";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
 import { PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
@@ -2708,6 +2709,130 @@ describe("production server compression", () => {
 
     // PNG should not be compressed
     expect(writtenHeaders["Content-Encoding"]).toBeUndefined();
+  });
+});
+
+describe("precompressAssets", () => {
+  it("precompresses JS and CSS files above size threshold", async () => {
+    const { precompressAssets, COMPRESS_THRESHOLD } =
+      await import("../packages/vinext/src/server/prod-server.js");
+    const tmpDir = path.join(import.meta.dirname, "fixtures", "_precompress_test");
+    const assetsDir = path.join(tmpDir, "assets");
+    await fs.promises.mkdir(assetsDir, { recursive: true });
+
+    // Create a compressible JS file above threshold
+    const jsContent = "const x = " + "a".repeat(COMPRESS_THRESHOLD + 100) + ";";
+    await fs.promises.writeFile(path.join(assetsDir, "chunk-abc123.js"), jsContent);
+    // Create a small file below threshold
+    await fs.promises.writeFile(path.join(assetsDir, "tiny.js"), "x");
+
+    try {
+      const map = await precompressAssets(tmpDir);
+      // Large JS file should be precompressed
+      expect(map.has("/assets/chunk-abc123.js")).toBe(true);
+      const cached = map.get("/assets/chunk-abc123.js")!;
+      expect(cached.br).toBeInstanceOf(Buffer);
+      expect(cached.gzip).toBeInstanceOf(Buffer);
+      // Compressed should be smaller than original
+      expect(cached.br.length).toBeLessThan(Buffer.byteLength(jsContent));
+      expect(cached.gzip.length).toBeLessThan(Buffer.byteLength(jsContent));
+      // Tiny file should not be precompressed (below threshold)
+      expect(map.has("/assets/tiny.js")).toBe(false);
+    } finally {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns empty map when assets/ directory does not exist", async () => {
+    const { precompressAssets } = await import("../packages/vinext/src/server/prod-server.js");
+    const map = await precompressAssets("/nonexistent/path");
+    expect(map.size).toBe(0);
+  });
+
+  it("skips non-compressible file types (images)", async () => {
+    const { precompressAssets, COMPRESS_THRESHOLD } =
+      await import("../packages/vinext/src/server/prod-server.js");
+    const tmpDir = path.join(import.meta.dirname, "fixtures", "_precompress_test2");
+    const assetsDir = path.join(tmpDir, "assets");
+    await fs.promises.mkdir(assetsDir, { recursive: true });
+
+    // PNG is not compressible
+    await fs.promises.writeFile(
+      path.join(assetsDir, "image.png"),
+      Buffer.alloc(COMPRESS_THRESHOLD + 100),
+    );
+
+    try {
+      const map = await precompressAssets(tmpDir);
+      expect(map.has("/assets/image.png")).toBe(false);
+    } finally {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("tryServeStatic (async)", () => {
+  it("serves a precompressed hashed asset with br encoding", async () => {
+    const { tryServeStatic } = await import("../packages/vinext/src/server/prod-server.js");
+    const tmpDir = path.join(import.meta.dirname, "fixtures", "_static_test");
+    const assetsDir = path.join(tmpDir, "assets");
+    await fs.promises.mkdir(assetsDir, { recursive: true });
+    await fs.promises.writeFile(path.join(assetsDir, "chunk.js"), "console.log('hi')");
+
+    const brBuf = Buffer.from("precompressed-br");
+    const gzipBuf = Buffer.from("precompressed-gzip");
+    const precompressed = new Map([["/assets/chunk.js", { br: brBuf, gzip: gzipBuf }]]);
+
+    let writtenStatus = 0;
+    let writtenHeaders: Record<string, string> = {};
+    let endBuf: Buffer | undefined;
+    const req = { headers: { "accept-encoding": "br, gzip" } };
+    const res = {
+      writeHead: (s: number, h: Record<string, string>) => {
+        writtenStatus = s;
+        writtenHeaders = h;
+      },
+      end: (b: Buffer) => {
+        endBuf = b;
+      },
+    };
+
+    try {
+      const served = await tryServeStatic(
+        req as any,
+        res as any,
+        tmpDir,
+        "/assets/chunk.js",
+        true,
+        undefined,
+        precompressed,
+      );
+      expect(served).toBe(true);
+      expect(writtenStatus).toBe(200);
+      expect(writtenHeaders["Content-Encoding"]).toBe("br");
+      expect(writtenHeaders["Cache-Control"]).toBe("public, max-age=31536000, immutable");
+      expect(writtenHeaders["Content-Length"]).toBe(String(brBuf.length));
+      // Should serve the precompressed buffer, not re-compress
+      expect(endBuf).toBe(brBuf);
+    } finally {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns false for non-existent files (async stat)", async () => {
+    const { tryServeStatic } = await import("../packages/vinext/src/server/prod-server.js");
+    const tmpDir = path.join(import.meta.dirname, "fixtures", "_static_test2");
+    await fs.promises.mkdir(tmpDir, { recursive: true });
+
+    const req = { headers: {} };
+    const res = { writeHead: () => {}, end: () => {} };
+
+    try {
+      const served = await tryServeStatic(req as any, res as any, tmpDir, "/nonexistent.js", false);
+      expect(served).toBe(false);
+    } finally {
+      await fs.promises.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
