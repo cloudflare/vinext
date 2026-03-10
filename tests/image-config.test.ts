@@ -344,3 +344,164 @@ describe("hasLocalMatch", () => {
     expect(hasLocalMatch([], "/anything.jpg")).toBe(false);
   });
 });
+
+// ─── Additional remote pattern edge cases (ported from Next.js) ─────────
+
+describe("matchRemotePattern hostname glob edge cases", () => {
+  it("* does not match empty string in hostname", () => {
+    // *.example.com should not match example.com (wildcard requires at least one segment)
+    const pattern: RemotePattern = { hostname: "*.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://example.com/img.png"))).toBe(false);
+  });
+
+  it("* matches single segment at beginning of hostname", () => {
+    const pattern: RemotePattern = { hostname: "*.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.png"))).toBe(true);
+  });
+
+  it("* in middle of hostname matches single label", () => {
+    const pattern: RemotePattern = { hostname: "cdn.*.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.us.example.com/img.png"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://cdn.eu.example.com/img.png"))).toBe(true);
+  });
+
+  it("* in middle of hostname does not match multiple labels", () => {
+    const pattern: RemotePattern = { hostname: "cdn.*.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.us.east.example.com/img.png"))).toBe(
+      false,
+    );
+  });
+
+  it("* at end of hostname matches single label", () => {
+    const pattern: RemotePattern = { hostname: "cdn.example.*" };
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.png"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.org/img.png"))).toBe(true);
+  });
+
+  it("** matches multiple labels in hostname", () => {
+    const pattern: RemotePattern = { hostname: "**.example.com" };
+    expect(matchRemotePattern(pattern, new URL("https://a.b.c.example.com/img.png"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/img.png"))).toBe(true);
+  });
+});
+
+describe("matchRemotePattern pathname glob edge cases", () => {
+  it("* at beginning of segment matches filename", () => {
+    const pattern: RemotePattern = { hostname: "example.com", pathname: "/images/*.png" };
+    expect(matchRemotePattern(pattern, new URL("https://example.com/images/photo.png"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://example.com/images/photo.jpg"))).toBe(
+      false,
+    );
+  });
+
+  it("* in middle of pathname segment", () => {
+    const pattern: RemotePattern = { hostname: "example.com", pathname: "/img-*-thumb" };
+    expect(matchRemotePattern(pattern, new URL("https://example.com/img-12345-thumb"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://example.com/img-abc-thumb"))).toBe(true);
+  });
+
+  it("* at end of segment matches extension", () => {
+    const pattern: RemotePattern = { hostname: "example.com", pathname: "/uploads/photo.*" };
+    expect(matchRemotePattern(pattern, new URL("https://example.com/uploads/photo.jpg"))).toBe(
+      true,
+    );
+    expect(matchRemotePattern(pattern, new URL("https://example.com/uploads/photo.png"))).toBe(
+      true,
+    );
+  });
+
+  it("* does not match path separator", () => {
+    const pattern: RemotePattern = { hostname: "example.com", pathname: "/images/*" };
+    // * should match a single segment, not cross /
+    expect(matchRemotePattern(pattern, new URL("https://example.com/images/a/b.png"))).toBe(false);
+  });
+
+  it("** matches hidden files (dotfiles)", () => {
+    const pattern: RemotePattern = { hostname: "example.com", pathname: "/uploads/**" };
+    expect(matchRemotePattern(pattern, new URL("https://example.com/uploads/.hidden"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://example.com/uploads/.a/b.png"))).toBe(true);
+  });
+
+  it("** matches deeply nested paths", () => {
+    const pattern: RemotePattern = { hostname: "example.com", pathname: "/assets/**" };
+    expect(
+      matchRemotePattern(pattern, new URL("https://example.com/assets/images/2024/01/photo.jpg")),
+    ).toBe(true);
+  });
+
+  it("combines hostname and pathname globs together", () => {
+    const pattern: RemotePattern = {
+      hostname: "*.cdn.example.com",
+      pathname: "/v1/*/images/**",
+    };
+    expect(
+      matchRemotePattern(
+        pattern,
+        new URL("https://us.cdn.example.com/v1/bucket123/images/photo.jpg"),
+      ),
+    ).toBe(true);
+    expect(
+      matchRemotePattern(
+        pattern,
+        new URL("https://eu.cdn.example.com/v1/bucket456/images/a/b/c.png"),
+      ),
+    ).toBe(true);
+    // Wrong hostname (no subdomain)
+    expect(
+      matchRemotePattern(pattern, new URL("https://cdn.example.com/v1/bucket/images/photo.jpg")),
+    ).toBe(false);
+    // Wrong pathname (missing /images/ segment)
+    expect(
+      matchRemotePattern(pattern, new URL("https://us.cdn.example.com/v1/bucket/other/photo.jpg")),
+    ).toBe(false);
+  });
+});
+
+describe("matchRemotePattern with URL object as pattern", () => {
+  it("accepts URL object as pattern", () => {
+    const pattern = new URL("https://cdn.example.com/images/photo.png");
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/images/photo.png"))).toBe(
+      true,
+    );
+  });
+
+  it("URL pattern matches protocol exactly", () => {
+    const pattern = new URL("https://cdn.example.com/img.png");
+    expect(matchRemotePattern(pattern, new URL("http://cdn.example.com/img.png"))).toBe(false);
+  });
+
+  it("URL pattern matches pathname exactly", () => {
+    const pattern = new URL("https://cdn.example.com/images/photo.png");
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/images/other.png"))).toBe(
+      false,
+    );
+  });
+});
+
+describe("matchLocalPattern additional edge cases", () => {
+  it("* matches hidden files at root", () => {
+    // * matches a single segment including dotfiles
+    expect(matchLocalPattern({ pathname: "/*" }, new URL("/.hidden", "http://n"))).toBe(true);
+  });
+
+  it("** matches nested hidden paths", () => {
+    expect(matchLocalPattern({ pathname: "/**" }, new URL("/.config/file.jpg", "http://n"))).toBe(
+      true,
+    );
+  });
+
+  it("exact pathname does not match with trailing slash", () => {
+    expect(
+      matchLocalPattern(
+        { pathname: "/images/photo.png" },
+        new URL("/images/photo.png/", "http://n"),
+      ),
+    ).toBe(false);
+  });
+
+  it("empty pathname pattern matches nothing", () => {
+    // Empty string is not ** — it should match empty pathname only
+    expect(matchLocalPattern({ pathname: "" }, new URL("/img.jpg", "http://n"))).toBe(false);
+    expect(matchLocalPattern({ pathname: "" }, new URL("/", "http://n"))).toBe(false);
+  });
+});

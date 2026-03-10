@@ -66,6 +66,18 @@ export function parseImageParams(
   const qualityValue = url.searchParams.get("q");
   if (!imageUrl || !widthValue || !qualityValue) return null;
 
+  // Reject recursive optimization URLs (prevents infinite loops)
+  try {
+    const decodedUrl = decodeURIComponent(imageUrl);
+    if (decodedUrl.includes("/_vinext/image")) return null;
+  } catch {
+    // If decoding fails, check the raw URL
+    if (imageUrl.includes("/_vinext/image")) return null;
+  }
+
+  // Reject excessively long URLs (DoS prevention)
+  if (imageUrl.length > 3072) return null;
+
   const width = parseInt(widthValue, 10);
   const quality = parseInt(qualityValue, 10);
   if (!Number.isInteger(width) || width < 1 || width > ABSOLUTE_MAX_WIDTH) return null;
@@ -112,8 +124,40 @@ export function negotiateImageFormat(
   return "image/jpeg";
 }
 
-function getCacheControl(imageConfig?: ImageConfig): string {
-  const ttl = imageConfig?.minimumCacheTTL ?? imageConfigDefault.minimumCacheTTL;
+/**
+ * Parse upstream Cache-Control header to extract cache duration.
+ * Prefers s-maxage over max-age. Returns 0 when no usable directive found.
+ */
+export function getMaxAge(header: string | null): number {
+  if (!header) return 0;
+
+  const directives = header.toLowerCase();
+
+  // If no-store or no-cache, don't cache
+  if (/(?:^|,)\s*(?:no-store|no-cache)\s*(?:,|$)/.test(directives)) {
+    return 0;
+  }
+
+  // Prefer s-maxage over max-age
+  const sMaxAgeMatch = directives.match(/s-maxage\s*=\s*"?(\d+)"?/);
+  if (sMaxAgeMatch) {
+    const val = parseInt(sMaxAgeMatch[1], 10);
+    return Number.isFinite(val) ? val : 0;
+  }
+
+  const maxAgeMatch = directives.match(/max-age\s*=\s*"?(\d+)"?/);
+  if (maxAgeMatch) {
+    const val = parseInt(maxAgeMatch[1], 10);
+    return Number.isFinite(val) ? val : 0;
+  }
+
+  return 0;
+}
+
+function getCacheControl(imageConfig?: ImageConfig, upstreamCacheControl?: string | null): string {
+  const minimumTTL = imageConfig?.minimumCacheTTL ?? imageConfigDefault.minimumCacheTTL;
+  const upstreamMaxAge = getMaxAge(upstreamCacheControl ?? null);
+  const ttl = Math.max(upstreamMaxAge, minimumTTL);
   return `public, max-age=${ttl}, must-revalidate`;
 }
 
@@ -192,6 +236,214 @@ export function isSafeImageContentType(
   const mediaType = contentType.split(";")[0].trim().toLowerCase();
   if (SAFE_IMAGE_CONTENT_TYPES.has(mediaType)) return true;
   if (dangerouslyAllowSVG && mediaType === "image/svg+xml") return true;
+  return false;
+}
+
+/**
+ * Detect image content type from magic bytes.
+ * Ported from Next.js: packages/next/src/server/image-optimizer/detect-content-type.ts
+ */
+export function detectContentType(buffer: ArrayBuffer): string | null {
+  const view = new Uint8Array(buffer);
+  if (view.length < 2) return null;
+
+  // JPEG: FF D8
+  if (view[0] === 0xff && view[1] === 0xd8) return "image/jpeg";
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (
+    view.length >= 8 &&
+    view[0] === 0x89 &&
+    view[1] === 0x50 &&
+    view[2] === 0x4e &&
+    view[3] === 0x47 &&
+    view[4] === 0x0d &&
+    view[5] === 0x0a &&
+    view[6] === 0x1a &&
+    view[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+
+  // GIF: 47 49 46
+  if (view.length >= 3 && view[0] === 0x47 && view[1] === 0x49 && view[2] === 0x46) {
+    return "image/gif";
+  }
+
+  // WebP: RIFF....WEBP
+  if (
+    view.length >= 12 &&
+    view[0] === 0x52 &&
+    view[1] === 0x49 &&
+    view[2] === 0x46 &&
+    view[3] === 0x46 &&
+    view[8] === 0x57 &&
+    view[9] === 0x45 &&
+    view[10] === 0x42 &&
+    view[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+
+  // AVIF: ....ftypavif or ....ftypavis
+  if (view.length >= 12) {
+    const ftypSlice = String.fromCharCode(...view.slice(4, 12));
+    if (ftypSlice === "ftypavif" || ftypSlice === "ftypavis") {
+      return "image/avif";
+    }
+  }
+
+  // HEIC: ....ftypheic or ....ftypheix or ....ftyphevc or ....ftyphevx or ....ftypmif1
+  if (view.length >= 12) {
+    const ftypSlice = String.fromCharCode(...view.slice(4, 12));
+    if (
+      ftypSlice === "ftypheic" ||
+      ftypSlice === "ftypheix" ||
+      ftypSlice === "ftyphevc" ||
+      ftypSlice === "ftyphevx" ||
+      ftypSlice === "ftypmif1"
+    ) {
+      return "image/heic";
+    }
+  }
+
+  // JP2: ....ftypjp2 (JPEG 2000)
+  if (view.length >= 11) {
+    const ftypSlice = String.fromCharCode(...view.slice(4, 11));
+    if (ftypSlice === "ftypjp2") {
+      return "image/jp2";
+    }
+  }
+
+  // ICO: 00 00 01 00
+  if (
+    view.length >= 4 &&
+    view[0] === 0x00 &&
+    view[1] === 0x00 &&
+    view[2] === 0x01 &&
+    view[3] === 0x00
+  ) {
+    return "image/x-icon";
+  }
+
+  // ICNS: 69 63 6E 73 (icns)
+  if (
+    view.length >= 4 &&
+    view[0] === 0x69 &&
+    view[1] === 0x63 &&
+    view[2] === 0x6e &&
+    view[3] === 0x73
+  ) {
+    return "image/icns";
+  }
+
+  // TIFF: 49 49 2A 00 (little-endian) or 4D 4D 00 2A (big-endian)
+  if (view.length >= 4) {
+    if (view[0] === 0x49 && view[1] === 0x49 && view[2] === 0x2a && view[3] === 0x00) {
+      return "image/tiff";
+    }
+    if (view[0] === 0x4d && view[1] === 0x4d && view[2] === 0x00 && view[3] === 0x2a) {
+      return "image/tiff";
+    }
+  }
+
+  // BMP: 42 4D
+  if (view[0] === 0x42 && view[1] === 0x4d) return "image/bmp";
+
+  // JPEG XL: FF 0A or 00 00 00 0C 4A 58 4C 20 0D 0A 87 0A
+  if (view[0] === 0xff && view[1] === 0x0a) return "image/jxl";
+  if (
+    view.length >= 12 &&
+    view[0] === 0x00 &&
+    view[1] === 0x00 &&
+    view[2] === 0x00 &&
+    view[3] === 0x0c &&
+    view[4] === 0x4a &&
+    view[5] === 0x58 &&
+    view[6] === 0x4c &&
+    view[7] === 0x20 &&
+    view[8] === 0x0d &&
+    view[9] === 0x0a &&
+    view[10] === 0x87 &&
+    view[11] === 0x0a
+  ) {
+    return "image/jxl";
+  }
+
+  // PDF: 25 50 44 46 (%PDF)
+  if (
+    view.length >= 4 &&
+    view[0] === 0x25 &&
+    view[1] === 0x50 &&
+    view[2] === 0x44 &&
+    view[3] === 0x46
+  ) {
+    return "application/pdf";
+  }
+
+  // SVG: check for <?xml or <svg (with optional leading whitespace)
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(view.slice(0, 1024));
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith("<?xml") || trimmed.startsWith("<svg")) {
+    return "image/svg+xml";
+  }
+
+  return null;
+}
+
+/**
+ * Detect whether an image buffer contains animation.
+ * Checks GIF for multiple image descriptors, WebP for ANIM chunk,
+ * and PNG for acTL chunk (APNG).
+ */
+export function isAnimated(buffer: ArrayBuffer, contentType: string): boolean {
+  const view = new Uint8Array(buffer);
+  const mediaType = contentType.split(";")[0].trim().toLowerCase();
+
+  if (mediaType === "image/gif") {
+    // GIF: look for multiple image descriptor markers (0x2C)
+    // A single-frame GIF has exactly one, animated has more
+    let imageDescriptorCount = 0;
+    for (let i = 0; i < view.length; i++) {
+      if (view[i] === 0x2c) {
+        imageDescriptorCount++;
+        if (imageDescriptorCount > 1) return true;
+      }
+    }
+    return false;
+  }
+
+  if (mediaType === "image/webp") {
+    // WebP: look for ANIM chunk (animated WebP uses VP8X + ANIM)
+    // Search for "ANIM" in the file
+    for (let i = 0; i < view.length - 3; i++) {
+      if (
+        view[i] === 0x41 && // A
+        view[i + 1] === 0x4e && // N
+        view[i + 2] === 0x49 && // I
+        view[i + 3] === 0x4d // M
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  if (mediaType === "image/png") {
+    // APNG: look for acTL chunk (animation control)
+    for (let i = 0; i < view.length - 3; i++) {
+      if (
+        view[i] === 0x61 && // a
+        view[i + 1] === 0x63 && // c
+        view[i + 2] === 0x54 && // T
+        view[i + 3] === 0x4c // L
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   return false;
 }
 
@@ -326,51 +578,59 @@ async function fetchRemoteImage(
   const allowLocalIP = imageConfig?.dangerouslyAllowLocalIP ?? false;
 
   let currentUrl = imageUrl;
-  for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
-    const parsed = new URL(currentUrl);
-    if (!allowLocalIP && isBlockedLocalHost(parsed.hostname)) {
-      return new Response('"url" parameter is not allowed', { status: 400 });
-    }
+  try {
+    for (let redirectCount = 0; redirectCount <= maxRedirects; redirectCount++) {
+      const parsed = new URL(currentUrl);
+      if (!allowLocalIP && isBlockedLocalHost(parsed.hostname)) {
+        return new Response('"url" parameter is not allowed', { status: 400 });
+      }
 
-    const response = await fetch(currentUrl, {
-      headers: buildUpstreamRequestHeaders(request),
-      redirect: "manual",
-    });
+      const response = await fetch(currentUrl, {
+        headers: buildUpstreamRequestHeaders(request),
+        redirect: "manual",
+        signal: AbortSignal.timeout(7_000),
+      });
 
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      const location = response.headers.get("location");
-      if (!location) {
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get("location");
+        if (!location) {
+          return new Response('"url" parameter is valid but upstream response is invalid', {
+            status: 400,
+          });
+        }
+        if (redirectCount === maxRedirects) {
+          return new Response("Too many redirects", { status: 508 });
+        }
+        currentUrl = new URL(location, currentUrl).toString();
+        continue;
+      }
+
+      if (!response.ok) {
         return new Response('"url" parameter is valid but upstream response is invalid', {
           status: 400,
         });
       }
-      if (redirectCount === maxRedirects) {
-        return new Response("Too many redirects", { status: 508 });
+
+      const body = await response.arrayBuffer();
+      if (body.byteLength > maxBody) {
+        return new Response('"url" parameter is valid but upstream response is invalid', {
+          status: 413,
+        });
       }
-      currentUrl = new URL(location, currentUrl).toString();
-      continue;
-    }
 
-    if (!response.ok) {
-      return new Response('"url" parameter is valid but upstream response is invalid', {
-        status: 400,
+      return new Response(body, {
+        status: 200,
+        headers: response.headers,
       });
     }
 
-    const body = await response.arrayBuffer();
-    if (body.byteLength > maxBody) {
-      return new Response('"url" parameter is valid but upstream response is invalid', {
-        status: 413,
-      });
+    return new Response("Too many redirects", { status: 508 });
+  } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      return new Response("Gateway Timeout", { status: 504 });
     }
-
-    return new Response(body, {
-      status: 200,
-      headers: response.headers,
-    });
+    throw error;
   }
-
-  return new Response("Too many redirects", { status: 508 });
 }
 
 async function fetchSourceImage(
@@ -414,23 +674,36 @@ export async function handleImageOptimization(
     return source.ok ? new Response("Image not found", { status: 404 }) : source;
   }
 
-  const sourceContentType = source.headers.get("Content-Type");
+  // Read body for magic-byte content-type detection
+  const sourceBuffer = await source.arrayBuffer();
+  const detectedContentType = detectContentType(sourceBuffer);
+  const sourceContentType = detectedContentType ?? source.headers.get("Content-Type");
   if (!isSafeImageContentType(sourceContentType, imageConfig?.dangerouslyAllowSVG)) {
     return new Response("The requested resource is not an allowed image type", { status: 400 });
   }
 
+  const upstreamCacheControl = source.headers.get("Cache-Control");
+
   const sourceMediaType = sourceContentType?.split(";")[0].trim().toLowerCase();
   if (sourceMediaType === "image/svg+xml") {
     const headers = new Headers(source.headers);
-    headers.set("Cache-Control", getCacheControl(imageConfig));
+    headers.set("Cache-Control", getCacheControl(imageConfig, upstreamCacheControl));
     headers.set("Vary", "Accept");
     setImageSecurityHeaders(headers, params.imageUrl, sourceMediaType, imageConfig);
-    return new Response(source.body, { status: 200, headers });
+    return new Response(sourceBuffer.slice(0), { status: 200, headers });
+  }
+
+  // Skip optimization for animated images (would break animation)
+  if (isAnimated(sourceBuffer, sourceContentType ?? "")) {
+    const headers = new Headers(source.headers);
+    headers.set("Cache-Control", getCacheControl(imageConfig, upstreamCacheControl));
+    headers.set("Vary", "Accept");
+    setImageSecurityHeaders(headers, params.imageUrl, sourceContentType, imageConfig);
+    return new Response(sourceBuffer.slice(0), { status: 200, headers });
   }
 
   const outputFormat = negotiateImageFormat(request.headers.get("Accept"), imageConfig?.formats);
   if (handlers.transformImage) {
-    const sourceBuffer = await source.arrayBuffer();
     const adjustedQuality =
       outputFormat === "image/avif" ? Math.max(params.quality - 20, 1) : params.quality;
     try {
@@ -441,7 +714,7 @@ export async function handleImageOptimization(
       });
       const headers = new Headers(transformed.headers);
       headers.set("Content-Type", outputFormat);
-      headers.set("Cache-Control", getCacheControl(imageConfig));
+      headers.set("Cache-Control", getCacheControl(imageConfig, upstreamCacheControl));
       headers.set("Vary", "Accept");
       setImageSecurityHeaders(headers, params.imageUrl, outputFormat, imageConfig);
       return new Response(transformed.body, {
@@ -450,7 +723,7 @@ export async function handleImageOptimization(
       });
     } catch {
       const headers = new Headers(source.headers);
-      headers.set("Cache-Control", getCacheControl(imageConfig));
+      headers.set("Cache-Control", getCacheControl(imageConfig, upstreamCacheControl));
       headers.set("Vary", "Accept");
       setImageSecurityHeaders(headers, params.imageUrl, sourceMediaType ?? null, imageConfig);
       return new Response(sourceBuffer.slice(0), { status: 200, headers });
@@ -458,8 +731,8 @@ export async function handleImageOptimization(
   }
 
   const headers = new Headers(source.headers);
-  headers.set("Cache-Control", getCacheControl(imageConfig));
+  headers.set("Cache-Control", getCacheControl(imageConfig, upstreamCacheControl));
   headers.set("Vary", "Accept");
   setImageSecurityHeaders(headers, params.imageUrl, sourceMediaType ?? null, imageConfig);
-  return new Response(source.body, { status: 200, headers });
+  return new Response(sourceBuffer.slice(0), { status: 200, headers });
 }

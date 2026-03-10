@@ -1393,3 +1393,131 @@ describe("parseImageParams dangerous URL scheme rejection", () => {
     expect(result).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Recursive URL guard
+// ---------------------------------------------------------------------------
+
+describe("Recursive URL guard", () => {
+  it("rejects recursive /_vinext/image URL", () => {
+    const url = new URL("http://localhost/_vinext/image");
+    url.searchParams.set("url", "/_vinext/image?url=/photo.jpg&w=100&q=75");
+    url.searchParams.set("w", "800");
+    url.searchParams.set("q", "75");
+    expect(parseImageParams(url)).toBeNull();
+  });
+
+  it("rejects encoded recursive /_vinext/image URL", () => {
+    const url = new URL("http://localhost/_vinext/image");
+    url.searchParams.set("url", encodeURIComponent("/_vinext/image?url=/photo.jpg&w=100&q=75"));
+    url.searchParams.set("w", "800");
+    url.searchParams.set("q", "75");
+    expect(parseImageParams(url)).toBeNull();
+  });
+
+  it("allows non-recursive URL containing 'image'", () => {
+    const url = new URL("http://localhost/_vinext/image");
+    url.searchParams.set("url", "/images/photo.jpg");
+    url.searchParams.set("w", "800");
+    url.searchParams.set("q", "75");
+    const result = parseImageParams(url);
+    expect(result).not.toBeNull();
+    expect(result!.imageUrl).toBe("/images/photo.jpg");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// URL length limit
+// ---------------------------------------------------------------------------
+
+describe("URL length limit", () => {
+  it("rejects url param exceeding 3072 characters", () => {
+    const url = new URL("http://localhost/_vinext/image");
+    url.searchParams.set("url", "/" + "a".repeat(3072));
+    url.searchParams.set("w", "800");
+    url.searchParams.set("q", "75");
+    expect(parseImageParams(url)).toBeNull();
+  });
+
+  it("accepts url param at exactly 3072 characters", () => {
+    const url = new URL("http://localhost/_vinext/image");
+    url.searchParams.set("url", "/" + "a".repeat(3071));
+    url.searchParams.set("w", "800");
+    url.searchParams.set("q", "75");
+    const result = parseImageParams(url);
+    expect(result).not.toBeNull();
+  });
+
+  it("accepts normal-length url param", () => {
+    const url = new URL("http://localhost/_vinext/image");
+    url.searchParams.set("url", "/images/photo.jpg");
+    url.searchParams.set("w", "800");
+    url.searchParams.set("q", "75");
+    const result = parseImageParams(url);
+    expect(result).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Upstream fetch timeout
+// ---------------------------------------------------------------------------
+
+describe("Upstream fetch timeout", () => {
+  it("returns 504 when upstream fetch times out", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_url: string | URL | Request, init?: RequestInit) => {
+      // Simulate a timeout by aborting after the signal fires
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal) {
+          // Immediately trigger timeout behavior
+          const error = new DOMException(
+            "The operation was aborted due to timeout",
+            "TimeoutError",
+          );
+          reject(error);
+        }
+      });
+    };
+
+    try {
+      const request = new Request(
+        `http://localhost/_vinext/image?url=${encodeURIComponent("https://slow.example.com/img.jpg")}&w=800&q=75`,
+      );
+      const handlers = {
+        fetchAsset: async () => new Response("unused", { status: 500 }),
+      };
+      const response = await handleImageOptimization(request, handlers, undefined, {
+        remotePatterns: [{ hostname: "slow.example.com" }],
+      });
+      expect(response.status).toBe(504);
+      expect(await response.text()).toBe("Gateway Timeout");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("succeeds when upstream responds within timeout", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("image-data", {
+        status: 200,
+        headers: { "Content-Type": "image/jpeg" },
+      });
+
+    try {
+      const request = new Request(
+        `http://localhost/_vinext/image?url=${encodeURIComponent("https://fast.example.com/img.jpg")}&w=800&q=75`,
+      );
+      const handlers = {
+        fetchAsset: async () => new Response("unused", { status: 500 }),
+      };
+      const response = await handleImageOptimization(request, handlers, undefined, {
+        remotePatterns: [{ hostname: "fast.example.com" }],
+      });
+      expect(response.status).toBe(200);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
