@@ -4,6 +4,7 @@
   "type": "module",
   "dependencies": {
     "@vitejs/plugin-rsc": "^0.5.19",
+    "fake-context-lib": "file:./__test_packages__/fake-context-lib",
     "fake-css-lib": "file:./__test_packages__/fake-css-lib",
     "fake-css-module-lib": "file:./__test_packages__/fake-css-module-lib",
     "react": "^19.2.4",

@@ -133,6 +133,21 @@ describe("App Router integration", () => {
     expect(html).toContain("Increment");
   });
 
+  // Verifies that "use client" modules from packages with internal submodules
+  // (re-exported through the package entry) share the same module instance in
+  // the browser. Without the client-reference-dedup plugin, the RSC proxy
+  // imports from the raw file path while client code uses pre-bundled deps,
+  // causing React context providers to be duplicated (createContext runs twice).
+  it("renders context provider/consumer from package with internal 'use client' submodule", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/context-dedup-test");
+    expect(res.status).toBe(200);
+    expect(html).toContain("Context Dedup Test");
+    // If module dedup is working, the consumer reads the provider's value.
+    // If broken, useContext returns null and we see "NOT_FOUND".
+    expect(html).toContain("dark-test-theme");
+    expect(html).not.toContain("NOT_FOUND");
+  });
+
   it("SSR renders 'use client' components that use usePathname/useSearchParams", async () => {
     const res = await fetch(`${baseUrl}/client-nav-test?q=hello`);
     expect(res.status).toBe(200);

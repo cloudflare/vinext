@@ -449,6 +449,9 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: ^0.5.19
         version: 0.5.20(react-dom@19.2.4(react@19.2.4))(react-server-dom-webpack@19.2.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.31.1))
+      fake-context-lib:
+        specifier: file:./__test_packages__/fake-context-lib
+        version: file:tests/fixtures/app-basic/__test_packages__/fake-context-lib
       fake-css-lib:
         specifier: file:./__test_packages__/fake-css-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-css-lib
@@ -3109,6 +3112,9 @@ packages:
 
   extend@3.0.2:
     resolution: {integrity: sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g==}
+
+  fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-context-lib, type: directory}
 
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-css-lib, type: directory}
@@ -6410,6 +6416,8 @@ snapshots:
   expect-type@1.3.0: {}
 
   extend@3.0.2: {}
+
+  fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib: {}
 
   fake-css-lib@file:tests/fixtures/app-basic/__test_packages__/fake-css-lib: {}
 
