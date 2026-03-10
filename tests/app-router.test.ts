@@ -3261,4 +3261,27 @@ describe("generateRscEntry ISR code generation", () => {
     expect(buildPageIdx).toBeGreaterThan(-1);
     expect(isrReadIdx).toBeLessThan(buildPageIdx);
   });
+
+  it("ISR cache read fires before generateStaticParams (skips expensive work on HIT)", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The ISR read block must appear before the generateStaticParams call so that
+    // a cache hit skips the potentially-expensive static params validation entirely.
+    const isrReadIdx = code.indexOf("__isrGet(");
+    const gspIdx = code.indexOf("generateStaticParams(");
+    expect(isrReadIdx).toBeGreaterThan(-1);
+    expect(gspIdx).toBeGreaterThan(-1);
+    expect(isrReadIdx).toBeLessThan(gspIdx);
+  });
+
+  it("RSC stream tee for rscData capture happens before the RSC response is returned", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // __rscForResponse must be assigned before the RSC response is returned so
+    // the tee branch (__rscB) is also consumed (populating the ISR cache).
+    // The RSC response is: new Response(__rscForResponse, ...)
+    const teeAssignIdx = code.indexOf("let __rscForResponse");
+    const rscResponseIdx = code.indexOf("return new Response(__rscForResponse");
+    expect(teeAssignIdx).toBeGreaterThan(-1);
+    expect(rscResponseIdx).toBeGreaterThan(-1);
+    expect(teeAssignIdx).toBeLessThan(rscResponseIdx);
+  });
 });

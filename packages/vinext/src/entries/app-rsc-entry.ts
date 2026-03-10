@@ -2044,44 +2044,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     });
   }
 
-  // dynamicParams = false: only params from generateStaticParams are allowed
-  if (dynamicParamsConfig === false && route.isDynamic && typeof route.page?.generateStaticParams === "function") {
-    try {
-      // Pass parent params to generateStaticParams (Next.js top-down params passing).
-      // Parent params = all matched params that DON'T belong to the leaf page's own dynamic segments.
-      // We pass the full matched params; the function uses only what it needs.
-      const staticParams = await route.page.generateStaticParams({ params });
-      if (Array.isArray(staticParams)) {
-        const paramKeys = Object.keys(params);
-        const isAllowed = staticParams.some(sp =>
-          paramKeys.every(key => {
-            const val = params[key];
-            const staticVal = sp[key];
-            // Allow parent params to not be in the returned set (they're inherited)
-            if (staticVal === undefined) return true;
-            if (Array.isArray(val)) return JSON.stringify(val) === JSON.stringify(staticVal);
-            return String(val) === String(staticVal);
-          })
-        );
-        if (!isAllowed) {
-          setHeadersContext(null);
-          setNavigationContext(null);
-          return new Response("Not Found", { status: 404 });
-        }
-      }
-    } catch (err) {
-      console.error("[vinext] generateStaticParams error:", err);
-    }
-  }
-
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
   // ── ISR cache read (production only) ─────────────────────────────────────
-  // Read from cache BEFORE building the component tree. This is the critical
-  // performance optimization: on a cache hit we skip all rendering work entirely.
-  // Both HTML requests and RSC requests (client-side navigation / prefetch) are
-  // served from cache — HTML requests use cached.html, RSC requests use cached.rscData.
+  // Read from cache BEFORE generateStaticParams and all rendering work.
+  // This is the critical performance optimization: on a cache hit we skip
+  // ALL expensive work (generateStaticParams, buildPageElement, layout probe,
+  // page probe, renderToReadableStream, SSR). Both HTML and RSC requests
+  // (client-side navigation / prefetch) are served from cache.
   if (
     process.env.NODE_ENV === "production" &&
     !isForceDynamic &&
@@ -2210,6 +2181,37 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     } catch (__isrReadErr) {
       // Cache read failure — fall through to normal rendering
       console.error("[vinext] ISR cache read error:", __isrReadErr);
+    }
+  }
+
+  // dynamicParams = false: only params from generateStaticParams are allowed.
+  // This runs AFTER the ISR cache read so that a cache hit skips this work entirely.
+  if (dynamicParamsConfig === false && route.isDynamic && typeof route.page?.generateStaticParams === "function") {
+    try {
+      // Pass parent params to generateStaticParams (Next.js top-down params passing).
+      // Parent params = all matched params that DON'T belong to the leaf page's own dynamic segments.
+      // We pass the full matched params; the function uses only what it needs.
+      const staticParams = await route.page.generateStaticParams({ params });
+      if (Array.isArray(staticParams)) {
+        const paramKeys = Object.keys(params);
+        const isAllowed = staticParams.some(sp =>
+          paramKeys.every(key => {
+            const val = params[key];
+            const staticVal = sp[key];
+            // Allow parent params to not be in the returned set (they're inherited)
+            if (staticVal === undefined) return true;
+            if (Array.isArray(val)) return JSON.stringify(val) === JSON.stringify(staticVal);
+            return String(val) === String(staticVal);
+          })
+        );
+        if (!isAllowed) {
+          setHeadersContext(null);
+          setNavigationContext(null);
+          return new Response("Not Found", { status: 404 });
+        }
+      }
+    } catch (err) {
+      console.error("[vinext] generateStaticParams error:", err);
     }
   }
 
@@ -2445,6 +2447,34 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   };
   const rscStream = renderToReadableStream(element, { onError: onRenderError });
 
+  // For ISR pages in production: tee the RSC stream immediately after creation so we
+  // can capture rscData for BOTH RSC requests (client-side nav/prefetch) and HTML
+  // requests. The tee must happen here — before the isRscRequest branch — so both
+  // paths can use the captured bytes when writing to the ISR cache.
+  //   __rscForResponse  → sent to the client (RSC response) or to SSR (HTML response)
+  //   __isrRscDataPromise → resolves to ArrayBuffer of captured RSC wire bytes
+  let __rscForResponse = rscStream;
+  let __isrRscDataPromise = null;
+  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0 && !isForceDynamic) {
+    const [__rscA, __rscB] = rscStream.tee();
+    __rscForResponse = __rscA;
+    __isrRscDataPromise = (async () => {
+      const __rscReader = __rscB.getReader();
+      const __rscChunks = [];
+      let __rscTotal = 0;
+      for (;;) {
+        const { done, value } = await __rscReader.read();
+        if (done) break;
+        __rscChunks.push(value);
+        __rscTotal += value.byteLength;
+      }
+      const __rscBuf = new Uint8Array(__rscTotal);
+      let __rscOff = 0;
+      for (const c of __rscChunks) { __rscBuf.set(c, __rscOff); __rscOff += c.byteLength; }
+      return __rscBuf.buffer;
+    })();
+  }
+
   if (isRscRequest) {
     // Direct RSC stream response (for client-side navigation)
     // NOTE: Do NOT clear headers/navigation context here!
@@ -2510,7 +2540,31 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
       responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
     }
-    return new Response(rscStream, { status: _mwCtx.status || 200, headers: responseHeaders });
+    // For ISR RSC requests: write rscData to cache in background via waitUntil so
+    // subsequent RSC requests (prefetch / client-side navigation) are served from cache.
+    if (process.env.NODE_ENV === "production" && __isrRscDataPromise && revalidateSeconds !== null && revalidateSeconds > 0) {
+      const __isrKey = __isrCacheKey(cleanPathname);
+      const __revalSecs = revalidateSeconds;
+      const __rscCachePromise = (async () => {
+        try {
+          const __rscData = await __isrRscDataPromise;
+          // Only write rscData; if there is already a full cache entry (html + rscData)
+          // from a prior HTML request, update it — otherwise store rscData-only so the
+          // next HTML MISS will fill html too.
+          const __existing = await __isrGet(__isrKey);
+          if (__existing && __existing.value && __existing.value.value && __existing.value.value.kind === "APP_PAGE") {
+            const __prev = __existing.value.value;
+            await __isrSet(__isrKey, { kind: "APP_PAGE", html: __prev.html, rscData: __rscData, headers: __prev.headers, postponed: __prev.postponed, status: __prev.status || 200 }, __revalSecs);
+          } else {
+            await __isrSet(__isrKey, { kind: "APP_PAGE", html: "", rscData: __rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs);
+          }
+        } catch (__rscCacheErr) {
+          console.error("[vinext] ISR RSC cache write error:", __rscCacheErr);
+        }
+      })();
+      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__rscCachePromise);
+    }
+    return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
 
   // Collect font data from RSC environment before passing to SSR
@@ -2531,37 +2585,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   }
   const fontLinkHeader = fontLinkHeaderParts.length > 0 ? fontLinkHeaderParts.join(", ") : "";
 
-  // For ISR pages in production (HTML requests / MISS path): tee the RSC stream so we
-  // can capture the RSC wire format bytes alongside the HTML. The captured rscData is
-  // stored in the cache entry and served directly for subsequent RSC requests (prefetch
-  // and client-side navigation) without re-rendering.
-  let rscStreamForSsr = rscStream;
-  let __isrRscDataPromise = null;
-  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0) {
-    const [__rscForSsr, __rscForCapture] = rscStream.tee();
-    rscStreamForSsr = __rscForSsr;
-    __isrRscDataPromise = (async () => {
-      const __rscReader = __rscForCapture.getReader();
-      const __rscChunks = [];
-      let __rscTotal = 0;
-      for (;;) {
-        const { done, value } = await __rscReader.read();
-        if (done) break;
-        __rscChunks.push(value);
-        __rscTotal += value.byteLength;
-      }
-      const __rscBuf = new Uint8Array(__rscTotal);
-      let __rscOff = 0;
-      for (const c of __rscChunks) { __rscBuf.set(c, __rscOff); __rscOff += c.byteLength; }
-      return __rscBuf.buffer;
-    })();
-  }
+  // __rscForResponse was already teed above (before isRscRequest) for ISR pages in
+  // production. For non-ISR or dev, __rscForResponse === rscStream (no tee).
+  // __isrRscDataPromise (also set above) resolves to rscData bytes captured from the
+  // second tee branch; it is awaited in the WRITE block below.
 
   // Delegate to SSR environment for HTML rendering
   let htmlStream;
   try {
     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    htmlStream = await ssrEntry.handleSsr(rscStreamForSsr, _getNavigationContext(), fontData);
+    htmlStream = await ssrEntry.handleSsr(__rscForResponse, _getNavigationContext(), fontData);
     // Shell render complete; Suspense boundaries stream asynchronously
     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
   } catch (ssrErr) {
