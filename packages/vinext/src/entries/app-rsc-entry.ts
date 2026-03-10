@@ -258,7 +258,7 @@ ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifes
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
-import { runWithExecutionContext as _runWithExecutionContext } from ${JSON.stringify(requestContextShimPath)};
+import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
 import { runWithFetchCache } from "vinext/fetch-cache";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
@@ -322,12 +322,13 @@ async function __isrSet(key, data, revalidateSeconds) {
 // headers — but that case is already prevented by the dynamic-usage opt-out.
 // TODO: capture render-time response headers for full Next.js parity.
 const __pendingRegenerations = new Map();
-function __triggerBackgroundRegeneration(key, renderFn, ctx) {
+function __triggerBackgroundRegeneration(key, renderFn) {
   if (__pendingRegenerations.has(key)) return;
   const promise = renderFn()
     .catch((err) => console.error("[vinext] ISR regen failed for " + key + ":", err))
     .finally(() => __pendingRegenerations.delete(key));
   __pendingRegenerations.set(key, promise);
+  const ctx = _getRequestExecutionContext();
   if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
 }
 // HTML and RSC are stored under separate keys — matching Next.js's file-system
@@ -2226,7 +2227,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
           ]);
           __isrDebug?.("regen complete", cleanPathname);
-        }, ctx);
+        });
         if (isRscRequest && __staleValue.rscData) {
           __isrDebug?.("STALE (RSC)", cleanPathname);
           setHeadersContext(null);

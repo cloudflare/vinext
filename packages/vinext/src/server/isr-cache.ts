@@ -21,6 +21,7 @@ import {
   type CachedAppPageValue,
 } from "../shims/cache.js";
 import { fnv1a64 } from "../utils/hash.js";
+import { getRequestExecutionContext } from "../shims/request-context.js";
 
 /**
  * Minimal ExecutionContext interface for Cloudflare Workers.
@@ -106,7 +107,8 @@ export function triggerBackgroundRegeneration(
   // Register with the Workers ExecutionContext so the runtime keeps the
   // isolate alive until the regeneration completes, even after the Response
   // has already been sent to the client.
-  ctx?.waitUntil(promise);
+  const execCtx = ctx ?? getRequestExecutionContext();
+  execCtx?.waitUntil(promise);
 }
 
 // ---------------------------------------------------------------------------
