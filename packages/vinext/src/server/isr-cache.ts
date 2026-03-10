@@ -152,11 +152,12 @@ export function buildAppPageCacheValue(
  * Compute an ISR cache key for a given router type and pathname.
  * Long pathnames are hashed to stay within KV key-length limits (512 bytes).
  */
-export function isrCacheKey(router: "pages" | "app", pathname: string): string {
+export function isrCacheKey(router: "pages" | "app", pathname: string, buildId?: string): string {
   const normalized = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  const key = `${router}:${normalized}`;
+  const prefix = buildId ? `${router}:${buildId}` : router;
+  const key = `${prefix}:${normalized}`;
   if (key.length <= 200) return key;
-  return `${router}:__hash:${fnv1a64(normalized)}`;
+  return `${prefix}:__hash:${fnv1a64(normalized)}`;
 }
 
 // ---------------------------------------------------------------------------

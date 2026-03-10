@@ -66,6 +66,33 @@ describe("isrCacheKey", () => {
     const path2 = "/" + "b".repeat(250);
     expect(isrCacheKey("pages", path1)).not.toBe(isrCacheKey("pages", path2));
   });
+
+  it("includes buildId in key when provided", () => {
+    expect(isrCacheKey("pages", "/about", "abc123")).toBe("pages:abc123:/about");
+  });
+
+  it("includes buildId in app router key", () => {
+    expect(isrCacheKey("app", "/dashboard", "build-42")).toBe("app:build-42:/dashboard");
+  });
+
+  it("preserves root with buildId", () => {
+    expect(isrCacheKey("pages", "/", "v1")).toBe("pages:v1:/");
+  });
+
+  it("strips trailing slash with buildId", () => {
+    expect(isrCacheKey("pages", "/about/", "v1")).toBe("pages:v1:/about");
+  });
+
+  it("hashes long paths with buildId", () => {
+    const longPath = "/" + "a".repeat(250);
+    const key = isrCacheKey("pages", longPath, "build-99");
+    expect(key).toMatch(/^pages:build-99:__hash:/);
+  });
+
+  it("without buildId format is unchanged (backward compat)", () => {
+    expect(isrCacheKey("pages", "/about")).toBe("pages:/about");
+    expect(isrCacheKey("app", "/dashboard")).toBe("app:/dashboard");
+  });
 });
 
 // ─── buildPagesCacheValue ───────────────────────────────────────────────
