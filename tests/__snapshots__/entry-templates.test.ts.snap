@@ -15664,7 +15664,8 @@ async function _renderPage(request, url, manifest) {
     let isrRevalidateSeconds = null;
     if (typeof pageModule.getStaticProps === "function") {
       const pathname = routeUrl.split("?")[0];
-      const cacheKey = "pages:" + (pathname === "/" ? "/" : pathname.replace(/\\/$/, ""));
+      const _cachePrefix = buildId ? "pages:" + buildId : "pages";
+      const cacheKey = _cachePrefix + ":" + (pathname === "/" ? "/" : pathname.replace(/\\/$/, ""));
       const cached = await isrGet(cacheKey);
 
       if (cached && !cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
@@ -15819,7 +15820,8 @@ async function _renderPage(request, url, manifest) {
       var isrHtml = await renderToStringAsync(isrElement);
       var fullHtml = shellPrefix + isrHtml + shellSuffix;
       var isrPathname = url.split("?")[0];
-      var isrCacheKey = "pages:" + (isrPathname === "/" ? "/" : isrPathname.replace(/\\/$/, ""));
+      var isrCacheKeyPrefix = buildId ? "pages:" + buildId : "pages";
+      var isrCacheKey = isrCacheKeyPrefix + ":" + (isrPathname === "/" ? "/" : isrPathname.replace(/\\/$/, ""));
       await isrSet(isrCacheKey, { kind: "PAGES", html: fullHtml, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
     }
 
