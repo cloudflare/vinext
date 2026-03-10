@@ -2,15 +2,15 @@
 
 ## Common Migration Errors
 
-| Error | Cause | Fix |
-|-------|-------|-----|
-| `ERR_REQUIRE_ESM` or `require() of ES Module` | Project missing `"type": "module"` | Add `"type": "module"` to package.json |
-| `module.exports` syntax error in config file | CJS config loaded as ESM | Rename `.js` config to `.cjs` (e.g., `postcss.config.js` → `postcss.config.cjs`) |
-| `Cannot find module '@vitejs/plugin-rsc'` | App Router project missing RSC plugin | `npm install -D @vitejs/plugin-rsc` |
-| `Cannot find module 'vite'` | Vite not installed | `npm install -D vite` |
-| `vinext: command not found` | vinext not installed or not in PATH | Install vinext: `npm install vinext`, then run via `npx vinext` or package.json scripts |
-| RSC environment crash on dev start | Native Node module (sharp, satori) loaded in RSC env | vinext auto-stubs these in production; in dev, ensure these are only imported in server code behind dynamic `import()` |
-| `ASSETS binding not found` | wrangler.jsonc missing assets config | Add `"assets": { "not_found_handling": "none" }` to wrangler.jsonc |
+| Error                                         | Cause                                                | Fix                                                                                                                    |
+| --------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `ERR_REQUIRE_ESM` or `require() of ES Module` | Project missing `"type": "module"`                   | Add `"type": "module"` to package.json                                                                                 |
+| `module.exports` syntax error in config file  | CJS config loaded as ESM                             | Rename `.js` config to `.cjs` (e.g., `postcss.config.js` → `postcss.config.cjs`)                                       |
+| `Cannot find module '@vitejs/plugin-rsc'`     | App Router project missing RSC plugin                | `npm install -D @vitejs/plugin-rsc`                                                                                    |
+| `Cannot find module 'vite'`                   | Vite not installed                                   | `npm install -D vite`                                                                                                  |
+| `vinext: command not found`                   | vinext not installed or not in PATH                  | Install vinext: `npm install vinext`, then run via `npx vinext` or package.json scripts                                |
+| RSC environment crash on dev start            | Native Node module (sharp, satori) loaded in RSC env | vinext auto-stubs these in production; in dev, ensure these are only imported in server code behind dynamic `import()` |
+| `ASSETS binding not found`                    | wrangler.jsonc missing assets config                 | Add `"assets": { "not_found_handling": "none" }` to wrangler.jsonc                                                     |
 
 ## ESM Conversion Issues
 
@@ -23,6 +23,23 @@ When adding `"type": "module"`, any `.js` file using `module.exports` or `requir
 - `prettier.config.js`
 
 Alternatively, convert these files to ESM (`export default` syntax) and keep the `.js` extension.
+
+## Third-Party Package ESM Resolution Errors
+
+**Symptom:** `Cannot find module '...'` errors in dev server when using certain npm packages.
+
+**Example Error:**
+
+```
+Cannot find module '\node_modules.pnpm\validator@13.15.26\node_modules\validator\es\lib\util\assertString'
+imported from \node_modules.pnpm\validator@13.15.26\node_modules\validator\es\lib\isEmail.js
+```
+
+**Cause:** Some ESM packages have complex internal import structures that Node.js module resolution can't handle when externalized.
+
+**vinext Fix:** vinext sets `noExternal: true` in all server environments (RSC and SSR), which forces all dependencies through Vite's transform pipeline. This resolves extensionless import issues automatically.
+
+**No configuration needed** — this is the default behavior.
 
 ## App Router vs Pages Router Issues
 

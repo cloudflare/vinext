@@ -18,12 +18,7 @@
  *   </Form>
  */
 
-import {
-  forwardRef,
-  useActionState,
-  type FormHTMLAttributes,
-  type ForwardedRef,
-} from "react";
+import { forwardRef, useActionState, type FormHTMLAttributes, type ForwardedRef } from "react";
 import { isDangerousScheme } from "./url-safety.js";
 
 // Re-export useActionState from React 19 to match Next.js's next/form module
@@ -59,10 +54,7 @@ interface FormProps extends FormHTMLAttributes<HTMLFormElement> {
   scroll?: boolean;
 }
 
-const Form = forwardRef(function Form(
-  props: FormProps,
-  ref: ForwardedRef<HTMLFormElement>,
-) {
+const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFormElement>) {
   const { action, replace = false, scroll = true, onSubmit, ...rest } = props;
 
   // If action is a function (server action), pass it directly to React
@@ -103,15 +95,14 @@ const Form = forwardRef(function Form(
     const url = `${action as string}?${params.toString()}`;
 
     // Navigate client-side
-    const win = window as any;
-    if (typeof win.__VINEXT_RSC_NAVIGATE__ === "function") {
+    if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
       // App Router: RSC navigation. Await so scroll happens after new content renders.
       if (replace) {
         window.history.replaceState(null, "", url);
       } else {
         window.history.pushState(null, "", url);
       }
-      await win.__VINEXT_RSC_NAVIGATE__(url);
+      await window.__VINEXT_RSC_NAVIGATE__(url);
     } else {
       // Pages Router: use router or fallback
       if (replace) {
@@ -127,14 +118,7 @@ const Form = forwardRef(function Form(
     }
   }
 
-  return (
-    <form
-      ref={ref}
-      action={action}
-      onSubmit={handleSubmit}
-      {...rest}
-    />
-  );
+  return <form ref={ref} action={action} onSubmit={handleSubmit} {...rest} />;
 });
 
 export default Form;

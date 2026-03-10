@@ -1,11 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { createBuilder, type ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { createBuilder, createServer, type ViteDevServer } from "vite";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import zlib from "node:zlib";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES, startFixtureServer, fetchHtml } from "./helpers.js";
-import { generateRscEntry } from "../packages/vinext/src/server/app-dev-server.js";
+import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 
 describe("App Router integration", () => {
   let server: ViteDevServer;
@@ -86,6 +87,18 @@ describe("App Router integration", () => {
   it("returns 404 for non-existent routes", async () => {
     const res = await fetch(`${baseUrl}/nonexistent`);
     expect(res.status).toBe(404);
+  });
+
+  // Dual-router coexistence: the app-basic fixture has both app/ and pages/
+  // (pages/old-school.tsx activates hasPagesDir). This verifies the Pages Router
+  // still renders its own pages correctly when both routers are active — the
+  // other direction from the fix that stops pages-router middleware from
+  // hard-404ing app/api/* routes that belong to the App Router.
+  it("renders pages-router page when both app/ and pages/ directories exist", async () => {
+    const res = await fetch(`${baseUrl}/old-school`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain("Old School Pages Directory");
   });
 
   it("returns RSC stream for .rsc requests", async () => {
@@ -588,6 +601,27 @@ describe("App Router integration", () => {
     expect(html).toMatch(/\$RX\("[^"]*","NEXT_HTTP_ERROR_FALLBACK/);
   });
 
+  it("async server throw in Suspense falls back to client rendering without dev decode crash (React 19 regression)", async () => {
+    // Regression for issue #50:
+    // React 19 dev-mode Flight decoding can crash in resolveErrorDev() with
+    // "Invalid hook call" / null dispatcher errors while SSR consumes an RSC
+    // stream that includes an error chunk.
+    const res = await fetch(`${baseUrl}/react19-dev-rsc-error`);
+    const html = await res.text();
+
+    expect(res.status).toBe(200);
+    // In React 19 dev mode, this route switches to client rendering when the
+    // async server throw is encountered during Flight streaming. The key
+    // regression check is that decode no longer crashes with a null dispatcher.
+    // Note: "Switched to client rendering" is a React internal message that
+    // may change across React versions.
+    expect(html).toContain("Switched to client rendering");
+    expect(html).toContain("react19-dev-rsc-error");
+    expect(html).toContain('data-testid="react19-dev-rsc-loading"');
+    expect(html).not.toContain("Invalid hook call");
+    expect(html).not.toContain("Cannot read properties of null (reading 'useContext')");
+  });
+
   it("renders error boundary wrapper for routes with error.tsx", async () => {
     const res = await fetch(`${baseUrl}/error-test`);
     expect(res.status).toBe(200);
@@ -794,7 +828,9 @@ describe("App Router integration", () => {
       // Socket error means the server crashed processing this request.
       // This is a known issue with native Node modules in the RSC environment.
       // The test passes to avoid blocking CI, but logs the issue.
-      console.warn("[test] /icon route caused a server error — native module loading in RSC env needs investigation");
+      console.warn(
+        "[test] /icon route caused a server error — native module loading in RSC env needs investigation",
+      );
     }
   });
 
@@ -960,7 +996,9 @@ describe("App Router integration", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     // React SSR inserts <!-- --> comments between text and expressions
-    expect(html).toMatch(/Item:\s*(<!--\s*-->)?\s*phone\s*(<!--\s*-->)?\s*in\s*(<!--\s*-->)?\s*electronics/);
+    expect(html).toMatch(
+      /Item:\s*(<!--\s*-->)?\s*phone\s*(<!--\s*-->)?\s*in\s*(<!--\s*-->)?\s*electronics/,
+    );
   });
 
   it("nested dynamic route serves all parent-derived paths", async () => {
@@ -968,12 +1006,16 @@ describe("App Router integration", () => {
     const res1 = await fetch(`${baseUrl}/shop/clothing/shirt`);
     expect(res1.status).toBe(200);
     const html1 = await res1.text();
-    expect(html1).toMatch(/Item:\s*(<!--\s*-->)?\s*shirt\s*(<!--\s*-->)?\s*in\s*(<!--\s*-->)?\s*clothing/);
+    expect(html1).toMatch(
+      /Item:\s*(<!--\s*-->)?\s*shirt\s*(<!--\s*-->)?\s*in\s*(<!--\s*-->)?\s*clothing/,
+    );
 
     const res2 = await fetch(`${baseUrl}/shop/electronics/laptop`);
     expect(res2.status).toBe(200);
     const html2 = await res2.text();
-    expect(html2).toMatch(/Item:\s*(<!--\s*-->)?\s*laptop\s*(<!--\s*-->)?\s*in\s*(<!--\s*-->)?\s*electronics/);
+    expect(html2).toMatch(
+      /Item:\s*(<!--\s*-->)?\s*laptop\s*(<!--\s*-->)?\s*in\s*(<!--\s*-->)?\s*electronics/,
+    );
   });
 
   it("export const revalidate sets ISR Cache-Control header", async () => {
@@ -1061,8 +1103,8 @@ describe("App Router integration", () => {
       method: "POST",
       headers: {
         "x-rsc-action": "fake-action-id",
-        "Origin": "https://evil.com",
-        "Host": new URL(baseUrl).host,
+        Origin: "https://evil.com",
+        Host: new URL(baseUrl).host,
       },
     });
     expect(res.status).toBe(403);
@@ -1075,8 +1117,8 @@ describe("App Router integration", () => {
       method: "POST",
       headers: {
         "x-rsc-action": "fake-action-id",
-        "Origin": "not-a-url",
-        "Host": new URL(baseUrl).host,
+        Origin: "not-a-url",
+        Host: new URL(baseUrl).host,
       },
     });
     expect(res.status).toBe(403);
@@ -1089,8 +1131,8 @@ describe("App Router integration", () => {
       method: "POST",
       headers: {
         "x-rsc-action": "nonexistent-action",
-        "Origin": baseUrl,
-        "Host": new URL(baseUrl).host,
+        Origin: baseUrl,
+        Host: new URL(baseUrl).host,
         "Content-Type": "text/plain",
       },
       body: "[]",
@@ -1119,7 +1161,7 @@ describe("App Router integration", () => {
       method: "POST",
       headers: {
         "x-rsc-action": "nonexistent-action",
-        "Origin": "null",
+        Origin: "null",
         "Content-Type": "text/plain",
       },
       body: "[]",
@@ -1137,8 +1179,8 @@ describe("App Router integration", () => {
       method: "POST",
       headers: {
         "x-rsc-action": "fake-action-id",
-        "Origin": "https://evil.com",
-        "Host": new URL(baseUrl).host,
+        Origin: "https://evil.com",
+        Host: new URL(baseUrl).host,
         "X-Forwarded-Host": "evil.com",
       },
     });
@@ -1151,8 +1193,8 @@ describe("App Router integration", () => {
   it("blocks page GET with cross-origin Origin header", async () => {
     const res = await fetch(`${baseUrl}/`, {
       headers: {
-        "Origin": "https://evil.com",
-        "Host": new URL(baseUrl).host,
+        Origin: "https://evil.com",
+        Host: new URL(baseUrl).host,
       },
     });
     expect(res.status).toBe(403);
@@ -1163,9 +1205,9 @@ describe("App Router integration", () => {
   it("blocks RSC stream requests with cross-origin Origin header", async () => {
     const res = await fetch(`${baseUrl}/about`, {
       headers: {
-        "Origin": "https://evil.com",
-        "Host": new URL(baseUrl).host,
-        "Accept": "text/x-component",
+        Origin: "https://evil.com",
+        Host: new URL(baseUrl).host,
+        Accept: "text/x-component",
       },
     });
     expect(res.status).toBe(403);
@@ -1177,16 +1219,19 @@ describe("App Router integration", () => {
     const http = await import("node:http");
     const url = new URL(baseUrl);
     const status = await new Promise<number>((resolve, reject) => {
-      const req = http.request({
-        hostname: url.hostname,
-        port: url.port,
-        path: "/",
-        method: "GET",
-        headers: {
-          "sec-fetch-site": "cross-site",
-          "sec-fetch-mode": "no-cors",
+      const req = http.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: "/",
+          method: "GET",
+          headers: {
+            "sec-fetch-site": "cross-site",
+            "sec-fetch-mode": "no-cors",
+          },
         },
-      }, (res) => resolve(res.statusCode ?? 0));
+        (res) => resolve(res.statusCode ?? 0),
+      );
       req.on("error", reject);
       req.end();
     });
@@ -1196,8 +1241,8 @@ describe("App Router integration", () => {
   it("allows page requests from localhost origin", async () => {
     const res = await fetch(`${baseUrl}/`, {
       headers: {
-        "Origin": baseUrl,
-        "Host": new URL(baseUrl).host,
+        Origin: baseUrl,
+        Host: new URL(baseUrl).host,
       },
     });
     expect(res.status).toBe(200);
@@ -1206,6 +1251,91 @@ describe("App Router integration", () => {
   it("allows page requests without Origin header", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
+  });
+});
+
+describe("App Router dev server origin check", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+  });
+
+  it("allows requests with no Origin header (direct navigation)", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+  });
+
+  it("allows same-origin requests", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: baseUrl },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("allows requests with Origin 'null' (privacy-sensitive context)", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: "null" },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("blocks cross-origin requests", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: "http://evil.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks cross-origin requests to internal Vite paths (/@*)", async () => {
+    const res = await fetch(`${baseUrl}/@fs/etc/passwd`, {
+      headers: { Origin: "http://evil.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks requests with Sec-Fetch-Site: cross-site and no-cors mode", async () => {
+    // Node.js fetch strips Sec-Fetch-* headers (they're forbidden headers
+    // in the Fetch spec). Use raw HTTP to simulate browser behavior.
+    const http = await import("node:http");
+    const url = new URL(baseUrl);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(
+        {
+          hostname: url.hostname,
+          port: url.port,
+          path: "/",
+          method: "GET",
+          headers: {
+            "sec-fetch-site": "cross-site",
+            "sec-fetch-mode": "no-cors",
+          },
+        },
+        (res) => resolve(res.statusCode ?? 0),
+      );
+      req.on("error", reject);
+      req.end();
+    });
+    expect(status).toBe(403);
+  });
+
+  it("blocks cross-origin requests to source files", async () => {
+    const res = await fetch(`${baseUrl}/app/page.tsx`, {
+      headers: { Origin: "http://evil.com" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("blocks requests with malformed Origin header", async () => {
+    const res = await fetch(`${baseUrl}/`, {
+      headers: { Origin: "not-a-url" },
+    });
+    expect(res.status).toBe(403);
   });
 });
 
@@ -1237,18 +1367,11 @@ describe("App Router Production build", () => {
     expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
 
     // RSC bundle should contain route handling code
-    const rscEntry = fs.readFileSync(
-      path.join(outDir, "server", "index.js"),
-      "utf-8",
-    );
+    const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");
     expect(rscEntry).toContain("handler");
 
     // Asset manifest should be generated
-    expect(
-      fs.existsSync(
-        path.join(outDir, "server", "__vite_rsc_assets_manifest.js"),
-      ),
-    ).toBe(true);
+    expect(fs.existsSync(path.join(outDir, "server", "__vite_rsc_assets_manifest.js"))).toBe(true);
   }, 30000);
 
   it("serves production build via preview server", async () => {
@@ -1263,10 +1386,7 @@ describe("App Router Production build", () => {
     });
 
     const addr = previewServer.httpServer.address();
-    const previewUrl =
-      addr && typeof addr === "object"
-        ? `http://localhost:${addr.port}`
-        : null;
+    const previewUrl = addr && typeof addr === "object" ? `http://localhost:${addr.port}` : null;
     expect(previewUrl).not.toBeNull();
 
     try {
@@ -1323,9 +1443,7 @@ describe("App Router Production server (startProdServer)", () => {
     await builder.buildApp();
 
     // Start the production server on a random available port
-    const { startProdServer } = await import(
-      "../packages/vinext/src/server/prod-server.js"
-    );
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
     server = await startProdServer({ port: 0, outDir, noCompression: false });
     const addr = server.address();
     const port = typeof addr === "object" && addr ? addr.port : 4210;
@@ -1425,6 +1543,33 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html.length).toBeGreaterThan(0);
   });
 
+  it("reports server component render errors via instrumentation in production", async () => {
+    const resetRes = await fetch(`${baseUrl}/api/instrumentation-test`, {
+      method: "DELETE",
+    });
+    expect(resetRes.status).toBe(200);
+
+    const errorRes = await fetch(`${baseUrl}/error-server-test`);
+    expect(errorRes.status).toBe(200);
+    await errorRes.text();
+
+    await new Promise((resolve) => setTimeout(resolve, 200));
+
+    const stateRes = await fetch(`${baseUrl}/api/instrumentation-test`);
+    expect(stateRes.status).toBe(200);
+    const state = await stateRes.json();
+
+    expect(state.errors.length).toBeGreaterThanOrEqual(1);
+
+    const err = state.errors[state.errors.length - 1];
+    expect(err.message).toBe("Server component error");
+    expect(err.path).toBe("/error-server-test");
+    expect(err.method).toBe("GET");
+    expect(err.routerKind).toBe("App Router");
+    expect(err.routePath).toBe("/error-server-test");
+    expect(err.routeType).toBe("render");
+  });
+
   it("returns 400 for malformed percent-encoded path (not crash)", async () => {
     const res = await fetch(`${baseUrl}/%E0%A4%A`);
     expect(res.status).toBe(400);
@@ -1442,7 +1587,7 @@ describe("App Router Production server (startProdServer)", () => {
 
 // ---------------------------------------------------------------------------
 // Malformed percent-encoded URL regression tests — App Router dev server
-// (covers app-dev-server.ts generated RSC handler decodeURIComponent)
+// (covers entries/app-rsc-entry.ts generated RSC handler decodeURIComponent)
 // ---------------------------------------------------------------------------
 
 describe("App Router dev server malformed URL handling", () => {
@@ -1450,7 +1595,9 @@ describe("App Router dev server malformed URL handling", () => {
   let devBaseUrl: string;
 
   beforeAll(async () => {
-    ({ server: devServer, baseUrl: devBaseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true }));
+    ({ server: devServer, baseUrl: devBaseUrl } = await startFixtureServer(APP_FIXTURE_DIR, {
+      appRouter: true,
+    }));
   }, 30000);
 
   afterAll(async () => {
@@ -1488,15 +1635,9 @@ describe("App Router Static export", () => {
   });
 
   it("exports static App Router pages to HTML files", async () => {
-    const { staticExportApp } = await import(
-      "../packages/vinext/src/build/static-export.js"
-    );
-    const { appRouter } = await import(
-      "../packages/vinext/src/routing/app-router.js"
-    );
-    const { resolveNextConfig } = await import(
-      "../packages/vinext/src/config/next-config.js"
-    );
+    const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
+    const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
 
     const appDir = path.resolve(APP_FIXTURE_DIR, "app");
     const routes = await appRouter(appDir);
@@ -1516,54 +1657,34 @@ describe("App Router Static export", () => {
 
     // Index page
     expect(result.files).toContain("index.html");
-    const indexHtml = fs.readFileSync(
-      path.join(exportDir, "index.html"),
-      "utf-8",
-    );
+    const indexHtml = fs.readFileSync(path.join(exportDir, "index.html"), "utf-8");
     expect(indexHtml).toContain("Welcome to App Router");
 
     // About page
     expect(result.files).toContain("about.html");
-    const aboutHtml = fs.readFileSync(
-      path.join(exportDir, "about.html"),
-      "utf-8",
-    );
+    const aboutHtml = fs.readFileSync(path.join(exportDir, "about.html"), "utf-8");
     expect(aboutHtml).toContain("About");
   });
 
   it("pre-renders dynamic routes from generateStaticParams", async () => {
     // blog/[slug] has generateStaticParams returning hello-world and getting-started
-    expect(
-      fs.existsSync(path.join(exportDir, "blog", "hello-world.html")),
-    ).toBe(true);
-    expect(
-      fs.existsSync(path.join(exportDir, "blog", "getting-started.html")),
-    ).toBe(true);
+    expect(fs.existsSync(path.join(exportDir, "blog", "hello-world.html"))).toBe(true);
+    expect(fs.existsSync(path.join(exportDir, "blog", "getting-started.html"))).toBe(true);
 
-    const blogHtml = fs.readFileSync(
-      path.join(exportDir, "blog", "hello-world.html"),
-      "utf-8",
-    );
+    const blogHtml = fs.readFileSync(path.join(exportDir, "blog", "hello-world.html"), "utf-8");
     expect(blogHtml).toContain("hello-world");
   });
 
   it("generates 404.html for App Router", async () => {
     expect(fs.existsSync(path.join(exportDir, "404.html"))).toBe(true);
-    const html404 = fs.readFileSync(
-      path.join(exportDir, "404.html"),
-      "utf-8",
-    );
+    const html404 = fs.readFileSync(path.join(exportDir, "404.html"), "utf-8");
     // Custom not-found.tsx should be rendered
     expect(html404).toContain("Page Not Found");
   });
 
   it("reports errors for dynamic routes without generateStaticParams", async () => {
-    const { staticExportApp } = await import(
-      "../packages/vinext/src/build/static-export.js"
-    );
-    const { resolveNextConfig } = await import(
-      "../packages/vinext/src/config/next-config.js"
-    );
+    const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
 
     // Create a fake route with isDynamic but no generateStaticParams
     const fakeRoutes = [
@@ -1574,7 +1695,8 @@ describe("App Router Static export", () => {
         layouts: [],
         templates: [],
         parallelSlots: [],
-        layoutSegmentDepths: [],
+        routeSegments: ["fake", "[id]"],
+        layoutTreePositions: [],
         loadingPath: null,
         errorPath: null,
         layoutErrorPaths: [],
@@ -1584,6 +1706,7 @@ describe("App Router Static export", () => {
         unauthorizedPath: null,
         isDynamic: true,
         params: ["id"],
+        patternParts: ["fake", ":id"],
       },
     ];
     const config = await resolveNextConfig({ output: "export" });
@@ -1600,21 +1723,15 @@ describe("App Router Static export", () => {
       });
 
       // Should have an error about missing generateStaticParams
-      expect(
-        result.errors.some((e) => e.error.includes("generateStaticParams")),
-      ).toBe(true);
+      expect(result.errors.some((e) => e.error.includes("generateStaticParams"))).toBe(true);
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   });
 
   it("skips route handlers with warning", async () => {
-    const { staticExportApp } = await import(
-      "../packages/vinext/src/build/static-export.js"
-    );
-    const { resolveNextConfig } = await import(
-      "../packages/vinext/src/config/next-config.js"
-    );
+    const { staticExportApp } = await import("../packages/vinext/src/build/static-export.js");
+    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
 
     // Create a fake API route
     const fakeRoutes = [
@@ -1625,7 +1742,8 @@ describe("App Router Static export", () => {
         layouts: [],
         templates: [],
         parallelSlots: [],
-        layoutSegmentDepths: [],
+        routeSegments: ["api", "hello"],
+        layoutTreePositions: [],
         loadingPath: null,
         errorPath: null,
         layoutErrorPaths: [],
@@ -1635,6 +1753,7 @@ describe("App Router Static export", () => {
         unauthorizedPath: null,
         isDynamic: false,
         params: [],
+        patternParts: ["api", "test"],
       },
     ];
     const config = await resolveNextConfig({ output: "export" });
@@ -1707,9 +1826,7 @@ describe("metadata routes integration (App Router)", () => {
   // has proper Node externals configured. The discovery/routing is tested below.
 
   it("scanMetadataFiles discovers icon.tsx as a dynamic icon route", async () => {
-    const { scanMetadataFiles } = await import(
-      "../packages/vinext/src/server/metadata-routes.js"
-    );
+    const { scanMetadataFiles } = await import("../packages/vinext/src/server/metadata-routes.js");
     const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
 
@@ -1722,9 +1839,7 @@ describe("metadata routes integration (App Router)", () => {
   });
 
   it("scanMetadataFiles discovers static apple-icon.png at root", async () => {
-    const { scanMetadataFiles } = await import(
-      "../packages/vinext/src/server/metadata-routes.js"
-    );
+    const { scanMetadataFiles } = await import("../packages/vinext/src/server/metadata-routes.js");
     const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
 
@@ -1736,9 +1851,7 @@ describe("metadata routes integration (App Router)", () => {
   });
 
   it("scanMetadataFiles discovers nested opengraph-image.png", async () => {
-    const { scanMetadataFiles } = await import(
-      "../packages/vinext/src/server/metadata-routes.js"
-    );
+    const { scanMetadataFiles } = await import("../packages/vinext/src/server/metadata-routes.js");
     const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
 
@@ -1776,9 +1889,7 @@ describe("metadata routes integration (App Router)", () => {
   });
 
   it("scanMetadataFiles discovers static favicon.ico at root", async () => {
-    const { scanMetadataFiles } = await import(
-      "../packages/vinext/src/server/metadata-routes.js"
-    );
+    const { scanMetadataFiles } = await import("../packages/vinext/src/server/metadata-routes.js");
     const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
     const routes = scanMetadataFiles(appDir);
 
@@ -1801,6 +1912,66 @@ describe("metadata routes integration (App Router)", () => {
     expect(magic[1]).toBe(0x00);
     expect(magic[2]).toBe(0x01);
     expect(magic[3]).toBe(0x00);
+  });
+
+  // generateSitemaps() support — paginated sitemaps at /products/sitemap/{id}.xml
+  it("serves /products/sitemap/0.xml from generateSitemaps", async () => {
+    const res = await fetch(`${baseUrl}/products/sitemap/0.xml`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/xml");
+    const xml = await res.text();
+    expect(xml).toContain("<urlset");
+    expect(xml).toContain("https://example.com/products/batch-0/item-1");
+    expect(xml).toContain("https://example.com/products/batch-0/item-2");
+    // Should NOT contain entries from other batches
+    expect(xml).not.toContain("batch-1");
+  });
+
+  it("serves /products/sitemap/1.xml with distinct entries", async () => {
+    const res = await fetch(`${baseUrl}/products/sitemap/1.xml`);
+    expect(res.status).toBe(200);
+    const xml = await res.text();
+    expect(xml).toContain("https://example.com/products/batch-1/item-1");
+    expect(xml).toContain("https://example.com/products/batch-1/item-2");
+    expect(xml).not.toContain("batch-0");
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/metadata-dynamic-routes/index.test.ts
+  // "Should 404 when missing .xml extension"
+  it("returns 404 for sitemap id without .xml extension", async () => {
+    const res = await fetch(`${baseUrl}/products/sitemap/0`);
+    expect(res.status).toBe(404);
+  });
+
+  it("serves /products/sitemap/featured.xml with string id", async () => {
+    const res = await fetch(`${baseUrl}/products/sitemap/featured.xml`);
+    expect(res.status).toBe(200);
+    const xml = await res.text();
+    expect(xml).toContain("https://example.com/products/batch-featured/item-1");
+    expect(xml).toContain("https://example.com/products/batch-featured/item-2");
+  });
+
+  it("returns 404 for invalid sitemap id", async () => {
+    const res = await fetch(`${baseUrl}/products/sitemap/99.xml`);
+    expect(res.status).toBe(404);
+  });
+
+  it("does not serve /products/sitemap.xml when generateSitemaps exists", async () => {
+    const res = await fetch(`${baseUrl}/products/sitemap.xml`);
+    // The base URL should not match — either 404 or falls through to page routing
+    expect(res.status).toBe(404);
+  });
+
+  it("scanMetadataFiles discovers nested products/sitemap.ts", async () => {
+    const { scanMetadataFiles } = await import("../packages/vinext/src/server/metadata-routes.js");
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
+    const routes = scanMetadataFiles(appDir);
+    const productsSitemap = routes.find(
+      (r: { type: string; servedUrl: string }) =>
+        r.type === "sitemap" && r.servedUrl === "/products/sitemap.xml",
+    );
+    expect(productsSitemap).toBeDefined();
+    expect(productsSitemap!.isDynamic).toBe(true);
   });
 });
 
@@ -1843,6 +2014,56 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("About");
+  });
+
+  // In App Router execution order, beforeFiles rewrites run after middleware.
+  // has/missing conditions on beforeFiles rules should therefore evaluate against
+  // middleware-modified headers/cookies, not the original pre-middleware request.
+  it("beforeFiles rewrite has/missing conditions see middleware-injected cookies", async () => {
+    // Without ?mw-auth, middleware does NOT inject mw-before-user=1.
+    // The has:[cookie:mw-before-user] beforeFiles rule should NOT match → no rewrite.
+    const noAuthRes = await fetch(`${baseUrl}/mw-gated-before`);
+    expect(noAuthRes.status).toBe(404);
+
+    // With ?mw-auth, middleware injects mw-before-user=1 into request cookies.
+    // The has:[cookie:mw-before-user] beforeFiles rule SHOULD match → rewrite to /about.
+    const authRes = await fetch(`${baseUrl}/mw-gated-before?mw-auth`);
+    expect(authRes.status).toBe(200);
+    const html = await authRes.text();
+    expect(html).toContain("About");
+  });
+
+  // Fallback rewrites run after middleware and after a 404 from route matching.
+  // has/missing conditions on fallback rules should evaluate against
+  // middleware-modified headers/cookies, not the original pre-middleware request.
+  it("fallback rewrite has/missing conditions see middleware-injected cookies", async () => {
+    // Without ?mw-auth, middleware does NOT inject mw-fallback-user=1.
+    // The has:[cookie:mw-fallback-user] fallback rule should NOT match → 404.
+    const noAuthRes = await fetch(`${baseUrl}/mw-gated-fallback`);
+    expect(noAuthRes.status).toBe(404);
+
+    // With ?mw-auth, middleware injects mw-fallback-user=1 into request cookies.
+    // The has:[cookie:mw-fallback-user] fallback rule SHOULD match → rewrite to /about.
+    const authRes = await fetch(`${baseUrl}/mw-gated-fallback?mw-auth`);
+    expect(authRes.status).toBe(200);
+    const html = await authRes.text();
+    expect(html).toContain("About");
+  });
+
+  it("fallback rewrites targeting Pages routes still work in mixed app/pages projects", async () => {
+    const noAuthRes = await fetch(`${baseUrl}/mw-gated-fallback-pages`);
+    expect(noAuthRes.status).toBe(404);
+
+    const { res, html } = await fetchHtml(`${baseUrl}`, "/mw-gated-fallback-pages?mw-auth", {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(html).toContain("Pages Header Override Delete");
+    expect(html).toContain('"page":"/pages-header-override-delete"');
   });
 
   it("applies custom headers from next.config.js on API routes", async () => {
@@ -1901,7 +2122,8 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       notFoundPath: null,
       forbiddenPath: null,
       unauthorizedPath: null,
-      layoutSegmentDepths: [0],
+      routeSegments: [],
+      layoutTreePositions: [0],
       isDynamic: false,
       params: [],
     },
@@ -1918,7 +2140,8 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       notFoundPath: null,
       forbiddenPath: null,
       unauthorizedPath: null,
-      layoutSegmentDepths: [0],
+      routeSegments: [],
+      layoutTreePositions: [0],
       isDynamic: false,
       params: [],
     },
@@ -1935,7 +2158,8 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       notFoundPath: null,
       forbiddenPath: null,
       unauthorizedPath: null,
-      layoutSegmentDepths: [0],
+      routeSegments: [],
+      layoutTreePositions: [0],
       isDynamic: true,
       params: ["slug"],
     },
@@ -1949,7 +2173,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       ],
     });
     expect(code).toContain("__configRedirects");
-    expect(code).toContain("__applyConfigRedirects");
+    expect(code).toContain("matchRedirect");
     expect(code).toContain("/old-about");
     expect(code).toContain("/old-blog/:slug");
     expect(code).toContain("permanent");
@@ -1964,7 +2188,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       },
     });
     expect(code).toContain("__configRewrites");
-    expect(code).toContain("__applyConfigRewrites");
+    expect(code).toContain("matchRewrite");
     expect(code).toContain("beforeFiles");
     expect(code).toContain("afterFiles");
     expect(code).toContain("fallback");
@@ -1975,12 +2199,10 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
 
   it("generates custom header handling code when headers are provided", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
-      headers: [
-        { source: "/api/(.*)", headers: [{ key: "X-Custom-Header", value: "vinext" }] },
-      ],
+      headers: [{ source: "/api/(.*)", headers: [{ key: "X-Custom-Header", value: "vinext" }] }],
     });
     expect(code).toContain("__configHeaders");
-    expect(code).toContain("__applyConfigHeaders");
+    expect(code).toContain("matchHeaders");
     expect(code).toContain("X-Custom-Header");
     expect(code).toContain("vinext");
   });
@@ -2005,9 +2227,26 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
       redirects: [{ source: "/docs/:path*", destination: "/wiki/:path*", permanent: false }],
     });
-    expect(code).toContain("__matchConfigPattern");
+    // matchConfigPattern is now used internally by matchRedirect/matchRewrite via config-matchers import
+    expect(code).toContain("matchRedirect");
     // Should handle catch-all patterns
     expect(code).toContain(":path*");
+  });
+
+  it("validates proxy.ts exports in generated middleware dispatch (matching Next.js)", () => {
+    const code = generateRscEntry(
+      "/tmp/test/app",
+      minimalRoutes,
+      "/tmp/proxy.ts",
+      [],
+      null,
+      "",
+      false,
+    );
+    // For proxy.ts files, named proxy export is preferred over default
+    expect(code).toContain("middlewareModule.proxy ?? middlewareModule.default");
+    // Should throw if no valid export found
+    expect(code).toContain("must export a function named");
   });
 
   it("applies redirects before middleware in the handler", () => {
@@ -2015,7 +2254,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
     });
     // The redirect check should appear before middleware and route matching
-    const redirectIdx = code.indexOf("__applyConfigRedirects(pathname");
+    const redirectIdx = code.indexOf("matchRedirect(__redirPathname");
     const routeMatchIdx = code.indexOf("matchRoute(cleanPathname");
     expect(redirectIdx).toBeGreaterThan(-1);
     expect(routeMatchIdx).toBeGreaterThan(-1);
@@ -2035,6 +2274,31 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(beforeIdx).toBeGreaterThan(-1);
     expect(routeMatchIdx).toBeGreaterThan(-1);
     expect(beforeIdx).toBeLessThan(routeMatchIdx);
+  });
+
+  it("strips .rsc suffix before matching beforeFiles rewrite rules", () => {
+    // RSC (soft-nav) requests arrive as /some/path.rsc but rewrite patterns
+    // are defined without the extension. The generated code must strip .rsc
+    // before calling matchRewrite for beforeFiles.
+    // beforeFiles now runs after middleware (using __postMwReqCtx), and
+    // cleanPathname has already had .rsc stripped at that point.
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      rewrites: {
+        beforeFiles: [{ source: "/old", destination: "/new" }],
+        afterFiles: [],
+        fallback: [],
+      },
+    });
+    // The generated code uses cleanPathname (already .rsc-stripped) when
+    // calling matchRewrite for beforeFiles.
+    const beforeFilesCallIdx = code.indexOf(
+      "matchRewrite(cleanPathname, __configRewrites.beforeFiles",
+    );
+    expect(beforeFilesCallIdx).toBeGreaterThan(-1);
+    // The cleanPathname assignment (stripping .rsc) must appear before the beforeFiles call
+    const cleanPathnameIdx = code.indexOf("cleanPathname = pathname.replace");
+    expect(cleanPathnameIdx).toBeGreaterThan(-1);
+    expect(cleanPathnameIdx).toBeLessThan(beforeFilesCallIdx);
   });
 
   it("applies afterFiles rewrites in the handler code", () => {
@@ -2078,10 +2342,10 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       },
     });
     // Should include the external URL detection and proxy functions
-    expect(code).toContain("__isExternalUrl");
-    expect(code).toContain("__proxyExternalRequest");
+    expect(code).toContain("isExternalUrl");
+    expect(code).toContain("proxyExternalRequest");
     // beforeFiles rewrite should check for external URL
-    expect(code).toContain("__isExternalUrl(__rewritten)");
+    expect(code).toContain("isExternalUrl(__rewritten)");
   });
 
   it("generates external URL checks for afterFiles rewrites", () => {
@@ -2092,7 +2356,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         fallback: [],
       },
     });
-    expect(code).toContain("__isExternalUrl(__afterRewritten)");
+    expect(code).toContain("isExternalUrl(__afterRewritten)");
   });
 
   it("generates external URL checks for fallback rewrites", () => {
@@ -2100,10 +2364,25 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
       rewrites: {
         beforeFiles: [],
         afterFiles: [],
-        fallback: [{ source: "/fallback/:path*", destination: "https://fallback.example.com/:path*" }],
+        fallback: [
+          { source: "/fallback/:path*", destination: "https://fallback.example.com/:path*" },
+        ],
       },
     });
-    expect(code).toContain("__isExternalUrl(__fallbackRewritten)");
+    expect(code).toContain("isExternalUrl(__fallbackRewritten)");
+  });
+
+  it("uses imported proxyExternalRequest which guards content-encoding stripping to Node runtime", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      rewrites: {
+        beforeFiles: [{ source: "/proxy/:path*", destination: "https://api.example.com/:path*" }],
+        afterFiles: [],
+        fallback: [],
+      },
+    });
+    // proxyExternalRequest is now imported from config-matchers (which contains
+    // the isNodeRuntime guard internally), so verify the import is used.
+    expect(code).toContain("proxyExternalRequest(request,");
   });
 
   it("adds basePath prefix to redirect destinations", () => {
@@ -2112,16 +2391,16 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     });
     // Generated code should prepend basePath to redirect destination
     expect(code).toContain("__basePath");
-    expect(code).toContain("__redir.destination.startsWith(__basePath)");
+    expect(code).toContain("!isExternalUrl(__redir.destination)");
+    expect(code).toContain("hasBasePath(__redir.destination, __basePath)");
   });
 
   it("generates CSRF origin validation code for server actions", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-    // Should include the CSRF validation function
-    expect(code).toContain("__validateCsrfOrigin");
-    expect(code).toContain("__isOriginAllowed");
+    // Should import the CSRF validation function from request-pipeline
+    expect(code).toContain("validateCsrfOrigin");
     // Should call CSRF validation before processing server actions
-    const csrfIdx = code.indexOf("__validateCsrfOrigin(request)");
+    const csrfIdx = code.indexOf("validateCsrfOrigin(request");
     const actionIdx = code.indexOf("loadServerAction(actionId)");
     expect(csrfIdx).toBeGreaterThan(-1);
     expect(actionIdx).toBeGreaterThan(-1);
@@ -2137,6 +2416,17 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("*.my-domain.com");
   });
 
+  it("keeps allowedDevOrigins separate from allowedOrigins", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false, {
+      allowedOrigins: ["actions.example.com"],
+      allowedDevOrigins: ["allowed.example.com"],
+    });
+    expect(code).toContain("actions.example.com");
+    expect(code).toContain("allowed.example.com");
+    expect(code).toContain('const __allowedOrigins = ["actions.example.com"]');
+    expect(code).toContain('const __allowedDevOrigins = ["allowed.example.com"]');
+  });
+
   it("embeds empty allowedOrigins when none provided", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
     expect(code).toContain("__allowedOrigins = []");
@@ -2144,15 +2434,12 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
 
   it("origin validation does not use x-forwarded-host", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
-    // The __validateCsrfOrigin function must not read x-forwarded-host.
-    // Extract just the CSRF validation function to ensure no false positives
-    // from other parts of the generated code.
-    const csrfStart = code.indexOf("function __validateCsrfOrigin");
-    const csrfEnd = code.indexOf("\n}", csrfStart) + 2;
-    const csrfFn = code.slice(csrfStart, csrfEnd);
-    expect(csrfFn).not.toContain("x-forwarded-host");
-    // It should use the host header only
-    expect(csrfFn).toContain('request.headers.get("host")');
+    // validateCsrfOrigin is now imported from request-pipeline.ts rather than
+    // inlined. The imported function uses host header only (not x-forwarded-host).
+    // Verify the call site passes allowed origins to the imported function.
+    expect(code).toContain("validateCsrfOrigin(request, __allowedOrigins)");
+    // The generated code should NOT define an inline __validateCsrfOrigin function
+    expect(code).not.toContain("function __validateCsrfOrigin");
   });
 
   // ── Dev origin check code generation ────────────────────────────────
@@ -2163,7 +2450,9 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("__safeDevHosts");
     // Should call dev origin validation inside _handleRequest
     const callSite = code.indexOf("const __originBlock = __validateDevRequestOrigin(request)");
-    const handleRequestIdx = code.indexOf("async function _handleRequest(request)");
+    const handleRequestIdx = code.indexOf(
+      "async function _handleRequest(request, __reqCtx, _mwCtx)",
+    );
     expect(callSite).toBeGreaterThan(-1);
     expect(handleRequestIdx).toBeGreaterThan(-1);
     // The call should be inside the function body (after the function declaration)
@@ -2177,6 +2466,162 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("staging.example.com");
     expect(code).toContain("*.preview.dev");
     expect(code).toContain("__allowedDevOrigins");
+  });
+
+  it("loads allowedDevOrigins from next.config into the virtual RSC entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-app-rsc-allowed-dev-origins-"));
+    try {
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        "export default function Layout({ children }) { return <html><body>{children}</body></html>; }",
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        "export default function Page() { return <div>allowed-dev-origins</div>; }",
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "next.config.mjs"),
+        `export default {
+  allowedDevOrigins: ["allowed.example.com"],
+  experimental: {
+    serverActions: {
+      allowedOrigins: ["actions.example.com"],
+    },
+  },
+};`,
+      );
+      fs.symlinkSync(
+        path.resolve(__dirname, "..", "node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+
+      const testServer = await createServer({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        server: { port: 0 },
+        logLevel: "silent",
+      });
+
+      try {
+        const resolved = await testServer.pluginContainer.resolveId("virtual:vinext-rsc-entry");
+        expect(resolved).toBeTruthy();
+        const loaded = await testServer.pluginContainer.load(resolved!.id);
+        const code = typeof loaded === "string" ? loaded : ((loaded as any)?.code ?? "");
+
+        expect(code).toContain('const __allowedDevOrigins = ["allowed.example.com"]');
+        expect(code).toContain('const __allowedOrigins = ["actions.example.com"]');
+      } finally {
+        await testServer.close();
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  describe("rscOnError: non-plain object dev hint", () => {
+    it("includes detection for the 'Only plain objects' RSC serialization error", () => {
+      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+      expect(code).toContain(
+        "Only plain objects, and a few built-ins, can be passed to Client Components",
+      );
+    });
+
+    it("guards the dev hint behind a NODE_ENV !== production check", () => {
+      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+      // The hint must be suppressed in production builds
+      expect(code).toContain('process.env.NODE_ENV !== "production"');
+    });
+
+    it("includes actionable guidance about module namespace objects in the hint", () => {
+      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+      expect(code).toContain("import * as X");
+      expect(code).toContain("[vinext] RSC serialization error");
+    });
+
+    it("includes actionable guidance about class instances in the hint", () => {
+      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+      expect(code).toContain("class instance");
+    });
+
+    it("does not affect the digest return path for navigation errors", () => {
+      const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+      // The existing digest path (redirect/notFound) must still be present
+      expect(code).toContain('"digest" in error');
+      expect(code).toContain("String(error.digest)");
+    });
+
+    // Runtime tests: extract the rscOnError function from the generated code
+    // and evaluate it. This catches syntax errors and logic bugs that the
+    // string-presence tests above would miss (e.g. unterminated strings,
+    // wrong return values, broken control flow).
+    describe("runtime behavior", () => {
+      let rscOnError: (error: unknown) => string | undefined;
+
+      beforeAll(() => {
+        const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "", false);
+
+        // Extract a top-level function from the generated code by matching
+        // balanced braces (simple regex can't handle nested braces).
+        function extractFunction(src: string, name: string): string {
+          const marker = `function ${name}(`;
+          const start = src.indexOf(marker);
+          if (start === -1) throw new Error(`Could not find ${name} in generated code`);
+          const braceStart = src.indexOf("{", start);
+          let depth = 0;
+          for (let i = braceStart; i < src.length; i++) {
+            if (src[i] === "{") depth++;
+            else if (src[i] === "}") depth--;
+            if (depth === 0) return src.slice(start, i + 1);
+          }
+          throw new Error(`Unbalanced braces in ${name}`);
+        }
+
+        const digestFn = extractFunction(code, "__errorDigest");
+        const onErrorFn = extractFunction(code, "rscOnError");
+
+        const body = `${digestFn}\n${onErrorFn}\nreturn rscOnError;`;
+        const factory = new Function("process", body);
+        rscOnError = factory({ env: { NODE_ENV: "development" } });
+      });
+
+      it("returns the digest string for navigation errors (redirect/notFound)", () => {
+        const error = Object.assign(new Error("NEXT_REDIRECT"), {
+          digest: "NEXT_REDIRECT;push;/dashboard;307",
+        });
+        expect(rscOnError(error)).toBe("NEXT_REDIRECT;push;/dashboard;307");
+      });
+
+      it("logs an actionable hint and returns undefined for RSC serialization errors", () => {
+        const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          const error = new Error(
+            "Only plain objects, and a few built-ins, can be passed to Client Components from Server Components. " +
+              "Objects with toJSON methods are not supported. Module namespace objects are not supported.",
+          );
+          const result = rscOnError(error);
+          expect(result).toBeUndefined();
+          expect(spy).toHaveBeenCalledOnce();
+          expect(spy.mock.calls[0]![0]).toContain("[vinext] RSC serialization error");
+        } finally {
+          spy.mockRestore();
+        }
+      });
+
+      it("returns undefined for generic errors in dev (no digest, no serialization match)", () => {
+        const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+        try {
+          const result = rscOnError(new Error("something went wrong"));
+          expect(result).toBeUndefined();
+          // Should NOT log the hint for unrelated errors
+          expect(spy).not.toHaveBeenCalled();
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
   });
 });
 
@@ -2247,6 +2692,40 @@ describe("App Router middleware with NextRequest", () => {
     expect(res.status).toBe(500);
   });
 
+  it("middleware request header overrides can delete credential headers before rendering", async () => {
+    // Ported from Next.js: test/e2e/middleware-request-header-overrides/test/index.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-request-header-overrides/test/index.test.ts
+    const { res, html } = await fetchHtml(baseUrl, "/header-override-delete", {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(html).toContain('id="authorization">null<');
+    expect(html).toContain('id="cookie">null<');
+    expect(html).toContain('id="middleware-header">hello-from-middleware<');
+    expect(html).toContain('id="cookie-count">0<');
+  });
+
+  it("middleware request header overrides can delete credential headers before pages getServerSideProps in mixed projects", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/pages-header-override-delete", {
+      headers: {
+        authorization: "Bearer secret",
+        cookie: "a=1; b=2",
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(html).toContain("Pages Header Override Delete");
+    expect(html).toContain('<p id="authorization"></p>');
+    expect(html).toContain('<p id="cookie"></p>');
+    expect(html).toContain('id="middleware-header">hello-from-middleware<');
+    expect(html).toContain('"authorization":null');
+    expect(html).toContain('"cookie":null');
+  });
+
   it("does not leak x-middleware-next or x-middleware-rewrite headers to the client", async () => {
     // NextResponse.next() sets x-middleware-next internally.
     // The dev server must strip it (and all x-middleware-* headers) before
@@ -2276,14 +2755,14 @@ describe("App Router middleware with NextRequest", () => {
 
 describe("SSR entry CSS preload fix", () => {
   it("generateSsrEntry includes fixPreloadAs function", async () => {
-    const { generateSsrEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const { generateSsrEntry } = await import("../packages/vinext/src/entries/app-ssr-entry.js");
     const code = generateSsrEntry();
     expect(code).toContain("fixPreloadAs");
     expect(code).toContain('as="style"');
   });
 
   it("generateSsrEntry includes fixFlightHints in RSC embed transform", async () => {
-    const { generateSsrEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const { generateSsrEntry } = await import("../packages/vinext/src/entries/app-ssr-entry.js");
     const code = generateSsrEntry();
     // The RSC embed stream should fix HL hint "stylesheet" → "style" before
     // chunks are embedded as __VINEXT_RSC_CHUNKS__ for client-side processing
@@ -2291,47 +2770,48 @@ describe("SSR entry CSS preload fix", () => {
     expect(code).toContain('"style"');
   });
 
-  it("fixPreloadAs regex correctly replaces as=\"stylesheet\" with as=\"style\"", () => {
+  it('fixPreloadAs regex correctly replaces as="stylesheet" with as="style"', () => {
     // Replicate the fixPreloadAs function from the generated SSR entry
     function fixPreloadAs(html: string): string {
-      return html.replace(/<link(?=[^>]*\srel="preload")[^>]*>/g, function(tag) {
+      return html.replace(/<link(?=[^>]*\srel="preload")[^>]*>/g, function (tag) {
         return tag.replace(' as="stylesheet"', ' as="style"');
       });
     }
 
     // Test: basic case from the issue
-    expect(fixPreloadAs('<link rel="preload" href="/assets/index-hG1v95Xi.css" as="stylesheet"/>')).toBe(
-      '<link rel="preload" href="/assets/index-hG1v95Xi.css" as="style"/>'
-    );
+    expect(
+      fixPreloadAs('<link rel="preload" href="/assets/index-hG1v95Xi.css" as="stylesheet"/>'),
+    ).toBe('<link rel="preload" href="/assets/index-hG1v95Xi.css" as="style"/>');
 
     // Test: as attribute before rel
     expect(fixPreloadAs('<link as="stylesheet" rel="preload" href="/file.css"/>')).toBe(
-      '<link as="style" rel="preload" href="/file.css"/>'
+      '<link as="style" rel="preload" href="/file.css"/>',
     );
 
     // Test: should NOT modify <link rel="stylesheet"> (no preload)
     expect(fixPreloadAs('<link rel="stylesheet" href="/file.css" as="stylesheet"/>')).toBe(
-      '<link rel="stylesheet" href="/file.css" as="stylesheet"/>'
+      '<link rel="stylesheet" href="/file.css" as="stylesheet"/>',
     );
 
     // Test: should NOT modify other preload types
     expect(fixPreloadAs('<link rel="preload" href="/font.woff2" as="font"/>')).toBe(
-      '<link rel="preload" href="/font.woff2" as="font"/>'
+      '<link rel="preload" href="/font.woff2" as="font"/>',
     );
 
     // Test: multiple link tags in one chunk
-    const multi = '<link rel="preload" href="/a.css" as="stylesheet"/><link rel="preload" href="/b.css" as="stylesheet"/>';
+    const multi =
+      '<link rel="preload" href="/a.css" as="stylesheet"/><link rel="preload" href="/b.css" as="stylesheet"/>';
     expect(fixPreloadAs(multi)).toBe(
-      '<link rel="preload" href="/a.css" as="style"/><link rel="preload" href="/b.css" as="style"/>'
+      '<link rel="preload" href="/a.css" as="style"/><link rel="preload" href="/b.css" as="style"/>',
     );
 
     // Test: no change needed
     expect(fixPreloadAs('<link rel="preload" href="/a.css" as="style"/>')).toBe(
-      '<link rel="preload" href="/a.css" as="style"/>'
+      '<link rel="preload" href="/a.css" as="style"/>',
     );
   });
 
-  it("fixFlightHints regex correctly replaces \"stylesheet\" with \"style\" in RSC Flight HL hints", () => {
+  it('fixFlightHints regex correctly replaces "stylesheet" with "style" in RSC Flight HL hints', () => {
     // Replicate the fixFlightHints regex from the generated SSR entry.
     // This runs on the raw Flight protocol text embedded in __VINEXT_RSC_CHUNKS__
     // so that client-side React creates valid <link rel="preload" as="style"> instead
@@ -2342,44 +2822,44 @@ describe("SSR entry CSS preload fix", () => {
 
     // Test: basic HL hint for CSS
     expect(fixFlightHints('2:HL["/assets/index.css","stylesheet"]')).toBe(
-      '2:HL["/assets/index.css","style"]'
+      '2:HL["/assets/index.css","style"]',
     );
 
     // Test: HL hint with options (3-element array)
     expect(fixFlightHints('2:HL["/assets/index.css","stylesheet",{"crossOrigin":""}]')).toBe(
-      '2:HL["/assets/index.css","style",{"crossOrigin":""}]'
+      '2:HL["/assets/index.css","style",{"crossOrigin":""}]',
     );
 
     // Test: should NOT modify non-HL lines containing "stylesheet"
-    expect(fixFlightHints('0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]')).toBe(
-      '0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]'
-    );
+    expect(
+      fixFlightHints(
+        '0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]',
+      ),
+    ).toBe('0:D{"name":"index"}\n1:["$","link",null,{"rel":"stylesheet","href":"/file.css"}]');
 
     // Test: multiple HL hints in one chunk
     expect(fixFlightHints('2:HL["/a.css","stylesheet"]\n3:HL["/b.css","stylesheet"]')).toBe(
-      '2:HL["/a.css","style"]\n3:HL["/b.css","style"]'
+      '2:HL["/a.css","style"]\n3:HL["/b.css","style"]',
     );
 
     // Test: should NOT modify HL hints with other as values
-    expect(fixFlightHints('2:HL["/font.woff2","font"]')).toBe(
-      '2:HL["/font.woff2","font"]'
-    );
+    expect(fixFlightHints('2:HL["/font.woff2","font"]')).toBe('2:HL["/font.woff2","font"]');
 
     // Test: no change needed when already "style"
     expect(fixFlightHints('2:HL["/assets/index.css","style"]')).toBe(
-      '2:HL["/assets/index.css","style"]'
+      '2:HL["/assets/index.css","style"]',
     );
 
     // Test: mixed content — only HL hints should be modified
-    expect(fixFlightHints('0:D{"name":"page"}\n2:HL["/app.css","stylesheet"]\n3:["$","div",null,{}]')).toBe(
-      '0:D{"name":"page"}\n2:HL["/app.css","style"]\n3:["$","div",null,{}]'
-    );
+    expect(
+      fixFlightHints('0:D{"name":"page"}\n2:HL["/app.css","stylesheet"]\n3:["$","div",null,{}]'),
+    ).toBe('0:D{"name":"page"}\n2:HL["/app.css","style"]\n3:["$","div",null,{}]');
   });
 });
 
 describe("Tick-buffered RSC delivery", () => {
   it("generateSsrEntry uses setTimeout-based tick buffering for RSC scripts", async () => {
-    const { generateSsrEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const { generateSsrEntry } = await import("../packages/vinext/src/entries/app-ssr-entry.js");
     const code = generateSsrEntry();
     // Should use setTimeout(0) for tick buffering instead of emitting
     // RSC scripts synchronously between HTML chunks
@@ -2395,7 +2875,8 @@ describe("Tick-buffered RSC delivery", () => {
   });
 
   it("generateBrowserEntry uses monkey-patched push() instead of polling", async () => {
-    const { generateBrowserEntry } = await import("../packages/vinext/src/server/app-dev-server.js");
+    const { generateBrowserEntry } =
+      await import("../packages/vinext/src/entries/app-browser-entry.js");
     const code = generateBrowserEntry();
     // Should override push() for immediate chunk delivery
     expect(code).toContain("arr.push = function");
@@ -2463,10 +2944,7 @@ describe("RSC plugin auto-registration", () => {
     const serverWithExplicitRsc = await createServer({
       root: APP_FIXTURE_DIR,
       configFile: false,
-      plugins: [
-        vinext({ appDir: APP_FIXTURE_DIR, rsc: false }),
-        rsc({ entries: RSC_ENTRIES }),
-      ],
+      plugins: [vinext({ appDir: APP_FIXTURE_DIR, rsc: false }), rsc({ entries: RSC_ENTRIES })],
       optimizeDeps: { holdUntilCrawlEnd: true },
       server: { port: 0, cors: false },
       logLevel: "silent",
@@ -2475,9 +2953,7 @@ describe("RSC plugin auto-registration", () => {
 
     try {
       const addr = serverWithExplicitRsc.httpServer?.address();
-      const url = addr && typeof addr === "object"
-        ? `http://localhost:${addr.port}`
-        : "";
+      const url = addr && typeof addr === "object" ? `http://localhost:${addr.port}` : "";
       const res = await fetch(`${url}/`);
       expect(res.status).toBe(200);
       const html = await res.text();
@@ -2498,10 +2974,7 @@ describe("RSC plugin auto-registration", () => {
       createBuilder({
         root: APP_FIXTURE_DIR,
         configFile: false,
-        plugins: [
-          vinext({ appDir: APP_FIXTURE_DIR }),
-          rsc({ entries: RSC_ENTRIES }),
-        ],
+        plugins: [vinext({ appDir: APP_FIXTURE_DIR }), rsc({ entries: RSC_ENTRIES })],
         logLevel: "silent",
       }),
     ).rejects.toThrow("Duplicate @vitejs/plugin-rsc detected");
@@ -2530,9 +3003,7 @@ describe("RSC plugin auto-registration", () => {
 
       // When auto-RSC fires, the returned array includes a Promise<Plugin[]>
       // for the lazily-loaded @vitejs/plugin-rsc. Verify it's present.
-      const hasRscPromise = plugins.some(
-        (p) => p && typeof (p as any).then === "function",
-      );
+      const hasRscPromise = plugins.some((p) => p && typeof (p as any).then === "function");
       expect(hasRscPromise).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -2545,9 +3016,7 @@ describe("RSC plugin auto-registration", () => {
       // Empty directory — no app/ or src/app/.
       const plugins = vinext({ appDir: tmpDir });
 
-      const hasRscPromise = plugins.some(
-        (p) => p && typeof (p as any).then === "function",
-      );
+      const hasRscPromise = plugins.some((p) => p && typeof (p as any).then === "function");
       expect(hasRscPromise).toBe(false);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -2556,13 +3025,14 @@ describe("RSC plugin auto-registration", () => {
 });
 
 // ── External rewrite proxy credential stripping (App Router) ─────────────────
-// Regression test: the inline __proxyExternalRequest in the generated RSC entry
+// Regression test: the proxyExternalRequest (imported from config-matchers) in the generated RSC entry
 // must strip Cookie, Authorization, x-api-key, proxy-authorization, and
 // x-middleware-* headers before forwarding to external rewrite destinations.
 describe("App Router external rewrite proxy credential stripping", () => {
   let mockServer: import("node:http").Server;
   let mockPort: number;
   let capturedHeaders: import("node:http").IncomingHttpHeaders | null = null;
+  let mockResponseMode: "plain" | "gzipHeaderAndBody" = "plain";
   let server: ViteDevServer;
   let baseUrl: string;
 
@@ -2571,6 +3041,18 @@ describe("App Router external rewrite proxy credential stripping", () => {
     const http = await import("node:http");
     mockServer = http.createServer((req, res) => {
       capturedHeaders = req.headers;
+      if (mockResponseMode === "gzipHeaderAndBody") {
+        const payload = "proxied gzipped body";
+        const gzipped = zlib.gzipSync(Buffer.from(payload));
+        res.writeHead(200, {
+          "Content-Type": "text/plain",
+          "Content-Encoding": "gzip",
+          "Content-Length": String(gzipped.byteLength),
+          "x-custom": "keep-me",
+        });
+        res.end(gzipped);
+        return;
+      }
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("proxied ok");
     });
@@ -2591,13 +3073,14 @@ describe("App Router external rewrite proxy credential stripping", () => {
     await new Promise<void>((resolve) => mockServer?.close(() => resolve()));
   });
 
-  it("strips credential headers from proxied requests to external rewrite targets", async () => {
+  it("forwards credential headers through proxied requests to external rewrite targets", async () => {
+    mockResponseMode = "plain";
     capturedHeaders = null;
 
     await fetch(`${baseUrl}/proxy-external-test/some-path`, {
       headers: {
-        "Cookie": "session=secret123",
-        "Authorization": "Bearer tok_secret",
+        Cookie: "session=secret123",
+        Authorization: "Bearer tok_secret",
         "x-api-key": "sk_live_secret",
         "proxy-authorization": "Basic cHJveHk=",
         "x-middleware-next": "1",
@@ -2606,15 +3089,24 @@ describe("App Router external rewrite proxy credential stripping", () => {
     });
 
     expect(capturedHeaders).not.toBeNull();
-    // Credential headers must be stripped
-    expect(capturedHeaders!["cookie"]).toBeUndefined();
-    expect(capturedHeaders!["authorization"]).toBeUndefined();
-    expect(capturedHeaders!["x-api-key"]).toBeUndefined();
-    expect(capturedHeaders!["proxy-authorization"]).toBeUndefined();
+    // Credential headers must be forwarded (matching Next.js behavior)
+    expect(capturedHeaders!["cookie"]).toBe("session=secret123");
+    expect(capturedHeaders!["authorization"]).toBe("Bearer tok_secret");
+    expect(capturedHeaders!["x-api-key"]).toBe("sk_live_secret");
+    expect(capturedHeaders!["proxy-authorization"]).toBe("Basic cHJveHk=");
     // Internal middleware headers must be stripped
     expect(capturedHeaders!["x-middleware-next"]).toBeUndefined();
     // Non-sensitive headers must be preserved
     expect(capturedHeaders!["x-custom-safe"]).toBe("keep-me");
   });
-});
 
+  it("strips content-encoding and content-length for Node fetch auto-decompression", async () => {
+    mockResponseMode = "gzipHeaderAndBody";
+    const response = await fetch(`${baseUrl}/proxy-external-test/some-path`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-encoding")).toBeNull();
+    expect(response.headers.get("content-length")).toBeNull();
+    expect(response.headers.get("x-custom")).toBe("keep-me");
+    expect(await response.text()).toBe("proxied gzipped body");
+  });
+});

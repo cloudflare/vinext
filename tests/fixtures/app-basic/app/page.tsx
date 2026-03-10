@@ -12,6 +12,9 @@ export default function HomePage() {
         <Link href="/headers-test" data-testid="headers-test-link">
           Go to Headers Test
         </Link>
+        <Link href="/redirect-test-config" data-testid="redirect-test-link">
+          Go to Redirect Test
+        </Link>
       </nav>
     </main>
   );

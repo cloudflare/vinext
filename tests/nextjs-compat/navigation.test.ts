@@ -44,21 +44,13 @@ describe("Next.js compat: navigation", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts#L168-L174
 
   it("redirect() in server component produces 307", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/nav-redirect-server`,
-      { redirect: "manual" },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/nav-redirect-server`, { redirect: "manual" });
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toContain(
-      "/nextjs-compat/nav-redirect-result",
-    );
+    expect(res.headers.get("location")).toContain("/nextjs-compat/nav-redirect-result");
   });
 
   it("redirect destination page renders correctly", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/nav-redirect-result",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/nav-redirect-result");
     expect(html).toContain("Result Page");
   });
 
@@ -67,16 +59,12 @@ describe("Next.js compat: navigation", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts#L136-L146
 
   it("notFound() in server component produces 404", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/nav-notfound-server`,
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/nav-notfound-server`);
     expect(res.status).toBe(404);
   });
 
   it("404 page contains noindex meta tag", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/nav-notfound-server`,
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/nav-notfound-server`);
     const html = await res.text();
     expect(html).toMatch(/meta\s+name="robots"\s+content="noindex"/);
   });
@@ -86,9 +74,7 @@ describe("Next.js compat: navigation", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/navigation/navigation.test.ts#L299-L305
 
   it("non-existent route returns 404 with noindex", async () => {
-    const res = await fetch(
-      `${baseUrl}/this-route-definitely-does-not-exist`,
-    );
+    const res = await fetch(`${baseUrl}/this-route-definitely-does-not-exist`);
     expect(res.status).toBe(404);
     const html = await res.text();
     expect(html).toMatch(/meta\s+name="robots"\s+content="noindex"/);

@@ -12,9 +12,7 @@ const BASE = "http://localhost:4174";
 
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
@@ -27,10 +25,9 @@ test.describe("Next.js compat: prefetch (browser)", () => {
 
     // Click the no-prefetch link
     await page.click("#no-prefetch-link");
-    await expect(page.locator("#no-prefetch-target")).toHaveText(
-      "No Prefetch Target Page",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator("#no-prefetch-target")).toHaveText("No Prefetch Target Page", {
+      timeout: 10_000,
+    });
   });
 
   // Test that prefetched link navigates correctly
@@ -40,16 +37,13 @@ test.describe("Next.js compat: prefetch (browser)", () => {
 
     // Click the prefetch link
     await page.click("#prefetch-link");
-    await expect(page.locator("#prefetch-target")).toHaveText(
-      "Prefetch Target Page",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator("#prefetch-target")).toHaveText("Prefetch Target Page", {
+      timeout: 10_000,
+    });
   });
 
   // Test that prefetched navigation preserves client state (no full reload)
-  test("prefetched navigation does not cause full page reload", async ({
-    page,
-  }) => {
+  test("prefetched navigation does not cause full page reload", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
     await waitForHydration(page);
 
@@ -60,22 +54,17 @@ test.describe("Next.js compat: prefetch (browser)", () => {
 
     // Navigate via prefetched link
     await page.click("#prefetch-link");
-    await expect(page.locator("#prefetch-target")).toHaveText(
-      "Prefetch Target Page",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator("#prefetch-target")).toHaveText("Prefetch Target Page", {
+      timeout: 10_000,
+    });
 
     // Marker should survive (no full reload)
-    const marker = await page.evaluate(
-      () => (window as any).__PREFETCH_MARKER__,
-    );
+    const marker = await page.evaluate(() => (window as any).__PREFETCH_MARKER__);
     expect(marker).toBe(true);
   });
 
   // Test that prefetch populates the in-memory RSC cache
-  test("visible Link prefetches RSC payload into in-memory cache", async ({
-    page,
-  }) => {
+  test("visible Link prefetches RSC payload into in-memory cache", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
     await waitForHydration(page);
 
@@ -95,13 +84,13 @@ test.describe("Next.js compat: prefetch (browser)", () => {
       const cache = (window as any).__VINEXT_RSC_PREFETCH_CACHE__;
       return cache ? Array.from(cache.keys()) : [];
     });
-    expect((cachedUrls as string[]).some((url) => url.includes("prefetch-test/target.rsc"))).toBe(true);
+    expect((cachedUrls as string[]).some((url) => url.includes("prefetch-test/target.rsc"))).toBe(
+      true,
+    );
   });
 
   // Test that prefetch={false} does NOT populate the cache
-  test("Link with prefetch={false} does not prefetch RSC payload", async ({
-    page,
-  }) => {
+  test("Link with prefetch={false} does not prefetch RSC payload", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
     await waitForHydration(page);
 
@@ -129,9 +118,7 @@ test.describe("Next.js compat: prefetch (browser)", () => {
   });
 
   // Test that navigating to a prefetched link uses the cache (no extra fetch)
-  test("navigation to prefetched link uses cached RSC payload", async ({
-    page,
-  }) => {
+  test("navigation to prefetched link uses cached RSC payload", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/prefetch-test`);
     await waitForHydration(page);
 
@@ -154,10 +141,9 @@ test.describe("Next.js compat: prefetch (browser)", () => {
 
     // Navigate via the prefetched link
     await page.click("#prefetch-link");
-    await expect(page.locator("#prefetch-target")).toHaveText(
-      "Prefetch Target Page",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator("#prefetch-target")).toHaveText("Prefetch Target Page", {
+      timeout: 10_000,
+    });
 
     // The cache should have been consumed (no extra network request for the .rsc)
     // The prefetch fetch already happened, but __VINEXT_RSC_NAVIGATE__ should

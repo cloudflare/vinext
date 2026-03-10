@@ -17,9 +17,7 @@ const BASE = "http://localhost:4174";
 
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
@@ -49,12 +47,8 @@ test.describe("Next.js compat: navigation (browser)", () => {
 
   // Next.js: 'should trigger not-found in a server component'
   // Source: navigation.test.ts#L136-L146
-  test("server component notFound() renders not-found component", async ({
-    page,
-  }) => {
-    const response = await page.goto(
-      `${BASE}/nextjs-compat/nav-notfound-server`,
-    );
+  test("server component notFound() renders not-found component", async ({ page }) => {
+    const response = await page.goto(`${BASE}/nextjs-compat/nav-notfound-server`);
     expect(response?.status()).toBe(404);
     // Should render the root not-found.tsx content
     await expect(page.locator("body")).toContainText("404");
@@ -62,16 +56,12 @@ test.describe("Next.js compat: navigation (browser)", () => {
 
   // Next.js: 'should trigger not-found client-side'
   // Source: navigation.test.ts#L155-L165
-  test("client-side notFound() trigger renders not-found component", async ({
-    page,
-  }) => {
+  test("client-side notFound() trigger renders not-found component", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-client-notfound`);
     await waitForHydration(page);
 
     // Verify the page loaded correctly first
-    await expect(page.locator("#notfound-trigger-page")).toHaveText(
-      "Not Found Trigger Page",
-    );
+    await expect(page.locator("#notfound-trigger-page")).toHaveText("Not Found Trigger Page");
 
     // Click button to trigger notFound()
     await page.click("#trigger-notfound");
@@ -108,9 +98,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
   // Client-side navigation to a non-existent route should render not-found
   // This is the core bug from the issue: clicking a Link to a page that doesn't
   // exist should render the not-found.tsx boundary, not a blank white page.
-  test("Link to non-existent route renders not-found via client navigation", async ({
-    page,
-  }) => {
+  test("Link to non-existent route renders not-found via client navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
     await waitForHydration(page);
 
@@ -147,9 +135,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
   });
 
   // Back/forward navigation
-  test("browser back button works after client navigation", async ({
-    page,
-  }) => {
+  test("browser back button works after client navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
     await waitForHydration(page);
 
@@ -161,9 +147,6 @@ test.describe("Next.js compat: navigation (browser)", () => {
 
     // Go back
     await page.goBack();
-    await expect(page.locator("#link-test-page")).toHaveText(
-      "Link Test Page",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator("#link-test-page")).toHaveText("Link Test Page", { timeout: 10_000 });
   });
 });

@@ -17,8 +17,6 @@ export default defineConfig({
     // GitHub Actions reporter adds inline failure annotations in PR diffs.
     // It's auto-enabled with the default reporter, but being explicit ensures
     // it survives any future reporter config changes.
-    reporters: process.env.CI
-      ? ["default", "github-actions"]
-      : ["default"],
+    reporters: process.env.CI ? ["default", "github-actions"] : ["default"],
   },
 });

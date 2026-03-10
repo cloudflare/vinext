@@ -5,12 +5,31 @@
  * Tests the treeshake config, manualChunks function, and experimentalMinChunkSize
  * to ensure large barrel-exporting libraries (e.g. mermaid) produce smaller bundles.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   clientManualChunks,
   clientTreeshakeConfig,
   computeLazyChunks,
+  _stripServerExports,
+  _asyncHooksStubPlugin,
 } from "../packages/vinext/src/index.js";
+
+// The vinext config hook mutates process.env.NODE_ENV as a side effect (matching
+// Next.js behavior). Save/restore globally so tests that call config() don't
+// pollute each other — this affects optimizeDeps, treeshake, and NODE_ENV tests.
+let originalNodeEnv: string | undefined;
+
+beforeEach(() => {
+  originalNodeEnv = process.env.NODE_ENV;
+});
+
+afterEach(() => {
+  if (originalNodeEnv === undefined) {
+    delete process.env.NODE_ENV;
+  } else {
+    process.env.NODE_ENV = originalNodeEnv;
+  }
+});
 
 // ─── clientTreeshakeConfig ────────────────────────────────────────────────────
 
@@ -90,10 +109,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
@@ -131,10 +147,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       path.join(tmpDir, "app", "page.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = { root: tmpDir, build: {}, plugins: [] };
@@ -146,6 +159,96 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.environments.rsc.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.ssr.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.client.optimizeDeps?.exclude).toContain("vinext");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+});
+
+// ─── process.env.NODE_ENV define ─────────────────────────────────────────────
+
+describe("process.env.NODE_ENV define", () => {
+  // Ported from Next.js: test/production/pages-dir/production/test/process-env.ts
+  // https://github.com/vercel/next.js/blob/canary/test/production/pages-dir/production/test/process-env.ts
+  // Helper: create a temp Pages Router project and return the vinext:config plugin
+  async function setupTmpProject() {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-node-env-test-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    return { mainPlugin: mainPlugin as any, tmpDir, fsp };
+  }
+
+  it("is injected as production for build", async () => {
+    const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
+
+      expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("production"));
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("is injected as production for build without explicit mode", async () => {
+    // Other tests in this file pass { command: "build" } with no mode.
+    // The mode defaults to "development" via env?.mode ?? "development",
+    // but command is "build" so resolvedNodeEnv should still be "production".
+    const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await mainPlugin.config(mockConfig, { command: "build" });
+
+      expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("production"));
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("is injected as development for serve", async () => {
+    const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
+    try {
+      const mockConfig = { root: tmpDir, build: {}, plugins: [] };
+      const result = await mainPlugin.config(mockConfig, { command: "serve", mode: "development" });
+
+      expect(result.define?.["process.env.NODE_ENV"]).toBe(JSON.stringify("development"));
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("respects user-defined process.env.NODE_ENV in config.define", async () => {
+    const { mainPlugin, tmpDir, fsp } = await setupTmpProject();
+    try {
+      const mockConfig = {
+        root: tmpDir,
+        build: {},
+        plugins: [],
+        define: { "process.env.NODE_ENV": JSON.stringify("staging") },
+      };
+      const result = await mainPlugin.config(mockConfig, { command: "build", mode: "production" });
+
+      // Should NOT override the user's explicit define
+      expect(result.define?.["process.env.NODE_ENV"]).toBeUndefined();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -179,10 +282,7 @@ describe("treeshake config integration", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = {
@@ -224,10 +324,7 @@ describe("treeshake config integration", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = {
@@ -274,10 +371,7 @@ describe("treeshake config integration", () => {
       path.join(tmpDir, "app", "page.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = {
@@ -326,10 +420,7 @@ describe("treeshake config integration", () => {
       path.join(tmpDir, "pages", "index.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       const mockConfig = {
@@ -381,10 +472,7 @@ describe("treeshake config integration", () => {
       path.join(tmpDir, "app", "page.tsx"),
       `export default function Home() { return <h1>Home</h1>; }`,
     );
-    await fsp.writeFile(
-      path.join(tmpDir, "next.config.mjs"),
-      `export default {};`,
-    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
       // Simulate having the Cloudflare plugin in the plugin list.
@@ -403,11 +491,14 @@ describe("treeshake config integration", () => {
       expect(result.environments.client.build.manifest).toBe(true);
 
       // Without Cloudflare plugin, manifest should NOT be set (standard App Router)
-      const resultNoCf = await (mainPlugin as any).config({
-        root: tmpDir,
-        build: {},
-        plugins: [],
-      }, { command: "build" });
+      const resultNoCf = await (mainPlugin as any).config(
+        {
+          root: tmpDir,
+          build: {},
+          plugins: [],
+        },
+        { command: "build" },
+      );
 
       expect(resultNoCf.environments.client.build.manifest).toBeUndefined();
     } finally {
@@ -703,10 +794,7 @@ describe("collectAssetTags lazy chunk filtering", () => {
    *
    * Must match the actual collectAssetTags implementation in index.ts.
    */
-  function simulateAssetTagFiltering(
-    ssrManifestFiles: string[],
-    lazyChunks: string[],
-  ): string[] {
+  function simulateAssetTagFiltering(ssrManifestFiles: string[], lazyChunks: string[]): string[] {
     const lazySet = new Set(lazyChunks);
     const tags: string[] = [];
     const seen = new Set<string>();
@@ -877,8 +965,8 @@ describe("collectAssetTags lazy chunk filtering", () => {
     // them ("/assets/entry.js"). After normalization, both should resolve
     // to the same key and the entry should appear only once.
     const ssrFiles = [
-      "assets/entry.js",      // added first (e.g. from client entry)
-      "/assets/entry.js",     // same file from SSR manifest with leading slash
+      "assets/entry.js", // added first (e.g. from client entry)
+      "/assets/entry.js", // same file from SSR manifest with leading slash
       "/assets/framework.js",
     ];
 
@@ -890,5 +978,365 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
     // framework.js should also appear with correct path
     expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
+  });
+});
+
+// ─── vinext:async-hooks-stub ───────────────────────────────────────────────────
+
+describe("vinext:async-hooks-stub", () => {
+  const VIRTUAL_ID = "\0vinext:async-hooks-stub";
+
+  // The resolveId handler uses `this.environment?.name`, so we call it with a
+  // mock context to control which environment is being simulated.
+  function resolveId(id: string, environmentName: string | undefined): string | undefined {
+    const handler = (
+      _asyncHooksStubPlugin.resolveId as { handler: (id: string) => string | undefined }
+    ).handler;
+    return handler.call(
+      { environment: environmentName ? { name: environmentName } : undefined },
+      id,
+    );
+  }
+
+  function load(id: string): string | undefined {
+    const handler = (_asyncHooksStubPlugin.load as { handler: (id: string) => string | undefined })
+      .handler;
+    return handler.call({}, id);
+  }
+
+  describe("resolveId", () => {
+    it("resolves node:async_hooks to virtual module in client env", () => {
+      expect(resolveId("node:async_hooks", "client")).toBe(VIRTUAL_ID);
+    });
+
+    it("resolves bare async_hooks to virtual module in client env", () => {
+      expect(resolveId("async_hooks", "client")).toBe(VIRTUAL_ID);
+    });
+
+    it("returns undefined in ssr environment", () => {
+      expect(resolveId("node:async_hooks", "ssr")).toBeUndefined();
+    });
+
+    it("returns undefined in rsc environment", () => {
+      expect(resolveId("node:async_hooks", "rsc")).toBeUndefined();
+    });
+
+    it("returns undefined when environment is undefined", () => {
+      expect(resolveId("node:async_hooks", undefined)).toBeUndefined();
+    });
+  });
+
+  describe("load", () => {
+    it("returns stub source with AsyncLocalStorage class", () => {
+      const source = load(VIRTUAL_ID);
+      expect(source).toBeDefined();
+      expect(source).toContain("export class AsyncLocalStorage");
+      expect(source).toContain("getStore()");
+      expect(source).toContain("run(_store, fn, ...args)");
+    });
+
+    it("returns undefined for other module ids", () => {
+      expect(load("some-other-module")).toBeUndefined();
+    });
+
+    it("stub getStore() returns undefined and run() passes through callback return value", () => {
+      const source = load(VIRTUAL_ID)!;
+      // Evaluate the generated source to test actual runtime behavior, not just
+      // string shape. This catches subtle syntax errors that string matching misses.
+      // Strip the ES module `export` keyword so we can evaluate with new Function.
+      const cjsSource = source.replace(/^export\s+/m, "") + "\nreturn AsyncLocalStorage;";
+      const ALS = new Function(cjsSource)() as new () => {
+        getStore(): unknown;
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+        run(store: unknown, fn: Function, ...args: unknown[]): unknown;
+        exit(fn: () => unknown): unknown;
+      };
+      const als = new ALS();
+      expect(als.getStore()).toBeUndefined();
+      expect(als.run(42, () => "result")).toBe("result");
+      expect(als.run(42, (a: number, b: number) => a + b, 3, 4)).toBe(7);
+      expect(als.exit(() => "exit-result")).toBe("exit-result");
+    });
+  });
+});
+
+// ─── stripServerExports ───────────────────────────────────────────────────────
+
+// Note: stripServerExports runs in Vite's transform pipeline AFTER JSX and
+// TypeScript have been compiled to plain JavaScript by esbuild/SWC. All test
+// inputs use post-compiled JS (no JSX, no TS type annotations).
+// Ported from Next.js: test/unit/babel-plugin-next-ssg-transform.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/unit/babel-plugin-next-ssg-transform.test.ts
+describe("stripServerExports", () => {
+  it("returns null when code has no server exports", () => {
+    const code = `
+export default function Page({ data }) {
+  return data;
+}
+`;
+    expect(_stripServerExports(code)).toBeNull();
+  });
+
+  it("strips export async function getServerSideProps", () => {
+    const code = `
+import db from './db';
+
+export default function Page({ data }) {
+  return data;
+}
+
+export async function getServerSideProps(ctx) {
+  const data = await db.query('SELECT * FROM posts');
+  return { props: { data } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export default function Page");
+    expect(result).not.toContain("db.query");
+    expect(result).toContain("export function getServerSideProps()");
+  });
+
+  it("strips export function getStaticProps", () => {
+    const code = `
+export default function Page({ items }) {
+  return items;
+}
+
+export function getStaticProps() {
+  return { props: { items: ['a', 'b'] }, revalidate: 60 };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export function getStaticProps()");
+    expect(result).not.toContain("revalidate: 60");
+  });
+
+  it("strips export async function getStaticPaths", () => {
+    const code = `
+export default function Post({ id }) {
+  return id;
+}
+
+export async function getStaticPaths() {
+  const paths = [{ params: { id: '1' } }, { params: { id: '2' } }];
+  return { paths, fallback: false };
+}
+
+export async function getStaticProps({ params }) {
+  return { props: { id: params.id } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).not.toContain("fallback: false");
+    expect(result).toContain("export function getStaticPaths()");
+    expect(result).toContain("export function getStaticProps()");
+  });
+
+  it("strips export const getServerSideProps = arrow function", () => {
+    const code = `
+export default function Page({ data }) {
+  return data;
+}
+
+export const getServerSideProps = async (ctx) => {
+  const res = await fetch('https://api.example.com/data');
+  const data = await res.json();
+  return { props: { data } };
+};
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("api.example.com");
+  });
+
+  it("strips export const getServerSideProps = simple reference", () => {
+    const code = `
+import { fetchPageData } from '../lib/data';
+
+export default function Page({ data }) {
+  return data;
+}
+
+export const getServerSideProps = fetchPageData;
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const getServerSideProps = undefined;");
+  });
+
+  it("preserves the default export and non-server exports", () => {
+    const code = `
+import React from 'react';
+
+export const config = { runtime: 'edge' };
+
+export default function Page({ data }) {
+  return data;
+}
+
+export async function getServerSideProps() {
+  return { props: { data: 'hello' } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const config");
+    expect(result).toContain("export default function Page");
+    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("data: 'hello'");
+  });
+
+  it("handles nested braces in function body", () => {
+    const code = `
+export default function Page({ items }) {
+  return items;
+}
+
+export async function getServerSideProps() {
+  const items = [];
+  for (let i = 0; i < 10; i++) {
+    if (i % 2 === 0) {
+      items.push({ id: i, nested: { deep: true } });
+    }
+  }
+  return { props: { items } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("nested: { deep: true }");
+  });
+
+  it("handles function expressions (= function() {})", () => {
+    // This pattern broke the old regex approach because it didn't match
+    // function expressions, only arrow functions.
+    const code = `
+export default function Page({ data }) {
+  return data;
+}
+
+export const getStaticProps = function() {
+  const data = fetchData();
+  return { props: { data } };
+};
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const getStaticProps = undefined;");
+    expect(result).not.toContain("fetchData");
+  });
+
+  it("handles async named function expressions", () => {
+    const code = `
+export default function Page({ data }) {
+  return data;
+}
+
+export const getServerSideProps = async function fetchData() {
+  const data = await db.query();
+  return { props: { data } };
+};
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const getServerSideProps = undefined;");
+    expect(result).not.toContain("db.query");
+  });
+
+  it("handles export { name } re-export syntax", () => {
+    // This pattern was completely unhandled by the old regex approach.
+    const code = `
+const getServerSideProps = async () => {
+  return { props: { data: 'secret' } };
+};
+
+export default function Page() {
+  return null;
+}
+
+export { getServerSideProps };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const getServerSideProps = undefined;");
+    // The original local declaration remains (dead code, tree-shaken later)
+    expect(result).not.toContain("export { getServerSideProps }");
+  });
+
+  it("handles export { name } with other specifiers", () => {
+    const code = `
+const getServerSideProps = async () => {
+  return { props: {} };
+};
+const config = { runtime: 'edge' };
+
+export default function Page() {
+  return null;
+}
+
+export { getServerSideProps, config };
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    // config should be preserved
+    expect(result).toContain("export { config }");
+    expect(result).toContain("export const getServerSideProps = undefined;");
+  });
+
+  it("handles strings containing braces", () => {
+    const code = `
+export default function Page({ msg }) {
+  return msg;
+}
+
+export async function getServerSideProps() {
+  const msg = "Hello {world}";
+  return { props: { msg } };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("Hello {world}");
+  });
+
+  it("handles regex literals in function body", () => {
+    // The old skipBalanced function didn't handle regex literals,
+    // causing premature function body termination.
+    const code = `
+export default function Page() {
+  return null;
+}
+
+export function getServerSideProps() {
+  const pattern = /\\{[^}]+\\}/;
+  return { props: {} };
+}
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export function getServerSideProps()");
+    expect(result).not.toContain("pattern");
+  });
+
+  it("handles expression-body arrows with semicolons in strings", () => {
+    const code = `
+export default function Page() {
+  return null;
+}
+
+export const getStaticPaths = () => [
+  { params: { id: 'a;b' } },
+];
+`;
+    const result = _stripServerExports(code);
+    expect(result).not.toBeNull();
+    expect(result).toContain("export const getStaticPaths = undefined;");
+    expect(result).not.toContain("a;b");
   });
 });

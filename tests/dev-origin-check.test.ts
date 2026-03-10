@@ -73,12 +73,16 @@ describe("dev origin check", () => {
     });
 
     it("same-origin check handles comma-separated Host header", () => {
-      expect(isAllowedDevOrigin("http://myapp.local:3000", "myapp.local:5173, proxy:8080")).toBe(true);
+      expect(isAllowedDevOrigin("http://myapp.local:3000", "myapp.local:5173, proxy:8080")).toBe(
+        true,
+      );
     });
 
     it("allows origins in the allowedDevOrigins list", () => {
       const allowed = ["custom-origin.com", "*.my-domain.com"];
-      expect(isAllowedDevOrigin("http://custom-origin.com:3000", "localhost:5173", allowed)).toBe(true);
+      expect(isAllowedDevOrigin("http://custom-origin.com:3000", "localhost:5173", allowed)).toBe(
+        true,
+      );
       expect(isAllowedDevOrigin("http://sub.my-domain.com", "localhost:5173", allowed)).toBe(true);
       expect(isAllowedDevOrigin("http://my-domain.com", "localhost:5173", allowed)).toBe(true);
       expect(isAllowedDevOrigin("http://a.b.my-domain.com", "localhost:5173", allowed)).toBe(true);
@@ -130,10 +134,12 @@ describe("dev origin check", () => {
     });
 
     it("allows localhost origin requests", () => {
-      expect(validateDevRequest({
-        origin: "http://localhost:5173",
-        host: "localhost:5173",
-      })).toBeNull();
+      expect(
+        validateDevRequest({
+          origin: "http://localhost:5173",
+          host: "localhost:5173",
+        }),
+      ).toBeNull();
     });
 
     it("blocks cross-site no-cors requests (script tag exfiltration)", () => {
@@ -157,10 +163,9 @@ describe("dev origin check", () => {
     });
 
     it("passes allowedDevOrigins to origin check", () => {
-      expect(validateDevRequest(
-        { origin: "http://custom.com", host: "localhost:5173" },
-        ["custom.com"],
-      )).toBeNull();
+      expect(
+        validateDevRequest({ origin: "http://custom.com", host: "localhost:5173" }, ["custom.com"]),
+      ).toBeNull();
     });
   });
 

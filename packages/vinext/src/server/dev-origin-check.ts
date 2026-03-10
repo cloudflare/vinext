@@ -100,7 +100,13 @@ export function isCrossSiteNoCorsRequest(
  * This is used by the Pages Router connect middleware.
  */
 export function validateDevRequest(
-  headers: { origin?: string; host?: string; "x-forwarded-host"?: string; "sec-fetch-site"?: string; "sec-fetch-mode"?: string },
+  headers: {
+    origin?: string;
+    host?: string;
+    "x-forwarded-host"?: string;
+    "sec-fetch-site"?: string;
+    "sec-fetch-mode"?: string;
+  },
   allowedDevOrigins?: string[],
 ): string | null {
   // Check Sec-Fetch headers first (catches <script> tag exfiltration)

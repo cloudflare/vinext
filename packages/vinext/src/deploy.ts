@@ -24,6 +24,7 @@ import {
   ensureESModule as _ensureESModule,
   renameCJSConfigs as _renameCJSConfigs,
   detectPackageManager as _detectPackageManager,
+  findInNodeModules as _findInNodeModules,
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
 import { runTPR } from "./cloudflare/tpr.js";
@@ -58,16 +59,16 @@ export interface DeployOptions {
 
 /** Deploy command flag definitions for util.parseArgs. */
 const deployArgOptions = {
-  help:               { type: "boolean", short: "h", default: false },
-  preview:            { type: "boolean", default: false },
-  env:                { type: "string" },
-  name:               { type: "string" },
-  "skip-build":       { type: "boolean", default: false },
-  "dry-run":          { type: "boolean", default: false },
+  help: { type: "boolean", short: "h", default: false },
+  preview: { type: "boolean", default: false },
+  env: { type: "string" },
+  name: { type: "string" },
+  "skip-build": { type: "boolean", default: false },
+  "dry-run": { type: "boolean", default: false },
   "experimental-tpr": { type: "boolean", default: false },
-  "tpr-coverage":     { type: "string" },
-  "tpr-limit":        { type: "string" },
-  "tpr-window":       { type: "string" },
+  "tpr-coverage": { type: "string" },
+  "tpr-limit": { type: "string" },
+  "tpr-window": { type: "string" },
 } as const;
 
 export function parseDeployArgs(args: string[]) {
@@ -113,13 +114,48 @@ interface ProjectInfo {
 
 // ─── Detection ───────────────────────────────────────────────────────────────
 
+/** Check whether a wrangler config file exists in the given directory. */
+export function hasWranglerConfig(root: string): boolean {
+  return (
+    fs.existsSync(path.join(root, "wrangler.jsonc")) ||
+    fs.existsSync(path.join(root, "wrangler.json")) ||
+    fs.existsSync(path.join(root, "wrangler.toml"))
+  );
+}
+
+/**
+ * Build the error message thrown when cloudflare() is missing from the Vite config.
+ * Shared between the build-time guard (index.ts configResolved) and the
+ * deploy-time guard (deploy.ts deploy()).
+ */
+export function formatMissingCloudflarePluginError(options: {
+  isAppRouter: boolean;
+  configFile?: string;
+}): string {
+  const cfArg = options.isAppRouter
+    ? '{\n      viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },\n    }'
+    : "";
+  const configRef = options.configFile ? options.configFile : "your Vite config";
+  return (
+    `[vinext] Missing @cloudflare/vite-plugin in ${configRef}.\n\n` +
+    `  Cloudflare Workers builds require the cloudflare() plugin.\n` +
+    `  Add it to ${configRef}:\n\n` +
+    `    import { cloudflare } from "@cloudflare/vite-plugin";\n\n` +
+    `    export default defineConfig({\n` +
+    `      plugins: [\n` +
+    `        vinext(),\n` +
+    `        cloudflare(${cfArg}),\n` +
+    `      ],\n` +
+    `    });\n\n` +
+    `  Or delete ${configRef} and re-run \`vinext deploy\` to auto-generate it.`
+  );
+}
+
 export function detectProject(root: string): ProjectInfo {
   const hasApp =
-    fs.existsSync(path.join(root, "app")) ||
-    fs.existsSync(path.join(root, "src", "app"));
+    fs.existsSync(path.join(root, "app")) || fs.existsSync(path.join(root, "src", "app"));
   const hasPages =
-    fs.existsSync(path.join(root, "pages")) ||
-    fs.existsSync(path.join(root, "src", "pages"));
+    fs.existsSync(path.join(root, "pages")) || fs.existsSync(path.join(root, "src", "pages"));
 
   // Prefer App Router if both exist
   const isAppRouter = hasApp;
@@ -130,25 +166,18 @@ export function detectProject(root: string): ProjectInfo {
     fs.existsSync(path.join(root, "vite.config.js")) ||
     fs.existsSync(path.join(root, "vite.config.mjs"));
 
-  const hasWranglerConfig =
-    fs.existsSync(path.join(root, "wrangler.jsonc")) ||
-    fs.existsSync(path.join(root, "wrangler.json")) ||
-    fs.existsSync(path.join(root, "wrangler.toml"));
+  const wranglerConfigExists = hasWranglerConfig(root);
 
   const hasWorkerEntry =
     fs.existsSync(path.join(root, "worker", "index.ts")) ||
     fs.existsSync(path.join(root, "worker", "index.js"));
 
-  // Check node_modules for installed packages
-  const hasCloudflarePlugin = fs.existsSync(
-    path.join(root, "node_modules", "@cloudflare", "vite-plugin"),
-  );
-  const hasRscPlugin = fs.existsSync(
-    path.join(root, "node_modules", "@vitejs", "plugin-rsc"),
-  );
-  const hasWrangler = fs.existsSync(
-    path.join(root, "node_modules", ".bin", "wrangler"),
-  );
+  // Check node_modules for installed packages.
+  // Walk up ancestor directories so that monorepo-hoisted packages are found
+  // even when node_modules lives at the workspace root rather than app root.
+  const hasCloudflarePlugin = _findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
+  const hasRscPlugin = _findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
+  const hasWrangler = _findInNodeModules(root, ".bin/wrangler") !== null;
 
   // Derive project name from package.json or directory name
   let projectName = path.basename(root);
@@ -160,6 +189,7 @@ export function detectProject(root: string): ProjectInfo {
         // Sanitize: Workers names must be lowercase alphanumeric + hyphens
         projectName = pkg.name
           .replace(/^@[^/]+\//, "") // strip npm scope
+          .toLowerCase() // lowercase BEFORE stripping invalid chars
           .replace(/[^a-z0-9-]/g, "-")
           .replace(/-+/g, "-")
           .replace(/^-|-$/g, "");
@@ -206,7 +236,7 @@ export function detectProject(root: string): ProjectInfo {
     isAppRouter,
     isPagesRouter,
     hasViteConfig,
-    hasWranglerConfig,
+    hasWranglerConfig: wranglerConfigExists,
     hasWorkerEntry,
     hasCloudflarePlugin,
     hasRscPlugin,
@@ -392,6 +422,7 @@ export function generateAppRouterWorkerEntry(): string {
  * directly in wrangler.jsonc: "main": "vinext/server/app-router-entry"
  */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
+import type { ImageConfig } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
 
 interface Env {
@@ -404,6 +435,12 @@ interface Env {
     };
   };
 }
+
+// Image security config. SVG sources with .svg extension auto-skip the
+// optimization endpoint on the client side (served directly, no proxy).
+// To route SVGs through the optimizer (with security headers), set
+// dangerouslyAllowSVG: true in next.config.js and uncomment below:
+// const imageConfig: ImageConfig = { dangerouslyAllowSVG: true };
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -437,13 +474,16 @@ export function generatePagesRouterWorkerEntry(): string {
  * Edit freely or delete to regenerate on next deploy.
  */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
+import type { ImageConfig } from "vinext/server/image-optimization";
 import {
   matchRedirect,
   matchRewrite,
   matchHeaders,
   requestContextFromRequest,
+  applyMiddlewareRequestHeaders,
   isExternalUrl,
   proxyExternalRequest,
+  sanitizeDestination,
 } from "vinext/config/config-matchers";
 
 // @ts-expect-error -- virtual module resolved by vinext at build time
@@ -460,15 +500,35 @@ interface Env {
   };
 }
 
+interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException(): void;
+}
+
 // Extract config values (embedded at build time in the server entry)
 const basePath: string = vinextConfig?.basePath ?? "";
 const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
 const configRedirects = vinextConfig?.redirects ?? [];
 const configRewrites = vinextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
 const configHeaders = vinextConfig?.headers ?? [];
+const imageConfig: ImageConfig | undefined = vinextConfig?.images ? {
+  dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
+  contentDispositionType: vinextConfig.images.contentDispositionType,
+  contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
+} : undefined;
+
+function hasBasePath(pathname: string, basePath: string): boolean {
+  if (!basePath) return false;
+  return pathname === basePath || pathname.startsWith(basePath + "/");
+}
+
+function stripBasePath(pathname: string, basePath: string): string {
+  if (!hasBasePath(pathname, basePath)) return pathname;
+  return pathname.slice(basePath.length) || "/";
+}
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     try {
       const url = new URL(request.url);
       let pathname = url.pathname;
@@ -482,10 +542,12 @@ export default {
       }
 
       // ── 1. Strip basePath ─────────────────────────────────────────
-      if (basePath && pathname.startsWith(basePath)) {
-        const stripped = pathname.slice(basePath.length) || "/";
-        urlWithQuery = stripped + url.search;
-        pathname = stripped;
+      {
+        const stripped = stripBasePath(pathname, basePath);
+        if (stripped !== pathname) {
+          urlWithQuery = stripped + url.search;
+          pathname = stripped;
+        }
       }
 
       // ── Image optimization via Cloudflare Images binding ──────────
@@ -498,11 +560,11 @@ export default {
             const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
             return result.response();
           },
-        }, allowedWidths);
+        }, allowedWidths, imageConfig);
       }
 
       // ── 2. Trailing slash normalization ────────────────────────────
-      if (pathname !== "/" && !pathname.startsWith("/api")) {
+      if (pathname !== "/" && pathname !== "/api" && !pathname.startsWith("/api/")) {
         const hasTrailing = pathname.endsWith("/");
         if (trailingSlash && !hasTrailing) {
           return new Response(null, {
@@ -528,21 +590,31 @@ export default {
       }
 
       // Build request context for has/missing condition matching.
-      // Created before middleware runs, matching prod-server ordering.
+      // headers and redirects run before middleware, so they use this
+      // pre-middleware snapshot. beforeFiles, afterFiles, and fallback
+      // rewrites run after middleware (App Router order), so they use
+      // postMwReqCtx created after x-middleware-request-* headers are
+      // unpacked into request.
       const reqCtx = requestContextFromRequest(request);
 
       // ── 3. Run middleware ──────────────────────────────────────────
       let resolvedUrl = urlWithQuery;
-      const middlewareHeaders: Record<string, string> = {};
+      const middlewareHeaders: Record<string, string | string[]> = {};
       let middlewareRewriteStatus: number | undefined;
       if (typeof runMiddleware === "function") {
-        const result = await runMiddleware(request);
+        const result = await runMiddleware(request, ctx);
 
         if (!result.continue) {
           if (result.redirectUrl) {
+            const redirectHeaders = new Headers({ Location: result.redirectUrl });
+            if (result.responseHeaders) {
+              for (const [key, value] of result.responseHeaders) {
+                redirectHeaders.append(key, value);
+              }
+            }
             return new Response(null, {
               status: result.redirectStatus ?? 307,
-              headers: { Location: result.redirectUrl },
+              headers: redirectHeaders,
             });
           }
           if (result.response) {
@@ -550,10 +622,22 @@ export default {
           }
         }
 
-        // Collect middleware response headers to merge into final response
+        // Collect middleware response headers to merge into final response.
+        // Use an array for Set-Cookie to preserve multiple values.
         if (result.responseHeaders) {
           for (const [key, value] of result.responseHeaders) {
-            middlewareHeaders[key] = value;
+            if (key === "set-cookie") {
+              const existing = middlewareHeaders[key];
+              if (Array.isArray(existing)) {
+                existing.push(value);
+              } else if (existing) {
+                middlewareHeaders[key] = [existing as string, value];
+              } else {
+                middlewareHeaders[key] = [value];
+              }
+            } else {
+              middlewareHeaders[key] = value;
+            }
           }
         }
 
@@ -566,41 +650,42 @@ export default {
         middlewareRewriteStatus = result.rewriteStatus;
       }
 
-      // Unpack x-middleware-request-* headers into the actual request so
-      // that renderPage / handleApiRoute see middleware-modified headers.
-      // Workers incoming request headers are immutable, so clone if needed.
-      const mwReqPrefix = "x-middleware-request-";
-      const mwReqHeaders: Record<string, string> = {};
-      for (const key of Object.keys(middlewareHeaders)) {
-        if (key.startsWith(mwReqPrefix)) {
-          const realName = key.slice(mwReqPrefix.length);
-          mwReqHeaders[realName] = middlewareHeaders[key];
-          delete middlewareHeaders[key];
-        } else if (key.startsWith("x-middleware-")) {
-          delete middlewareHeaders[key];
-        }
-      }
-      if (Object.keys(mwReqHeaders).length > 0) {
-        const newHeaders = new Headers(request.headers);
-        for (const [k, v] of Object.entries(mwReqHeaders)) {
-          newHeaders.set(k, v);
-        }
-        request = new Request(request.url, {
-          method: request.method,
-          headers: newHeaders,
-          body: request.body,
-          // @ts-expect-error -- duplex needed for streaming request bodies
-          duplex: request.body ? "half" : undefined,
-        });
-      }
+      // Unpack x-middleware-request-* headers into the actual request and strip
+      // all x-middleware-* internal signals. Rebuilds postMwReqCtx for use by
+      // beforeFiles, afterFiles, and fallback config rules (which run after
+      // middleware per the Next.js execution order).
+      const { postMwReqCtx, request: postMwReq } = applyMiddlewareRequestHeaders(middlewareHeaders, request);
+      request = postMwReq;
 
       let resolvedPathname = resolvedUrl.split("?")[0];
 
       // ── 4. Apply custom headers from next.config.js ───────────────
+      // Config headers are additive for multi-value headers (Vary,
+      // Set-Cookie) and override for everything else. Vary values are
+      // comma-joined per HTTP spec. Set-Cookie values are accumulated
+      // as arrays (RFC 6265 forbids comma-joining cookies).
+      // Middleware headers take precedence: skip config keys already set
+      // by middleware so middleware always wins for the same key.
       if (configHeaders.length) {
-        const matched = matchHeaders(resolvedPathname, configHeaders);
+        const matched = matchHeaders(resolvedPathname, configHeaders, reqCtx);
         for (const h of matched) {
-          middlewareHeaders[h.key.toLowerCase()] = h.value;
+          const lk = h.key.toLowerCase();
+          if (lk === "set-cookie") {
+            const existing = middlewareHeaders[lk];
+            if (Array.isArray(existing)) {
+              existing.push(h.value);
+            } else if (existing) {
+              middlewareHeaders[lk] = [existing as string, h.value];
+            } else {
+              middlewareHeaders[lk] = [h.value];
+            }
+          } else if (lk === "vary" && middlewareHeaders[lk]) {
+            middlewareHeaders[lk] += ", " + h.value;
+          } else if (!(lk in middlewareHeaders)) {
+            // Middleware headers take precedence: only set if middleware
+            // did not already place this key on the response.
+            middlewareHeaders[lk] = h.value;
+          }
         }
       }
 
@@ -608,9 +693,13 @@ export default {
       if (configRedirects.length) {
         const redirect = matchRedirect(resolvedPathname, configRedirects, reqCtx);
         if (redirect) {
-          const dest = basePath && !redirect.destination.startsWith(basePath)
-            ? basePath + redirect.destination
-            : redirect.destination;
+          const dest = sanitizeDestination(
+            basePath &&
+              !isExternalUrl(redirect.destination) &&
+              !hasBasePath(redirect.destination, basePath)
+              ? basePath + redirect.destination
+              : redirect.destination,
+          );
           return new Response(null, {
             status: redirect.permanent ? 308 : 307,
             headers: { Location: dest },
@@ -620,7 +709,7 @@ export default {
 
       // ��─ 6. Apply beforeFiles rewrites from next.config.js ─────────
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, reqCtx);
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
@@ -640,7 +729,7 @@ export default {
 
       // ── 8. Apply afterFiles rewrites from next.config.js ──────────
       if (configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, reqCtx);
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
@@ -653,16 +742,16 @@ export default {
       // ── 9. Page routes ────────────────────────────────────────────
       let response: Response | undefined;
       if (typeof renderPage === "function") {
-        response = await renderPage(request, resolvedUrl, null);
+        response = await renderPage(request, resolvedUrl, null, ctx);
 
         // ── 10. Fallback rewrites (if SSR returned 404) ─────────────
         if (response && response.status === 404 && configRewrites.fallback?.length) {
-          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, reqCtx);
+          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, postMwReqCtx);
           if (fallbackRewrite) {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
             }
-            response = await renderPage(request, fallbackRewrite, null);
+            response = await renderPage(request, fallbackRewrite, null, ctx);
           }
         }
       }
@@ -681,19 +770,34 @@ export default {
 
 /**
  * Merge middleware/config headers into a response.
- * Response headers take precedence over middleware headers, matching
- * the behavior in prod-server.ts.
+ * Response headers take precedence over middleware headers for all headers
+ * except Set-Cookie, which is additive (both middleware and response cookies
+ * are preserved). Matches the behavior in prod-server.ts. Uses getSetCookie()
+ * to preserve multiple Set-Cookie values.
  */
 function mergeHeaders(
   response: Response,
-  extraHeaders: Record<string, string>,
+  extraHeaders: Record<string, string | string[]>,
   statusOverride?: number,
 ): Response {
   if (!Object.keys(extraHeaders).length && !statusOverride) return response;
-  // Middleware/config headers go in first (lower precedence), then
-  // response headers overlay them (higher precedence).
-  const merged: Record<string, string> = { ...extraHeaders };
-  response.headers.forEach((v, k) => { merged[k] = v; });
+  const merged = new Headers();
+  // Middleware/config headers go in first (lower precedence)
+  for (const [k, v] of Object.entries(extraHeaders)) {
+    if (Array.isArray(v)) {
+      for (const item of v) merged.append(k, item);
+    } else {
+      merged.set(k, v);
+    }
+  }
+  // Response headers overlay them (higher precedence), except Set-Cookie
+  // which is additive (both middleware and response cookies should be sent).
+  response.headers.forEach((v, k) => {
+    if (k === "set-cookie") return;
+    merged.set(k, v);
+  });
+  const responseCookies = response.headers.getSetCookie?.() ?? [];
+  for (const cookie of responseCookies) merged.append("set-cookie", cookie);
   return new Response(response.body, {
     status: statusOverride ?? response.status,
     statusText: response.statusText,
@@ -837,10 +941,8 @@ export function getMissingDeps(
     }
   }
   if (info.hasMDX) {
-    // Check if @mdx-js/rollup is already installed
-    const hasMdxRollup = fs.existsSync(
-      path.join(info.root, "node_modules", "@mdx-js", "rollup"),
-    );
+    // Check if @mdx-js/rollup is already installed (walk up for monorepo hoisting)
+    const hasMdxRollup = _findInNodeModules(info.root, "@mdx-js/rollup") !== null;
     if (!hasMdxRollup) {
       missing.push({ name: "@mdx-js/rollup", version: "latest" });
     }
@@ -871,6 +973,35 @@ interface GeneratedFile {
   path: string;
   content: string;
   description: string;
+}
+
+/**
+ * Check whether an existing vite.config file already imports and uses the
+ * Cloudflare Vite plugin. This is a heuristic text scan — it doesn't execute
+ * the config — so it may produce false negatives for unusual configurations.
+ *
+ * Returns true if `@cloudflare/vite-plugin` appears to be configured, false
+ * if it is missing (meaning the build will fail with "could not resolve
+ * virtual:vinext-rsc-entry").
+ */
+export function viteConfigHasCloudflarePlugin(root: string): boolean {
+  const candidates = [
+    path.join(root, "vite.config.ts"),
+    path.join(root, "vite.config.js"),
+    path.join(root, "vite.config.mjs"),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      try {
+        const content = fs.readFileSync(candidate, "utf-8");
+        return content.includes("@cloudflare/vite-plugin");
+      } catch {
+        // unreadable — assume it might be fine
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 export function getFilesToGenerate(info: ProjectInfo): GeneratedFile[] {
@@ -947,7 +1078,9 @@ export interface WranglerDeployArgs {
   env: string | undefined;
 }
 
-export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" | "env">): WranglerDeployArgs {
+export function buildWranglerDeployArgs(
+  options: Pick<DeployOptions, "preview" | "env">,
+): WranglerDeployArgs {
   const args = ["deploy"];
   const env = options.env || (options.preview ? "preview" : undefined);
   if (env) {
@@ -957,7 +1090,11 @@ export function buildWranglerDeployArgs(options: Pick<DeployOptions, "preview" |
 }
 
 function runWranglerDeploy(root: string, options: Pick<DeployOptions, "preview" | "env">): string {
-  const wranglerBin = path.join(root, "node_modules", ".bin", "wrangler");
+  // Walk up ancestor directories so the binary is found even when node_modules
+  // is hoisted to the workspace root in a monorepo.
+  const wranglerBin =
+    _findInNodeModules(root, ".bin/wrangler") ??
+    path.join(root, "node_modules", ".bin", "wrangler"); // fallback for error message clarity
 
   const execOpts: ExecSyncOptions = {
     cwd: root,
@@ -1025,7 +1162,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
     if (reactUpgrade.length > 0) {
       const installCmd = detectPackageManager(root).replace(/ -D$/, "");
       const [pm, ...pmArgs] = installCmd.split(" ");
-      console.log(`  Upgrading ${reactUpgrade.map(d => d.replace(/@latest$/, "")).join(", ")}...`);
+      console.log(
+        `  Upgrading ${reactUpgrade.map((d) => d.replace(/@latest$/, "")).join(", ")}...`,
+      );
       execFileSync(pm, [...pmArgs, ...reactUpgrade], { cwd: root, stdio: "inherit" });
     }
   }
@@ -1056,6 +1195,13 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (filesToGenerate.length > 0) {
     console.log();
     writeGeneratedFiles(filesToGenerate);
+  }
+
+  // Fail if an existing Vite config is missing the Cloudflare plugin.
+  // This is the most common cause of "could not resolve virtual:vinext-rsc-entry"
+  // errors — `vinext init` generates a minimal local-dev config without it.
+  if (info.hasViteConfig && !viteConfigHasCloudflarePlugin(root)) {
+    throw new Error(formatMissingCloudflarePluginError({ isAppRouter: info.isAppRouter }));
   }
 
   if (options.dryRun) {

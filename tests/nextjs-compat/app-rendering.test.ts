@@ -46,10 +46,7 @@ describe("Next.js compat: app-rendering", () => {
     // Next.js: it('should run data in layout and page', ...)
     // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-rendering/rendering.test.ts#L18-L22
     it("should run async data in layout and page", async () => {
-      const { html } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/ssr-only/nested",
-      );
+      const { html } = await fetchHtml(baseUrl, "/nextjs-compat/ssr-only/nested");
       // Layout renders: <h1 id="layout-message">hello from layout</h1>
       expect(html).toContain("hello from layout");
       // Page renders: <p id="page-message">hello from page</p>
@@ -61,10 +58,7 @@ describe("Next.js compat: app-rendering", () => {
     // NOTE: Delays reduced from 5s to 1s. Threshold adjusted from 10s to 3s.
     it("should run data fetch in parallel (layout + page concurrent)", async () => {
       const startTime = Date.now();
-      const { html } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/ssr-only/slow",
-      );
+      const { html } = await fetchHtml(baseUrl, "/nextjs-compat/ssr-only/slow");
       const duration = Date.now() - startTime;
 
       // Each part takes 1s. If sequential it would take 2s+.
@@ -80,10 +74,7 @@ describe("Next.js compat: app-rendering", () => {
     // Next.js: it('should run data in layout and page', ...)
     // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-rendering/rendering.test.ts#L37-L41
     it("should run async data in layout and page", async () => {
-      const { html } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/static-only/nested",
-      );
+      const { html } = await fetchHtml(baseUrl, "/nextjs-compat/static-only/nested");
       expect(html).toContain("hello from layout");
       expect(html).toContain("hello from page");
     });
@@ -92,10 +83,7 @@ describe("Next.js compat: app-rendering", () => {
     // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-rendering/rendering.test.ts#L43-L55
     // NOTE: Delays reduced from 5s to 1s.
     it("should run data in parallel during development", async () => {
-      const { html } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/static-only/slow",
-      );
+      const { html } = await fetchHtml(baseUrl, "/nextjs-compat/static-only/slow");
       expect(html).toContain("hello from slow layout");
       expect(html).toContain("hello from slow page");
     });
@@ -106,10 +94,7 @@ describe("Next.js compat: app-rendering", () => {
     // Next.js: it('should revalidate the page when revalidate is configured', ...)
     // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-rendering/rendering.test.ts#L59-L86
     it("should render ISR page with layout and page data", async () => {
-      const { html } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/isr-multiple/nested",
-      );
+      const { html } = await fetchHtml(baseUrl, "/nextjs-compat/isr-multiple/nested");
       expect(html).toContain("hello from layout");
       expect(html).toContain("hello from page");
       // Should contain timestamp values from Date.now()
@@ -136,20 +121,14 @@ describe("Next.js compat: app-rendering", () => {
     // VERIFY: Once fixed, also confirm that the "Invalid hook call" warnings from use() go away
     // (they may be related to the same module caching causing duplicate React instances).
     it.skip("should produce different timestamps on subsequent requests", async () => {
-      const { html: html1 } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/isr-multiple/nested",
-      );
+      const { html: html1 } = await fetchHtml(baseUrl, "/nextjs-compat/isr-multiple/nested");
       const layoutNow1 = html1.match(/id="layout-now"[^>]*>(\d+)/)?.[1];
       const pageNow1 = html1.match(/id="page-now"[^>]*>(\d+)/)?.[1];
 
       // Wait for revalidation window (revalidate = 1 second)
       await new Promise((r) => setTimeout(r, 1500));
 
-      const { html: html2 } = await fetchHtml(
-        baseUrl,
-        "/nextjs-compat/isr-multiple/nested",
-      );
+      const { html: html2 } = await fetchHtml(baseUrl, "/nextjs-compat/isr-multiple/nested");
       const layoutNow2 = html2.match(/id="layout-now"[^>]*>(\d+)/)?.[1];
       const pageNow2 = html2.match(/id="page-now"[^>]*>(\d+)/)?.[1];
 

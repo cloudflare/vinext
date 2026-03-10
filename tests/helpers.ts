@@ -12,14 +12,8 @@ import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
 
 // ── Fixture paths ─────────────────────────────────────────────
-export const PAGES_FIXTURE_DIR = path.resolve(
-  import.meta.dirname,
-  "./fixtures/pages-basic",
-);
-export const APP_FIXTURE_DIR = path.resolve(
-  import.meta.dirname,
-  "./fixtures/app-basic",
-);
+export const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
+export const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic");
 
 // ── Shared RSC virtual module entries (used by @vitejs/plugin-rsc) ──
 export const RSC_ENTRIES = {

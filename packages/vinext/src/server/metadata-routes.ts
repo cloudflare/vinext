@@ -25,14 +25,7 @@ import path from "node:path";
 export interface SitemapEntry {
   url: string;
   lastModified?: string | Date;
-  changeFrequency?:
-    | "always"
-    | "hourly"
-    | "daily"
-    | "weekly"
-    | "monthly"
-    | "yearly"
-    | "never";
+  changeFrequency?: "always" | "hourly" | "daily" | "weekly" | "monthly" | "yearly" | "never";
   priority?: number;
   alternates?: {
     languages?: Record<string, string>;
@@ -193,16 +186,12 @@ export function sitemapToXml(entries: SitemapEntry[]): string {
 
     if (entry.lastModified) {
       const date =
-        entry.lastModified instanceof Date
-          ? entry.lastModified.toISOString()
-          : entry.lastModified;
+        entry.lastModified instanceof Date ? entry.lastModified.toISOString() : entry.lastModified;
       lines.push(`    <lastmod>${escapeXml(date)}</lastmod>`);
     }
 
     if (entry.changeFrequency) {
-      lines.push(
-        `    <changefreq>${escapeXml(entry.changeFrequency)}</changefreq>`,
-      );
+      lines.push(`    <changefreq>${escapeXml(entry.changeFrequency)}</changefreq>`);
     }
 
     if (entry.priority !== undefined) {
@@ -232,9 +221,7 @@ export function robotsToText(config: RobotsConfig): string {
   const rules = Array.isArray(config.rules) ? config.rules : [config.rules];
 
   for (const rule of rules) {
-    const agents = Array.isArray(rule.userAgent)
-      ? rule.userAgent
-      : [rule.userAgent ?? "*"];
+    const agents = Array.isArray(rule.userAgent) ? rule.userAgent : [rule.userAgent ?? "*"];
 
     for (const agent of agents) {
       lines.push(`User-Agent: ${agent}`);
@@ -248,9 +235,7 @@ export function robotsToText(config: RobotsConfig): string {
     }
 
     if (rule.disallow) {
-      const disallows = Array.isArray(rule.disallow)
-        ? rule.disallow
-        : [rule.disallow];
+      const disallows = Array.isArray(rule.disallow) ? rule.disallow : [rule.disallow];
       for (const disallow of disallows) {
         lines.push(`Disallow: ${disallow}`);
       }
@@ -264,9 +249,7 @@ export function robotsToText(config: RobotsConfig): string {
   }
 
   if (config.sitemap) {
-    const sitemaps = Array.isArray(config.sitemap)
-      ? config.sitemap
-      : [config.sitemap];
+    const sitemaps = Array.isArray(config.sitemap) ? config.sitemap : [config.sitemap];
     for (const sitemap of sitemaps) {
       lines.push(`Sitemap: ${sitemap}`);
     }
@@ -328,9 +311,7 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
         // Skip route group parentheses from URL
         const dirName = entry.name;
         const isRouteGroup = dirName.startsWith("(") && dirName.endsWith(")");
-        const nextUrlPrefix = isRouteGroup
-          ? urlPrefix
-          : `${urlPrefix}/${dirName}`;
+        const nextUrlPrefix = isRouteGroup ? urlPrefix : `${urlPrefix}/${dirName}`;
         scan(path.join(dir, dirName), nextUrlPrefix);
         continue;
       }
@@ -357,10 +338,7 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
           type: metaType,
           isDynamic,
           filePath: path.join(dir, fileName),
-          servedUrl:
-            urlPrefix === ""
-              ? config.urlPath
-              : `${urlPrefix}${config.urlPath}`,
+          servedUrl: urlPrefix === "" ? config.urlPath : `${urlPrefix}${config.urlPath}`,
           contentType: isStatic
             ? getStaticContentType(ext, config.contentType)
             : config.contentType,

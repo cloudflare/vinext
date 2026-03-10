@@ -38,11 +38,11 @@ export default {
       return new Response("Bad Request", { status: 400 });
     }
 
-     // Do NOT decode/normalize the pathname here. The RSC handler
-     // (virtual:vinext-rsc-entry) is the single point of decoding — it calls
-     // decodeURIComponent + normalizePath on the incoming URL. Decoding here
-     // AND in the handler would double-decode, causing inconsistent path
-     // matching between middleware and routing.
+    // Do NOT decode/normalize the pathname here. The RSC handler
+    // (virtual:vinext-rsc-entry) is the single point of decoding — it calls
+    // decodeURIComponent + normalizePath on the incoming URL. Decoding here
+    // AND in the handler would double-decode, causing inconsistent path
+    // matching between middleware and routing.
 
     // Delegate to RSC handler (which decodes + normalizes the pathname itself)
     const result = await rscHandler(request);

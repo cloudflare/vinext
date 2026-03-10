@@ -22,7 +22,10 @@ export async function GET() {
 export async function POST(request: Request) {
   const contentType = request.headers.get("content-type") || "";
 
-  if (contentType.includes("application/x-www-form-urlencoded") || contentType.includes("multipart/form-data")) {
+  if (
+    contentType.includes("application/x-www-form-urlencoded") ||
+    contentType.includes("multipart/form-data")
+  ) {
     const formData = await request.formData();
     const name = formData.get("name");
     const email = formData.get("email");

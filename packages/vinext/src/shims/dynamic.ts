@@ -33,10 +33,15 @@ let DynamicErrorBoundary: any;
 function getDynamicErrorBoundary() {
   if (DynamicErrorBoundary) return DynamicErrorBoundary;
   if (!React.Component) return null;
-  DynamicErrorBoundary = class extends React.Component<
-    { fallback: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>; children: React.ReactNode },
-    { error: Error | null }
-  > {
+  DynamicErrorBoundary = class extends (
+    React.Component<
+      {
+        fallback: ComponentType<{ error?: Error | null; isLoading?: boolean; pastDelay?: boolean }>;
+        children: React.ReactNode;
+      },
+      { error: Error | null }
+    >
+  ) {
     constructor(props: any) {
       super(props);
       this.state = { error: null };
@@ -115,11 +120,7 @@ function dynamic<P extends object = object>(
       const fallback = LoadingComponent
         ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
         : null;
-      return React.createElement(
-        Suspense,
-        { fallback },
-        React.createElement(LazyComponent, props),
-      );
+      return React.createElement(Suspense, { fallback }, React.createElement(LazyComponent, props));
     };
 
     ClientSSRFalse.displayName = "DynamicClientSSRFalse";
@@ -168,11 +169,7 @@ function dynamic<P extends object = object>(
     const fallback = LoadingComponent
       ? React.createElement(LoadingComponent, { isLoading: true, pastDelay: true, error: null })
       : null;
-    return React.createElement(
-      Suspense,
-      { fallback },
-      React.createElement(LazyComponent, props),
-    );
+    return React.createElement(Suspense, { fallback }, React.createElement(LazyComponent, props));
   };
 
   ClientDynamic.displayName = "DynamicClient";

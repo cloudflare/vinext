@@ -6,9 +6,5 @@ import "client-only";
 // accidentally imported in a Server Component.
 
 export default function ClientOnlyWidget() {
-  return (
-    <div data-testid="client-only-widget">
-      Client Only Widget (rendered in browser)
-    </div>
-  );
+  return <div data-testid="client-only-widget">Client Only Widget (rendered in browser)</div>;
 }

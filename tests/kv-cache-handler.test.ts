@@ -29,6 +29,20 @@ function createMockKV(store: Map<string, string> = new Map()) {
 }
 
 // ---------------------------------------------------------------------------
+// Mock ExecutionContext
+// ---------------------------------------------------------------------------
+
+function createMockCtx() {
+  const registered: Promise<unknown>[] = [];
+  return {
+    waitUntil: vi.fn((p: Promise<unknown>) => {
+      registered.push(p);
+    }),
+    registered,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -171,10 +185,7 @@ describe("KVCacheHandler", () => {
     });
 
     it("rejects entry with unknown value kind", async () => {
-      store.set(
-        "cache:bad-kind",
-        validEntry({ kind: "UNKNOWN_KIND", data: {} }),
-      );
+      store.set("cache:bad-kind", validEntry({ kind: "UNKNOWN_KIND", data: {} }));
       const result = await handler.get("bad-kind");
       expect(result).toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:bad-kind");
@@ -196,10 +207,7 @@ describe("KVCacheHandler", () => {
     });
 
     it("rejects entry where value has no kind field", async () => {
-      store.set(
-        "cache:no-kind",
-        validEntry({ html: "<html></html>" }),
-      );
+      store.set("cache:no-kind", validEntry({ html: "<html></html>" }));
       const result = await handler.get("no-kind");
       expect(result).toBeNull();
       expect(kv.delete).toHaveBeenCalledWith("cache:no-kind");
@@ -347,6 +355,105 @@ describe("KVCacheHandler", () => {
       expect(result).not.toBeNull();
       expect(result!.value!.kind).toBe("PAGES");
       expect((result!.value as any).html).toBe("<div>hi</div>");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // ctx.waitUntil registration
+  // -------------------------------------------------------------------------
+
+  describe("ctx.waitUntil registration", () => {
+    it("registers corrupt-JSON delete with waitUntil when ctx is provided", async () => {
+      const ctx = createMockCtx();
+      const handlerWithCtx = new KVCacheHandler(kv as any, { ctx });
+      store.set("cache:corrupt", "not valid json {{{");
+
+      await handlerWithCtx.get("corrupt");
+
+      expect(ctx.waitUntil).toHaveBeenCalledOnce();
+      // The registered promise must be the delete promise returned by kv.delete
+      expect(kv.delete).toHaveBeenCalledWith("cache:corrupt");
+      await Promise.all(ctx.registered); // let the background op settle
+      expect(store.has("cache:corrupt")).toBe(false);
+    });
+
+    it("registers invalid-shape delete with waitUntil when ctx is provided", async () => {
+      const ctx = createMockCtx();
+      const handlerWithCtx = new KVCacheHandler(kv as any, { ctx });
+      store.set("cache:bad-shape", JSON.stringify({ notValid: true }));
+
+      await handlerWithCtx.get("bad-shape");
+
+      expect(ctx.waitUntil).toHaveBeenCalledOnce();
+      expect(kv.delete).toHaveBeenCalledWith("cache:bad-shape");
+    });
+
+    it("registers tag-invalidation delete with waitUntil when ctx is provided", async () => {
+      const ctx = createMockCtx();
+      const handlerWithCtx = new KVCacheHandler(kv as any, { ctx });
+      const entryTime = 1000;
+      const tagInvalidatedTime = 2000; // after entry — triggers invalidation
+
+      store.set(
+        "cache:tagged",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "", pageData: {}, status: 200 },
+          tags: ["my-tag"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+      store.set("__tag:my-tag", String(tagInvalidatedTime));
+
+      await handlerWithCtx.get("tagged");
+
+      expect(ctx.waitUntil).toHaveBeenCalledOnce();
+      expect(kv.delete).toHaveBeenCalledWith("cache:tagged");
+    });
+
+    it("registers KV put with waitUntil on set() when ctx is provided", async () => {
+      const ctx = createMockCtx();
+      const handlerWithCtx = new KVCacheHandler(kv as any, { ctx });
+
+      await handlerWithCtx.set("write-me", {
+        kind: "PAGES",
+        html: "<html></html>",
+        pageData: {},
+        headers: undefined,
+        status: 200,
+      });
+
+      expect(ctx.waitUntil).toHaveBeenCalledOnce();
+      expect(kv.put).toHaveBeenCalledWith(
+        "cache:write-me",
+        expect.any(String),
+        expect.objectContaining({}),
+      );
+      await Promise.all(ctx.registered);
+      expect(store.has("cache:write-me")).toBe(true);
+    });
+
+    it("fires delete without waitUntil when no ctx (fire-and-forget fallback)", async () => {
+      // handler created without ctx in beforeEach
+      store.set("cache:no-ctx-del", "not valid json");
+      await handler.get("no-ctx-del");
+      // kv.delete was called directly (no waitUntil involved)
+      expect(kv.delete).toHaveBeenCalledWith("cache:no-ctx-del");
+    });
+
+    it("fires put without waitUntil when no ctx (fire-and-forget fallback)", async () => {
+      await handler.set("no-ctx-put", {
+        kind: "PAGES",
+        html: "<p>hi</p>",
+        pageData: {},
+        headers: undefined,
+        status: 200,
+      });
+      expect(kv.put).toHaveBeenCalledWith(
+        "cache:no-ctx-put",
+        expect.any(String),
+        expect.any(Object),
+      );
     });
   });
 });

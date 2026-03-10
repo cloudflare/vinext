@@ -1,7 +1,9 @@
 import { describe, it, expect, afterEach } from "vitest";
 import path from "node:path";
 import fs from "node:fs";
-import vinext, { _parseStaticObjectLiteral as parseStaticObjectLiteral } from "../packages/vinext/src/index.js";
+import vinext, {
+  _parseStaticObjectLiteral as parseStaticObjectLiteral,
+} from "../packages/vinext/src/index.js";
 import type { Plugin } from "vite";
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -148,11 +150,47 @@ describe("next/font/google shim", () => {
   it("exports common font families as named exports", async () => {
     const mod = await import("../packages/vinext/src/shims/font-google.js");
     const names = [
-      "Inter", "Roboto", "Roboto_Mono", "Open_Sans", "Lato",
-      "Poppins", "Montserrat", "Geist", "Geist_Mono",
-      "JetBrains_Mono", "Fira_Code",
+      "Inter",
+      "Roboto",
+      "Roboto_Mono",
+      "Open_Sans",
+      "Lato",
+      "Poppins",
+      "Montserrat",
+      "Geist",
+      "Geist_Mono",
+      "JetBrains_Mono",
+      "Fira_Code",
     ];
     for (const name of names) {
+      expect(typeof (mod as any)[name]).toBe("function");
+    }
+  });
+
+  it("exports all Google Fonts as named exports", async () => {
+    const mod = await import("../packages/vinext/src/shims/font-google.js");
+    const fixturePath = path.join(process.cwd(), "tests/fixtures/google-fonts.json");
+    const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf-8")) as {
+      families: string[];
+    };
+    const toExportName = (family: string): string =>
+      family
+        .replace(/[^0-9A-Za-z]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .replace(/_+/g, "_");
+    const expected = fixture.families.map(toExportName).sort();
+    const nonFontExports = new Set([
+      "default",
+      "buildGoogleFontsUrl",
+      "getSSRFontLinks",
+      "getSSRFontStyles",
+      "getSSRFontPreloads",
+    ]);
+    const actual = Object.keys(mod)
+      .filter((name) => !nonFontExports.has(name))
+      .sort();
+    expect(actual).toEqual(expected);
+    for (const name of actual) {
       expect(typeof (mod as any)[name]).toBe("function");
     }
   });
@@ -529,7 +567,9 @@ describe("parseStaticObjectLiteral", () => {
   // ── Security: these must all return null ──
 
   it("rejects function calls (code execution)", () => {
-    const result = parseStaticObjectLiteral(`{ weight: require('child_process').execSync('whoami') }`);
+    const result = parseStaticObjectLiteral(
+      `{ weight: require('child_process').execSync('whoami') }`,
+    );
     expect(result).toBeNull();
   });
 

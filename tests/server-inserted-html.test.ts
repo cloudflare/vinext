@@ -3,9 +3,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 describe("useServerInsertedHTML", () => {
   beforeEach(async () => {
     // Clear any stale callbacks between tests
-    const { clearServerInsertedHTML } = await import(
-      "../packages/vinext/src/shims/navigation.js"
-    );
+    const { clearServerInsertedHTML } = await import("../packages/vinext/src/shims/navigation.js");
     clearServerInsertedHTML();
   });
 
@@ -25,9 +23,8 @@ describe("useServerInsertedHTML", () => {
   });
 
   it("collects callbacks registered during SSR (no document)", async () => {
-    const { useServerInsertedHTML, flushServerInsertedHTML } = await import(
-      "../packages/vinext/src/shims/navigation.js"
-    );
+    const { useServerInsertedHTML, flushServerInsertedHTML } =
+      await import("../packages/vinext/src/shims/navigation.js");
 
     // In test environment, document is undefined (SSR-like)
     const results: string[] = [];
@@ -43,9 +40,8 @@ describe("useServerInsertedHTML", () => {
   });
 
   it("collects multiple callbacks", async () => {
-    const { useServerInsertedHTML, flushServerInsertedHTML } = await import(
-      "../packages/vinext/src/shims/navigation.js"
-    );
+    const { useServerInsertedHTML, flushServerInsertedHTML } =
+      await import("../packages/vinext/src/shims/navigation.js");
 
     useServerInsertedHTML(() => "<style>.a {}</style>");
     useServerInsertedHTML(() => "<style>.b {}</style>");
@@ -59,9 +55,8 @@ describe("useServerInsertedHTML", () => {
   });
 
   it("flush clears the callback list", async () => {
-    const { useServerInsertedHTML, flushServerInsertedHTML } = await import(
-      "../packages/vinext/src/shims/navigation.js"
-    );
+    const { useServerInsertedHTML, flushServerInsertedHTML } =
+      await import("../packages/vinext/src/shims/navigation.js");
 
     useServerInsertedHTML(() => "first");
 
@@ -74,9 +69,8 @@ describe("useServerInsertedHTML", () => {
   });
 
   it("clearServerInsertedHTML discards callbacks without calling them", async () => {
-    const { useServerInsertedHTML, clearServerInsertedHTML, flushServerInsertedHTML } = await import(
-      "../packages/vinext/src/shims/navigation.js"
-    );
+    const { useServerInsertedHTML, clearServerInsertedHTML, flushServerInsertedHTML } =
+      await import("../packages/vinext/src/shims/navigation.js");
 
     let called = false;
     useServerInsertedHTML(() => {
@@ -92,9 +86,8 @@ describe("useServerInsertedHTML", () => {
   });
 
   it("ignores null/undefined returns from callbacks", async () => {
-    const { useServerInsertedHTML, flushServerInsertedHTML } = await import(
-      "../packages/vinext/src/shims/navigation.js"
-    );
+    const { useServerInsertedHTML, flushServerInsertedHTML } =
+      await import("../packages/vinext/src/shims/navigation.js");
 
     useServerInsertedHTML(() => null);
     useServerInsertedHTML(() => undefined);
@@ -106,9 +99,8 @@ describe("useServerInsertedHTML", () => {
   });
 
   it("handles callback errors gracefully", async () => {
-    const { useServerInsertedHTML, flushServerInsertedHTML } = await import(
-      "../packages/vinext/src/shims/navigation.js"
-    );
+    const { useServerInsertedHTML, flushServerInsertedHTML } =
+      await import("../packages/vinext/src/shims/navigation.js");
 
     useServerInsertedHTML(() => {
       throw new Error("CSS extraction failed");
@@ -122,12 +114,15 @@ describe("useServerInsertedHTML", () => {
   });
 
   it("callbacks can return React-like elements", async () => {
-    const { useServerInsertedHTML, flushServerInsertedHTML } = await import(
-      "../packages/vinext/src/shims/navigation.js"
-    );
+    const { useServerInsertedHTML, flushServerInsertedHTML } =
+      await import("../packages/vinext/src/shims/navigation.js");
 
     // Simulate a React element (like styled-components would return)
-    const fakeElement = { $$typeof: Symbol.for("react.element"), type: "style", props: { children: ".x{}" } };
+    const fakeElement = {
+      $$typeof: Symbol.for("react.element"),
+      type: "style",
+      props: { children: ".x{}" },
+    };
     useServerInsertedHTML(() => fakeElement);
 
     const flushed = flushServerInsertedHTML();
@@ -136,9 +131,8 @@ describe("useServerInsertedHTML", () => {
   });
 
   it("supports the styled-components SSR pattern", async () => {
-    const { useServerInsertedHTML, flushServerInsertedHTML } = await import(
-      "../packages/vinext/src/shims/navigation.js"
-    );
+    const { useServerInsertedHTML, flushServerInsertedHTML } =
+      await import("../packages/vinext/src/shims/navigation.js");
 
     // Simulate styled-components ServerStyleSheet pattern
     const collectedStyles: string[] = [];
@@ -147,7 +141,9 @@ describe("useServerInsertedHTML", () => {
     // This simulates what a StyleRegistry component does
     useServerInsertedHTML(() => {
       extractCount++;
-      collectedStyles.push(`<style data-styled="sc-${extractCount}">.sc-${extractCount} { color: red; }</style>`);
+      collectedStyles.push(
+        `<style data-styled="sc-${extractCount}">.sc-${extractCount} { color: red; }</style>`,
+      );
       return collectedStyles[collectedStyles.length - 1];
     });
 

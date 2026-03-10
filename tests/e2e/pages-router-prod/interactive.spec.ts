@@ -65,23 +65,15 @@ test.describe("Pages Router Production — Interactive", () => {
     );
   });
 
-  test("dynamic route renders with params in production", async ({
-    page,
-  }) => {
+  test("dynamic route renders with params in production", async ({ page }) => {
     await page.goto(`${BASE}/posts/42`);
-    await expect(page.locator('[data-testid="post-title"]')).toHaveText(
-      "Post: 42",
-    );
+    await expect(page.locator('[data-testid="post-title"]')).toHaveText("Post: 42");
   });
 
   test("catch-all route renders in production", async ({ page }) => {
     await page.goto(`${BASE}/docs/guides/setup`);
-    await expect(page.locator('[data-testid="docs-title"]')).toHaveText(
-      "Docs",
-    );
-    await expect(page.locator('[data-testid="docs-slug"]')).toHaveText(
-      "Path: guides/setup",
-    );
+    await expect(page.locator('[data-testid="docs-title"]')).toHaveText("Docs");
+    await expect(page.locator('[data-testid="docs-slug"]')).toHaveText("Path: guides/setup");
   });
 
   test("navigating between pages preserves _app wrapper", async ({ page }) => {

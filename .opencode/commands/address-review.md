@@ -56,6 +56,7 @@ Do NOT skip this. The whole point is to avoid losing track of work.
 ## Step 5: Reply to review comments
 
 For each comment that was addressed, reply confirming the fix:
+
 ```
 gh api repos/cloudflare/vinext/pulls/$ARGUMENTS/comments/{comment_id}/replies \
   -f body="Fixed in <commit sha>"
@@ -72,6 +73,7 @@ gh pr merge $ARGUMENTS --auto --squash --delete-branch
 ## Step 7: Summary
 
 Print a final summary:
+
 - Comments addressed (with commit references)
 - Follow-up issues filed (with issue numbers and links)
 - Auto-merge status

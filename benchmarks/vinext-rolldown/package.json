@@ -8,10 +8,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "vinext": "file:../../packages/vinext",
     "react": "19.2.4",
     "react-dom": "19.2.4",
-    "react-server-dom-webpack": "19.2.4"
+    "react-server-dom-webpack": "19.2.4",
+    "vinext": "file:../../packages/vinext"
   },
   "devDependencies": {
     "@vitejs/plugin-rsc": "0.5.19",

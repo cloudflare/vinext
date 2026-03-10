@@ -101,8 +101,7 @@ describe("Next.js compat: rsc-basic", () => {
       },
     });
     const body = await res.text();
-    const hasContent =
-      body.includes("Server Component") || body.includes("from server");
+    const hasContent = body.includes("Server Component") || body.includes("from server");
     expect(hasContent).toBe(true);
   });
 
@@ -111,9 +110,7 @@ describe("Next.js compat: rsc-basic", () => {
   // Next.js: 'should return 404 for missing routes'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-basic/rsc-basic.test.ts
   it("missing route returns 404", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/definitely-does-not-exist`,
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/definitely-does-not-exist`);
     expect(res.status).toBe(404);
   });
 });

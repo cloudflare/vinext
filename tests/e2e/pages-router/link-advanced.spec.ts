@@ -35,9 +35,7 @@ test.describe("Link advanced props (Pages Router)", () => {
     await expect(page.locator("h1")).toHaveText("About");
 
     // scroll={false} means scrollTo(0,0) should NOT have been called
-    const scrollToTopCalled = await page.evaluate(
-      () => (window as any).__scrollToTopCalled,
-    );
+    const scrollToTopCalled = await page.evaluate(() => (window as any).__scrollToTopCalled);
     expect(scrollToTopCalled).toBe(false);
   });
 
@@ -63,9 +61,7 @@ test.describe("Link advanced props (Pages Router)", () => {
     await expect(page.locator("h1")).toHaveText("Hello, vinext!");
   });
 
-  test("as prop renders correct href on the anchor element", async ({
-    page,
-  }) => {
+  test("as prop renders correct href on the anchor element", async ({ page }) => {
     await page.goto(`${BASE}/link-test`);
     await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
 
@@ -85,9 +81,9 @@ test.describe("Link advanced props (Pages Router)", () => {
     await expect(page.locator("h1")).toHaveText("Link Advanced Props Test");
 
     // The prevented-message should be visible
-    await expect(
-      page.locator('[data-testid="prevented-message"]'),
-    ).toHaveText("Navigation was prevented");
+    await expect(page.locator('[data-testid="prevented-message"]')).toHaveText(
+      "Navigation was prevented",
+    );
   });
 
   test('target="_blank" has correct attributes', async ({ page }) => {

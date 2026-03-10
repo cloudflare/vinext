@@ -27,11 +27,10 @@ import path from "node:path";
 import fs from "node:fs";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
+import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-matcher.js";
 
-const PAGE_EXTENSIONS = [".tsx", ".ts", ".jsx", ".js"];
-
-function findFileWithExtensions(basePath: string): boolean {
-  return PAGE_EXTENSIONS.some((ext) => fs.existsSync(basePath + ext));
+function findFileWithExtensions(basePath: string, matcher: ValidFileMatcher): boolean {
+  return matcher.dottedExtensions.some((ext) => fs.existsSync(basePath + ext));
 }
 
 /**
@@ -75,10 +74,9 @@ export interface StaticExportResult {
  *
  * Creates a directory of static HTML files by rendering each route at build time.
  */
-export async function staticExportPages(
-  options: StaticExportOptions,
-): Promise<StaticExportResult> {
+export async function staticExportPages(options: StaticExportOptions): Promise<StaticExportResult> {
   const { server, routes, apiRoutes, pagesDir, outDir, config } = options;
+  const fileMatcher = createValidFileMatcher(config.pageExtensions);
   const result: StaticExportResult = {
     pageCount: 0,
     files: [],
@@ -143,8 +141,7 @@ export async function staticExportPages(
         continue;
       }
 
-      const paths: Array<{ params: Record<string, string | string[]> }> =
-        pathsResult?.paths ?? [];
+      const paths: Array<{ params: Record<string, string | string[]> }> = pathsResult?.paths ?? [];
 
       for (const { params } of paths) {
         // Build the URL path from the route pattern and params
@@ -163,7 +160,7 @@ export async function staticExportPages(
     pageProps: Record<string, unknown>;
   }> | null = null;
   const appPath = path.join(pagesDir, "_app");
-  if (findFileWithExtensions(appPath)) {
+  if (findFileWithExtensions(appPath, fileMatcher)) {
     try {
       const appModule = await server.ssrLoadModule(appPath);
       AppComponent = appModule.default ?? null;
@@ -174,7 +171,7 @@ export async function staticExportPages(
 
   let DocumentComponent: React.ComponentType | null = null;
   const docPath = path.join(pagesDir, "_document");
-  if (findFileWithExtensions(docPath)) {
+  if (findFileWithExtensions(docPath, fileMatcher)) {
     try {
       const docModule = await server.ssrLoadModule(docPath);
       DocumentComponent = docModule.default ?? null;
@@ -228,6 +225,7 @@ export async function staticExportPages(
       AppComponent,
       DocumentComponent,
       headShim,
+      fileMatcher,
     });
     if (html404) {
       const fullPath = path.join(outDir, "404.html");
@@ -335,15 +333,14 @@ async function renderStaticPage(options: RenderStaticPageOptions): Promise<strin
 
   // Collect head tags
   const ssrHeadHTML =
-    typeof headShim.getSSRHeadHTML === "function"
-      ? headShim.getSSRHeadHTML()
-      : "";
+    typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "";
 
   // __NEXT_DATA__ for client hydration
   const nextDataScript = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
     props: { pageProps },
     page: route.pattern,
     query: params,
+    buildId: _config.buildId,
   })}</script>`;
 
   // Build HTML shell
@@ -396,24 +393,19 @@ interface RenderErrorPageOptions {
   DocumentComponent: React.ComponentType | null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   headShim: any;
+  fileMatcher: ValidFileMatcher;
 }
 
-async function renderErrorPage(
-  options: RenderErrorPageOptions,
-): Promise<string | null> {
-  const { server, pagesDir, statusCode, AppComponent, DocumentComponent, headShim } =
+async function renderErrorPage(options: RenderErrorPageOptions): Promise<string | null> {
+  const { server, pagesDir, statusCode, AppComponent, DocumentComponent, headShim, fileMatcher } =
     options;
 
   const candidates =
-    statusCode === 404
-      ? ["404", "_error"]
-      : statusCode === 500
-        ? ["500", "_error"]
-        : ["_error"];
+    statusCode === 404 ? ["404", "_error"] : statusCode === 500 ? ["500", "_error"] : ["_error"];
 
   for (const candidate of candidates) {
     const candidatePath = path.join(pagesDir, candidate);
-    if (!findFileWithExtensions(candidatePath)) continue;
+    if (!findFileWithExtensions(candidatePath, fileMatcher)) continue;
 
     const errorModule = await server.ssrLoadModule(candidatePath);
     const ErrorComponent = errorModule.default;
@@ -469,10 +461,7 @@ async function renderErrorPage(
  * E.g., "/posts/:id" + { id: "42" } → "/posts/42"
  * E.g., "/docs/:slug+" + { slug: ["a", "b"] } → "/docs/a/b"
  */
-function buildUrlFromParams(
-  pattern: string,
-  params: Record<string, string | string[]>,
-): string {
+function buildUrlFromParams(pattern: string, params: Record<string, string | string[]>): string {
   const parts = pattern.split("/").filter(Boolean);
   const result: string[] = [];
 
@@ -546,7 +535,9 @@ async function resolveParentParams(
   // at each level of the path hierarchy.
   type ParentSegment = {
     params: string[];
-    generateStaticParams: (opts: { params: Record<string, string | string[]> }) => Promise<Record<string, string | string[]>[]>;
+    generateStaticParams: (opts: {
+      params: Record<string, string | string[]>;
+    }) => Promise<Record<string, string | string[]>[]>;
   };
 
   const parentSegments: ParentSegment[] = [];

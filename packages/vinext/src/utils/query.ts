@@ -2,9 +2,15 @@
  * Add a query parameter value to an object, promoting to array for duplicate keys.
  * Matches Next.js behavior: ?a=1&a=2 → { a: ['1', '2'] }
  */
-export function addQueryParam(obj: Record<string, string | string[]>, key: string, value: string): void {
+export function addQueryParam(
+  obj: Record<string, string | string[]>,
+  key: string,
+  value: string,
+): void {
   if (key in obj) {
-    obj[key] = Array.isArray(obj[key]) ? (obj[key] as string[]).concat(value) : [obj[key] as string, value];
+    obj[key] = Array.isArray(obj[key])
+      ? (obj[key] as string[]).concat(value)
+      : [obj[key] as string, value];
   } else {
     obj[key] = value;
   }

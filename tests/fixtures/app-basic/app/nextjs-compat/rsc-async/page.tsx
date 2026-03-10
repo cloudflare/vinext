@@ -1,5 +1,5 @@
 async function delay(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 export default async function Page() {
   await delay(100);

@@ -25,27 +25,20 @@ jobs:
       - name: Checkout vinext
         uses: actions/checkout@v4
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node-pnpm
         with:
           node-version: ${{ inputs.node_version }}
-          cache: pnpm
 
-      - name: Build vinext
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm run build
+      - name: Build vinext plugin
+        run: pnpm run build
 
       - name: Read vinext versions
         id: versions
         run: |
-          node - <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
-          const pkg = require('./packages/vinext/package.json');
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+
+          const pkg = JSON.parse(readFileSync('./packages/vinext/package.json', 'utf8'));
           const clean = (value) => value.replace(/^[^0-9]*/, '');
           const react = clean(pkg.peerDependencies.react);
           const reactDom = clean(pkg.peerDependencies['react-dom']);
@@ -57,18 +50,18 @@ jobs:
             `vite=${vite}`,
             `rsc=${rsc}`,
           ].join('\n');
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `${lines}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `${lines}\n`);
           NODE
 
       - name: Validate repo URL
         env:
           REPO_URL: ${{ inputs.repo_url }}
         run: |
-          node - <<'NODE'
-          const fs = require('fs');
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
 
           const input = process.env.REPO_URL;
-          const allowed = JSON.parse(fs.readFileSync('.github/repos.json', 'utf8'))
+          const allowed = JSON.parse(readFileSync('.github/repos.json', 'utf8'))
             .map((repo) => repo.url);
 
           if (!allowed.includes(input)) {
@@ -109,42 +102,37 @@ jobs:
       - name: Verify build output
         working-directory: target-repo
         run: |
-          node - <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
+          node --input-type=module <<'NODE'
+          import { existsSync, readdirSync } from 'node:fs';
+          import { join } from 'node:path';
 
           const ensureNonEmptyDir = (dir) => {
-            if (!fs.existsSync(dir)) {
+            if (!existsSync(dir)) {
               console.error(`missing ${dir}`);
               process.exit(1);
             }
-            const entries = fs.readdirSync(dir);
+            const entries = readdirSync(dir);
             if (entries.length === 0) {
               console.error(`empty ${dir}`);
               process.exit(1);
             }
           };
 
-          const clientDir = 'dist/client';
-          ensureNonEmptyDir(clientDir);
-
           const hasJs = (dir) => {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            const entries = readdirSync(dir, { withFileTypes: true });
             for (const entry of entries) {
-              const entryPath = path.join(dir, entry.name);
+              const entryPath = join(dir, entry.name);
               if (entry.isDirectory()) {
-                if (hasJs(entryPath)) {
-                  return true;
-                }
+                if (hasJs(entryPath)) return true;
                 continue;
               }
-              if (entry.name.endsWith('.js') || entry.name.endsWith('.mjs')) {
-                return true;
-              }
+              if (entry.name.endsWith('.js') || entry.name.endsWith('.mjs')) return true;
             }
             return false;
           };
 
+          const clientDir = 'dist/client';
+          ensureNonEmptyDir(clientDir);
           if (!hasJs(clientDir)) {
             console.error(`no js artifacts in ${clientDir}`);
             process.exit(1);
@@ -152,7 +140,6 @@ jobs:
 
           const serverDir = 'dist/server';
           ensureNonEmptyDir(serverDir);
-
           if (!hasJs(serverDir)) {
             console.error(`no js artifacts in ${serverDir}`);
             process.exit(1);

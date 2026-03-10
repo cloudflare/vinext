@@ -24,12 +24,14 @@ You have been invoked on a specific GitHub issue or PR. **All your actions must 
 Not every invocation means "write code." Determine the right mode before acting.
 
 **Triage mode** — when invoked on an issue without explicit implementation instructions, or on a community PR for review:
+
 - Assess the root cause. Check whether the issue matches a known pattern (see "Known issue patterns" below).
 - Search for duplicate or overlapping PRs (`gh pr list --search "<keywords>" --state open` and `--state closed`). If an open PR already exists, link to it and recommend the reporter or maintainer evaluate it — do not start a competing implementation.
 - If the issue lacks a reproduction, specific error message, or clear expected behavior, post a comment asking for those details. Do not guess at the problem.
 - If a community PR solves a non-problem (no reported failure, speculative hardening, or a scenario that doesn't occur in practice), recommend closing with an explanation of why.
 
 **Implementation mode** — when explicitly asked to fix, implement, or open a PR:
+
 - Follow the "Before starting work" checklist below in full.
 - If an existing community PR already addresses the issue, review and iterate on that PR rather than opening a competing one — unless the maintainer explicitly asks for a fresh implementation.
 - The deliverable is a PR with code changes, tests, and a description that matches the implementation.
@@ -50,13 +52,15 @@ Gather full context before writing any code.
 When reviewing a community PR, assess value before reviewing code in detail.
 
 **Check these first:**
+
 - Does the PR link to an open issue with a concrete reproduction or error message? PRs without a reported failure case are often speculative.
 - Is there already another open PR addressing the same issue? Duplicates waste reviewer time — recommend closing the later one with a link to the earlier PR.
 - Does the change match the actual root cause? A fix applied per-file (e.g., adding JSX pragmas to each shim) when the root cause is a Vite config issue is a misdiagnosis — flag it.
-- Do the tests actually validate the fix? Check out the PR branch and verify the tests *fail* on main without the code change. LLM-generated PRs frequently include tests that pass regardless of whether the fix is applied. If you can't run the tests, inspect the assertions and determine whether they would pass without the code change by reading the test logic.
+- Do the tests actually validate the fix? Check out the PR branch and verify the tests _fail_ on main without the code change. LLM-generated PRs frequently include tests that pass regardless of whether the fix is applied. If you can't run the tests, inspect the assertions and determine whether they would pass without the code change by reading the test logic.
 - Does the diff contain unrelated changes? Formatting tweaks, dependency bumps, or drive-by refactors mixed in with the actual fix should be flagged and split out.
 
 **Signals of low-value or LLM-generated PRs:**
+
 - Excessive description boilerplate: "Type of Change" checklists, "Security" sections on trivial changes, numbered verification steps for a one-line fix.
 - Verbose restating of information already in the linked issue.
 - "Hardening" or "compatibility" fixes with no concrete failure scenario.
@@ -68,39 +72,41 @@ Be constructive in community-facing comments. Thank contributors for their effor
 
 These are the most commonly reported issue categories. When triaging, check whether the report matches one of these before investigating from scratch.
 
-| Symptom | Root cause | What to check |
-|---------|-----------|---------------|
-| `React.createContext is not a function`, `useContext` returns null, hooks dispatcher null | RSC and SSR are **separate Vite environments** with separate module instances. Context created in RSC is not available in SSR. | State must be passed across the boundary via `handleSsr(rscStream, navContext)`. Check if the component is a `"use client"` component expecting context that was set in the RSC environment. |
-| `does not provide an export named 'jsx'` | CJS/ESM interop — `react/jsx-runtime` may only expose a default export in some bundling configurations. | This is a Vite config issue (optimizeDeps pre-bundling), not a per-file issue. Do not fix by adding JSX pragmas to individual files. Check `optimizeDeps.include` and the RSC plugin's handling of `react/jsx-runtime`. |
-| Missing `next/*` export (e.g., `next/font/google` named fonts, `ServerInsertedHTMLContext`) | vinext shim doesn't export everything Next.js does. | Compare the shim's exports against the real Next.js module's public API. Add the missing export with a test. |
-| Routing fails with hyphens, encoded characters, or catch-all segments | Matcher regex too restrictive (`[\w]+` misses hyphens) or pathname not decoded before matching. | Check `tokenRe` patterns in `middleware-codegen.ts` and pathname decoding in server entry points. |
-| Wrong package manager detected, lockfile issues | `cli.ts` detection logic doesn't handle all formats (e.g., `bun.lock` is text, not binary). | Check `detectPackageManager()` in `cli.ts` and the lockfile patterns it matches. |
-| `Directory import 'next/font/local' is not supported resolving ES modules` | Node.js ESM doesn't resolve directory imports. Third-party font packages (e.g., `geist`) import `next/font/local` as a bare path. | Check the `resolveId` hook in `index.ts` — it needs to handle `next/font/local` → `next/font/local/index.js` resolution. |
-| Immutable headers error on Workers | `Request.headers` is immutable per the Fetch API spec. Code that stores the original reference and later calls `.set()` will throw. | Wrap with `new Headers(request.headers)` to create a mutable copy. |
+| Symptom                                                                                     | Root cause                                                                                                                          | What to check                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `React.createContext is not a function`, `useContext` returns null, hooks dispatcher null   | RSC and SSR are **separate Vite environments** with separate module instances. Context created in RSC is not available in SSR.      | State must be passed across the boundary via `handleSsr(rscStream, navContext)`. Check if the component is a `"use client"` component expecting context that was set in the RSC environment.                            |
+| `does not provide an export named 'jsx'`                                                    | CJS/ESM interop — `react/jsx-runtime` may only expose a default export in some bundling configurations.                             | This is a Vite config issue (optimizeDeps pre-bundling), not a per-file issue. Do not fix by adding JSX pragmas to individual files. Check `optimizeDeps.include` and the RSC plugin's handling of `react/jsx-runtime`. |
+| Missing `next/*` export (e.g., `next/font/google` named fonts, `ServerInsertedHTMLContext`) | vinext shim doesn't export everything Next.js does.                                                                                 | Compare the shim's exports against the real Next.js module's public API. Add the missing export with a test.                                                                                                            |
+| Routing fails with hyphens, encoded characters, or catch-all segments                       | Matcher regex too restrictive (`[\w]+` misses hyphens) or pathname not decoded before matching.                                     | Check `tokenRe` patterns in `middleware-codegen.ts` and pathname decoding in server entry points.                                                                                                                       |
+| Wrong package manager detected, lockfile issues                                             | `cli.ts` detection logic doesn't handle all formats (e.g., `bun.lock` is text, not binary).                                         | Check `detectPackageManager()` in `cli.ts` and the lockfile patterns it matches.                                                                                                                                        |
+| `Directory import 'next/font/local' is not supported resolving ES modules`                  | Node.js ESM doesn't resolve directory imports. Third-party font packages (e.g., `geist`) import `next/font/local` as a bare path.   | Check the `resolveId` hook in `index.ts` — it needs to handle `next/font/local` → `next/font/local/index.js` resolution.                                                                                                |
+| Immutable headers error on Workers                                                          | `Request.headers` is immutable per the Fetch API spec. Code that stores the original reference and later calls `.set()` will throw. | Wrap with `new Headers(request.headers)` to create a mutable copy.                                                                                                                                                      |
 
 ## Code path parity (critical rule)
 
 > This is the #1 source of blocking review feedback. When you modify any file listed below, check every other file in this list for the same logic.
 
 **The four server files** — if you modify one, check the other three:
-- `server/app-dev-server.ts` — App Router dev (generates the RSC entry)
+
+- `entries/app-rsc-entry.ts` — App Router dev (generates the RSC entry)
 - `server/dev-server.ts` — Pages Router dev
 - `server/prod-server.ts` — Pages Router production (independent middleware/routing/SSR)
 - `cloudflare/worker-entry.ts` — Workers entry
 
-App Router prod delegates to the built RSC entry, so it inherits fixes from `app-dev-server.ts`. Pages Router prod does not — it has its own logic that must be updated separately.
+App Router prod delegates to the built RSC entry, so it inherits fixes from `entries/app-rsc-entry.ts`. Pages Router prod does not — it has its own logic that must be updated separately.
 
 **Other parity pairs:**
+
 - **`cli.ts` ↔ `index.ts`** — the CLI build has its own Rollup/Vite config. When you add a build option to `index.ts`, add the same option to `cli.ts`.
 - **`getImageProps` ↔ `Image` component** — both must enforce identical validation. If `Image` blocks invalid URLs, `getImageProps` must too.
 - **ISR cache early-return paths** — in `dev-server.ts`, ISR cache HIT and STALE paths return early via `res.writeHead()` + `res.end()` before later logic runs. If you add response headers, preloads, or transforms, verify they also apply to the cached-response code paths.
 
 ## Generated code and templates
 
-Several files generate JavaScript as template strings (`deploy.ts`, `app-dev-server.ts`, parts of `index.ts`). These are the highest-risk code for logic drift.
+Several files generate JavaScript as template strings (`deploy.ts`, `entries/app-rsc-entry.ts`, parts of `index.ts`). These are the highest-risk code for logic drift.
 
 - **Worker entry templates in `deploy.ts`** generate two nearly-identical entry points (App Router and Pages Router). When you modify one, check the other. Functions like `handleImageOptimization()` are copy-pasted between them.
-- **`app-dev-server.ts` generates the RSC entry** as a string. Functions inlined there (e.g., `isSafeRegex`, `matchConfigPattern`, `proxyExternalRequest`) must exactly match their counterparts in shared modules (`config-matchers.ts`, `image-optimization.ts`, etc.). When the shared module gets a fix, update the template too.
+- **`entries/app-rsc-entry.ts` generates the RSC entry** as a string. Functions inlined there (e.g., `isSafeRegex`, `matchConfigPattern`, `proxyExternalRequest`) must exactly match their counterparts in shared modules (`config-matchers.ts`, `image-optimization.ts`, etc.). When the shared module gets a fix, update the template too.
 - **Escaping differs between contexts.** Template literals inside template literals need different escaping than regular code. After modifying generated code, verify the output is syntactically valid by reading the generated file or checking the build output.
 - **Prefer imports over duplication.** When a template can import a shared module at runtime, do that. When it cannot (generated string context), extract the function body into a const string and interpolate it into both templates.
 
@@ -146,14 +152,14 @@ Every response that does content negotiation, proxies upstream requests, or sets
 
 These patterns have each caused blocking review feedback. Memorize them.
 
-| Pattern | Problem | Fix |
-|---------|---------|-----|
-| `var x = value` inside try/catch | If try throws before assignment, `x` is `undefined` — `for...of` on it crashes | Declare `let x = []` before the try block |
-| `Object.fromEntries(response.headers)` | Drops multi-value headers like `Set-Cookie` | Use `headers.forEach()` (see HTTP section) |
-| Consuming a Response/ReadableStream body twice | Body is gone after first read — cached entry becomes useless | Call `response.clone()` before consuming |
-| `new Request(url, { body: stream })` without `duplex` | Throws in Node.js | Add `duplex: "half"` to the options |
-| `req.destroy()` + `reject()` without guard | Node.js may still fire `end`, calling `resolve()` | Add a `let settled = false` guard flag |
-| `parseInt(untrustedInput)` | Returns `NaN` on invalid input — `NaN` propagates silently | Validate with `Number.isNaN()` immediately after parsing |
+| Pattern                                               | Problem                                                                        | Fix                                                      |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| `var x = value` inside try/catch                      | If try throws before assignment, `x` is `undefined` — `for...of` on it crashes | Declare `let x = []` before the try block                |
+| `Object.fromEntries(response.headers)`                | Drops multi-value headers like `Set-Cookie`                                    | Use `headers.forEach()` (see HTTP section)               |
+| Consuming a Response/ReadableStream body twice        | Body is gone after first read — cached entry becomes useless                   | Call `response.clone()` before consuming                 |
+| `new Request(url, { body: stream })` without `duplex` | Throws in Node.js                                                              | Add `duplex: "half"` to the options                      |
+| `req.destroy()` + `reject()` without guard            | Node.js may still fire `end`, calling `resolve()`                              | Add a `let settled = false` guard flag                   |
+| `parseInt(untrustedInput)`                            | Returns `NaN` on invalid input — `NaN` propagates silently                     | Validate with `Number.isNaN()` immediately after parsing |
 
 ## Security
 

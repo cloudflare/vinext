@@ -3,9 +3,7 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4174";
 
 test.describe("Error Boundaries", () => {
-  test("error.tsx catches client component error on button click", async ({
-    page,
-  }) => {
+  test("error.tsx catches client component error on button click", async ({ page }) => {
     await page.goto(`${BASE}/error-test`);
 
     // Page renders normally first
@@ -69,15 +67,9 @@ test.describe("Error Boundaries", () => {
   test("parent route without error renders normally", async ({ page }) => {
     await page.goto(`${BASE}/error-nested-test`);
 
-    await expect(
-      page.locator('[data-testid="error-nested-page"]'),
-    ).toBeVisible();
-    await expect(
-      page.locator('[data-testid="outer-error-boundary"]'),
-    ).not.toBeVisible();
-    await expect(
-      page.locator('[data-testid="inner-error-boundary"]'),
-    ).not.toBeVisible();
+    await expect(page.locator('[data-testid="error-nested-page"]')).toBeVisible();
+    await expect(page.locator('[data-testid="outer-error-boundary"]')).not.toBeVisible();
+    await expect(page.locator('[data-testid="inner-error-boundary"]')).not.toBeVisible();
   });
 });
 

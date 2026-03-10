@@ -162,10 +162,7 @@ describe("Next.js compat: not-found", () => {
   // Next.js cascades metadata from parent layouts into not-found/error pages.
 
   it("not-found page should inherit metadata title from parent layout", async () => {
-    const { res, html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-not-found/missing",
-    );
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-not-found/missing");
     expect(res.status).toBe(404);
     // Should render the not-found content
     expect(html).toContain("Not Found (metadata test)");
@@ -174,24 +171,81 @@ describe("Next.js compat: not-found", () => {
   });
 
   it("not-found page should inherit metadata description from parent layout", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-not-found/missing",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-not-found/missing");
     expect(html).toContain(
       '<meta name="description" content="Layout description for not-found test"',
     );
   });
 
   it("not-found page should still include noindex meta tag alongside layout metadata", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/metadata-not-found/missing",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-not-found/missing");
     // noindex should still be present
     expect(html).toContain("noindex");
     // Layout metadata should also be present
     expect(html).toContain("<title>Metadata Not Found Layout Title</title>");
+  });
+
+  // ── generateMetadata in fallback layout receives real params ──
+  // Regression test for: renderHTTPAccessFallbackPage was passing {} for params
+  // to resolveModuleMetadata(), so generateMetadata() would get undefined for
+  // all dynamic route params (e.g. params.slug === undefined).
+  //
+  // Fixture: nextjs-compat/layout-params-notfound/[slug]/layout.tsx exports
+  // generateMetadata({ params }) that returns title "not-found: <slug>".
+  // The page calls notFound() for invalid slugs, triggering the fallback render.
+
+  it("layout generateMetadata() in not-found fallback receives actual route params", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-params-notfound/bad-slug",
+    );
+    expect(res.status).toBe(404);
+    // The not-found boundary must render
+    expect(html).toContain("layout-params-notfound-boundary");
+    // The title must include the actual slug -- proves params were forwarded correctly.
+    // If renderHTTPAccessFallbackPage passed {} instead of {slug:"bad-slug"},
+    // the title would be "not-found: undefined" instead.
+    expect(html).toContain("<title>not-found: bad-slug</title>");
+  });
+
+  it("layout generateMetadata() in not-found fallback uses actual slug value", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-params-notfound/my-other-slug",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain("<title>not-found: my-other-slug</title>");
+  });
+
+  // ── generateViewport in fallback layout receives real params ──
+  // Regression test for: renderHTTPAccessFallbackPage was passing {} for params
+  // to resolveModuleViewport(), so generateViewport() would get undefined for
+  // all dynamic route params (e.g. params.slug === undefined).
+  //
+  // Fixture: nextjs-compat/layout-params-notfound/[slug]/layout.tsx exports
+  // generateViewport({ params }) that returns themeColor "slug-<slug>".
+
+  it("layout generateViewport() in not-found fallback receives actual route params", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-params-notfound/bad-slug",
+    );
+    expect(res.status).toBe(404);
+    // The not-found boundary must render
+    expect(html).toContain("layout-params-notfound-boundary");
+    // The theme-color must include the actual slug -- proves params were forwarded.
+    // If renderHTTPAccessFallbackPage passed {} instead of {slug:"bad-slug"},
+    // the themeColor would be "slug-undefined" instead of "slug-bad-slug".
+    expect(html).toContain('content="slug-bad-slug"');
+  });
+
+  it("layout generateViewport() in not-found fallback uses actual slug value", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/layout-params-notfound/my-other-slug",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain('content="slug-my-other-slug"');
   });
 
   // ── notFound() from layout components ───────────────────────
@@ -231,20 +285,14 @@ describe("Next.js compat: not-found", () => {
   // throwing layout, causing a 500 error.
 
   it("layout+page notFound(): valid slug renders page", async () => {
-    const { res, html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/not-found-layout-page/hello",
-    );
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-layout-page/hello");
     expect(res.status).toBe(200);
     expect(html).toContain("not-found-layout-page-content");
     expect(html).toContain("not-found-layout-page-wrapper");
   });
 
   it("layout+page notFound(): invalid slug caught by parent boundary (not 500)", async () => {
-    const { res, html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/not-found-layout-page/invalid",
-    );
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-layout-page/invalid");
     // Must be 404, NOT 500 — the layout's notFound() should be caught first,
     // rendering with parent layouts only (excluding the throwing layout).
     expect(res.status).toBe(404);
@@ -257,10 +305,9 @@ describe("Next.js compat: not-found", () => {
   });
 
   it("layout+page notFound(): RSC request returns 404 (not 500)", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/not-found-layout-page/invalid.rsc`,
-      { headers: { Accept: "text/x-component" } },
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/not-found-layout-page/invalid.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
     // RSC response must be 404 with valid flight data, not 500
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toContain("text/x-component");

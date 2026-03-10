@@ -33,7 +33,9 @@ describe("matchRemotePattern hostname", () => {
 
   it("single wildcard does not match deep subdomains", () => {
     const pattern: RemotePattern = { hostname: "*.example.com" };
-    expect(matchRemotePattern(pattern, new URL("https://deep.cdn.example.com/img.png"))).toBe(false);
+    expect(matchRemotePattern(pattern, new URL("https://deep.cdn.example.com/img.png"))).toBe(
+      false,
+    );
   });
 
   it("matches double-star wildcard (**) for deep subdomains", () => {
@@ -110,19 +112,25 @@ describe("matchRemotePattern port", () => {
 describe("matchRemotePattern pathname", () => {
   it("defaults to ** (match everything) when not specified", () => {
     const pattern: RemotePattern = { hostname: "example.com" };
-    expect(matchRemotePattern(pattern, new URL("https://example.com/any/path/here.png"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://example.com/any/path/here.png"))).toBe(
+      true,
+    );
   });
 
   it("matches exact pathname", () => {
     const pattern: RemotePattern = { hostname: "example.com", pathname: "/images/hero.png" };
     expect(matchRemotePattern(pattern, new URL("https://example.com/images/hero.png"))).toBe(true);
-    expect(matchRemotePattern(pattern, new URL("https://example.com/images/other.png"))).toBe(false);
+    expect(matchRemotePattern(pattern, new URL("https://example.com/images/other.png"))).toBe(
+      false,
+    );
   });
 
   it("matches single-segment pathname wildcard", () => {
     const pattern: RemotePattern = { hostname: "example.com", pathname: "/images/*" };
     expect(matchRemotePattern(pattern, new URL("https://example.com/images/photo.png"))).toBe(true);
-    expect(matchRemotePattern(pattern, new URL("https://example.com/images/deep/photo.png"))).toBe(false);
+    expect(matchRemotePattern(pattern, new URL("https://example.com/images/deep/photo.png"))).toBe(
+      false,
+    );
   });
 
   it("matches multi-segment pathname wildcard", () => {
@@ -133,7 +141,9 @@ describe("matchRemotePattern pathname", () => {
 
   it("rejects non-matching pathname", () => {
     const pattern: RemotePattern = { hostname: "example.com", pathname: "/uploads/*" };
-    expect(matchRemotePattern(pattern, new URL("https://example.com/images/photo.png"))).toBe(false);
+    expect(matchRemotePattern(pattern, new URL("https://example.com/images/photo.png"))).toBe(
+      false,
+    );
   });
 });
 
@@ -152,7 +162,9 @@ describe("matchRemotePattern search", () => {
 
   it("skips search check when not specified", () => {
     const pattern: RemotePattern = { hostname: "example.com" };
-    expect(matchRemotePattern(pattern, new URL("https://example.com/img.png?anything=here"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://example.com/img.png?anything=here"))).toBe(
+      true,
+    );
   });
 });
 
@@ -160,51 +172,49 @@ describe("matchRemotePattern search", () => {
 
 describe("hasRemoteMatch", () => {
   it("matches by domain name", () => {
-    expect(hasRemoteMatch(
-      ["cdn.example.com"],
-      [],
-      new URL("https://cdn.example.com/photo.png"),
-    )).toBe(true);
+    expect(
+      hasRemoteMatch(["cdn.example.com"], [], new URL("https://cdn.example.com/photo.png")),
+    ).toBe(true);
   });
 
   it("does not match unrecognized domain", () => {
-    expect(hasRemoteMatch(
-      ["cdn.example.com"],
-      [],
-      new URL("https://evil.com/photo.png"),
-    )).toBe(false);
+    expect(hasRemoteMatch(["cdn.example.com"], [], new URL("https://evil.com/photo.png"))).toBe(
+      false,
+    );
   });
 
   it("matches by remote pattern", () => {
-    expect(hasRemoteMatch(
-      [],
-      [{ hostname: "*.example.com", pathname: "/images/**" }],
-      new URL("https://cdn.example.com/images/photo.png"),
-    )).toBe(true);
+    expect(
+      hasRemoteMatch(
+        [],
+        [{ hostname: "*.example.com", pathname: "/images/**" }],
+        new URL("https://cdn.example.com/images/photo.png"),
+      ),
+    ).toBe(true);
   });
 
   it("matches when either domain or pattern matches", () => {
-    expect(hasRemoteMatch(
-      ["other.com"],
-      [{ hostname: "cdn.example.com" }],
-      new URL("https://cdn.example.com/photo.png"),
-    )).toBe(true);
+    expect(
+      hasRemoteMatch(
+        ["other.com"],
+        [{ hostname: "cdn.example.com" }],
+        new URL("https://cdn.example.com/photo.png"),
+      ),
+    ).toBe(true);
   });
 
   it("rejects when neither domain nor pattern matches", () => {
-    expect(hasRemoteMatch(
-      ["allowed.com"],
-      [{ hostname: "cdn.allowed.com" }],
-      new URL("https://evil.com/photo.png"),
-    )).toBe(false);
+    expect(
+      hasRemoteMatch(
+        ["allowed.com"],
+        [{ hostname: "cdn.allowed.com" }],
+        new URL("https://evil.com/photo.png"),
+      ),
+    ).toBe(false);
   });
 
   it("handles empty domains and patterns", () => {
-    expect(hasRemoteMatch(
-      [],
-      [],
-      new URL("https://example.com/photo.png"),
-    )).toBe(false);
+    expect(hasRemoteMatch([], [], new URL("https://example.com/photo.png"))).toBe(false);
   });
 });
 
@@ -223,7 +233,9 @@ describe("matchRemotePattern glob edge cases", () => {
     const pattern: RemotePattern = { hostname: "example.com", pathname: "/images/photo.png" };
     // The dot before 'png' should be literal
     expect(matchRemotePattern(pattern, new URL("https://example.com/images/photo.png"))).toBe(true);
-    expect(matchRemotePattern(pattern, new URL("https://example.com/images/photoXpng"))).toBe(false);
+    expect(matchRemotePattern(pattern, new URL("https://example.com/images/photoXpng"))).toBe(
+      false,
+    );
   });
 
   it("handles multiple wildcards in pattern", () => {
@@ -238,8 +250,12 @@ describe("matchRemotePattern glob edge cases", () => {
       pathname: "/uploads/**",
       protocol: "https",
     };
-    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/uploads/a/b.png"))).toBe(true);
+    expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/uploads/a/b.png"))).toBe(
+      true,
+    );
     expect(matchRemotePattern(pattern, new URL("https://cdn.example.com/other/a.png"))).toBe(false);
-    expect(matchRemotePattern(pattern, new URL("http://cdn.example.com/uploads/a.png"))).toBe(false);
+    expect(matchRemotePattern(pattern, new URL("http://cdn.example.com/uploads/a.png"))).toBe(
+      false,
+    );
   });
 });

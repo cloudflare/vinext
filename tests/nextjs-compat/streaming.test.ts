@@ -44,10 +44,7 @@ describe("Next.js compat: streaming", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-rendering/rendering.test.ts
 
   it("streaming page returns 200 with content", async () => {
-    const { res, html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/streaming-test",
-    );
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/streaming-test");
     expect(res.status).toBe(200);
     expect(html).toContain("Streaming Test");
   });
@@ -55,20 +52,14 @@ describe("Next.js compat: streaming", () => {
   it("streamed content appears in final response", async () => {
     // Next.js: streaming SSR with Suspense boundaries
     // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-rendering/rendering.test.ts
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/streaming-test",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/streaming-test");
     expect(html).toContain("Streamed content loaded");
   });
 
   it("nested streaming page returns 200", async () => {
     // Next.js: streaming SSR with Suspense boundaries
     // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-rendering/rendering.test.ts
-    const { res, html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/streaming-test/nested",
-    );
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/streaming-test/nested");
     expect(res.status).toBe(200);
     expect(html).toContain("Nested Streaming Test");
   });
@@ -76,10 +67,7 @@ describe("Next.js compat: streaming", () => {
   it("nested streamed content resolves", async () => {
     // Next.js: streaming SSR with Suspense boundaries
     // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-rendering/rendering.test.ts
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/streaming-test/nested",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/streaming-test/nested");
     expect(html).toContain("Content A loaded");
     expect(html).toContain("Content B loaded");
   });
@@ -93,10 +81,7 @@ describe("Next.js compat: streaming", () => {
     // resolves quickly (as in SSR with fetchHtml reading the full response),
     // the final HTML contains the resolved page content rather than the
     // loading fallback. The key assertion is that the page renders successfully.
-    const { res, html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/streaming-test",
-    );
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/streaming-test");
     expect(res.status).toBe(200);
     expect(html).toContain("Streaming Test");
   });
@@ -106,10 +91,7 @@ describe("Next.js compat: streaming", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-rendering/rendering.test.ts
 
   it("streaming response is valid HTML", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/streaming-test",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/streaming-test");
     expect(html).toMatch(/^<!DOCTYPE html>/i);
     expect(html).toContain("</html>");
   });

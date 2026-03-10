@@ -59,10 +59,12 @@ describe("sitemapToXml", () => {
   });
 
   it("generates image entries", () => {
-    const xml = sitemapToXml([{
-      url: "https://example.com",
-      images: ["https://example.com/photo1.jpg", "https://example.com/photo2.jpg"],
-    }]);
+    const xml = sitemapToXml([
+      {
+        url: "https://example.com",
+        images: ["https://example.com/photo1.jpg", "https://example.com/photo2.jpg"],
+      },
+    ]);
     expect(xml).toContain("<image:image>");
     expect(xml).toContain("<image:loc>https://example.com/photo1.jpg</image:loc>");
     expect(xml).toContain("<image:loc>https://example.com/photo2.jpg</image:loc>");
@@ -70,13 +72,15 @@ describe("sitemapToXml", () => {
   });
 
   it("generates all fields together", () => {
-    const xml = sitemapToXml([{
-      url: "https://example.com/blog",
-      lastModified: "2024-06-01",
-      changeFrequency: "daily",
-      priority: 0.9,
-      images: ["https://example.com/hero.jpg"],
-    }]);
+    const xml = sitemapToXml([
+      {
+        url: "https://example.com/blog",
+        lastModified: "2024-06-01",
+        changeFrequency: "daily",
+        priority: 0.9,
+        images: ["https://example.com/hero.jpg"],
+      },
+    ]);
     expect(xml).toContain("<loc>https://example.com/blog</loc>");
     expect(xml).toContain("<lastmod>2024-06-01</lastmod>");
     expect(xml).toContain("<changefreq>daily</changefreq>");
@@ -276,7 +280,7 @@ describe("scanMetadataFiles", () => {
   it("discovers sitemap.xml at root", () => {
     createFile("sitemap.xml");
     const routes = scanMetadataFiles(tmpDir);
-    const sitemap = routes.find(r => r.type === "sitemap");
+    const sitemap = routes.find((r) => r.type === "sitemap");
     expect(sitemap).toBeDefined();
     expect(sitemap!.servedUrl).toBe("/sitemap.xml");
     expect(sitemap!.isDynamic).toBe(false);
@@ -286,7 +290,7 @@ describe("scanMetadataFiles", () => {
   it("discovers dynamic sitemap.ts at root", () => {
     createFile("sitemap.ts");
     const routes = scanMetadataFiles(tmpDir);
-    const sitemap = routes.find(r => r.type === "sitemap");
+    const sitemap = routes.find((r) => r.type === "sitemap");
     expect(sitemap).toBeDefined();
     expect(sitemap!.isDynamic).toBe(true);
     expect(sitemap!.servedUrl).toBe("/sitemap.xml");
@@ -295,7 +299,7 @@ describe("scanMetadataFiles", () => {
   it("discovers robots.txt at root", () => {
     createFile("robots.txt");
     const routes = scanMetadataFiles(tmpDir);
-    const robots = routes.find(r => r.type === "robots");
+    const robots = routes.find((r) => r.type === "robots");
     expect(robots).toBeDefined();
     expect(robots!.servedUrl).toBe("/robots.txt");
     expect(robots!.contentType).toBe("text/plain");
@@ -304,7 +308,7 @@ describe("scanMetadataFiles", () => {
   it("discovers manifest.webmanifest at root", () => {
     createFile("manifest.webmanifest");
     const routes = scanMetadataFiles(tmpDir);
-    const manifest = routes.find(r => r.type === "manifest");
+    const manifest = routes.find((r) => r.type === "manifest");
     expect(manifest).toBeDefined();
     expect(manifest!.servedUrl).toBe("/manifest.webmanifest");
   });
@@ -312,7 +316,7 @@ describe("scanMetadataFiles", () => {
   it("discovers favicon.ico at root", () => {
     createFile("favicon.ico");
     const routes = scanMetadataFiles(tmpDir);
-    const favicon = routes.find(r => r.type === "favicon");
+    const favicon = routes.find((r) => r.type === "favicon");
     expect(favicon).toBeDefined();
     expect(favicon!.servedUrl).toBe("/favicon.ico");
     expect(favicon!.contentType).toBe("image/x-icon");
@@ -321,7 +325,7 @@ describe("scanMetadataFiles", () => {
   it("discovers dynamic icon.tsx at root", () => {
     createFile("icon.tsx");
     const routes = scanMetadataFiles(tmpDir);
-    const icon = routes.find(r => r.type === "icon");
+    const icon = routes.find((r) => r.type === "icon");
     expect(icon).toBeDefined();
     expect(icon!.isDynamic).toBe(true);
     expect(icon!.servedUrl).toBe("/icon");
@@ -330,7 +334,7 @@ describe("scanMetadataFiles", () => {
   it("discovers static icon.png at root", () => {
     createFile("icon.png");
     const routes = scanMetadataFiles(tmpDir);
-    const icon = routes.find(r => r.type === "icon");
+    const icon = routes.find((r) => r.type === "icon");
     expect(icon).toBeDefined();
     expect(icon!.isDynamic).toBe(false);
     expect(icon!.contentType).toBe("image/png");
@@ -339,7 +343,7 @@ describe("scanMetadataFiles", () => {
   it("discovers opengraph-image.tsx", () => {
     createFile("opengraph-image.tsx");
     const routes = scanMetadataFiles(tmpDir);
-    const og = routes.find(r => r.type === "opengraph-image");
+    const og = routes.find((r) => r.type === "opengraph-image");
     expect(og).toBeDefined();
     expect(og!.servedUrl).toBe("/opengraph-image");
   });
@@ -347,7 +351,7 @@ describe("scanMetadataFiles", () => {
   it("discovers twitter-image.jpg", () => {
     createFile("twitter-image.jpg");
     const routes = scanMetadataFiles(tmpDir);
-    const twitter = routes.find(r => r.type === "twitter-image");
+    const twitter = routes.find((r) => r.type === "twitter-image");
     expect(twitter).toBeDefined();
     expect(twitter!.contentType).toBe("image/jpeg");
   });
@@ -355,7 +359,7 @@ describe("scanMetadataFiles", () => {
   it("discovers apple-icon.png", () => {
     createFile("apple-icon.png");
     const routes = scanMetadataFiles(tmpDir);
-    const apple = routes.find(r => r.type === "apple-icon");
+    const apple = routes.find((r) => r.type === "apple-icon");
     expect(apple).toBeDefined();
     expect(apple!.servedUrl).toBe("/apple-icon");
   });
@@ -364,11 +368,11 @@ describe("scanMetadataFiles", () => {
     createFile("blog/sitemap.xml");
     createFile("blog/icon.png");
     const routes = scanMetadataFiles(tmpDir);
-    const blogSitemap = routes.find(r => r.type === "sitemap" && r.servedUrl.includes("blog"));
+    const blogSitemap = routes.find((r) => r.type === "sitemap" && r.servedUrl.includes("blog"));
     expect(blogSitemap).toBeDefined();
     expect(blogSitemap!.servedUrl).toBe("/blog/sitemap.xml");
 
-    const blogIcon = routes.find(r => r.type === "icon" && r.servedUrl.includes("blog"));
+    const blogIcon = routes.find((r) => r.type === "icon" && r.servedUrl.includes("blog"));
     expect(blogIcon).toBeDefined();
     expect(blogIcon!.servedUrl).toBe("/blog/icon");
   });
@@ -379,15 +383,15 @@ describe("scanMetadataFiles", () => {
     createFile("blog/favicon.ico");
     const routes = scanMetadataFiles(tmpDir);
     // robots, manifest, favicon should NOT be found in subdirectories
-    expect(routes.find(r => r.type === "robots")).toBeUndefined();
-    expect(routes.find(r => r.type === "manifest")).toBeUndefined();
-    expect(routes.find(r => r.type === "favicon")).toBeUndefined();
+    expect(routes.find((r) => r.type === "robots")).toBeUndefined();
+    expect(routes.find((r) => r.type === "manifest")).toBeUndefined();
+    expect(routes.find((r) => r.type === "favicon")).toBeUndefined();
   });
 
   it("route groups are transparent in URLs", () => {
     createFile("(marketing)/icon.png");
     const routes = scanMetadataFiles(tmpDir);
-    const icon = routes.find(r => r.type === "icon");
+    const icon = routes.find((r) => r.type === "icon");
     expect(icon).toBeDefined();
     // (marketing) should NOT appear in URL
     expect(icon!.servedUrl).toBe("/icon");
@@ -398,7 +402,7 @@ describe("scanMetadataFiles", () => {
     createFile("sitemap.xml");
     createFile("sitemap.ts");
     const routes = scanMetadataFiles(tmpDir);
-    const sitemaps = routes.filter(r => r.type === "sitemap");
+    const sitemaps = routes.filter((r) => r.type === "sitemap");
     // Only one should remain (dynamic wins)
     expect(sitemaps).toHaveLength(1);
     expect(sitemaps[0].isDynamic).toBe(true);
@@ -412,11 +416,11 @@ describe("scanMetadataFiles", () => {
     createFile("opengraph-image.tsx");
     const routes = scanMetadataFiles(tmpDir);
     expect(routes.length).toBeGreaterThanOrEqual(5);
-    expect(routes.find(r => r.type === "sitemap")).toBeDefined();
-    expect(routes.find(r => r.type === "robots")).toBeDefined();
-    expect(routes.find(r => r.type === "favicon")).toBeDefined();
-    expect(routes.find(r => r.type === "icon")).toBeDefined();
-    expect(routes.find(r => r.type === "opengraph-image")).toBeDefined();
+    expect(routes.find((r) => r.type === "sitemap")).toBeDefined();
+    expect(routes.find((r) => r.type === "robots")).toBeDefined();
+    expect(routes.find((r) => r.type === "favicon")).toBeDefined();
+    expect(routes.find((r) => r.type === "icon")).toBeDefined();
+    expect(routes.find((r) => r.type === "opengraph-image")).toBeDefined();
   });
 });
 
@@ -426,8 +430,14 @@ describe("METADATA_FILE_MAP", () => {
   it("has all 8 metadata types", () => {
     expect(Object.keys(METADATA_FILE_MAP)).toEqual(
       expect.arrayContaining([
-        "sitemap", "robots", "manifest", "favicon",
-        "icon", "opengraph-image", "twitter-image", "apple-icon",
+        "sitemap",
+        "robots",
+        "manifest",
+        "favicon",
+        "icon",
+        "opengraph-image",
+        "twitter-image",
+        "apple-icon",
       ]),
     );
   });

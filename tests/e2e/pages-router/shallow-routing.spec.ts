@@ -7,9 +7,7 @@ const BASE = "http://localhost:4173";
  */
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
@@ -143,6 +141,8 @@ test.describe("Shallow routing (Pages Router)", () => {
     await page.click('[data-testid="shallow-push"]');
 
     // asPath should update to include query
-    await expect(page.locator('[data-testid="router-asPath"]')).toHaveText("/shallow-test?tab=settings");
+    await expect(page.locator('[data-testid="router-asPath"]')).toHaveText(
+      "/shallow-test?tab=settings",
+    );
   });
 });

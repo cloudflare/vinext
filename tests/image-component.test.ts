@@ -435,7 +435,8 @@ describe("blurDataURL CSS injection prevention", () => {
       width: 400,
       height: 300,
       placeholder: "blur",
-      blurDataURL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      blurDataURL:
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
     });
 
     expect((props.style as any)?.backgroundImage).toContain("data:image/png;base64,");

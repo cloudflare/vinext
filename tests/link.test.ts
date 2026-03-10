@@ -9,7 +9,7 @@
  * These tests verify SSR output matches Next.js expectations and that
  * pure helper functions work correctly.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 
@@ -45,11 +45,7 @@ describe("Link rendering", () => {
 
   it("renders with object href", () => {
     const html = ReactDOMServer.renderToString(
-      React.createElement(
-        Link,
-        { href: { pathname: "/search", query: { q: "test" } } },
-        "Search",
-      ),
+      React.createElement(Link, { href: { pathname: "/search", query: { q: "test" } } }, "Search"),
     );
     // resolveHref({ pathname: "/search", query: { q: "test" } }) -> "/search?q=test"
     expect(html).toContain('href="/search?q=test"');
@@ -57,11 +53,7 @@ describe("Link rendering", () => {
 
   it("renders object href with only query (defaults to /)", () => {
     const html = ReactDOMServer.renderToString(
-      React.createElement(
-        Link,
-        { href: { query: { tab: "settings" } } },
-        "Settings",
-      ),
+      React.createElement(Link, { href: { query: { tab: "settings" } } }, "Settings"),
     );
     expect(html).toContain('href="/?tab=settings"');
   });
@@ -69,11 +61,7 @@ describe("Link rendering", () => {
   it("renders with as prop overriding href", () => {
     // Legacy pattern: href is the route pattern, as is the actual URL
     const html = ReactDOMServer.renderToString(
-      React.createElement(
-        Link,
-        { href: "/user/[id]", as: "/user/42" },
-        "User 42",
-      ),
+      React.createElement(Link, { href: "/user/[id]", as: "/user/42" }, "User 42"),
     );
     expect(html).toContain('href="/user/42"');
   });
@@ -90,7 +78,7 @@ describe("Link rendering", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Link, { href: "/test", locale: "fr" } as any, "Test"),
     );
-    expect(html).not.toContain('locale=');
+    expect(html).not.toContain("locale=");
   });
 
   it("passes through standard anchor attributes", () => {
@@ -137,9 +125,7 @@ describe("useLinkStatus", () => {
 
 describe("Link resolveHref", () => {
   it("string href passes through unchanged", () => {
-    const html = ReactDOMServer.renderToString(
-      React.createElement(Link, { href: "/about" }, "x"),
-    );
+    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/about" }, "x"));
     expect(html).toContain('href="/about"');
   });
 
@@ -157,11 +143,7 @@ describe("Link resolveHref", () => {
 
   it("object href with only pathname", () => {
     const html = ReactDOMServer.renderToString(
-      React.createElement(
-        Link,
-        { href: { pathname: "/dashboard" } },
-        "x",
-      ),
+      React.createElement(Link, { href: { pathname: "/dashboard" } }, "x"),
     );
     expect(html).toContain('href="/dashboard"');
   });
@@ -218,9 +200,7 @@ describe("Link locale handling", () => {
   });
 
   it("locale=undefined keeps href as-is", () => {
-    const html = ReactDOMServer.renderToString(
-      React.createElement(Link, { href: "/about" }, "x"),
-    );
+    const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/about" }, "x"));
     expect(html).toContain('href="/about"');
   });
 
@@ -239,5 +219,101 @@ describe("Link locale handling", () => {
     );
     // Should not become /fr/fr/about
     expect(html).toContain('href="/fr/about"');
+  });
+});
+
+// ─── toSameOriginPath ────────────────────────────────────────────────────
+// Tests for the shared same-origin URL normalization utility.
+// Related to: https://github.com/cloudflare/vinext/issues/335
+
+import { toSameOriginPath } from "../packages/vinext/src/shims/url-utils.js";
+
+describe("toSameOriginPath", () => {
+  it("returns null on the server (no window)", () => {
+    // In vitest (Node.js), typeof window === 'undefined' by default
+    // unless jsdom is configured. Our tests run in node env.
+    expect(toSameOriginPath("https://example.com/path")).toBe(null);
+  });
+
+  it("returns null for invalid URLs", () => {
+    expect(toSameOriginPath("not a url")).toBe(null);
+  });
+
+  describe("with window (client-side)", () => {
+    const originalWindow = globalThis.window;
+
+    beforeEach(() => {
+      // Simulate a browser window with a known origin
+      (globalThis as any).window = {
+        location: {
+          origin: "http://localhost:3000",
+          href: "http://localhost:3000/current",
+        },
+      };
+    });
+
+    afterEach(() => {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    });
+
+    it("returns pathname for same-origin http:// URL", () => {
+      expect(toSameOriginPath("http://localhost:3000/about")).toBe("/about");
+    });
+
+    it("returns pathname + search + hash for same-origin URL", () => {
+      expect(toSameOriginPath("http://localhost:3000/search?q=test#results")).toBe(
+        "/search?q=test#results",
+      );
+    });
+
+    it("returns null for cross-origin URL", () => {
+      expect(toSameOriginPath("https://example.com/path")).toBe(null);
+    });
+
+    it("returns pathname for same-origin protocol-relative URL", () => {
+      // //localhost:3000/about resolves to the page's protocol + localhost:3000
+      expect(toSameOriginPath("//localhost:3000/about")).toBe("/about");
+    });
+
+    it("returns null for cross-origin protocol-relative URL", () => {
+      expect(toSameOriginPath("//other.com/path")).toBe(null);
+    });
+
+    it("preserves the root path /", () => {
+      expect(toSameOriginPath("http://localhost:3000/")).toBe("/");
+    });
+
+    it("returns null for different port (different origin)", () => {
+      expect(toSameOriginPath("http://localhost:5173/about")).toBe(null);
+    });
+
+    it("returns null for same host but different scheme (different origin)", () => {
+      expect(toSameOriginPath("https://localhost:3000/about")).toBe(null);
+    });
+  });
+});
+
+// ─── Link with same-origin absolute URL (SSR rendering) ─────────────────
+// Verifies that <Link href="http://..."> renders the absolute URL as the
+// href attribute (the normalization happens at click time, not render time).
+
+describe("Link with absolute URL", () => {
+  it("renders absolute http:// URL as href", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "http://example.com/path" }, "External"),
+    );
+    // The <a> tag should have the full absolute URL as href
+    expect(html).toContain('href="http://example.com/path"');
+  });
+
+  it("renders absolute https:// URL as href", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "https://example.com/path" }, "Secure External"),
+    );
+    expect(html).toContain('href="https://example.com/path"');
   });
 });

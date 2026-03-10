@@ -10,9 +10,14 @@ export default function Page() {
       <p id="param-q">{searchParams.get("q") ?? "N/A"}</p>
       <p id="param-page">{searchParams.get("page") ?? "N/A"}</p>
       <p id="search-string">{searchParams.toString()}</p>
-      <button id="push-search" onClick={() => {
-        window.history.pushState(null, "", "/nextjs-compat/hooks-search?q=updated&page=2");
-      }}>Update Search</button>
+      <button
+        id="push-search"
+        onClick={() => {
+          window.history.pushState(null, "", "/nextjs-compat/hooks-search?q=updated&page=2");
+        }}
+      >
+        Update Search
+      </button>
     </div>
   );
 }

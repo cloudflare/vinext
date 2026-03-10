@@ -29,25 +29,19 @@ jobs:
   publish:
     name: Publish
     needs: ci
+    if: github.repository_owner == 'cloudflare'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # full history for changelog generation
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node-pnpm
         with:
-          node-version: 24
           registry-url: https://registry.npmjs.org
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
 
       - name: Build
         run: pnpm run build
-        working-directory: packages/vinext
 
       - name: Bump version
         id: version
@@ -89,11 +83,12 @@ jobs:
       - name: Get changes since last version
         run: |
           PREV_TAG="v${{ steps.version.outputs.previous }}"
+          FORMAT="%h %s (%aN)"
           if git rev-parse "$PREV_TAG" >/dev/null 2>&1; then
-            git log "$PREV_TAG"..HEAD --oneline --no-merges > /tmp/commits.txt
+            git log "$PREV_TAG"..HEAD --format="$FORMAT" --no-merges > /tmp/commits.txt
           else
             # No previous tag found, grab recent commits
-            git log --oneline --no-merges -20 > /tmp/commits.txt
+            git log --format="$FORMAT" --no-merges -30 > /tmp/commits.txt
           fi
 
       - name: Generate release summary
@@ -113,12 +108,12 @@ jobs:
             -H "Content-Type: application/json" \
             -H "cf-aig-authorization: Bearer ${CF_API_TOKEN}" \
             -H "anthropic-version: 2023-06-01" \
-            -d "$(jq -n --arg commits "$COMMITS" '{
+            -d "$(jq -n --arg commits "$COMMITS" --arg version "${{ steps.version.outputs.version }}" '{
               model: "claude-sonnet-4-20250514",
-              max_tokens: 300,
+              max_tokens: 1024,
               messages: [{
                 role: "user",
-                content: ("Here are the commits in a new release of vinext (a Vite plugin that reimplements Next.js for Cloudflare Workers):\n\n" + $commits + "\n\nWrite a 1-3 bullet point TLDR of what changed. Be super concise — focus on what matters to users. No preamble, just the bullet points.")
+                content: ("You are writing GitHub release notes for vinext v" + $version + " — a Vite plugin that reimplements the Next.js API surface for Cloudflare Workers.\n\nHere are the commits since the last release (format: hash subject (author)):\n\n" + $commits + "\n\nWrite release notes in standard GitHub release format. Use these guidelines:\n- Group changes under markdown headings: ## What'\''s Changed, then subheadings like ### New Features, ### Bug Fixes, ### Performance, ### Internal / Chores — only include a subheading if there are relevant commits for it\n- Under each subheading, write bullet points. Each bullet should describe the change in plain English from a user'\''s perspective — not just repeat the commit message verbatim\n- Credit contributors by appending (author name) at the end of each bullet using the author from the commit log; deduplicate if the same person appears many times by listing them once in a ## Contributors section at the end\n- Omit noise like typo fixes, dependency bumps, and CI-only changes unless they are meaningful to users\n- No preamble or closing remarks — just the release notes")
               }]
             }')") || true
 
@@ -146,6 +141,19 @@ jobs:
             echo "$SUMMARY"
             echo "EOFMARKER"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          SUMMARY: ${{ steps.summary.outputs.text }}
+        run: |
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes-file - \
+            --draft \
+            --repo "${{ github.repository }}" <<< "${SUMMARY}"
 
       - name: Notify Google Chat
         if: success()

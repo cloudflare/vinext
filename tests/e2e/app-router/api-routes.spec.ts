@@ -151,9 +151,7 @@ test.describe("Route Handler HTTP Methods (OpenNext compat)", () => {
     expect(data.message).toBe("vinext route handler");
   });
 
-  test("POST with text body returns status-based response", async ({
-    request,
-  }) => {
+  test("POST with text body returns status-based response", async ({ request }) => {
     // Ref: opennextjs-cloudflare methods.test.ts "POST"
     const res = await request.post(`${BASE}/api/methods`, {
       headers: { "Content-Type": "text/plain" },
@@ -204,9 +202,7 @@ test.describe("Route Handler HTTP Methods (OpenNext compat)", () => {
     expect(res.status()).toBe(204);
   });
 
-  test("HEAD returns 200 with custom headers and empty body", async ({
-    request,
-  }) => {
+  test("HEAD returns 200 with custom headers and empty body", async ({ request }) => {
     // Ref: opennextjs-cloudflare methods.test.ts "HEAD"
     const res = await request.head(`${BASE}/api/methods`);
     expect(res.status()).toBe(200);
@@ -247,9 +243,7 @@ test.describe("Route Handler HTTP Methods (OpenNext compat)", () => {
     expect(data.email).toBe("vinext@vinext.dev");
   });
 
-  test("query parameters should work in route handlers", async ({
-    request,
-  }) => {
+  test("query parameters should work in route handlers", async ({ request }) => {
     // Ref: opennextjs-cloudflare methods.test.ts "query parameters should work in route handlers"
     const res = await request.get(`${BASE}/api/methods/query?query=vinext+is+awesome`);
     expect(res.status()).toBe(200);
@@ -266,38 +260,33 @@ test.describe("Route Handler HTTP Methods (OpenNext compat)", () => {
  *
  * In Next.js, a GET-only route handler with `export const revalidate = N`
  * receives Cache-Control: s-maxage=N, stale-while-revalidate.
- * vinext does not read `revalidate` from route handler modules.
  */
 test.describe("Route Handler Cache Headers (OpenNext compat)", () => {
   // Ref: opennextjs-cloudflare methods.test.ts — static GET cache headers
-  // vinext does not apply Cache-Control to route handler responses.
-  // The dev server only reads `revalidate` from page modules, not route handlers.
-  test.fixme(
-    "static GET route handler has s-maxage Cache-Control",
-    async ({ request }) => {
-      const res = await request.get(`${BASE}/api/static-data`);
-      expect(res.status()).toBe(200);
-      const cacheControl = res.headers()["cache-control"];
-      expect(cacheControl).toContain("s-maxage=1");
-      expect(cacheControl).toContain("stale-while-revalidate");
-    },
-  );
+  test("static GET route handler has s-maxage Cache-Control", async ({ request }) => {
+    const res = await request.get(`${BASE}/api/static-data`);
+    expect(res.status()).toBe(200);
+    const cacheControl = res.headers()["cache-control"];
+    expect(cacheControl).toContain("s-maxage=1");
+    expect(cacheControl).toContain("stale-while-revalidate");
+  });
 
   // Ref: opennextjs-cloudflare methods.test.ts — revalidation timing
   // Fixture uses revalidate=1 so the sleep can be short.
-  test.fixme(
-    "static GET route handler serves fresh data after revalidation period",
-    async ({ request }) => {
-      const res1 = await request.get(`${BASE}/api/static-data`);
-      const data1 = await res1.json();
+  // This test verifies dev behavior where responses are not cached —
+  // each GET invocation runs the handler fresh, so timestamps always differ.
+  test("static GET route handler serves fresh data after revalidation period", async ({
+    request,
+  }) => {
+    const res1 = await request.get(`${BASE}/api/static-data`);
+    const data1 = await res1.json();
 
-      // Wait just past the 1s revalidation window
-      await new Promise((r) => setTimeout(r, 1100));
+    // Wait just past the 1s revalidation window
+    await new Promise((r) => setTimeout(r, 1100));
 
-      const res2 = await request.get(`${BASE}/api/static-data`);
-      const data2 = await res2.json();
+    const res2 = await request.get(`${BASE}/api/static-data`);
+    const data2 = await res2.json();
 
-      expect(data2.timestamp).not.toBe(data1.timestamp);
-    },
-  );
+    expect(data2.timestamp).not.toBe(data1.timestamp);
+  });
 });

@@ -9,23 +9,18 @@ async function getFailedJobs() {
 
   if (!token || !repository || !runId) return [];
 
-  const res = await fetch(
-    `https://api.github.com/repos/${repository}/actions/runs/${runId}/jobs`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: "application/vnd.github+json",
-      },
-      signal: AbortSignal.timeout(15_000),
-    }
-  );
+  const res = await fetch(`https://api.github.com/repos/${repository}/actions/runs/${runId}/jobs`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/vnd.github+json",
+    },
+    signal: AbortSignal.timeout(15_000),
+  });
 
   if (!res.ok) return [];
 
   const { jobs } = await res.json();
-  return jobs
-    .filter((j) => j.conclusion === "failure")
-    .map((j) => j.name);
+  return jobs.filter((j) => j.conclusion === "failure").map((j) => j.name);
 }
 
 async function sendEmail() {

@@ -33,6 +33,7 @@ async function startFixture(
     cwd: root,
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env },
+    detached: process.platform !== "win32",
   });
 
   // Wait for the server to be ready
@@ -59,9 +60,7 @@ async function startFixture(
     proc.on("exit", (code) => {
       if (code !== null && code !== 0) {
         clearTimeout(timeoutId);
-        reject(
-          new Error(`Fixture "${name}" exited with code ${code}: ${output}`),
-        );
+        reject(new Error(`Fixture "${name}" exited with code ${code}: ${output}`));
       }
     });
   });
@@ -81,8 +80,32 @@ async function startFixture(
 }
 
 function killProcess(proc: ChildProcess | null) {
-  if (proc && !proc.killed) {
-    proc.kill("SIGTERM");
+  if (!proc || proc.killed) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      return;
+    }
+    return;
+  }
+
+  const pid = proc.pid;
+  if (pid == null) {
+    return;
+  }
+
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // ignore
+    }
   }
 }
 
@@ -203,6 +226,38 @@ describe("nuqs", () => {
   });
 });
 
+// ─── next-intl ───────────────────────────────────────────────────────────────
+describe("next-intl", () => {
+  let proc: ChildProcess | null = null;
+  let fetchPage: (path: string) => Promise<{ html: string; status: number }>;
+
+  beforeAll(async () => {
+    const fixture = await startFixture("next-intl", 4403);
+    proc = fixture.process;
+    fetchPage = fixture.fetchPage;
+  }, 30000);
+
+  afterAll(() => killProcess(proc));
+
+  it("renders English SSR content", async () => {
+    const { html, status } = await fetchPage("/en");
+    expect(status).toBe(200);
+    expect(html).toContain('<html lang="en"');
+    expect(html).toContain('data-testid="title"');
+    expect(html).toContain("Hello World");
+    expect(html).toContain("This page uses next-intl for internationalization.");
+  });
+
+  it("renders German SSR content", async () => {
+    const { html, status } = await fetchPage("/de");
+    expect(status).toBe(200);
+    expect(html).toContain('<html lang="de"');
+    expect(html).toContain('data-testid="title"');
+    expect(html).toContain("Hallo Welt");
+    expect(html).toContain("Diese Seite verwendet next-intl zur Internationalisierung.");
+  });
+});
+
 // ─── better-auth ──────────────────────────────────────────────────────────────
 describe("better-auth", () => {
   let proc: ChildProcess | null = null;
@@ -225,8 +280,12 @@ describe("better-auth", () => {
     return { res, cookieHeader: toCookieHeader(res.headers.getSetCookie()) };
   }
 
+  function nextEmail(prefix: string) {
+    return `${prefix}-${Math.random().toString(36).slice(2, 10)}@example.com`;
+  }
+
   beforeAll(async () => {
-    const fixture = await startFixture("better-auth", 4403);
+    const fixture = await startFixture("better-auth", 4404);
     proc = fixture.process;
     baseUrl = fixture.baseUrl;
     fetchPage = fixture.fetchPage;
@@ -257,28 +316,26 @@ describe("better-auth", () => {
   });
 
   it("sign-up flow creates user and returns session", async () => {
-    const { res } = await signUpUser(
-      "signup-test@example.com",
-      "password123456",
-      "Signup Test",
-    );
+    const email = nextEmail("signup-test");
+    const { res } = await signUpUser(email, "password123456", "Signup Test");
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data.user).toBeDefined();
-    expect(data.user.email).toBe("signup-test@example.com");
+    expect(data.user.email).toBe(email);
     expect(data.user.name).toBe("Signup Test");
   });
 
   it("session is accessible after sign-in with cookie", async () => {
     // Create a user first (self-contained — no dependency on other tests)
-    await signUpUser("signin-test@example.com", "password123456", "Signin Test");
+    const email = nextEmail("signin-test");
+    await signUpUser(email, "password123456", "Signin Test");
 
     // Sign in to get a session cookie
     const signinRes = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        email: "signin-test@example.com",
+        email,
         password: "password123456",
       }),
       signal: AbortSignal.timeout(10000),
@@ -294,18 +351,19 @@ describe("better-auth", () => {
     });
     expect(sessionRes.status).toBe(200);
     const session = await sessionRes.json();
-    expect(session.user.email).toBe("signin-test@example.com");
+    expect(session.user.email).toBe(email);
   });
 
   it("server component can access session via headers()", async () => {
     // Create and sign in a user (self-contained)
-    await signUpUser("protected-test@example.com", "password123456", "Protected Test");
+    const email = nextEmail("protected-test");
+    await signUpUser(email, "password123456", "Protected Test");
 
     const signinRes = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        email: "protected-test@example.com",
+        email,
         password: "password123456",
       }),
       signal: AbortSignal.timeout(10000),
@@ -321,6 +379,84 @@ describe("better-auth", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('data-testid="protected-heading"');
-    expect(html).toContain("Logged in as protected-test@example.com");
+    expect(html).toContain(`Logged in as ${email}`);
+  });
+});
+
+// ─── shadcn (radix-ui) ───────────────────────────────────────────────────────
+describe("shadcn", () => {
+  let proc: ChildProcess | null = null;
+  let fetchPage: (path: string) => Promise<{ html: string; status: number }>;
+
+  beforeAll(async () => {
+    const fixture = await startFixture("shadcn", 4405);
+    proc = fixture.process;
+    fetchPage = fixture.fetchPage;
+  }, 30000);
+
+  afterAll(() => killProcess(proc));
+
+  it("renders SSR content", async () => {
+    const { html, status } = await fetchPage("/");
+    expect(status).toBe(200);
+    expect(html).toContain("shadcn test");
+    expect(html).toContain('data-testid="ssr-content"');
+    expect(html).toContain("Server-rendered content");
+  });
+
+  it("renders Button component with variants", async () => {
+    const { html } = await fetchPage("/");
+    expect(html).toContain('data-testid="default-button"');
+    expect(html).toContain('data-testid="destructive-button"');
+    expect(html).toContain('data-testid="outline-button"');
+    expect(html).toContain('data-testid="secondary-button"');
+    expect(html).toContain('data-testid="ghost-button"');
+    expect(html).toContain('data-testid="link-button"');
+  });
+
+  it("renders Button as server component with @radix-ui/react-slot", async () => {
+    const { html } = await fetchPage("/");
+    // Button without "use client" renders directly as a <button> element
+    // (not a client reference), proving @radix-ui/react-slot works in RSC
+    expect(html).toContain("<button");
+    expect(html).toContain("Default Button");
+  });
+
+  it("renders Dialog trigger from @radix-ui/react-dialog", async () => {
+    const { html } = await fetchPage("/");
+    expect(html).toContain('data-testid="dialog-trigger"');
+    expect(html).toContain('aria-haspopup="dialog"');
+    expect(html).toContain("Open Dialog");
+  });
+
+  it("renders DropdownMenu trigger from @radix-ui/react-dropdown-menu", async () => {
+    const { html } = await fetchPage("/");
+    expect(html).toContain('data-testid="dropdown-trigger"');
+    expect(html).toContain('aria-haspopup="menu"');
+    expect(html).toContain("Open Menu");
+  });
+});
+
+// ─── validator ──────────────────────────────────────────────────────────────
+
+describe("validator", () => {
+  let proc: ChildProcess | null = null;
+  let fetchPage: (pathname: string) => Promise<{ html: string; status: number }>;
+
+  beforeAll(async () => {
+    const fixture = await startFixture("validator", 4405);
+    proc = fixture.process;
+    fetchPage = fixture.fetchPage;
+  }, 30000);
+
+  afterAll(() => killProcess(proc));
+
+  it("can import and use validator/es/lib/isEmail.js in SSR", async () => {
+    const { html, status } = await fetchPage("/");
+    expect(status).toBe(200);
+    expect(html).toContain("<h1>Validator Test</h1>");
+    // React adds HTML comments for hydration markers, so check without whitespace sensitivity
+    expect(html).toMatch(/Email:.*test@example\.com/);
+    expect(html).toMatch(/Valid:.*true/);
   });
 });

@@ -26,18 +26,13 @@ describe("Next.js compat: metadata-suspense", () => {
   });
 
   it("should render metadata in head when layout is wrapped with Suspense", async () => {
-    const { html } = await fetchHtml(
-      ctx.baseUrl,
-      "/nextjs-compat/metadata-suspense-test",
-    );
+    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/metadata-suspense-test");
 
     // Title should be present
     expect(html).toContain("<title>Suspense Metadata Title</title>");
 
     // Application name meta tag
-    expect(html).toMatch(
-      /<meta\s+name="application-name"\s+content="suspense-app"/,
-    );
+    expect(html).toMatch(/<meta\s+name="application-name"\s+content="suspense-app"/);
 
     // Description meta tag
     expect(html).toMatch(
@@ -45,33 +40,18 @@ describe("Next.js compat: metadata-suspense", () => {
     );
   });
 
-  // SKIP: Vinext emits duplicate <title> tags when a layout wraps children
-  // in <Suspense>. The metadata is injected once in the shell and again when
-  // the Suspense boundary resolves, producing two <title> elements.
-  //
-  // ROOT CAUSE: Metadata is rendered as part of the page element tree, which
-  // gets wrapped by Suspense. When SSR streams the shell (with fallback) and
-  // then the resolved content, both include the metadata head tags.
-  //
-  // TO FIX: `packages/vinext/src/server/app-dev-server.ts` — metadata should
-  // be hoisted above Suspense boundaries (rendered outside the Suspense wrapper
-  // in buildPageElement) or deduplicated during SSR HTML assembly.
-  //
-  // VERIFY: Remove skip, run this test. Should see exactly 1 <title> tag.
-  it.skip("should not produce duplicate title tags with Suspense layout", async () => {
-    const { html } = await fetchHtml(
-      ctx.baseUrl,
-      "/nextjs-compat/metadata-suspense-test",
-    );
+  // Regression test: the shared app-basic root layout used to hardcode
+  // <title>App Basic</title>, which made metadata routes appear to emit
+  // duplicate titles. Keep this assertion live so metadata fixtures rely on
+  // the Metadata API rather than manual <head> tags.
+  it("should not produce duplicate title tags with Suspense layout", async () => {
+    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/metadata-suspense-test");
     const titleMatches = html.match(/<title>/g);
     expect(titleMatches).toHaveLength(1);
   });
 
   it("should render page content inside Suspense boundary", async () => {
-    const { html } = await fetchHtml(
-      ctx.baseUrl,
-      "/nextjs-compat/metadata-suspense-test",
-    );
+    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/metadata-suspense-test");
 
     // Page content should be rendered (not loading fallback)
     expect(html).toContain("Suspense Metadata Page");

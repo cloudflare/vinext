@@ -8,9 +8,7 @@ export default function ServerOnlyPage() {
   return (
     <div>
       <h1 data-testid="server-only-heading">Server Only Page</h1>
-      <p data-testid="server-only-message">
-        This component successfully imported server-only
-      </p>
+      <p data-testid="server-only-message">This component successfully imported server-only</p>
     </div>
   );
 }

@@ -1,0 +1,14 @@
+{
+  "name": "test-validator",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "validator": "^13.15.26"
+  },
+  "devDependencies": {
+    "vinext": "workspace:*",
+    "vite": "^7.3.1"
+  }
+}

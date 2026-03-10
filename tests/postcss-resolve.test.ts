@@ -3,7 +3,7 @@ import path from "node:path";
 import os from "node:os";
 
 describe("resolvePostcssStringPlugins", () => {
-  let resolvePostcssStringPlugins: typeof import("../packages/vinext/src/index.js")["_resolvePostcssStringPlugins"];
+  let resolvePostcssStringPlugins: (typeof import("../packages/vinext/src/index.js"))["_resolvePostcssStringPlugins"];
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/index.js");
@@ -26,7 +26,9 @@ describe("resolvePostcssStringPlugins", () => {
     const pluginDir = path.join(dir, "node_modules", "mock-postcss-plugin");
     await fsp.mkdir(pluginDir, { recursive: true });
 
-    const pluginContent = opts?.mockPluginContent ?? `
+    const pluginContent =
+      opts?.mockPluginContent ??
+      `
 module.exports = function mockPlugin(opts) {
   return {
     postcssPlugin: "mock-postcss-plugin",

@@ -1,14 +1,21 @@
 {
   "name": "vinext-monorepo",
   "private": true,
-  "packageManager": "pnpm@10.30.0",
   "scripts": {
     "build": "pnpm --filter vinext run build",
     "test": "vitest run",
     "test:watch": "vitest",
+    "generate:google-fonts": "node scripts/generate-google-fonts.js",
     "typecheck": "tsgo --noEmit",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
     "lint": "oxlint --deny-warnings",
     "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@mdx-js/react": "^3.1.1",
+    "@mdx-js/rollup": "^3.1.1",
+    "@unpic/react": "^1.0.2"
   },
   "devDependencies": {
     "@playwright/test": "^1.58.2",
@@ -18,6 +25,8 @@
     "@typescript/native-preview": "^7.0.0-dev.20260213.1",
     "@vitejs/plugin-rsc": "^0.5.19",
     "image-size": "2.0.2",
+    "next": "^16.1.6",
+    "oxfmt": "^0.36.0",
     "oxlint": "^1.47.0",
     "playwright": "^1.52.0",
     "react": "^19.2.4",
@@ -26,14 +35,13 @@
     "vite": "^7.3.1",
     "vitest": "^3.2.1"
   },
-  "dependencies": {
-    "@mdx-js/react": "^3.1.1",
-    "@mdx-js/rollup": "^3.1.1",
-    "@unpic/react": "^1.0.2"
-  },
+  "packageManager": "pnpm@10.30.0",
   "pnpm": {
     "peerDependencyRules": {
-      "ignoreMissing": ["next", "webpack"]
+      "ignoreMissing": [
+        "next",
+        "webpack"
+      ]
     },
     "onlyBuiltDependencies": [
       "better-sqlite3",

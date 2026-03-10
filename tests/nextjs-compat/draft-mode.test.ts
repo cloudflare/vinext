@@ -42,9 +42,7 @@ describe("Next.js compat: draft-mode", () => {
   it("draftMode().enable() sets bypass cookie", async () => {
     const res = await fetch(`${baseUrl}/nextjs-compat/api/draft-enable`);
     const setCookies = res.headers.getSetCookie();
-    expect(
-      setCookies.some((c) => c.includes("__prerender_bypass")),
-    ).toBe(true);
+    expect(setCookies.some((c) => c.includes("__prerender_bypass"))).toBe(true);
   });
 
   // ── draftMode().disable() ───────────────────────────────────
@@ -53,9 +51,7 @@ describe("Next.js compat: draft-mode", () => {
   it("draftMode().disable() clears bypass cookie", async () => {
     const res = await fetch(`${baseUrl}/nextjs-compat/api/draft-disable`);
     const setCookies = res.headers.getSetCookie();
-    const bypassCookie = setCookies.find((c) =>
-      c.includes("__prerender_bypass"),
-    );
+    const bypassCookie = setCookies.find((c) => c.includes("__prerender_bypass"));
     expect(bypassCookie).toBeDefined();
     // Clearing should set Max-Age=0 or an expired date or empty value
     expect(bypassCookie).toMatch(
@@ -67,23 +63,16 @@ describe("Next.js compat: draft-mode", () => {
   // Next.js: isEnabled should reflect the presence of the bypass cookie
 
   it("draftMode().isEnabled returns false by default", async () => {
-    const { data } = await fetchJson(
-      baseUrl,
-      "/nextjs-compat/api/draft-status",
-    );
+    const { data } = await fetchJson(baseUrl, "/nextjs-compat/api/draft-status");
     expect(data).toEqual({ isEnabled: false });
   });
 
   it("draftMode().isEnabled returns false for arbitrary cookie values", async () => {
     // Arbitrary cookie values should NOT enable draft mode — only the
     // server-generated secret is valid (prevents predictable bypass).
-    const { data } = await fetchJson(
-      baseUrl,
-      "/nextjs-compat/api/draft-status",
-      {
-        headers: { Cookie: "__prerender_bypass=some-value" },
-      },
-    );
+    const { data } = await fetchJson(baseUrl, "/nextjs-compat/api/draft-status", {
+      headers: { Cookie: "__prerender_bypass=some-value" },
+    });
     expect(data).toEqual({ isEnabled: false });
   });
 
@@ -98,9 +87,7 @@ describe("Next.js compat: draft-mode", () => {
     const origEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = "production";
     try {
-      const ctx = headersContextFromRequest(
-        new Request("http://localhost/test"),
-      );
+      const ctx = headersContextFromRequest(new Request("http://localhost/test"));
       await runWithHeadersContext(ctx, async () => {
         const dm = await draftModeFn();
         dm.enable();
@@ -116,33 +103,47 @@ describe("Next.js compat: draft-mode", () => {
   it("draftMode().enable() cookie omits Secure flag in development", async () => {
     const res = await fetch(`${baseUrl}/nextjs-compat/api/draft-enable`);
     const setCookies = res.headers.getSetCookie();
-    const bypassCookie = setCookies.find((c) =>
-      c.includes("__prerender_bypass"),
-    );
+    const bypassCookie = setCookies.find((c) => c.includes("__prerender_bypass"));
     expect(bypassCookie).toBeDefined();
     // Dev server runs in development — should NOT have Secure flag
     expect(bypassCookie).not.toMatch(/;\s*Secure/i);
+  });
+
+  // ── draftMode() marks dynamic usage ──────────────────────────
+  // draftMode() reads from a request cookie, so it must opt out of
+  // static/ISR caching — same as headers() and cookies().
+
+  it("draftMode() marks dynamic usage so the render is uncacheable", async () => {
+    const {
+      draftMode: draftModeFn,
+      consumeDynamicUsage,
+      runWithHeadersContext,
+      headersContextFromRequest,
+    } = await import("../../packages/vinext/src/shims/headers.js");
+
+    const ctx = headersContextFromRequest(new Request("http://localhost/test"));
+    await runWithHeadersContext(ctx, async () => {
+      // Reset any prior dynamic usage
+      consumeDynamicUsage();
+
+      await draftModeFn();
+      expect(consumeDynamicUsage()).toBe(true);
+    });
   });
 
   it("draftMode().isEnabled returns true after enable() round-trip", async () => {
     // Enable draft mode and extract the Set-Cookie value
     const enableRes = await fetch(`${baseUrl}/nextjs-compat/api/draft-enable`);
     const setCookies = enableRes.headers.getSetCookie();
-    const bypassCookie = setCookies.find((c) =>
-      c.includes("__prerender_bypass"),
-    );
+    const bypassCookie = setCookies.find((c) => c.includes("__prerender_bypass"));
     expect(bypassCookie).toBeDefined();
     // Extract raw cookie (name=value portion before first ;)
     const rawCookie = bypassCookie!.split(";")[0];
 
     // Send the valid cookie back to check isEnabled
-    const { data } = await fetchJson(
-      baseUrl,
-      "/nextjs-compat/api/draft-status",
-      {
-        headers: { Cookie: rawCookie },
-      },
-    );
+    const { data } = await fetchJson(baseUrl, "/nextjs-compat/api/draft-status", {
+      headers: { Cookie: rawCookie },
+    });
     expect(data).toEqual({ isEnabled: true });
   });
 });

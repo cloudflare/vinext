@@ -93,10 +93,7 @@ describe("Next.js compat: next/dynamic", () => {
   // Uses dynamic(() => import('./client').then(mod => ({ default: mod.Button })))
 
   it("SSR: named export via dynamic() should render button content", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/dynamic/named-export",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/named-export");
     expect(html).toContain("this is a client button");
   });
 
@@ -106,18 +103,12 @@ describe("Next.js compat: next/dynamic", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic/dynamic.test.ts#L79-L96
 
   it("SSR: ssr:false page should contain static content", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/dynamic/ssr-false-only",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/ssr-false-only");
     expect(html).toContain("This is static content");
   });
 
   it("SSR: ssr:false page should NOT contain dynamic content", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/dynamic/ssr-false-only",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/dynamic/ssr-false-only");
     expect(html).not.toContain("next-dynamic dynamic no ssr on client");
   });
 

@@ -26,40 +26,28 @@ describe("Next.js compat: prefetch", () => {
   });
 
   it("should serve RSC payload at .rsc endpoint", async () => {
-    const res = await fetch(
-      `${ctx.baseUrl}/nextjs-compat/prefetch-test/target.rsc`,
-      {
-        headers: { Accept: "text/x-component" },
-      },
-    );
+    const res = await fetch(`${ctx.baseUrl}/nextjs-compat/prefetch-test/target.rsc`, {
+      headers: { Accept: "text/x-component" },
+    });
     expect(res.status).toBe(200);
     const contentType = res.headers.get("content-type");
     expect(contentType).toContain("text/x-component");
   });
 
   it("should render prefetch page with links", async () => {
-    const { html } = await fetchHtml(
-      ctx.baseUrl,
-      "/nextjs-compat/prefetch-test",
-    );
+    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/prefetch-test");
     expect(html).toContain("Prefetch Test Home");
     expect(html).toContain('id="prefetch-link"');
     expect(html).toContain('id="no-prefetch-link"');
   });
 
   it("should navigate to target page (prefetch=true)", async () => {
-    const { html } = await fetchHtml(
-      ctx.baseUrl,
-      "/nextjs-compat/prefetch-test/target",
-    );
+    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/prefetch-test/target");
     expect(html).toContain("Prefetch Target Page");
   });
 
   it("should navigate to target page (prefetch=false)", async () => {
-    const { html } = await fetchHtml(
-      ctx.baseUrl,
-      "/nextjs-compat/prefetch-test/no-prefetch",
-    );
+    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/prefetch-test/no-prefetch");
     expect(html).toContain("No Prefetch Target Page");
   });
 });

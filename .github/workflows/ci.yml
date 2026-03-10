@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -20,25 +20,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-node-pnpm
       - run: pnpm run lint
+
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-pnpm
+      - run: pnpm run fmt:check
 
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-node-pnpm
       - run: pnpm run typecheck
 
   test:
@@ -46,12 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-node-pnpm
       - name: Build plugin (needed by ecosystem fixtures)
         run: pnpm run build
       - run: pnpm test
@@ -65,67 +58,46 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-node-pnpm
       - name: Build plugin
         run: pnpm run build
+
       - name: Pack vinext for local install
         run: npm pack --pack-destination "${{ runner.temp }}"
         working-directory: packages/vinext
+
       - name: Scaffold a fresh create-next-app project
         run: npx create-next-app@latest "${{ runner.temp }}/cna-test" --yes
+
       - name: Install vinext from local tarball
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash
         run: npm install "${{ runner.temp }}"/vinext-*.tgz
+
       - name: Run vinext init
         working-directory: ${{ runner.temp }}/cna-test
         run: npx vinext init --skip-check
+
       - name: Start dev server and verify HTTP 200
         working-directory: ${{ runner.temp }}/cna-test
-        shell: node {0}
+        shell: bash
         run: |
-          const { spawn } = require("child_process");
-          const http = require("http");
+          npx vite dev --port 3099 &
+          SERVER_PID=$!
 
-          const isWin = process.platform === "win32";
-          const server = spawn("npx", ["vite", "dev", "--port", "3099"], {
-            cwd: process.cwd(),
-            stdio: "inherit",
-            shell: true,
-          });
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3099/ || true)
+            if [ "$STATUS" = "200" ]; then
+              echo "Server responded with HTTP 200 (attempt $i)"
+              kill "$SERVER_PID" 2>/dev/null || true
+              exit 0
+            fi
+            sleep 1
+          done
 
-          let attempts = 0;
-          const maxAttempts = 30;
-          const interval = setInterval(() => {
-            attempts++;
-            http.get("http://localhost:3099/", (res) => {
-              if (res.statusCode === 200) {
-                console.log(`Server responded with HTTP 200 (attempt ${attempts})`);
-                clearInterval(interval);
-                if (isWin) {
-                  spawn("taskkill", ["/pid", String(server.pid), "/T", "/F"], { stdio: "ignore" });
-                } else {
-                  server.kill("SIGTERM");
-                }
-                process.exit(0);
-              }
-            }).on("error", () => {});
-            if (attempts >= maxAttempts) {
-              console.error("Server did not respond with HTTP 200 within 30 seconds");
-              clearInterval(interval);
-              if (isWin) {
-                spawn("taskkill", ["/pid", String(server.pid), "/T", "/F"], { stdio: "ignore" });
-              } else {
-                server.kill("SIGTERM");
-              }
-              process.exit(1);
-            }
-          }, 1000);
+          echo "Server did not respond with HTTP 200 within 30 seconds"
+          kill "$SERVER_PID" 2>/dev/null || true
+          exit 1
 
   e2e:
     name: E2E (${{ matrix.project }})
@@ -139,21 +111,27 @@ jobs:
           - cloudflare-pages-router
           - pages-router-prod
           - cloudflare-workers
+          - cloudflare-dev
+          - cloudflare-pages-router-dev
     steps:
       - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-node-pnpm
       - name: Build plugin
         run: pnpm run build
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-${{ hashFiles('**/package.json') }}
+
       - run: pnpm exec playwright install chromium
+
       - run: pnpm exec playwright test
         env:
           CI: true
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
+
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

@@ -22,6 +22,14 @@ import {
 } from "../shims/cache.js";
 import { fnv1a64 } from "../utils/hash.js";
 
+/**
+ * Minimal ExecutionContext interface for Cloudflare Workers.
+ * Matches the Workers runtime type; also works with the stub used in tests.
+ */
+export interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
 export interface ISRCacheEntry {
   value: CacheHandlerValue;
   isStale: boolean;
@@ -72,10 +80,16 @@ const pendingRegenerations = new Map<string, Promise<void>>();
  *
  * If a regeneration for this key is already in progress, this is a no-op.
  * The renderFn should produce the new cache value and call isrSet internally.
+ *
+ * On Cloudflare Workers, pass the `ExecutionContext` as `ctx` so the
+ * regeneration promise is registered with `ctx.waitUntil()`. Without this,
+ * the Workers runtime terminates the isolate as soon as the Response is
+ * returned, silently killing any pending background work.
  */
 export function triggerBackgroundRegeneration(
   key: string,
   renderFn: () => Promise<void>,
+  ctx?: ExecutionContext,
 ): void {
   if (pendingRegenerations.has(key)) return;
 
@@ -88,6 +102,11 @@ export function triggerBackgroundRegeneration(
     });
 
   pendingRegenerations.set(key, promise);
+
+  // Register with the Workers ExecutionContext so the runtime keeps the
+  // isolate alive until the regeneration completes, even after the Response
+  // has already been sent to the client.
+  ctx?.waitUntil(promise);
 }
 
 // ---------------------------------------------------------------------------

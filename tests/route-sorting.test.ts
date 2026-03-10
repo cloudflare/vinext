@@ -14,7 +14,12 @@
  */
 import { describe, it, expect } from "vitest";
 import path from "node:path";
-import { pagesRouter, matchRoute, apiRouter, patternToNextFormat } from "../packages/vinext/src/routing/pages-router.js";
+import {
+  pagesRouter,
+  matchRoute,
+  apiRouter,
+  patternToNextFormat,
+} from "../packages/vinext/src/routing/pages-router.js";
 import { appRouter, invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
 
 const PAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic/pages");
@@ -25,11 +30,13 @@ const APP_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
 describe("Pages Router route sorting", () => {
   it("dynamic routes come before catch-all routes", async () => {
     const routes = await pagesRouter(PAGES_DIR);
-    const patterns = routes.map(r => r.pattern);
+    const patterns = routes.map((r) => r.pattern);
 
     // Find positions of dynamic params vs catch-all
-    const dynamicIdx = patterns.findIndex(p => p.includes(":") && !p.includes("+") && !p.includes("*"));
-    const catchAllIdx = patterns.findIndex(p => p.includes("+"));
+    const dynamicIdx = patterns.findIndex(
+      (p) => p.includes(":") && !p.includes("+") && !p.includes("*"),
+    );
+    const catchAllIdx = patterns.findIndex((p) => p.includes("+"));
 
     if (dynamicIdx !== -1 && catchAllIdx !== -1) {
       expect(dynamicIdx).toBeLessThan(catchAllIdx);
@@ -39,7 +46,7 @@ describe("Pages Router route sorting", () => {
   it("sorts deterministically (alphabetic tiebreaker)", async () => {
     const routes1 = await pagesRouter(PAGES_DIR);
     const routes2 = await pagesRouter(PAGES_DIR);
-    expect(routes1.map(r => r.pattern)).toEqual(routes2.map(r => r.pattern));
+    expect(routes1.map((r) => r.pattern)).toEqual(routes2.map((r) => r.pattern));
   });
 });
 
@@ -102,14 +109,14 @@ describe("App Router route sorting (additional)", () => {
   it("discovers all expected route types", async () => {
     invalidateAppRouteCache();
     const routes = await appRouter(APP_DIR);
-    const patterns = routes.map(r => r.pattern);
+    const patterns = routes.map((r) => r.pattern);
 
     // Static routes
     expect(patterns).toContain("/");
     expect(patterns).toContain("/about");
 
     // Dynamic routes should exist
-    const hasDynamic = patterns.some(p => p.includes(":"));
+    const hasDynamic = patterns.some((p) => p.includes(":"));
     expect(hasDynamic).toBe(true);
   });
 });
@@ -120,14 +127,14 @@ describe("Pages Router API routes", () => {
   it("discovers API routes", async () => {
     const routes = await apiRouter(PAGES_DIR);
     expect(routes.length).toBeGreaterThan(0);
-    const patterns = routes.map(r => r.pattern);
-    expect(patterns.some(p => p.startsWith("/api/"))).toBe(true);
+    const patterns = routes.map((r) => r.pattern);
+    expect(patterns.some((p) => p.startsWith("/api/"))).toBe(true);
   });
 
   it("sorts static API routes before dynamic", async () => {
     const routes = await apiRouter(PAGES_DIR);
-    const staticRoutes = routes.filter(r => !r.isDynamic);
-    const dynamicRoutes = routes.filter(r => r.isDynamic);
+    const staticRoutes = routes.filter((r) => !r.isDynamic);
+    const dynamicRoutes = routes.filter((r) => r.isDynamic);
 
     if (staticRoutes.length > 0 && dynamicRoutes.length > 0) {
       const lastStaticIdx = routes.indexOf(staticRoutes[staticRoutes.length - 1]);

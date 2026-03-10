@@ -26,11 +26,7 @@
  *   }
  */
 
-import type {
-  CacheHandler,
-  CacheHandlerValue,
-  IncrementalCacheValue,
-} from "../shims/cache.js";
+import type { CacheHandler, CacheHandlerValue, IncrementalCacheValue } from "../shims/cache.js";
 
 // Cloudflare KV namespace interface (matches Workers types)
 interface KVNamespace {
@@ -42,15 +38,21 @@ interface KVNamespace {
     options?: { expirationTtl?: number; metadata?: Record<string, unknown> },
   ): Promise<void>;
   delete(key: string): Promise<void>;
-  list(options?: {
-    prefix?: string;
-    limit?: number;
-    cursor?: string;
-  }): Promise<{
+  list(options?: { prefix?: string; limit?: number; cursor?: string }): Promise<{
     keys: Array<{ name: string; metadata?: Record<string, unknown> }>;
     list_complete: boolean;
     cursor?: string;
   }>;
+}
+
+/**
+ * Minimal ExecutionContext interface for Cloudflare Workers.
+ * Passed via KVCacheHandler constructor options so that background KV
+ * operations (cleanup deletes, cache writes) are registered with
+ * ctx.waitUntil() and are not killed when the Response is returned.
+ */
+interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
 }
 
 /** Shape stored in KV for each cache entry. */
@@ -87,16 +89,15 @@ function validateTag(tag: string): string | null {
 export class KVCacheHandler implements CacheHandler {
   private kv: KVNamespace;
   private prefix: string;
+  private ctx: ExecutionContext | undefined;
 
-  constructor(kvNamespace: KVNamespace, options?: { appPrefix?: string }) {
+  constructor(kvNamespace: KVNamespace, options?: { appPrefix?: string; ctx?: ExecutionContext }) {
     this.kv = kvNamespace;
     this.prefix = options?.appPrefix ? `${options.appPrefix}:` : "";
+    this.ctx = options?.ctx;
   }
 
-  async get(
-    key: string,
-    _ctx?: Record<string, unknown>,
-  ): Promise<CacheHandlerValue | null> {
+  async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const kvKey = this.prefix + ENTRY_PREFIX + key;
     const raw = await this.kv.get(kvKey);
     if (!raw) return null;
@@ -105,8 +106,9 @@ export class KVCacheHandler implements CacheHandler {
     try {
       parsed = JSON.parse(raw);
     } catch {
-      // Corrupted JSON — delete and treat as miss
-      await this.kv.delete(kvKey);
+      // Corrupted JSON — fire cleanup delete in the background and treat as miss.
+      // Using waitUntil ensures the delete isn't killed when the Response is returned.
+      this._deleteInBackground(kvKey);
       return null;
     }
 
@@ -114,7 +116,7 @@ export class KVCacheHandler implements CacheHandler {
     const entry = validateCacheEntry(parsed);
     if (!entry) {
       console.error("[vinext] Invalid cache entry shape for key:", key);
-      await this.kv.delete(kvKey);
+      this._deleteInBackground(kvKey);
       return null;
     }
 
@@ -123,7 +125,7 @@ export class KVCacheHandler implements CacheHandler {
       const ok = restoreArrayBuffers(entry.value);
       if (!ok) {
         // base64 decode failed — corrupted entry, treat as miss
-        await this.kv.delete(kvKey);
+        this._deleteInBackground(kvKey);
         return null;
       }
     }
@@ -140,7 +142,7 @@ export class KVCacheHandler implements CacheHandler {
           if (Number.isNaN(tagTimestamp) || tagTimestamp >= entry.lastModified) {
             // Tag was invalidated after this entry, or timestamp is corrupted
             // — treat as miss to force re-render
-            await this.kv.delete(kvKey);
+            this._deleteInBackground(kvKey);
             return null;
           }
         }
@@ -162,7 +164,7 @@ export class KVCacheHandler implements CacheHandler {
     };
   }
 
-  async set(
+  set(
     key: string,
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
@@ -186,8 +188,7 @@ export class KVCacheHandler implements CacheHandler {
     // Determine revalidation time
     let revalidateAt: number | null = null;
     if (ctx) {
-      const revalidate =
-        (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
+      const revalidate = (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
       if (typeof revalidate === "number" && revalidate > 0) {
         revalidateAt = Date.now() + revalidate * 1000;
       }
@@ -223,15 +224,13 @@ export class KVCacheHandler implements CacheHandler {
       expirationTtl = Math.max(expirationTtl, 60);
     }
 
-    await this.kv.put(this.prefix + ENTRY_PREFIX + key, JSON.stringify(entry), {
+    this._putInBackground(this.prefix + ENTRY_PREFIX + key, JSON.stringify(entry), {
       expirationTtl,
     });
+    return Promise.resolve();
   }
 
-  async revalidateTag(
-    tags: string | string[],
-    _durations?: { expire?: number },
-  ): Promise<void> {
+  async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     const validTags = tagList.filter((t) => validateTag(t) !== null);
@@ -249,20 +248,44 @@ export class KVCacheHandler implements CacheHandler {
   resetRequestCache(): void {
     // No-op — KV is stateless per request
   }
+
+  /**
+   * Fire a KV delete in the background.
+   * When `ctx` is present the promise is registered with `waitUntil` so it
+   * isn't killed after the Response is returned on Cloudflare Workers.
+   * When `ctx` is absent (Node.js dev/prod) the promise is simply floated
+   * (fire-and-forget) to preserve existing behaviour.
+   */
+  private _deleteInBackground(kvKey: string): void {
+    const promise = this.kv.delete(kvKey);
+    if (this.ctx) {
+      this.ctx.waitUntil(promise);
+    }
+    // else: fire-and-forget on Node.js
+  }
+
+  /**
+   * Fire a KV put in the background.
+   * Same waitUntil / fire-and-forget split as `_deleteInBackground`.
+   */
+  private _putInBackground(
+    kvKey: string,
+    value: string,
+    options?: { expirationTtl?: number },
+  ): void {
+    const promise = this.kv.put(kvKey, value, options);
+    if (this.ctx) {
+      this.ctx.waitUntil(promise);
+    }
+    // else: fire-and-forget on Node.js
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Validation helpers
 // ---------------------------------------------------------------------------
 
-const VALID_KINDS = new Set([
-  "FETCH",
-  "APP_PAGE",
-  "PAGES",
-  "APP_ROUTE",
-  "REDIRECT",
-  "IMAGE",
-]);
+const VALID_KINDS = new Set(["FETCH", "APP_PAGE", "PAGES", "APP_ROUTE", "REDIRECT", "IMAGE"]);
 
 /**
  * Validate that a parsed JSON value has the expected KVCacheEntry shape.
@@ -276,18 +299,13 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   // Required fields
   if (typeof obj.lastModified !== "number") return null;
   if (!Array.isArray(obj.tags)) return null;
-  if (
-    obj.revalidateAt !== null &&
-    typeof obj.revalidateAt !== "number"
-  )
-    return null;
+  if (obj.revalidateAt !== null && typeof obj.revalidateAt !== "number") return null;
 
   // value must be null or a valid cache value object with a known kind
   if (obj.value !== null) {
     if (!obj.value || typeof obj.value !== "object") return null;
     const value = obj.value as Record<string, unknown>;
-    if (typeof value.kind !== "string" || !VALID_KINDS.has(value.kind))
-      return null;
+    if (typeof value.kind !== "string" || !VALID_KINDS.has(value.kind)) return null;
   }
 
   return raw as KVCacheEntry;
@@ -305,9 +323,7 @@ function serializeForJSON(value: IncrementalCacheValue): IncrementalCacheValue {
   if (value.kind === "APP_PAGE") {
     return {
       ...value,
-      rscData: value.rscData
-        ? (arrayBufferToBase64(value.rscData) as any)
-        : undefined,
+      rscData: value.rscData ? (arrayBufferToBase64(value.rscData) as any) : undefined,
     };
   }
   if (value.kind === "APP_ROUTE") {

@@ -49,9 +49,7 @@ describe("Next.js compat: set-cookies", () => {
   });
 
   it("cookies().set() with httpOnly option", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/set-multiple-cookies`,
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/set-multiple-cookies`);
     const setCookies = res.headers.getSetCookie();
     const tokenCookie = setCookies.find((c) => c.includes("token=xyz"));
     expect(tokenCookie).toBeDefined();
@@ -59,9 +57,7 @@ describe("Next.js compat: set-cookies", () => {
   });
 
   it("multiple cookies().set() produces multiple Set-Cookie headers", async () => {
-    const res = await fetch(
-      `${baseUrl}/nextjs-compat/api/set-multiple-cookies`,
-    );
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/set-multiple-cookies`);
     const setCookies = res.headers.getSetCookie();
     expect(setCookies.some((c) => c.includes("token=xyz"))).toBe(true);
     expect(setCookies.some((c) => c.includes("theme=dark"))).toBe(true);
@@ -83,21 +79,14 @@ describe("Next.js compat: set-cookies", () => {
   // Next.js: reading a cookie from the incoming request
 
   it("cookies().get() reads cookie from request", async () => {
-    const { data } = await fetchJson(
-      baseUrl,
-      "/nextjs-compat/api/read-cookie",
-      {
-        headers: { Cookie: "session=test-value" },
-      },
-    );
+    const { data } = await fetchJson(baseUrl, "/nextjs-compat/api/read-cookie", {
+      headers: { Cookie: "session=test-value" },
+    });
     expect(data).toEqual({ session: "test-value" });
   });
 
   it("cookies().get() returns null when cookie not present", async () => {
-    const { data } = await fetchJson(
-      baseUrl,
-      "/nextjs-compat/api/read-cookie",
-    );
+    const { data } = await fetchJson(baseUrl, "/nextjs-compat/api/read-cookie");
     expect(data).toEqual({ session: null });
   });
 });

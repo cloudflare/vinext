@@ -6,8 +6,15 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: deploy-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deploy:
+    # Skip entirely for fork PRs — they don't have access to deploy secrets.
+    # Use /deploy-preview slash command for fork PRs instead.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     name: Deploy ${{ matrix.example.name }}
     runs-on: ubuntu-latest
     permissions:
@@ -40,15 +47,7 @@ jobs:
             wrangler_config: dist/server/wrangler.json
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-node-pnpm
 
       - name: Build vinext plugin
         run: pnpm run build
@@ -113,7 +112,7 @@ jobs:
           script: |
             const prNumber = context.issue.number;
             const alias = `pr-${prNumber}`;
-            
+
             const examples = [
               { name: 'app-router-cloudflare', project: 'app-router-cloudflare' },
               { name: 'pages-router-cloudflare', project: 'pages-router-cloudflare' },
@@ -123,30 +122,30 @@ jobs:
               { name: 'benchmarks', project: 'benchmarks' },
               { name: 'hackernews', project: 'hackernews', original: 'https://next-react-server-components.vercel.app' },
             ];
-            
+
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
             });
-            
+
             const marker = '<!-- vinext-deploy-previews -->';
             const existingComment = comments.find(c => c.body?.includes(marker));
-            
+
             const rows = examples
               .map(e => {
                 const orig = e.original ? `[original](${e.original})` : '';
                 return `| ${e.name} | [preview](https://${alias}-${e.project}.vinext.workers.dev) | [production](https://${e.project}.vinext.workers.dev) | ${orig} |`;
               })
               .join('\n');
-            
+
             const body = [
               marker,
               '| Example | Preview | Production | Original |',
               '|---------|---------|------------|----------|',
               rows,
             ].join('\n');
-            
+
             if (existingComment) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
