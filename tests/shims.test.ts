@@ -8236,8 +8236,12 @@ describe("KVCacheHandler", () => {
     const stored = kv.store.get("cache:ttl-key");
     expect(stored).toBeDefined();
     expect(stored!.expirationTtl).toBeDefined();
-    // 10x the revalidation period = 600, but minimum is 60
-    expect(stored!.expirationTtl).toBe(600);
+    // KV TTL is always 30 days (2592000s) regardless of revalidation period.
+    // Staleness is tracked via revalidateAt in the stored JSON, not KV eviction.
+    // Tying TTL to revalidation period would cause frequently-revalidated pages
+    // (e.g. revalidate=5) to be evicted quickly under low traffic, forcing a
+    // blocking fresh render on the next request instead of serving stale content.
+    expect(stored!.expirationTtl).toBe(30 * 24 * 3600);
   });
 
   it("handles multiple tag invalidation in parallel", async () => {

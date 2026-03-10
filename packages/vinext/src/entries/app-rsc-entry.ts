@@ -2099,36 +2099,35 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const __cached = await __isrGet(__isrKey);
       if (__cached && !__cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_PAGE") {
         const __cachedValue = __cached.value.value;
-        if (isRscRequest) {
-          if (__cachedValue.rscData) {
-            console.log("[vinext] ISR HIT (RSC)", cleanPathname);
-            setHeadersContext(null);
-            setNavigationContext(null);
-            return new Response(__cachedValue.rscData, {
-              status: __cachedValue.status || 200,
-              headers: {
-                "Content-Type": "text/x-component; charset=utf-8",
-                "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-                "Vary": "RSC, Accept",
-                "X-Vinext-Cache": "HIT",
-              },
-            });
-          }
-        } else {
-          if (typeof __cachedValue.html === "string" && __cachedValue.html.length > 0) {
-            console.log("[vinext] ISR HIT (HTML)", cleanPathname);
-            setHeadersContext(null);
-            setNavigationContext(null);
-            return new Response(__cachedValue.html, {
-              status: __cachedValue.status || 200,
-              headers: {
-                "Content-Type": "text/html; charset=utf-8",
-                "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
-                "Vary": "RSC, Accept",
-                "X-Vinext-Cache": "HIT",
-              },
-            });
-          }
+        const __hasRsc = !!__cachedValue.rscData;
+        const __hasHtml = typeof __cachedValue.html === "string" && __cachedValue.html.length > 0;
+        if (isRscRequest && __hasRsc) {
+          console.log("[vinext] ISR HIT (RSC)", cleanPathname);
+          setHeadersContext(null);
+          setNavigationContext(null);
+          return new Response(__cachedValue.rscData, {
+            status: __cachedValue.status || 200,
+            headers: {
+              "Content-Type": "text/x-component; charset=utf-8",
+              "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+              "Vary": "RSC, Accept",
+              "X-Vinext-Cache": "HIT",
+            },
+          });
+        }
+        if (!isRscRequest && __hasHtml) {
+          console.log("[vinext] ISR HIT (HTML)", cleanPathname);
+          setHeadersContext(null);
+          setNavigationContext(null);
+          return new Response(__cachedValue.html, {
+            status: __cachedValue.status || 200,
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+              "Vary": "RSC, Accept",
+              "X-Vinext-Cache": "HIT",
+            },
+          });
         }
         console.log("[vinext] ISR MISS (empty cached entry)", cleanPathname);
       }
