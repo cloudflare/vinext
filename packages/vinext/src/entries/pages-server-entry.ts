@@ -301,6 +301,27 @@ function triggerBackgroundRegeneration(key, renderFn) {
   if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
 }
 
+function fnv1a64(input) {
+  let h1 = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h1 ^= input.charCodeAt(i);
+    h1 = (h1 * 0x01000193) >>> 0;
+  }
+  let h2 = 0x050c5d1f;
+  for (let i = 0; i < input.length; i++) {
+    h2 ^= input.charCodeAt(i);
+    h2 = (h2 * 0x01000193) >>> 0;
+  }
+  return h1.toString(36) + h2.toString(36);
+}
+function isrCacheKey(router, pathname) {
+  const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
+  const prefix = buildId ? router + ":" + buildId : router;
+  const key = prefix + ":" + normalized;
+  if (key.length <= 200) return key;
+  return prefix + ":__hash:" + fnv1a64(normalized);
+}
+
 async function renderToStringAsync(element) {
   const stream = await renderToReadableStream(element);
   await stream.allReady;
@@ -783,8 +804,7 @@ async function _renderPage(request, url, manifest) {
     let isrRevalidateSeconds = null;
     if (typeof pageModule.getStaticProps === "function") {
       const pathname = routeUrl.split("?")[0];
-      const _cachePrefix = buildId ? "pages:" + buildId : "pages";
-      const cacheKey = _cachePrefix + ":" + (pathname === "/" ? "/" : pathname.replace(/\\/$/, ""));
+      const cacheKey = isrCacheKey("pages", pathname);
       const cached = await isrGet(cacheKey);
 
       if (cached && !cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
@@ -939,9 +959,8 @@ async function _renderPage(request, url, manifest) {
       var isrHtml = await renderToStringAsync(isrElement);
       var fullHtml = shellPrefix + isrHtml + shellSuffix;
       var isrPathname = url.split("?")[0];
-      var isrCacheKeyPrefix = buildId ? "pages:" + buildId : "pages";
-      var isrCacheKey = isrCacheKeyPrefix + ":" + (isrPathname === "/" ? "/" : isrPathname.replace(/\\/$/, ""));
-      await isrSet(isrCacheKey, { kind: "PAGES", html: fullHtml, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
+      var _cacheKey = isrCacheKey("pages", isrPathname);
+      await isrSet(_cacheKey, { kind: "PAGES", html: fullHtml, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
     }
 
     // Merge headers/status/cookies set by getServerSideProps on the res object.
