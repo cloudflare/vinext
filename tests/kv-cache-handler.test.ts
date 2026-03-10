@@ -477,14 +477,18 @@ describe("KVCacheHandler", () => {
       // the key in the store before the await returns.
       const handler2 = new KVCacheHandler(kv as any);
 
-      await handler2.set("stale-regen", {
-        kind: "APP_PAGE",
-        html: "<html>fresh</html>",
-        rscData: undefined,
-        headers: undefined,
-        postponed: undefined,
-        status: 200,
-      }, { revalidate: 10 });
+      await handler2.set(
+        "stale-regen",
+        {
+          kind: "APP_PAGE",
+          html: "<html>fresh</html>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { revalidate: 10 },
+      );
 
       // After await, the KV store must already contain the key.
       // Before the fix this would also pass (synchronous mock), but the
@@ -500,9 +504,9 @@ describe("KVCacheHandler", () => {
       // Swap out kv.put with a delayed version so we can verify that the
       // promise returned by set() is NOT resolved until the put completes.
       let resolveKvPut!: () => void;
-      const kvPutLatch = new Promise<void>((r) => { resolveKvPut = r; });
-      let putResolvedBeforeSetAwaited = false;
-
+      const kvPutLatch = new Promise<void>((r) => {
+        resolveKvPut = r;
+      });
       kv.put = vi.fn(async (key: string, value: string) => {
         await kvPutLatch;
         store.set(key, value);
@@ -518,7 +522,9 @@ describe("KVCacheHandler", () => {
 
       // The set() promise should NOT be resolved yet because the kv.put hasn't resolved.
       let setSettled = false;
-      setPromise.then(() => { setSettled = true; });
+      setPromise.then(() => {
+        setSettled = true;
+      });
 
       // Give microtasks a chance to run
       await Promise.resolve();
@@ -539,7 +545,9 @@ describe("KVCacheHandler", () => {
       // Simulate a delayed KV put (network latency) to prove that
       // ctx.waitUntil keeps the isolate alive until the write completes.
       let resolveKvPut!: () => void;
-      const kvPutLatch = new Promise<void>((r) => { resolveKvPut = r; });
+      const kvPutLatch = new Promise<void>((r) => {
+        resolveKvPut = r;
+      });
 
       kv.put = vi.fn(async (key: string, value: string) => {
         await kvPutLatch;
@@ -551,21 +559,27 @@ describe("KVCacheHandler", () => {
 
       // Simulate the regen renderFn pattern from app-rsc-entry.ts
       const renderFn = async () => {
-        await handlerWithCtx.set("regen-key", {
-          kind: "APP_PAGE",
-          html: "<html>revalidated</html>",
-          rscData: undefined,
-          headers: undefined,
-          postponed: undefined,
-          status: 200,
-        }, { revalidate: 30 });
+        await handlerWithCtx.set(
+          "regen-key",
+          {
+            kind: "APP_PAGE",
+            html: "<html>revalidated</html>",
+            rscData: undefined,
+            headers: undefined,
+            postponed: undefined,
+            status: 200,
+          },
+          { revalidate: 30 },
+        );
       };
 
       // Trigger background regen as the generated entry does
       let regenSettled = false;
       const regenPromise = renderFn()
         .catch(() => {})
-        .finally(() => { regenSettled = true; });
+        .finally(() => {
+          regenSettled = true;
+        });
       ctx.waitUntil(regenPromise);
 
       // Regen should not have settled yet (put is blocked)

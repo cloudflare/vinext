@@ -280,17 +280,12 @@ export class KVCacheHandler implements CacheHandler {
     // else: fire-and-forget on Node.js
   }
 
-
   /**
    * Execute a KV put and return the promise so callers can await completion.
    * Also registers with ctx.waitUntil() so the Workers runtime keeps the
    * isolate alive even if the caller does not await the returned promise.
    */
-  private _put(
-    kvKey: string,
-    value: string,
-    options?: { expirationTtl?: number },
-  ): Promise<void> {
+  private _put(kvKey: string, value: string, options?: { expirationTtl?: number }): Promise<void> {
     const promise = this.kv.put(kvKey, value, options);
     const ctx = getRequestExecutionContext() ?? this.ctx;
     if (ctx) {
