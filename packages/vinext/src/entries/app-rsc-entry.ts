@@ -2064,11 +2064,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   // In that case: RSC requests get a HIT (rscData available), but HTML
   // requests treat it as a MISS and fall through to render — which will
   // overwrite the entry with a complete html+rscData entry.
+  // force-static and dynamic='error' are compatible with ISR — they control
+  // how dynamic APIs behave during rendering, not whether results are cached.
+  // Only force-dynamic truly bypasses the ISR cache.
   if (
     process.env.NODE_ENV === "production" &&
     !isForceDynamic &&
-    !isForceStatic &&
-    !isDynamicError &&
     revalidateSeconds !== null && revalidateSeconds > 0
   ) {
     const __isrKey = __isrCacheKey(cleanPathname);
@@ -2596,6 +2597,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const __revalSecsRsc = revalidateSeconds;
       const __rscWritePromise = (async () => {
         try {
+          // Read-before-write: if a complete entry (non-empty html) already exists and is
+          // fresh, skip the partial write entirely. This prevents a racing RSC request from
+          // clobbering a complete html+rscData entry that the HTML request already wrote.
+          // The HTML write path always writes a complete entry and must win.
+          const __existing = await __isrGet(__isrKeyRsc);
+          if (__existing && !__existing.isStale && __existing.value.value?.kind === "APP_PAGE" &&
+              typeof __existing.value.value.html === "string" && __existing.value.value.html.length > 0) {
+            console.log("[vinext] ISR RSC partial write skipped (complete entry exists)", __isrKeyRsc);
+            return;
+          }
           const __rscDataForCache = await __isrRscDataPromise;
           await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc);
           console.log("[vinext] ISR RSC cache written (partial, html pending)", __isrKeyRsc);
