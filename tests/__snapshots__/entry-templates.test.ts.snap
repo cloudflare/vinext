@@ -1766,7 +1766,7 @@ function __applyConfigHeaders(pathname, ctx) {
   return result;
 }
 
-export default async function handler(request) {
+export default async function handler(request, ctx) {
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -1783,7 +1783,7 @@ export default async function handler(request) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -1818,13 +1818,40 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx) {
-  const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
+async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+  const __reqStart = performance.now();
+  let __mwEnd;
+  let __routeMatchEnd;
+  let __isrCheckEnd;
+  let __buildPageEnd;
   let __compileEnd;
   let __renderEnd;
   // __reqStart is included in the timing header so the Node logging middleware
   // can compute true compile time as: handlerStart - middlewareStart.
   // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
+
+  // Emit a structured timing log line in production so \`wrangler tail\` shows
+  // per-phase wall-clock latency for every request. No-ops in dev (dev logging
+  // uses the x-vinext-timing response header path instead).
+  function __logTiming(cacheState) {
+    if (process.env.NODE_ENV !== "production") return;
+    const _t = performance.now();
+    const _r = (v) => v !== undefined ? Math.round(v - __reqStart) + "ms" : "-";
+    const parts = [
+      request.method,
+      url.pathname,
+      "total=" + Math.round(_t - __reqStart) + "ms",
+      "mw=" + _r(__mwEnd),
+      "route_match=" + _r(__routeMatchEnd),
+      "isr_check=" + _r(__isrCheckEnd),
+      "build_page=" + _r(__buildPageEnd),
+      "compile=" + _r(__compileEnd),
+      "render=" + _r(__renderEnd),
+      cacheState ? "cache=" + cacheState : null,
+    ].filter(Boolean).join(" ");
+    console.log("[vinext:timing] " + parts);
+  }
+
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -1892,6 +1919,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // every response path without module-level state that races on Workers.
 
   
+  if (__mwEnd === undefined) __mwEnd = performance.now();
 
   // Build post-middleware request context for afterFiles/fallback rewrites.
   // These run after middleware in the App Router execution order and should
@@ -2183,6 +2211,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const { route, params } = match;
+  __routeMatchEnd = performance.now();
 
   // Update navigation context with matched params
   setNavigationContext({
@@ -2421,6 +2450,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
     if (!_isInterceptingRsc) {
       const _earlyCached = await isrGet(_earlyIsrKey);
+      __isrCheckEnd = performance.now();
       if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
         const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
         const _earlyIsStale = _earlyCached.isStale;
@@ -2439,29 +2469,37 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             if (_earlyIsStale) {
               // Background regeneration: re-render and update cache
               const _earlyFrozenNavCtx = _getNavigationContext();
-               triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-                 let _earlyEl;
-                 try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-                 const ssrEntry2 = await _loadSSREntry();
-                 const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-                 // Capture font data after render starts (fonts are populated during RSC rendering).
-                 const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-                 const [rscBytesCollected, htmlStream2] = await Promise.all([
-                   collectStreamAsArrayBuffer(rscStream2a),
-                   ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-                 ]);
-                 const htmlReader2 = htmlStream2.getReader();
-                 const htmlChunks2 = [];
-                 while (true) {
-                   const { done, value } = await htmlReader2.read();
-                   if (done) break;
-                   htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-                 }
-                 // Include path tags so revalidatePath() can invalidate this entry.
-                 const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-               });
+                 triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                   const _rg0 = performance.now();
+                   let _earlyEl;
+                   try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                   const _rgBuild = performance.now();
+                   const ssrEntry2 = await _loadSSREntry();
+                   const _rgSsrLoad = performance.now();
+                   const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+
+                  // Capture font data after render starts (fonts are populated during RSC rendering).
+                  const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                  const [rscBytesCollected, htmlStream2] = await Promise.all([
+                    collectStreamAsArrayBuffer(rscStream2a),
+                    ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                  ]);
+                  const _rgRender = performance.now();
+                  const htmlReader2 = htmlStream2.getReader();
+                  const htmlChunks2 = [];
+                  while (true) {
+                    const { done, value } = await htmlReader2.read();
+                    if (done) break;
+                    htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                  }
+                  const _rgDrain = performance.now();
+                  // Include path tags so revalidatePath() can invalidate this entry.
+                  const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                   await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                   setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                   const _rgEnd = performance.now();
+                   console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+                 }, ctx);
              }
              if (_mwCtx.headers) {
                for (const [key, value] of _mwCtx.headers) {
@@ -2492,6 +2530,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 controller.close();
               }
             });
+            __logTiming(_earlyIsStale ? "STALE" : "HIT");
             return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
           }
           // RSC HIT but no rscData — fall through to render (will populate it)
@@ -2501,29 +2540,36 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
            if (_earlyIsStale) {
              // Background regeneration
              const _earlyFrozenNavCtx = _getNavigationContext();
-             triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-               let _earlyEl;
-               try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-               const ssrEntry2 = await _loadSSREntry();
-               const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-               // Capture font data after render starts (fonts are populated during RSC rendering).
-               const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-               const [rscBytesCollected, htmlStream2] = await Promise.all([
-                 collectStreamAsArrayBuffer(rscStream2a),
-                 ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-               ]);
-               const htmlReader2 = htmlStream2.getReader();
-               const htmlChunks2 = [];
-               while (true) {
-                 const { done, value } = await htmlReader2.read();
-                 if (done) break;
-                 htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-               }
-               // Include path tags so revalidatePath() can invalidate this entry.
-               const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-               await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-               setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-             });
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                const _rg0 = performance.now();
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const _rgBuild = performance.now();
+                const ssrEntry2 = await _loadSSREntry();
+                const _rgSsrLoad = performance.now();
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                // Capture font data after render starts (fonts are populated during RSC rendering).
+                const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                ]);
+                const _rgRender = performance.now();
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _rgDrain = performance.now();
+                // Include path tags so revalidatePath() can invalidate this entry.
+                const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                 const _rgEnd = performance.now();
+                 console.log("[vinext:regen] path=" + cleanPathname + " type=html-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+               }, ctx);
            }
            setHeadersContext(null);
           setNavigationContext(null);
@@ -2541,6 +2587,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               _earlyHtmlResp.headers.append(key, value);
             }
           }
+          __logTiming(_earlyIsStale ? "STALE" : "HIT");
           return _earlyHtmlResp;
         }
       }
@@ -2762,9 +2809,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return null;
   });
   if (_pageProbeResult instanceof Response) return _pageProbeResult;
+  __buildPageEnd = performance.now();
 
   // Mark end of compile phase: route matching, middleware, tree building are done.
-  if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
+  __compileEnd = performance.now();
 
   // Render to RSC stream.
   // Track non-navigation RSC errors so we can detect when the in-tree global
@@ -2821,31 +2869,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         _rscResponseStream = rscStreamForClient;
         const _rssMissNavCtx = _getNavigationContext();
         const _rssMissCacheKey = isrCacheKey("app", cleanPathname);
-        triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
-          const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
-          // Render a second time to get HTML for the cache entry (needed so HTML
-          // requests also get a HIT after an RSC-first visit populates the cache).
-          let _bgEl;
-          try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-          const ssrEntry2 = await _loadSSREntry();
-          const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-          const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-          const [, htmlStream2] = await Promise.all([
-            collectStreamAsArrayBuffer(rscStream3a),
-            ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
-          ]);
-          const htmlReader2 = htmlStream2.getReader();
-          const htmlChunks2 = [];
-          while (true) {
-            const { done, value } = await htmlReader2.read();
-            if (done) break;
-            htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-          }
-          const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-          // Cache with the original RSC bytes (from the first render, already served to client).
-          await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
-          setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
-        });
+         triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
+           const _rg0 = performance.now();
+           const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
+           const _rgRscDrain = performance.now();
+           // Render a second time to get HTML for the cache entry (needed so HTML
+           // requests also get a HIT after an RSC-first visit populates the cache).
+           let _bgEl;
+           try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+           const _rgBuild = performance.now();
+           const ssrEntry2 = await _loadSSREntry();
+           const _rgSsrLoad = performance.now();
+           const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+           const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+           const [, htmlStream2] = await Promise.all([
+             collectStreamAsArrayBuffer(rscStream3a),
+             ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
+           ]);
+           const _rgRender = performance.now();
+           const htmlReader2 = htmlStream2.getReader();
+           const htmlChunks2 = [];
+           while (true) {
+             const { done, value } = await htmlReader2.read();
+             if (done) break;
+             htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+           }
+           const _rgDrain = performance.now();
+           const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+           // Cache with the original RSC bytes (from the first render, already served to client).
+            await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
+            setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
+            const _rgEnd = performance.now();
+            console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-miss rsc_drain=" + Math.round(_rgRscDrain-_rg0) + "ms build=" + Math.round(_rgBuild-_rgRscDrain) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+          }, ctx);
       }
 
      // Merge middleware response headers into the RSC response.
@@ -2921,7 +2977,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
      const ssrEntry = await _loadSSREntry();
      htmlStream = await ssrEntry.handleSsr(_rscStreamForSsr, _getNavigationContext(), fontData);
      // Shell render complete; Suspense boundaries stream asynchronously
-     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
+     __renderEnd = performance.now();
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
@@ -2982,6 +3038,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         : -1;
       response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
     }
+    const __cacheStateForLog = response.headers.get("X-Vinext-Cache") ?? response.headers.get("x-vinext-cache") ?? undefined;
+    __logTiming(__cacheStateForLog);
     // Apply custom status code from middleware rewrite
     if (_mwCtx.status) {
       return new Response(response.body, {
@@ -3058,26 +3116,30 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
        // Background cache population — runs after the response is already streaming.
        // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
        // waitUntil mechanism keeps the isolate alive until the cache write completes.
-       triggerBackgroundRegeneration(cacheKey, async () => {
-         const htmlReader = htmlStreamForCache.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await htmlReader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-         }
-         const freshHtml = chunks.join("");
-         // Only cache if no dynamic API usage was detected during this render.
-         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
-         if (!dynamicUsedDuringRender) {
-           const rscBytesCollected = _rscStreamForCache
-             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
-             : undefined;
-            const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-           setRevalidateDuration(cacheKey, revalidateSeconds);
-         }
-       });
+        triggerBackgroundRegeneration(cacheKey, async () => {
+          const _rg0 = performance.now();
+          const htmlReader = htmlStreamForCache.getReader();
+          const chunks = [];
+          while (true) {
+            const { done, value } = await htmlReader.read();
+            if (done) break;
+            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+          }
+          const _rgDrain = performance.now();
+          const freshHtml = chunks.join("");
+          // Only cache if no dynamic API usage was detected during this render.
+          // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+          if (!dynamicUsedDuringRender) {
+            const rscBytesCollected = _rscStreamForCache
+              ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+              : undefined;
+             const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+             await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+             setRevalidateDuration(cacheKey, revalidateSeconds);
+           }
+           const _rgEnd = performance.now();
+           console.log("[vinext:regen] path=" + cleanPathname + " type=html-miss html_drain=" + Math.round(_rgDrain-_rg0) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+         }, ctx);
        return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
@@ -4545,7 +4607,7 @@ function __applyConfigHeaders(pathname, ctx) {
   return result;
 }
 
-export default async function handler(request) {
+export default async function handler(request, ctx) {
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -4562,7 +4624,7 @@ export default async function handler(request) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -4597,13 +4659,40 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx) {
-  const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
+async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+  const __reqStart = performance.now();
+  let __mwEnd;
+  let __routeMatchEnd;
+  let __isrCheckEnd;
+  let __buildPageEnd;
   let __compileEnd;
   let __renderEnd;
   // __reqStart is included in the timing header so the Node logging middleware
   // can compute true compile time as: handlerStart - middlewareStart.
   // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
+
+  // Emit a structured timing log line in production so \`wrangler tail\` shows
+  // per-phase wall-clock latency for every request. No-ops in dev (dev logging
+  // uses the x-vinext-timing response header path instead).
+  function __logTiming(cacheState) {
+    if (process.env.NODE_ENV !== "production") return;
+    const _t = performance.now();
+    const _r = (v) => v !== undefined ? Math.round(v - __reqStart) + "ms" : "-";
+    const parts = [
+      request.method,
+      url.pathname,
+      "total=" + Math.round(_t - __reqStart) + "ms",
+      "mw=" + _r(__mwEnd),
+      "route_match=" + _r(__routeMatchEnd),
+      "isr_check=" + _r(__isrCheckEnd),
+      "build_page=" + _r(__buildPageEnd),
+      "compile=" + _r(__compileEnd),
+      "render=" + _r(__renderEnd),
+      cacheState ? "cache=" + cacheState : null,
+    ].filter(Boolean).join(" ");
+    console.log("[vinext:timing] " + parts);
+  }
+
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -4676,6 +4765,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // every response path without module-level state that races on Workers.
 
   
+  if (__mwEnd === undefined) __mwEnd = performance.now();
 
   // Build post-middleware request context for afterFiles/fallback rewrites.
   // These run after middleware in the App Router execution order and should
@@ -4967,6 +5057,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const { route, params } = match;
+  __routeMatchEnd = performance.now();
 
   // Update navigation context with matched params
   setNavigationContext({
@@ -5205,6 +5296,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
     if (!_isInterceptingRsc) {
       const _earlyCached = await isrGet(_earlyIsrKey);
+      __isrCheckEnd = performance.now();
       if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
         const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
         const _earlyIsStale = _earlyCached.isStale;
@@ -5223,29 +5315,37 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             if (_earlyIsStale) {
               // Background regeneration: re-render and update cache
               const _earlyFrozenNavCtx = _getNavigationContext();
-               triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-                 let _earlyEl;
-                 try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-                 const ssrEntry2 = await _loadSSREntry();
-                 const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-                 // Capture font data after render starts (fonts are populated during RSC rendering).
-                 const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-                 const [rscBytesCollected, htmlStream2] = await Promise.all([
-                   collectStreamAsArrayBuffer(rscStream2a),
-                   ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-                 ]);
-                 const htmlReader2 = htmlStream2.getReader();
-                 const htmlChunks2 = [];
-                 while (true) {
-                   const { done, value } = await htmlReader2.read();
-                   if (done) break;
-                   htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-                 }
-                 // Include path tags so revalidatePath() can invalidate this entry.
-                 const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-               });
+                 triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                   const _rg0 = performance.now();
+                   let _earlyEl;
+                   try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                   const _rgBuild = performance.now();
+                   const ssrEntry2 = await _loadSSREntry();
+                   const _rgSsrLoad = performance.now();
+                   const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+
+                  // Capture font data after render starts (fonts are populated during RSC rendering).
+                  const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                  const [rscBytesCollected, htmlStream2] = await Promise.all([
+                    collectStreamAsArrayBuffer(rscStream2a),
+                    ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                  ]);
+                  const _rgRender = performance.now();
+                  const htmlReader2 = htmlStream2.getReader();
+                  const htmlChunks2 = [];
+                  while (true) {
+                    const { done, value } = await htmlReader2.read();
+                    if (done) break;
+                    htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                  }
+                  const _rgDrain = performance.now();
+                  // Include path tags so revalidatePath() can invalidate this entry.
+                  const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                   await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                   setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                   const _rgEnd = performance.now();
+                   console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+                 }, ctx);
              }
              if (_mwCtx.headers) {
                for (const [key, value] of _mwCtx.headers) {
@@ -5276,6 +5376,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 controller.close();
               }
             });
+            __logTiming(_earlyIsStale ? "STALE" : "HIT");
             return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
           }
           // RSC HIT but no rscData — fall through to render (will populate it)
@@ -5285,29 +5386,36 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
            if (_earlyIsStale) {
              // Background regeneration
              const _earlyFrozenNavCtx = _getNavigationContext();
-             triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-               let _earlyEl;
-               try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-               const ssrEntry2 = await _loadSSREntry();
-               const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-               // Capture font data after render starts (fonts are populated during RSC rendering).
-               const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-               const [rscBytesCollected, htmlStream2] = await Promise.all([
-                 collectStreamAsArrayBuffer(rscStream2a),
-                 ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-               ]);
-               const htmlReader2 = htmlStream2.getReader();
-               const htmlChunks2 = [];
-               while (true) {
-                 const { done, value } = await htmlReader2.read();
-                 if (done) break;
-                 htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-               }
-               // Include path tags so revalidatePath() can invalidate this entry.
-               const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-               await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-               setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-             });
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                const _rg0 = performance.now();
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const _rgBuild = performance.now();
+                const ssrEntry2 = await _loadSSREntry();
+                const _rgSsrLoad = performance.now();
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                // Capture font data after render starts (fonts are populated during RSC rendering).
+                const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                ]);
+                const _rgRender = performance.now();
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _rgDrain = performance.now();
+                // Include path tags so revalidatePath() can invalidate this entry.
+                const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                 const _rgEnd = performance.now();
+                 console.log("[vinext:regen] path=" + cleanPathname + " type=html-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+               }, ctx);
            }
            setHeadersContext(null);
           setNavigationContext(null);
@@ -5325,6 +5433,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               _earlyHtmlResp.headers.append(key, value);
             }
           }
+          __logTiming(_earlyIsStale ? "STALE" : "HIT");
           return _earlyHtmlResp;
         }
       }
@@ -5546,9 +5655,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return null;
   });
   if (_pageProbeResult instanceof Response) return _pageProbeResult;
+  __buildPageEnd = performance.now();
 
   // Mark end of compile phase: route matching, middleware, tree building are done.
-  if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
+  __compileEnd = performance.now();
 
   // Render to RSC stream.
   // Track non-navigation RSC errors so we can detect when the in-tree global
@@ -5605,31 +5715,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         _rscResponseStream = rscStreamForClient;
         const _rssMissNavCtx = _getNavigationContext();
         const _rssMissCacheKey = isrCacheKey("app", cleanPathname);
-        triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
-          const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
-          // Render a second time to get HTML for the cache entry (needed so HTML
-          // requests also get a HIT after an RSC-first visit populates the cache).
-          let _bgEl;
-          try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-          const ssrEntry2 = await _loadSSREntry();
-          const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-          const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-          const [, htmlStream2] = await Promise.all([
-            collectStreamAsArrayBuffer(rscStream3a),
-            ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
-          ]);
-          const htmlReader2 = htmlStream2.getReader();
-          const htmlChunks2 = [];
-          while (true) {
-            const { done, value } = await htmlReader2.read();
-            if (done) break;
-            htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-          }
-          const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-          // Cache with the original RSC bytes (from the first render, already served to client).
-          await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
-          setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
-        });
+         triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
+           const _rg0 = performance.now();
+           const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
+           const _rgRscDrain = performance.now();
+           // Render a second time to get HTML for the cache entry (needed so HTML
+           // requests also get a HIT after an RSC-first visit populates the cache).
+           let _bgEl;
+           try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+           const _rgBuild = performance.now();
+           const ssrEntry2 = await _loadSSREntry();
+           const _rgSsrLoad = performance.now();
+           const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+           const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+           const [, htmlStream2] = await Promise.all([
+             collectStreamAsArrayBuffer(rscStream3a),
+             ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
+           ]);
+           const _rgRender = performance.now();
+           const htmlReader2 = htmlStream2.getReader();
+           const htmlChunks2 = [];
+           while (true) {
+             const { done, value } = await htmlReader2.read();
+             if (done) break;
+             htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+           }
+           const _rgDrain = performance.now();
+           const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+           // Cache with the original RSC bytes (from the first render, already served to client).
+            await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
+            setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
+            const _rgEnd = performance.now();
+            console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-miss rsc_drain=" + Math.round(_rgRscDrain-_rg0) + "ms build=" + Math.round(_rgBuild-_rgRscDrain) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+          }, ctx);
       }
 
      // Merge middleware response headers into the RSC response.
@@ -5705,7 +5823,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
      const ssrEntry = await _loadSSREntry();
      htmlStream = await ssrEntry.handleSsr(_rscStreamForSsr, _getNavigationContext(), fontData);
      // Shell render complete; Suspense boundaries stream asynchronously
-     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
+     __renderEnd = performance.now();
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
@@ -5766,6 +5884,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         : -1;
       response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
     }
+    const __cacheStateForLog = response.headers.get("X-Vinext-Cache") ?? response.headers.get("x-vinext-cache") ?? undefined;
+    __logTiming(__cacheStateForLog);
     // Apply custom status code from middleware rewrite
     if (_mwCtx.status) {
       return new Response(response.body, {
@@ -5842,26 +5962,30 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
        // Background cache population — runs after the response is already streaming.
        // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
        // waitUntil mechanism keeps the isolate alive until the cache write completes.
-       triggerBackgroundRegeneration(cacheKey, async () => {
-         const htmlReader = htmlStreamForCache.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await htmlReader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-         }
-         const freshHtml = chunks.join("");
-         // Only cache if no dynamic API usage was detected during this render.
-         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
-         if (!dynamicUsedDuringRender) {
-           const rscBytesCollected = _rscStreamForCache
-             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
-             : undefined;
-            const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-           setRevalidateDuration(cacheKey, revalidateSeconds);
-         }
-       });
+        triggerBackgroundRegeneration(cacheKey, async () => {
+          const _rg0 = performance.now();
+          const htmlReader = htmlStreamForCache.getReader();
+          const chunks = [];
+          while (true) {
+            const { done, value } = await htmlReader.read();
+            if (done) break;
+            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+          }
+          const _rgDrain = performance.now();
+          const freshHtml = chunks.join("");
+          // Only cache if no dynamic API usage was detected during this render.
+          // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+          if (!dynamicUsedDuringRender) {
+            const rscBytesCollected = _rscStreamForCache
+              ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+              : undefined;
+             const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+             await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+             setRevalidateDuration(cacheKey, revalidateSeconds);
+           }
+           const _rgEnd = performance.now();
+           console.log("[vinext:regen] path=" + cleanPathname + " type=html-miss html_drain=" + Math.round(_rgDrain-_rg0) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+         }, ctx);
        return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
@@ -7359,7 +7483,7 @@ function __applyConfigHeaders(pathname, ctx) {
   return result;
 }
 
-export default async function handler(request) {
+export default async function handler(request, ctx) {
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -7376,7 +7500,7 @@ export default async function handler(request) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -7411,13 +7535,40 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx) {
-  const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
+async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+  const __reqStart = performance.now();
+  let __mwEnd;
+  let __routeMatchEnd;
+  let __isrCheckEnd;
+  let __buildPageEnd;
   let __compileEnd;
   let __renderEnd;
   // __reqStart is included in the timing header so the Node logging middleware
   // can compute true compile time as: handlerStart - middlewareStart.
   // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
+
+  // Emit a structured timing log line in production so \`wrangler tail\` shows
+  // per-phase wall-clock latency for every request. No-ops in dev (dev logging
+  // uses the x-vinext-timing response header path instead).
+  function __logTiming(cacheState) {
+    if (process.env.NODE_ENV !== "production") return;
+    const _t = performance.now();
+    const _r = (v) => v !== undefined ? Math.round(v - __reqStart) + "ms" : "-";
+    const parts = [
+      request.method,
+      url.pathname,
+      "total=" + Math.round(_t - __reqStart) + "ms",
+      "mw=" + _r(__mwEnd),
+      "route_match=" + _r(__routeMatchEnd),
+      "isr_check=" + _r(__isrCheckEnd),
+      "build_page=" + _r(__buildPageEnd),
+      "compile=" + _r(__compileEnd),
+      "render=" + _r(__renderEnd),
+      cacheState ? "cache=" + cacheState : null,
+    ].filter(Boolean).join(" ");
+    console.log("[vinext:timing] " + parts);
+  }
+
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -7485,6 +7636,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // every response path without module-level state that races on Workers.
 
   
+  if (__mwEnd === undefined) __mwEnd = performance.now();
 
   // Build post-middleware request context for afterFiles/fallback rewrites.
   // These run after middleware in the App Router execution order and should
@@ -7776,6 +7928,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const { route, params } = match;
+  __routeMatchEnd = performance.now();
 
   // Update navigation context with matched params
   setNavigationContext({
@@ -8014,6 +8167,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
     if (!_isInterceptingRsc) {
       const _earlyCached = await isrGet(_earlyIsrKey);
+      __isrCheckEnd = performance.now();
       if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
         const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
         const _earlyIsStale = _earlyCached.isStale;
@@ -8032,29 +8186,37 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             if (_earlyIsStale) {
               // Background regeneration: re-render and update cache
               const _earlyFrozenNavCtx = _getNavigationContext();
-               triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-                 let _earlyEl;
-                 try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-                 const ssrEntry2 = await _loadSSREntry();
-                 const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-                 // Capture font data after render starts (fonts are populated during RSC rendering).
-                 const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-                 const [rscBytesCollected, htmlStream2] = await Promise.all([
-                   collectStreamAsArrayBuffer(rscStream2a),
-                   ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-                 ]);
-                 const htmlReader2 = htmlStream2.getReader();
-                 const htmlChunks2 = [];
-                 while (true) {
-                   const { done, value } = await htmlReader2.read();
-                   if (done) break;
-                   htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-                 }
-                 // Include path tags so revalidatePath() can invalidate this entry.
-                 const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-               });
+                 triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                   const _rg0 = performance.now();
+                   let _earlyEl;
+                   try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                   const _rgBuild = performance.now();
+                   const ssrEntry2 = await _loadSSREntry();
+                   const _rgSsrLoad = performance.now();
+                   const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+
+                  // Capture font data after render starts (fonts are populated during RSC rendering).
+                  const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                  const [rscBytesCollected, htmlStream2] = await Promise.all([
+                    collectStreamAsArrayBuffer(rscStream2a),
+                    ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                  ]);
+                  const _rgRender = performance.now();
+                  const htmlReader2 = htmlStream2.getReader();
+                  const htmlChunks2 = [];
+                  while (true) {
+                    const { done, value } = await htmlReader2.read();
+                    if (done) break;
+                    htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                  }
+                  const _rgDrain = performance.now();
+                  // Include path tags so revalidatePath() can invalidate this entry.
+                  const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                   await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                   setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                   const _rgEnd = performance.now();
+                   console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+                 }, ctx);
              }
              if (_mwCtx.headers) {
                for (const [key, value] of _mwCtx.headers) {
@@ -8085,6 +8247,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 controller.close();
               }
             });
+            __logTiming(_earlyIsStale ? "STALE" : "HIT");
             return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
           }
           // RSC HIT but no rscData — fall through to render (will populate it)
@@ -8094,29 +8257,36 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
            if (_earlyIsStale) {
              // Background regeneration
              const _earlyFrozenNavCtx = _getNavigationContext();
-             triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-               let _earlyEl;
-               try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-               const ssrEntry2 = await _loadSSREntry();
-               const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-               // Capture font data after render starts (fonts are populated during RSC rendering).
-               const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-               const [rscBytesCollected, htmlStream2] = await Promise.all([
-                 collectStreamAsArrayBuffer(rscStream2a),
-                 ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-               ]);
-               const htmlReader2 = htmlStream2.getReader();
-               const htmlChunks2 = [];
-               while (true) {
-                 const { done, value } = await htmlReader2.read();
-                 if (done) break;
-                 htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-               }
-               // Include path tags so revalidatePath() can invalidate this entry.
-               const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-               await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-               setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-             });
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                const _rg0 = performance.now();
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const _rgBuild = performance.now();
+                const ssrEntry2 = await _loadSSREntry();
+                const _rgSsrLoad = performance.now();
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                // Capture font data after render starts (fonts are populated during RSC rendering).
+                const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                ]);
+                const _rgRender = performance.now();
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _rgDrain = performance.now();
+                // Include path tags so revalidatePath() can invalidate this entry.
+                const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                 const _rgEnd = performance.now();
+                 console.log("[vinext:regen] path=" + cleanPathname + " type=html-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+               }, ctx);
            }
            setHeadersContext(null);
           setNavigationContext(null);
@@ -8134,6 +8304,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               _earlyHtmlResp.headers.append(key, value);
             }
           }
+          __logTiming(_earlyIsStale ? "STALE" : "HIT");
           return _earlyHtmlResp;
         }
       }
@@ -8355,9 +8526,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return null;
   });
   if (_pageProbeResult instanceof Response) return _pageProbeResult;
+  __buildPageEnd = performance.now();
 
   // Mark end of compile phase: route matching, middleware, tree building are done.
-  if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
+  __compileEnd = performance.now();
 
   // Render to RSC stream.
   // Track non-navigation RSC errors so we can detect when the in-tree global
@@ -8414,31 +8586,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         _rscResponseStream = rscStreamForClient;
         const _rssMissNavCtx = _getNavigationContext();
         const _rssMissCacheKey = isrCacheKey("app", cleanPathname);
-        triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
-          const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
-          // Render a second time to get HTML for the cache entry (needed so HTML
-          // requests also get a HIT after an RSC-first visit populates the cache).
-          let _bgEl;
-          try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-          const ssrEntry2 = await _loadSSREntry();
-          const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-          const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-          const [, htmlStream2] = await Promise.all([
-            collectStreamAsArrayBuffer(rscStream3a),
-            ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
-          ]);
-          const htmlReader2 = htmlStream2.getReader();
-          const htmlChunks2 = [];
-          while (true) {
-            const { done, value } = await htmlReader2.read();
-            if (done) break;
-            htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-          }
-          const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-          // Cache with the original RSC bytes (from the first render, already served to client).
-          await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
-          setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
-        });
+         triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
+           const _rg0 = performance.now();
+           const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
+           const _rgRscDrain = performance.now();
+           // Render a second time to get HTML for the cache entry (needed so HTML
+           // requests also get a HIT after an RSC-first visit populates the cache).
+           let _bgEl;
+           try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+           const _rgBuild = performance.now();
+           const ssrEntry2 = await _loadSSREntry();
+           const _rgSsrLoad = performance.now();
+           const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+           const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+           const [, htmlStream2] = await Promise.all([
+             collectStreamAsArrayBuffer(rscStream3a),
+             ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
+           ]);
+           const _rgRender = performance.now();
+           const htmlReader2 = htmlStream2.getReader();
+           const htmlChunks2 = [];
+           while (true) {
+             const { done, value } = await htmlReader2.read();
+             if (done) break;
+             htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+           }
+           const _rgDrain = performance.now();
+           const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+           // Cache with the original RSC bytes (from the first render, already served to client).
+            await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
+            setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
+            const _rgEnd = performance.now();
+            console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-miss rsc_drain=" + Math.round(_rgRscDrain-_rg0) + "ms build=" + Math.round(_rgBuild-_rgRscDrain) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+          }, ctx);
       }
 
      // Merge middleware response headers into the RSC response.
@@ -8514,7 +8694,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
      const ssrEntry = await _loadSSREntry();
      htmlStream = await ssrEntry.handleSsr(_rscStreamForSsr, _getNavigationContext(), fontData);
      // Shell render complete; Suspense boundaries stream asynchronously
-     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
+     __renderEnd = performance.now();
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
@@ -8583,6 +8763,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         : -1;
       response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
     }
+    const __cacheStateForLog = response.headers.get("X-Vinext-Cache") ?? response.headers.get("x-vinext-cache") ?? undefined;
+    __logTiming(__cacheStateForLog);
     // Apply custom status code from middleware rewrite
     if (_mwCtx.status) {
       return new Response(response.body, {
@@ -8659,26 +8841,30 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
        // Background cache population — runs after the response is already streaming.
        // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
        // waitUntil mechanism keeps the isolate alive until the cache write completes.
-       triggerBackgroundRegeneration(cacheKey, async () => {
-         const htmlReader = htmlStreamForCache.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await htmlReader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-         }
-         const freshHtml = chunks.join("");
-         // Only cache if no dynamic API usage was detected during this render.
-         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
-         if (!dynamicUsedDuringRender) {
-           const rscBytesCollected = _rscStreamForCache
-             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
-             : undefined;
-            const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-           setRevalidateDuration(cacheKey, revalidateSeconds);
-         }
-       });
+        triggerBackgroundRegeneration(cacheKey, async () => {
+          const _rg0 = performance.now();
+          const htmlReader = htmlStreamForCache.getReader();
+          const chunks = [];
+          while (true) {
+            const { done, value } = await htmlReader.read();
+            if (done) break;
+            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+          }
+          const _rgDrain = performance.now();
+          const freshHtml = chunks.join("");
+          // Only cache if no dynamic API usage was detected during this render.
+          // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+          if (!dynamicUsedDuringRender) {
+            const rscBytesCollected = _rscStreamForCache
+              ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+              : undefined;
+             const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+             await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+             setRevalidateDuration(cacheKey, revalidateSeconds);
+           }
+           const _rgEnd = performance.now();
+           console.log("[vinext:regen] path=" + cleanPathname + " type=html-miss html_drain=" + Math.round(_rgDrain-_rg0) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+         }, ctx);
        return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
@@ -10161,7 +10347,7 @@ function __applyConfigHeaders(pathname, ctx) {
   return result;
 }
 
-export default async function handler(request) {
+export default async function handler(request, ctx) {
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -10178,7 +10364,7 @@ export default async function handler(request) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -10213,13 +10399,40 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx) {
-  const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
+async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+  const __reqStart = performance.now();
+  let __mwEnd;
+  let __routeMatchEnd;
+  let __isrCheckEnd;
+  let __buildPageEnd;
   let __compileEnd;
   let __renderEnd;
   // __reqStart is included in the timing header so the Node logging middleware
   // can compute true compile time as: handlerStart - middlewareStart.
   // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
+
+  // Emit a structured timing log line in production so \`wrangler tail\` shows
+  // per-phase wall-clock latency for every request. No-ops in dev (dev logging
+  // uses the x-vinext-timing response header path instead).
+  function __logTiming(cacheState) {
+    if (process.env.NODE_ENV !== "production") return;
+    const _t = performance.now();
+    const _r = (v) => v !== undefined ? Math.round(v - __reqStart) + "ms" : "-";
+    const parts = [
+      request.method,
+      url.pathname,
+      "total=" + Math.round(_t - __reqStart) + "ms",
+      "mw=" + _r(__mwEnd),
+      "route_match=" + _r(__routeMatchEnd),
+      "isr_check=" + _r(__isrCheckEnd),
+      "build_page=" + _r(__buildPageEnd),
+      "compile=" + _r(__compileEnd),
+      "render=" + _r(__renderEnd),
+      cacheState ? "cache=" + cacheState : null,
+    ].filter(Boolean).join(" ");
+    console.log("[vinext:timing] " + parts);
+  }
+
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -10287,6 +10500,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // every response path without module-level state that races on Workers.
 
   
+  if (__mwEnd === undefined) __mwEnd = performance.now();
 
   // Build post-middleware request context for afterFiles/fallback rewrites.
   // These run after middleware in the App Router execution order and should
@@ -10578,6 +10792,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const { route, params } = match;
+  __routeMatchEnd = performance.now();
 
   // Update navigation context with matched params
   setNavigationContext({
@@ -10816,6 +11031,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
     if (!_isInterceptingRsc) {
       const _earlyCached = await isrGet(_earlyIsrKey);
+      __isrCheckEnd = performance.now();
       if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
         const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
         const _earlyIsStale = _earlyCached.isStale;
@@ -10834,29 +11050,37 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             if (_earlyIsStale) {
               // Background regeneration: re-render and update cache
               const _earlyFrozenNavCtx = _getNavigationContext();
-               triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-                 let _earlyEl;
-                 try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-                 const ssrEntry2 = await _loadSSREntry();
-                 const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-                 // Capture font data after render starts (fonts are populated during RSC rendering).
-                 const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-                 const [rscBytesCollected, htmlStream2] = await Promise.all([
-                   collectStreamAsArrayBuffer(rscStream2a),
-                   ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-                 ]);
-                 const htmlReader2 = htmlStream2.getReader();
-                 const htmlChunks2 = [];
-                 while (true) {
-                   const { done, value } = await htmlReader2.read();
-                   if (done) break;
-                   htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-                 }
-                 // Include path tags so revalidatePath() can invalidate this entry.
-                 const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-               });
+                 triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                   const _rg0 = performance.now();
+                   let _earlyEl;
+                   try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                   const _rgBuild = performance.now();
+                   const ssrEntry2 = await _loadSSREntry();
+                   const _rgSsrLoad = performance.now();
+                   const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+
+                  // Capture font data after render starts (fonts are populated during RSC rendering).
+                  const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                  const [rscBytesCollected, htmlStream2] = await Promise.all([
+                    collectStreamAsArrayBuffer(rscStream2a),
+                    ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                  ]);
+                  const _rgRender = performance.now();
+                  const htmlReader2 = htmlStream2.getReader();
+                  const htmlChunks2 = [];
+                  while (true) {
+                    const { done, value } = await htmlReader2.read();
+                    if (done) break;
+                    htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                  }
+                  const _rgDrain = performance.now();
+                  // Include path tags so revalidatePath() can invalidate this entry.
+                  const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                   await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                   setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                   const _rgEnd = performance.now();
+                   console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+                 }, ctx);
              }
              if (_mwCtx.headers) {
                for (const [key, value] of _mwCtx.headers) {
@@ -10887,6 +11111,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 controller.close();
               }
             });
+            __logTiming(_earlyIsStale ? "STALE" : "HIT");
             return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
           }
           // RSC HIT but no rscData — fall through to render (will populate it)
@@ -10896,29 +11121,36 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
            if (_earlyIsStale) {
              // Background regeneration
              const _earlyFrozenNavCtx = _getNavigationContext();
-             triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-               let _earlyEl;
-               try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-               const ssrEntry2 = await _loadSSREntry();
-               const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-               // Capture font data after render starts (fonts are populated during RSC rendering).
-               const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-               const [rscBytesCollected, htmlStream2] = await Promise.all([
-                 collectStreamAsArrayBuffer(rscStream2a),
-                 ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-               ]);
-               const htmlReader2 = htmlStream2.getReader();
-               const htmlChunks2 = [];
-               while (true) {
-                 const { done, value } = await htmlReader2.read();
-                 if (done) break;
-                 htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-               }
-               // Include path tags so revalidatePath() can invalidate this entry.
-               const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-               await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-               setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-             });
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                const _rg0 = performance.now();
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const _rgBuild = performance.now();
+                const ssrEntry2 = await _loadSSREntry();
+                const _rgSsrLoad = performance.now();
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                // Capture font data after render starts (fonts are populated during RSC rendering).
+                const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                ]);
+                const _rgRender = performance.now();
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _rgDrain = performance.now();
+                // Include path tags so revalidatePath() can invalidate this entry.
+                const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                 const _rgEnd = performance.now();
+                 console.log("[vinext:regen] path=" + cleanPathname + " type=html-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+               }, ctx);
            }
            setHeadersContext(null);
           setNavigationContext(null);
@@ -10936,6 +11168,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               _earlyHtmlResp.headers.append(key, value);
             }
           }
+          __logTiming(_earlyIsStale ? "STALE" : "HIT");
           return _earlyHtmlResp;
         }
       }
@@ -11157,9 +11390,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return null;
   });
   if (_pageProbeResult instanceof Response) return _pageProbeResult;
+  __buildPageEnd = performance.now();
 
   // Mark end of compile phase: route matching, middleware, tree building are done.
-  if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
+  __compileEnd = performance.now();
 
   // Render to RSC stream.
   // Track non-navigation RSC errors so we can detect when the in-tree global
@@ -11216,31 +11450,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         _rscResponseStream = rscStreamForClient;
         const _rssMissNavCtx = _getNavigationContext();
         const _rssMissCacheKey = isrCacheKey("app", cleanPathname);
-        triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
-          const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
-          // Render a second time to get HTML for the cache entry (needed so HTML
-          // requests also get a HIT after an RSC-first visit populates the cache).
-          let _bgEl;
-          try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-          const ssrEntry2 = await _loadSSREntry();
-          const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-          const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-          const [, htmlStream2] = await Promise.all([
-            collectStreamAsArrayBuffer(rscStream3a),
-            ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
-          ]);
-          const htmlReader2 = htmlStream2.getReader();
-          const htmlChunks2 = [];
-          while (true) {
-            const { done, value } = await htmlReader2.read();
-            if (done) break;
-            htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-          }
-          const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-          // Cache with the original RSC bytes (from the first render, already served to client).
-          await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
-          setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
-        });
+         triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
+           const _rg0 = performance.now();
+           const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
+           const _rgRscDrain = performance.now();
+           // Render a second time to get HTML for the cache entry (needed so HTML
+           // requests also get a HIT after an RSC-first visit populates the cache).
+           let _bgEl;
+           try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+           const _rgBuild = performance.now();
+           const ssrEntry2 = await _loadSSREntry();
+           const _rgSsrLoad = performance.now();
+           const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+           const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+           const [, htmlStream2] = await Promise.all([
+             collectStreamAsArrayBuffer(rscStream3a),
+             ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
+           ]);
+           const _rgRender = performance.now();
+           const htmlReader2 = htmlStream2.getReader();
+           const htmlChunks2 = [];
+           while (true) {
+             const { done, value } = await htmlReader2.read();
+             if (done) break;
+             htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+           }
+           const _rgDrain = performance.now();
+           const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+           // Cache with the original RSC bytes (from the first render, already served to client).
+            await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
+            setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
+            const _rgEnd = performance.now();
+            console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-miss rsc_drain=" + Math.round(_rgRscDrain-_rg0) + "ms build=" + Math.round(_rgBuild-_rgRscDrain) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+          }, ctx);
       }
 
      // Merge middleware response headers into the RSC response.
@@ -11316,7 +11558,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
      const ssrEntry = await _loadSSREntry();
      htmlStream = await ssrEntry.handleSsr(_rscStreamForSsr, _getNavigationContext(), fontData);
      // Shell render complete; Suspense boundaries stream asynchronously
-     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
+     __renderEnd = performance.now();
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
@@ -11377,6 +11619,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         : -1;
       response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
     }
+    const __cacheStateForLog = response.headers.get("X-Vinext-Cache") ?? response.headers.get("x-vinext-cache") ?? undefined;
+    __logTiming(__cacheStateForLog);
     // Apply custom status code from middleware rewrite
     if (_mwCtx.status) {
       return new Response(response.body, {
@@ -11453,26 +11697,30 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
        // Background cache population — runs after the response is already streaming.
        // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
        // waitUntil mechanism keeps the isolate alive until the cache write completes.
-       triggerBackgroundRegeneration(cacheKey, async () => {
-         const htmlReader = htmlStreamForCache.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await htmlReader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-         }
-         const freshHtml = chunks.join("");
-         // Only cache if no dynamic API usage was detected during this render.
-         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
-         if (!dynamicUsedDuringRender) {
-           const rscBytesCollected = _rscStreamForCache
-             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
-             : undefined;
-            const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-           setRevalidateDuration(cacheKey, revalidateSeconds);
-         }
-       });
+        triggerBackgroundRegeneration(cacheKey, async () => {
+          const _rg0 = performance.now();
+          const htmlReader = htmlStreamForCache.getReader();
+          const chunks = [];
+          while (true) {
+            const { done, value } = await htmlReader.read();
+            if (done) break;
+            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+          }
+          const _rgDrain = performance.now();
+          const freshHtml = chunks.join("");
+          // Only cache if no dynamic API usage was detected during this render.
+          // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+          if (!dynamicUsedDuringRender) {
+            const rscBytesCollected = _rscStreamForCache
+              ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+              : undefined;
+             const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+             await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+             setRevalidateDuration(cacheKey, revalidateSeconds);
+           }
+           const _rgEnd = performance.now();
+           console.log("[vinext:regen] path=" + cleanPathname + " type=html-miss html_drain=" + Math.round(_rgDrain-_rg0) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+         }, ctx);
        return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
@@ -12947,7 +13195,7 @@ function __applyConfigHeaders(pathname, ctx) {
   return result;
 }
 
-export default async function handler(request) {
+export default async function handler(request, ctx) {
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -12964,7 +13212,7 @@ export default async function handler(request) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -12999,13 +13247,40 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx) {
-  const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
+async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+  const __reqStart = performance.now();
+  let __mwEnd;
+  let __routeMatchEnd;
+  let __isrCheckEnd;
+  let __buildPageEnd;
   let __compileEnd;
   let __renderEnd;
   // __reqStart is included in the timing header so the Node logging middleware
   // can compute true compile time as: handlerStart - middlewareStart.
   // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
+
+  // Emit a structured timing log line in production so \`wrangler tail\` shows
+  // per-phase wall-clock latency for every request. No-ops in dev (dev logging
+  // uses the x-vinext-timing response header path instead).
+  function __logTiming(cacheState) {
+    if (process.env.NODE_ENV !== "production") return;
+    const _t = performance.now();
+    const _r = (v) => v !== undefined ? Math.round(v - __reqStart) + "ms" : "-";
+    const parts = [
+      request.method,
+      url.pathname,
+      "total=" + Math.round(_t - __reqStart) + "ms",
+      "mw=" + _r(__mwEnd),
+      "route_match=" + _r(__routeMatchEnd),
+      "isr_check=" + _r(__isrCheckEnd),
+      "build_page=" + _r(__buildPageEnd),
+      "compile=" + _r(__compileEnd),
+      "render=" + _r(__renderEnd),
+      cacheState ? "cache=" + cacheState : null,
+    ].filter(Boolean).join(" ");
+    console.log("[vinext:timing] " + parts);
+  }
+
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -13073,6 +13348,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // every response path without module-level state that races on Workers.
 
   
+  if (__mwEnd === undefined) __mwEnd = performance.now();
 
   // Build post-middleware request context for afterFiles/fallback rewrites.
   // These run after middleware in the App Router execution order and should
@@ -13364,6 +13640,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const { route, params } = match;
+  __routeMatchEnd = performance.now();
 
   // Update navigation context with matched params
   setNavigationContext({
@@ -13602,6 +13879,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
     if (!_isInterceptingRsc) {
       const _earlyCached = await isrGet(_earlyIsrKey);
+      __isrCheckEnd = performance.now();
       if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
         const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
         const _earlyIsStale = _earlyCached.isStale;
@@ -13620,29 +13898,37 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             if (_earlyIsStale) {
               // Background regeneration: re-render and update cache
               const _earlyFrozenNavCtx = _getNavigationContext();
-               triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-                 let _earlyEl;
-                 try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-                 const ssrEntry2 = await _loadSSREntry();
-                 const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-                 // Capture font data after render starts (fonts are populated during RSC rendering).
-                 const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-                 const [rscBytesCollected, htmlStream2] = await Promise.all([
-                   collectStreamAsArrayBuffer(rscStream2a),
-                   ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-                 ]);
-                 const htmlReader2 = htmlStream2.getReader();
-                 const htmlChunks2 = [];
-                 while (true) {
-                   const { done, value } = await htmlReader2.read();
-                   if (done) break;
-                   htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-                 }
-                 // Include path tags so revalidatePath() can invalidate this entry.
-                 const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-               });
+                 triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                   const _rg0 = performance.now();
+                   let _earlyEl;
+                   try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                   const _rgBuild = performance.now();
+                   const ssrEntry2 = await _loadSSREntry();
+                   const _rgSsrLoad = performance.now();
+                   const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+
+                  // Capture font data after render starts (fonts are populated during RSC rendering).
+                  const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                  const [rscBytesCollected, htmlStream2] = await Promise.all([
+                    collectStreamAsArrayBuffer(rscStream2a),
+                    ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                  ]);
+                  const _rgRender = performance.now();
+                  const htmlReader2 = htmlStream2.getReader();
+                  const htmlChunks2 = [];
+                  while (true) {
+                    const { done, value } = await htmlReader2.read();
+                    if (done) break;
+                    htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                  }
+                  const _rgDrain = performance.now();
+                  // Include path tags so revalidatePath() can invalidate this entry.
+                  const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                   await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                   setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                   const _rgEnd = performance.now();
+                   console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+                 }, ctx);
              }
              if (_mwCtx.headers) {
                for (const [key, value] of _mwCtx.headers) {
@@ -13673,6 +13959,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 controller.close();
               }
             });
+            __logTiming(_earlyIsStale ? "STALE" : "HIT");
             return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
           }
           // RSC HIT but no rscData — fall through to render (will populate it)
@@ -13682,29 +13969,36 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
            if (_earlyIsStale) {
              // Background regeneration
              const _earlyFrozenNavCtx = _getNavigationContext();
-             triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-               let _earlyEl;
-               try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-               const ssrEntry2 = await _loadSSREntry();
-               const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-               // Capture font data after render starts (fonts are populated during RSC rendering).
-               const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-               const [rscBytesCollected, htmlStream2] = await Promise.all([
-                 collectStreamAsArrayBuffer(rscStream2a),
-                 ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-               ]);
-               const htmlReader2 = htmlStream2.getReader();
-               const htmlChunks2 = [];
-               while (true) {
-                 const { done, value } = await htmlReader2.read();
-                 if (done) break;
-                 htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-               }
-               // Include path tags so revalidatePath() can invalidate this entry.
-               const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-               await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-               setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-             });
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                const _rg0 = performance.now();
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const _rgBuild = performance.now();
+                const ssrEntry2 = await _loadSSREntry();
+                const _rgSsrLoad = performance.now();
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                // Capture font data after render starts (fonts are populated during RSC rendering).
+                const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                ]);
+                const _rgRender = performance.now();
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _rgDrain = performance.now();
+                // Include path tags so revalidatePath() can invalidate this entry.
+                const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                 const _rgEnd = performance.now();
+                 console.log("[vinext:regen] path=" + cleanPathname + " type=html-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+               }, ctx);
            }
            setHeadersContext(null);
           setNavigationContext(null);
@@ -13722,6 +14016,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               _earlyHtmlResp.headers.append(key, value);
             }
           }
+          __logTiming(_earlyIsStale ? "STALE" : "HIT");
           return _earlyHtmlResp;
         }
       }
@@ -13943,9 +14238,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return null;
   });
   if (_pageProbeResult instanceof Response) return _pageProbeResult;
+  __buildPageEnd = performance.now();
 
   // Mark end of compile phase: route matching, middleware, tree building are done.
-  if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
+  __compileEnd = performance.now();
 
   // Render to RSC stream.
   // Track non-navigation RSC errors so we can detect when the in-tree global
@@ -14002,31 +14298,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         _rscResponseStream = rscStreamForClient;
         const _rssMissNavCtx = _getNavigationContext();
         const _rssMissCacheKey = isrCacheKey("app", cleanPathname);
-        triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
-          const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
-          // Render a second time to get HTML for the cache entry (needed so HTML
-          // requests also get a HIT after an RSC-first visit populates the cache).
-          let _bgEl;
-          try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-          const ssrEntry2 = await _loadSSREntry();
-          const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-          const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-          const [, htmlStream2] = await Promise.all([
-            collectStreamAsArrayBuffer(rscStream3a),
-            ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
-          ]);
-          const htmlReader2 = htmlStream2.getReader();
-          const htmlChunks2 = [];
-          while (true) {
-            const { done, value } = await htmlReader2.read();
-            if (done) break;
-            htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-          }
-          const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-          // Cache with the original RSC bytes (from the first render, already served to client).
-          await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
-          setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
-        });
+         triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
+           const _rg0 = performance.now();
+           const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
+           const _rgRscDrain = performance.now();
+           // Render a second time to get HTML for the cache entry (needed so HTML
+           // requests also get a HIT after an RSC-first visit populates the cache).
+           let _bgEl;
+           try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+           const _rgBuild = performance.now();
+           const ssrEntry2 = await _loadSSREntry();
+           const _rgSsrLoad = performance.now();
+           const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+           const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+           const [, htmlStream2] = await Promise.all([
+             collectStreamAsArrayBuffer(rscStream3a),
+             ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
+           ]);
+           const _rgRender = performance.now();
+           const htmlReader2 = htmlStream2.getReader();
+           const htmlChunks2 = [];
+           while (true) {
+             const { done, value } = await htmlReader2.read();
+             if (done) break;
+             htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+           }
+           const _rgDrain = performance.now();
+           const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+           // Cache with the original RSC bytes (from the first render, already served to client).
+            await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
+            setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
+            const _rgEnd = performance.now();
+            console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-miss rsc_drain=" + Math.round(_rgRscDrain-_rg0) + "ms build=" + Math.round(_rgBuild-_rgRscDrain) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+          }, ctx);
       }
 
      // Merge middleware response headers into the RSC response.
@@ -14102,7 +14406,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
      const ssrEntry = await _loadSSREntry();
      htmlStream = await ssrEntry.handleSsr(_rscStreamForSsr, _getNavigationContext(), fontData);
      // Shell render complete; Suspense boundaries stream asynchronously
-     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
+     __renderEnd = performance.now();
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
@@ -14163,6 +14467,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         : -1;
       response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
     }
+    const __cacheStateForLog = response.headers.get("X-Vinext-Cache") ?? response.headers.get("x-vinext-cache") ?? undefined;
+    __logTiming(__cacheStateForLog);
     // Apply custom status code from middleware rewrite
     if (_mwCtx.status) {
       return new Response(response.body, {
@@ -14239,26 +14545,30 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
        // Background cache population — runs after the response is already streaming.
        // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
        // waitUntil mechanism keeps the isolate alive until the cache write completes.
-       triggerBackgroundRegeneration(cacheKey, async () => {
-         const htmlReader = htmlStreamForCache.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await htmlReader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-         }
-         const freshHtml = chunks.join("");
-         // Only cache if no dynamic API usage was detected during this render.
-         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
-         if (!dynamicUsedDuringRender) {
-           const rscBytesCollected = _rscStreamForCache
-             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
-             : undefined;
-            const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-           setRevalidateDuration(cacheKey, revalidateSeconds);
-         }
-       });
+        triggerBackgroundRegeneration(cacheKey, async () => {
+          const _rg0 = performance.now();
+          const htmlReader = htmlStreamForCache.getReader();
+          const chunks = [];
+          while (true) {
+            const { done, value } = await htmlReader.read();
+            if (done) break;
+            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+          }
+          const _rgDrain = performance.now();
+          const freshHtml = chunks.join("");
+          // Only cache if no dynamic API usage was detected during this render.
+          // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+          if (!dynamicUsedDuringRender) {
+            const rscBytesCollected = _rscStreamForCache
+              ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+              : undefined;
+             const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+             await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+             setRevalidateDuration(cacheKey, revalidateSeconds);
+           }
+           const _rgEnd = performance.now();
+           console.log("[vinext:regen] path=" + cleanPathname + " type=html-miss html_drain=" + Math.round(_rgDrain-_rg0) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+         }, ctx);
        return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
@@ -15764,7 +16074,7 @@ function __applyConfigHeaders(pathname, ctx) {
   return result;
 }
 
-export default async function handler(request) {
+export default async function handler(request, ctx) {
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -15781,7 +16091,7 @@ export default async function handler(request) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -15816,13 +16126,40 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx) {
-  const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
+async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+  const __reqStart = performance.now();
+  let __mwEnd;
+  let __routeMatchEnd;
+  let __isrCheckEnd;
+  let __buildPageEnd;
   let __compileEnd;
   let __renderEnd;
   // __reqStart is included in the timing header so the Node logging middleware
   // can compute true compile time as: handlerStart - middlewareStart.
   // Format: "handlerStart,compileMs,renderMs" - all as integers (ms). Dev-only.
+
+  // Emit a structured timing log line in production so \`wrangler tail\` shows
+  // per-phase wall-clock latency for every request. No-ops in dev (dev logging
+  // uses the x-vinext-timing response header path instead).
+  function __logTiming(cacheState) {
+    if (process.env.NODE_ENV !== "production") return;
+    const _t = performance.now();
+    const _r = (v) => v !== undefined ? Math.round(v - __reqStart) + "ms" : "-";
+    const parts = [
+      request.method,
+      url.pathname,
+      "total=" + Math.round(_t - __reqStart) + "ms",
+      "mw=" + _r(__mwEnd),
+      "route_match=" + _r(__routeMatchEnd),
+      "isr_check=" + _r(__isrCheckEnd),
+      "build_page=" + _r(__buildPageEnd),
+      "compile=" + _r(__compileEnd),
+      "render=" + _r(__renderEnd),
+      cacheState ? "cache=" + cacheState : null,
+    ].filter(Boolean).join(" ");
+    console.log("[vinext:timing] " + parts);
+  }
+
   const url = new URL(request.url);
 
   // ── Cross-origin request protection ─────────────────────────────────
@@ -15976,6 +16313,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
   }
   
+  if (__mwEnd === undefined) __mwEnd = performance.now();
 
   // Build post-middleware request context for afterFiles/fallback rewrites.
   // These run after middleware in the App Router execution order and should
@@ -16267,6 +16605,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   const { route, params } = match;
+  __routeMatchEnd = performance.now();
 
   // Update navigation context with matched params
   setNavigationContext({
@@ -16505,6 +16844,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const _isInterceptingRsc = isRscRequest && !!findIntercept(cleanPathname);
     if (!_isInterceptingRsc) {
       const _earlyCached = await isrGet(_earlyIsrKey);
+      __isrCheckEnd = performance.now();
       if (_earlyCached && _earlyCached.value.value?.kind === "APP_PAGE") {
         const _earlyRevalidateSecs = getRevalidateDuration(_earlyIsrKey) ?? revalidateSeconds;
         const _earlyIsStale = _earlyCached.isStale;
@@ -16523,29 +16863,37 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             if (_earlyIsStale) {
               // Background regeneration: re-render and update cache
               const _earlyFrozenNavCtx = _getNavigationContext();
-               triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-                 let _earlyEl;
-                 try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-                 const ssrEntry2 = await _loadSSREntry();
-                 const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-                 // Capture font data after render starts (fonts are populated during RSC rendering).
-                 const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-                 const [rscBytesCollected, htmlStream2] = await Promise.all([
-                   collectStreamAsArrayBuffer(rscStream2a),
-                   ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-                 ]);
-                 const htmlReader2 = htmlStream2.getReader();
-                 const htmlChunks2 = [];
-                 while (true) {
-                   const { done, value } = await htmlReader2.read();
-                   if (done) break;
-                   htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-                 }
-                 // Include path tags so revalidatePath() can invalidate this entry.
-                 const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-               });
+                 triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                   const _rg0 = performance.now();
+                   let _earlyEl;
+                   try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                   const _rgBuild = performance.now();
+                   const ssrEntry2 = await _loadSSREntry();
+                   const _rgSsrLoad = performance.now();
+                   const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+
+                  // Capture font data after render starts (fonts are populated during RSC rendering).
+                  const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                  const [rscBytesCollected, htmlStream2] = await Promise.all([
+                    collectStreamAsArrayBuffer(rscStream2a),
+                    ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                  ]);
+                  const _rgRender = performance.now();
+                  const htmlReader2 = htmlStream2.getReader();
+                  const htmlChunks2 = [];
+                  while (true) {
+                    const { done, value } = await htmlReader2.read();
+                    if (done) break;
+                    htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                  }
+                  const _rgDrain = performance.now();
+                  // Include path tags so revalidatePath() can invalidate this entry.
+                  const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                   await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                   setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                   const _rgEnd = performance.now();
+                   console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+                 }, ctx);
              }
              if (_mwCtx.headers) {
                for (const [key, value] of _mwCtx.headers) {
@@ -16576,6 +16924,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 controller.close();
               }
             });
+            __logTiming(_earlyIsStale ? "STALE" : "HIT");
             return new Response(_earlyCachedRscStream, { status: _mwCtx.status || 200, headers: _earlyRscResponseHeaders });
           }
           // RSC HIT but no rscData — fall through to render (will populate it)
@@ -16585,29 +16934,36 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
            if (_earlyIsStale) {
              // Background regeneration
              const _earlyFrozenNavCtx = _getNavigationContext();
-             triggerBackgroundRegeneration(_earlyIsrKey, async () => {
-               let _earlyEl;
-               try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-               const ssrEntry2 = await _loadSSREntry();
-               const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-               // Capture font data after render starts (fonts are populated during RSC rendering).
-               const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-               const [rscBytesCollected, htmlStream2] = await Promise.all([
-                 collectStreamAsArrayBuffer(rscStream2a),
-                 ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
-               ]);
-               const htmlReader2 = htmlStream2.getReader();
-               const htmlChunks2 = [];
-               while (true) {
-                 const { done, value } = await htmlReader2.read();
-                 if (done) break;
-                 htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-               }
-               // Include path tags so revalidatePath() can invalidate this entry.
-               const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-               await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
-               setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
-             });
+              triggerBackgroundRegeneration(_earlyIsrKey, async () => {
+                const _rg0 = performance.now();
+                let _earlyEl;
+                try { _earlyEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+                const _rgBuild = performance.now();
+                const ssrEntry2 = await _loadSSREntry();
+                const _rgSsrLoad = performance.now();
+                const [rscStream2a, rscStream2b] = renderToReadableStream(_earlyEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+                // Capture font data after render starts (fonts are populated during RSC rendering).
+                const _regenFontData2 = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                const [rscBytesCollected, htmlStream2] = await Promise.all([
+                  collectStreamAsArrayBuffer(rscStream2a),
+                  ssrEntry2.handleSsr(rscStream2b, _earlyFrozenNavCtx, _regenFontData2),
+                ]);
+                const _rgRender = performance.now();
+                const htmlReader2 = htmlStream2.getReader();
+                const htmlChunks2 = [];
+                while (true) {
+                  const { done, value } = await htmlReader2.read();
+                  if (done) break;
+                  htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+                }
+                const _rgDrain = performance.now();
+                // Include path tags so revalidatePath() can invalidate this entry.
+                const _regenTags2 = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+                 await isrSet(_earlyIsrKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _regenTags2);
+                 setRevalidateDuration(_earlyIsrKey, revalidateSeconds);
+                 const _rgEnd = performance.now();
+                 console.log("[vinext:regen] path=" + cleanPathname + " type=html-stale build=" + Math.round(_rgBuild-_rg0) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+               }, ctx);
            }
            setHeadersContext(null);
           setNavigationContext(null);
@@ -16625,6 +16981,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
               _earlyHtmlResp.headers.append(key, value);
             }
           }
+          __logTiming(_earlyIsStale ? "STALE" : "HIT");
           return _earlyHtmlResp;
         }
       }
@@ -16846,9 +17203,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     return null;
   });
   if (_pageProbeResult instanceof Response) return _pageProbeResult;
+  __buildPageEnd = performance.now();
 
   // Mark end of compile phase: route matching, middleware, tree building are done.
-  if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
+  __compileEnd = performance.now();
 
   // Render to RSC stream.
   // Track non-navigation RSC errors so we can detect when the in-tree global
@@ -16905,31 +17263,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         _rscResponseStream = rscStreamForClient;
         const _rssMissNavCtx = _getNavigationContext();
         const _rssMissCacheKey = isrCacheKey("app", cleanPathname);
-        triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
-          const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
-          // Render a second time to get HTML for the cache entry (needed so HTML
-          // requests also get a HIT after an RSC-first visit populates the cache).
-          let _bgEl;
-          try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
-          const ssrEntry2 = await _loadSSREntry();
-          const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
-          const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-          const [, htmlStream2] = await Promise.all([
-            collectStreamAsArrayBuffer(rscStream3a),
-            ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
-          ]);
-          const htmlReader2 = htmlStream2.getReader();
-          const htmlChunks2 = [];
-          while (true) {
-            const { done, value } = await htmlReader2.read();
-            if (done) break;
-            htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-          }
-          const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-          // Cache with the original RSC bytes (from the first render, already served to client).
-          await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
-          setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
-        });
+         triggerBackgroundRegeneration(_rssMissCacheKey, async () => {
+           const _rg0 = performance.now();
+           const rscBytesCollected = await collectStreamAsArrayBuffer(rscStreamForBgCache);
+           const _rgRscDrain = performance.now();
+           // Render a second time to get HTML for the cache entry (needed so HTML
+           // requests also get a HIT after an RSC-first visit populates the cache).
+           let _bgEl;
+           try { _bgEl = await buildPageElement(route, params, undefined, url.searchParams); } catch (_) { return; }
+           const _rgBuild = performance.now();
+           const ssrEntry2 = await _loadSSREntry();
+           const _rgSsrLoad = performance.now();
+           const [rscStream3a, rscStream3b] = renderToReadableStream(_bgEl, { onError: createRscOnErrorHandler(request, cleanPathname, route.pattern) }).tee();
+           const _rssMissFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+           const [, htmlStream2] = await Promise.all([
+             collectStreamAsArrayBuffer(rscStream3a),
+             ssrEntry2.handleSsr(rscStream3b, _rssMissNavCtx, _rssMissFontData),
+           ]);
+           const _rgRender = performance.now();
+           const htmlReader2 = htmlStream2.getReader();
+           const htmlChunks2 = [];
+           while (true) {
+             const { done, value } = await htmlReader2.read();
+             if (done) break;
+             htmlChunks2.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+           }
+           const _rgDrain = performance.now();
+           const _rssMissTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+           // Cache with the original RSC bytes (from the first render, already served to client).
+            await isrSet(_rssMissCacheKey, buildAppPageCacheValue(htmlChunks2.join(""), rscBytesCollected, 200), revalidateSeconds, _rssMissTags);
+            setRevalidateDuration(_rssMissCacheKey, revalidateSeconds);
+            const _rgEnd = performance.now();
+            console.log("[vinext:regen] path=" + cleanPathname + " type=rsc-miss rsc_drain=" + Math.round(_rgRscDrain-_rg0) + "ms build=" + Math.round(_rgBuild-_rgRscDrain) + "ms ssr_load=" + Math.round(_rgSsrLoad-_rgBuild) + "ms render=" + Math.round(_rgRender-_rgSsrLoad) + "ms html_drain=" + Math.round(_rgDrain-_rgRender) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+          }, ctx);
       }
 
      // Merge middleware response headers into the RSC response.
@@ -17005,7 +17371,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
      const ssrEntry = await _loadSSREntry();
      htmlStream = await ssrEntry.handleSsr(_rscStreamForSsr, _getNavigationContext(), fontData);
      // Shell render complete; Suspense boundaries stream asynchronously
-     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
+     __renderEnd = performance.now();
   } catch (ssrErr) {
     const specialResponse = await handleRenderError(ssrErr);
     if (specialResponse) return specialResponse;
@@ -17066,6 +17432,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         : -1;
       response.headers.set("x-vinext-timing", handlerStart + "," + compileMs + "," + renderMs);
     }
+    const __cacheStateForLog = response.headers.get("X-Vinext-Cache") ?? response.headers.get("x-vinext-cache") ?? undefined;
+    __logTiming(__cacheStateForLog);
     // Apply custom status code from middleware rewrite
     if (_mwCtx.status) {
       return new Response(response.body, {
@@ -17142,26 +17510,30 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
        // Background cache population — runs after the response is already streaming.
        // We fire-and-forget via triggerBackgroundRegeneration so Cloudflare Workers'
        // waitUntil mechanism keeps the isolate alive until the cache write completes.
-       triggerBackgroundRegeneration(cacheKey, async () => {
-         const htmlReader = htmlStreamForCache.getReader();
-         const chunks = [];
-         while (true) {
-           const { done, value } = await htmlReader.read();
-           if (done) break;
-           chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
-         }
-         const freshHtml = chunks.join("");
-         // Only cache if no dynamic API usage was detected during this render.
-         // dynamicUsedDuringRender is evaluated in the outer scope before this block.
-         if (!dynamicUsedDuringRender) {
-           const rscBytesCollected = _rscStreamForCache
-             ? await collectStreamAsArrayBuffer(_rscStreamForCache)
-             : undefined;
-            const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
-           await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
-           setRevalidateDuration(cacheKey, revalidateSeconds);
-         }
-       });
+        triggerBackgroundRegeneration(cacheKey, async () => {
+          const _rg0 = performance.now();
+          const htmlReader = htmlStreamForCache.getReader();
+          const chunks = [];
+          while (true) {
+            const { done, value } = await htmlReader.read();
+            if (done) break;
+            chunks.push(typeof value === "string" ? value : new TextDecoder().decode(value));
+          }
+          const _rgDrain = performance.now();
+          const freshHtml = chunks.join("");
+          // Only cache if no dynamic API usage was detected during this render.
+          // dynamicUsedDuringRender is evaluated in the outer scope before this block.
+          if (!dynamicUsedDuringRender) {
+            const rscBytesCollected = _rscStreamForCache
+              ? await collectStreamAsArrayBuffer(_rscStreamForCache)
+              : undefined;
+             const _missPageTags = [cleanPathname, "_N_T_" + cleanPathname, ...getCollectedFetchTags()];
+             await isrSet(cacheKey, buildAppPageCacheValue(freshHtml, rscBytesCollected, 200), revalidateSeconds, _missPageTags);
+             setRevalidateDuration(cacheKey, revalidateSeconds);
+           }
+           const _rgEnd = performance.now();
+           console.log("[vinext:regen] path=" + cleanPathname + " type=html-miss html_drain=" + Math.round(_rgDrain-_rg0) + "ms kv_set=" + Math.round(_rgEnd-_rgDrain) + "ms total=" + Math.round(_rgEnd-_rg0) + "ms");
+         }, ctx);
        return attachMiddlewareContext(new Response(htmlStreamForClient, {
          headers: {
            "Content-Type": "text/html; charset=utf-8",
