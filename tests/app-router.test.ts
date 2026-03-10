@@ -2466,7 +2466,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     // Should call dev origin validation inside _handleRequest
     const callSite = code.indexOf("const __originBlock = __validateDevRequestOrigin(request)");
     const handleRequestIdx = code.indexOf(
-      "async function _handleRequest(request, __reqCtx, _mwCtx)",
+      "async function _handleRequest(request, __reqCtx, _mwCtx, ctx)",
     );
     expect(callSite).toBeGreaterThan(-1);
     expect(handleRequestIdx).toBeGreaterThan(-1);
@@ -3145,5 +3145,94 @@ describe("App Router external rewrite proxy credential stripping", () => {
     expect(response.headers.get("content-length")).toBeNull();
     expect(response.headers.get("x-custom")).toBe("keep-me");
     expect(await response.text()).toBe("proxied gzipped body");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// generateRscEntry — ISR code generation assertions
+// ---------------------------------------------------------------------------
+
+describe("generateRscEntry ISR code generation", () => {
+  // Minimal route list — only the generated ISR guard logic matters here
+  const minimalRoutes = [
+    {
+      pattern: "/",
+      pagePath: "/tmp/test/app/page.tsx",
+      routePath: null,
+      layouts: ["/tmp/test/app/layout.tsx"],
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      layoutErrorPaths: [null],
+      notFoundPath: null,
+      forbiddenPath: null,
+      unauthorizedPath: null,
+      routeSegments: [],
+      layoutTreePositions: [0],
+      isDynamic: false,
+      params: [],
+    },
+  ] as any[];
+
+  it('generated code contains process.env.NODE_ENV === "production" guard for ISR cache read', () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain('process.env.NODE_ENV === "production"');
+  });
+
+  it("generated code contains ISR inline helper functions", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("async function __isrGet(");
+    expect(code).toContain("async function __isrSet(");
+    expect(code).toContain("function __triggerBackgroundRegeneration(");
+    expect(code).toContain("function __isrCacheKey(");
+    expect(code).toContain("const __pendingRegenerations = new Map()");
+  });
+
+  it("generated handler exports async function handler(request, ctx)", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The handler must accept a ctx param so ExecutionContext is threaded through
+    expect(code).toMatch(/export default async function handler\s*\(\s*request\s*,\s*ctx\s*\)/);
+  });
+
+  it("generated code imports getCacheHandler from next/cache", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("getCacheHandler");
+    expect(code).toContain('"next/cache"');
+  });
+
+  it("generated code emits X-Vinext-Cache: MISS header on first render", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain('"X-Vinext-Cache": "MISS"');
+  });
+
+  it("generated code emits X-Vinext-Cache: HIT header on cache hits", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain('"X-Vinext-Cache": "HIT"');
+  });
+
+  it("generated code emits X-Vinext-Cache: STALE header on stale hits", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain('"X-Vinext-Cache": "STALE"');
+  });
+
+  it("generated code uses ctx.waitUntil for background cache write", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("ctx.waitUntil");
+  });
+
+  it("generated code tees the response stream for cache population in production", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain(".tee()");
+  });
+
+  it("ISR cache read fires before buildPageElement (early return on HIT)", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The ISR read block must appear before 'buildPageElement' in the generated code
+    const isrReadIdx = code.indexOf("__isrGet(");
+    const buildPageIdx = code.indexOf("buildPageElement(");
+    expect(isrReadIdx).toBeGreaterThan(-1);
+    expect(buildPageIdx).toBeGreaterThan(-1);
+    expect(isrReadIdx).toBeLessThan(buildPageIdx);
   });
 });

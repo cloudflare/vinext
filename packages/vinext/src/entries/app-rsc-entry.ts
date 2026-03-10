@@ -34,6 +34,9 @@ const configMatchersPath = fileURLToPath(
 const requestPipelinePath = fileURLToPath(
   new URL("../server/request-pipeline.js", import.meta.url),
 ).replace(/\\/g, "/");
+const isrCachePath = fileURLToPath(
+  new URL("../server/isr-cache.js", import.meta.url),
+).replace(/\\/g, "/");
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -254,7 +257,7 @@ ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(inst
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("../server/metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
-import { _consumeRequestScopedCacheLife, _runWithCacheState } from "next/cache";
+import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithFetchCache } from "vinext/fetch-cache";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
@@ -291,7 +294,38 @@ function setNavigationContext(ctx) {
 // ISR cache is disabled in dev mode — every request re-renders fresh,
 // matching Next.js dev behavior. Cache-Control headers are still emitted
 // based on export const revalidate for testing purposes.
-// Production ISR is handled by prod-server.ts and the Cloudflare worker entry.
+// Production ISR uses the MemoryCacheHandler (or configured KV handler).
+//
+// These helpers are inlined instead of imported from isr-cache.js because
+// the virtual RSC entry module runs in the RSC Vite environment which
+// cannot use dynamic imports at the module-evaluation level for server-only
+// modules, and direct imports must use the pre-computed absolute paths.
+async function __isrGet(key) {
+  const handler = getCacheHandler();
+  const result = await handler.get(key);
+  if (!result || !result.value) return null;
+  return { value: result, isStale: result.cacheState === "stale" };
+}
+async function __isrSet(key, data, revalidateSeconds) {
+  const handler = getCacheHandler();
+  await handler.set(key, data, { revalidate: revalidateSeconds, tags: [] });
+}
+const __pendingRegenerations = new Map();
+function __triggerBackgroundRegeneration(key, renderFn, ctx) {
+  if (__pendingRegenerations.has(key)) return;
+  const promise = renderFn()
+    .catch((err) => console.error("[vinext] ISR regen failed for " + key + ":", err))
+    .finally(() => __pendingRegenerations.delete(key));
+  __pendingRegenerations.set(key, promise);
+  if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
+}
+function __isrCacheKey(pathname) {
+  const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
+  const key = "app:" + normalized;
+  if (key.length <= 200) return key;
+  // Simple djb2-based truncation for very long keys (keeps under KV 512-byte limit)
+  return "app:__hash:" + __errorDigest(normalized);
+}
 
 // Normalize null-prototype objects from matchPattern() into thenable objects
 // that work both as Promises (for Next.js 15+ async params) and as plain
@@ -1293,7 +1327,7 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
-export default async function handler(request) {
+export default async function handler(request, ctx) {
   ${
     instrumentationPath
       ? `// Ensure instrumentation.register() has run before handling the first request.
@@ -1318,7 +1352,7 @@ export default async function handler(request) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -1353,7 +1387,7 @@ export default async function handler(request) {
   );
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx) {
+async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
   let __compileEnd;
   let __renderEnd;
@@ -2046,6 +2080,90 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // force-dynamic: set no-store Cache-Control
   const isForceDynamic = dynamicConfig === "force-dynamic";
 
+  // ── ISR cache read (production only, HTML requests only) ──────────────────
+  // Read from cache BEFORE building the component tree. This is the critical
+  // performance optimization: on a cache hit we skip all rendering work entirely.
+  // RSC requests (.rsc suffix / client-side navigation) are never served from
+  // the ISR cache — they always render fresh so the client gets live data.
+  if (
+    process.env.NODE_ENV === "production" &&
+    !isRscRequest &&
+    !isForceDynamic &&
+    !isForceStatic &&
+    !isDynamicError &&
+    revalidateSeconds !== null && revalidateSeconds > 0
+  ) {
+    const __isrKey = __isrCacheKey(cleanPathname);
+    try {
+      const __cached = await __isrGet(__isrKey);
+      if (__cached && !__cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_PAGE") {
+        // Fresh cache hit — serve immediately, skip all rendering
+        const __hitHeaders = {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+          "Vary": "RSC, Accept",
+          "X-Vinext-Cache": "HIT",
+        };
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return new Response(__cached.value.value.html, { status: __cached.value.value.status || 200, headers: __hitHeaders });
+      }
+      if (__cached && __cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_PAGE") {
+        // Stale cache hit — serve stale immediately, trigger background regeneration
+        const __staleHtml = __cached.value.value.html;
+        const __staleStatus = __cached.value.value.status || 200;
+        const __revalSecs = revalidateSeconds;
+        __triggerBackgroundRegeneration(__isrKey, async function() {
+          // Re-render the page to produce fresh HTML for the cache
+          const __revalHeadCtx = headersContextFromRequest(request);
+          const __freshHtml = await runWithHeadersContext(__revalHeadCtx, () =>
+            _runWithNavigationContext(() =>
+              _runWithCacheState(() =>
+                _runWithPrivateCache(() =>
+                  runWithFetchCache(async () => {
+                    setNavigationContext({ pathname: cleanPathname, searchParams: url.searchParams, params });
+                    const __revalElement = await buildPageElement(route, params, undefined, url.searchParams);
+                    const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
+                    const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
+                    const __revalFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+                    const __revalSsrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+                    const __revalHtmlStream = await __revalSsrEntry.handleSsr(__revalRscStream, _getNavigationContext(), __revalFontData);
+                    setHeadersContext(null);
+                    setNavigationContext(null);
+                    // Collect the full HTML string from the stream
+                    const __revalReader = __revalHtmlStream.getReader();
+                    const __revalDecoder = new TextDecoder();
+                    const __revalChunks = [];
+                    for (;;) {
+                      const { done, value } = await __revalReader.read();
+                      if (done) break;
+                      __revalChunks.push(__revalDecoder.decode(value, { stream: true }));
+                    }
+                    __revalChunks.push(__revalDecoder.decode());
+                    return __revalChunks.join("");
+                  })
+                )
+              )
+            )
+          );
+          await __isrSet(__isrKey, { kind: "APP_PAGE", html: __freshHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs);
+        }, ctx);
+        const __staleHeaders = {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "s-maxage=0, stale-while-revalidate",
+          "Vary": "RSC, Accept",
+          "X-Vinext-Cache": "STALE",
+        };
+        setHeadersContext(null);
+        setNavigationContext(null);
+        return new Response(__staleHtml, { status: __staleStatus, headers: __staleHeaders });
+      }
+    } catch (__isrReadErr) {
+      // Cache read failure — fall through to normal rendering
+      console.error("[vinext] ISR cache read error:", __isrReadErr);
+    }
+  }
+
   // Check for intercepting routes on RSC requests (client-side navigation).
   // If the target URL matches an intercepting route in a parallel slot,
   // render the source route with the intercepting page in the slot.
@@ -2499,9 +2617,50 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }));
   }
 
-  // Emit Cache-Control for ISR pages so tests can verify revalidate values,
-  // but skip actual caching in dev — every request renders fresh.
+  // Emit Cache-Control for ISR pages and write to ISR cache on MISS (production only).
   if (revalidateSeconds !== null && revalidateSeconds > 0) {
+    // In production, tee the response body to simultaneously stream to the
+    // client and collect the full HTML string for the ISR cache.
+    // In dev, skip the tee and the X-Vinext-Cache header — every request renders
+    // fresh (no cache reads or writes in dev mode).
+    if (process.env.NODE_ENV === "production") {
+      const __isrResponseProd = attachMiddlewareContext(new Response(htmlStream, {
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+          "Vary": "RSC, Accept",
+          "X-Vinext-Cache": "MISS",
+        },
+      }));
+      if (__isrResponseProd.body) {
+        const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
+        const __isrKey = __isrCacheKey(cleanPathname);
+        const __revalSecs = revalidateSeconds;
+        const __cachePromise = (async () => {
+          try {
+            const __reader = __streamForCache.getReader();
+            const __decoder = new TextDecoder();
+            const __chunks = [];
+            for (;;) {
+              const { done, value } = await __reader.read();
+              if (done) break;
+              __chunks.push(__decoder.decode(value, { stream: true }));
+            }
+            __chunks.push(__decoder.decode());
+            const __fullHtml = __chunks.join("");
+            await __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs);
+          } catch (__cacheErr) {
+            console.error("[vinext] ISR cache write error:", __cacheErr);
+          }
+        })();
+        // Register with ExecutionContext so the Workers runtime keeps the isolate
+        // alive until the cache write finishes, even after the response is sent.
+        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__cachePromise);
+        return new Response(__streamForClient, __isrResponseProd);
+      }
+      return __isrResponseProd;
+    }
+    // Dev mode: return Cache-Control header but no X-Vinext-Cache (no cache read/write)
     return attachMiddlewareContext(new Response(htmlStream, {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
