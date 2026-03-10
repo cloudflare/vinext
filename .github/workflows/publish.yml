@@ -81,15 +81,29 @@ jobs:
           git push origin "v${{ steps.version.outputs.version }}"
 
       - name: Get changes since last version
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           PREV_TAG="v${{ steps.version.outputs.previous }}"
-          FORMAT="%h %s (%aN)"
+          FORMAT="%H %s"
           if git rev-parse "$PREV_TAG" >/dev/null 2>&1; then
-            git log "$PREV_TAG"..HEAD --format="$FORMAT" --no-merges > /tmp/commits.txt
+            git log "$PREV_TAG"..HEAD --format="$FORMAT" --no-merges > /tmp/raw-commits.txt
           else
             # No previous tag found, grab recent commits
-            git log --format="$FORMAT" --no-merges -30 > /tmp/commits.txt
+            git log --format="$FORMAT" --no-merges -30 > /tmp/raw-commits.txt
           fi
+
+          # Resolve GitHub @usernames for each commit via the API
+          while IFS= read -r line; do
+            SHA=$(echo "$line" | cut -d' ' -f1)
+            SUBJECT=$(echo "$line" | cut -d' ' -f2-)
+            LOGIN=$(gh api "repos/${{ github.repository }}/commits/${SHA}" --jq '.author.login // .commit.author.name' 2>/dev/null || echo "")
+            if [ -n "$LOGIN" ]; then
+              echo "${SHA} ${SUBJECT} (@${LOGIN})"
+            else
+              echo "${SHA} ${SUBJECT}"
+            fi
+          done < /tmp/raw-commits.txt > /tmp/commits.txt
 
       - name: Generate release summary
         id: summary
@@ -113,7 +127,7 @@ jobs:
               max_tokens: 1024,
               messages: [{
                 role: "user",
-                content: ("You are writing GitHub release notes for vinext v" + $version + " — a Vite plugin that reimplements the Next.js API surface for Cloudflare Workers.\n\nHere are the commits since the last release (format: hash subject (author)):\n\n" + $commits + "\n\nWrite release notes in standard GitHub release format. Use these guidelines:\n- Group changes under markdown headings: ## What'\''s Changed, then subheadings like ### New Features, ### Bug Fixes, ### Performance, ### Internal / Chores — only include a subheading if there are relevant commits for it\n- Under each subheading, write bullet points. Each bullet should describe the change in plain English from a user'\''s perspective — not just repeat the commit message verbatim\n- Credit contributors by appending (author name) at the end of each bullet using the author from the commit log; deduplicate if the same person appears many times by listing them once in a ## Contributors section at the end\n- Omit noise like typo fixes, dependency bumps, and CI-only changes unless they are meaningful to users\n- No preamble or closing remarks — just the release notes")
+                content: ("You are writing GitHub release notes for vinext v" + $version + " — a Vite plugin that reimplements the Next.js API surface for Cloudflare Workers.\n\nHere are the commits since the last release (format: hash subject (@github-username)):\n\n" + $commits + "\n\nWrite release notes in standard GitHub release format. Use these guidelines:\n- Group changes under markdown headings: ## What'\''s Changed, then subheadings like ### New Features, ### Bug Fixes, ### Performance, ### Internal / Chores — only include a subheading if there are relevant commits for it\n- Under each subheading, write bullet points. Each bullet should describe the change in plain English from a user'\''s perspective — not just repeat the commit message verbatim\n- Credit contributors by appending @username at the end of each bullet using the GitHub username from the commit log (keep the @ prefix so GitHub renders it as a mention); deduplicate if the same person appears many times by listing them once in a ## Contributors section at the end\n- Omit noise like typo fixes, dependency bumps, and CI-only changes unless they are meaningful to users\n- No preamble or closing remarks — just the release notes")
               }]
             }')") || true
 
@@ -152,7 +166,6 @@ jobs:
           gh release create "v${VERSION}" \
             --title "v${VERSION}" \
             --notes-file - \
-            --draft \
             --repo "${{ github.repository }}" <<< "${SUMMARY}"
 
       - name: Notify Google Chat
