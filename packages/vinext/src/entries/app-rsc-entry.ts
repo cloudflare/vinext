@@ -323,12 +323,26 @@ function __triggerBackgroundRegeneration(key, renderFn, ctx) {
 // HTML and RSC are stored under separate keys — matching Next.js's file-system
 // layout (.html / .rsc) — so each request type reads and writes its own key
 // independently with no races or partial-entry sentinels.
+//
+// Key format: "app:<buildId>/<pathname>:<suffix>"
+// Long-pathname fallback: "app:__hash:<buildId>/<fnv1a64(pathname)>:<suffix>"
+// The 200-char threshold keeps the full key well under Cloudflare KV's 512-byte limit
+// even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
+// 32-bit rounds) to give a ~64-bit output with negligible collision probability for
+// realistic pathname lengths.
+function __isrFnv1a64(s) {
+  let h1 = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) { h1 ^= s.charCodeAt(i); h1 = (h1 * 0x01000193) >>> 0; }
+  let h2 = 0x050c5d1f;
+  for (let i = 0; i < s.length; i++) { h2 ^= s.charCodeAt(i); h2 = (h2 * 0x01000193) >>> 0; }
+  return h1.toString(36) + h2.toString(36);
+}
 function __isrCacheKey(pathname, suffix) {
   const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
   const key = "app:" + process.env.__VINEXT_BUILD_ID + "/" + normalized + ":" + suffix;
   if (key.length <= 200) return key;
-  // Simple djb2-based truncation for very long keys (keeps under KV 512-byte limit)
-  return "app:__hash:" + process.env.__VINEXT_BUILD_ID + "/" + __errorDigest(normalized) + ":" + suffix;
+  // Pathname too long — hash it to keep under KV's 512-byte key limit.
+  return "app:__hash:" + process.env.__VINEXT_BUILD_ID + "/" + __isrFnv1a64(normalized) + ":" + suffix;
 }
 function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
 function __isrRscKey(pathname) { return __isrCacheKey(pathname, "rsc"); }
@@ -2078,7 +2092,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   if (
     process.env.NODE_ENV === "production" &&
     !isForceDynamic &&
-    revalidateSeconds !== null && revalidateSeconds > 0
+    revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity
   ) {
     const __isrKey = isRscRequest ? __isrRscKey(cleanPathname) : __isrHtmlKey(cleanPathname);
     try {
@@ -2124,9 +2138,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         const __staleValue = __cached.value.value;
         const __staleStatus = __staleValue.status || 200;
         const __revalSecs = revalidateSeconds;
-        __triggerBackgroundRegeneration(__isrKey, async function() {
+        __triggerBackgroundRegeneration(cleanPathname, async function() {
           // Re-render the page to produce fresh HTML + RSC data for the cache
-          const __revalHeadCtx = headersContextFromRequest(request);
+          // Use an empty headers context for background regeneration — not the original
+          // user request — to prevent user-specific cookies/auth headers from leaking
+          // into content that is cached and served to all subsequent users.
+          const __revalHeadCtx = { headers: new Headers(), cookies: new Map() };
           const __revalResult = await runWithHeadersContext(__revalHeadCtx, () =>
             _runWithNavigationContext(() =>
               _runWithCacheState(() =>
@@ -2495,7 +2512,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   //   __isrRscDataPromise → resolves to ArrayBuffer of captured RSC wire bytes
   let __rscForResponse = rscStream;
   let __isrRscDataPromise = null;
-  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0 && !isForceDynamic) {
+  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity && !isForceDynamic) {
     const [__rscA, __rscB] = rscStream.tee();
     __rscForResponse = __rscA;
     __isrRscDataPromise = (async () => {
@@ -2529,6 +2546,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     if (isForceDynamic) {
       responseHeaders["Cache-Control"] = "no-store, must-revalidate";
     } else if ((isForceStatic || isDynamicError) && !revalidateSeconds) {
+      responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
+      responseHeaders["X-Vinext-Cache"] = "STATIC";
+    } else if (revalidateSeconds === Infinity) {
       responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
       responseHeaders["X-Vinext-Cache"] = "STATIC";
     } else if (revalidateSeconds) {
@@ -2583,7 +2603,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     // For ISR-eligible RSC requests in production: write rscData to its own key.
     // HTML is stored under a separate key (written by the HTML path below) so
     // these writes never race or clobber each other.
-    if (process.env.NODE_ENV === "production" && __isrRscDataPromise && revalidateSeconds !== null && revalidateSeconds > 0) {
+    if (process.env.NODE_ENV === "production" && __isrRscDataPromise) {
       responseHeaders["X-Vinext-Cache"] = "MISS";
       const __isrKeyRsc = __isrRscKey(cleanPathname);
       const __revalSecsRsc = revalidateSeconds;
@@ -2760,7 +2780,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   }
 
   // Emit Cache-Control for ISR pages and write to ISR cache on MISS (production only).
-  if (revalidateSeconds !== null && revalidateSeconds > 0) {
+  // revalidate=Infinity means "cache forever" (no periodic revalidation) — treated as
+  // static here so we emit s-maxage=31536000 but skip ISR cache management.
+  if (revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity) {
     // In production, tee the HTML response body to simultaneously stream to the
     // client and collect the full HTML string for the ISR cache. rscData was
     // already captured above by teeing the RSC stream before SSR.
@@ -2778,7 +2800,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       if (__isrResponseProd.body) {
         const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
         const __isrKey = __isrHtmlKey(cleanPathname);
+        const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
         const __revalSecs = revalidateSeconds;
+        const __capturedRscDataPromise = __isrRscDataPromise;
         const __cachePromise = (async () => {
           try {
             const __reader = __streamForCache.getReader();
@@ -2791,8 +2815,22 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             }
             __chunks.push(__decoder.decode());
             const __fullHtml = __chunks.join("");
-            // HTML key stores only html — RSC is stored independently under its own key.
-            await __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs);
+            // Write HTML and RSC to their own keys independently.
+            // RSC data was captured by the tee above (before isRscRequest branch)
+            // so an initial browser visit (HTML request) also populates the RSC key,
+            // ensuring the first client-side navigation after a direct visit is a
+            // cache hit rather than a miss.
+            const __writes = [
+              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+            ];
+            if (__capturedRscDataPromise) {
+              __writes.push(
+                __capturedRscDataPromise.then((__rscBuf) =>
+                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs)
+                )
+              );
+            }
+            await Promise.all(__writes);
             console.log("[vinext] ISR HTML cache written", __isrKey);
           } catch (__cacheErr) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
@@ -2801,7 +2839,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         // Register with ExecutionContext so the Workers runtime keeps the isolate
         // alive until the cache write finishes, even after the response is sent.
         if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__cachePromise);
-        return new Response(__streamForClient, __isrResponseProd);
+        return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
       }
       return __isrResponseProd;
     }
@@ -2810,6 +2848,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       headers: {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
+        "Vary": "RSC, Accept",
+      },
+    }));
+  }
+
+  // revalidate=Infinity (or false, which Next.js normalises to false/0): treat as
+  // permanent static — emit the longest safe s-maxage but skip ISR cache management.
+  if (revalidateSeconds === Infinity) {
+    return attachMiddlewareContext(new Response(htmlStream, {
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "s-maxage=31536000, stale-while-revalidate",
+        "X-Vinext-Cache": "STATIC",
         "Vary": "RSC, Accept",
       },
     }));
