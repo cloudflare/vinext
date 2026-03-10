@@ -8,6 +8,7 @@
 import * as React from "react";
 import type { CSSProperties, JSX } from "react";
 import Head from "./head.js";
+import { getImageBlurSvg } from "./image-blur-svg.js";
 import { ServerInsertedHTMLContext } from "./navigation.js";
 import {
   hasLocalMatch,
@@ -27,8 +28,6 @@ export interface StaticImageData {
   height: number;
   width: number;
   blurDataURL?: string;
-  // TODO: blurWidth/blurHeight are declared but not consumed by normalizeProps.
-  // Next.js 16 passes them to getImageBlurSvg() for placeholder generation.
   blurWidth?: number;
   blurHeight?: number;
 }
@@ -40,10 +39,21 @@ export interface StaticRequire {
 export type StaticImport = StaticRequire | StaticImageData;
 export type ImageLoader = (props: ImageLoaderProps) => string;
 export type PlaceholderValue = "blur" | "empty" | `data:image/${string}`;
+export type OnLoad = React.ReactEventHandler<HTMLImageElement> | undefined;
 export type OnLoadingComplete = (img: HTMLImageElement) => void;
+
+export type PlaceholderStyle = Partial<
+  Pick<
+    CSSProperties,
+    "backgroundSize" | "backgroundPosition" | "backgroundRepeat" | "backgroundImage"
+  >
+>;
 
 type LoadingValue = "lazy" | "eager" | undefined;
 const VALID_LOADING_VALUES = ["lazy", "eager", undefined] as const;
+
+// Object-fit values that are not valid background-size values
+const INVALID_BACKGROUND_SIZE_VALUES = ["-moz-initial", "fill", "none", "scale-down", undefined];
 
 type RuntimeImageConfig = ImageConfigComplete & {
   allSizes: number[];
@@ -94,8 +104,10 @@ type ImageMeta = {
 };
 
 type ImageState = {
-  config: RuntimeImageConfig;
-  defaultLoader: (props: ImageLoaderPropsWithConfig) => string;
+  config?: RuntimeImageConfig;
+  defaultLoader?: (props: ImageLoaderPropsWithConfig) => string;
+  showAltText?: boolean;
+  blurComplete?: boolean;
 };
 
 function parseJson<T>(value: string | undefined, fallback: T): T {
@@ -413,14 +425,21 @@ function generateImgAttrs({
   };
 }
 
-function normalizeProps(
+export function normalizeProps(
   incomingProps: ImageProps,
   state: ImageState,
 ): { props: ImgProps; meta: ImageMeta } {
   const {
+    showAltText,
+    blurComplete,
+    defaultLoader: stateDefaultLoader = defaultLoader,
+    config: stateConfig = __imageConfig,
+  } = state;
+
+  const {
     src: srcProp,
     alt,
-    sizes,
+    sizes: sizesProp,
     unoptimized: unoptimizedProp = false,
     priority = false,
     preload = false,
@@ -430,12 +449,12 @@ function normalizeProps(
     width,
     height,
     fill: fillProp = false,
-    style,
+    style: styleProp,
     overrideSrc,
     onLoad,
     onLoadingComplete,
     placeholder = "empty",
-    blurDataURL,
+    blurDataURL: blurDataURLProp,
     fetchPriority,
     decoding = "async",
     layout,
@@ -448,11 +467,46 @@ function normalizeProps(
   } = incomingProps;
 
   let fill = fillProp;
-  const unwrapped = unwrapStaticImport(srcProp);
-  let src = typeof unwrapped === "string" ? unwrapped : unwrapped.src;
+  let sizes = sizesProp;
+  let style = styleProp;
+  let blurDataURL = blurDataURLProp;
+
+  const defaultOrCustomLoader = loaderProp
+    ? ({ config: _config, ...props }: ImageLoaderPropsWithConfig) => loaderProp(props)
+    : stateDefaultLoader;
+  if (!loaderProp && stateConfig.loader === "custom") {
+    throw new Error(
+      `Image with src "${srcProp}" is missing "loader" prop.\nRead more: https://nextjs.org/docs/messages/next-image-missing-loader`,
+    );
+  }
+
+  // Handle layout prop → fill, style, and sizes mapping
+  if (layout) {
+    if (layout === "fill") {
+      fill = true;
+    }
+    const layoutToStyle: Record<string, Record<string, string> | undefined> = {
+      intrinsic: { maxWidth: "100%", height: "auto" },
+      responsive: { width: "100%", height: "auto" },
+    };
+    const layoutToSizes: Record<string, string | undefined> = {
+      responsive: "100vw",
+      fill: "100vw",
+    };
+    const layoutStyle = layoutToStyle[layout];
+    if (layoutStyle) {
+      style = { ...style, ...layoutStyle };
+    }
+    const layoutSizes = layoutToSizes[layout];
+    if (layoutSizes && !sizes) {
+      sizes = layoutSizes;
+    }
+  }
+
   let widthInt = getInt(width);
   let heightInt = getInt(height);
-  let blurData = blurDataURL;
+  let blurWidth: number | undefined;
+  let blurHeight: number | undefined;
 
   if (isStaticImport(srcProp)) {
     const staticData = isStaticRequire(srcProp) ? srcProp.default : srcProp;
@@ -470,8 +524,9 @@ function normalizeProps(
         )}`,
       );
     }
-    src = staticData.src;
-    blurData = blurDataURL ?? staticData.blurDataURL;
+    blurWidth = staticData.blurWidth;
+    blurHeight = staticData.blurHeight;
+    blurDataURL = blurDataURLProp ?? staticData.blurDataURL;
     if (!fill) {
       if (!widthInt && !heightInt) {
         widthInt = staticData.width;
@@ -483,60 +538,17 @@ function normalizeProps(
       }
     }
   }
+  const unwrapped = unwrapStaticImport(srcProp);
+  const src = typeof unwrapped === "string" ? unwrapped : unwrapped.src;
 
-  if (layout === "fill") {
-    fill = true;
+  let isLazy = !priority && !preload && (loading === "lazy" || typeof loading === "undefined");
+  if (!src || isDataUrl(src) || isBlobUrl(src)) {
+    isLazy = false;
   }
 
   if (process.env.NODE_ENV !== "production") {
     if (!src) {
       throw new Error(`Image is missing required "src" property.`);
-    }
-    if (src.length > 0 && src.charCodeAt(0) <= 0x20) {
-      throw new Error(
-        `Image with src "${src}" cannot start with a space or control character. Use src.trimStart() to remove it or encodeURIComponent(src) to keep it.`,
-      );
-    }
-    if (src.length > 0 && src.charCodeAt(src.length - 1) <= 0x20) {
-      throw new Error(
-        `Image with src "${src}" cannot end with a space or control character. Use src.trimEnd() to remove it or encodeURIComponent(src) to keep it.`,
-      );
-    }
-    if (!VALID_LOADING_VALUES.includes(loading)) {
-      throw new Error(
-        `Image with src "${src}" has invalid "loading" property. Provided "${loading}" should be one of ${VALID_LOADING_VALUES.map(
-          String,
-        ).join(",")}.`,
-      );
-    }
-    if (priority && loading === "lazy") {
-      throw new Error(
-        `Image with src "${src}" has both "priority" and "loading='lazy'" properties. Only one should be used.`,
-      );
-    }
-    if (preload && loading === "lazy") {
-      throw new Error(
-        `Image with src "${src}" has both "preload" and "loading='lazy'" properties. Only one should be used.`,
-      );
-    }
-    if (preload && priority) {
-      throw new Error(
-        `Image with src "${src}" has both "preload" and "priority" properties. Only "preload" should be used.`,
-      );
-    }
-    if (
-      placeholder !== "empty" &&
-      placeholder !== "blur" &&
-      !placeholder.startsWith("data:image/")
-    ) {
-      throw new Error(
-        `Image with src "${src}" has invalid "placeholder" property "${placeholder}".`,
-      );
-    }
-    if (placeholder === "blur" && !blurData) {
-      throw new Error(
-        `Image with src "${src}" has "placeholder='blur'" property but is missing the "blurDataURL" property.`,
-      );
     }
     if (fill) {
       if (width !== undefined) {
@@ -581,66 +593,105 @@ function normalizeProps(
           `Image with src "${src}" has invalid "height" property. Expected a numeric value in pixels but received "${height}".`,
         );
       }
+      if (src.length > 0 && src.charCodeAt(0) <= 0x20) {
+        throw new Error(
+          `Image with src "${src}" cannot start with a space or control character. Use src.trimStart() to remove it or encodeURIComponent(src) to keep it.`,
+        );
+      }
+      if (src.length > 0 && src.charCodeAt(src.length - 1) <= 0x20) {
+        throw new Error(
+          `Image with src "${src}" cannot end with a space or control character. Use src.trimEnd() to remove it or encodeURIComponent(src) to keep it.`,
+        );
+      }
     }
-  }
-
-  let unoptimized = unoptimizedProp;
-  let isLazy = !priority && !preload && (loading === "lazy" || typeof loading === "undefined");
-
-  if (!src || isDataUrl(src) || isBlobUrl(src)) {
-    unoptimized = true;
-    isLazy = false;
-  }
-  if (state.config.unoptimized) {
-    unoptimized = true;
-  }
-  if (!state.config.dangerouslyAllowSVG && src.split("?", 1)[0].endsWith(".svg")) {
-    unoptimized = true;
-  }
-
-  const qualityInt = getInt(quality);
-  if (process.env.NODE_ENV !== "production" && qualityInt && state.config.qualities) {
-    if (!state.config.qualities.includes(qualityInt)) {
-      console.warn(
-        `Image with src "${src}" is using quality "${qualityInt}" which is not configured in images.qualities [${state.config.qualities.join(", ")}].`,
+    if (!VALID_LOADING_VALUES.includes(loading)) {
+      throw new Error(
+        `Image with src "${src}" has invalid "loading" property. Provided "${loading}" should be one of ${VALID_LOADING_VALUES.map(
+          String,
+        ).join(",")}.`,
       );
     }
-  }
-
-  if (process.env.NODE_ENV !== "production") {
-    if (lazyBoundary) {
-      console.warn(`Image with src "${src}" has legacy prop "lazyBoundary".`);
+    if (priority && loading === "lazy") {
+      throw new Error(
+        `Image with src "${src}" has both "priority" and "loading='lazy'" properties. Only one should be used.`,
+      );
     }
-    if (lazyRoot) {
-      console.warn(`Image with src "${src}" has legacy prop "lazyRoot".`);
+    if (preload && loading === "lazy") {
+      throw new Error(
+        `Image with src "${src}" has both "preload" and "loading='lazy'" properties. Only one should be used.`,
+      );
     }
-    if (layout) {
-      console.warn(`Image with src "${src}" has legacy prop "layout".`);
+    if (preload && priority) {
+      throw new Error(
+        `Image with src "${src}" has both "preload" and "priority" properties. Only "preload" should be used.`,
+      );
     }
-    if (objectFit) {
-      console.warn(`Image with src "${src}" has legacy prop "objectFit".`);
+    if (
+      placeholder !== "empty" &&
+      placeholder !== "blur" &&
+      !placeholder.startsWith("data:image/")
+    ) {
+      throw new Error(
+        `Image with src "${src}" has invalid "placeholder" property "${placeholder}".`,
+      );
     }
-    if (objectPosition) {
-      console.warn(`Image with src "${src}" has legacy prop "objectPosition".`);
+    if (placeholder !== "empty") {
+      if (widthInt && heightInt && widthInt * heightInt < 1600) {
+        console.warn(
+          `Image with src "${src}" is smaller than 40x40. Consider removing the "placeholder" property to improve performance.`,
+        );
+      }
+    }
+    if (placeholder === "blur" && !blurDataURL) {
+      throw new Error(
+        `Image with src "${src}" has "placeholder='blur'" property but is missing the "blurDataURL" property.`,
+      );
+    }
+    if ("ref" in rest) {
+      console.warn(
+        `Image with src "${src}" is using unsupported "ref" property. Consider using the "onLoad" property instead.`,
+      );
     }
     if (onLoadingComplete) {
       console.warn(
         `Image with src "${src}" is using deprecated "onLoadingComplete" property. Please use "onLoad" instead.`,
       );
     }
+    for (const [legacyKey, legacyValue] of Object.entries({
+      layout,
+      objectFit,
+      objectPosition,
+      lazyBoundary,
+      lazyRoot,
+    })) {
+      if (legacyValue) {
+        console.warn(`Image with src "${src}" has legacy prop "${legacyKey}".`);
+      }
+    }
   }
 
-  const defaultOrCustomLoader = loaderProp
-    ? ({ config: _config, ...props }: ImageLoaderPropsWithConfig) => loaderProp(props)
-    : state.defaultLoader;
-  if (!loaderProp && state.config.loader === "custom") {
-    throw new Error(
-      `Image with src "${src}" is missing "loader" prop.\nRead more: https://nextjs.org/docs/messages/next-image-missing-loader`,
-    );
+  let unoptimized = unoptimizedProp;
+  if (!src || isDataUrl(src) || isBlobUrl(src)) {
+    unoptimized = true;
+  }
+  if (stateConfig.unoptimized) {
+    unoptimized = true;
+  }
+  if (!stateConfig.dangerouslyAllowSVG && src.split("?", 1)[0].endsWith(".svg")) {
+    unoptimized = true;
+  }
+
+  const qualityInt = getInt(quality);
+  if (process.env.NODE_ENV !== "production" && qualityInt && stateConfig.qualities) {
+    if (!stateConfig.qualities.includes(qualityInt)) {
+      console.warn(
+        `Image with src "${src}" is using quality "${qualityInt}" which is not configured in images.qualities [${stateConfig.qualities.join(", ")}].`,
+      );
+    }
   }
 
   const imgAttributes = generateImgAttrs({
-    config: state.config,
+    config: stateConfig,
     src,
     unoptimized,
     width: widthInt,
@@ -649,20 +700,12 @@ function normalizeProps(
     loader: defaultOrCustomLoader,
   });
 
-  const blurSource =
-    placeholder === "blur"
-      ? blurData
-      : placeholder.startsWith("data:image/")
-        ? placeholder
-        : undefined;
-  const sanitizedBlurSource = blurSource ? sanitizeBlurDataURL(blurSource) : undefined;
-
   const imgStyle = Object.assign(
     fill
       ? {
           position: "absolute",
-          width: "100%",
           height: "100%",
+          width: "100%",
           left: 0,
           top: 0,
           right: 0,
@@ -670,21 +713,48 @@ function normalizeProps(
           objectFit,
           objectPosition,
         }
-      : {
-          objectFit,
-          objectPosition,
-        },
-    { color: "transparent" },
-    style,
-    sanitizedBlurSource && placeholder !== "empty"
-      ? {
-          backgroundSize: (objectFit as CSSProperties["backgroundSize"]) || "cover",
-          backgroundPosition: objectPosition || "50% 50%",
-          backgroundRepeat: "no-repeat",
-          backgroundImage: `url(${sanitizedBlurSource})`,
-        }
       : {},
+    showAltText ? {} : { color: "transparent" },
+    style,
   );
+
+  // Build placeholder style using SVG blur when placeholder='blur'
+  let backgroundImage: string | null = null;
+  if (!blurComplete && placeholder !== "empty") {
+    if (placeholder === "blur") {
+      const sanitized = sanitizeBlurDataURL(blurDataURL || "");
+      if (sanitized) {
+        backgroundImage = `url("data:image/svg+xml;charset=utf-8,${getImageBlurSvg({
+          widthInt,
+          heightInt,
+          blurWidth,
+          blurHeight,
+          blurDataURL: sanitized,
+          objectFit: imgStyle.objectFit,
+        })}")`;
+      }
+    } else {
+      const sanitized = sanitizeBlurDataURL(placeholder);
+      if (sanitized) {
+        backgroundImage = `url("${sanitized}")`;
+      }
+    }
+  }
+
+  const backgroundSize = !INVALID_BACKGROUND_SIZE_VALUES.includes(imgStyle.objectFit)
+    ? imgStyle.objectFit
+    : imgStyle.objectFit === "fill"
+      ? "100% 100%"
+      : "cover";
+
+  const placeholderStyle: PlaceholderStyle = backgroundImage
+    ? {
+        backgroundSize,
+        backgroundPosition: imgStyle.objectPosition || "50% 50%",
+        backgroundRepeat: "no-repeat",
+        backgroundImage,
+      }
+    : {};
 
   const props: ImgProps = {
     ...rest,
@@ -701,7 +771,7 @@ function normalizeProps(
           onLoadingComplete(e.currentTarget);
         }
       : onLoad,
-    style: imgStyle,
+    style: { ...imgStyle, ...placeholderStyle },
     sizes: imgAttributes.sizes,
     srcSet: imgAttributes.srcSet,
     src: overrideSrc || imgAttributes.src,

@@ -464,7 +464,7 @@ describe("sanitizeBlurDataURL prevents CSS injection", () => {
     ).toThrow(/invalid "placeholder" property/);
   });
 
-  it("allows valid blurDataURL and sets backgroundImage", async () => {
+  it("allows valid blurDataURL and sets backgroundImage with SVG blur", async () => {
     const { getImageProps } = await loadImageModule();
     const { props } = getImageProps({
       src: "/test.png",
@@ -475,7 +475,12 @@ describe("sanitizeBlurDataURL prevents CSS injection", () => {
       blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
     });
 
-    expect(props.style.backgroundImage).toBe("url(data:image/png;base64,iVBORw0KGgo=)");
+    // blur placeholder now uses SVG wrapping
+    expect(props.style.backgroundImage).toMatch(
+      /^url\("data:image\/svg\+xml;charset=utf-8,.*%3Csvg.*%3C\/svg%3E"\)$/,
+    );
+    // The original blurDataURL should be embedded inside the SVG
+    expect(props.style.backgroundImage).toContain("data:image/png;base64,iVBORw0KGgo=");
   });
 });
 
@@ -951,5 +956,429 @@ describe("SVG auto-unoptimized", () => {
 
     expect(props.srcSet).toBeUndefined();
     expect(props.src).toBe("/icon.svg");
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Phase 2: Blur SVG placeholder integration
+// Ported from Next.js: packages/next/src/shared/lib/get-img-props.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/get-img-props.ts
+// ──────────────────────────────────────────────────────────────
+
+describe("blur placeholder uses getImageBlurSvg", () => {
+  it("wraps blurDataURL in an SVG blur filter for placeholder='blur'", async () => {
+    const { getImageProps } = await loadImageModule();
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+    });
+
+    // Next.js wraps in: url("data:image/svg+xml;charset=utf-8,<svg>...")
+    expect(props.style.backgroundImage).toMatch(
+      /^url\("data:image\/svg\+xml;charset=utf-8,.*%3Csvg.*%3C\/svg%3E"\)$/,
+    );
+  });
+
+  it("passes blurWidth/blurHeight from static imports to the SVG generator", async () => {
+    const { getImageProps } = await loadImageModule();
+    const staticImage = {
+      src: "/static/photo.png",
+      width: 1200,
+      height: 800,
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+      blurWidth: 8,
+      blurHeight: 6,
+    };
+
+    const { props } = getImageProps({
+      alt: "blur dims",
+      src: staticImage,
+      placeholder: "blur",
+    });
+
+    // blurWidth=8 → SVG viewBox width = 8*40 = 320
+    // blurHeight=6 → SVG viewBox height = 6*40 = 240
+    expect(props.style.backgroundImage).toContain("viewBox='0 0 320 240'");
+  });
+
+  it("falls back to widthInt/heightInt when no blurWidth/blurHeight", async () => {
+    const { getImageProps } = await loadImageModule();
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 400,
+      height: 300,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+    });
+
+    expect(props.style.backgroundImage).toContain("viewBox='0 0 400 300'");
+  });
+
+  it("includes Gaussian blur filter in placeholder", async () => {
+    const { getImageProps } = await loadImageModule();
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+    });
+
+    expect(props.style.backgroundImage).toContain("feGaussianBlur");
+    expect(props.style.backgroundImage).toContain("stdDeviation='20'");
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Phase 3: INVALID_BACKGROUND_SIZE_VALUES handling
+// Ported from Next.js: packages/next/src/shared/lib/get-img-props.ts lines 91-97, 712-718
+// ──────────────────────────────────────────────────────────────
+
+describe("backgroundSize handles invalid objectFit values", () => {
+  it("uses 'cover' as backgroundSize when objectFit is undefined", async () => {
+    const { getImageProps } = await loadImageModule();
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+    });
+
+    expect(props.style.backgroundSize).toBe("cover");
+  });
+
+  it("uses '100% 100%' as backgroundSize when objectFit is 'fill' in fill mode", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      fill: true,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+      objectFit: "fill",
+    } as any);
+
+    expect(props.style.backgroundSize).toBe("100% 100%");
+    warnSpy.mockRestore();
+  });
+
+  it("uses 'cover' as backgroundSize when objectFit is 'none' in fill mode", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      fill: true,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+      objectFit: "none",
+    } as any);
+
+    expect(props.style.backgroundSize).toBe("cover");
+    warnSpy.mockRestore();
+  });
+
+  it("uses 'cover' as backgroundSize when objectFit is 'scale-down' in fill mode", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      fill: true,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+      objectFit: "scale-down",
+    } as any);
+
+    expect(props.style.backgroundSize).toBe("cover");
+    warnSpy.mockRestore();
+  });
+
+  it("uses objectFit directly as backgroundSize when it is a valid background-size (e.g., 'contain') in fill mode", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      fill: true,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+      objectFit: "contain",
+    } as any);
+
+    expect(props.style.backgroundSize).toBe("contain");
+    warnSpy.mockRestore();
+  });
+
+  it("uses objectFit directly as backgroundSize for 'cover' in fill mode", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      fill: true,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+      objectFit: "cover",
+    } as any);
+
+    expect(props.style.backgroundSize).toBe("cover");
+    warnSpy.mockRestore();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Phase 4: showAltText and blurComplete state parameters
+// Ported from Next.js: packages/next/src/shared/lib/get-img-props.ts lines 694, 699
+// ──────────────────────────────────────────────────────────────
+
+describe("showAltText and blurComplete state parameters", () => {
+  it("applies color: transparent when showAltText is false (default)", async () => {
+    const { getImageProps } = await loadImageModule();
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+    });
+
+    expect(props.style.color).toBe("transparent");
+  });
+
+  it("does not set color: transparent when showAltText is true", async () => {
+    const { normalizeProps } = await loadImageModule();
+    const { props } = normalizeProps(
+      {
+        src: "/test.png",
+        alt: "test",
+        width: 100,
+        height: 100,
+      },
+      {
+        showAltText: true,
+      },
+    );
+
+    expect(props.style.color).not.toBe("transparent");
+  });
+
+  it("does not show blur placeholder when blurComplete is true", async () => {
+    const { normalizeProps } = await loadImageModule();
+    const { props } = normalizeProps(
+      {
+        src: "/test.png",
+        alt: "test",
+        width: 100,
+        height: 100,
+        placeholder: "blur",
+        blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+      },
+      {
+        blurComplete: true,
+      },
+    );
+
+    expect(props.style.backgroundImage).toBeUndefined();
+  });
+
+  it("shows blur placeholder when blurComplete is false (default)", async () => {
+    const { normalizeProps } = await loadImageModule();
+    const { props } = normalizeProps(
+      {
+        src: "/test.png",
+        alt: "test",
+        width: 100,
+        height: 100,
+        placeholder: "blur",
+        blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+      },
+      {},
+    );
+
+    expect(props.style.backgroundImage).toBeDefined();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Phase 5: Type exports
+// ──────────────────────────────────────────────────────────────
+
+describe("type exports", () => {
+  it("exports OnLoad type", async () => {
+    const mod = await loadImageModule();
+    // OnLoad is a type-only export, so at runtime we just verify the module loaded
+    // The real verification is in TypeScript compilation
+    expect(mod).toBeDefined();
+  });
+
+  it("exports PlaceholderStyle type", async () => {
+    const mod = await loadImageModule();
+    expect(mod).toBeDefined();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Phase 6: layout prop → style/sizes mapping
+// Ported from Next.js: packages/next/src/shared/lib/get-img-props.ts lines 372-392
+// ──────────────────────────────────────────────────────────────
+
+describe("layout prop to style/sizes mapping", () => {
+  it("layout='intrinsic' applies maxWidth: 100%, height: auto", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      layout: "intrinsic",
+    } as any);
+
+    expect(props.style.maxWidth).toBe("100%");
+    expect(props.style.height).toBe("auto");
+    warnSpy.mockRestore();
+  });
+
+  it("layout='responsive' applies width: 100%, height: auto and sizes='100vw'", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      layout: "responsive",
+    } as any);
+
+    expect(props.style.width).toBe("100%");
+    expect(props.style.height).toBe("auto");
+    expect(props.sizes).toBe("100vw");
+    warnSpy.mockRestore();
+  });
+
+  it("layout='fill' sets fill=true and sizes='100vw'", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      layout: "fill",
+    } as any);
+
+    expect(props["data-nimg"]).toBe("fill");
+    expect(props.style.position).toBe("absolute");
+    expect(props.sizes).toBe("100vw");
+    warnSpy.mockRestore();
+  });
+
+  it("layout='responsive' does not override explicit sizes prop", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      layout: "responsive",
+      sizes: "50vw",
+    } as any);
+
+    expect(props.sizes).toBe("50vw");
+    warnSpy.mockRestore();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Phase 7: Additional dev-mode warnings (ref, small image placeholder)
+// Ported from Next.js: packages/next/src/shared/lib/get-img-props.ts lines 567-572, 598-601
+// ──────────────────────────────────────────────────────────────
+
+describe("additional dev-mode warnings", () => {
+  it("warns when placeholder is used on images smaller than 40x40", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 30,
+      height: 30,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringMatching(/smaller than 40x40.*Consider removing.*placeholder/),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("does not warn for images >= 40x40 with placeholder", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 40,
+      height: 40,
+      placeholder: "blur",
+      blurDataURL: "data:image/png;base64,iVBORw0KGgo=",
+    });
+
+    const smallImageWarnings = warnSpy.mock.calls.filter(
+      (call) => typeof call[0] === "string" && call[0].includes("smaller than 40x40"),
+    );
+    expect(smallImageWarnings).toHaveLength(0);
+    warnSpy.mockRestore();
+  });
+
+  it("warns when ref prop is passed", async () => {
+    const { getImageProps } = await loadImageModule();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+      ref: {} as any,
+    } as any);
+
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringMatching(/unsupported "ref" property/));
+    warnSpy.mockRestore();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Phase 8: Non-fill mode should not include objectFit/objectPosition in base style
+// Ported from Next.js: packages/next/src/shared/lib/get-img-props.ts lines 680-696
+// ──────────────────────────────────────────────────────────────
+
+describe("non-fill mode style", () => {
+  it("does not include objectFit or objectPosition in style when fill is false", async () => {
+    const { getImageProps } = await loadImageModule();
+    const { props } = getImageProps({
+      src: "/test.png",
+      alt: "test",
+      width: 100,
+      height: 100,
+    });
+
+    expect(Object.keys(props.style)).not.toContain("objectFit");
+    expect(Object.keys(props.style)).not.toContain("objectPosition");
   });
 });
