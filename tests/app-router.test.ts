@@ -3232,10 +3232,40 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("generated code stores rscData in the ISR cache entry", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // The cache write must include rscData (not always undefined)
+    // The HTML-path cache write must include rscData (not always undefined)
     expect(code).toContain("rscData: __rscData");
     // Background regen must also store rscData
     expect(code).toContain("rscData: __freshRscData");
+  });
+
+  it("generated code writes RSC-first partial cache entry on RSC MISS", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The RSC-path cache write must store rscData with html:"" as a partial entry.
+    // This lets subsequent RSC requests hit cache immediately without waiting
+    // for an HTML request to come in and populate a complete entry.
+    expect(code).toContain('html: ""');
+    // The RSC write must use __isrKeyRsc / __rscDataForCache variable names
+    expect(code).toContain("__rscDataForCache");
+    expect(code).toContain("__isrKeyRsc");
+  });
+
+  it("generated code treats html:'' partial entries as MISS for HTML requests", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The ISR read block must check __hasHtml before returning an HTML HIT,
+    // so that a partial entry (html:"") falls through to render.
+    expect(code).toContain("__hasHtml");
+    // Must also check __hasRsc before returning an RSC HIT
+    expect(code).toContain("__hasRsc");
+    // HTML requests must only return HIT when __hasHtml is true.
+    // Slice from the ISR cache read comment to the main render call.
+    // Use "element = await buildPageElement" (the main page render, not the fn def or regen call).
+    const isrReadBlock = code.slice(
+      code.indexOf("ISR cache read"),
+      code.indexOf("element = await buildPageElement"),
+    );
+    expect(isrReadBlock.length).toBeGreaterThan(0);
+    expect(isrReadBlock).toContain("if (isRscRequest && __hasRsc)");
+    expect(isrReadBlock).toContain("if (!isRscRequest && __hasHtml)");
   });
 
   it("generated code serves cached rscData for RSC requests on HIT", () => {
@@ -3243,20 +3273,24 @@ describe("generateRscEntry ISR code generation", () => {
     // ISR read block must return rscData for RSC requests
     expect(code).toContain("rscData");
     expect(code).toContain("text/x-component");
-    // The ISR read block must NOT have the old !isRscRequest guard
-    // (it should handle both HTML and RSC requests)
+    // The ISR read block must have an explicit RSC hit path (not just an HTML path)
     const isrReadBlock = code.slice(
       code.indexOf("ISR cache read"),
-      code.indexOf("buildPageElement("),
+      code.indexOf("element = await buildPageElement"),
     );
-    expect(isrReadBlock).not.toContain("!isRscRequest");
+    expect(isrReadBlock.length).toBeGreaterThan(0);
+    // Must serve RSC from cache using isRscRequest guard
+    expect(isrReadBlock).toContain("if (isRscRequest && __hasRsc)");
+    // Must NOT use the old bare !isRscRequest guard (HTML-only serving without data check)
+    expect(isrReadBlock).not.toContain("if (!isRscRequest) {");
   });
 
   it("ISR cache read fires before buildPageElement (early return on HIT)", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // The ISR read block must appear before 'buildPageElement' in the generated code
+    // The ISR read block must appear before the main 'buildPageElement' render call.
+    // Use "element = await buildPageElement" to target the main call, not the fn definition.
     const isrReadIdx = code.indexOf("__isrGet(");
-    const buildPageIdx = code.indexOf("buildPageElement(");
+    const buildPageIdx = code.indexOf("element = await buildPageElement");
     expect(isrReadIdx).toBeGreaterThan(-1);
     expect(buildPageIdx).toBeGreaterThan(-1);
     expect(isrReadIdx).toBeLessThan(buildPageIdx);

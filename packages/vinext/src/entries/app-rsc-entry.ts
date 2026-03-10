@@ -2053,6 +2053,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   // ALL expensive work (generateStaticParams, buildPageElement, layout probe,
   // page probe, renderToReadableStream, SSR). Both HTML and RSC requests
   // (client-side navigation / prefetch) are served from cache.
+  //
+  // Partial cache entries: an RSC-first request may populate the cache with
+  // rscData but leave html as "" (the HTML request hasn't come in yet).
+  // In that case: RSC requests get a HIT (rscData available), but HTML
+  // requests treat it as a MISS and fall through to render — which will
+  // overwrite the entry with a complete html+rscData entry.
   if (
     process.env.NODE_ENV === "production" &&
     !isForceDynamic &&
@@ -2064,13 +2070,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     try {
       const __cached = await __isrGet(__isrKey);
       if (__cached && !__cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_PAGE") {
+        const __cachedValue = __cached.value.value;
+        const __hasHtml = typeof __cachedValue.html === "string" && __cachedValue.html.length > 0;
+        const __hasRsc = !!__cachedValue.rscData;
         // Fresh cache hit — serve immediately, skip all rendering
-        setHeadersContext(null);
-        setNavigationContext(null);
-        if (isRscRequest && __cached.value.value.rscData) {
+        // (but only if we have the right data for this request type)
+        if (isRscRequest && __hasRsc) {
+          console.log("[vinext] ISR HIT (RSC)", cleanPathname);
+          setHeadersContext(null);
+          setNavigationContext(null);
           // RSC request (client-side navigation or prefetch): return cached RSC wire format
-          return new Response(__cached.value.value.rscData, {
-            status: __cached.value.value.status || 200,
+          return new Response(__cachedValue.rscData, {
+            status: __cachedValue.status || 200,
             headers: {
               "Content-Type": "text/x-component; charset=utf-8",
               "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
@@ -2079,9 +2090,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             },
           });
         }
-        if (!isRscRequest) {
-          return new Response(__cached.value.value.html, {
-            status: __cached.value.value.status || 200,
+        if (!isRscRequest && __hasHtml) {
+          console.log("[vinext] ISR HIT (HTML)", cleanPathname);
+          setHeadersContext(null);
+          setNavigationContext(null);
+          return new Response(__cachedValue.html, {
+            status: __cachedValue.status || 200,
             headers: {
               "Content-Type": "text/html; charset=utf-8",
               "Cache-Control": "s-maxage=" + revalidateSeconds + ", stale-while-revalidate",
@@ -2090,11 +2104,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             },
           });
         }
-        // RSC request but rscData not cached yet — fall through to render
+        // For this request type, no usable cached data yet — fall through to render.
+        // (e.g. RSC request but only html cached, or HTML request but only rscData cached)
+        if (isRscRequest) {
+          console.log("[vinext] ISR MISS (RSC, rscData not cached yet)", cleanPathname);
+        } else {
+          console.log("[vinext] ISR MISS (HTML, html not cached yet)", cleanPathname);
+        }
       }
       if (__cached && __cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_PAGE") {
         // Stale cache hit — serve stale immediately, trigger background regeneration
         const __staleValue = __cached.value.value;
+        const __hasStaleHtml = typeof __staleValue.html === "string" && __staleValue.html.length > 0;
+        const __hasStaleRsc = !!__staleValue.rscData;
         const __staleStatus = __staleValue.status || 200;
         const __revalSecs = revalidateSeconds;
         __triggerBackgroundRegeneration(__isrKey, async function() {
@@ -2151,10 +2173,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             )
           );
           await __isrSet(__isrKey, { kind: "APP_PAGE", html: __revalResult.html, rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs);
+          console.log("[vinext] ISR regen complete", __isrKey);
         }, ctx);
-        setHeadersContext(null);
-        setNavigationContext(null);
-        if (isRscRequest && __staleValue.rscData) {
+        if (isRscRequest && __hasStaleRsc) {
+          console.log("[vinext] ISR STALE (RSC)", cleanPathname);
+          setHeadersContext(null);
+          setNavigationContext(null);
           return new Response(__staleValue.rscData, {
             status: __staleStatus,
             headers: {
@@ -2165,7 +2189,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             },
           });
         }
-        if (!isRscRequest) {
+        if (!isRscRequest && __hasStaleHtml) {
+          console.log("[vinext] ISR STALE (HTML)", cleanPathname);
+          setHeadersContext(null);
+          setNavigationContext(null);
           return new Response(__staleValue.html, {
             status: __staleStatus,
             headers: {
@@ -2176,7 +2203,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             },
           });
         }
-        // RSC request but rscData not cached yet — fall through to render
+        // Stale but no data for this request type — fall through to render
+        if (isRscRequest) {
+          console.log("[vinext] ISR STALE (RSC, rscData not in stale entry)", cleanPathname);
+        } else {
+          console.log("[vinext] ISR STALE (HTML, html not in stale entry)", cleanPathname);
+        }
+      }
+      if (!__cached) {
+        console.log("[vinext] ISR MISS (no cache entry)", cleanPathname);
       }
     } catch (__isrReadErr) {
       // Cache read failure — fall through to normal rendering
@@ -2540,29 +2575,30 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const compileMs = __compileEnd !== undefined ? Math.round(__compileEnd - __reqStart) : -1;
       responseHeaders["x-vinext-timing"] = handlerStart + "," + compileMs + ",-1";
     }
-    // For ISR RSC requests: write rscData to cache in background via waitUntil so
-    // subsequent RSC requests (prefetch / client-side navigation) are served from cache.
+    // For ISR-eligible RSC requests in production: write the rscData to cache immediately
+    // (with html:"" as a placeholder) so that subsequent RSC requests can be served from
+    // cache without waiting for an HTML request to come in first.
+    //
+    // html:"" is intentional — it signals a partial entry. The ISR read block above
+    // treats html:"" as a MISS for HTML requests, letting the first HTML request
+    // fall through to render and overwrite the entry with full html+rscData.
+    //
+    // This means RSC prefetch caching is immediate; HTML caching happens on the
+    // first HTML request (which may come right after the prefetch).
     if (process.env.NODE_ENV === "production" && __isrRscDataPromise && revalidateSeconds !== null && revalidateSeconds > 0) {
-      const __isrKey = __isrCacheKey(cleanPathname);
-      const __revalSecs = revalidateSeconds;
-      const __rscCachePromise = (async () => {
+      responseHeaders["X-Vinext-Cache"] = "MISS";
+      const __isrKeyRsc = __isrCacheKey(cleanPathname);
+      const __revalSecsRsc = revalidateSeconds;
+      const __rscWritePromise = (async () => {
         try {
-          const __rscData = await __isrRscDataPromise;
-          // Only write rscData; if there is already a full cache entry (html + rscData)
-          // from a prior HTML request, update it — otherwise store rscData-only so the
-          // next HTML MISS will fill html too.
-          const __existing = await __isrGet(__isrKey);
-          if (__existing && __existing.value && __existing.value.value && __existing.value.value.kind === "APP_PAGE") {
-            const __prev = __existing.value.value;
-            await __isrSet(__isrKey, { kind: "APP_PAGE", html: __prev.html, rscData: __rscData, headers: __prev.headers, postponed: __prev.postponed, status: __prev.status || 200 }, __revalSecs);
-          } else {
-            await __isrSet(__isrKey, { kind: "APP_PAGE", html: "", rscData: __rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs);
-          }
-        } catch (__rscCacheErr) {
-          console.error("[vinext] ISR RSC cache write error:", __rscCacheErr);
+          const __rscDataForCache = await __isrRscDataPromise;
+          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc);
+          console.log("[vinext] ISR RSC cache written (partial, html pending)", __isrKeyRsc);
+        } catch (__rscWriteErr) {
+          console.error("[vinext] ISR RSC cache write error:", __rscWriteErr);
         }
       })();
-      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__rscCachePromise);
+      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__rscWritePromise);
     }
     return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
@@ -2757,9 +2793,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             }
             __chunks.push(__decoder.decode());
             const __fullHtml = __chunks.join("");
-            // Await the RSC data captured by teeing the RSC stream before SSR
+            // Await the RSC data captured by teeing the RSC stream before SSR.
+            // If an RSC-first request already wrote a partial entry (html:"", rscData set),
+            // this HTML write will overwrite it with a complete entry (html+rscData).
             const __rscData = __isrRscDataPromise ? await __isrRscDataPromise : undefined;
             await __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: __rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs);
+            console.log("[vinext] ISR HTML cache written (complete)", __isrKey);
           } catch (__cacheErr) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
           }
