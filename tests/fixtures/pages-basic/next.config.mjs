@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  generateBuildId: () => "test-build-id",
   env: {
     CUSTOM_VAR: "hello-from-config",
   },
