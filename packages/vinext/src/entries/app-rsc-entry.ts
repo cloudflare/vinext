@@ -34,9 +34,6 @@ const configMatchersPath = fileURLToPath(
 const requestPipelinePath = fileURLToPath(
   new URL("../server/request-pipeline.js", import.meta.url),
 ).replace(/\\/g, "/");
-const isrCachePath = fileURLToPath(
-  new URL("../server/isr-cache.js", import.meta.url),
-).replace(/\\/g, "/");
 
 /**
  * Resolved config options relevant to App Router request handling.
