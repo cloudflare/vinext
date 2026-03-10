@@ -2176,7 +2176,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 pagesDir,
                 nextConfig?.i18n,
                 fileMatcher,
-                nextConfig?.buildId,
               );
               const mwStatus = (req as any).__vinextRewriteStatus as number | undefined;
 

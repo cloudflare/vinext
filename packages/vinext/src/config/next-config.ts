@@ -338,31 +338,30 @@ export async function loadNextConfig(
 }
 
 /**
+ * Generate a UUID that doesn't contain "ad" to avoid false-positive ad-blocker hits.
+ * Mirrors Next.js's own nanoid retry loop.
+ */
+function safeUUID(): string {
+  let id = randomUUID();
+  while (/ad/i.test(id)) id = randomUUID();
+  return id;
+}
+
+/**
  * Call the user's generateBuildId function and validate its return value.
  * Follows Next.js semantics: null return falls back to a random UUID; any
  * other non-string throws. Leading/trailing whitespace is trimmed.
- *
- * The fallback avoids UUIDs containing "ad" to prevent false-positive ad-blocker
- * hits (mirrors Next.js's own nanoid retry loop).
  *
  * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/generateBuildId
  */
 async function resolveBuildId(
   generate: (() => string | null | Promise<string | null>) | undefined,
 ): Promise<string> {
-  if (!generate) {
-    let id = randomUUID();
-    while (/ad/i.test(id)) id = randomUUID();
-    return id;
-  }
+  if (!generate) return safeUUID();
 
   const result = await generate();
 
-  if (result === null) {
-    let id = randomUUID();
-    while (/ad/i.test(id)) id = randomUUID();
-    return id;
-  }
+  if (result === null) return safeUUID();
 
   if (typeof result !== "string") {
     throw new Error(

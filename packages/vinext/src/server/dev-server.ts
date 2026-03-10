@@ -274,7 +274,6 @@ export function createSSRHandler(
   pagesDir: string,
   i18nConfig?: NextI18nConfig | null,
   fileMatcher?: ValidFileMatcher,
-  buildId?: string,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
   return async (
@@ -811,7 +810,7 @@ hydrate();
                           props: { pageProps },
                           page: patternToNextFormat(route.pattern),
                           query: params,
-                          buildId,
+                          buildId: process.env.__VINEXT_BUILD_ID,
                           isFallback: false,
                           locale: locale ?? i18nConfig?.defaultLocale,
                           locales: i18nConfig?.locales,
