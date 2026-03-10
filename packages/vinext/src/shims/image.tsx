@@ -19,6 +19,8 @@ export interface StaticImageData {
   height: number;
   width: number;
   blurDataURL?: string;
+  blurWidth?: number;
+  blurHeight?: number;
 }
 
 /**
@@ -99,7 +101,13 @@ function validateRemoteUrl(src: string): { allowed: boolean; reason?: string } {
   };
 }
 
-interface ImageProps {
+/**
+ * Placeholder value type matching Next.js 16.x.
+ * Accepts 'blur', 'empty', or a data:image/* URL for custom placeholders.
+ */
+export type PlaceholderValue = "blur" | "empty" | `data:image/${string}`;
+
+export interface ImageProps {
   src: string | StaticImageData;
   alt: string;
   width?: number;
@@ -107,7 +115,7 @@ interface ImageProps {
   fill?: boolean;
   priority?: boolean;
   quality?: number;
-  placeholder?: "blur" | "empty";
+  placeholder?: PlaceholderValue;
   blurDataURL?: string;
   loader?: (params: { src: string; width: number; quality?: number }) => string;
   sizes?: string;
@@ -117,10 +125,20 @@ interface ImageProps {
   onError?: React.ReactEventHandler<HTMLImageElement>;
   onClick?: React.MouseEventHandler<HTMLImageElement>;
   id?: string;
-  // Accept and ignore Next.js-specific props that don't apply
   unoptimized?: boolean;
   overrideSrc?: string;
   loading?: "lazy" | "eager";
+  // Deprecated props — accepted but ignored for backwards compatibility
+  /** @deprecated Use `fill` instead */
+  layout?: string;
+  /** @deprecated Use `style={{ objectFit: ... }}` instead */
+  objectFit?: string;
+  /** @deprecated Use `style={{ objectPosition: ... }}` instead */
+  objectPosition?: string;
+  /** @deprecated No longer needed */
+  lazyBoundary?: string;
+  /** @deprecated No longer needed */
+  lazyRoot?: unknown;
 }
 
 /**
@@ -212,8 +230,14 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     className,
     style,
     unoptimized: _unoptimized,
-    overrideSrc: _overrideSrc,
+    overrideSrc,
     loading,
+    // Deprecated props — destructure to prevent leaking to <img> via ...rest
+    layout: _layout,
+    objectFit: _objectFit,
+    objectPosition: _objectPosition,
+    lazyBoundary: _lazyBoundary,
+    lazyRoot: _lazyRoot,
     ...rest
   },
   ref,
@@ -330,25 +354,31 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       ? imageOptimizationUrl(src, imgWidth, imgQuality)
       : imageOptimizationUrl(src, RESPONSIVE_WIDTHS[0], imgQuality);
 
-  // Blur placeholder: show a low-quality background while the image loads.
-  // Sanitize blurDataURL to prevent CSS injection via crafted data URLs.
+  // Placeholder: show a background while the image loads.
+  // 'blur' uses blurDataURL, data:image/* strings are used directly.
+  // Sanitize all data URLs to prevent CSS injection.
   const sanitizedLocalBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
-  const blurStyle =
-    placeholder === "blur" && sanitizedLocalBlur
-      ? {
-          backgroundImage: `url(${sanitizedLocalBlur})`,
-          backgroundSize: "cover",
-          backgroundRepeat: "no-repeat",
-          backgroundPosition: "center",
-        }
-      : undefined;
+  const placeholderUrl =
+    placeholder === "blur"
+      ? sanitizedLocalBlur
+      : typeof placeholder === "string" && placeholder.startsWith("data:image/")
+        ? sanitizeBlurDataURL(placeholder)
+        : undefined;
+  const blurStyle = placeholderUrl
+    ? {
+        backgroundImage: `url(${placeholderUrl})`,
+        backgroundSize: "cover",
+        backgroundRepeat: "no-repeat",
+        backgroundPosition: "center",
+      }
+    : undefined;
 
   // For local images, render a standard <img> tag with srcSet and blur support.
   // The src and srcSet point to the /_vinext/image optimization endpoint.
   return (
     <img
       ref={ref}
-      src={optimizedSrc}
+      src={overrideSrc || optimizedSrc}
       alt={alt}
       width={fill ? undefined : imgWidth}
       height={fill ? undefined : imgHeight}
@@ -398,8 +428,14 @@ export function getImageProps(props: ImageProps): {
     className,
     style,
     unoptimized: _unoptimized,
-    overrideSrc: _overrideSrc,
+    overrideSrc,
     loading,
+    // Deprecated props — destructure to prevent leaking to output
+    layout: _layout,
+    objectFit: _objectFit,
+    objectPosition: _objectPosition,
+    lazyBoundary: _lazyBoundary,
+    lazyRoot: _lazyRoot,
     ...rest
   } = props;
 
@@ -454,21 +490,26 @@ export function getImageProps(props: ImageProps): {
       ? generateSrcSet(resolvedSrc, imgWidth, imgQuality)
       : undefined;
 
-  // Blur placeholder styles — sanitize to prevent CSS injection
+  // Placeholder styles — sanitize to prevent CSS injection
   const sanitizedBlurURL = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
-  const blurStyle =
-    placeholder === "blur" && sanitizedBlurURL
-      ? {
-          backgroundImage: `url(${sanitizedBlurURL})`,
-          backgroundSize: "cover",
-          backgroundRepeat: "no-repeat" as const,
-          backgroundPosition: "center" as const,
-        }
-      : undefined;
+  const placeholderUrl =
+    placeholder === "blur"
+      ? sanitizedBlurURL
+      : typeof placeholder === "string" && placeholder.startsWith("data:image/")
+        ? sanitizeBlurDataURL(placeholder)
+        : undefined;
+  const blurStyle = placeholderUrl
+    ? {
+        backgroundImage: `url(${placeholderUrl})`,
+        backgroundSize: "cover" as const,
+        backgroundRepeat: "no-repeat" as const,
+        backgroundPosition: "center" as const,
+      }
+    : undefined;
 
   return {
     props: {
-      src: optimizedSrc,
+      src: overrideSrc || optimizedSrc,
       alt,
       width: fill ? undefined : imgWidth,
       height: fill ? undefined : imgHeight,

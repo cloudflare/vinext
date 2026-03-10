@@ -582,3 +582,157 @@ describe("imageSizes config support in srcSet", () => {
     }
   });
 });
+
+// ─── overrideSrc prop ──────────────────────────────────────────────
+// Ported from Next.js: test/unit/next-image-get-img-props.test.ts
+describe("overrideSrc prop", () => {
+  it("overrideSrc replaces the final src in getImageProps", () => {
+    const { props } = getImageProps({
+      alt: "override test",
+      src: "/photo.jpg",
+      width: 400,
+      height: 300,
+      overrideSrc: "/cdn/photo-optimized.jpg",
+    });
+    expect(props.src).toBe("/cdn/photo-optimized.jpg");
+  });
+
+  it("overrideSrc replaces src in SSR rendering", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "override ssr",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        overrideSrc: "/cdn/photo.webp",
+      }),
+    );
+    expect(html).toContain('src="/cdn/photo.webp"');
+  });
+
+  it("overrideSrc does not affect srcSet generation", () => {
+    const { props } = getImageProps({
+      alt: "override srcset",
+      src: "/photo.jpg",
+      width: 400,
+      height: 300,
+      overrideSrc: "/cdn/photo.webp",
+    });
+    // srcSet should still use original src through optimization endpoint
+    expect(props.srcSet).toBeDefined();
+    expect(props.srcSet).toContain("/_vinext/image");
+  });
+});
+
+// ─── data:image/* placeholder type ────────────────────────────────
+// Ported from Next.js: test/unit/next-image-get-img-props.test.ts
+describe("data:image/* placeholder type", () => {
+  it("accepts data:image/* string as placeholder value", () => {
+    const dataUrl =
+      "data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
+    const { props } = getImageProps({
+      alt: "custom placeholder",
+      src: "/photo.jpg",
+      width: 400,
+      height: 300,
+      placeholder: dataUrl as any,
+    });
+    expect((props.style as any)?.backgroundImage).toContain("R0lGODlh");
+  });
+
+  it("renders data:image/* placeholder in SSR", () => {
+    const dataUrl =
+      "data:image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==";
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "data placeholder",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        placeholder: dataUrl as any,
+      }),
+    );
+    expect(html).toContain("background-image");
+    expect(html).toContain("R0lGODlh");
+  });
+});
+
+// ─── deprecated props compatibility ───────────────────────────────
+// Ported from Next.js: test/unit/next-image-get-img-props.test.ts
+describe("deprecated props compatibility", () => {
+  it("accepts layout prop without error", () => {
+    // Should not throw when receiving deprecated layout prop
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "deprecated layout",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        layout: "responsive",
+      } as any),
+    );
+    expect(html).toContain('alt="deprecated layout"');
+  });
+
+  it("accepts objectFit prop without error", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "deprecated objectFit",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        objectFit: "contain",
+      } as any),
+    );
+    expect(html).toContain('alt="deprecated objectFit"');
+  });
+
+  it("accepts objectPosition prop without error", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "deprecated objectPosition",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        objectPosition: "top center",
+      } as any),
+    );
+    expect(html).toContain('alt="deprecated objectPosition"');
+  });
+
+  it("accepts lazyBoundary and lazyRoot props without error", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "deprecated lazy props",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        lazyBoundary: "200px",
+        lazyRoot: null,
+      } as any),
+    );
+    expect(html).toContain('alt="deprecated lazy props"');
+  });
+});
+
+// ─── StaticImageData blurWidth/blurHeight ─────────────────────────
+describe("StaticImageData blurWidth/blurHeight", () => {
+  it("accepts StaticImageData with blurWidth and blurHeight fields", () => {
+    const staticImage: StaticImageData & { blurWidth?: number; blurHeight?: number } = {
+      src: "/assets/hero.abc123.png",
+      width: 1200,
+      height: 800,
+      blurDataURL: "data:image/png;base64,abc123",
+      blurWidth: 8,
+      blurHeight: 5,
+    };
+    // Should not throw
+    const { props } = getImageProps({
+      alt: "hero with blur dims",
+      src: staticImage,
+      placeholder: "blur",
+    });
+    expect(props.src).toBeDefined();
+    expect((props.style as any)?.backgroundImage).toContain("data:image/png;base64,abc123");
+  });
+});
