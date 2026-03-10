@@ -31,6 +31,16 @@ jobs:
       - uses: ./.github/actions/setup-node-pnpm
       - run: pnpm run fmt:check
 
+  dependencies:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-pnpm
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
+        continue-on-error: true
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
