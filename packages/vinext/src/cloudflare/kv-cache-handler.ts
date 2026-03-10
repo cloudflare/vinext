@@ -96,11 +96,13 @@ export class KVCacheHandler implements CacheHandler {
   private kv: KVNamespace;
   private prefix: string;
   private ctx: ExecutionContext | undefined;
+  private ttlSeconds: number;
 
-  constructor(kvNamespace: KVNamespace, options?: { appPrefix?: string; ctx?: ExecutionContext }) {
+  constructor(kvNamespace: KVNamespace, options?: { appPrefix?: string; ctx?: ExecutionContext; ttlSeconds?: number }) {
     this.kv = kvNamespace;
     this.prefix = options?.appPrefix ? `${options.appPrefix}:` : "";
     this.ctx = options?.ctx;
+    this.ttlSeconds = options?.ttlSeconds ?? 30 * 24 * 3600;
   }
 
   async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
@@ -232,7 +234,7 @@ export class KVCacheHandler implements CacheHandler {
     // Background regen overwrites the key with a fresh entry + new revalidateAt,
     // so active pages always have something to serve. Entries only disappear after
     // 30 days of zero traffic, or when explicitly deleted via tag invalidation.
-    const expirationTtl: number | undefined = revalidateAt !== null ? 30 * 24 * 3600 : undefined;
+    const expirationTtl: number | undefined = revalidateAt !== null ? this.ttlSeconds : undefined;
 
     this._putInBackground(this.prefix + ENTRY_PREFIX + key, JSON.stringify(entry), {
       expirationTtl,

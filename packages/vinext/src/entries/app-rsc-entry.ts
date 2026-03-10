@@ -321,10 +321,10 @@ function __triggerBackgroundRegeneration(key, renderFn, ctx) {
 // independently with no races or partial-entry sentinels.
 function __isrCacheKey(pathname, suffix) {
   const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  const key = "app:" + normalized + ":" + suffix;
+  const key = "app:" + process.env.__VINEXT_BUILD_ID + "/" + normalized + ":" + suffix;
   if (key.length <= 200) return key;
   // Simple djb2-based truncation for very long keys (keeps under KV 512-byte limit)
-  return "app:__hash:" + __errorDigest(normalized) + ":" + suffix;
+  return "app:__hash:" + process.env.__VINEXT_BUILD_ID + "/" + __errorDigest(normalized) + ":" + suffix;
 }
 function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
 function __isrRscKey(pathname) { return __isrCacheKey(pathname, "rsc"); }
