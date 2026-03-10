@@ -334,12 +334,14 @@ function __triggerBackgroundRegeneration(key, renderFn, ctx) {
 // layout (.html / .rsc) — so each request type reads and writes its own key
 // independently with no races or partial-entry sentinels.
 //
-// Key format: "app:<buildId>/<pathname>:<suffix>"
-// Long-pathname fallback: "app:__hash:<buildId>/<fnv1a64(pathname)>:<suffix>"
+// Key format: "app:<buildId>:<pathname>:<suffix>"
+// Long-pathname fallback: "app:<buildId>:__hash:<fnv1a64(pathname)>:<suffix>"
+// Without buildId (should not happen in production): "app:<pathname>:<suffix>"
 // The 200-char threshold keeps the full key well under Cloudflare KV's 512-byte limit
 // even after adding the build ID and suffix. FNV-1a 64 is used for the hash (two
 // 32-bit rounds) to give a ~64-bit output with negligible collision probability for
 // realistic pathname lengths.
+// Keep in sync with isrCacheKey() in server/isr-cache.ts.
 function __isrFnv1a64(s) {
   // h1 uses the standard FNV-1a 32-bit offset basis (0x811c9dc5).
   let h1 = 0x811c9dc5;
@@ -355,10 +357,13 @@ function __isrFnv1a64(s) {
 }
 function __isrCacheKey(pathname, suffix) {
   const normalized = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  const key = "app:" + process.env.__VINEXT_BUILD_ID + "/" + normalized + ":" + suffix;
+  // __VINEXT_BUILD_ID is replaced at compile time by Vite's define plugin.
+  const buildId = process.env.__VINEXT_BUILD_ID;
+  const prefix = buildId ? "app:" + buildId : "app";
+  const key = prefix + ":" + normalized + ":" + suffix;
   if (key.length <= 200) return key;
   // Pathname too long — hash it to keep under KV's 512-byte key limit.
-  return "app:__hash:" + process.env.__VINEXT_BUILD_ID + "/" + __isrFnv1a64(normalized) + ":" + suffix;
+  return prefix + ":__hash:" + __isrFnv1a64(normalized) + ":" + suffix;
 }
 function __isrHtmlKey(pathname) { return __isrCacheKey(pathname, "html"); }
 function __isrRscKey(pathname) { return __isrCacheKey(pathname, "rsc"); }
