@@ -254,7 +254,7 @@ ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(inst
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("../server/metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
-import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
+import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler, runWithExecutionContext as _runWithExecutionContext } from "next/cache";
 import { runWithFetchCache } from "vinext/fetch-cache";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
@@ -1338,8 +1338,12 @@ export default async function handler(request, ctx) {
   // ALS scope that propagates through all async continuations (including RSC
   // streaming), preventing state leakage between concurrent requests on
   // Cloudflare Workers and other concurrent runtimes.
+  //
+  // runWithExecutionContext stores the Workers ExecutionContext (ctx) in ALS so
+  // that KVCacheHandler._putInBackground can register background KV puts with
+  // ctx.waitUntil() without needing ctx passed at construction time.
   const headersCtx = headersContextFromRequest(request);
-  return runWithHeadersContext(headersCtx, () =>
+  const _run = () => runWithHeadersContext(headersCtx, () =>
     _runWithNavigationContext(() =>
       _runWithCacheState(() =>
         _runWithPrivateCache(() =>
@@ -1382,6 +1386,7 @@ export default async function handler(request, ctx) {
       )
     )
   );
+  return ctx ? _runWithExecutionContext(ctx, _run) : _run();
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {

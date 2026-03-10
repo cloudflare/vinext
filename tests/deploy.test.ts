@@ -366,7 +366,7 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain('import handler from "vinext/server/app-router-entry"');
   });
 
-  it("delegates to handler.fetch", () => {
+  it("delegates to handler.fetch with ctx", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("handler.fetch(request, env, ctx)");
   });
@@ -414,6 +414,22 @@ describe("generateAppRouterWorkerEntry", () => {
     // The App Router generated entry delegates to handleImageOptimization
     // which calls parseImageParams. Verify the comment documents this.
     expect(content).toContain("parseImageParams");
+  });
+
+  it("does not include KV wiring when hasISR is false", () => {
+    const content = generateAppRouterWorkerEntry(false);
+    expect(content).not.toContain("KVCacheHandler");
+    expect(content).not.toContain("setCacheHandler");
+    expect(content).not.toContain("VINEXT_CACHE");
+  });
+
+  it("includes KV wiring when hasISR is true", () => {
+    const content = generateAppRouterWorkerEntry(true);
+    expect(content).toContain('import { KVCacheHandler } from "vinext/cloudflare"');
+    expect(content).toContain('import { setCacheHandler } from "vinext/shims/cache"');
+    expect(content).toContain("VINEXT_CACHE: KVNamespace");
+    expect(content).toContain("new KVCacheHandler(env.VINEXT_CACHE)");
+    expect(content).toContain("setCacheHandler(");
   });
 });
 

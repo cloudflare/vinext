@@ -227,6 +227,48 @@ export class MemoryCacheHandler implements CacheHandler {
 }
 
 // ---------------------------------------------------------------------------
+// Request-scoped ExecutionContext ALS
+//
+// Stores the Cloudflare Workers ExecutionContext (or equivalent) for the
+// current request so that KVCacheHandler (and other cache backends) can
+// register background promises with ctx.waitUntil() without needing the
+// ctx passed at construction time.
+//
+// Set at the top of each request in the generated RSC entry via
+// setRequestExecutionContext(ctx).  Read by KVCacheHandler._putInBackground.
+// ---------------------------------------------------------------------------
+
+export interface ExecutionContextLike {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
+const _CTX_ALS_KEY = Symbol.for("vinext.executionContext.als");
+const _g2 = globalThis as unknown as Record<PropertyKey, unknown>;
+const _ctxAls = (_g2[_CTX_ALS_KEY] ??=
+  new AsyncLocalStorage<ExecutionContextLike>()) as AsyncLocalStorage<ExecutionContextLike>;
+
+/**
+ * Run a function within an ExecutionContext ALS scope.
+ * The RSC entry calls this to associate ctx with all downstream operations.
+ * @internal
+ */
+export function runWithExecutionContext<T>(
+  ctx: ExecutionContextLike,
+  fn: () => T,
+): T {
+  return _ctxAls.run(ctx, fn);
+}
+
+/**
+ * Get the ExecutionContext for the current request, if any.
+ * Returns undefined when called outside a request scope (e.g., during build).
+ * @internal
+ */
+export function getRequestExecutionContext(): ExecutionContextLike | undefined {
+  return _ctxAls.getStore();
+}
+
+// ---------------------------------------------------------------------------
 // Active cache handler — the singleton used by next/cache API functions.
 // Defaults to MemoryCacheHandler, can be swapped at runtime.
 // ---------------------------------------------------------------------------
