@@ -271,9 +271,21 @@ export function getRequestExecutionContext(): ExecutionContextLike | undefined {
 // ---------------------------------------------------------------------------
 // Active cache handler — the singleton used by next/cache API functions.
 // Defaults to MemoryCacheHandler, can be swapped at runtime.
+//
+// Stored on globalThis via Symbol.for so that setCacheHandler() called in the
+// Cloudflare Worker environment (worker/index.ts) is visible to getCacheHandler()
+// called in the RSC environment (generated RSC entry). Without this, the two
+// environments load separate module instances and operate on different
+// `activeHandler` variables — setCacheHandler sets KVCacheHandler in one copy,
+// but getCacheHandler returns MemoryCacheHandler from the other copy.
 // ---------------------------------------------------------------------------
 
-let activeHandler: CacheHandler = new MemoryCacheHandler();
+const _HANDLER_KEY = Symbol.for("vinext.cacheHandler");
+const _gHandler = globalThis as unknown as Record<PropertyKey, CacheHandler>;
+
+function _getActiveHandler(): CacheHandler {
+  return _gHandler[_HANDLER_KEY] ?? (_gHandler[_HANDLER_KEY] = new MemoryCacheHandler());
+}
 
 /**
  * Set a custom CacheHandler. Call this during server startup to
@@ -283,14 +295,14 @@ let activeHandler: CacheHandler = new MemoryCacheHandler();
  * as Next.js 16's CacheHandler class).
  */
 export function setCacheHandler(handler: CacheHandler): void {
-  activeHandler = handler;
+  _gHandler[_HANDLER_KEY] = handler;
 }
 
 /**
  * Get the active CacheHandler (for internal use or testing).
  */
 export function getCacheHandler(): CacheHandler {
-  return activeHandler;
+  return _getActiveHandler();
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +339,7 @@ export async function revalidateTag(
   } else if (profile && typeof profile === "object") {
     durations = profile;
   }
-  await activeHandler.revalidateTag(tag, durations);
+  await _getActiveHandler().revalidateTag(tag, durations);
 }
 
 /**
@@ -339,7 +351,7 @@ export async function revalidateTag(
 export async function revalidatePath(path: string, _type?: "page" | "layout"): Promise<void> {
   // Next.js internally converts paths to tags with a prefix
   const pathTag = `_N_T_${path}`;
-  await activeHandler.revalidateTag([path, pathTag]);
+  await _getActiveHandler().revalidateTag([path, pathTag]);
 }
 
 /**
@@ -356,7 +368,7 @@ export async function revalidatePath(path: string, _type?: "page" | "layout"): P
  */
 export async function updateTag(tag: string): Promise<void> {
   // Expire the tag immediately (same as revalidateTag without SWR)
-  await activeHandler.revalidateTag(tag);
+  await _getActiveHandler().revalidateTag(tag);
 }
 
 /**
@@ -657,7 +669,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
 
     // Try to get from cache. Check cacheState so time-expired entries
     // trigger a re-fetch instead of being served indefinitely.
-    const existing = await activeHandler.get(cacheKey, {
+    const existing = await _getActiveHandler().get(cacheKey, {
       kind: "FETCH",
       tags,
     });
@@ -690,7 +702,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
     };
 
-    await activeHandler.set(cacheKey, cacheValue, {
+    await _getActiveHandler().set(cacheKey, cacheValue, {
       fetchCache: true,
       tags,
       revalidate: revalidateSeconds,
