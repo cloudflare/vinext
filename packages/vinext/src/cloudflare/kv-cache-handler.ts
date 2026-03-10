@@ -239,10 +239,9 @@ export class KVCacheHandler implements CacheHandler {
     // 30 days of zero traffic, or when explicitly deleted via tag invalidation.
     const expirationTtl: number | undefined = revalidateAt !== null ? this.ttlSeconds : undefined;
 
-    this._putInBackground(this.prefix + ENTRY_PREFIX + key, JSON.stringify(entry), {
+    return this._put(this.prefix + ENTRY_PREFIX + key, JSON.stringify(entry), {
       expirationTtl,
     });
-    return Promise.resolve();
   }
 
   async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
@@ -281,22 +280,23 @@ export class KVCacheHandler implements CacheHandler {
     // else: fire-and-forget on Node.js
   }
 
+
   /**
-   * Fire a KV put in the background.
-   * Same ALS ctx → constructor ctx → fire-and-forget precedence as
-   * `_deleteInBackground`.
+   * Execute a KV put and return the promise so callers can await completion.
+   * Also registers with ctx.waitUntil() so the Workers runtime keeps the
+   * isolate alive even if the caller does not await the returned promise.
    */
-  private _putInBackground(
+  private _put(
     kvKey: string,
     value: string,
     options?: { expirationTtl?: number },
-  ): void {
+  ): Promise<void> {
     const promise = this.kv.put(kvKey, value, options);
     const ctx = getRequestExecutionContext() ?? this.ctx;
     if (ctx) {
       ctx.waitUntil(promise);
     }
-    // else: fire-and-forget on Node.js
+    return promise;
   }
 }
 
