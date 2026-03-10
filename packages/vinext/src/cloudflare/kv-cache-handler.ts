@@ -98,7 +98,10 @@ export class KVCacheHandler implements CacheHandler {
   private ctx: ExecutionContext | undefined;
   private ttlSeconds: number;
 
-  constructor(kvNamespace: KVNamespace, options?: { appPrefix?: string; ctx?: ExecutionContext; ttlSeconds?: number }) {
+  constructor(
+    kvNamespace: KVNamespace,
+    options?: { appPrefix?: string; ctx?: ExecutionContext; ttlSeconds?: number },
+  ) {
     this.kv = kvNamespace;
     this.prefix = options?.appPrefix ? `${options.appPrefix}:` : "";
     this.ctx = options?.ctx;

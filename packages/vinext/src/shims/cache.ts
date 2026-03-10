@@ -252,10 +252,7 @@ const _ctxAls = (_g2[_CTX_ALS_KEY] ??=
  * The RSC entry calls this to associate ctx with all downstream operations.
  * @internal
  */
-export function runWithExecutionContext<T>(
-  ctx: ExecutionContextLike,
-  fn: () => T,
-): T {
+export function runWithExecutionContext<T>(ctx: ExecutionContextLike, fn: () => T): T {
   return _ctxAls.run(ctx, fn);
 }
 
