@@ -11,8 +11,10 @@
  *   import { setCacheHandler } from "vinext/shims/cache";
  *
  *   export default {
- *     async fetch(request: Request, env: Env) {
+ *     async fetch(request: Request, env: Env, ctx: ExecutionContext) {
  *       setCacheHandler(new KVCacheHandler(env.VINEXT_CACHE));
+ *       // ctx is propagated automatically via runWithExecutionContext in
+ *       // the vinext handler — no need to pass it to KVCacheHandler.
  *       // ... rest of worker handler
  *     }
  *   };
@@ -27,6 +29,7 @@
  */
 
 import type { CacheHandler, CacheHandlerValue, IncrementalCacheValue } from "../shims/cache.js";
+import { getRequestExecutionContext } from "../shims/request-context.js";
 
 // Cloudflare KV namespace interface (matches Workers types)
 interface KVNamespace {
@@ -47,9 +50,12 @@ interface KVNamespace {
 
 /**
  * Minimal ExecutionContext interface for Cloudflare Workers.
- * Passed via KVCacheHandler constructor options so that background KV
- * operations (cleanup deletes, cache writes) are registered with
- * ctx.waitUntil() and are not killed when the Response is returned.
+ * Background KV operations (cleanup deletes, cache writes) are registered
+ * with ctx.waitUntil() so they are not killed when the Response is returned.
+ *
+ * The preferred way to supply ctx is via runWithExecutionContext() in the
+ * worker entry (see vinext/shims/request-context). The constructor option
+ * is kept as a fallback for callers that set it explicitly.
  */
 interface ExecutionContext {
   waitUntil(promise: Promise<unknown>): void;
@@ -251,22 +257,25 @@ export class KVCacheHandler implements CacheHandler {
 
   /**
    * Fire a KV delete in the background.
-   * When `ctx` is present the promise is registered with `waitUntil` so it
-   * isn't killed after the Response is returned on Cloudflare Workers.
-   * When `ctx` is absent (Node.js dev/prod) the promise is simply floated
-   * (fire-and-forget) to preserve existing behaviour.
+   * Prefers the per-request ExecutionContext from ALS (set by
+   * runWithExecutionContext in the worker entry) so that background KV
+   * operations are registered with the correct request's waitUntil().
+   * Falls back to the constructor-provided ctx for callers that set it
+   * explicitly, and to fire-and-forget when neither is available (Node.js dev).
    */
   private _deleteInBackground(kvKey: string): void {
     const promise = this.kv.delete(kvKey);
-    if (this.ctx) {
-      this.ctx.waitUntil(promise);
+    const ctx = getRequestExecutionContext() ?? this.ctx;
+    if (ctx) {
+      ctx.waitUntil(promise);
     }
     // else: fire-and-forget on Node.js
   }
 
   /**
    * Fire a KV put in the background.
-   * Same waitUntil / fire-and-forget split as `_deleteInBackground`.
+   * Same ALS ctx → constructor ctx → fire-and-forget precedence as
+   * `_deleteInBackground`.
    */
   private _putInBackground(
     kvKey: string,
@@ -274,8 +283,9 @@ export class KVCacheHandler implements CacheHandler {
     options?: { expirationTtl?: number },
   ): void {
     const promise = this.kv.put(kvKey, value, options);
-    if (this.ctx) {
-      this.ctx.waitUntil(promise);
+    const ctx = getRequestExecutionContext() ?? this.ctx;
+    if (ctx) {
+      ctx.waitUntil(promise);
     }
     // else: fire-and-forget on Node.js
   }

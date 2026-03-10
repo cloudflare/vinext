@@ -356,7 +356,7 @@ describe("generateAppRouterWorkerEntry", () => {
   it("generates valid TypeScript", () => {
     const content = generateAppRouterWorkerEntry();
     expect(content).toContain("export default");
-    expect(content).toContain("async fetch(request: Request, env: Env)");
+    expect(content).toContain("async fetch(request: Request, env: Env, ctx: ExecutionContext)");
     expect(content).toContain("Promise<Response>");
   });
 
@@ -367,7 +367,7 @@ describe("generateAppRouterWorkerEntry", () => {
 
   it("delegates to handler.fetch", () => {
     const content = generateAppRouterWorkerEntry();
-    expect(content).toContain("handler.fetch(request)");
+    expect(content).toContain("handler.fetch(request, env, ctx)");
   });
 
   it("includes auto-generated comment", () => {
@@ -392,6 +392,12 @@ describe("generateAppRouterWorkerEntry", () => {
     expect(content).toContain("interface Env");
     expect(content).toContain("IMAGES");
     expect(content).toContain("ASSETS");
+  });
+
+  it("declares ExecutionContext interface", () => {
+    const content = generateAppRouterWorkerEntry();
+    expect(content).toContain("interface ExecutionContext");
+    expect(content).toContain("waitUntil");
   });
 
   it("passes image handlers inline to handleImageOptimization", () => {

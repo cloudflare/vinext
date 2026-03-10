@@ -21,6 +21,9 @@ import {
 import { findFileWithExts } from "./pages-entry-helpers.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const _requestContextShimPath = fileURLToPath(
+  new URL("../shims/request-context.js", import.meta.url),
+).replace(/\\/g, "/");
 
 /**
  * Generate the virtual SSR server entry module.
@@ -143,6 +146,11 @@ ${generateSafeRegExpCode("es5")}
 ${generateMiddlewareMatcherCode("es5")}
 
 export async function runMiddleware(request, ctx) {
+  if (ctx) return _runWithExecutionContext(ctx, () => _runMiddleware(request));
+  return _runMiddleware(request);
+}
+
+async function _runMiddleware(request) {
   var isProxy = ${middlewarePath ? JSON.stringify(isProxyFile(middlewarePath)) : "false"};
   var middlewareFn = isProxy
     ? (middlewareModule.proxy ?? middlewareModule.default)
@@ -183,7 +191,8 @@ export async function runMiddleware(request, ctx) {
     console.error("[vinext] Middleware error:", e);
     return { continue: false, response: new Response("Internal Server Error", { status: 500 }) };
   }
-  if (ctx && typeof ctx.waitUntil === "function") { ctx.waitUntil(fetchEvent.drainWaitUntil()); } else { fetchEvent.drainWaitUntil(); }
+  var _mwCtx = _getRequestExecutionContext();
+  if (_mwCtx && typeof _mwCtx.waitUntil === "function") { _mwCtx.waitUntil(fetchEvent.drainWaitUntil()); } else { fetchEvent.drainWaitUntil(); }
 
   if (!response) return { continue: true };
 
@@ -250,6 +259,7 @@ import { safeJsonStringify } from "vinext/html";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 import { parseCookies } from ${JSON.stringify(path.resolve(__dirname, "../config/config-matchers.js").replace(/\\/g, "/"))};
+import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
 
@@ -273,7 +283,7 @@ async function isrSet(key, data, revalidateSeconds, tags) {
   await handler.set(key, data, { revalidate: revalidateSeconds, tags: tags || [] });
 }
 const pendingRegenerations = new Map();
-function triggerBackgroundRegeneration(key, renderFn, ctx) {
+function triggerBackgroundRegeneration(key, renderFn) {
   if (pendingRegenerations.has(key)) return;
   const promise = renderFn()
     .catch((err) => console.error("[vinext] ISR regen failed for " + key + ":", err))
@@ -281,6 +291,7 @@ function triggerBackgroundRegeneration(key, renderFn, ctx) {
   pendingRegenerations.set(key, promise);
   // Register with the Workers ExecutionContext so the isolate is kept alive
   // until the regeneration finishes, even after the Response has been sent.
+  const ctx = _getRequestExecutionContext();
   if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(promise);
 }
 
@@ -634,6 +645,11 @@ async function readBodyWithLimit(request, maxBytes) {
 }
 
 export async function renderPage(request, url, manifest, ctx) {
+  if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest));
+  return _renderPage(request, url, manifest);
+}
+
+async function _renderPage(request, url, manifest) {
   const localeInfo = extractLocale(url);
   const locale = localeInfo.locale;
   const routeUrl = localeInfo.url;
@@ -779,7 +795,7 @@ export async function renderPage(request, url, manifest, ctx) {
           if (freshResult && freshResult.props && typeof freshResult.revalidate === "number" && freshResult.revalidate > 0) {
             await isrSet(cacheKey, { kind: "PAGES", html: cached.value.value.html, pageData: freshResult.props, headers: undefined, status: undefined }, freshResult.revalidate);
           }
-        }, ctx);
+        });
         var _staleHeaders = {
           "Content-Type": "text/html", "X-Vinext-Cache": "STALE",
           "Cache-Control": "s-maxage=0, stale-while-revalidate",

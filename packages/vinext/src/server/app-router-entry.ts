@@ -6,7 +6,7 @@
  *
  * Or import and delegate to it from a custom worker:
  *   import handler from "vinext/server/app-router-entry";
- *   return handler.fetch(request);
+ *   return handler.fetch(request, env, ctx);
  *
  * This file runs in the RSC environment. Configure the Cloudflare plugin with:
  *   cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } })
@@ -14,9 +14,10 @@
 
 // @ts-expect-error — virtual module resolved by vinext
 import rscHandler from "virtual:vinext-rsc-entry";
+import { runWithExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
 
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, _env?: unknown, ctx?: ExecutionContextLike): Promise<Response> {
     const url = new URL(request.url);
 
     // Normalize backslashes (browsers treat /\ as //) before any other checks.
@@ -44,8 +45,11 @@ export default {
     // AND in the handler would double-decode, causing inconsistent path
     // matching between middleware and routing.
 
-    // Delegate to RSC handler (which decodes + normalizes the pathname itself)
-    const result = await rscHandler(request);
+    // Delegate to RSC handler (which decodes + normalizes the pathname itself),
+    // wrapping in the ExecutionContext ALS scope so downstream code can reach
+    // ctx.waitUntil() without having ctx threaded through every call site.
+    const handleFn = () => rscHandler(request);
+    const result = await (ctx ? runWithExecutionContext(ctx, handleFn) : handleFn());
 
     if (result instanceof Response) {
       return result;

@@ -436,6 +436,11 @@ interface Env {
   };
 }
 
+interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+  passThroughOnException(): void;
+}
+
 // Image security config. SVG sources with .svg extension auto-skip the
 // optimization endpoint on the client side (served directly, no proxy).
 // To route SVGs through the optimizer (with security headers), set
@@ -443,7 +448,7 @@ interface Env {
 // const imageConfig: ImageConfig = { dangerouslyAllowSVG: true };
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
     // Image optimization via Cloudflare Images binding.
@@ -460,8 +465,10 @@ export default {
       }, allowedWidths);
     }
 
-    // Delegate everything else to vinext
-    return handler.fetch(request);
+    // Delegate everything else to vinext, forwarding ctx so that
+    // ctx.waitUntil() is available to background cache writes and
+    // other deferred work via getRequestExecutionContext().
+    return handler.fetch(request, env, ctx);
   },
 };
 `;
