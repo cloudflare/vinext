@@ -40,6 +40,7 @@ import {
   parseImageParams,
   isSafeImageContentType,
   negotiateImageFormat,
+  getContentDisposition,
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
   type ImageConfig,
@@ -606,12 +607,16 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         res.end("The requested resource is not an allowed image type");
         return;
       }
-      // Serve the original image with CSP and security headers
+      // Serve the original image with CSP and security headers.
+      // Negotiate format early so Content-Disposition gets the correct filename extension.
+      const accept = req.headers["accept"] as string | undefined;
+      const format = negotiateImageFormat(accept ?? null);
+      const dispositionType = imageConfig?.contentDispositionType ?? "inline";
       const imageSecurityHeaders: Record<string, string> = {
         "Content-Security-Policy":
           imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": imageConfig?.contentDispositionType ?? "inline",
+        "Content-Disposition": getContentDisposition(params.imageUrl, format, dispositionType),
       };
       // Check pre-built image manifest before trying Sharp
       if (imageManifest) {
@@ -639,8 +644,6 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
           if (fs.existsSync(imageFsPath)) {
             // Check filesystem cache first
             const cacheDir = path.join(clientDir, ".vinext-image-cache");
-            const accept = req.headers["accept"] as string | undefined;
-            const format = negotiateImageFormat(accept ?? null);
             const formatExt =
               format === "image/avif" ? "avif" : format === "image/webp" ? "webp" : "jpeg";
             const cacheKey = `${params.imageUrl.replace(/\//g, "__")}-w${params.width}-q${params.quality}.${formatExt}`;
@@ -659,12 +662,16 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
                 const __appSharpPipeline = __sharp(rawBuffer).resize(params.width, undefined, {
                   withoutEnlargement: true,
                 });
+                // Apply AVIF quality offset matching Next.js behavior:
+                // AVIF has better compression, so reduce quality by 20 for perceptual parity
+                const effectiveQuality =
+                  format === "image/avif" ? Math.max(params.quality - 20, 1) : params.quality;
                 optimizedBuf = await (
                   format === "image/avif"
-                    ? __appSharpPipeline.avif({ quality: params.quality })
+                    ? __appSharpPipeline.avif({ quality: effectiveQuality })
                     : format === "image/webp"
-                      ? __appSharpPipeline.webp({ quality: params.quality })
-                      : __appSharpPipeline.jpeg({ quality: params.quality })
+                      ? __appSharpPipeline.webp({ quality: effectiveQuality })
+                      : __appSharpPipeline.jpeg({ quality: effectiveQuality })
                 ).toBuffer();
 
                 // Write to filesystem cache
@@ -871,15 +878,20 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         res.end("The requested resource is not an allowed image type");
         return;
       }
+      // Try sharp-based image optimization
+      const pagesAccept = req.headers["accept"] as string | undefined;
+      const pagesFormat = negotiateImageFormat(pagesAccept ?? null);
+      const pagesDispositionType = pagesImageConfig?.contentDispositionType ?? "inline";
       const imageSecurityHeaders: Record<string, string> = {
         "Content-Security-Policy":
           pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": pagesImageConfig?.contentDispositionType ?? "inline",
+        "Content-Disposition": getContentDisposition(
+          params.imageUrl,
+          pagesFormat,
+          pagesDispositionType,
+        ),
       };
-      // Try sharp-based image optimization
-      const pagesAccept = req.headers["accept"] as string | undefined;
-      const pagesFormat = negotiateImageFormat(pagesAccept ?? null);
       const pagesFormatExt =
         pagesFormat === "image/avif" ? "avif" : pagesFormat === "image/webp" ? "webp" : "jpeg";
       // Check pre-built image manifest before trying Sharp
@@ -921,12 +933,15 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
                   undefined,
                   { withoutEnlargement: true },
                 );
+                // AVIF quality offset: match perceptual quality with Next.js
+                const pagesEffectiveQuality =
+                  pagesFormat === "image/avif" ? Math.max(params.quality - 20, 1) : params.quality;
                 optimizedBuf = await (
                   pagesFormat === "image/avif"
-                    ? __pagesSharpPipeline.avif({ quality: params.quality })
+                    ? __pagesSharpPipeline.avif({ quality: pagesEffectiveQuality })
                     : pagesFormat === "image/webp"
-                      ? __pagesSharpPipeline.webp({ quality: params.quality })
-                      : __pagesSharpPipeline.jpeg({ quality: params.quality })
+                      ? __pagesSharpPipeline.webp({ quality: pagesEffectiveQuality })
+                      : __pagesSharpPipeline.jpeg({ quality: pagesEffectiveQuality })
                 ).toBuffer();
 
                 if (!fs.existsSync(cacheDir)) {
@@ -941,7 +956,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
                 "Content-Security-Policy":
                   pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
                 "X-Content-Type-Options": "nosniff",
-                "Content-Disposition": pagesImageConfig?.contentDispositionType ?? "inline",
+                "Content-Disposition": getContentDisposition(
+                  params.imageUrl,
+                  pagesFormat,
+                  pagesDispositionType,
+                ),
               };
               res.writeHead(200, {
                 "Content-Type": pagesFormat,

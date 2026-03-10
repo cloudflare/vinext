@@ -36,7 +36,8 @@ describe("Image SSR rendering", () => {
     );
     expect(html).toContain('alt="a nice image"');
     // Local images are routed through the optimization endpoint
-    expect(html).toContain(`src="${optUrlHtml("/test.png", 100)}"`);
+    // x-descriptor mode: src = largest snapped width (100→128, 200→256) → 256
+    expect(html).toContain(`src="${optUrlHtml("/test.png", 256)}"`);
     expect(html).toContain('width="100"');
     expect(html).toContain('height="100"');
     expect(html).toContain('decoding="async"');
@@ -138,7 +139,8 @@ describe("Image SSR rendering", () => {
         placeholder: "blur",
       }),
     );
-    expect(html).toContain(`src="${optUrlHtml("/_next/static/media/test.abc123.png", 800)}"`);
+    // x-descriptor: 800→828, 1600→1920 → src = 1920 (largest)
+    expect(html).toContain(`src="${optUrlHtml("/_next/static/media/test.abc123.png", 1920)}"`);
 
     expect(html).toContain('width="800"');
     expect(html).toContain('height="600"');
@@ -164,7 +166,7 @@ describe("Image SSR rendering", () => {
 // ─── srcSet generation ──────────────────────────────────────────────────
 
 describe("Image srcSet generation", () => {
-  it("generates srcSet for local images with width", () => {
+  it("generates x-descriptor srcSet for local images without sizes prop", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "test",
@@ -173,31 +175,29 @@ describe("Image srcSet generation", () => {
         height: 400,
       }),
     );
-    // RESPONSIVE_WIDTHS = [640, 750, 828, 1080, 1200, 1920, 2048, 3840]
-    // Filter: widths <= 500 * 2 = 1000 → [640, 750, 828]
+    // No sizes prop + width=500 → x-descriptor mode (Next.js parity)
+    // 500 → snaps to 640, 1000 → snaps to 1080
     expect(html).toContain("srcSet");
-    expect(html).toContain(`${optUrlHtml("/photo.png", 640)} 640w`);
-    expect(html).toContain(`${optUrlHtml("/photo.png", 750)} 750w`);
-    expect(html).toContain(`${optUrlHtml("/photo.png", 828)} 828w`);
-    // Should not include widths > 1000
-    expect(html).not.toContain("1080w");
+    expect(html).toContain(`${optUrlHtml("/photo.png", 640)} 1x`);
+    expect(html).toContain(`${optUrlHtml("/photo.png", 1080)} 2x`);
   });
 
-  it("generates srcSet with all widths for large images", () => {
+  it("generates w-descriptor srcSet when sizes prop is provided", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "test",
         src: "/large.png",
         width: 2000,
         height: 1500,
+        sizes: "100vw",
       }),
     );
-    // widths <= 4000: all of them
+    // sizes="100vw" → w-descriptor mode with allSizes
     expect(html).toContain(`${optUrlHtml("/large.png", 640)} 640w`);
     expect(html).toContain(`${optUrlHtml("/large.png", 3840)} 3840w`);
   });
 
-  it("generates fallback srcSet for very small images", () => {
+  it("generates x-descriptor srcSet for very small images", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(Image, {
         alt: "tiny",
@@ -206,9 +206,10 @@ describe("Image srcSet generation", () => {
         height: 16,
       }),
     );
-    // widths <= 32: none of RESPONSIVE_WIDTHS qualify
-    // Falls back to single: optimized icon.png at 16w
-    expect(html).toContain(`${optUrlHtml("/icon.png", 16)} 16w`);
+    // width=16 → snap to 16, width*2=32 → snap to 32
+    // x-descriptors: "opt(16) 1x, opt(32) 2x"
+    expect(html).toContain(`${optUrlHtml("/icon.png", 16)} 1x`);
+    expect(html).toContain(`${optUrlHtml("/icon.png", 32)} 2x`);
   });
 
   it("does not generate srcSet for fill mode", () => {
@@ -236,7 +237,8 @@ describe("getImageProps", () => {
     });
 
     expect(props.alt).toBe("a nice desc");
-    expect(props.src).toBe(optUrl("/test.png", 100));
+    // x-descriptor mode: src = 2x snapped width (100→128, 200→256) → largest = 256
+    expect(props.src).toBe(optUrl("/test.png", 256));
     expect(props.width).toBe(100);
     expect(props.height).toBe(200);
     expect(props.loading).toBe("lazy");
@@ -339,7 +341,8 @@ describe("getImageProps", () => {
       src: staticImage,
     });
 
-    expect(props.src).toBe(optUrl("/static/photo.png", 1920));
+    // x-descriptor: 1920→1920, 3840→3840 → src = 3840 (largest)
+    expect(props.src).toBe(optUrl("/static/photo.png", 3840));
     expect(props.width).toBe(1920);
     expect(props.height).toBe(1080);
   });
@@ -355,7 +358,8 @@ describe("getImageProps", () => {
     expect(props.srcSet).toBeDefined();
     expect(props.srcSet).toContain("/_vinext/image");
     expect(props.srcSet).toContain("photo.png");
-    expect(props.srcSet).toContain("w");
+    // No sizes prop → x-descriptors
+    expect(props.srcSet).toContain("1x");
   });
 
   it("handles loading=eager prop", () => {
@@ -564,21 +568,22 @@ describe("fill mode objectFit customization", () => {
 
 // ─── imageSizes config support in srcSet ──────────────────────────
 describe("imageSizes config support in srcSet", () => {
-  it("includes imageSizes in srcSet for small images", () => {
-    // A 100px image should generate srcSet with imageSizes (32, 48, 64, 96, 128)
-    // not just deviceSizes (640, 750, ...)
+  it("snaps to imageSizes for small images in x-descriptor mode", () => {
+    // width=100 → snaps to allSizes >= 100 → 128 (from imageSizes)
+    // width*2=200 → snaps to allSizes >= 200 → 256 (from imageSizes)
+    // x-descriptor: "opt(128) 1x, opt(256) 2x"
     const { props } = getImageProps({
       alt: "small image",
       src: "/icon.png",
       width: 100,
       height: 100,
     });
-    // Should include small widths from imageSizes, not just large device widths
     expect(props.srcSet).toBeDefined();
     if (props.srcSet) {
-      // For a 100px image, valid widths up to 2x = 200px should be included
-      // imageSizes 32, 48, 64, 96, 128 are all <= 200
-      expect(props.srcSet).toContain("128w");
+      // imageSizes 128 is used as the 1x snap point
+      expect(props.srcSet).toContain(optUrl("/icon.png", 128));
+      expect(props.srcSet).toContain("1x");
+      expect(props.srcSet).toContain("2x");
     }
   });
 });
@@ -712,6 +717,118 @@ describe("deprecated props compatibility", () => {
       } as any),
     );
     expect(html).toContain('alt="deprecated lazy props"');
+  });
+});
+
+// ─── srcSet descriptor parity with Next.js ────────────────────────
+// Ported from Next.js: packages/next/src/shared/lib/get-img-props.ts getWidths()
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/get-img-props.ts
+describe("srcSet x-descriptor parity with Next.js", () => {
+  it("uses x-descriptors (1x, 2x) when no sizes prop and width is given", () => {
+    // Next.js: getWidths with width=200, no sizes → kind='x'
+    // width(200) snaps to allSizes >= 200 → 256
+    // width*2(400) snaps to allSizes >= 400 → 640
+    // srcSet = "opt(256) 1x, opt(640) 2x"
+    const { props } = getImageProps({
+      alt: "x-desc test",
+      src: "/photo.png",
+      width: 200,
+      height: 150,
+    });
+    expect(props.srcSet).toBeDefined();
+    expect(props.srcSet).toContain("1x");
+    expect(props.srcSet).toContain("2x");
+    // Should NOT use w-descriptors
+    expect(props.srcSet).not.toMatch(/\d+w/);
+  });
+
+  it("snaps widths to nearest allSizes value >= target", () => {
+    // width=300 → snap to 384, width*2=600 → snap to 640
+    const { props } = getImageProps({
+      alt: "snap test",
+      src: "/photo.png",
+      width: 300,
+      height: 200,
+    });
+    expect(props.srcSet).toContain(optUrl("/photo.png", 384));
+    expect(props.srcSet).toContain(optUrl("/photo.png", 640));
+  });
+
+  it("deduplicates when 1x and 2x snap to the same size", () => {
+    // width=3000 → snap to 3840, width*2=6000 → snap to 3840 (max)
+    // Dedup → only one entry: "opt(3840) 1x"
+    const { props } = getImageProps({
+      alt: "dedup test",
+      src: "/photo.png",
+      width: 3000,
+      height: 2000,
+    });
+    expect(props.srcSet).toBeDefined();
+    // Only 1 entry (deduplicated)
+    const entries = props.srcSet!.split(", ");
+    expect(entries.length).toBe(1);
+    expect(entries[0]).toContain("1x");
+  });
+
+  it("sets src to the largest width in srcSet (2x variant)", () => {
+    // Next.js: src = loader({ width: widths[last] })
+    // width=200 → widths=[256, 640] → src=opt(640)
+    const { props } = getImageProps({
+      alt: "src test",
+      src: "/photo.png",
+      width: 200,
+      height: 150,
+    });
+    expect(props.src).toBe(optUrl("/photo.png", 640));
+  });
+
+  it("uses w-descriptors when sizes prop is provided", () => {
+    // Next.js: getWidths with sizes="50vw" → kind='w'
+    const { props } = getImageProps({
+      alt: "w-desc test",
+      src: "/photo.png",
+      width: 500,
+      height: 400,
+      sizes: "(max-width: 768px) 100vw, 50vw",
+    });
+    expect(props.srcSet).toBeDefined();
+    expect(props.srcSet).toMatch(/\d+w/);
+    // Should NOT use x-descriptors
+    expect(props.srcSet).not.toContain("1x");
+    expect(props.srcSet).not.toContain("2x");
+  });
+
+  it("renders x-descriptors in SSR output", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "x-desc ssr",
+        src: "/photo.png",
+        width: 400,
+        height: 300,
+      }),
+    );
+    // Should use x-descriptors in srcSet
+    expect(html).toContain("1x");
+    expect(html).toContain("2x");
+    // Should NOT use w-descriptors
+    expect(html).not.toMatch(/\d+w/);
+  });
+
+  it("renders w-descriptors in SSR when sizes is provided", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "w-desc ssr",
+        src: "/photo.png",
+        width: 500,
+        height: 400,
+        sizes: "50vw",
+      }),
+    );
+    // Should use w-descriptors
+    expect(html).toMatch(/\d+w/);
+    // Should NOT use x-descriptors
+    expect(html).not.toContain(" 1x");
+    expect(html).not.toContain(" 2x");
   });
 });
 

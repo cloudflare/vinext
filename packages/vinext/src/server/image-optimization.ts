@@ -420,7 +420,7 @@ const MIME_TO_EXT: Record<string, string> = {
  * Extracts the base name from the image URL path and appends the correct
  * extension for the output format. Matches Next.js behavior.
  */
-function getContentDisposition(
+export function getContentDisposition(
   imageUrl: string | undefined,
   outputFormat: string | undefined,
   dispositionType: "inline" | "attachment" = "inline",

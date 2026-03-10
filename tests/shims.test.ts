@@ -5647,9 +5647,10 @@ describe("next/image enhancements", () => {
       priority: true,
     });
     // Local images now route through the optimization endpoint
+    // x-descriptor mode: src = 2x snapped width (800→828, 1600→1920) → 1920
     expect(result.props.src).toContain("/_vinext/image");
     expect(result.props.src).toContain("url=%2Fphoto.jpg");
-    expect(result.props.src).toContain("w=800");
+    expect(result.props.src).toContain("w=1920");
     expect(result.props.alt).toBe("Test");
     expect(result.props.width).toBe(800);
     expect(result.props.height).toBe(600);
@@ -5676,7 +5677,8 @@ describe("next/image enhancements", () => {
     });
     expect(result.props.src).toContain("/_vinext/image");
     expect(result.props.src).toContain("url=%2Fimported.jpg");
-    expect(result.props.src).toContain("w=1200");
+    // x-descriptor mode: 1200→1200, 2400→3840 → src = largest = 3840
+    expect(result.props.src).toContain("w=3840");
     expect(result.props.width).toBe(1200);
     expect(result.props.height).toBe(800);
   });

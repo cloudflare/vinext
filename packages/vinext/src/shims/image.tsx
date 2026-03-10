@@ -200,18 +200,70 @@ export function imageOptimizationUrl(src: string, width: number, quality: number
 }
 
 /**
- * Generate a srcSet string for responsive images.
+ * Determine the widths and descriptor kind for srcSet generation.
+ * Matches Next.js getWidths() in packages/next/src/shared/lib/get-img-props.ts.
  *
- * Uses ALL_SIZES (imageSizes + deviceSizes) and filters to widths
- * <= 2x the original image width to avoid pointless upscaling.
- * This matches Next.js behavior where both imageSizes and deviceSizes
- * are used for srcSet generation.
+ * - When `sizes` is provided: uses allSizes (filtered by vw% if present), kind='w'
+ * - When `sizes` is absent + width is given: snaps [width, width*2] to nearest
+ *   allSizes values, kind='x' (1x, 2x descriptors)
+ * - When neither: uses deviceSizes, kind='w'
  */
-function generateSrcSet(src: string, originalWidth: number, quality: number = 75): string {
-  const widths = ALL_SIZES.filter((w) => w <= originalWidth * 2);
-  if (widths.length === 0)
-    return `${imageOptimizationUrl(src, originalWidth, quality)} ${originalWidth}w`;
-  return widths.map((w) => `${imageOptimizationUrl(src, w, quality)} ${w}w`).join(", ");
+function getWidths(
+  width: number | undefined,
+  sizes: string | undefined,
+): { widths: number[]; kind: "w" | "x" } {
+  if (sizes) {
+    // Find all "vw" percent sizes used in the sizes prop
+    const viewportWidthRe = /(^|\s)(1?\d?\d)vw/g;
+    const percentSizes: number[] = [];
+    let match: RegExpExecArray | null;
+    while ((match = viewportWidthRe.exec(sizes)) !== null) {
+      percentSizes.push(parseInt(match[2]));
+    }
+    if (percentSizes.length) {
+      const smallestRatio = Math.min(...percentSizes) * 0.01;
+      return {
+        widths: ALL_SIZES.filter((s) => s >= RESPONSIVE_WIDTHS[0] * smallestRatio),
+        kind: "w",
+      };
+    }
+    return { widths: ALL_SIZES, kind: "w" };
+  }
+  if (typeof width !== "number") {
+    return { widths: RESPONSIVE_WIDTHS, kind: "w" };
+  }
+  // No sizes prop, width is known: x-descriptor mode
+  // Snap [width, width*2] to nearest allSizes value >= target
+  const widths = [
+    ...new Set(
+      [width, width * 2].map(
+        (w) => ALL_SIZES.find((p) => p >= w) || ALL_SIZES[ALL_SIZES.length - 1],
+      ),
+    ),
+  ];
+  return { widths, kind: "x" };
+}
+
+/**
+ * Generate srcSet, sizes, and src attributes for an image.
+ * Matches Next.js genImgAttrs() behavior.
+ */
+function generateImgAttrs(
+  src: string,
+  width: number | undefined,
+  sizes: string | undefined,
+  quality: number = 75,
+): { src: string; srcSet: string | undefined; sizes: string | undefined } {
+  const { widths, kind } = getWidths(width, sizes);
+  const last = widths.length - 1;
+
+  return {
+    sizes: !sizes && kind === "w" ? "100vw" : sizes,
+    srcSet: widths
+      .map((w, i) => `${imageOptimizationUrl(src, w, quality)} ${kind === "w" ? w : i + 1}${kind}`)
+      .join(", "),
+    src: imageOptimizationUrl(src, widths[last], quality),
+  };
 }
 
 const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
@@ -339,19 +391,18 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   const isSvg = src.endsWith(".svg");
   const skipOptimization = _unoptimized === true || (isSvg && !__dangerouslyAllowSVG);
 
-  const srcSet =
-    imgWidth && !fill && !skipOptimization
-      ? generateSrcSet(src, imgWidth, imgQuality)
-      : imgWidth && !fill
-        ? RESPONSIVE_WIDTHS.filter((w) => w <= imgWidth * 2)
-            .map((w) => `${src} ${w}w`)
-            .join(", ") || `${src} ${imgWidth}w`
-        : undefined;
+  // Generate srcSet/src/sizes using Next.js-compatible getWidths logic.
+  // When no sizes prop and width is known → x-descriptors (1x, 2x).
+  // When sizes is provided → w-descriptors with allSizes.
+  const imgAttrs =
+    !fill && !skipOptimization ? generateImgAttrs(src, imgWidth, sizes, imgQuality) : undefined;
+
+  const srcSet = imgAttrs?.srcSet;
 
   const optimizedSrc = skipOptimization
     ? src
-    : imgWidth
-      ? imageOptimizationUrl(src, imgWidth, imgQuality)
+    : imgAttrs
+      ? imgAttrs.src
       : imageOptimizationUrl(src, RESPONSIVE_WIDTHS[0], imgQuality);
 
   // Placeholder: show a background while the image loads.
@@ -386,7 +437,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       fetchPriority={priority ? "high" : undefined}
       decoding="async"
       srcSet={srcSet}
-      sizes={sizes ?? (fill ? "100vw" : undefined)}
+      sizes={imgAttrs?.sizes ?? (fill ? "100vw" : undefined)}
       className={className}
       data-nimg={fill ? "fill" : "1"}
       style={
@@ -478,17 +529,17 @@ export function getImageProps(props: ImageProps): {
     !!loader ||
     isRemoteUrl(resolvedSrc);
 
+  // Generate srcSet/src/sizes using Next.js-compatible getWidths logic
+  const imgAttrs =
+    !fill && !skipOpt ? generateImgAttrs(resolvedSrc, imgWidth, sizes, imgQuality) : undefined;
+
   const optimizedSrc = skipOpt
     ? resolvedSrc
-    : imgWidth
-      ? imageOptimizationUrl(resolvedSrc, imgWidth, imgQuality)
+    : imgAttrs
+      ? imgAttrs.src
       : imageOptimizationUrl(resolvedSrc, RESPONSIVE_WIDTHS[0], imgQuality);
 
-  // Build srcSet — point to /_vinext/image for local images
-  const srcSet =
-    imgWidth && !fill && !isRemoteUrl(resolvedSrc) && !loader && !skipOpt
-      ? generateSrcSet(resolvedSrc, imgWidth, imgQuality)
-      : undefined;
+  const srcSet = imgAttrs?.srcSet;
 
   // Placeholder styles — sanitize to prevent CSS injection
   const sanitizedBlurURL = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
@@ -517,7 +568,7 @@ export function getImageProps(props: ImageProps): {
       fetchPriority: priority ? ("high" as const) : undefined,
       decoding: "async" as const,
       srcSet,
-      sizes: sizes ?? (fill ? "100vw" : undefined),
+      sizes: imgAttrs?.sizes ?? (fill ? "100vw" : undefined),
       className,
       "data-nimg": fill ? "fill" : "1",
       style: fill
