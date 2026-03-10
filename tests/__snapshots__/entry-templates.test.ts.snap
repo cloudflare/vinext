@@ -15081,6 +15081,9 @@ if (typeof _instrumentation.onRequestError === "function") {
 // i18n config (embedded at build time)
 const i18nConfig = null;
 
+// Build ID (embedded at build time)
+const buildId = "d4a60275-6897-440a-b848-6ef29cbf7dbe";
+
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = {"basePath":"","trailingSlash":false,"redirects":[{"source":"/old-about","destination":"/about","permanent":true}],"rewrites":{"beforeFiles":[{"source":"/before-rewrite","destination":"/about"},{"source":"/mw-gated-before","has":[{"type":"cookie","key":"mw-before-user"}],"destination":"/about"}],"afterFiles":[{"source":"/after-rewrite","destination":"/about"},{"source":"/mw-gated-rewrite","has":[{"type":"cookie","key":"mw-user"}],"destination":"/about"}],"fallback":[{"source":"/fallback-rewrite","destination":"/about"}]},"headers":[{"source":"/api/(.*)","headers":[{"key":"X-Custom-Header","value":"vinext"}]},{"source":"/about","has":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Auth-Only-Header","value":"1"}]},{"source":"/about","missing":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Guest-Only-Header","value":"1"}]},{"source":"/ssr","headers":[{"key":"Vary","value":"Accept-Language"}]}],"i18n":null,"images":{}};
 
@@ -15733,7 +15736,7 @@ export async function renderPage(request, url, manifest, ctx) {
     const pageModuleIds = route.filePath ? [route.filePath] : [];
     const assetTags = collectAssetTags(manifest, pageModuleIds);
     const nextDataPayload = {
-      props: { pageProps }, page: patternToNextFormat(route.pattern), query: params, isFallback: false,
+      props: { pageProps }, page: patternToNextFormat(route.pattern), query: params, buildId, isFallback: false,
     };
     if (i18nConfig) {
       nextDataPayload.locale = locale;
