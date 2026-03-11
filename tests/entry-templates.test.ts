@@ -277,9 +277,10 @@ describe("Pages Router entry templates", () => {
     expect(stabilize(code)).toMatchSnapshot();
   });
 
-  it("server entry rejects malformed non-terminal catch-all patterns", async () => {
+  it("server entry uses trie-based route matching", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
-    expect(stabilize(code)).toContain("if (i !== patternParts.length - 1) return null;");
+    expect(stabilize(code)).toContain("buildRouteTrie");
+    expect(stabilize(code)).toContain("trieMatch");
   });
 
   it("client entry snapshot", async () => {
