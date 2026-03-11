@@ -11,6 +11,7 @@ export default function Post({ id }: PostProps) {
     <div>
       <h1 data-testid="post-title">Post: {id}</h1>
       <p data-testid="pathname">Pathname: {router.pathname}</p>
+      <p data-testid="as-path">As Path: {router.asPath}</p>
       <p data-testid="query">Query ID: {router.query.id}</p>
     </div>
   );

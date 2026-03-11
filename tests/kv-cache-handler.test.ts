@@ -356,6 +356,70 @@ describe("KVCacheHandler", () => {
       expect(result!.value!.kind).toBe("PAGES");
       expect((result!.value as any).html).toBe("<div>hi</div>");
     });
+
+    it("preserves slash-based path tags for Workers invalidation", async () => {
+      await handler.set(
+        "rt-path-tags",
+        {
+          kind: "APP_PAGE",
+          html: "<div>hi</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        {
+          revalidate: 60,
+          tags: ["/revalidate-tag-test", "_N_T_/revalidate-tag-test", "test-data"],
+        },
+      );
+
+      const raw = store.get("cache:rt-path-tags");
+      expect(raw).toBeTruthy();
+      const parsed = JSON.parse(raw!);
+      expect(parsed.tags).toEqual([
+        "/revalidate-tag-test",
+        "_N_T_/revalidate-tag-test",
+        "test-data",
+      ]);
+    });
+  });
+
+  describe("tag invalidation", () => {
+    it("revalidateTag persists slash-based path invalidation markers", async () => {
+      await handler.revalidateTag(["/revalidate-tag-test", "_N_T_/revalidate-tag-test"]);
+
+      expect(store.get("__tag:/revalidate-tag-test")).toMatch(/^\d+$/);
+      expect(store.get("__tag:_N_T_/revalidate-tag-test")).toMatch(/^\d+$/);
+    });
+
+    it("slash-based path tags invalidate persisted APP_PAGE entries", async () => {
+      const entryTime = 1000;
+      const invalidatedTime = 2000;
+
+      store.set(
+        "cache:app-page",
+        JSON.stringify({
+          value: {
+            kind: "APP_PAGE",
+            html: "<html>cached</html>",
+            rscData: undefined,
+            headers: undefined,
+            postponed: undefined,
+            status: 200,
+          },
+          tags: ["/revalidate-tag-test", "_N_T_/revalidate-tag-test"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+      store.set("__tag:/revalidate-tag-test", String(invalidatedTime));
+
+      const result = await handler.get("app-page");
+
+      expect(result).toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:app-page");
+    });
   });
 
   // -------------------------------------------------------------------------

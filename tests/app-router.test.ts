@@ -1447,6 +1447,14 @@ describe("App Router Production server (startProdServer)", () => {
   let server: import("node:http").Server;
   let baseUrl: string;
 
+  function extractRequestId(html: string): string | undefined {
+    return (
+      html.match(
+        /data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/,
+      )?.[1] ?? html.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1]
+    );
+  }
+
   beforeAll(async () => {
     // Build the app-basic fixture to the default dist/ directory
     const builder = await createBuilder({
@@ -1597,6 +1605,60 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.status).toBe(400);
     const body = await res.text();
     expect(body).toContain("Bad Request");
+  });
+
+  it("revalidateTag invalidates App Router ISR page entries by fetch tag", async () => {
+    const res1 = await fetch(`${baseUrl}/revalidate-tag-test`);
+    expect(res1.status).toBe(200);
+    const html1 = await res1.text();
+    const reqId1 = extractRequestId(html1);
+    expect(reqId1).toBeTruthy();
+
+    const res2 = await fetch(`${baseUrl}/revalidate-tag-test`);
+    expect(res2.status).toBe(200);
+    const html2 = await res2.text();
+    const reqId2 = extractRequestId(html2);
+    expect(reqId2).toBe(reqId1);
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+
+    const tagRes = await fetch(`${baseUrl}/api/revalidate-tag`);
+    expect(tagRes.status).toBe(200);
+    expect(await tagRes.text()).toBe("ok");
+
+    const res3 = await fetch(`${baseUrl}/revalidate-tag-test`);
+    expect(res3.status).toBe(200);
+    const html3 = await res3.text();
+    const reqId3 = extractRequestId(html3);
+    expect(reqId3).toBeTruthy();
+    expect(reqId3).not.toBe(reqId1);
+    expect(res3.headers.get("x-vinext-cache")).toBe("MISS");
+  });
+
+  it("revalidatePath invalidates App Router ISR page entries by path tag", async () => {
+    const res1 = await fetch(`${baseUrl}/revalidate-tag-test`);
+    expect(res1.status).toBe(200);
+    const html1 = await res1.text();
+    const reqId1 = extractRequestId(html1);
+    expect(reqId1).toBeTruthy();
+
+    const res2 = await fetch(`${baseUrl}/revalidate-tag-test`);
+    expect(res2.status).toBe(200);
+    const html2 = await res2.text();
+    const reqId2 = extractRequestId(html2);
+    expect(reqId2).toBe(reqId1);
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+
+    const pathRes = await fetch(`${baseUrl}/api/revalidate-path`);
+    expect(pathRes.status).toBe(200);
+    expect(await pathRes.text()).toBe("ok");
+
+    const res3 = await fetch(`${baseUrl}/revalidate-tag-test`);
+    expect(res3.status).toBe(200);
+    const html3 = await res3.text();
+    const reqId3 = extractRequestId(html3);
+    expect(reqId3).toBeTruthy();
+    expect(reqId3).not.toBe(reqId1);
+    expect(res3.headers.get("x-vinext-cache")).toBe("MISS");
   });
 });
 
@@ -2489,7 +2551,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     // Should call dev origin validation inside _handleRequest
     const callSite = code.indexOf("const __originBlock = __validateDevRequestOrigin(request)");
     const handleRequestIdx = code.indexOf(
-      "async function _handleRequest(request, __reqCtx, _mwCtx, ctx)",
+      "async function _handleRequest(request, __reqCtx, _mwCtx)",
     );
     expect(callSite).toBeGreaterThan(-1);
     expect(handleRequestIdx).toBeGreaterThan(-1);
@@ -3228,6 +3290,17 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("function __triggerBackgroundRegeneration(");
     expect(code).toContain("function __isrCacheKey(");
     expect(code).toContain("const __pendingRegenerations = new Map()");
+  });
+
+  it("generated code threads collected fetch tags into page ISR writes", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("getCollectedFetchTags");
+    expect(code).toContain("function __pageCacheTags(pathname, extraTags)");
+    expect(code).toContain('const tags = [pathname, "_N_T_" + pathname]');
+    expect(code).toContain(
+      "const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags())",
+    );
+    expect(code).toContain("Array.isArray(tags) ? tags : []");
   });
 
   it("generated handler exports async function handler(request, ctx)", () => {

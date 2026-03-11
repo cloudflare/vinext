@@ -29,7 +29,7 @@
  */
 
 import type { CacheHandler, CacheHandlerValue, IncrementalCacheValue } from "../shims/cache.js";
-import { getRequestExecutionContext } from "../shims/request-context.js";
+import { getRequestExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
 
 // Cloudflare KV namespace interface (matches Workers types)
 interface KVNamespace {
@@ -46,19 +46,6 @@ interface KVNamespace {
     list_complete: boolean;
     cursor?: string;
   }>;
-}
-
-/**
- * Minimal ExecutionContext interface for Cloudflare Workers.
- * Background KV operations (cleanup deletes, cache writes) are registered
- * with ctx.waitUntil() so they are not killed when the Response is returned.
- *
- * The preferred way to supply ctx is via runWithExecutionContext() in the
- * worker entry (see vinext/shims/request-context). The constructor option
- * is kept as a fallback for callers that set it explicitly.
- */
-interface ExecutionContext {
-  waitUntil(promise: Promise<unknown>): void;
 }
 
 /** Shape stored in KV for each cache entry. */
@@ -86,16 +73,18 @@ const MAX_TAG_LENGTH = 256;
  */
 function validateTag(tag: string): string | null {
   if (typeof tag !== "string" || tag.length === 0 || tag.length > MAX_TAG_LENGTH) return null;
-  // Block control characters, path separators, and KV-special characters.
+  // Block control characters and reserved separators used in our own key format.
+  // Slash is allowed because revalidatePath() relies on pathname tags like
+  // "/posts/hello" and "_N_T_/posts/hello".
   // eslint-disable-next-line no-control-regex -- intentional: reject control chars in tags
-  if (/[\x00-\x1f/\\:]/.test(tag)) return null;
+  if (/[\x00-\x1f\\:]/.test(tag)) return null;
   return tag;
 }
 
 export class KVCacheHandler implements CacheHandler {
   private kv: KVNamespace;
   private prefix: string;
-  private ctx: ExecutionContext | undefined;
+  private ctx: ExecutionContextLike | undefined;
   private ttlSeconds: number;
 
   /** Local in-memory cache for tag invalidation timestamps. Avoids redundant KV reads. */
@@ -107,7 +96,7 @@ export class KVCacheHandler implements CacheHandler {
     kvNamespace: KVNamespace,
     options?: {
       appPrefix?: string;
-      ctx?: ExecutionContext;
+      ctx?: ExecutionContextLike;
       ttlSeconds?: number;
       /** TTL in milliseconds for the local tag cache. Defaults to 5000ms. */
       tagCacheTtlMs?: number;
