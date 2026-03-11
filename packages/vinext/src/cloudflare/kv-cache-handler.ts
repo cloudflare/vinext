@@ -174,19 +174,21 @@ export class KVCacheHandler implements CacheHandler {
           uncachedTags.map((tag) => this.kv.get(this.prefix + TAG_PREFIX + tag)),
         );
 
-        // Populate cache for all results first
+        // Populate cache for all results first, then check for invalidation.
+        // Two-loop structure ensures all tag results are cached even when an
+        // earlier tag would cause an early return — so subsequent get() calls
+        // for entries sharing those tags don't redundantly re-fetch from KV.
         for (let i = 0; i < uncachedTags.length; i++) {
           const tagTime = tagResults[i];
           const tagTimestamp = tagTime ? Number(tagTime) : 0;
           this._tagCache.set(uncachedTags[i], { timestamp: tagTimestamp, fetchedAt: now });
         }
 
-        // Then check for invalidation
-        for (let i = 0; i < uncachedTags.length; i++) {
-          const tagTime = tagResults[i];
-          if (tagTime) {
-            const tagTimestamp = Number(tagTime);
-            if (Number.isNaN(tagTimestamp) || tagTimestamp >= entry.lastModified) {
+        // Then check for invalidation using the now-cached timestamps
+        for (const tag of uncachedTags) {
+          const cached = this._tagCache.get(tag)!;
+          if (cached.timestamp !== 0) {
+            if (Number.isNaN(cached.timestamp) || cached.timestamp >= entry.lastModified) {
               this._deleteInBackground(kvKey);
               return null;
             }
