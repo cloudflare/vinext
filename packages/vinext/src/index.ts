@@ -53,6 +53,8 @@ import {
 import { hasBasePath } from "./utils/base-path.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
+import { patchReactServerDom } from "./plugins/patch-react-server-dom.js";
+import { stripReactTypeImports } from "./plugins/strip-react-type-imports.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import react, { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
@@ -1504,6 +1506,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         }
       },
     },
+    // Fix React 19 dev-mode crashes in Vite's module runner — see src/plugins/patch-react-server-dom.ts
+    patchReactServerDom(),
+    // Strip type-only React imports that esbuild can't detect — see src/plugins/strip-react-type-imports.ts
+    stripReactTypeImports(),
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
     // Dedup client references from RSC proxy modules — see src/plugins/client-reference-dedup.ts
