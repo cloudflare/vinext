@@ -3428,9 +3428,9 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain('"X-Vinext-Cache": "STALE"');
   });
 
-  it("generated code uses ctx.waitUntil for background cache write", () => {
+  it("generated code uses request execution context for background cache write", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("ctx.waitUntil");
+    expect(code).toContain("_getRequestExecutionContext()?.waitUntil");
   });
 
   it("generated code tees the RSC stream to capture rscData for cache", () => {
