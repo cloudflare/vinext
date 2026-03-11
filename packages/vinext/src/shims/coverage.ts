@@ -115,7 +115,7 @@ export function checkModuleCoverage(
     const missing: string[] = [];
 
     for (const exp of exports) {
-      if (exp === "__esModule" || exp === "default") continue; // skip internals
+      if (exp === "__esModule") continue; // skip internals
       if (gapExports.has(exp)) continue; // intentionally skipped
       if (!shimSet.has(exp)) {
         missing.push(exp);

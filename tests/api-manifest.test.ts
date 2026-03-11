@@ -6,9 +6,34 @@ import {
   extractExportsFromDistFile,
   getModuleExports,
   buildManifest,
+  PUBLIC_MODULES,
+  SUBDIRECTORY_MODULES,
 } from "../scripts/extract-nextjs-api.js";
 
 const FIXTURE_DIR = path.join(import.meta.dirname, "fixtures/next-api-manifest");
+
+describe("module lists", () => {
+  it("PUBLIC_MODULES has 20 entries", () => {
+    expect(PUBLIC_MODULES).toHaveLength(20);
+    expect(PUBLIC_MODULES).toContain("web-vitals");
+  });
+
+  it("SUBDIRECTORY_MODULES has 4 entries", () => {
+    expect(SUBDIRECTORY_MODULES).toHaveLength(4);
+    expect(SUBDIRECTORY_MODULES.map((m) => m.name)).toEqual([
+      "compat/router",
+      "legacy/image",
+      "font/google",
+      "font/local",
+    ]);
+  });
+
+  it("SUBDIRECTORY_MODULES entries have correct entryFile paths", () => {
+    for (const mod of SUBDIRECTORY_MODULES) {
+      expect(mod.entryFile).toMatch(/\.js$/);
+    }
+  });
+});
 
 describe("extractExportsFromRootFile", () => {
   it("extracts Pattern A module.exports.X = ... style exports", () => {
@@ -209,6 +234,24 @@ describe("getModuleExports (integration with fixtures)", () => {
     const result = getModuleExports(dir, "nonexistent");
     expect(result).toEqual([]);
   });
+
+  it("resolves subdirectory module with custom entryFile", () => {
+    const dir = path.join(FIXTURE_DIR, "full-package");
+    const result = getModuleExports(dir, "compat/router", "compat/router.js");
+    expect(result).toEqual(["useRouter"]);
+  });
+
+  it("resolves subdirectory module with default export", () => {
+    const dir = path.join(FIXTURE_DIR, "full-package");
+    const result = getModuleExports(dir, "legacy/image", "legacy/image.js");
+    expect(result).toEqual(["default"]);
+  });
+
+  it("returns [] for empty subdirectory entry file", () => {
+    const dir = path.join(FIXTURE_DIR, "full-package");
+    const result = getModuleExports(dir, "font/google", "font/google/index.js");
+    expect(result).toEqual([]);
+  });
 });
 
 describe("buildManifest", () => {
@@ -218,21 +261,32 @@ describe("buildManifest", () => {
     expect(manifest.version).toBe("99.0.0-test");
   });
 
-  it("has all non-empty modules", () => {
+  it("has all non-empty modules including subdirectory modules", () => {
     const dir = path.join(FIXTURE_DIR, "full-package");
     const manifest = buildManifest(dir);
-    // full-package has headers.js, navigation.js, form.js
+    // Root modules: headers.js, navigation.js, form.js, web-vitals.js
     expect(manifest.modules).toHaveProperty("next/headers");
     expect(manifest.modules).toHaveProperty("next/navigation");
     expect(manifest.modules).toHaveProperty("next/form");
+    expect(manifest.modules).toHaveProperty("next/web-vitals");
+    // Subdirectory modules: compat/router, legacy/image
+    expect(manifest.modules).toHaveProperty("next/compat/router");
+    expect(manifest.modules).toHaveProperty("next/legacy/image");
+    // Verify exports
+    expect(manifest.modules["next/compat/router"]).toEqual(["useRouter"]);
+    expect(manifest.modules["next/legacy/image"]).toEqual(["default"]);
+    expect(manifest.modules["next/web-vitals"]).toEqual(["useReportWebVitals"]);
   });
 
-  it("skips modules with no exports", () => {
+  it("skips modules with no exports including empty subdirectory entries", () => {
     const dir = path.join(FIXTURE_DIR, "full-package");
     const manifest = buildManifest(dir);
     // full-package doesn't have server.js, cache.js, etc.
     expect(manifest.modules).not.toHaveProperty("next/server");
     expect(manifest.modules).not.toHaveProperty("next/cache");
+    // font/google and font/local have empty entry files
+    expect(manifest.modules).not.toHaveProperty("next/font/google");
+    expect(manifest.modules).not.toHaveProperty("next/font/local");
   });
 
   it("exports are sorted alphabetically", () => {

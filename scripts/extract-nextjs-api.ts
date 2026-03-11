@@ -22,6 +22,15 @@ export const PUBLIC_MODULES = [
   "router",
   "script",
   "server",
+  "web-vitals",
+];
+
+// Public entry points in subdirectories (not at package root)
+export const SUBDIRECTORY_MODULES: Array<{ name: string; entryFile: string }> = [
+  { name: "compat/router", entryFile: "compat/router.js" },
+  { name: "legacy/image", entryFile: "legacy/image.js" },
+  { name: "font/google", entryFile: "font/google/index.js" },
+  { name: "font/local", entryFile: "font/local/index.js" },
 ];
 
 export interface ApiManifest {
@@ -143,8 +152,12 @@ export function extractExportsFromDistFile(source: string): string[] {
 /**
  * Get all exports for a module, handling both Pattern A and B.
  */
-export function getModuleExports(nextPkgDir: string, moduleName: string): string[] {
-  const rootFile = path.join(nextPkgDir, `${moduleName}.js`);
+export function getModuleExports(
+  nextPkgDir: string,
+  moduleName: string,
+  entryFile?: string,
+): string[] {
+  const rootFile = path.join(nextPkgDir, entryFile || `${moduleName}.js`);
   if (!fs.existsSync(rootFile)) return [];
 
   const source = fs.readFileSync(rootFile, "utf-8");
@@ -157,11 +170,15 @@ export function getModuleExports(nextPkgDir: string, moduleName: string): string
   const target = resolveReExportTarget(source);
   if (!target) return [];
 
-  // Resolve target relative to nextPkgDir
-  // Handle both './dist/...' and 'next/dist/...' paths
-  const targetPath = target.startsWith("next/")
-    ? path.join(nextPkgDir, target.slice(5) + ".js")
-    : path.join(nextPkgDir, target + ".js");
+  // Resolve target relative to the entry file's directory
+  // Handle both './dist/...' (relative to entry file) and 'next/dist/...' paths
+  let targetPath: string;
+  if (target.startsWith("next/")) {
+    targetPath = path.join(nextPkgDir, target.slice(5) + ".js");
+  } else {
+    const entryDir = path.dirname(rootFile);
+    targetPath = path.join(entryDir, target + ".js");
+  }
 
   if (!fs.existsSync(targetPath)) return [];
 
@@ -180,6 +197,14 @@ export function buildManifest(nextPkgDir: string): ApiManifest {
     const moduleExports = getModuleExports(nextPkgDir, mod);
     if (moduleExports.length > 0) {
       modules[`next/${mod}`] = moduleExports.sort();
+    }
+  }
+
+  // Subdirectory modules
+  for (const { name, entryFile } of SUBDIRECTORY_MODULES) {
+    const moduleExports = getModuleExports(nextPkgDir, name, entryFile);
+    if (moduleExports.length > 0) {
+      modules[`next/${name}`] = moduleExports.sort();
     }
   }
 

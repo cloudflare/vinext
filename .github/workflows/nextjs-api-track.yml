@@ -38,16 +38,22 @@ jobs:
         if: steps.next-version.outputs.changed == 'true'
         run: |
           npm install --no-save "next@${{ steps.next-version.outputs.latest }}"
-          pnpm tsx scripts/extract-nextjs-api.ts node_modules/next new-manifest.json
+          pnpm dlx tsx scripts/extract-nextjs-api.ts node_modules/next new-manifest.json
 
       - name: Diff manifests
         if: steps.next-version.outputs.changed == 'true'
         id: diff
         run: |
-          DIFF=$(pnpm tsx scripts/diff-nextjs-api.ts api-manifest.json new-manifest.json 2>&1) || true
+          DIFF=$(pnpm dlx tsx scripts/diff-nextjs-api.ts api-manifest.json new-manifest.json 2>&1) || true
           echo "diff<<EOF" >> "$GITHUB_OUTPUT"
           echo "$DIFF" >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure tracking label exists
+        if: steps.next-version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh label create "next-api-tracking" --description "Automated Next.js API surface tracking" --color "0e8a16" 2>/dev/null || true
 
       - name: Open tracking issue
         if: steps.next-version.outputs.changed == 'true'
@@ -65,10 +71,7 @@ jobs:
             exit 0
           fi
 
-          gh issue create \
-            --title "Next.js API update: ${NEXT_CURRENT} → ${NEXT_LATEST}" \
-            --label "next-api-tracking" \
-            --body "$(cat <<BODY
+          read -r -d '' ISSUE_BODY <<BODY || true
           ## Next.js API Surface Change Detected
 
           **Previous version:** ${NEXT_CURRENT}
@@ -85,9 +88,16 @@ jobs:
           - [ ] Review API changes
           - [ ] Update shims for new exports
           - [ ] Update \`known-gaps.json\` for intentionally unsupported features
-          - [ ] Regenerate \`api-manifest.json\` with \`pnpm tsx scripts/extract-nextjs-api.ts\`
-          - [ ] Run \`pnpm tsx scripts/check-shim-coverage.ts\` to verify coverage
+          - [ ] Regenerate \`api-manifest.json\` with \`pnpm dlx tsx scripts/extract-nextjs-api.ts\`
+          - [ ] Run \`pnpm dlx tsx scripts/check-shim-coverage.ts\` to verify coverage
 
           _This issue was automatically created by the [Next.js API Tracking workflow](https://github.com/${REPO}/actions/workflows/nextjs-api-track.yml)._
           BODY
-          )"
+
+          # Strip leading whitespace (10 spaces from YAML indentation)
+          ISSUE_BODY=$(echo "$ISSUE_BODY" | sed 's/^          //')
+
+          gh issue create \
+            --title "Next.js API update: ${NEXT_CURRENT} → ${NEXT_LATEST}" \
+            --label "next-api-tracking" \
+            --body "$ISSUE_BODY"

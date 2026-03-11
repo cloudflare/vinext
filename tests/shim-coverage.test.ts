@@ -120,7 +120,7 @@ describe("checkModuleCoverage", () => {
     expect(result.passed).toBe(true);
   });
 
-  it("skips __esModule and default in export checks", () => {
+  it("skips __esModule but checks default in export checks", () => {
     const manifest = makeManifest({
       "next/headers": ["__esModule", "default", "cookies"],
     });
@@ -129,7 +129,35 @@ describe("checkModuleCoverage", () => {
       "next/headers": new Set(["cookies"]),
     };
     const result = checkModuleCoverage(manifest, registry, shimExports, {});
+    // Should fail because "default" is not in shimExports
+    expect(result.passed).toBe(false);
+    expect(result.missingExports["next/headers"]).toEqual(["default"]);
+  });
+
+  it("passes when default export is present in shim", () => {
+    const manifest = makeManifest({
+      "next/form": ["__esModule", "default"],
+    });
+    const registry = new Set(["next/form"]);
+    const shimExports = {
+      "next/form": new Set(["default"]),
+    };
+    const result = checkModuleCoverage(manifest, registry, shimExports, {});
     expect(result.passed).toBe(true);
+    expect(result.coveredModules).toEqual(["next/form"]);
+  });
+
+  it("catches missing default export", () => {
+    const manifest = makeManifest({
+      "next/error": ["default"],
+    });
+    const registry = new Set(["next/error"]);
+    const shimExports = {
+      "next/error": new Set([]),
+    };
+    const result = checkModuleCoverage(manifest, registry, shimExports, {});
+    expect(result.passed).toBe(false);
+    expect(result.missingExports["next/error"]).toEqual(["default"]);
   });
 
   it("handles multiple modules with mixed coverage", () => {
