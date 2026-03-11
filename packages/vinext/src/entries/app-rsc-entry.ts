@@ -1404,7 +1404,7 @@ export default async function handler(request, ctx) {
   const headersCtx = headersContextFromRequest(request);
   const __uCtx = _createUnifiedCtx({
     headersContext: headersCtx,
-    executionContext: ctx ?? null,
+    executionContext: ctx ?? _getRequestExecutionContext() ?? null,
   });
   return _runWithUnifiedCtx(__uCtx, async () => {
     _ensureFetchPatch();
@@ -1413,7 +1413,7 @@ export default async function handler(request, ctx) {
     // _handleRequest which fills in .headers and .status;
     // avoids module-level variables that race on Workers.
     const _mwCtx = { headers: null, status: null };
-    const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
+    const response = await _handleRequest(request, __reqCtx, _mwCtx);
     // Apply custom headers from next.config.js to non-redirect responses.
     // Skip redirects (3xx) because Response.redirect() creates immutable headers,
     // and Next.js doesn't apply custom headers to redirects anyway.

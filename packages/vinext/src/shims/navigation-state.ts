@@ -13,7 +13,11 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerStateAccessors, type NavigationContext } from "./navigation.js";
-import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
+import {
+  isInsideUnifiedScope,
+  getRequestContext,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // ALS setup — same pattern as headers.ts
@@ -49,7 +53,18 @@ function _getState(): NavigationState {
  */
 export function runWithNavigationContext<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
-    return fn();
+    return runWithUnifiedStateMutation((uCtx) => {
+      const previousServerContext = uCtx.serverContext;
+      const previousCallbacks = uCtx.serverInsertedHTMLCallbacks;
+
+      uCtx.serverContext = null;
+      uCtx.serverInsertedHTMLCallbacks = [];
+
+      return () => {
+        uCtx.serverContext = previousServerContext;
+        uCtx.serverInsertedHTMLCallbacks = previousCallbacks;
+      };
+    }, fn);
   }
   const state: NavigationState = {
     serverContext: null,

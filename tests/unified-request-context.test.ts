@@ -5,6 +5,10 @@ import {
   getRequestContext,
   isInsideUnifiedScope,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import {
+  getRequestExecutionContext,
+  runWithExecutionContext,
+} from "../packages/vinext/src/shims/request-context.js";
 
 describe("unified-request-context", () => {
   describe("isInsideUnifiedScope", () => {
@@ -35,6 +39,8 @@ describe("unified-request-context", () => {
       expect(ctx._privateCache).toBeNull();
       expect(ctx.currentRequestTags).toEqual([]);
       expect(ctx.executionContext).toBeNull();
+      expect(ctx.ssrContext).toBeNull();
+      expect(ctx.ssrHeadElements).toEqual([]);
     });
   });
 
@@ -217,6 +223,19 @@ describe("unified-request-context", () => {
       });
       expect(calls).toHaveLength(1);
     });
+
+    it("inherits the outer ExecutionContext ALS when none is provided", () => {
+      const outerCtx = {
+        waitUntil() {},
+      };
+
+      runWithExecutionContext(outerCtx, () => {
+        runWithRequestContext(createRequestContext(), () => {
+          expect(getRequestContext().executionContext).toBe(outerCtx);
+          expect(getRequestExecutionContext()).toBe(outerCtx);
+        });
+      });
+    });
   });
 
   describe("sub-state field access", () => {
@@ -248,7 +267,141 @@ describe("unified-request-context", () => {
         });
         expect(ctx.currentRequestTags).toEqual(["tag1"]);
         expect(ctx.executionContext).not.toBeNull();
+        expect(ctx.ssrContext).toBeNull();
+        expect(ctx.ssrHeadElements).toEqual([]);
       });
+    });
+  });
+
+  describe("legacy wrapper semantics inside unified scope", () => {
+    it("runWithHeadersContext restores the outer headers sub-state", async () => {
+      const { runWithHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+
+      const outerHeaders = {
+        headers: new Headers({ "x-id": "outer" }),
+        cookies: new Map([["outer", "1"]]),
+      };
+      const innerHeaders = {
+        headers: new Headers({ "x-id": "inner" }),
+        cookies: new Map([["inner", "1"]]),
+      };
+
+      runWithRequestContext(
+        createRequestContext({
+          headersContext: outerHeaders,
+          dynamicUsageDetected: true,
+          pendingSetCookies: ["outer=1"],
+          draftModeCookieHeader: "outer=draft",
+          phase: "action",
+        }),
+        () => {
+          runWithHeadersContext(innerHeaders as any, () => {
+            const ctx = getRequestContext();
+            expect((ctx.headersContext as any).headers.get("x-id")).toBe("inner");
+            expect(ctx.dynamicUsageDetected).toBe(false);
+            expect(ctx.pendingSetCookies).toEqual([]);
+            expect(ctx.draftModeCookieHeader).toBeNull();
+            expect(ctx.phase).toBe("render");
+
+            ctx.dynamicUsageDetected = true;
+            ctx.pendingSetCookies.push("inner=1");
+            ctx.draftModeCookieHeader = "inner=draft";
+            ctx.phase = "route-handler";
+          });
+
+          const ctx = getRequestContext();
+          expect(ctx.headersContext).toBe(outerHeaders);
+          expect(ctx.dynamicUsageDetected).toBe(true);
+          expect(ctx.pendingSetCookies).toEqual(["outer=1"]);
+          expect(ctx.draftModeCookieHeader).toBe("outer=draft");
+          expect(ctx.phase).toBe("action");
+        },
+      );
+    });
+
+    it("runWithNavigationContext restores the outer navigation sub-state", async () => {
+      await import("../packages/vinext/src/shims/navigation-state.js");
+      const { runWithNavigationContext } =
+        await import("../packages/vinext/src/shims/navigation-state.js");
+      const { setNavigationContext, getNavigationContext } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      const outerCallback = () => "outer";
+
+      runWithRequestContext(
+        createRequestContext({
+          serverContext: { pathname: "/outer", searchParams: new URLSearchParams(), params: {} },
+          serverInsertedHTMLCallbacks: [outerCallback],
+        }),
+        () => {
+          runWithNavigationContext(() => {
+            expect(getNavigationContext()).toBeNull();
+            expect(getRequestContext().serverInsertedHTMLCallbacks).toEqual([]);
+
+            setNavigationContext({
+              pathname: "/inner",
+              searchParams: new URLSearchParams("q=1"),
+              params: { id: "1" },
+            });
+            getRequestContext().serverInsertedHTMLCallbacks.push(() => "inner");
+          });
+
+          expect((getNavigationContext() as any)?.pathname).toBe("/outer");
+          expect(getRequestContext().serverInsertedHTMLCallbacks).toEqual([outerCallback]);
+        },
+      );
+    });
+
+    it("cache/private/fetch/router/head sub-scopes reset and restore correctly", async () => {
+      const { _runWithCacheState } = await import("../packages/vinext/src/shims/cache.js");
+      const { runWithPrivateCache } = await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { runWithFetchCache, getCollectedFetchTags } =
+        await import("../packages/vinext/src/shims/fetch-cache.js");
+      const { runWithRouterState } = await import("../packages/vinext/src/shims/router-state.js");
+      const { setSSRContext } = await import("../packages/vinext/src/shims/router.js");
+      const { runWithHeadState } = await import("../packages/vinext/src/shims/head-state.js");
+
+      runWithRequestContext(
+        createRequestContext({
+          requestScopedCacheLife: { revalidate: 60 },
+          _privateCache: new Map([["outer", 1]]),
+          currentRequestTags: ["outer-tag"],
+          ssrContext: { pathname: "/outer", query: {}, asPath: "/outer" },
+          ssrHeadElements: ["<meta data-outer />"],
+        }),
+        async () => {
+          _runWithCacheState(() => {
+            expect(getRequestContext().requestScopedCacheLife).toBeNull();
+            getRequestContext().requestScopedCacheLife = { revalidate: 1 } as any;
+          });
+          expect(getRequestContext().requestScopedCacheLife).toEqual({ revalidate: 60 });
+
+          runWithPrivateCache(() => {
+            expect(getRequestContext()._privateCache).toBeInstanceOf(Map);
+            expect(getRequestContext()._privateCache?.size).toBe(0);
+            getRequestContext()._privateCache?.set("inner", 2);
+          });
+          expect([...getRequestContext()._privateCache!.entries()]).toEqual([["outer", 1]]);
+
+          await runWithFetchCache(async () => {
+            expect(getCollectedFetchTags()).toEqual([]);
+            getRequestContext().currentRequestTags.push("inner-tag");
+          });
+          expect(getCollectedFetchTags()).toEqual(["outer-tag"]);
+
+          runWithRouterState(() => {
+            expect(getRequestContext().ssrContext).toBeNull();
+            setSSRContext({ pathname: "/inner", query: {}, asPath: "/inner" } as any);
+          });
+          expect((getRequestContext().ssrContext as any).pathname).toBe("/outer");
+
+          runWithHeadState(() => {
+            expect(getRequestContext().ssrHeadElements).toEqual([]);
+            getRequestContext().ssrHeadElements.push("<meta data-inner />");
+          });
+          expect(getRequestContext().ssrHeadElements).toEqual(["<meta data-outer />"]);
+        },
+      );
     });
   });
 
@@ -266,6 +419,8 @@ describe("unified-request-context", () => {
       expect(ctx._privateCache).toBeNull();
       expect(ctx.currentRequestTags).toEqual([]);
       expect(ctx.executionContext).toBeNull();
+      expect(ctx.ssrContext).toBeNull();
+      expect(ctx.ssrHeadElements).toEqual([]);
     });
 
     it("merges partial overrides", () => {
@@ -278,6 +433,8 @@ describe("unified-request-context", () => {
       // Other fields get defaults
       expect(ctx.headersContext).toBeNull();
       expect(ctx.currentRequestTags).toEqual([]);
+      expect(ctx.ssrContext).toBeNull();
+      expect(ctx.ssrHeadElements).toEqual([]);
     });
   });
 });

@@ -20,7 +20,11 @@
 import { markDynamicUsage as _markDynamic } from "./headers.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fnv1a64 } from "../utils/hash.js";
-import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
+import {
+  isInsideUnifiedScope,
+  getRequestContext,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // Lazy accessor for cache context — avoids circular imports with cache-runtime.
@@ -413,7 +417,13 @@ function _getCacheState(): CacheState {
  */
 export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
-    return fn();
+    return runWithUnifiedStateMutation((uCtx) => {
+      const previous = uCtx.requestScopedCacheLife;
+      uCtx.requestScopedCacheLife = null;
+      return () => {
+        uCtx.requestScopedCacheLife = previous;
+      };
+    }, fn);
   }
   const state: CacheState = {
     requestScopedCacheLife: null,

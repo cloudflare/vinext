@@ -11,7 +11,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
-import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
+import {
+  isInsideUnifiedScope,
+  getRequestContext,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // Request context
@@ -202,14 +206,29 @@ export function runWithHeadersContext<T>(
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
   if (isInsideUnifiedScope()) {
-    // Inside unified scope — update the unified store directly, no extra ALS.
-    const uCtx = getRequestContext();
-    uCtx.headersContext = ctx as unknown;
-    uCtx.dynamicUsageDetected = false;
-    uCtx.pendingSetCookies = [];
-    uCtx.draftModeCookieHeader = null;
-    uCtx.phase = "render";
-    return fn();
+    return runWithUnifiedStateMutation((uCtx) => {
+      const previous = {
+        headersContext: uCtx.headersContext,
+        dynamicUsageDetected: uCtx.dynamicUsageDetected,
+        pendingSetCookies: uCtx.pendingSetCookies,
+        draftModeCookieHeader: uCtx.draftModeCookieHeader,
+        phase: uCtx.phase,
+      };
+
+      uCtx.headersContext = ctx as unknown;
+      uCtx.dynamicUsageDetected = false;
+      uCtx.pendingSetCookies = [];
+      uCtx.draftModeCookieHeader = null;
+      uCtx.phase = "render";
+
+      return () => {
+        uCtx.headersContext = previous.headersContext;
+        uCtx.dynamicUsageDetected = previous.dynamicUsageDetected;
+        uCtx.pendingSetCookies = previous.pendingSetCookies;
+        uCtx.draftModeCookieHeader = previous.draftModeCookieHeader;
+        uCtx.phase = previous.phase;
+      };
+    }, fn);
   }
 
   const state: VinextHeadersShimState = {

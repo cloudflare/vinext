@@ -10,6 +10,11 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerHeadStateAccessors } from "./head.js";
+import {
+  getRequestContext,
+  isInsideUnifiedScope,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // ALS setup
@@ -29,6 +34,9 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 } satisfies HeadState) as HeadState;
 
 function _getState(): HeadState {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext() as unknown as HeadState;
+  }
   return _als.getStore() ?? _fallbackState;
 }
 
@@ -38,6 +46,16 @@ function _getState(): HeadState {
  * on concurrent runtimes.
  */
 export function runWithHeadState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      const previous = uCtx.ssrHeadElements;
+      uCtx.ssrHeadElements = [];
+      return () => {
+        uCtx.ssrHeadElements = previous;
+      };
+    }, fn);
+  }
+
   const state: HeadState = {
     ssrHeadElements: [],
   };
@@ -54,6 +72,10 @@ _registerHeadStateAccessors({
   },
 
   resetSSRHead(): void {
+    if (isInsideUnifiedScope()) {
+      getRequestContext().ssrHeadElements = [];
+      return;
+    }
     const state = _als.getStore();
     if (state) {
       state.ssrHeadElements = [];

@@ -259,11 +259,10 @@ import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext, wrapWithRouterContext } from "next/router";
 import { getCacheHandler } from "next/cache";
-import { runWithFetchCache } from "vinext/fetch-cache";
-import { _runWithCacheState } from "next/cache";
-import { runWithPrivateCache } from "vinext/cache-runtime";
-import { runWithRouterState } from "vinext/router-state";
-import { runWithHeadState } from "vinext/head-state";
+import { ensureFetchPatch } from "vinext/fetch-cache";
+import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
+import "vinext/router-state";
+import "vinext/head-state";
 import { safeJsonStringify } from "vinext/html";
 import { decode as decodeQueryString } from "node:querystring";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
@@ -711,11 +710,9 @@ async function _renderPage(request, url, manifest) {
   }
 
   const { route, params } = match;
-  return runWithRouterState(() =>
-    runWithHeadState(() =>
-      _runWithCacheState(() =>
-        runWithPrivateCache(() =>
-          runWithFetchCache(async () => {
+  const __uCtx = _createUnifiedCtx();
+  return _runWithUnifiedCtx(__uCtx, async () => {
+    ensureFetchPatch();
   try {
     if (typeof setSSRContext === "function") {
       setSSRContext({
@@ -1002,11 +999,7 @@ async function _renderPage(request, url, manifest) {
     console.error("[vinext] SSR error:", e);
     return new Response("Internal Server Error", { status: 500 });
   }
-          }) // end runWithFetchCache
-        ) // end runWithPrivateCache
-      ) // end _runWithCacheState
-    ) // end runWithHeadState
-  ); // end runWithRouterState
+  });
 }
 
 export async function handleApiRoute(request, url) {

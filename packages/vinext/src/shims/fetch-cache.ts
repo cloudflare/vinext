@@ -22,7 +22,11 @@
 import { getCacheHandler, type CachedFetchValue } from "./cache.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
+import {
+  isInsideUnifiedScope,
+  getRequestContext,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // Cache key generation
@@ -742,7 +746,13 @@ export function withFetchCache(): () => void {
 export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
   _ensurePatchInstalled();
   if (isInsideUnifiedScope()) {
-    return fn();
+    return await runWithUnifiedStateMutation((uCtx) => {
+      const previousTags = uCtx.currentRequestTags;
+      uCtx.currentRequestTags = [];
+      return () => {
+        uCtx.currentRequestTags = previousTags;
+      };
+    }, fn);
   }
   return _als.run({ currentRequestTags: [] }, fn);
 }

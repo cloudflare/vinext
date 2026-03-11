@@ -57,6 +57,12 @@ export interface UnifiedRequestContext {
   // ── request-context.ts ─────────────────────────────────────────────
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
   executionContext: unknown;
+
+  // ── router-state.ts / head-state.ts (Pages Router) ────────────────
+  /** Pages Router SSR context used by next/router during SSR. */
+  ssrContext: unknown;
+  /** Collected SSR <Head> HTML for the Pages Router. */
+  ssrHeadElements: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -66,9 +72,28 @@ export interface UnifiedRequestContext {
 
 const _ALS_KEY = Symbol.for("vinext.unifiedRequestContext.als");
 const _FALLBACK_KEY = Symbol.for("vinext.unifiedRequestContext.fallback");
+const _REQUEST_CONTEXT_ALS_KEY = Symbol.for("vinext.requestContext.als");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 const _als = (_g[_ALS_KEY] ??=
   new AsyncLocalStorage<UnifiedRequestContext>()) as AsyncLocalStorage<UnifiedRequestContext>;
+
+function _getInheritedExecutionContext(): unknown {
+  const unifiedStore = _als.getStore();
+  if (unifiedStore) return unifiedStore.executionContext;
+
+  const executionContextAls = _g[_REQUEST_CONTEXT_ALS_KEY] as
+    | AsyncLocalStorage<unknown | null>
+    | undefined;
+  return executionContextAls?.getStore() ?? null;
+}
+
+function _isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    typeof (value as Promise<T>).then === "function"
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -90,7 +115,9 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     requestScopedCacheLife: null,
     _privateCache: null,
     currentRequestTags: [],
-    executionContext: null,
+    executionContext: _getInheritedExecutionContext(),
+    ssrContext: null,
+    ssrHeadElements: [],
     ...opts,
   };
 }
@@ -108,6 +135,34 @@ export function runWithRequestContext<T>(
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
   return _als.run(ctx, fn);
+}
+
+/**
+ * Apply a temporary mutation to the current unified store, then restore it
+ * after `fn` completes. Used by legacy runWith* wrappers to preserve their
+ * nested-scope semantics without creating another ALS layer.
+ *
+ * @internal
+ */
+export function runWithUnifiedStateMutation<T>(
+  mutate: (ctx: UnifiedRequestContext) => () => void,
+  fn: () => T | Promise<T>,
+): T | Promise<T> {
+  const ctx = _als.getStore();
+  if (!ctx) return fn();
+
+  const restore = mutate(ctx);
+  try {
+    const result = fn();
+    if (_isPromiseLike(result)) {
+      return Promise.resolve(result).finally(restore) as Promise<T>;
+    }
+    restore();
+    return result;
+  } catch (error) {
+    restore();
+    throw error;
+  }
 }
 
 /**

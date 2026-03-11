@@ -35,7 +35,11 @@ import {
   _registerCacheContextAccessor,
   type CacheLifeConfig,
 } from "./cache.js";
-import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
+import {
+  isInsideUnifiedScope,
+  getRequestContext,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // Cache execution context — AsyncLocalStorage for cacheLife/cacheTag
@@ -257,7 +261,13 @@ function _getPrivateState(): PrivateCacheState {
  */
 export function runWithPrivateCache<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
-    return fn();
+    return runWithUnifiedStateMutation((uCtx) => {
+      const previous = uCtx._privateCache;
+      uCtx._privateCache = new Map();
+      return () => {
+        uCtx._privateCache = previous;
+      };
+    }, fn);
   }
   const state: PrivateCacheState = {
     cache: new Map(),

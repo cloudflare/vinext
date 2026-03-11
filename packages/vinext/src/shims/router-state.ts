@@ -10,6 +10,11 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerRouterStateAccessors } from "./router.js";
+import {
+  getRequestContext,
+  isInsideUnifiedScope,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // ALS setup
@@ -39,6 +44,9 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 } satisfies RouterState) as RouterState;
 
 function _getState(): RouterState {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext() as unknown as RouterState;
+  }
   return _als.getStore() ?? _fallbackState;
 }
 
@@ -48,6 +56,16 @@ function _getState(): RouterState {
  * on concurrent runtimes.
  */
 export function runWithRouterState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      const previous = uCtx.ssrContext;
+      uCtx.ssrContext = null;
+      return () => {
+        uCtx.ssrContext = previous;
+      };
+    }, fn);
+  }
+
   const state: RouterState = {
     ssrContext: null,
   };
@@ -64,6 +82,10 @@ _registerRouterStateAccessors({
   },
 
   setSSRContext(ctx: SSRContext | null): void {
+    if (isInsideUnifiedScope()) {
+      getRequestContext().ssrContext = ctx as unknown;
+      return;
+    }
     const state = _als.getStore();
     if (state) {
       state.ssrContext = ctx;

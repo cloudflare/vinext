@@ -22,7 +22,11 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
+import {
+  isInsideUnifiedScope,
+  getRequestContext,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // ExecutionContext interface
@@ -66,8 +70,13 @@ export function runWithExecutionContext<T>(
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
   if (isInsideUnifiedScope()) {
-    getRequestContext().executionContext = ctx;
-    return fn();
+    return runWithUnifiedStateMutation((uCtx) => {
+      const previous = uCtx.executionContext;
+      uCtx.executionContext = ctx;
+      return () => {
+        uCtx.executionContext = previous;
+      };
+    }, fn);
   }
   return _als.run(ctx, fn);
 }
