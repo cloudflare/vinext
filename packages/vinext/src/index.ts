@@ -1746,10 +1746,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         }
 
-        function appendNodeResponseHeaders(
-          res: any,
-          headers: Headers | null | undefined,
-        ): void {
+        function appendNodeResponseHeaders(res: any, headers: Headers | null | undefined): void {
           if (!headers) return;
           for (const [key, value] of headers) {
             if (!key.startsWith("x-middleware-")) {
@@ -1763,7 +1760,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             Object.fromEntries(
               Object.entries(req.headers)
                 .filter(([, value]) => value !== undefined)
-                .map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") : String(value)]),
+                .map(([key, value]) => [
+                  key,
+                  Array.isArray(value) ? value.join(", ") : String(value),
+                ]),
             ),
           );
         }
@@ -2155,8 +2155,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
             if (middlewareResult.responseHeaders) {
               requestHeaders =
-                buildRequestHeadersFromMiddlewareResponse(requestHeaders, middlewareResult.responseHeaders) ??
-                requestHeaders;
+                buildRequestHeadersFromMiddlewareResponse(
+                  requestHeaders,
+                  middlewareResult.responseHeaders,
+                ) ?? requestHeaders;
               appendNodeResponseHeaders(res, middlewareResult.responseHeaders);
             }
 
@@ -2174,7 +2176,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const postMwReqCtx = buildRequestContext(url);
 
           if (nextConfig?.rewrites.beforeFiles.length) {
-            const rewritten = applyRewrites(pathname, nextConfig.rewrites.beforeFiles, postMwReqCtx);
+            const rewritten = applyRewrites(
+              pathname,
+              nextConfig.rewrites.beforeFiles,
+              postMwReqCtx,
+            );
             if (rewritten) {
               if (isExternalUrl(rewritten)) {
                 await proxyExternalRewriteNode(req, res, rewritten);
@@ -2185,10 +2191,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
           }
 
-          const metadataRouteFiles = pathname ? resolveDynamicMetadataRouteModuleFiles(pathname) : null;
+          const metadataRouteFiles = pathname
+            ? resolveDynamicMetadataRouteModuleFiles(pathname)
+            : null;
           if (!metadataRouteFiles) {
             if (nextConfig?.rewrites.afterFiles.length) {
-              const afterRewrite = applyRewrites(pathname, nextConfig.rewrites.afterFiles, postMwReqCtx);
+              const afterRewrite = applyRewrites(
+                pathname,
+                nextConfig.rewrites.afterFiles,
+                postMwReqCtx,
+              );
               if (afterRewrite) {
                 if (isExternalUrl(afterRewrite)) {
                   await proxyExternalRewriteNode(req, res, afterRewrite);
@@ -2202,7 +2214,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const appRoutes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
             let appMatch = pathname ? matchRoute(pathname, appRoutes as any) : null;
             if (!appMatch && nextConfig?.rewrites.fallback.length) {
-              const fallbackRewrite = applyRewrites(pathname, nextConfig.rewrites.fallback, postMwReqCtx);
+              const fallbackRewrite = applyRewrites(
+                pathname,
+                nextConfig.rewrites.fallback,
+                postMwReqCtx,
+              );
               if (fallbackRewrite) {
                 if (isExternalUrl(fallbackRewrite)) {
                   await proxyExternalRewriteNode(req, res, fallbackRewrite);
@@ -2898,10 +2914,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     return;
                   }
                   const fallbackMatch = matchRoute(fallbackRewrite.split("?")[0], routes);
-                  if (
-                    !fallbackMatch &&
-                    hasAppDir
-                  ) {
+                  if (!fallbackMatch && hasAppDir) {
                     await handOffToAppRouter(fallbackRewrite, {
                       allowFullAppFallback: true,
                     });

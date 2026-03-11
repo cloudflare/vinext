@@ -1537,7 +1537,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared) {
   // _mwCtx (per-request container) so handler() can merge them into
   // every response path without module-level state that races on Workers.
 
-  ${ 
+  ${
     middlewarePath
       ? `
   if (!__hostPrepared) {
