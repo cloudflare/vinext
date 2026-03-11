@@ -513,12 +513,14 @@ export function headers(): Promise<Headers> & Headers {
 
   const state = _getState();
   if (!state.headersContext) {
-    return _decorateRejectedRequestApiPromise<Headers>(
-      new Error(
-        "headers() can only be called from a Server Component, Route Handler, " +
-          "or Server Action. Make sure you're not calling it from a Client Component.",
-      ),
-    );
+    // Return empty readonly headers instead of rejecting.
+    // Libraries like TRPC call headers() inside React cache() during RSC
+    // module initialization, before runWithHeadersContext sets up the ALS
+    // scope. Rejecting here crashes the process; returning empty headers
+    // lets initialization proceed. The real request headers are available
+    // when the TRPC procedure is actually invoked during rendering.
+    const emptyHeaders = _sealHeaders(new Headers());
+    return _decorateRequestApiPromise(Promise.resolve(emptyHeaders), emptyHeaders);
   }
 
   if (state.headersContext.accessError) {
@@ -543,11 +545,9 @@ export function cookies(): Promise<RequestCookies> & RequestCookies {
 
   const state = _getState();
   if (!state.headersContext) {
-    return _decorateRejectedRequestApiPromise<RequestCookies>(
-      new Error(
-        "cookies() can only be called from a Server Component, Route Handler, or Server Action.",
-      ),
-    );
+    // Return empty readonly cookies instead of rejecting (same rationale as headers()).
+    const emptyCookies = _sealCookies(new RequestCookies(new Map()));
+    return _decorateRequestApiPromise(Promise.resolve(emptyCookies), emptyCookies);
   }
 
   if (state.headersContext.accessError) {
