@@ -1,17 +1,9 @@
 /**
  * Shared state for instrumentation.ts testing in app-router-cloudflare.
  *
- * ## Why plain module-level variables work here
- *
- * register() is now emitted as a top-level `await` inside the generated RSC
- * entry module (see `generateRscEntry` in `entries/app-rsc-entry.ts`). This means it
- * runs inside the Cloudflare Worker process — the same process and module graph
- * as the API routes. Plain module-level variables are therefore visible to both
- * the instrumentation code and the API route that reads them.
- *
- * This is different from the old approach (writing to a temp file on disk) which
- * was needed when register() ran in the host Node.js process and API routes ran
- * in the miniflare Worker subprocess (two separate processes, no shared memory).
+ * Cloudflare dev and worker paths can evaluate instrumentation and route modules
+ * through different module instances. Store state on globalThis so the startup
+ * register() path and the request-handling path observe the same values.
  */
 
 export type CapturedRequestError = {
@@ -23,29 +15,44 @@ export type CapturedRequestError = {
   routeType: string;
 }
 
-/** Set to true when instrumentation.ts register() is called. */
-let registerCalled = false;
+type InstrumentationState = {
+  capturedErrors: CapturedRequestError[];
+  registerCalled: boolean;
+};
 
-/** List of errors captured by onRequestError(). */
-const capturedErrors: CapturedRequestError[] = [];
+function getInstrumentationState(): InstrumentationState {
+  const scopedGlobal = globalThis as typeof globalThis & {
+    __VINEXT_CLOUDFLARE_INSTRUMENTATION_STATE__?: InstrumentationState;
+  };
+
+  if (!scopedGlobal.__VINEXT_CLOUDFLARE_INSTRUMENTATION_STATE__) {
+    scopedGlobal.__VINEXT_CLOUDFLARE_INSTRUMENTATION_STATE__ = {
+      capturedErrors: [],
+      registerCalled: false,
+    };
+  }
+
+  return scopedGlobal.__VINEXT_CLOUDFLARE_INSTRUMENTATION_STATE__;
+}
 
 export function isRegisterCalled(): boolean {
-  return registerCalled;
+  return getInstrumentationState().registerCalled;
 }
 
 export function getCapturedErrors(): CapturedRequestError[] {
-  return [...capturedErrors];
+  return [...getInstrumentationState().capturedErrors];
 }
 
 export function markRegisterCalled(): void {
-  registerCalled = true;
+  getInstrumentationState().registerCalled = true;
 }
 
 export function recordRequestError(entry: CapturedRequestError): void {
-  capturedErrors.push(entry);
+  getInstrumentationState().capturedErrors.push(entry);
 }
 
 export function resetInstrumentationState(): void {
-  registerCalled = false;
-  capturedErrors.length = 0;
+  const state = getInstrumentationState();
+  state.registerCalled = false;
+  state.capturedErrors.length = 0;
 }

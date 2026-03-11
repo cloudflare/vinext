@@ -612,15 +612,34 @@ export default {
         request = new Request(strippedUrl, request);
       }
 
-      // Build request context for has/missing condition matching.
-      // headers and redirects run before middleware, so they use this
-      // pre-middleware snapshot. beforeFiles, afterFiles, and fallback
-      // rewrites run after middleware (App Router order), so they use
-      // postMwReqCtx created after x-middleware-request-* headers are
-      // unpacked into request.
+      // Build request context for pre-middleware config matching. Redirects
+      // run before middleware in Next.js. Header match conditions also use the
+      // original request snapshot even though header merging happens later so
+      // middleware response headers can still take precedence.
+      // beforeFiles, afterFiles, and fallback rewrites run after middleware
+      // (App Router order), so they use postMwReqCtx created after
+      // x-middleware-request-* headers are unpacked into request.
       const reqCtx = requestContextFromRequest(request);
 
-      // ── 3. Run middleware ──────────────────────────────────────────
+      // ── 3. Apply redirects from next.config.js ────────────────────
+      if (configRedirects.length) {
+        const redirect = matchRedirect(pathname, configRedirects, reqCtx);
+        if (redirect) {
+          const dest = sanitizeDestination(
+            basePath &&
+              !isExternalUrl(redirect.destination) &&
+              !hasBasePath(redirect.destination, basePath)
+              ? basePath + redirect.destination
+              : redirect.destination,
+          );
+          return new Response(null, {
+            status: redirect.permanent ? 308 : 307,
+            headers: { Location: dest },
+          });
+        }
+      }
+
+      // ── 4. Run middleware ──────────────────────────────────────────
       let resolvedUrl = urlWithQuery;
       const middlewareHeaders: Record<string, string | string[]> = {};
       let middlewareRewriteStatus: number | undefined;
@@ -680,9 +699,11 @@ export default {
       const { postMwReqCtx, request: postMwReq } = applyMiddlewareRequestHeaders(middlewareHeaders, request);
       request = postMwReq;
 
+      // Config header matching must keep using the original normalized pathname
+      // even if middleware rewrites the downstream route/render target.
       let resolvedPathname = resolvedUrl.split("?")[0];
 
-      // ── 4. Apply custom headers from next.config.js ───────────────
+      // ── 5. Apply custom headers from next.config.js ───────────────
       // Config headers are additive for multi-value headers (Vary,
       // Set-Cookie) and override for everything else. Vary values are
       // comma-joined per HTTP spec. Set-Cookie values are accumulated
@@ -690,7 +711,7 @@ export default {
       // Middleware headers take precedence: skip config keys already set
       // by middleware so middleware always wins for the same key.
       if (configHeaders.length) {
-        const matched = matchHeaders(resolvedPathname, configHeaders, reqCtx);
+        const matched = matchHeaders(pathname, configHeaders, reqCtx);
         for (const h of matched) {
           const lk = h.key.toLowerCase();
           if (lk === "set-cookie") {
@@ -709,24 +730,6 @@ export default {
             // did not already place this key on the response.
             middlewareHeaders[lk] = h.value;
           }
-        }
-      }
-
-      // ── 5. Apply redirects from next.config.js ────────────────────
-      if (configRedirects.length) {
-        const redirect = matchRedirect(resolvedPathname, configRedirects, reqCtx);
-        if (redirect) {
-          const dest = sanitizeDestination(
-            basePath &&
-              !isExternalUrl(redirect.destination) &&
-              !hasBasePath(redirect.destination, basePath)
-              ? basePath + redirect.destination
-              : redirect.destination,
-          );
-          return new Response(null, {
-            status: redirect.permanent ? 308 : 307,
-            headers: { Location: dest },
-          });
         }
       }
 

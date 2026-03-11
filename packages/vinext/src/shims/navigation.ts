@@ -166,7 +166,7 @@ function withBasePath(p: string): string {
 // ---------------------------------------------------------------------------
 
 /** Maximum number of entries in the RSC prefetch cache. */
-const MAX_PREFETCH_CACHE_SIZE = 50;
+export const MAX_PREFETCH_CACHE_SIZE = 50;
 
 /** TTL for prefetch cache entries in ms (matches Next.js static prefetch TTL). */
 export const PREFETCH_CACHE_TTL = 30_000;
@@ -220,12 +220,29 @@ export function getPrefetchedUrls(): Set<string> {
  */
 export function storePrefetchResponse(rscUrl: string, response: Response): void {
   const cache = getPrefetchCache();
-  // Evict oldest entry if at capacity (Map iterates in insertion order)
+  const now = Date.now();
+
+  // Sweep expired entries before resorting to FIFO eviction
+  if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
+    const prefetched = getPrefetchedUrls();
+    for (const [key, entry] of cache) {
+      if (now - entry.timestamp >= PREFETCH_CACHE_TTL) {
+        cache.delete(key);
+        prefetched.delete(key);
+      }
+    }
+  }
+
+  // FIFO fallback if still at capacity after sweep
   if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
     const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
+    if (oldest !== undefined) {
+      cache.delete(oldest);
+      getPrefetchedUrls().delete(oldest);
+    }
   }
-  cache.set(rscUrl, { response, timestamp: Date.now() });
+
+  cache.set(rscUrl, { response, timestamp: now });
 }
 
 // Client navigation listeners

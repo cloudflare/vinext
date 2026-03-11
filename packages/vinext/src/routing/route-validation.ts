@@ -154,10 +154,24 @@ export function patternToNextFormat(pattern: string): string {
     .replace(/:([\w-]+)/g, "[$1]");
 }
 
+function normalizeRoutePattern(pattern: string): string {
+  if (pattern === "/") return "/";
+  const normalized = pattern.replace(/\/+$/, "");
+  return normalized === "" ? "/" : normalized;
+}
+
 export function validateRoutePatterns(patterns: readonly string[]): void {
   const root = new UrlNode();
+  const seenPatterns = new Set<string>();
   for (const pattern of patterns) {
-    root.insert(patternToNextFormat(pattern));
+    const normalizedPattern = normalizeRoutePattern(pattern);
+    if (seenPatterns.has(normalizedPattern)) {
+      throw new Error(
+        `You cannot have two routes that resolve to the same path ("${normalizedPattern}").`,
+      );
+    }
+    seenPatterns.add(normalizedPattern);
+    root.insert(patternToNextFormat(normalizedPattern));
   }
   root.assertOptionalCatchAllSpecificity();
 }

@@ -356,6 +356,70 @@ describe("KVCacheHandler", () => {
       expect(result!.value!.kind).toBe("PAGES");
       expect((result!.value as any).html).toBe("<div>hi</div>");
     });
+
+    it("preserves slash-based path tags for Workers invalidation", async () => {
+      await handler.set(
+        "rt-path-tags",
+        {
+          kind: "APP_PAGE",
+          html: "<div>hi</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        {
+          revalidate: 60,
+          tags: ["/revalidate-tag-test", "_N_T_/revalidate-tag-test", "test-data"],
+        },
+      );
+
+      const raw = store.get("cache:rt-path-tags");
+      expect(raw).toBeTruthy();
+      const parsed = JSON.parse(raw!);
+      expect(parsed.tags).toEqual([
+        "/revalidate-tag-test",
+        "_N_T_/revalidate-tag-test",
+        "test-data",
+      ]);
+    });
+  });
+
+  describe("tag invalidation", () => {
+    it("revalidateTag persists slash-based path invalidation markers", async () => {
+      await handler.revalidateTag(["/revalidate-tag-test", "_N_T_/revalidate-tag-test"]);
+
+      expect(store.get("__tag:/revalidate-tag-test")).toMatch(/^\d+$/);
+      expect(store.get("__tag:_N_T_/revalidate-tag-test")).toMatch(/^\d+$/);
+    });
+
+    it("slash-based path tags invalidate persisted APP_PAGE entries", async () => {
+      const entryTime = 1000;
+      const invalidatedTime = 2000;
+
+      store.set(
+        "cache:app-page",
+        JSON.stringify({
+          value: {
+            kind: "APP_PAGE",
+            html: "<html>cached</html>",
+            rscData: undefined,
+            headers: undefined,
+            postponed: undefined,
+            status: 200,
+          },
+          tags: ["/revalidate-tag-test", "_N_T_/revalidate-tag-test"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+      store.set("__tag:/revalidate-tag-test", String(invalidatedTime));
+
+      const result = await handler.get("app-page");
+
+      expect(result).toBeNull();
+      expect(kv.delete).toHaveBeenCalledWith("cache:app-page");
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -454,6 +518,237 @@ describe("KVCacheHandler", () => {
         expect.any(String),
         expect.any(Object),
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Local tag cache
+  // -------------------------------------------------------------------------
+
+  describe("local tag cache", () => {
+    it("cached tags skip KV on second get()", async () => {
+      const entryTime = 1000;
+      store.set(
+        "cache:tagged-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["t1", "t2"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+      // No tag invalidation timestamps in KV — tags are valid
+
+      // First get() — should fetch tags from KV (cache miss in local cache)
+      const result1 = await handler.get("tagged-page");
+      expect(result1).not.toBeNull();
+
+      // kv.get calls: 1 for the entry + 2 for the tags = 3
+      expect(kv.get).toHaveBeenCalledTimes(3);
+
+      // Reset call counts
+      kv.get.mockClear();
+
+      // Second get() — tags should come from local cache, NOT from KV
+      const result2 = await handler.get("tagged-page");
+      expect(result2).not.toBeNull();
+
+      // kv.get calls: 1 for the entry only, 0 for tags
+      expect(kv.get).toHaveBeenCalledTimes(1);
+      expect(kv.get).toHaveBeenCalledWith("cache:tagged-page");
+    });
+
+    it("revalidateTag() updates local cache so subsequent get() skips KV for that tag", async () => {
+      const entryTime = 1000;
+
+      // revalidateTag sets the invalidation timestamp
+      await handler.revalidateTag("t1");
+
+      kv.get.mockClear();
+
+      // Now store an entry with tag t1 that was created BEFORE the invalidation
+      store.set(
+        "cache:rt-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>old</p>", pageData: {}, status: 200 },
+          tags: ["t1"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // get() should see tag t1 is invalidated via local cache — no KV GET for __tag:t1
+      const result = await handler.get("rt-page");
+      expect(result).toBeNull(); // invalidated
+
+      // kv.get: 1 for entry, 0 for tags (t1 was in local cache)
+      expect(kv.get).toHaveBeenCalledTimes(1);
+      expect(kv.get).toHaveBeenCalledWith("cache:rt-page");
+    });
+
+    it("TTL expiry triggers fresh KV fetch", async () => {
+      // Use tagCacheTtlMs: 0 so entries expire immediately — no fake timers needed.
+      const shortTtlHandler = new KVCacheHandler(kv as any, { tagCacheTtlMs: 0 });
+
+      const entryTime = 1000;
+      store.set(
+        "cache:ttl-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["t1"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // First get() — populates local tag cache (entry + tag = 2 calls)
+      await shortTtlHandler.get("ttl-page");
+      expect(kv.get).toHaveBeenCalledTimes(2);
+      kv.get.mockClear();
+
+      // Second get() — TTL is 0ms so entry is already expired; must re-fetch tag from KV
+      await shortTtlHandler.get("ttl-page");
+      expect(kv.get).toHaveBeenCalledTimes(2); // entry + tag again
+    });
+
+    it("tag invalidation works end-to-end with local cache", async () => {
+      const entryTime = 1000;
+      store.set(
+        "cache:e2e-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>original</p>", pageData: {}, status: 200 },
+          tags: ["t1"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // First get() succeeds (no invalidation yet)
+      const result1 = await handler.get("e2e-page");
+      expect(result1).not.toBeNull();
+
+      // Now invalidate tag t1
+      await handler.revalidateTag("t1");
+
+      // get() should return null (cache miss due to tag invalidation)
+      const result2 = await handler.get("e2e-page");
+      expect(result2).toBeNull();
+    });
+
+    it("uncached tags are still fetched from KV", async () => {
+      const entryTime = 1000;
+
+      // Store entry with two tags
+      store.set(
+        "cache:partial-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["t1", "t2"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // First get() populates local cache for both t1 and t2
+      await handler.get("partial-page");
+      kv.get.mockClear();
+
+      // Now add a DIFFERENT entry that shares t1 but also has t3 (not yet cached)
+      store.set(
+        "cache:partial-page2",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>other</p>", pageData: {}, status: 200 },
+          tags: ["t1", "t3"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      const result = await handler.get("partial-page2");
+      expect(result).not.toBeNull();
+
+      // kv.get: 1 for entry + 1 for t3 (t1 was cached). NOT 2 for tags.
+      expect(kv.get).toHaveBeenCalledTimes(2);
+      // Verify the calls are for the entry and t3 only
+      expect(kv.get).toHaveBeenCalledWith("cache:partial-page2");
+      expect(kv.get).toHaveBeenCalledWith("__tag:t3");
+    });
+
+    it("NaN tag timestamp in local cache treated as invalidation", async () => {
+      const entryTime = 1000;
+
+      // Put a non-numeric tag value in KV
+      store.set("__tag:bad-tag", "not-a-number");
+
+      store.set(
+        "cache:nan-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["bad-tag"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // First get() — fetches from KV, gets NaN, caches it, returns null
+      const result1 = await handler.get("nan-page");
+      expect(result1).toBeNull();
+
+      kv.get.mockClear();
+
+      // Re-store the entry (it was deleted by the first get)
+      store.set(
+        "cache:nan-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["bad-tag"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // Second get() — NaN is in local cache, should still treat as invalidation
+      const result2 = await handler.get("nan-page");
+      expect(result2).toBeNull();
+
+      // kv.get: 1 for entry, 0 for tag (NaN was cached locally)
+      expect(kv.get).toHaveBeenCalledTimes(1);
+    });
+
+    it("resetRequestCache() forces tags to be re-fetched from KV", async () => {
+      const entryTime = 1000;
+      store.set(
+        "cache:reset-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["t1", "t2"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // First get() — populates local tag cache (1 entry + 2 tags = 3 calls)
+      const result1 = await handler.get("reset-page");
+      expect(result1).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledTimes(3);
+      kv.get.mockClear();
+
+      // Second get() without reset — tags served from local cache (1 entry only)
+      const result2 = await handler.get("reset-page");
+      expect(result2).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledTimes(1);
+      kv.get.mockClear();
+
+      // Clear the local cache
+      handler.resetRequestCache();
+
+      // Third get() after reset — tags must be re-fetched from KV (1 entry + 2 tags = 3 calls)
+      const result3 = await handler.get("reset-page");
+      expect(result3).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledTimes(3);
+      expect(kv.get).toHaveBeenCalledWith("cache:reset-page");
+      expect(kv.get).toHaveBeenCalledWith("__tag:t1");
+      expect(kv.get).toHaveBeenCalledWith("__tag:t2");
     });
   });
 

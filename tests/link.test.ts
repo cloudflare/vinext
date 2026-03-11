@@ -141,6 +141,35 @@ describe("Link resolveHref", () => {
     expect(html).toMatch(/href="\/items\?page=2&(?:amp;)?sort=name"/);
   });
 
+  it("object href preserves array query values as repeated params", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: { pathname: "/search", query: { tag: ["a", "b"], q: "x" } } },
+        "x",
+      ),
+    );
+    expect(html).toContain('href="/search?tag=a&amp;tag=b&amp;q=x"');
+  });
+
+  it("object href stringifies scalar query values like Next.js", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        {
+          href: {
+            pathname: "/search",
+            query: { page: 2, draft: false, empty: null, missing: undefined, tag: ["a", "b"] },
+          },
+        },
+        "x",
+      ),
+    );
+    expect(html).toContain(
+      'href="/search?page=2&amp;draft=false&amp;empty=&amp;missing=&amp;tag=a&amp;tag=b"',
+    );
+  });
+
   it("object href preserves an existing query string in pathname", () => {
     const html = ReactDOMServer.renderToString(
       React.createElement(
@@ -241,6 +270,30 @@ describe("Link locale handling", () => {
     );
     // Should not become /fr/fr/about
     expect(html).toContain('href="/fr/about"');
+  });
+
+  it("locale does not mangle absolute same-origin URLs", () => {
+    // An absolute URL like https://example.com/about should not become
+    // /fr/https://example.com/about — locale prefix only applies to paths
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "https://example.com/about", locale: "fr" } as any, "x"),
+    );
+    expect(html).toContain('href="https://example.com/about"');
+  });
+
+  it("locale does not mangle protocol-relative URLs", () => {
+    // //example.com/about should not become /fr///example.com/about
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "//example.com/about", locale: "fr" } as any, "x"),
+    );
+    expect(html).toContain('href="//example.com/about"');
+  });
+
+  it("locale does not mangle http:// URLs", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "http://example.com/path", locale: "de" } as any, "x"),
+    );
+    expect(html).toContain('href="http://example.com/path"');
   });
 });
 

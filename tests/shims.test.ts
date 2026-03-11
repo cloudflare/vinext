@@ -6727,6 +6727,117 @@ describe("Pages Router router helpers", () => {
     expect(typeof mod.wrapWithRouterContext).toBe("function");
   });
 
+  it("serializes array query values as repeated params for object-form router URLs", async () => {
+    const previousWindow = (globalThis as any).window;
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+
+    (globalThis as any).window = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        assign: vi.fn(),
+        replace: vi.fn(),
+        reload: vi.fn(),
+      },
+      history: {
+        state: null,
+        pushState,
+        replaceState,
+        back: vi.fn(),
+      },
+      dispatchEvent: vi.fn(),
+      scrollTo: vi.fn(),
+      scrollX: 0,
+      scrollY: 0,
+      __NEXT_DATA__: {
+        page: "/",
+        query: {},
+        isFallback: false,
+      },
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.push(
+        { pathname: "/search", query: { tag: ["a", "b"], q: "x" } },
+        undefined,
+        { shallow: true },
+      );
+
+      expect(pushState).toHaveBeenCalledWith({}, "", "/search?tag=a&tag=b&q=x");
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("stringifies scalar query values like Next.js for object-form router URLs", async () => {
+    const previousWindow = (globalThis as any).window;
+    const pushState = vi.fn();
+    const replaceState = vi.fn();
+
+    (globalThis as any).window = {
+      location: {
+        pathname: "/",
+        search: "",
+        hash: "",
+        assign: vi.fn(),
+        replace: vi.fn(),
+        reload: vi.fn(),
+      },
+      history: {
+        state: null,
+        pushState,
+        replaceState,
+        back: vi.fn(),
+      },
+      dispatchEvent: vi.fn(),
+      scrollTo: vi.fn(),
+      scrollX: 0,
+      scrollY: 0,
+      __NEXT_DATA__: {
+        page: "/",
+        query: {},
+        isFallback: false,
+      },
+      __VINEXT_LOCALE__: undefined,
+      __VINEXT_LOCALES__: undefined,
+      __VINEXT_DEFAULT_LOCALE__: undefined,
+    };
+
+    try {
+      const routerModule = await import("../packages/vinext/src/shims/router.js");
+      await routerModule.default.push(
+        {
+          pathname: "/search",
+          query: { page: 2, draft: false, empty: null, missing: undefined, tag: ["a", "b"] },
+        },
+        undefined,
+        { shallow: true },
+      );
+
+      expect(pushState).toHaveBeenCalledWith(
+        {},
+        "",
+        "/search?page=2&draft=false&empty=&missing=&tag=a&tag=b",
+      );
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
   it("exposes beforePopState on both the Router singleton and wrapped router context", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
@@ -6793,6 +6904,55 @@ describe("Pages Router router helpers", () => {
 
     it("returns false for full URLs without window context", () => {
       expect(isHashOnlyChange("https://example.com#foo")).toBe(false);
+    });
+  });
+
+  describe("applyNavigationLocale", () => {
+    it("does not prefix absolute https:// URLs", async () => {
+      const { applyNavigationLocale } = await import("../packages/vinext/src/shims/router.js");
+      // Simulate a browser-like window so the locale guard is reached
+      (globalThis as any).window = { __VINEXT_DEFAULT_LOCALE__: "en" };
+      try {
+        expect(applyNavigationLocale("https://example.com/about", "fr")).toBe(
+          "https://example.com/about",
+        );
+      } finally {
+        delete (globalThis as any).window;
+      }
+    });
+
+    it("does not prefix absolute http:// URLs", async () => {
+      const { applyNavigationLocale } = await import("../packages/vinext/src/shims/router.js");
+      (globalThis as any).window = { __VINEXT_DEFAULT_LOCALE__: "en" };
+      try {
+        expect(applyNavigationLocale("http://example.com/path", "de")).toBe(
+          "http://example.com/path",
+        );
+      } finally {
+        delete (globalThis as any).window;
+      }
+    });
+
+    it("does not prefix protocol-relative // URLs", async () => {
+      const { applyNavigationLocale } = await import("../packages/vinext/src/shims/router.js");
+      (globalThis as any).window = { __VINEXT_DEFAULT_LOCALE__: "en" };
+      try {
+        expect(applyNavigationLocale("//cdn.example.com/img.png", "fr")).toBe(
+          "//cdn.example.com/img.png",
+        );
+      } finally {
+        delete (globalThis as any).window;
+      }
+    });
+
+    it("prefixes local paths with locale", async () => {
+      const { applyNavigationLocale } = await import("../packages/vinext/src/shims/router.js");
+      (globalThis as any).window = { __VINEXT_DEFAULT_LOCALE__: "en" };
+      try {
+        expect(applyNavigationLocale("/about", "fr")).toBe("/fr/about");
+      } finally {
+        delete (globalThis as any).window;
+      }
     });
   });
 });
