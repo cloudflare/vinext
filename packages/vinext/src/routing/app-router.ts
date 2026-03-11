@@ -22,6 +22,7 @@ import {
   type ValidFileMatcher,
 } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
+import { buildRouteTrie, trieMatch, type TrieNode } from "./route-trie.js";
 
 export interface InterceptingRoute {
   /** The interception convention: "." | ".." | "../.." | "..." */
@@ -947,6 +948,18 @@ function hasRemainingVisibleSegments(segments: string[], startIndex: number): bo
   return false;
 }
 
+// Trie cache — keyed by route array identity (same array = same trie)
+const appTrieCache = new WeakMap<AppRoute[], TrieNode<AppRoute>>();
+
+function getOrBuildAppTrie(routes: AppRoute[]): TrieNode<AppRoute> {
+  let trie = appTrieCache.get(routes);
+  if (!trie) {
+    trie = buildRouteTrie(routes);
+    appTrieCache.set(routes, trie);
+  }
+  return trie;
+}
+
 /**
  * Match a URL against App Router routes.
  */
@@ -962,56 +975,8 @@ export function matchAppRoute(
     /* malformed percent-encoding — match as-is */
   }
 
-  // Split URL once, reuse across all route match attempts
+  // Split URL once, look up via trie
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) {
-      return { route, params };
-    }
-  }
-
-  return null;
-}
-
-function matchPattern(
-  urlParts: string[],
-  patternParts: string[],
-): Record<string, string | string[]> | null {
-  const params: Record<string, string | string[]> = Object.create(null);
-
-  for (let i = 0; i < patternParts.length; i++) {
-    const pp = patternParts[i];
-
-    if (pp.endsWith("+")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      if (remaining.length === 0) return null;
-      params[paramName] = remaining;
-      return params;
-    }
-
-    if (pp.endsWith("*")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      params[paramName] = remaining;
-      return params;
-    }
-
-    if (pp.startsWith(":")) {
-      const paramName = pp.slice(1);
-      if (i >= urlParts.length) return null;
-      params[paramName] = urlParts[i];
-      continue;
-    }
-
-    if (i >= urlParts.length || urlParts[i] !== pp) return null;
-  }
-
-  if (urlParts.length !== patternParts.length) return null;
-
-  return params;
+  const trie = getOrBuildAppTrie(routes);
+  return trieMatch(trie, urlParts);
 }
