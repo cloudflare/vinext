@@ -62,3 +62,32 @@ describe("assetPrefix — resolveNextConfig", () => {
     expect(resolved.assetPrefix).toBe("https://cdn.example.com/subdir")
   })
 })
+
+describe("assetPrefix — basePath + assetPrefix combination", () => {
+  it("explicit CDN assetPrefix is not overridden by basePath, with both fields asserted", async () => {
+    const config: NextConfig = {
+      basePath: "/app",
+      assetPrefix: "https://cdn.example.com",
+    }
+    const resolved = await resolveNextConfig(config)
+    expect(resolved.basePath).toBe("/app")
+    expect(resolved.assetPrefix).toBe("https://cdn.example.com")
+  })
+
+  it("does not produce a double-prefix when basePath and CDN assetPrefix are combined", async () => {
+    const config: NextConfig = {
+      basePath: "/app",
+      assetPrefix: "https://cdn.example.com",
+    }
+    const resolved = await resolveNextConfig(config)
+    expect(resolved.assetPrefix).not.toBe("https://cdn.example.com/app")
+    expect(resolved.assetPrefix).toBe("https://cdn.example.com")
+  })
+
+  it("assetPrefix inherits basePath when assetPrefix is explicitly empty, with both fields asserted", async () => {
+    const config: NextConfig = { basePath: "/app", assetPrefix: "" }
+    const resolved = await resolveNextConfig(config)
+    expect(resolved.basePath).toBe("/app")
+    expect(resolved.assetPrefix).toBe("/app")
+  })
+})
