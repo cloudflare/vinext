@@ -283,6 +283,15 @@ describe("Pages Router entry templates", () => {
     expect(stabilize(code)).toContain("trieMatch");
   });
 
+  it("server entry eagerly starts ISR regeneration before waitUntil registration", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+    const renderFnCall = code.indexOf("const promise = renderFn()");
+    const waitUntilCall = code.indexOf("ctx.waitUntil(promise)");
+
+    expect(renderFnCall).toBeGreaterThan(-1);
+    expect(waitUntilCall).toBeGreaterThan(renderFnCall);
+  });
+
   it("client entry snapshot", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-client-entry");
     expect(stabilize(code)).toMatchSnapshot();
