@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import type { IncomingMessage } from "node:http";
 
 /**
@@ -20,11 +20,17 @@ function mockReq(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
 }
 
 describe("nodeToWebRequest", () => {
-  it("uses req.url when no urlOverride is provided", async () => {
+  let nodeToWebRequest: (typeof import("../packages/vinext/src/server/prod-server.js"))["nodeToWebRequest"];
+
+  beforeAll(async () => {
     const mod = await import("../packages/vinext/src/server/prod-server.js");
+    nodeToWebRequest = mod.nodeToWebRequest;
+  });
+
+  it("uses req.url when no urlOverride is provided", () => {
     const req = mockReq({ url: "/test/page?q=1" });
 
-    const webReq = mod.nodeToWebRequest(req);
+    const webReq = nodeToWebRequest(req);
 
     const parsed = new URL(webReq.url);
     // Without override, the raw req.url is used as the path+query source
@@ -32,23 +38,21 @@ describe("nodeToWebRequest", () => {
     expect(parsed.searchParams.get("q")).toBe("1");
   });
 
-  it("uses urlOverride when provided instead of req.url", async () => {
-    const mod = await import("../packages/vinext/src/server/prod-server.js");
+  it("uses urlOverride when provided instead of req.url", () => {
     const req = mockReq({ url: "/raw/unnormalized//path?q=1" });
 
     // After normalization, the prod server would pass the clean URL
-    const webReq = mod.nodeToWebRequest(req, "/normalized/path?q=1");
+    const webReq = nodeToWebRequest(req, "/normalized/path?q=1");
 
     const parsed = new URL(webReq.url);
     expect(parsed.pathname).toBe("/normalized/path");
     expect(parsed.searchParams.get("q")).toBe("1");
   });
 
-  it("urlOverride replaces the entire path+query from req.url", async () => {
-    const mod = await import("../packages/vinext/src/server/prod-server.js");
+  it("urlOverride replaces the entire path+query from req.url", () => {
     const req = mockReq({ url: "/original/path?old=param" });
 
-    const webReq = mod.nodeToWebRequest(req, "/overridden/path?new=param");
+    const webReq = nodeToWebRequest(req, "/overridden/path?new=param");
 
     const parsed = new URL(webReq.url);
     expect(parsed.pathname).toBe("/overridden/path");
@@ -57,8 +61,7 @@ describe("nodeToWebRequest", () => {
     expect(parsed.searchParams.has("old")).toBe(false);
   });
 
-  it("preserves headers and host when urlOverride is used", async () => {
-    const mod = await import("../packages/vinext/src/server/prod-server.js");
+  it("preserves headers and host when urlOverride is used", () => {
     // GET request (no body needed, avoids Readable.toWeb mock issues)
     const req = mockReq({
       url: "/raw/url",
@@ -69,7 +72,7 @@ describe("nodeToWebRequest", () => {
       },
     });
 
-    const webReq = mod.nodeToWebRequest(req, "/normalized/url");
+    const webReq = nodeToWebRequest(req, "/normalized/url");
 
     expect(webReq.method).toBe("GET");
     expect(webReq.headers.get("x-custom")).toBe("value");
@@ -78,11 +81,10 @@ describe("nodeToWebRequest", () => {
     expect(parsed.pathname).toBe("/normalized/url");
   });
 
-  it("uses req.url fallback '/' when req.url is undefined and no override", async () => {
-    const mod = await import("../packages/vinext/src/server/prod-server.js");
+  it("uses req.url fallback '/' when req.url is undefined and no override", () => {
     const req = mockReq({ url: undefined });
 
-    const webReq = mod.nodeToWebRequest(req);
+    const webReq = nodeToWebRequest(req);
 
     const parsed = new URL(webReq.url);
     expect(parsed.pathname).toBe("/");

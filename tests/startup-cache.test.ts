@@ -1,7 +1,7 @@
 /**
  * Tests for startup-time caching of expensive filesystem operations.
  *
- * Task 1a: hasMdxFiles() should cache its result per root directory.
+ * Task 1a: hasMdxFiles() should cache its result per (root, appDir, pagesDir) combination.
  * Task 1b: resolvePostcssStringPlugins() should cache its result per project root.
  */
 import { afterEach, describe, it, expect, beforeAll, beforeEach, vi } from "vitest";

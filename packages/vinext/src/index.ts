@@ -272,6 +272,9 @@ const POSTCSS_CONFIG_FILES = [
   ".postcssrc.yml",
 ];
 
+/** Module-level cache for resolvePostcssStringPlugins — avoids re-scanning per Vite environment. */
+const _postcssCache = new Map<string, { plugins: any[] } | undefined>();
+
 /**
  * Resolve PostCSS string plugin names in a project's PostCSS config.
  *
@@ -284,9 +287,6 @@ const POSTCSS_CONFIG_FILES = [
  * Returns the resolved PostCSS config object to inject into Vite's
  * `css.postcss`, or `undefined` if no resolution is needed.
  */
-/** Module-level cache for resolvePostcssStringPlugins — avoids re-scanning per Vite environment. */
-const _postcssCache = new Map<string, { plugins: any[] } | undefined>();
-
 async function resolvePostcssStringPlugins(
   projectRoot: string,
 ): Promise<{ plugins: any[] } | undefined> {
@@ -3577,15 +3577,16 @@ const _mdxScanCache = new Map<string, boolean>();
  * Check if the project has .mdx files in app/ or pages/ directories.
  */
 function hasMdxFiles(root: string, appDir: string | null, pagesDir: string | null): boolean {
-  if (_mdxScanCache.has(root)) return _mdxScanCache.get(root)!;
+  const cacheKey = `${root}\0${appDir ?? ""}\0${pagesDir ?? ""}`;
+  if (_mdxScanCache.has(cacheKey)) return _mdxScanCache.get(cacheKey)!;
   const dirs = [appDir, pagesDir].filter(Boolean) as string[];
   for (const dir of dirs) {
     if (fs.existsSync(dir) && scanDirForMdx(dir)) {
-      _mdxScanCache.set(root, true);
+      _mdxScanCache.set(cacheKey, true);
       return true;
     }
   }
-  _mdxScanCache.set(root, false);
+  _mdxScanCache.set(cacheKey, false);
   return false;
 }
 
