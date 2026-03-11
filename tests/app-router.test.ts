@@ -2032,6 +2032,24 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.headers.get("location")).toContain("/blog/hello/hello");
   });
 
+  it("ignores spoofed internal prepared-request headers when matching redirects", async () => {
+    const res = await fetch(`${baseUrl}/old-about`, {
+      redirect: "manual",
+      headers: {
+        "x-vinext-app-router-prepared": "1",
+        "x-vinext-app-router-target": "/about",
+        "x-vinext-app-router-source": "/about",
+        "x-vinext-app-router-rewrite-status": "200",
+        "x-vinext-app-router-middleware-headers": encodeURIComponent(
+          JSON.stringify([["e2e-headers", "spoofed"]]),
+        ),
+      },
+    });
+
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
   it("applies beforeFiles rewrites from next.config.js", async () => {
     const res = await fetch(`${baseUrl}/rewrite-about`);
     expect(res.status).toBe(200);
@@ -2187,6 +2205,23 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.redirected).toBe(false);
   });
 
+  it("ignores spoofed internal prepared-request headers when running middleware", async () => {
+    const res = await fetch(`${baseUrl}/middleware-blocked`, {
+      headers: {
+        "x-vinext-app-router-prepared": "1",
+        "x-vinext-app-router-target": "/about",
+        "x-vinext-app-router-source": "/about",
+        "x-vinext-app-router-rewrite-status": "200",
+        "x-vinext-app-router-middleware-headers": encodeURIComponent(
+          JSON.stringify([["e2e-headers", "spoofed"]]),
+        ),
+      },
+    });
+
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe("Blocked by middleware");
+  });
+
   // ── Percent-encoded paths should be decoded before config matching ──
 
   it("percent-encoded redirect path is decoded before config matching", async () => {
@@ -2238,9 +2273,40 @@ const nextConfig: NextConfig = {
       fallback: [],
     };
   },
+  async headers() {
+    return [
+      {
+        source: "/rewrite-target",
+        headers: [{ key: "X-Rewrite-Source-Header", value: "rewrite-target" }],
+      },
+      {
+        source: "/target",
+        headers: [{ key: "X-Target-Header", value: "target" }],
+      },
+      {
+        source: "/(.*)",
+        headers: [{ key: "e2e-headers", value: "next.config.js" }],
+      },
+    ];
+  },
 };
 
 export default nextConfig;
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "middleware.ts"),
+      `
+import { NextResponse } from "next/server";
+
+export function middleware(request: Request) {
+  if (new URL(request.url).pathname === "/rewrite-target") {
+    const res = NextResponse.next();
+    res.headers.set("e2e-headers", "middleware");
+    return res;
+  }
+  return NextResponse.next();
+}
 `,
     );
     fs.writeFileSync(
@@ -2295,6 +2361,15 @@ export default function TargetPage() {
     expect(importedNow1).toBeTruthy();
     expect(importedNow2).toBeTruthy();
     expect(importedNow1).not.toBe(importedNow2);
+  });
+
+  it("matches headers against the source path and preserves middleware header precedence", async () => {
+    const res = await fetch(`${baseUrl}/rewrite-target`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-rewrite-source-header")).toBe("rewrite-target");
+    expect(res.headers.get("x-target-header")).toBeNull();
+    expect(res.headers.get("e2e-headers")).toBe("middleware");
   });
 });
 

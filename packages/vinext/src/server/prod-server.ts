@@ -47,6 +47,7 @@ import { normalizePath } from "./normalize-path.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { computeLazyChunks } from "../index.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
+import { stripAppRouterPreparedRequestHeaders } from "./app-router-prepared-state.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -819,6 +820,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         : undefined;
       const protocol = rawProtocol === "https" || rawProtocol === "http" ? rawProtocol : "http";
       const hostHeader = resolveHost(req, `${host}:${port}`);
+      stripAppRouterPreparedRequestHeaders(req.headers);
       const reqHeaders = Object.entries(req.headers).reduce((h, [k, v]) => {
         if (v) h.set(k, Array.isArray(v) ? v.join(", ") : v);
         return h;

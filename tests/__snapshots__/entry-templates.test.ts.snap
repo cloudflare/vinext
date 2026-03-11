@@ -354,6 +354,8 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
+import { readAppRouterPreparedRequestState, sanitizeAppRouterPreparedRequestHeaders } from "<ROOT>/packages/vinext/src/server/app-router-prepared-state.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { runWithFetchCache } from "vinext/fetch-cache";
@@ -1387,9 +1389,6 @@ const __configRedirects = [];
 const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
 const __allowedOrigins = [];
-const __hostPreparedHeader = "x-vinext-app-router-prepared";
-const __hostRewriteStatusHeader = "x-vinext-app-router-rewrite-status";
-const __hostTargetHeader = "x-vinext-app-router-target";
 
 
 // ── Dev server origin verification ──────────────────────────────────────
@@ -1633,25 +1632,35 @@ async function __readFormDataWithLimit(request, maxBytes) {
 
 export default async function handler(request, ctx) {
   
-  const __hostPrepared = request.headers.get(__hostPreparedHeader) === "1";
-  const __hostRewriteStatus = request.headers.get(__hostRewriteStatusHeader);
-  const __hostPreparedTarget = request.headers.get(__hostTargetHeader);
-  if (__hostPrepared || __hostRewriteStatus || __hostPreparedTarget) {
-    const __sanitizedHeaders = new Headers(request.headers);
-    __sanitizedHeaders.delete(__hostPreparedHeader);
-    __sanitizedHeaders.delete(__hostRewriteStatusHeader);
-    __sanitizedHeaders.delete(__hostTargetHeader);
-    const __requestUrl = __hostPreparedTarget
-      ? new URL(__hostPreparedTarget, request.url).href
+  const __hostPreparedState = readAppRouterPreparedRequestState(request.headers);
+  let __configHeadersRequest = request;
+  if (__hostPreparedState.hasStateHeaders) {
+    const __sanitizedHeaders = sanitizeAppRouterPreparedRequestHeaders(request.headers);
+    const __sourceUrl = __hostPreparedState.sourceUrl
+      ? new URL(__hostPreparedState.sourceUrl, request.url).href
       : request.url;
-    request = new Request(__requestUrl, {
+    const __targetUrl = __hostPreparedState.targetUrl
+      ? new URL(__hostPreparedState.targetUrl, request.url).href
+      : request.url;
+    const __preparedRequestHeaders = __hostPreparedState.middlewareHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(
+          __sanitizedHeaders,
+          __hostPreparedState.middlewareHeaders,
+        ) ?? __sanitizedHeaders
+      : __sanitizedHeaders;
+    __configHeadersRequest = new Request(__sourceUrl, {
       method: request.method,
       headers: __sanitizedHeaders,
+    });
+    request = new Request(__targetUrl, {
+      method: request.method,
+      headers: __preparedRequestHeaders,
       body: request.body,
       // @ts-expect-error -- duplex is required when reusing a streaming body
       duplex: request.body ? "half" : undefined,
     });
   }
+  const __hostPrepared = __hostPreparedState.prepared;
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -1667,13 +1676,15 @@ export default async function handler(request, ctx) {
       _runWithCacheState(() =>
         _runWithPrivateCache(() =>
           runWithFetchCache(async () => {
-            const __reqCtx = requestContextFromRequest(request);
+            const __reqCtx = requestContextFromRequest(__configHeadersRequest);
             // Per-request container for middleware state. Passed into
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = {
-              headers: null,
-              status: __hostRewriteStatus ? Number(__hostRewriteStatus) || null : null,
+              headers: __hostPreparedState.middlewareHeaders
+                ? new Headers(__hostPreparedState.middlewareHeaders)
+                : null,
+              status: __hostPreparedState.rewriteStatus,
             };
             const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared);
             // Apply custom headers from next.config.js to non-redirect responses.
@@ -1681,7 +1692,7 @@ export default async function handler(request, ctx) {
             // and Next.js doesn't apply custom headers to redirects anyway.
             if (response && response.headers && !(response.status >= 300 && response.status < 400)) {
               if (__configHeaders.length) {
-                const url = new URL(request.url);
+                const url = new URL(__configHeadersRequest.url);
                 let pathname;
                 try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
                 
@@ -2874,8 +2885,41 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared) {
   // Check for draftMode Set-Cookie header (from draftMode().enable()/disable())
   const draftCookie = getDraftModeCookieHeader();
 
-  setHeadersContext(null);
-  setNavigationContext(null);
+  // Keep request-scoped headers/navigation state alive until the HTML stream is
+  // fully consumed. Libraries like better-auth call cookies() from async hooks
+  // that run after handleSsr() returns, while the response is still streaming.
+  let __requestStateCleaned = false;
+  function __cleanupRequestState() {
+    if (__requestStateCleaned) return;
+    __requestStateCleaned = true;
+    setHeadersContext(null);
+    setNavigationContext(null);
+  }
+
+  const __htmlReader = htmlStream.getReader();
+  htmlStream = new ReadableStream({
+    async pull(controller) {
+      try {
+        const chunk = await __htmlReader.read();
+        if (chunk.done) {
+          controller.close();
+          __cleanupRequestState();
+          return;
+        }
+        controller.enqueue(chunk.value);
+      } catch (error) {
+        __cleanupRequestState();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await __htmlReader.cancel(reason);
+      } finally {
+        __cleanupRequestState();
+      }
+    },
+  });
 
   // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
   function attachMiddlewareContext(response) {
@@ -3091,6 +3135,8 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
+import { readAppRouterPreparedRequestState, sanitizeAppRouterPreparedRequestHeaders } from "<ROOT>/packages/vinext/src/server/app-router-prepared-state.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { runWithFetchCache } from "vinext/fetch-cache";
@@ -4124,9 +4170,6 @@ const __configRedirects = [{"source":"/old","destination":"/new","permanent":tru
 const __configRewrites = {"beforeFiles":[{"source":"/api/:path*","destination":"/backend/:path*"}],"afterFiles":[],"fallback":[]};
 const __configHeaders = [{"source":"/api/:path*","headers":[{"key":"X-Custom","value":"test"}]}];
 const __allowedOrigins = ["https://example.com"];
-const __hostPreparedHeader = "x-vinext-app-router-prepared";
-const __hostRewriteStatusHeader = "x-vinext-app-router-rewrite-status";
-const __hostTargetHeader = "x-vinext-app-router-target";
 
 
 // ── Dev server origin verification ──────────────────────────────────────
@@ -4370,25 +4413,35 @@ async function __readFormDataWithLimit(request, maxBytes) {
 
 export default async function handler(request, ctx) {
   
-  const __hostPrepared = request.headers.get(__hostPreparedHeader) === "1";
-  const __hostRewriteStatus = request.headers.get(__hostRewriteStatusHeader);
-  const __hostPreparedTarget = request.headers.get(__hostTargetHeader);
-  if (__hostPrepared || __hostRewriteStatus || __hostPreparedTarget) {
-    const __sanitizedHeaders = new Headers(request.headers);
-    __sanitizedHeaders.delete(__hostPreparedHeader);
-    __sanitizedHeaders.delete(__hostRewriteStatusHeader);
-    __sanitizedHeaders.delete(__hostTargetHeader);
-    const __requestUrl = __hostPreparedTarget
-      ? new URL(__hostPreparedTarget, request.url).href
+  const __hostPreparedState = readAppRouterPreparedRequestState(request.headers);
+  let __configHeadersRequest = request;
+  if (__hostPreparedState.hasStateHeaders) {
+    const __sanitizedHeaders = sanitizeAppRouterPreparedRequestHeaders(request.headers);
+    const __sourceUrl = __hostPreparedState.sourceUrl
+      ? new URL(__hostPreparedState.sourceUrl, request.url).href
       : request.url;
-    request = new Request(__requestUrl, {
+    const __targetUrl = __hostPreparedState.targetUrl
+      ? new URL(__hostPreparedState.targetUrl, request.url).href
+      : request.url;
+    const __preparedRequestHeaders = __hostPreparedState.middlewareHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(
+          __sanitizedHeaders,
+          __hostPreparedState.middlewareHeaders,
+        ) ?? __sanitizedHeaders
+      : __sanitizedHeaders;
+    __configHeadersRequest = new Request(__sourceUrl, {
       method: request.method,
       headers: __sanitizedHeaders,
+    });
+    request = new Request(__targetUrl, {
+      method: request.method,
+      headers: __preparedRequestHeaders,
       body: request.body,
       // @ts-expect-error -- duplex is required when reusing a streaming body
       duplex: request.body ? "half" : undefined,
     });
   }
+  const __hostPrepared = __hostPreparedState.prepared;
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -4404,13 +4457,15 @@ export default async function handler(request, ctx) {
       _runWithCacheState(() =>
         _runWithPrivateCache(() =>
           runWithFetchCache(async () => {
-            const __reqCtx = requestContextFromRequest(request);
+            const __reqCtx = requestContextFromRequest(__configHeadersRequest);
             // Per-request container for middleware state. Passed into
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = {
-              headers: null,
-              status: __hostRewriteStatus ? Number(__hostRewriteStatus) || null : null,
+              headers: __hostPreparedState.middlewareHeaders
+                ? new Headers(__hostPreparedState.middlewareHeaders)
+                : null,
+              status: __hostPreparedState.rewriteStatus,
             };
             const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared);
             // Apply custom headers from next.config.js to non-redirect responses.
@@ -4418,7 +4473,7 @@ export default async function handler(request, ctx) {
             // and Next.js doesn't apply custom headers to redirects anyway.
             if (response && response.headers && !(response.status >= 300 && response.status < 400)) {
               if (__configHeaders.length) {
-                const url = new URL(request.url);
+                const url = new URL(__configHeadersRequest.url);
                 let pathname;
                 try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
                 if (pathname.startsWith("/base")) pathname = pathname.slice("/base".length) || "/";
@@ -5614,8 +5669,41 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared) {
   // Check for draftMode Set-Cookie header (from draftMode().enable()/disable())
   const draftCookie = getDraftModeCookieHeader();
 
-  setHeadersContext(null);
-  setNavigationContext(null);
+  // Keep request-scoped headers/navigation state alive until the HTML stream is
+  // fully consumed. Libraries like better-auth call cookies() from async hooks
+  // that run after handleSsr() returns, while the response is still streaming.
+  let __requestStateCleaned = false;
+  function __cleanupRequestState() {
+    if (__requestStateCleaned) return;
+    __requestStateCleaned = true;
+    setHeadersContext(null);
+    setNavigationContext(null);
+  }
+
+  const __htmlReader = htmlStream.getReader();
+  htmlStream = new ReadableStream({
+    async pull(controller) {
+      try {
+        const chunk = await __htmlReader.read();
+        if (chunk.done) {
+          controller.close();
+          __cleanupRequestState();
+          return;
+        }
+        controller.enqueue(chunk.value);
+      } catch (error) {
+        __cleanupRequestState();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await __htmlReader.cancel(reason);
+      } finally {
+        __cleanupRequestState();
+      }
+    },
+  });
 
   // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
   function attachMiddlewareContext(response) {
@@ -5831,6 +5919,8 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
+import { readAppRouterPreparedRequestState, sanitizeAppRouterPreparedRequestHeaders } from "<ROOT>/packages/vinext/src/server/app-router-prepared-state.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { runWithFetchCache } from "vinext/fetch-cache";
@@ -6894,9 +6984,6 @@ const __configRedirects = [];
 const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
 const __allowedOrigins = [];
-const __hostPreparedHeader = "x-vinext-app-router-prepared";
-const __hostRewriteStatusHeader = "x-vinext-app-router-rewrite-status";
-const __hostTargetHeader = "x-vinext-app-router-target";
 
 
 // ── Dev server origin verification ──────────────────────────────────────
@@ -7140,25 +7227,35 @@ async function __readFormDataWithLimit(request, maxBytes) {
 
 export default async function handler(request, ctx) {
   
-  const __hostPrepared = request.headers.get(__hostPreparedHeader) === "1";
-  const __hostRewriteStatus = request.headers.get(__hostRewriteStatusHeader);
-  const __hostPreparedTarget = request.headers.get(__hostTargetHeader);
-  if (__hostPrepared || __hostRewriteStatus || __hostPreparedTarget) {
-    const __sanitizedHeaders = new Headers(request.headers);
-    __sanitizedHeaders.delete(__hostPreparedHeader);
-    __sanitizedHeaders.delete(__hostRewriteStatusHeader);
-    __sanitizedHeaders.delete(__hostTargetHeader);
-    const __requestUrl = __hostPreparedTarget
-      ? new URL(__hostPreparedTarget, request.url).href
+  const __hostPreparedState = readAppRouterPreparedRequestState(request.headers);
+  let __configHeadersRequest = request;
+  if (__hostPreparedState.hasStateHeaders) {
+    const __sanitizedHeaders = sanitizeAppRouterPreparedRequestHeaders(request.headers);
+    const __sourceUrl = __hostPreparedState.sourceUrl
+      ? new URL(__hostPreparedState.sourceUrl, request.url).href
       : request.url;
-    request = new Request(__requestUrl, {
+    const __targetUrl = __hostPreparedState.targetUrl
+      ? new URL(__hostPreparedState.targetUrl, request.url).href
+      : request.url;
+    const __preparedRequestHeaders = __hostPreparedState.middlewareHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(
+          __sanitizedHeaders,
+          __hostPreparedState.middlewareHeaders,
+        ) ?? __sanitizedHeaders
+      : __sanitizedHeaders;
+    __configHeadersRequest = new Request(__sourceUrl, {
       method: request.method,
       headers: __sanitizedHeaders,
+    });
+    request = new Request(__targetUrl, {
+      method: request.method,
+      headers: __preparedRequestHeaders,
       body: request.body,
       // @ts-expect-error -- duplex is required when reusing a streaming body
       duplex: request.body ? "half" : undefined,
     });
   }
+  const __hostPrepared = __hostPreparedState.prepared;
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -7174,13 +7271,15 @@ export default async function handler(request, ctx) {
       _runWithCacheState(() =>
         _runWithPrivateCache(() =>
           runWithFetchCache(async () => {
-            const __reqCtx = requestContextFromRequest(request);
+            const __reqCtx = requestContextFromRequest(__configHeadersRequest);
             // Per-request container for middleware state. Passed into
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = {
-              headers: null,
-              status: __hostRewriteStatus ? Number(__hostRewriteStatus) || null : null,
+              headers: __hostPreparedState.middlewareHeaders
+                ? new Headers(__hostPreparedState.middlewareHeaders)
+                : null,
+              status: __hostPreparedState.rewriteStatus,
             };
             const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared);
             // Apply custom headers from next.config.js to non-redirect responses.
@@ -7188,7 +7287,7 @@ export default async function handler(request, ctx) {
             // and Next.js doesn't apply custom headers to redirects anyway.
             if (response && response.headers && !(response.status >= 300 && response.status < 400)) {
               if (__configHeaders.length) {
-                const url = new URL(request.url);
+                const url = new URL(__configHeadersRequest.url);
                 let pathname;
                 try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
                 
@@ -8389,8 +8488,41 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared) {
   // Check for draftMode Set-Cookie header (from draftMode().enable()/disable())
   const draftCookie = getDraftModeCookieHeader();
 
-  setHeadersContext(null);
-  setNavigationContext(null);
+  // Keep request-scoped headers/navigation state alive until the HTML stream is
+  // fully consumed. Libraries like better-auth call cookies() from async hooks
+  // that run after handleSsr() returns, while the response is still streaming.
+  let __requestStateCleaned = false;
+  function __cleanupRequestState() {
+    if (__requestStateCleaned) return;
+    __requestStateCleaned = true;
+    setHeadersContext(null);
+    setNavigationContext(null);
+  }
+
+  const __htmlReader = htmlStream.getReader();
+  htmlStream = new ReadableStream({
+    async pull(controller) {
+      try {
+        const chunk = await __htmlReader.read();
+        if (chunk.done) {
+          controller.close();
+          __cleanupRequestState();
+          return;
+        }
+        controller.enqueue(chunk.value);
+      } catch (error) {
+        __cleanupRequestState();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await __htmlReader.cancel(reason);
+      } finally {
+        __cleanupRequestState();
+      }
+    },
+  });
 
   // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
   function attachMiddlewareContext(response) {
@@ -8606,6 +8738,8 @@ import * as _instrumentation from "/tmp/test/instrumentation.ts";
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
+import { readAppRouterPreparedRequestState, sanitizeAppRouterPreparedRequestHeaders } from "<ROOT>/packages/vinext/src/server/app-router-prepared-state.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { runWithFetchCache } from "vinext/fetch-cache";
@@ -9668,9 +9802,6 @@ const __configRedirects = [];
 const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
 const __allowedOrigins = [];
-const __hostPreparedHeader = "x-vinext-app-router-prepared";
-const __hostRewriteStatusHeader = "x-vinext-app-router-rewrite-status";
-const __hostTargetHeader = "x-vinext-app-router-target";
 
 
 // ── Dev server origin verification ──────────────────────────────────────
@@ -9917,25 +10048,35 @@ export default async function handler(request, ctx) {
   // This is a no-op after the first call (guarded by __instrumentationInitialized).
   await __ensureInstrumentation();
   
-  const __hostPrepared = request.headers.get(__hostPreparedHeader) === "1";
-  const __hostRewriteStatus = request.headers.get(__hostRewriteStatusHeader);
-  const __hostPreparedTarget = request.headers.get(__hostTargetHeader);
-  if (__hostPrepared || __hostRewriteStatus || __hostPreparedTarget) {
-    const __sanitizedHeaders = new Headers(request.headers);
-    __sanitizedHeaders.delete(__hostPreparedHeader);
-    __sanitizedHeaders.delete(__hostRewriteStatusHeader);
-    __sanitizedHeaders.delete(__hostTargetHeader);
-    const __requestUrl = __hostPreparedTarget
-      ? new URL(__hostPreparedTarget, request.url).href
+  const __hostPreparedState = readAppRouterPreparedRequestState(request.headers);
+  let __configHeadersRequest = request;
+  if (__hostPreparedState.hasStateHeaders) {
+    const __sanitizedHeaders = sanitizeAppRouterPreparedRequestHeaders(request.headers);
+    const __sourceUrl = __hostPreparedState.sourceUrl
+      ? new URL(__hostPreparedState.sourceUrl, request.url).href
       : request.url;
-    request = new Request(__requestUrl, {
+    const __targetUrl = __hostPreparedState.targetUrl
+      ? new URL(__hostPreparedState.targetUrl, request.url).href
+      : request.url;
+    const __preparedRequestHeaders = __hostPreparedState.middlewareHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(
+          __sanitizedHeaders,
+          __hostPreparedState.middlewareHeaders,
+        ) ?? __sanitizedHeaders
+      : __sanitizedHeaders;
+    __configHeadersRequest = new Request(__sourceUrl, {
       method: request.method,
       headers: __sanitizedHeaders,
+    });
+    request = new Request(__targetUrl, {
+      method: request.method,
+      headers: __preparedRequestHeaders,
       body: request.body,
       // @ts-expect-error -- duplex is required when reusing a streaming body
       duplex: request.body ? "half" : undefined,
     });
   }
+  const __hostPrepared = __hostPreparedState.prepared;
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -9951,13 +10092,15 @@ export default async function handler(request, ctx) {
       _runWithCacheState(() =>
         _runWithPrivateCache(() =>
           runWithFetchCache(async () => {
-            const __reqCtx = requestContextFromRequest(request);
+            const __reqCtx = requestContextFromRequest(__configHeadersRequest);
             // Per-request container for middleware state. Passed into
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = {
-              headers: null,
-              status: __hostRewriteStatus ? Number(__hostRewriteStatus) || null : null,
+              headers: __hostPreparedState.middlewareHeaders
+                ? new Headers(__hostPreparedState.middlewareHeaders)
+                : null,
+              status: __hostPreparedState.rewriteStatus,
             };
             const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared);
             // Apply custom headers from next.config.js to non-redirect responses.
@@ -9965,7 +10108,7 @@ export default async function handler(request, ctx) {
             // and Next.js doesn't apply custom headers to redirects anyway.
             if (response && response.headers && !(response.status >= 300 && response.status < 400)) {
               if (__configHeaders.length) {
-                const url = new URL(request.url);
+                const url = new URL(__configHeadersRequest.url);
                 let pathname;
                 try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
                 
@@ -11158,8 +11301,41 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared) {
   // Check for draftMode Set-Cookie header (from draftMode().enable()/disable())
   const draftCookie = getDraftModeCookieHeader();
 
-  setHeadersContext(null);
-  setNavigationContext(null);
+  // Keep request-scoped headers/navigation state alive until the HTML stream is
+  // fully consumed. Libraries like better-auth call cookies() from async hooks
+  // that run after handleSsr() returns, while the response is still streaming.
+  let __requestStateCleaned = false;
+  function __cleanupRequestState() {
+    if (__requestStateCleaned) return;
+    __requestStateCleaned = true;
+    setHeadersContext(null);
+    setNavigationContext(null);
+  }
+
+  const __htmlReader = htmlStream.getReader();
+  htmlStream = new ReadableStream({
+    async pull(controller) {
+      try {
+        const chunk = await __htmlReader.read();
+        if (chunk.done) {
+          controller.close();
+          __cleanupRequestState();
+          return;
+        }
+        controller.enqueue(chunk.value);
+      } catch (error) {
+        __cleanupRequestState();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await __htmlReader.cancel(reason);
+      } finally {
+        __cleanupRequestState();
+      }
+    },
+  });
 
   // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
   function attachMiddlewareContext(response) {
@@ -11375,6 +11551,8 @@ import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, merge
 import { sitemapToXml, robotsToText, manifestToJson } from "<ROOT>/packages/vinext/src/server/metadata-routes.js";
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
+import { readAppRouterPreparedRequestState, sanitizeAppRouterPreparedRequestHeaders } from "<ROOT>/packages/vinext/src/server/app-router-prepared-state.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { runWithFetchCache } from "vinext/fetch-cache";
@@ -12415,9 +12593,6 @@ const __configRedirects = [];
 const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
 const __allowedOrigins = [];
-const __hostPreparedHeader = "x-vinext-app-router-prepared";
-const __hostRewriteStatusHeader = "x-vinext-app-router-rewrite-status";
-const __hostTargetHeader = "x-vinext-app-router-target";
 
 
 // ── Dev server origin verification ──────────────────────────────────────
@@ -12661,25 +12836,35 @@ async function __readFormDataWithLimit(request, maxBytes) {
 
 export default async function handler(request, ctx) {
   
-  const __hostPrepared = request.headers.get(__hostPreparedHeader) === "1";
-  const __hostRewriteStatus = request.headers.get(__hostRewriteStatusHeader);
-  const __hostPreparedTarget = request.headers.get(__hostTargetHeader);
-  if (__hostPrepared || __hostRewriteStatus || __hostPreparedTarget) {
-    const __sanitizedHeaders = new Headers(request.headers);
-    __sanitizedHeaders.delete(__hostPreparedHeader);
-    __sanitizedHeaders.delete(__hostRewriteStatusHeader);
-    __sanitizedHeaders.delete(__hostTargetHeader);
-    const __requestUrl = __hostPreparedTarget
-      ? new URL(__hostPreparedTarget, request.url).href
+  const __hostPreparedState = readAppRouterPreparedRequestState(request.headers);
+  let __configHeadersRequest = request;
+  if (__hostPreparedState.hasStateHeaders) {
+    const __sanitizedHeaders = sanitizeAppRouterPreparedRequestHeaders(request.headers);
+    const __sourceUrl = __hostPreparedState.sourceUrl
+      ? new URL(__hostPreparedState.sourceUrl, request.url).href
       : request.url;
-    request = new Request(__requestUrl, {
+    const __targetUrl = __hostPreparedState.targetUrl
+      ? new URL(__hostPreparedState.targetUrl, request.url).href
+      : request.url;
+    const __preparedRequestHeaders = __hostPreparedState.middlewareHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(
+          __sanitizedHeaders,
+          __hostPreparedState.middlewareHeaders,
+        ) ?? __sanitizedHeaders
+      : __sanitizedHeaders;
+    __configHeadersRequest = new Request(__sourceUrl, {
       method: request.method,
       headers: __sanitizedHeaders,
+    });
+    request = new Request(__targetUrl, {
+      method: request.method,
+      headers: __preparedRequestHeaders,
       body: request.body,
       // @ts-expect-error -- duplex is required when reusing a streaming body
       duplex: request.body ? "half" : undefined,
     });
   }
+  const __hostPrepared = __hostPreparedState.prepared;
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -12695,13 +12880,15 @@ export default async function handler(request, ctx) {
       _runWithCacheState(() =>
         _runWithPrivateCache(() =>
           runWithFetchCache(async () => {
-            const __reqCtx = requestContextFromRequest(request);
+            const __reqCtx = requestContextFromRequest(__configHeadersRequest);
             // Per-request container for middleware state. Passed into
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = {
-              headers: null,
-              status: __hostRewriteStatus ? Number(__hostRewriteStatus) || null : null,
+              headers: __hostPreparedState.middlewareHeaders
+                ? new Headers(__hostPreparedState.middlewareHeaders)
+                : null,
+              status: __hostPreparedState.rewriteStatus,
             };
             const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared);
             // Apply custom headers from next.config.js to non-redirect responses.
@@ -12709,7 +12896,7 @@ export default async function handler(request, ctx) {
             // and Next.js doesn't apply custom headers to redirects anyway.
             if (response && response.headers && !(response.status >= 300 && response.status < 400)) {
               if (__configHeaders.length) {
-                const url = new URL(request.url);
+                const url = new URL(__configHeadersRequest.url);
                 let pathname;
                 try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
                 
@@ -13902,8 +14089,41 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared) {
   // Check for draftMode Set-Cookie header (from draftMode().enable()/disable())
   const draftCookie = getDraftModeCookieHeader();
 
-  setHeadersContext(null);
-  setNavigationContext(null);
+  // Keep request-scoped headers/navigation state alive until the HTML stream is
+  // fully consumed. Libraries like better-auth call cookies() from async hooks
+  // that run after handleSsr() returns, while the response is still streaming.
+  let __requestStateCleaned = false;
+  function __cleanupRequestState() {
+    if (__requestStateCleaned) return;
+    __requestStateCleaned = true;
+    setHeadersContext(null);
+    setNavigationContext(null);
+  }
+
+  const __htmlReader = htmlStream.getReader();
+  htmlStream = new ReadableStream({
+    async pull(controller) {
+      try {
+        const chunk = await __htmlReader.read();
+        if (chunk.done) {
+          controller.close();
+          __cleanupRequestState();
+          return;
+        }
+        controller.enqueue(chunk.value);
+      } catch (error) {
+        __cleanupRequestState();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await __htmlReader.cancel(reason);
+      } finally {
+        __cleanupRequestState();
+      }
+    },
+  });
 
   // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
   function attachMiddlewareContext(response) {
@@ -14119,6 +14339,8 @@ import * as middlewareModule from "/tmp/test/middleware.ts";
 
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "<ROOT>/packages/vinext/src/server/middleware-request-headers.js";
+import { readAppRouterPreparedRequestState, sanitizeAppRouterPreparedRequestHeaders } from "<ROOT>/packages/vinext/src/server/app-router-prepared-state.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { runWithFetchCache } from "vinext/fetch-cache";
@@ -15348,9 +15570,6 @@ const __configRedirects = [];
 const __configRewrites = {"beforeFiles":[],"afterFiles":[],"fallback":[]};
 const __configHeaders = [];
 const __allowedOrigins = [];
-const __hostPreparedHeader = "x-vinext-app-router-prepared";
-const __hostRewriteStatusHeader = "x-vinext-app-router-rewrite-status";
-const __hostTargetHeader = "x-vinext-app-router-target";
 
 
 // ── Dev server origin verification ──────────────────────────────────────
@@ -15594,25 +15813,35 @@ async function __readFormDataWithLimit(request, maxBytes) {
 
 export default async function handler(request, ctx) {
   
-  const __hostPrepared = request.headers.get(__hostPreparedHeader) === "1";
-  const __hostRewriteStatus = request.headers.get(__hostRewriteStatusHeader);
-  const __hostPreparedTarget = request.headers.get(__hostTargetHeader);
-  if (__hostPrepared || __hostRewriteStatus || __hostPreparedTarget) {
-    const __sanitizedHeaders = new Headers(request.headers);
-    __sanitizedHeaders.delete(__hostPreparedHeader);
-    __sanitizedHeaders.delete(__hostRewriteStatusHeader);
-    __sanitizedHeaders.delete(__hostTargetHeader);
-    const __requestUrl = __hostPreparedTarget
-      ? new URL(__hostPreparedTarget, request.url).href
+  const __hostPreparedState = readAppRouterPreparedRequestState(request.headers);
+  let __configHeadersRequest = request;
+  if (__hostPreparedState.hasStateHeaders) {
+    const __sanitizedHeaders = sanitizeAppRouterPreparedRequestHeaders(request.headers);
+    const __sourceUrl = __hostPreparedState.sourceUrl
+      ? new URL(__hostPreparedState.sourceUrl, request.url).href
       : request.url;
-    request = new Request(__requestUrl, {
+    const __targetUrl = __hostPreparedState.targetUrl
+      ? new URL(__hostPreparedState.targetUrl, request.url).href
+      : request.url;
+    const __preparedRequestHeaders = __hostPreparedState.middlewareHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(
+          __sanitizedHeaders,
+          __hostPreparedState.middlewareHeaders,
+        ) ?? __sanitizedHeaders
+      : __sanitizedHeaders;
+    __configHeadersRequest = new Request(__sourceUrl, {
       method: request.method,
       headers: __sanitizedHeaders,
+    });
+    request = new Request(__targetUrl, {
+      method: request.method,
+      headers: __preparedRequestHeaders,
       body: request.body,
       // @ts-expect-error -- duplex is required when reusing a streaming body
       duplex: request.body ? "half" : undefined,
     });
   }
+  const __hostPrepared = __hostPreparedState.prepared;
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -15628,13 +15857,15 @@ export default async function handler(request, ctx) {
       _runWithCacheState(() =>
         _runWithPrivateCache(() =>
           runWithFetchCache(async () => {
-            const __reqCtx = requestContextFromRequest(request);
+            const __reqCtx = requestContextFromRequest(__configHeadersRequest);
             // Per-request container for middleware state. Passed into
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = {
-              headers: null,
-              status: __hostRewriteStatus ? Number(__hostRewriteStatus) || null : null,
+              headers: __hostPreparedState.middlewareHeaders
+                ? new Headers(__hostPreparedState.middlewareHeaders)
+                : null,
+              status: __hostPreparedState.rewriteStatus,
             };
             const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared);
             // Apply custom headers from next.config.js to non-redirect responses.
@@ -15642,7 +15873,7 @@ export default async function handler(request, ctx) {
             // and Next.js doesn't apply custom headers to redirects anyway.
             if (response && response.headers && !(response.status >= 300 && response.status < 400)) {
               if (__configHeaders.length) {
-                const url = new URL(request.url);
+                const url = new URL(__configHeadersRequest.url);
                 let pathname;
                 try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
                 
@@ -16919,8 +17150,41 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared) {
   // Check for draftMode Set-Cookie header (from draftMode().enable()/disable())
   const draftCookie = getDraftModeCookieHeader();
 
-  setHeadersContext(null);
-  setNavigationContext(null);
+  // Keep request-scoped headers/navigation state alive until the HTML stream is
+  // fully consumed. Libraries like better-auth call cookies() from async hooks
+  // that run after handleSsr() returns, while the response is still streaming.
+  let __requestStateCleaned = false;
+  function __cleanupRequestState() {
+    if (__requestStateCleaned) return;
+    __requestStateCleaned = true;
+    setHeadersContext(null);
+    setNavigationContext(null);
+  }
+
+  const __htmlReader = htmlStream.getReader();
+  htmlStream = new ReadableStream({
+    async pull(controller) {
+      try {
+        const chunk = await __htmlReader.read();
+        if (chunk.done) {
+          controller.close();
+          __cleanupRequestState();
+          return;
+        }
+        controller.enqueue(chunk.value);
+      } catch (error) {
+        __cleanupRequestState();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await __htmlReader.cancel(reason);
+      } finally {
+        __cleanupRequestState();
+      }
+    },
+  });
 
   // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
   function attachMiddlewareContext(response) {

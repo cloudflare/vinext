@@ -64,11 +64,12 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import commonjs from "vite-plugin-commonjs";
+import {
+  setAppRouterPreparedRequestState,
+  stripAppRouterPreparedRequestHeaders,
+} from "./server/app-router-prepared-state.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const APP_ROUTER_PREPARED_HEADER = "x-vinext-app-router-prepared";
-const APP_ROUTER_REWRITE_STATUS_HEADER = "x-vinext-app-router-rewrite-status";
-const APP_ROUTER_TARGET_HEADER = "x-vinext-app-router-target";
 
 /**
  * Fetch Google Fonts CSS, download .woff2 files, cache locally, and return
@@ -1728,24 +1729,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         }
 
-        function setAppRouterPreparedRequestState(
-          req: IncomingMessage,
-          options?: { rewriteStatus?: number | null; requestUrl?: string | null },
-        ): void {
-          req.headers[APP_ROUTER_PREPARED_HEADER] = "1";
-          const rewriteStatus = options?.rewriteStatus;
-          if (typeof rewriteStatus === "number") {
-            req.headers[APP_ROUTER_REWRITE_STATUS_HEADER] = String(rewriteStatus);
-          } else {
-            delete req.headers[APP_ROUTER_REWRITE_STATUS_HEADER];
-          }
-          if (options?.requestUrl) {
-            req.headers[APP_ROUTER_TARGET_HEADER] = options.requestUrl;
-          } else {
-            delete req.headers[APP_ROUTER_TARGET_HEADER];
-          }
-        }
-
         function appendNodeResponseHeaders(res: any, headers: Headers | null | undefined): void {
           if (!headers) return;
           for (const [key, value] of headers) {
@@ -2085,8 +2068,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             : "";
           const originProto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
           const origin = `${originProto}://${req.headers.host || "localhost"}`;
+          const sourceUrl = url;
 
           let requestHeaders = buildNodeRequestHeaders(req);
+          let middlewareResponseHeaders: Headers | null = null;
           let rewriteStatus: number | null = null;
           const buildRequestForUrl = (requestUrl: string, headers: Headers): Request =>
             new Request(new URL(toRoutingUrl(requestUrl), origin), {
@@ -2154,12 +2139,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
 
             if (middlewareResult.responseHeaders) {
+              middlewareResponseHeaders = middlewareResult.responseHeaders;
               requestHeaders =
                 buildRequestHeadersFromMiddlewareResponse(
                   requestHeaders,
                   middlewareResult.responseHeaders,
                 ) ?? requestHeaders;
-              appendNodeResponseHeaders(res, middlewareResult.responseHeaders);
             }
 
             if (middlewareResult.rewriteUrl) {
@@ -2168,8 +2153,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               rewriteStatus = middlewareResult.rewriteStatus ?? null;
             }
           }
-
-          applyRequestHeadersToNodeRequest(req, requestHeaders);
 
           const buildRequestContext = (requestUrl: string): RequestContext =>
             requestContextFromRequest(buildRequestForUrl(requestUrl, requestHeaders));
@@ -2232,7 +2215,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
 
           req.url = url;
-          setAppRouterPreparedRequestState(req, { rewriteStatus, requestUrl: url });
+          setAppRouterPreparedRequestState(req.headers, {
+            rewriteStatus,
+            requestUrl: url,
+            sourceUrl,
+            middlewareHeaders: middlewareResponseHeaders,
+          });
 
           if (shouldInvalidateAppRscRequest(req, url)) {
             await invalidateAppRscModulesForRequest(url, {
@@ -2274,6 +2262,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // (including /@*, /__vite*, /node_modules* paths) are validated
         // before Vite serves any content.
         server.middlewares.use((req: any, res: any, next: any) => {
+          stripAppRouterPreparedRequestHeaders(req.headers);
           const blockReason = validateDevRequest(
             {
               origin: req.headers.origin as string | undefined,

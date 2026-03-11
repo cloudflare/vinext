@@ -37,6 +37,12 @@ const requestPipelinePath = fileURLToPath(
 const requestContextShimPath = fileURLToPath(
   new URL("../shims/request-context.js", import.meta.url),
 ).replace(/\\/g, "/");
+const middlewareRequestHeadersPath = fileURLToPath(
+  new URL("../server/middleware-request-headers.js", import.meta.url),
+).replace(/\\/g, "/");
+const preparedStatePath = fileURLToPath(
+  new URL("../server/app-router-prepared-state.js", import.meta.url),
+).replace(/\\/g, "/");
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -257,6 +263,8 @@ ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(inst
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("../server/metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
+import { buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
+import { readAppRouterPreparedRequestState, sanitizeAppRouterPreparedRequestHeaders } from ${JSON.stringify(preparedStatePath)};
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
 import { runWithFetchCache } from "vinext/fetch-cache";
@@ -1271,9 +1279,6 @@ const __configRedirects = ${JSON.stringify(redirects)};
 const __configRewrites = ${JSON.stringify(rewrites)};
 const __configHeaders = ${JSON.stringify(headers)};
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
-const __hostPreparedHeader = "x-vinext-app-router-prepared";
-const __hostRewriteStatusHeader = "x-vinext-app-router-rewrite-status";
-const __hostTargetHeader = "x-vinext-app-router-target";
 
 ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 
@@ -1387,25 +1392,35 @@ export default async function handler(request, ctx) {
   `
       : ""
   }
-  const __hostPrepared = request.headers.get(__hostPreparedHeader) === "1";
-  const __hostRewriteStatus = request.headers.get(__hostRewriteStatusHeader);
-  const __hostPreparedTarget = request.headers.get(__hostTargetHeader);
-  if (__hostPrepared || __hostRewriteStatus || __hostPreparedTarget) {
-    const __sanitizedHeaders = new Headers(request.headers);
-    __sanitizedHeaders.delete(__hostPreparedHeader);
-    __sanitizedHeaders.delete(__hostRewriteStatusHeader);
-    __sanitizedHeaders.delete(__hostTargetHeader);
-    const __requestUrl = __hostPreparedTarget
-      ? new URL(__hostPreparedTarget, request.url).href
+  const __hostPreparedState = readAppRouterPreparedRequestState(request.headers);
+  let __configHeadersRequest = request;
+  if (__hostPreparedState.hasStateHeaders) {
+    const __sanitizedHeaders = sanitizeAppRouterPreparedRequestHeaders(request.headers);
+    const __sourceUrl = __hostPreparedState.sourceUrl
+      ? new URL(__hostPreparedState.sourceUrl, request.url).href
       : request.url;
-    request = new Request(__requestUrl, {
+    const __targetUrl = __hostPreparedState.targetUrl
+      ? new URL(__hostPreparedState.targetUrl, request.url).href
+      : request.url;
+    const __preparedRequestHeaders = __hostPreparedState.middlewareHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(
+          __sanitizedHeaders,
+          __hostPreparedState.middlewareHeaders,
+        ) ?? __sanitizedHeaders
+      : __sanitizedHeaders;
+    __configHeadersRequest = new Request(__sourceUrl, {
       method: request.method,
       headers: __sanitizedHeaders,
+    });
+    request = new Request(__targetUrl, {
+      method: request.method,
+      headers: __preparedRequestHeaders,
       body: request.body,
       // @ts-expect-error -- duplex is required when reusing a streaming body
       duplex: request.body ? "half" : undefined,
     });
   }
+  const __hostPrepared = __hostPreparedState.prepared;
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -1421,13 +1436,15 @@ export default async function handler(request, ctx) {
       _runWithCacheState(() =>
         _runWithPrivateCache(() =>
           runWithFetchCache(async () => {
-            const __reqCtx = requestContextFromRequest(request);
+            const __reqCtx = requestContextFromRequest(__configHeadersRequest);
             // Per-request container for middleware state. Passed into
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = {
-              headers: null,
-              status: __hostRewriteStatus ? Number(__hostRewriteStatus) || null : null,
+              headers: __hostPreparedState.middlewareHeaders
+                ? new Headers(__hostPreparedState.middlewareHeaders)
+                : null,
+              status: __hostPreparedState.rewriteStatus,
             };
             const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared);
             // Apply custom headers from next.config.js to non-redirect responses.
@@ -1435,7 +1452,7 @@ export default async function handler(request, ctx) {
             // and Next.js doesn't apply custom headers to redirects anyway.
             if (response && response.headers && !(response.status >= 300 && response.status < 400)) {
               if (__configHeaders.length) {
-                const url = new URL(request.url);
+                const url = new URL(__configHeadersRequest.url);
                 let pathname;
                 try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
                 ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}

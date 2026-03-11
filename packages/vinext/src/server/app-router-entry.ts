@@ -15,9 +15,19 @@
 // @ts-expect-error — virtual module resolved by vinext
 import rscHandler from "virtual:vinext-rsc-entry";
 import { runWithExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
+import {
+  hasAppRouterPreparedRequestHeaders,
+  sanitizeAppRouterPreparedRequestHeaders,
+} from "./app-router-prepared-state.js";
 
 export default {
   async fetch(request: Request, _env?: unknown, ctx?: ExecutionContextLike): Promise<Response> {
+    if (hasAppRouterPreparedRequestHeaders(request.headers)) {
+      request = new Request(request, {
+        headers: sanitizeAppRouterPreparedRequestHeaders(request.headers),
+      });
+    }
+
     const url = new URL(request.url);
 
     // Normalize backslashes (browsers treat /\ as //) before any other checks.
