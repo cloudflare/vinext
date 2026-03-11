@@ -443,7 +443,7 @@ export function headersContextFromRequest(request: Request): HeadersContext {
   let _mutable: Headers | null = null;
 
   const headersProxy = new Proxy(request.headers, {
-    get(target, prop: string | symbol, receiver) {
+    get(target, prop: string | symbol) {
       // Route to the materialised copy if it exists.
       const src = _mutable ?? target;
 
