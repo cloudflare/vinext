@@ -211,14 +211,6 @@ export function classifyAppRoute(
 
 // ─── Row building ─────────────────────────────────────────────────────────────
 
-const TYPE_ORDER: Record<RouteType, number> = {
-  static: 0,
-  isr: 1,
-  ssr: 2,
-  unknown: 3,
-  api: 4,
-};
-
 /**
  * Builds a sorted list of RouteRow objects from the discovered routes.
  * Routes are sorted alphabetically by path, matching filesystem order.
@@ -310,9 +302,7 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
   // Explanatory note — only shown when unknown routes are present
   if (usedTypes.includes("unknown")) {
     lines.push("");
-    lines.push(
-      "  ? Some routes could not be classified. vinext currently uses static analysis",
-    );
+    lines.push("  ? Some routes could not be classified. vinext currently uses static analysis");
     lines.push(
       "    and cannot detect dynamic API usage (headers(), cookies(), etc.) at build time.",
     );

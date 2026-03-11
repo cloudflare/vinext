@@ -351,7 +351,9 @@ async function buildApp() {
 
   const isApp = hasAppDir();
   // In verbose mode, skip the custom logger so raw Vite/Rollup output is shown.
-  const logger = parsed.verbose ? vite.createLogger("info", { allowClearScreen: false }) : createBuildLogger(vite);
+  const logger = parsed.verbose
+    ? vite.createLogger("info", { allowClearScreen: false })
+    : createBuildLogger(vite);
 
   // For App Router: upgrade React if needed for react-server-dom-webpack compatibility.
   // Without this, builds with react<19.2.4 produce a Worker that crashes at
