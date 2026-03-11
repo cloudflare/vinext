@@ -13,6 +13,7 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerStateAccessors, type NavigationContext } from "./navigation.js";
+import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // ALS setup — same pattern as headers.ts
@@ -35,6 +36,9 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 } satisfies NavigationState) as NavigationState;
 
 function _getState(): NavigationState {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext() as unknown as NavigationState;
+  }
   return _als.getStore() ?? _fallbackState;
 }
 
@@ -44,6 +48,9 @@ function _getState(): NavigationState {
  * useServerInsertedHTML callbacks on concurrent runtimes.
  */
 export function runWithNavigationContext<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return fn();
+  }
   const state: NavigationState = {
     serverContext: null,
     serverInsertedHTMLCallbacks: [],
@@ -61,13 +68,7 @@ _registerStateAccessors({
   },
 
   setServerContext(ctx: NavigationContext | null): void {
-    const state = _als.getStore();
-    if (state) {
-      state.serverContext = ctx;
-    } else {
-      // No ALS scope — fallback for environments without als.run() wrapping.
-      _fallbackState.serverContext = ctx;
-    }
+    _getState().serverContext = ctx;
   },
 
   getInsertedHTMLCallbacks(): Array<() => unknown> {
@@ -75,11 +76,6 @@ _registerStateAccessors({
   },
 
   clearInsertedHTMLCallbacks(): void {
-    const state = _als.getStore();
-    if (state) {
-      state.serverInsertedHTMLCallbacks = [];
-    } else {
-      _fallbackState.serverInsertedHTMLCallbacks = [];
-    }
+    _getState().serverInsertedHTMLCallbacks = [];
   },
 });

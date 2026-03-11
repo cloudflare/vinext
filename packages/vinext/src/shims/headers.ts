@@ -11,6 +11,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { buildRequestHeadersFromMiddlewareResponse } from "../server/middleware-request-headers.js";
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
+import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // Request context
@@ -57,8 +58,10 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 } satisfies VinextHeadersShimState) as VinextHeadersShimState;
 
 function _getState(): VinextHeadersShimState {
-  const state = _als.getStore();
-  return state ?? _fallbackState;
+  if (isInsideUnifiedScope()) {
+    return getRequestContext() as unknown as VinextHeadersShimState;
+  }
+  return _als.getStore() ?? _fallbackState;
 }
 
 /**
@@ -171,36 +174,16 @@ export function getHeadersContext(): HeadersContext | null {
 }
 
 export function setHeadersContext(ctx: HeadersContext | null): void {
+  const state = _getState();
   if (ctx !== null) {
-    // For backward compatibility, set context on the current ALS store
-    // if one exists, otherwise update the fallback. Callers should
-    // migrate to runWithHeadersContext() for new-request setup.
-    const existing = _als.getStore();
-    if (existing) {
-      existing.headersContext = ctx;
-      existing.dynamicUsageDetected = false;
-      existing.pendingSetCookies = [];
-      existing.draftModeCookieHeader = null;
-      existing.phase = "render";
-    } else {
-      _fallbackState.headersContext = ctx;
-      _fallbackState.dynamicUsageDetected = false;
-      _fallbackState.pendingSetCookies = [];
-      _fallbackState.draftModeCookieHeader = null;
-      _fallbackState.phase = "render";
-    }
-    return;
-  }
-
-  // End of request cleanup: keep the store (so consumeDynamicUsage and
-  // cookie flushing can still run), but clear the request headers/cookies.
-  const state = _als.getStore();
-  if (state) {
-    state.headersContext = null;
+    state.headersContext = ctx;
+    state.dynamicUsageDetected = false;
+    state.pendingSetCookies = [];
+    state.draftModeCookieHeader = null;
     state.phase = "render";
   } else {
-    _fallbackState.headersContext = null;
-    _fallbackState.phase = "render";
+    state.headersContext = null;
+    state.phase = "render";
   }
 }
 
@@ -218,6 +201,17 @@ export function runWithHeadersContext<T>(
   ctx: HeadersContext,
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    // Inside unified scope — update the unified store directly, no extra ALS.
+    const uCtx = getRequestContext();
+    uCtx.headersContext = ctx as unknown;
+    uCtx.dynamicUsageDetected = false;
+    uCtx.pendingSetCookies = [];
+    uCtx.draftModeCookieHeader = null;
+    uCtx.phase = "render";
+    return fn();
+  }
+
   const state: VinextHeadersShimState = {
     headersContext: ctx,
     dynamicUsageDetected: false,

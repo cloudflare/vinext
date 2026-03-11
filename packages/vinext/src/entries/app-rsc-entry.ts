@@ -252,7 +252,7 @@ import {
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, runWithHeadersContext, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
 import { NextRequest, NextFetchEvent } from "next/server";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
@@ -262,13 +262,13 @@ ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(inst
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("../server/metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
-import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
-import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
-import { getCollectedFetchTags, runWithFetchCache } from "vinext/fetch-cache";
+import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
+import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
+import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags } from "vinext/fetch-cache";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(routeTriePath)};
-import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
-import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
+import "vinext/navigation-state";
+import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
@@ -722,7 +722,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     // that run during stream consumption to see null headers/navigation context and throw,
     // resulting in missing provider context on the client (e.g. next-intl useTranslations fails
     // with "context from NextIntlClientProvider was not found").
-    // Context is cleared naturally when the ALS scope from runWithHeadersContext unwinds.
+    // Context is cleared naturally when the ALS scope from runWithRequestContext unwinds.
     return new Response(rscStream, {
       status: statusCode,
       headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
@@ -876,7 +876,7 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     // that run during stream consumption to see null headers/navigation context and throw,
     // resulting in missing provider context on the client (e.g. next-intl useTranslations fails
     // with "context from NextIntlClientProvider was not found").
-    // Context is cleared naturally when the ALS scope from runWithHeadersContext unwinds.
+    // Context is cleared naturally when the ALS scope from runWithRequestContext unwinds.
     return new Response(rscStream, {
       status: 200,
       headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
@@ -1398,60 +1398,50 @@ export default async function handler(request, ctx) {
   `
       : ""
   }
-  // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
-  // per-request isolation for all state modules. Each runWith*() creates an
-  // ALS scope that propagates through all async continuations (including RSC
-  // streaming), preventing state leakage between concurrent requests on
-  // Cloudflare Workers and other concurrent runtimes.
-  //
-  // runWithExecutionContext stores the Workers ExecutionContext (ctx) in ALS so
-  // that KVCacheHandler._putInBackground can register background KV puts with
-  // ctx.waitUntil() without needing ctx passed at construction time.
+  // Wrap the entire request in a single unified ALS scope for per-request
+  // isolation. All state modules (headers, navigation, cache, fetch-cache,
+  // execution-context) read from this store via isInsideUnifiedScope().
   const headersCtx = headersContextFromRequest(request);
-  const _run = () => runWithHeadersContext(headersCtx, () =>
-    _runWithNavigationContext(() =>
-      _runWithCacheState(() =>
-        _runWithPrivateCache(() =>
-          runWithFetchCache(async () => {
-            const __reqCtx = requestContextFromRequest(request);
-            // Per-request container for middleware state. Passed into
-            // _handleRequest which fills in .headers and .status;
-            // avoids module-level variables that race on Workers.
-            const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx);
-            // Apply custom headers from next.config.js to non-redirect responses.
-            // Skip redirects (3xx) because Response.redirect() creates immutable headers,
-            // and Next.js doesn't apply custom headers to redirects anyway.
-            if (response && response.headers && !(response.status >= 300 && response.status < 400)) {
-              if (__configHeaders.length) {
-                const url = new URL(request.url);
-                let pathname;
-                try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
-                ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
-                const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
-                for (const h of extraHeaders) {
-                  // Use append() for headers where multiple values must coexist
-                  // (Vary, Set-Cookie). Using set() on these would destroy
-                  // existing values like "Vary: RSC, Accept" which are critical
-                  // for correct CDN caching behavior.
-                  const lk = h.key.toLowerCase();
-                  if (lk === "vary" || lk === "set-cookie") {
-                    response.headers.append(h.key, h.value);
-                  } else if (!response.headers.has(lk)) {
-                    // Middleware headers take precedence: skip config keys already
-                    // set by middleware so middleware headers always win.
-                    response.headers.set(h.key, h.value);
-                  }
-                }
-              }
-            }
-            return response;
-          })
-        )
-      )
-    )
-  );
-  return ctx ? _runWithExecutionContext(ctx, _run) : _run();
+  const __uCtx = _createUnifiedCtx({
+    headersContext: headersCtx,
+    executionContext: ctx ?? null,
+  });
+  return _runWithUnifiedCtx(__uCtx, async () => {
+    _ensureFetchPatch();
+    const __reqCtx = requestContextFromRequest(request);
+    // Per-request container for middleware state. Passed into
+    // _handleRequest which fills in .headers and .status;
+    // avoids module-level variables that race on Workers.
+    const _mwCtx = { headers: null, status: null };
+    const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
+    // Apply custom headers from next.config.js to non-redirect responses.
+    // Skip redirects (3xx) because Response.redirect() creates immutable headers,
+    // and Next.js doesn't apply custom headers to redirects anyway.
+    if (response && response.headers && !(response.status >= 300 && response.status < 400)) {
+      if (__configHeaders.length) {
+        const url = new URL(request.url);
+        let pathname;
+        try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
+        ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
+        const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
+        for (const h of extraHeaders) {
+          // Use append() for headers where multiple values must coexist
+          // (Vary, Set-Cookie). Using set() on these would destroy
+          // existing values like "Vary: RSC, Accept" which are critical
+          // for correct CDN caching behavior.
+          const lk = h.key.toLowerCase();
+          if (lk === "vary" || lk === "set-cookie") {
+            response.headers.append(h.key, h.value);
+          } else if (!response.headers.has(lk)) {
+            // Middleware headers take precedence: skip config keys already
+            // set by middleware so middleware headers always win.
+            response.headers.set(h.key, h.value);
+          }
+        }
+      }
+    }
+    return response;
+  });
 }
 
 async function _handleRequest(request, __reqCtx, _mwCtx) {
@@ -1711,7 +1701,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   // Set navigation context for Server Components.
-  // Note: Headers context is already set by runWithHeadersContext in the handler wrapper.
+  // Note: Headers context is already set by runWithRequestContext in the handler wrapper.
   setNavigationContext({
     pathname: cleanPathname,
     searchParams: url.searchParams,
@@ -1851,7 +1841,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       // Collect cookies set during the action synchronously (before stream is consumed).
       // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
       // by the client, and async server components that run during consumption need the
-      // context to still be live. The AsyncLocalStorage scope from runWithHeadersContext
+      // context to still be live. The AsyncLocalStorage scope from runWithRequestContext
       // handles cleanup naturally when all async continuations complete.
       const actionPendingCookies = getAndClearPendingCookies();
       const actionDraftCookie = getDraftModeCookieHeader();
@@ -2208,57 +2198,54 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           // user request — to prevent user-specific cookies/auth headers from leaking
           // into content that is cached and served to all subsequent users.
           const __revalHeadCtx = { headers: new Headers(), cookies: new Map() };
-          const __revalResult = await runWithHeadersContext(__revalHeadCtx, () =>
-            _runWithNavigationContext(() =>
-              _runWithCacheState(() =>
-                _runWithPrivateCache(() =>
-                  runWithFetchCache(async () => {
-                    setNavigationContext({ pathname: cleanPathname, searchParams: url.searchParams, params });
-                    const __revalElement = await buildPageElement(route, params, undefined, url.searchParams);
-                    const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
-                    const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
-                    // Tee RSC stream: one for SSR, one to capture rscData
-                    const [__revalRscForSsr, __revalRscForCapture] = __revalRscStream.tee();
-                    // Capture rscData bytes in parallel with SSR
-                    const __rscDataPromise = (async () => {
-                      const __rscReader = __revalRscForCapture.getReader();
-                      const __rscChunks = [];
-                      let __rscTotal = 0;
-                      for (;;) {
-                        const { done, value } = await __rscReader.read();
-                        if (done) break;
-                        __rscChunks.push(value);
-                        __rscTotal += value.byteLength;
-                      }
-                      const __rscBuf = new Uint8Array(__rscTotal);
-                      let __rscOff = 0;
-                      for (const c of __rscChunks) { __rscBuf.set(c, __rscOff); __rscOff += c.byteLength; }
-                      return __rscBuf.buffer;
-                    })();
-                    const __revalFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
-                    const __revalSsrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-                    const __revalHtmlStream = await __revalSsrEntry.handleSsr(__revalRscForSsr, _getNavigationContext(), __revalFontData);
-                    setHeadersContext(null);
-                    setNavigationContext(null);
-                    // Collect the full HTML string from the stream
-                    const __revalReader = __revalHtmlStream.getReader();
-                    const __revalDecoder = new TextDecoder();
-                    const __revalChunks = [];
-                    for (;;) {
-                      const { done, value } = await __revalReader.read();
-                      if (done) break;
-                      __revalChunks.push(__revalDecoder.decode(value, { stream: true }));
-                    }
-                    __revalChunks.push(__revalDecoder.decode());
-                    const __freshHtml = __revalChunks.join("");
-                    const __freshRscData = await __rscDataPromise;
-                    const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-                    return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
-                  })
-                )
-              )
-            )
-          );
+          const __revalUCtx = _createUnifiedCtx({
+            headersContext: __revalHeadCtx,
+            executionContext: _getRequestExecutionContext(),
+          });
+          const __revalResult = await _runWithUnifiedCtx(__revalUCtx, async () => {
+            _ensureFetchPatch();
+            setNavigationContext({ pathname: cleanPathname, searchParams: url.searchParams, params });
+            const __revalElement = await buildPageElement(route, params, undefined, url.searchParams);
+            const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
+            const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
+            // Tee RSC stream: one for SSR, one to capture rscData
+            const [__revalRscForSsr, __revalRscForCapture] = __revalRscStream.tee();
+            // Capture rscData bytes in parallel with SSR
+            const __rscDataPromise = (async () => {
+              const __rscReader = __revalRscForCapture.getReader();
+              const __rscChunks = [];
+              let __rscTotal = 0;
+              for (;;) {
+                const { done, value } = await __rscReader.read();
+                if (done) break;
+                __rscChunks.push(value);
+                __rscTotal += value.byteLength;
+              }
+              const __rscBuf = new Uint8Array(__rscTotal);
+              let __rscOff = 0;
+              for (const c of __rscChunks) { __rscBuf.set(c, __rscOff); __rscOff += c.byteLength; }
+              return __rscBuf.buffer;
+            })();
+            const __revalFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
+            const __revalSsrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+            const __revalHtmlStream = await __revalSsrEntry.handleSsr(__revalRscForSsr, _getNavigationContext(), __revalFontData);
+            setHeadersContext(null);
+            setNavigationContext(null);
+            // Collect the full HTML string from the stream
+            const __revalReader = __revalHtmlStream.getReader();
+            const __revalDecoder = new TextDecoder();
+            const __revalChunks = [];
+            for (;;) {
+              const { done, value } = await __revalReader.read();
+              if (done) break;
+              __revalChunks.push(__revalDecoder.decode(value, { stream: true }));
+            }
+            __revalChunks.push(__revalDecoder.decode());
+            const __freshHtml = __revalChunks.join("");
+            const __freshRscData = await __rscDataPromise;
+            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+            return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
+          });
           // Write HTML and RSC to their own keys independently — no races
           await Promise.all([
             __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
@@ -2367,7 +2354,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         const interceptStream = renderToReadableStream(interceptElement, { onError: interceptOnError });
         // Do NOT clear headers/navigation context here — the RSC stream is consumed lazily
         // by the client, and async server components that run during consumption need the
-        // context to still be live. The AsyncLocalStorage scope from runWithHeadersContext
+        // context to still be live. The AsyncLocalStorage scope from runWithRequestContext
         // handles cleanup naturally when all async continuations complete.
         return new Response(interceptStream, {
           headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
@@ -2602,7 +2589,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // NOTE: Do NOT clear headers/navigation context here!
     // The RSC stream is consumed lazily - components render when chunks are read.
     // If we clear context now, headers()/cookies() will fail during rendering.
-    // Context will be cleared when the next request starts (via runWithHeadersContext).
+    // Context will be cleared when the next request starts (via runWithRequestContext).
     const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
     // Include matched route params so the client can hydrate useParams()
     if (params && Object.keys(params).length > 0) {

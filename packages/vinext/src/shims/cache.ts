@@ -20,6 +20,7 @@
 import { markDynamicUsage as _markDynamic } from "./headers.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { fnv1a64 } from "../utils/hash.js";
+import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // Lazy accessor for cache context — avoids circular imports with cache-runtime.
@@ -398,6 +399,9 @@ const _cacheFallbackState = (_g[_FALLBACK_KEY] ??= {
 } satisfies CacheState) as CacheState;
 
 function _getCacheState(): CacheState {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext() as unknown as CacheState;
+  }
   return _cacheAls.getStore() ?? _cacheFallbackState;
 }
 
@@ -408,6 +412,9 @@ function _getCacheState(): CacheState {
  * @internal
  */
 export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return fn();
+  }
   const state: CacheState = {
     requestScopedCacheLife: null,
   };
@@ -420,12 +427,7 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
  * @internal
  */
 export function _initRequestScopedCacheState(): void {
-  const state = _cacheAls.getStore();
-  if (state) {
-    state.requestScopedCacheLife = null;
-  } else {
-    _cacheFallbackState.requestScopedCacheLife = null;
-  }
+  _getCacheState().requestScopedCacheLife = null;
 }
 
 /**

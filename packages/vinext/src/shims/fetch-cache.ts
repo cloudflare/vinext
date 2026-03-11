@@ -22,6 +22,7 @@
 import { getCacheHandler, type CachedFetchValue } from "./cache.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // Cache key generation
@@ -438,6 +439,9 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 } satisfies FetchCacheState) as FetchCacheState;
 
 function _getState(): FetchCacheState {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext() as unknown as FetchCacheState;
+  }
   return _als.getStore() ?? _fallbackState;
 }
 
@@ -737,7 +741,18 @@ export function withFetchCache(): () => void {
  */
 export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
   _ensurePatchInstalled();
+  if (isInsideUnifiedScope()) {
+    return fn();
+  }
   return _als.run({ currentRequestTags: [] }, fn);
+}
+
+/**
+ * Install the patched fetch without creating an ALS scope.
+ * Used by the unified request context which manages its own scope.
+ */
+export function ensureFetchPatch(): void {
+  _ensurePatchInstalled();
 }
 
 /**

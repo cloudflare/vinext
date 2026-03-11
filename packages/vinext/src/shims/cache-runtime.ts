@@ -35,6 +35,7 @@ import {
   _registerCacheContextAccessor,
   type CacheLifeConfig,
 } from "./cache.js";
+import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // Cache execution context — AsyncLocalStorage for cacheLife/cacheTag
@@ -239,6 +240,13 @@ const _privateFallbackState = (_g[_PRIVATE_FALLBACK_KEY] ??= {
 } satisfies PrivateCacheState) as PrivateCacheState;
 
 function _getPrivateState(): PrivateCacheState {
+  if (isInsideUnifiedScope()) {
+    const ctx = getRequestContext();
+    if (ctx._privateCache === null) {
+      ctx._privateCache = new Map();
+    }
+    return { cache: ctx._privateCache };
+  }
   return _privateAls.getStore() ?? _privateFallbackState;
 }
 
@@ -248,6 +256,9 @@ function _getPrivateState(): PrivateCacheState {
  * on concurrent runtimes.
  */
 export function runWithPrivateCache<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return fn();
+  }
   const state: PrivateCacheState = {
     cache: new Map(),
   };
@@ -259,6 +270,10 @@ export function runWithPrivateCache<T>(fn: () => T | Promise<T>): T | Promise<T>
  * Only needed when not using runWithPrivateCache() (legacy path).
  */
 export function clearPrivateCache(): void {
+  if (isInsideUnifiedScope()) {
+    getRequestContext()._privateCache = new Map();
+    return;
+  }
   const state = _privateAls.getStore();
   if (state) {
     state.cache = new Map();
