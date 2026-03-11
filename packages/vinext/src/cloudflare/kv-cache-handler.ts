@@ -393,7 +393,7 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
  * since Buffer.from(str, "base64") silently ignores invalid characters.
  */
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  if (!BASE64_RE.test(base64)) {
+  if (!BASE64_RE.test(base64) || base64.length % 4 !== 0) {
     throw new Error("Invalid base64 string");
   }
   const buf = Buffer.from(base64, "base64");

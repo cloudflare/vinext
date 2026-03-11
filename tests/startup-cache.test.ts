@@ -4,7 +4,7 @@
  * Task 1a: hasMdxFiles() should cache its result per root directory.
  * Task 1b: resolvePostcssStringPlugins() should cache its result per project root.
  */
-import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
+import { afterEach, describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -26,6 +26,10 @@ describe("hasMdxFiles caching", () => {
   beforeEach(() => {
     // Clear the cache between tests to ensure isolation
     mdxScanCache.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it("returns true when .mdx files exist in appDir", async () => {
@@ -77,8 +81,6 @@ describe("hasMdxFiles caching", () => {
       const result2 = hasMdxFiles(tmpDir, appDir, null);
       expect(result2).toBe(true);
       expect(readdirSpy).not.toHaveBeenCalled();
-
-      readdirSpy.mockRestore();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
@@ -102,8 +104,6 @@ describe("hasMdxFiles caching", () => {
       const result2 = hasMdxFiles(tmpDir, appDir, null);
       expect(result2).toBe(false);
       expect(readdirSpy).not.toHaveBeenCalled();
-
-      readdirSpy.mockRestore();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
@@ -146,6 +146,10 @@ describe("resolvePostcssStringPlugins caching", () => {
 
   beforeEach(() => {
     postcssCache.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   async function createTmpProject(configFileName: string, configContent: string): Promise<string> {
@@ -196,8 +200,6 @@ module.exports.postcss = true;`,
       expect(result2).toBeDefined();
       expect(result2!.plugins).toHaveLength(1);
       expect(existsSpy).not.toHaveBeenCalled();
-
-      existsSpy.mockRestore();
     } finally {
       await cleanupDir(dir);
     }
@@ -218,8 +220,6 @@ module.exports.postcss = true;`,
       const result2 = await resolvePostcssStringPlugins(dir);
       expect(result2).toBeUndefined();
       expect(existsSpy).not.toHaveBeenCalled();
-
-      existsSpy.mockRestore();
     } finally {
       await cleanupDir(dir);
     }
