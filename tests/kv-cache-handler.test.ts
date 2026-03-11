@@ -524,37 +524,39 @@ describe("KVCacheHandler", () => {
 
     it("TTL expiry triggers fresh KV fetch", async () => {
       vi.useFakeTimers();
-      const now = 10_000;
-      vi.setSystemTime(now);
+      try {
+        const now = 10_000;
+        vi.setSystemTime(now);
 
-      const entryTime = 1000;
-      store.set(
-        "cache:ttl-page",
-        JSON.stringify({
-          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
-          tags: ["t1"],
-          lastModified: entryTime,
-          revalidateAt: null,
-        }),
-      );
+        const entryTime = 1000;
+        store.set(
+          "cache:ttl-page",
+          JSON.stringify({
+            value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+            tags: ["t1"],
+            lastModified: entryTime,
+            revalidateAt: null,
+          }),
+        );
 
-      // First get() — populates local tag cache
-      await handler.get("ttl-page");
-      expect(kv.get).toHaveBeenCalledTimes(2); // entry + tag
-      kv.get.mockClear();
+        // First get() — populates local tag cache
+        await handler.get("ttl-page");
+        expect(kv.get).toHaveBeenCalledTimes(2); // entry + tag
+        kv.get.mockClear();
 
-      // Second get() within TTL — uses local cache
-      vi.setSystemTime(now + 4_000); // 4s < 5s TTL
-      await handler.get("ttl-page");
-      expect(kv.get).toHaveBeenCalledTimes(1); // entry only
-      kv.get.mockClear();
+        // Second get() within TTL — uses local cache
+        vi.setSystemTime(now + 4_000); // 4s < 5s TTL
+        await handler.get("ttl-page");
+        expect(kv.get).toHaveBeenCalledTimes(1); // entry only
+        kv.get.mockClear();
 
-      // Third get() after TTL — must re-fetch from KV
-      vi.setSystemTime(now + 6_000); // 6s > 5s TTL
-      await handler.get("ttl-page");
-      expect(kv.get).toHaveBeenCalledTimes(2); // entry + tag
-
-      vi.useRealTimers();
+        // Third get() after TTL — must re-fetch from KV
+        vi.setSystemTime(now + 6_000); // 6s > 5s TTL
+        await handler.get("ttl-page");
+        expect(kv.get).toHaveBeenCalledTimes(2); // entry + tag
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("tag invalidation works end-to-end with local cache", async () => {
