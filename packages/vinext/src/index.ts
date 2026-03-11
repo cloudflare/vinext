@@ -700,6 +700,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
 
+  // Per-build cache for og-inline-fetch-assets plugin to avoid repeated file reads
+  const _ogInlineCache = new Map<string, string>();
+
   /**
    * Generate the virtual SSR server entry module.
    * This is the entry point for `vite build --ssr`.
@@ -2835,7 +2838,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     {
       name: "vinext:og-inline-fetch-assets",
       enforce: "pre",
-      transform(code, id) {
+      async transform(code, id) {
         // Quick bail-out: only process modules that use new URL(..., import.meta.url)
         if (!code.includes("import.meta.url")) {
           return null;
@@ -2856,12 +2859,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
             const absPath = path.resolve(moduleDir, relPath);
 
-            let fileBase64: string;
-            try {
-              fileBase64 = fs.readFileSync(absPath).toString("base64");
-            } catch {
-              // File not found on disk — skip (may be a runtime-only asset)
-              continue;
+            let fileBase64 = _ogInlineCache.get(absPath);
+            if (!fileBase64) {
+              try {
+                const buf = await fs.promises.readFile(absPath);
+                fileBase64 = buf.toString("base64");
+                _ogInlineCache.set(absPath, fileBase64);
+              } catch {
+                // File not found on disk — skip (may be a runtime-only asset)
+                continue;
+              }
             }
 
             // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
@@ -2892,12 +2899,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
             const absPath = path.resolve(moduleDir, relPath);
 
-            let fileBase64: string;
-            try {
-              fileBase64 = fs.readFileSync(absPath).toString("base64");
-            } catch {
-              // File not found on disk — skip
-              continue;
+            let fileBase64 = _ogInlineCache.get(absPath);
+            if (!fileBase64) {
+              try {
+                const buf = await fs.promises.readFile(absPath);
+                fileBase64 = buf.toString("base64");
+                _ogInlineCache.set(absPath, fileBase64);
+              } catch {
+                // File not found on disk — skip
+                continue;
+              }
             }
 
             // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
