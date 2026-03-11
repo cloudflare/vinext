@@ -17,6 +17,7 @@ import {
   requestContextFromRequest,
   isExternalUrl,
   proxyExternalRequest,
+  sanitizeDestination,
 } from "vinext/config/config-matchers";
 import { mergeHeaders } from "vinext/server/worker-utils";
 
@@ -73,8 +74,24 @@ export default {
         request = new Request(strippedUrl, request);
       }
 
-      // Build request context for has/missing condition matching
+      // Build request context for config matching that runs before middleware.
       const reqCtx = requestContextFromRequest(request);
+
+      // Apply redirects from next.config.js before middleware.
+      if (configRedirects.length) {
+        const redirect = matchRedirect(pathname, configRedirects, reqCtx);
+        if (redirect) {
+          const dest = sanitizeDestination(
+            basePath && !isExternalUrl(redirect.destination) && !redirect.destination.startsWith(basePath)
+              ? basePath + redirect.destination
+              : redirect.destination,
+          );
+          return new Response(null, {
+            status: redirect.permanent ? 308 : 307,
+            headers: { Location: dest },
+          });
+        }
+      }
 
       // Run middleware
       let resolvedUrl = urlWithQuery;
@@ -142,11 +159,12 @@ export default {
         });
       }
 
+      const postMwReqCtx = requestContextFromRequest(request);
       let resolvedPathname = resolvedUrl.split("?")[0];
 
       // Apply custom headers from next.config.js
       if (configHeaders.length) {
-        const matched = matchHeaders(resolvedPathname, configHeaders);
+        const matched = matchHeaders(pathname, configHeaders, reqCtx);
         for (const h of matched) {
           const lk = h.key.toLowerCase();
           if (lk === "set-cookie") {
@@ -160,29 +178,15 @@ export default {
             }
           } else if (lk === "vary" && middlewareHeaders[lk]) {
             middlewareHeaders[lk] += ", " + h.value;
-          } else {
+          } else if (!(lk in middlewareHeaders)) {
             middlewareHeaders[lk] = h.value;
           }
         }
       }
 
-      // Apply redirects from next.config.js
-      if (configRedirects.length) {
-        const redirect = matchRedirect(resolvedPathname, configRedirects, reqCtx);
-        if (redirect) {
-          const dest = basePath && !redirect.destination.startsWith(basePath)
-            ? basePath + redirect.destination
-            : redirect.destination;
-          return new Response(null, {
-            status: redirect.permanent ? 308 : 307,
-            headers: { Location: dest },
-          });
-        }
-      }
-
       // Apply beforeFiles rewrites from next.config.js
       if (configRewrites.beforeFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, reqCtx);
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.beforeFiles, postMwReqCtx);
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
@@ -202,7 +206,7 @@ export default {
 
       // Apply afterFiles rewrites
       if (configRewrites.afterFiles?.length) {
-        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, reqCtx);
+        const rewritten = matchRewrite(resolvedPathname, configRewrites.afterFiles, postMwReqCtx);
         if (rewritten) {
           if (isExternalUrl(rewritten)) {
             return proxyExternalRequest(request, rewritten);
@@ -219,7 +223,7 @@ export default {
 
         // Fallback rewrites (if SSR returned 404)
         if (response && response.status === 404 && configRewrites.fallback?.length) {
-          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, reqCtx);
+          const fallbackRewrite = matchRewrite(resolvedPathname, configRewrites.fallback, postMwReqCtx);
           if (fallbackRewrite) {
             if (isExternalUrl(fallbackRewrite)) {
               return proxyExternalRequest(request, fallbackRewrite);
@@ -240,4 +244,3 @@ export default {
     }
   },
 };
-

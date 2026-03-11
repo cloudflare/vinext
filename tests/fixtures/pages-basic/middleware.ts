@@ -26,9 +26,21 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(new URL("/ssr", request.url));
   }
 
+  if (url.pathname === "/headers-before-middleware-rewrite") {
+    return NextResponse.rewrite(new URL("/ssr", request.url));
+  }
+
+  if (url.pathname === "/redirect-before-middleware-rewrite") {
+    return NextResponse.redirect(new URL("/ssr", request.url));
+  }
+
+  if (url.pathname === "/redirect-before-middleware-response") {
+    return new Response("middleware should not win", { status: 418 });
+  }
+
   // Block /blocked with a custom response
   if (url.pathname === "/blocked") {
-    return new Response("Access Denied", { status: 403 });
+    return new Response("Access Denied", { status: 403, statusText: "Blocked by Middleware" });
   }
 
   // Throw an error to test that middleware errors return 500, not bypass auth

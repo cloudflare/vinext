@@ -285,6 +285,14 @@ describe("validateRoutePatterns", () => {
     ).toThrow(/differ only by non-word/);
   });
 
+  it("rejects duplicate normalized patterns", () => {
+    expect(() => validateRoutePatterns(["/about", "/about"])).toThrow(/same path/);
+  });
+
+  it("rejects slash-equivalent patterns", () => {
+    expect(() => validateRoutePatterns(["/about", "/about/"])).toThrow(/same path/);
+  });
+
   it("rejects the Unicode ellipsis in catch-all syntax", () => {
     expect(() => validateRoutePatterns(["/[…three-dots]"])).toThrow(
       /Detected a three-dot character/,
@@ -331,6 +339,229 @@ describe("App Router route sorting (additional)", () => {
 
       invalidateAppRouteCache();
       await expect(appRouter(appDir)).rejects.toThrow(/different slug names/);
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      invalidateAppRouteCache();
+    }
+  });
+
+  it("rejects route groups that resolve to the same URL path", async () => {
+    // Next.js validates normalized app paths after route groups are stripped:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/validate-app-paths.test.ts
+    // Route-group conflicts are also documented here:
+    // https://github.com/vercel/next.js/blob/canary/docs/01-app/03-api-reference/03-file-conventions/route-groups.mdx
+    const tmpRoot = await makeTempDir("vinext-app-route-group-conflict-");
+    const appDir = path.join(tmpRoot, "app");
+
+    try {
+      await fs.mkdir(path.join(appDir, "(a)", "about"), { recursive: true });
+      await fs.mkdir(path.join(appDir, "(b)", "about"), { recursive: true });
+      await fs.writeFile(
+        path.join(appDir, "layout.tsx"),
+        "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "(a)", "about", "page.tsx"),
+        "export default function Page() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "(b)", "about", "page.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      invalidateAppRouteCache();
+      await expect(appRouter(appDir)).rejects.toThrow(/same path.*\/about/);
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      invalidateAppRouteCache();
+    }
+  });
+
+  it("rejects grouped slot sub-pages that resolve to the same URL path within one slot", async () => {
+    const tmpRoot = await makeTempDir("vinext-app-slot-route-group-conflict-");
+    const appDir = path.join(tmpRoot, "app");
+
+    try {
+      await fs.mkdir(path.join(appDir, "dashboard", "@team", "(a)", "members"), {
+        recursive: true,
+      });
+      await fs.mkdir(path.join(appDir, "dashboard", "@team", "(b)", "members"), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        path.join(appDir, "layout.tsx"),
+        "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "page.tsx"),
+        "export default function Page() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "default.tsx"),
+        "export default function Default() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@team", "default.tsx"),
+        "export default function Default() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@team", "(a)", "members", "page.tsx"),
+        "export default function Page() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@team", "(b)", "members", "page.tsx"),
+        "export default function Page() { return null; }",
+      );
+
+      invalidateAppRouteCache();
+      await expect(appRouter(appDir)).rejects.toThrow(/same path.*\/dashboard\/members/);
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      invalidateAppRouteCache();
+    }
+  });
+
+  it("merges grouped slot sub-pages from different slots onto the same synthesized route", async () => {
+    const tmpRoot = await makeTempDir("vinext-app-slot-route-group-merge-");
+    const appDir = path.join(tmpRoot, "app");
+
+    try {
+      await fs.mkdir(path.join(appDir, "dashboard", "@team", "(a)", "members"), {
+        recursive: true,
+      });
+      await fs.mkdir(path.join(appDir, "dashboard", "@analytics", "(b)", "members"), {
+        recursive: true,
+      });
+      await fs.writeFile(
+        path.join(appDir, "layout.tsx"),
+        "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "page.tsx"),
+        "export default function Page() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "default.tsx"),
+        "export default function Default() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@team", "default.tsx"),
+        "export default function Default() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@analytics", "default.tsx"),
+        "export default function Default() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@team", "(a)", "members", "page.tsx"),
+        "export default function TeamMembers() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@analytics", "(b)", "members", "page.tsx"),
+        "export default function AnalyticsMembers() { return null; }",
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const membersRoute = routes.find((route) => route.pattern === "/dashboard/members");
+
+      expect(membersRoute).toBeDefined();
+      expect(membersRoute!.parallelSlots.find((slot) => slot.name === "team")!.pagePath).toContain(
+        path.join("@team", "(a)", "members"),
+      );
+      expect(
+        membersRoute!.parallelSlots.find((slot) => slot.name === "analytics")!.pagePath,
+      ).toContain(path.join("@analytics", "(b)", "members"));
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      invalidateAppRouteCache();
+    }
+  });
+
+  it("rejects slot sub-pages that collide with route handlers at the same URL", async () => {
+    const tmpRoot = await makeTempDir("vinext-app-slot-route-handler-conflict-");
+    const appDir = path.join(tmpRoot, "app");
+
+    try {
+      await fs.mkdir(path.join(appDir, "dashboard", "@team", "members"), { recursive: true });
+      await fs.mkdir(path.join(appDir, "dashboard", "members"), { recursive: true });
+      await fs.writeFile(
+        path.join(appDir, "layout.tsx"),
+        "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "page.tsx"),
+        "export default function Page() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "default.tsx"),
+        "export default function Default() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@team", "default.tsx"),
+        "export default function Default() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@team", "members", "page.tsx"),
+        "export default function TeamMembers() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "members", "route.ts"),
+        "export async function GET() { return new Response('ok'); }",
+      );
+
+      invalidateAppRouteCache();
+      await expect(appRouter(appDir)).rejects.toThrow(/same path.*\/dashboard\/members/);
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      invalidateAppRouteCache();
+    }
+  });
+
+  it("does not overwrite a child slot with a parent slot sub-page that shares the same name", async () => {
+    const tmpRoot = await makeTempDir("vinext-app-slot-shadowing-");
+    const appDir = path.join(tmpRoot, "app");
+
+    try {
+      await fs.mkdir(path.join(appDir, "dashboard", "@team", "settings"), { recursive: true });
+      await fs.mkdir(path.join(appDir, "dashboard", "settings", "@team"), { recursive: true });
+      await fs.writeFile(
+        path.join(appDir, "layout.tsx"),
+        "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "page.tsx"),
+        "export default function DashboardPage() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "default.tsx"),
+        "export default function DashboardDefault() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@team", "default.tsx"),
+        "export default function ParentTeamDefault() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "@team", "settings", "page.tsx"),
+        "export default function ParentTeamSettings() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "settings", "page.tsx"),
+        "export default function SettingsPage() { return null; }",
+      );
+      await fs.writeFile(
+        path.join(appDir, "dashboard", "settings", "@team", "page.tsx"),
+        "export default function ChildTeamPage() { return null; }",
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const settingsRoute = routes.find((route) => route.pattern === "/dashboard/settings");
+
+      expect(settingsRoute).toBeDefined();
+      expect(settingsRoute!.parallelSlots.find((slot) => slot.name === "team")!.pagePath).toContain(
+        path.join("settings", "@team", "page.tsx"),
+      );
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
       invalidateAppRouteCache();
