@@ -198,6 +198,10 @@ describe("classifyPagesRoute", () => {
     const filePath = path.join(FIXTURES_PAGES, "api", "hello.ts");
     expect(classifyPagesRoute(filePath)).toEqual({ type: "api" });
   });
+
+  it("returns unknown on file read failure (consistent with classifyAppRoute)", () => {
+    expect(classifyPagesRoute("/nonexistent/pages/page.tsx")).toEqual({ type: "unknown" });
+  });
 });
 
 // ─── classifyAppRoute ─────────────────────────────────────────────────────────
@@ -216,6 +220,13 @@ describe("classifyAppRoute", () => {
   it("classifies force-static page as static", () => {
     const pagePath = path.join(FIXTURES_APP, "static-test", "page.tsx");
     expect(classifyAppRoute(pagePath, null, true)).toEqual({ type: "static" });
+  });
+
+  it("classifies dynamic=error page as static (enforces static, not dynamic)", () => {
+    // dynamic="error" means "throw if dynamic APIs are used" — the page is
+    // statically rendered, same as force-static for classification purposes.
+    const pagePath = path.join(FIXTURES_APP, "error-static-test", "page.tsx");
+    expect(classifyAppRoute(pagePath, null, false)).toEqual({ type: "static" });
   });
 
   it("classifies revalidate=60 page as isr", () => {
@@ -372,6 +383,13 @@ describe("formatBuildReport", () => {
     expect(tableLines[0]).toContain("┌");
     expect(tableLines[1]).toContain("├");
     expect(tableLines[2]).toContain("└");
+  });
+
+  it("uses ┌ for a single-route table (not └)", () => {
+    const rows = [{ pattern: "/", type: "static" as const }];
+    const out = formatBuildReport(rows);
+    expect(out).toContain("┌ ○ /");
+    expect(out).not.toContain("└ ○ /");
   });
 
   it("prints a legend line with only the types that appear", () => {

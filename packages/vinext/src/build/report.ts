@@ -103,6 +103,11 @@ export function extractExportConstNumber(code: string, name: string): number | n
  *   null     — no `revalidate` key found (fully static)
  */
 export function extractGetStaticPropsRevalidate(code: string): number | false | null {
+  // TODO: This regex matches `revalidate:` anywhere in the file, not scoped to
+  // the getStaticProps return object. A config object or comment elsewhere in
+  // the file (e.g. `const defaults = { revalidate: 30 }`) could produce a false
+  // positive. Rare in practice, but a proper AST-based approach would be more
+  // accurate.
   const re = /\brevalidate\s*:\s*(-?\d+(?:\.\d+)?|Infinity|false)\b/;
   const m = re.exec(code);
   if (!m) return null;
@@ -133,7 +138,7 @@ export function classifyPagesRoute(filePath: string): {
   try {
     code = fs.readFileSync(filePath, "utf8");
   } catch {
-    return { type: "static" };
+    return { type: "unknown" };
   }
 
   if (hasNamedExport(code, "getServerSideProps")) {
@@ -185,10 +190,12 @@ export function classifyAppRoute(
 
   // Check `export const dynamic`
   const dynamicValue = extractExportConstString(code, "dynamic");
-  if (dynamicValue === "force-dynamic" || dynamicValue === "error") {
+  if (dynamicValue === "force-dynamic") {
     return { type: "ssr" };
   }
-  if (dynamicValue === "force-static") {
+  if (dynamicValue === "force-static" || dynamicValue === "error") {
+    // "error" enforces static rendering — it throws if dynamic APIs are used,
+    // so the page is statically rendered (same as force-static for classification).
     return { type: "static" };
   }
 
@@ -283,7 +290,7 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
 
   rows.forEach((row, i) => {
     const isLast = i === rows.length - 1;
-    const corner = isLast ? "└" : i === 0 ? "┌" : "├";
+    const corner = i === 0 ? "┌" : isLast ? "└" : "├";
     const sym = SYMBOLS[row.type];
     const suffix =
       row.type === "isr" && row.revalidate !== undefined ? `  (${row.revalidate}s)` : "";

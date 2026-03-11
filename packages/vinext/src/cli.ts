@@ -103,7 +103,7 @@ function parseArgs(args: string[]): ParsedArgs {
     const arg = args[i];
     if (arg === "--help" || arg === "-h") {
       result.help = true;
-    } else if (arg === "--verbose" || arg === "-v") {
+    } else if (arg === "--verbose") {
       result.verbose = true;
     } else if (arg === "--turbopack") {
       result.turbopack = true; // no-op, accepted for script compat
@@ -572,7 +572,7 @@ function printHelp(cmd?: string) {
   runs the appropriate multi-environment build via Vite.
 
   Options:
-    -v, --verbose     Show full Vite/Rollup build output (suppressed by default)
+    --verbose         Show full Vite/Rollup build output (suppressed by default)
     -h, --help        Show this help
 `);
     return;
