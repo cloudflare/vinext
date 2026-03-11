@@ -617,7 +617,7 @@ describe("resolveNextConfig external rewrite warning", () => {
       (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
     );
     expect(externalWarning).toBeDefined();
-    expect(externalWarning![0]).toContain("1 external rewrite");
+    expect(externalWarning![0]).toContain("1 external rewrite that");
     expect(externalWarning![0]).toContain("https://api.example.com/:path*");
     expect(externalWarning![0]).toContain("All request headers");
     expect(externalWarning![0]).toContain("/api/:path*");
