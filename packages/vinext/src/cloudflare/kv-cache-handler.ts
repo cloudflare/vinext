@@ -29,7 +29,7 @@
  */
 
 import type { CacheHandler, CacheHandlerValue, IncrementalCacheValue } from "../shims/cache.js";
-import { getRequestExecutionContext } from "../shims/request-context.js";
+import { getRequestExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
 
 // Cloudflare KV namespace interface (matches Workers types)
 interface KVNamespace {
@@ -46,19 +46,6 @@ interface KVNamespace {
     list_complete: boolean;
     cursor?: string;
   }>;
-}
-
-/**
- * Minimal ExecutionContext interface for Cloudflare Workers.
- * Background KV operations (cleanup deletes, cache writes) are registered
- * with ctx.waitUntil() so they are not killed when the Response is returned.
- *
- * The preferred way to supply ctx is via runWithExecutionContext() in the
- * worker entry (see vinext/shims/request-context). The constructor option
- * is kept as a fallback for callers that set it explicitly.
- */
-interface ExecutionContext {
-  waitUntil(promise: Promise<unknown>): void;
 }
 
 /** Shape stored in KV for each cache entry. */
@@ -95,12 +82,12 @@ function validateTag(tag: string): string | null {
 export class KVCacheHandler implements CacheHandler {
   private kv: KVNamespace;
   private prefix: string;
-  private ctx: ExecutionContext | undefined;
+  private ctx: ExecutionContextLike | undefined;
   private ttlSeconds: number;
 
   constructor(
     kvNamespace: KVNamespace,
-    options?: { appPrefix?: string; ctx?: ExecutionContext; ttlSeconds?: number },
+    options?: { appPrefix?: string; ctx?: ExecutionContextLike; ttlSeconds?: number },
   ) {
     this.kv = kvNamespace;
     this.prefix = options?.appPrefix ? `${options.appPrefix}:` : "";

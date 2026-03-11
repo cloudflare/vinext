@@ -1404,7 +1404,7 @@ export default async function handler(request, ctx) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -1440,7 +1440,7 @@ export default async function handler(request, ctx) {
   return ctx ? _runWithExecutionContext(ctx, _run) : _run();
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+async function _handleRequest(request, __reqCtx, _mwCtx) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
   let __compileEnd;
   let __renderEnd;
@@ -2643,7 +2643,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           console.error("[vinext] ISR RSC cache write error:", __rscWriteErr);
         }
       })();
-      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__rscWritePromise);
+      _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
     return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
@@ -2863,9 +2863,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
           }
         })();
-        // Register with ExecutionContext so the Workers runtime keeps the isolate
-        // alive until the cache write finishes, even after the response is sent.
-        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__cachePromise);
+        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+        // the isolate alive until the cache write finishes, even after the response is sent.
+        _getRequestExecutionContext()?.waitUntil(__cachePromise);
         return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
       }
       return __isrResponseProd;
