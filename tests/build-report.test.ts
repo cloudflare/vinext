@@ -237,9 +237,9 @@ describe("classifyAppRoute", () => {
     });
   });
 
-  it("classifies page with revalidate=0 as ssr", () => {
-    // null pagePath and null routePath — no file to read, no isDynamic — unknown
-    expect(classifyAppRoute(null, null, false)).toEqual({ type: "unknown" });
+  it("classifies revalidate=0 page as ssr", () => {
+    const pagePath = path.join(FIXTURES_APP, "revalidate-zero-test", "page.tsx");
+    expect(classifyAppRoute(pagePath, null, false)).toEqual({ type: "ssr" });
   });
 
   it("classifies page with isDynamic=true and no config as ssr", () => {
@@ -257,10 +257,9 @@ describe("classifyAppRoute", () => {
     });
   });
 
-  it("classifies revalidate=Infinity as static", () => {
-    // null pagePath with isDynamic=false → unknown (no file to read).
-    // Actual Infinity→static path is covered by extractExportConstNumber tests.
-    expect(classifyAppRoute(null, null, false)).toEqual({ type: "unknown" });
+  it("classifies revalidate=Infinity page as static", () => {
+    const pagePath = path.join(FIXTURES_APP, "revalidate-infinity-test", "page.tsx");
+    expect(classifyAppRoute(pagePath, null, false)).toEqual({ type: "static" });
   });
 });
 
