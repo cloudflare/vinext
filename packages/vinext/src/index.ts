@@ -1675,7 +1675,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           let pathname = normalizedUrl.split("?")[0];
           if (pathname.endsWith(".rsc")) pathname = pathname.slice(0, -4) || "/";
-          if (pathname.includes(".")) return null;
 
           pathname = pathname.replaceAll("\\", "/");
           if (pathname.startsWith("//")) return null;
@@ -2182,11 +2181,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 url = url.replace(/\.html(?=\?|$)/, "");
               }
 
-              // Skip requests for files with extensions (static assets)
+              // Do not blanket-skip dotted paths here. Next.js allows dots in
+              // route segments (including dynamic params), so let the normal
+              // routing and rewrite pipeline decide whether this is a page or
+              // a true asset miss after Vite's built-in static handling.
               let pathname = url.split("?")[0];
-              if (pathname.includes(".") && !pathname.endsWith(".html")) {
-                return next();
-              }
 
               // Guard against protocol-relative URL open redirects.
               // Normalize backslashes first: browsers treat /\ as // in URL

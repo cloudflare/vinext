@@ -153,6 +153,50 @@ describe("Next.js compat: app-rendering", () => {
       expect(importedNow2).toBeTruthy();
       expect(importedNow1).not.toBe(importedNow2);
     });
+
+    it("should re-execute dotted App Router paths on subsequent requests", async () => {
+      const routePath = "/nextjs-compat/isr-dotted/jane.doe";
+      const { html: html1 } = await fetchHtml(baseUrl, routePath);
+      const importedNow1 = html1.match(/id="dotted-imported-now"[^>]*>(\d+)/)?.[1];
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const { html: html2 } = await fetchHtml(baseUrl, routePath);
+      const importedNow2 = html2.match(/id="dotted-imported-now"[^>]*>(\d+)/)?.[1];
+
+      expect(html1).toContain("jane.doe");
+      expect(html2).toContain("jane.doe");
+      expect(importedNow1).toBeTruthy();
+      expect(importedNow2).toBeTruthy();
+      expect(importedNow1).not.toBe(importedNow2);
+    });
+
+    it("should re-execute dotted App Router .rsc requests on subsequent requests", async () => {
+      const routePath = "/nextjs-compat/isr-dotted/jane.doe.rsc";
+      const res1 = await fetch(`${baseUrl}${routePath}`, {
+        headers: { Accept: "text/x-component" },
+      });
+      const rsc1 = await res1.text();
+      const importedNow1 = rsc1.match(/dotted-imported-now.*?(\d{10,})/)?.[1];
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const res2 = await fetch(`${baseUrl}${routePath}`, {
+        headers: { Accept: "text/x-component" },
+      });
+      const rsc2 = await res2.text();
+      const importedNow2 = rsc2.match(/dotted-imported-now.*?(\d{10,})/)?.[1];
+
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+      expect(res1.headers.get("content-type")).toContain("text/x-component");
+      expect(res2.headers.get("content-type")).toContain("text/x-component");
+      expect(rsc1).toContain("jane.doe");
+      expect(rsc2).toContain("jane.doe");
+      expect(importedNow1).toBeTruthy();
+      expect(importedNow2).toBeTruthy();
+      expect(importedNow1).not.toBe(importedNow2);
+    });
   });
 
   // ── Mixed static and dynamic (skipped in Next.js too) ──────
