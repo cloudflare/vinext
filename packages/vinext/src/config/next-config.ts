@@ -439,19 +439,22 @@ export async function resolveNextConfig(
     }
   }
 
-  // Warn about external rewrites that act as reverse proxies
   {
     const allRewrites = [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback];
-    const externalRewrites = allRewrites.filter((r) => isExternalUrl(r.destination));
+    const externalRewrites = allRewrites.filter((rewrite) => isExternalUrl(rewrite.destination));
+
     if (externalRewrites.length > 0) {
-      const listing = externalRewrites.map((r) => `  ${r.source} → ${r.destination}`).join("\n");
       const noun = externalRewrites.length === 1 ? "external rewrite" : "external rewrites";
+      const listing = externalRewrites
+        .map((rewrite) => `  ${rewrite.source} → ${rewrite.destination}`)
+        .join("\n");
+
       console.warn(
-        `[vinext] Found ${externalRewrites.length} ${noun} that proxy requests to third-party origins:\n` +
+        `[vinext] Found ${externalRewrites.length} ${noun} that proxy requests to external origins:\n` +
           `${listing}\n` +
-          `Credential headers (cookie, authorization, proxy-authorization, x-api-key) are stripped from outbound requests. ` +
-          `All other request headers are still forwarded. ` +
-          `If you need to forward credentials to the external origin, use an API route or route handler where you control exactly which headers are sent.`,
+          `Request headers, including credential headers (cookie, authorization, proxy-authorization, x-api-key), ` +
+          `are forwarded to the external origin to match Next.js behavior. ` +
+          `If you do not want to forward credentials, use an API route or route handler where you control exactly which headers are sent.`,
       );
     }
   }

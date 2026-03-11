@@ -612,19 +612,18 @@ describe("resolveNextConfig external rewrite warning", () => {
       ],
     });
 
-    // Should have warned about the external rewrite
     const externalWarning = warn.mock.calls.find(
       (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
     );
+
     expect(externalWarning).toBeDefined();
     expect(externalWarning![0]).toContain("1 external rewrite that");
     expect(externalWarning![0]).toContain("https://api.example.com/:path*");
-    expect(externalWarning![0]).toContain("Credential headers");
-    expect(externalWarning![0]).toContain("stripped");
     expect(externalWarning![0]).toContain("/api/:path*");
     expect(externalWarning![0]).toContain("→");
-
-    // The internal rewrite should not appear in the warning
+    expect(externalWarning![0]).toContain("credential headers");
+    expect(externalWarning![0]).toContain("forwarded");
+    expect(externalWarning![0]).toContain("match Next.js behavior");
     expect(externalWarning![0]).not.toContain("/other");
   });
 
