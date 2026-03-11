@@ -1271,6 +1271,9 @@ const __configRedirects = ${JSON.stringify(redirects)};
 const __configRewrites = ${JSON.stringify(rewrites)};
 const __configHeaders = ${JSON.stringify(headers)};
 const __allowedOrigins = ${JSON.stringify(allowedOrigins)};
+const __hostPreparedHeader = "x-vinext-app-router-prepared";
+const __hostRewriteStatusHeader = "x-vinext-app-router-rewrite-status";
+const __hostTargetHeader = "x-vinext-app-router-target";
 
 ${generateDevOriginCheckCode(config?.allowedDevOrigins)}
 
@@ -1384,6 +1387,25 @@ export default async function handler(request, ctx) {
   `
       : ""
   }
+  const __hostPrepared = request.headers.get(__hostPreparedHeader) === "1";
+  const __hostRewriteStatus = request.headers.get(__hostRewriteStatusHeader);
+  const __hostPreparedTarget = request.headers.get(__hostTargetHeader);
+  if (__hostPrepared || __hostRewriteStatus || __hostPreparedTarget) {
+    const __sanitizedHeaders = new Headers(request.headers);
+    __sanitizedHeaders.delete(__hostPreparedHeader);
+    __sanitizedHeaders.delete(__hostRewriteStatusHeader);
+    __sanitizedHeaders.delete(__hostTargetHeader);
+    const __requestUrl = __hostPreparedTarget
+      ? new URL(__hostPreparedTarget, request.url).href
+      : request.url;
+    request = new Request(__requestUrl, {
+      method: request.method,
+      headers: __sanitizedHeaders,
+      body: request.body,
+      // @ts-expect-error -- duplex is required when reusing a streaming body
+      duplex: request.body ? "half" : undefined,
+    });
+  }
   // Wrap the entire request in nested AsyncLocalStorage.run() scopes to ensure
   // per-request isolation for all state modules. Each runWith*() creates an
   // ALS scope that propagates through all async continuations (including RSC
@@ -1403,8 +1425,11 @@ export default async function handler(request, ctx) {
             // Per-request container for middleware state. Passed into
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
-            const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
+            const _mwCtx = {
+              headers: null,
+              status: __hostRewriteStatus ? Number(__hostRewriteStatus) || null : null,
+            };
+            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -1440,7 +1465,7 @@ export default async function handler(request, ctx) {
   return ctx ? _runWithExecutionContext(ctx, _run) : _run();
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+async function _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
   let __compileEnd;
   let __renderEnd;
@@ -1484,7 +1509,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   if (__tsRedirect) return __tsRedirect;
 
   // ── Apply redirects from next.config.js ───────────────────────────────
-  if (__configRedirects.length) {
+  if (!__hostPrepared && __configRedirects.length) {
     // Strip .rsc suffix before matching redirect rules - RSC (client-side nav) requests
     // arrive as /some/path.rsc but redirect patterns are defined without it (e.g.
     // /some/path). Without this, soft-nav fetches bypass all config redirects.
@@ -1512,9 +1537,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   // _mwCtx (per-request container) so handler() can merge them into
   // every response path without module-level state that races on Workers.
 
-  ${
+  ${ 
     middlewarePath
       ? `
+  if (!__hostPrepared) {
    // Run proxy/middleware if present and path matches.
    // Validate exports match the file type (proxy.ts vs middleware.ts), matching Next.js behavior.
    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
@@ -1596,6 +1622,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     applyMiddlewareRequestHeaders(_mwCtx.headers);
     processMiddlewareHeaders(_mwCtx.headers);
   }
+  }
   `
       : ""
   }
@@ -1604,12 +1631,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   // These run after middleware in the App Router execution order and should
   // evaluate has/missing conditions against middleware-modified headers.
   // When no middleware is present, this falls back to requestContextFromRequest.
-  const __postMwReqCtx = __buildPostMwRequestContext(request);
+  const __postMwReqCtx = __hostPrepared ? requestContextFromRequest(request) : __buildPostMwRequestContext(request);
 
   // ── Apply beforeFiles rewrites from next.config.js ────────────────────
   // In App Router execution order, beforeFiles runs after middleware so that
   // has/missing conditions can evaluate against middleware-modified headers.
-  if (__configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
+  if (!__hostPrepared && __configRewrites.beforeFiles && __configRewrites.beforeFiles.length) {
     const __rewritten = matchRewrite(cleanPathname, __configRewrites.beforeFiles, __postMwReqCtx);
     if (__rewritten) {
       if (isExternalUrl(__rewritten)) {
@@ -1873,7 +1900,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   }
 
   // ── Apply afterFiles rewrites from next.config.js ──────────────────────
-  if (__configRewrites.afterFiles && __configRewrites.afterFiles.length) {
+  if (!__hostPrepared && __configRewrites.afterFiles && __configRewrites.afterFiles.length) {
     const __afterRewritten = matchRewrite(cleanPathname, __configRewrites.afterFiles, __postMwReqCtx);
     if (__afterRewritten) {
       if (isExternalUrl(__afterRewritten)) {
@@ -1888,7 +1915,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   let match = matchRoute(cleanPathname, routes);
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
-  if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
+  if (!__hostPrepared && !match && __configRewrites.fallback && __configRewrites.fallback.length) {
     const __fallbackRewritten = matchRewrite(cleanPathname, __configRewrites.fallback, __postMwReqCtx);
     if (__fallbackRewritten) {
       if (isExternalUrl(__fallbackRewritten)) {

@@ -51,7 +51,7 @@ import {
   manifestFilesWithBase,
   normalizeManifestFile,
 } from "./utils/manifest-paths.js";
-import { hasBasePath } from "./utils/base-path.js";
+import { hasBasePath, stripBasePath } from "./utils/base-path.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
@@ -66,6 +66,9 @@ import fs from "node:fs";
 import commonjs from "vite-plugin-commonjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const APP_ROUTER_PREPARED_HEADER = "x-vinext-app-router-prepared";
+const APP_ROUTER_REWRITE_STATUS_HEADER = "x-vinext-app-router-rewrite-status";
+const APP_ROUTER_TARGET_HEADER = "x-vinext-app-router-target";
 
 /**
  * Fetch Google Fonts CSS, download .woff2 files, cache locally, and return
@@ -1687,9 +1690,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
 
           const bp = nextConfig?.basePath ?? "";
-          if (bp && pathname.startsWith(bp)) {
-            pathname = pathname.slice(bp.length) || "/";
-          }
+          if (bp) pathname = stripBasePath(pathname, bp);
 
           return pathname || "/";
         }
@@ -1713,6 +1714,81 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (pathname === "/api" || pathname.startsWith("/api/")) return false;
 
           return true;
+        }
+
+        function applyRequestHeadersToNodeRequest(
+          req: IncomingMessage,
+          nextRequestHeaders: Headers,
+        ): void {
+          for (const key of Object.keys(req.headers)) {
+            delete req.headers[key];
+          }
+          for (const [key, value] of nextRequestHeaders) {
+            req.headers[key] = value;
+          }
+        }
+
+        function setAppRouterPreparedRequestState(
+          req: IncomingMessage,
+          options?: { rewriteStatus?: number | null; requestUrl?: string | null },
+        ): void {
+          req.headers[APP_ROUTER_PREPARED_HEADER] = "1";
+          const rewriteStatus = options?.rewriteStatus;
+          if (typeof rewriteStatus === "number") {
+            req.headers[APP_ROUTER_REWRITE_STATUS_HEADER] = String(rewriteStatus);
+          } else {
+            delete req.headers[APP_ROUTER_REWRITE_STATUS_HEADER];
+          }
+          if (options?.requestUrl) {
+            req.headers[APP_ROUTER_TARGET_HEADER] = options.requestUrl;
+          } else {
+            delete req.headers[APP_ROUTER_TARGET_HEADER];
+          }
+        }
+
+        function appendNodeResponseHeaders(
+          res: any,
+          headers: Headers | null | undefined,
+        ): void {
+          if (!headers) return;
+          for (const [key, value] of headers) {
+            if (!key.startsWith("x-middleware-")) {
+              res.appendHeader(key, value);
+            }
+          }
+        }
+
+        function buildNodeRequestHeaders(req: IncomingMessage): Headers {
+          return new Headers(
+            Object.fromEntries(
+              Object.entries(req.headers)
+                .filter(([, value]) => value !== undefined)
+                .map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") : String(value)]),
+            ),
+          );
+        }
+
+        function resolveDynamicMetadataRouteModuleFiles(pathname: string): string[] | null {
+          const metadataRoutes = scanMetadataFiles(appDir);
+          for (const metadataRoute of metadataRoutes) {
+            if (!metadataRoute.isDynamic) continue;
+            if (pathname === metadataRoute.servedUrl) return [metadataRoute.filePath];
+            if (
+              metadataRoute.type === "sitemap" &&
+              metadataRoute.servedUrl.endsWith(".xml") &&
+              pathname.startsWith(metadataRoute.servedUrl.slice(0, -4) + "/") &&
+              pathname.endsWith(".xml")
+            ) {
+              return [metadataRoute.filePath];
+            }
+          }
+          return null;
+        }
+
+        function collectAllDynamicMetadataRouteFiles(): string[] {
+          return scanMetadataFiles(appDir)
+            .filter((metadataRoute) => metadataRoute.isDynamic)
+            .map((metadataRoute) => metadataRoute.filePath);
         }
 
         function cleanViteModuleId(moduleId: string): string {
@@ -1830,6 +1906,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return collectAppRouteModuleFiles(matchedRoute);
           }
 
+          const metadataRouteFiles = resolveDynamicMetadataRouteModuleFiles(pathname);
+          if (metadataRouteFiles) return metadataRouteFiles;
+
           if (options.skipIfPagesRouteMatches && hasPagesDir) {
             const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
             if (matchRoute(pathname, pageRoutes)) return null;
@@ -1842,6 +1921,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             for (const filePath of collectAppRouteModuleFiles(route)) {
               files.add(filePath);
             }
+          }
+          for (const filePath of collectAllDynamicMetadataRouteFiles()) {
+            files.add(filePath);
           }
           return [...files];
         }
@@ -1884,6 +1966,271 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           const entryModule = rscEnv.moduleGraph.getModuleById(RESOLVED_RSC_ENTRY);
           if (entryModule) rscEnv.moduleGraph.invalidateModule(entryModule);
+        }
+
+        async function prepareDirectAppRouterRequest(
+          req: IncomingMessage,
+          res: any,
+          initialUrl: string,
+          options?: { staticExportToken?: string },
+        ): Promise<boolean> {
+          if (hasCloudflarePlugin) return false;
+          let url = initialUrl;
+          if (
+            url.startsWith("/@") ||
+            url.startsWith("/__vite") ||
+            url.startsWith("/node_modules")
+          ) {
+            return false;
+          }
+
+          const rawPathname = url.split("?")[0];
+          const requestHasRscSuffix = rawPathname.endsWith(".rsc");
+          const toRoutingUrl = (requestUrl: string): string =>
+            requestHasRscSuffix ? requestUrl.replace(/\.rsc(?=\?|$)/, "") : requestUrl;
+          const fromRoutingUrl = (routingUrl: string): string => {
+            if (!requestHasRscSuffix) return routingUrl;
+            const [routingPathname, search = ""] = routingUrl.split("?");
+            return `${routingPathname}.rsc${search ? `?${search}` : ""}`;
+          };
+          if (rawPathname.endsWith("/index.html")) {
+            url = url.replace("/index.html", "/");
+          } else if (rawPathname.endsWith(".html")) {
+            url = url.replace(/\.html(?=\?|$)/, "");
+          }
+
+          if (url.split("?")[0] === "/_vinext/image") {
+            const imgParams = new URLSearchParams(url.split("?")[1] ?? "");
+            const rawImgUrl = imgParams.get("url");
+            const imgUrl = rawImgUrl?.replaceAll("\\", "/") ?? null;
+            if (
+              !imgUrl ||
+              !imgUrl.startsWith("/") ||
+              imgUrl.startsWith("//") ||
+              imgUrl.startsWith("/@") ||
+              imgUrl.startsWith("/__vite") ||
+              imgUrl.startsWith("/node_modules")
+            ) {
+              res.writeHead(400);
+              res.end(!rawImgUrl ? "Missing url parameter" : "Only relative URLs allowed");
+              return true;
+            }
+            const resolvedImg = new URL(imgUrl, `http://${req.headers.host || "localhost"}`);
+            if (resolvedImg.origin !== `http://${req.headers.host || "localhost"}`) {
+              res.writeHead(400);
+              res.end("Only relative URLs allowed");
+              return true;
+            }
+            res.writeHead(302, { Location: imgUrl });
+            res.end();
+            return true;
+          }
+
+          let pathname = toRoutingUrl(url).split("?")[0].replaceAll("\\", "/");
+          if (pathname.startsWith("//")) {
+            res.writeHead(404);
+            res.end("404 Not Found");
+            return true;
+          }
+
+          try {
+            pathname = normalizePath(decodeURIComponent(pathname));
+          } catch {
+            res.writeHead(400);
+            res.end("Bad Request");
+            return true;
+          }
+
+          const bp = nextConfig?.basePath ?? "";
+          if (bp) {
+            const stripped = stripBasePath(pathname, bp);
+            if (stripped !== pathname) {
+              const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+              url = stripped + qs;
+              pathname = stripped;
+            }
+          }
+
+          if (
+            nextConfig &&
+            pathname !== "/" &&
+            pathname !== "/api" &&
+            !pathname.startsWith("/api/") &&
+            !requestHasRscSuffix
+          ) {
+            const hasTrailing = pathname.endsWith("/");
+            if (nextConfig.trailingSlash && !hasTrailing) {
+              const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+              const dest = bp + pathname + "/" + qs;
+              res.writeHead(308, { Location: dest });
+              res.end();
+              return true;
+            }
+            if (!nextConfig.trailingSlash && hasTrailing) {
+              const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
+              const dest = bp + pathname.replace(/\/+$/, "") + qs;
+              res.writeHead(308, { Location: dest });
+              res.end();
+              return true;
+            }
+          }
+
+          const devTrustProxy =
+            process.env.VINEXT_TRUST_PROXY === "1" ||
+            (process.env.VINEXT_TRUSTED_HOSTS ?? "").split(",").some((h) => h.trim());
+          const rawProto = devTrustProxy
+            ? String(req.headers["x-forwarded-proto"] || "")
+                .split(",")[0]
+                .trim()
+            : "";
+          const originProto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
+          const origin = `${originProto}://${req.headers.host || "localhost"}`;
+
+          let requestHeaders = buildNodeRequestHeaders(req);
+          let rewriteStatus: number | null = null;
+          const buildRequestForUrl = (requestUrl: string, headers: Headers): Request =>
+            new Request(new URL(toRoutingUrl(requestUrl), origin), {
+              method: req.method,
+              headers,
+            });
+
+          if (nextConfig?.redirects.length) {
+            const redirectMatch = matchRedirect(
+              pathname,
+              nextConfig.redirects,
+              requestContextFromRequest(buildRequestForUrl(url, requestHeaders)),
+            );
+            if (redirectMatch) {
+              const destination = sanitizeDestination(
+                bp &&
+                  !isExternalUrl(redirectMatch.destination) &&
+                  !hasBasePath(redirectMatch.destination, bp)
+                  ? bp + redirectMatch.destination
+                  : redirectMatch.destination,
+              );
+              res.writeHead(redirectMatch.permanent ? 308 : 307, { Location: destination });
+              res.end();
+              return true;
+            }
+          }
+
+          if (middlewarePath) {
+            const middlewareResult = await runMiddleware(
+              getPagesRunner(),
+              middlewarePath,
+              buildRequestForUrl(url, requestHeaders),
+              nextConfig?.i18n,
+            );
+
+            if (!middlewareResult.continue) {
+              if (middlewareResult.redirectUrl) {
+                const redirectHeaders: Record<string, string | string[]> = {
+                  Location: middlewareResult.redirectUrl,
+                };
+                if (middlewareResult.responseHeaders) {
+                  for (const [key, value] of middlewareResult.responseHeaders) {
+                    const existing = redirectHeaders[key];
+                    if (existing === undefined) {
+                      redirectHeaders[key] = value;
+                    } else if (Array.isArray(existing)) {
+                      existing.push(value);
+                    } else {
+                      redirectHeaders[key] = [existing, value];
+                    }
+                  }
+                }
+                res.writeHead(middlewareResult.redirectStatus ?? 307, redirectHeaders);
+                res.end();
+                return true;
+              }
+              if (middlewareResult.response) {
+                res.statusCode = middlewareResult.response.status;
+                for (const [key, value] of middlewareResult.response.headers) {
+                  res.appendHeader(key, value);
+                }
+                res.end(await middlewareResult.response.text());
+                return true;
+              }
+            }
+
+            if (middlewareResult.responseHeaders) {
+              requestHeaders =
+                buildRequestHeadersFromMiddlewareResponse(requestHeaders, middlewareResult.responseHeaders) ??
+                requestHeaders;
+              appendNodeResponseHeaders(res, middlewareResult.responseHeaders);
+            }
+
+            if (middlewareResult.rewriteUrl) {
+              url = fromRoutingUrl(toRoutingUrl(middlewareResult.rewriteUrl));
+              pathname = normalizeAppRequestPath(url) ?? pathname;
+              rewriteStatus = middlewareResult.rewriteStatus ?? null;
+            }
+          }
+
+          applyRequestHeadersToNodeRequest(req, requestHeaders);
+
+          const buildRequestContext = (requestUrl: string): RequestContext =>
+            requestContextFromRequest(buildRequestForUrl(requestUrl, requestHeaders));
+          const postMwReqCtx = buildRequestContext(url);
+
+          if (nextConfig?.rewrites.beforeFiles.length) {
+            const rewritten = applyRewrites(pathname, nextConfig.rewrites.beforeFiles, postMwReqCtx);
+            if (rewritten) {
+              if (isExternalUrl(rewritten)) {
+                await proxyExternalRewriteNode(req, res, rewritten);
+                return true;
+              }
+              url = fromRoutingUrl(toRoutingUrl(rewritten));
+              pathname = normalizeAppRequestPath(url) ?? pathname;
+            }
+          }
+
+          const metadataRouteFiles = pathname ? resolveDynamicMetadataRouteModuleFiles(pathname) : null;
+          if (!metadataRouteFiles) {
+            if (nextConfig?.rewrites.afterFiles.length) {
+              const afterRewrite = applyRewrites(pathname, nextConfig.rewrites.afterFiles, postMwReqCtx);
+              if (afterRewrite) {
+                if (isExternalUrl(afterRewrite)) {
+                  await proxyExternalRewriteNode(req, res, afterRewrite);
+                  return true;
+                }
+                url = fromRoutingUrl(toRoutingUrl(afterRewrite));
+                pathname = normalizeAppRequestPath(url) ?? pathname;
+              }
+            }
+
+            const appRoutes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
+            let appMatch = pathname ? matchRoute(pathname, appRoutes as any) : null;
+            if (!appMatch && nextConfig?.rewrites.fallback.length) {
+              const fallbackRewrite = applyRewrites(pathname, nextConfig.rewrites.fallback, postMwReqCtx);
+              if (fallbackRewrite) {
+                if (isExternalUrl(fallbackRewrite)) {
+                  await proxyExternalRewriteNode(req, res, fallbackRewrite);
+                  return true;
+                }
+                url = fromRoutingUrl(toRoutingUrl(fallbackRewrite));
+                pathname = normalizeAppRequestPath(url) ?? pathname;
+                appMatch = pathname ? matchRoute(pathname, appRoutes as any) : null;
+              }
+            }
+          }
+
+          req.url = url;
+          setAppRouterPreparedRequestState(req, { rewriteStatus, requestUrl: url });
+
+          if (shouldInvalidateAppRscRequest(req, url)) {
+            await invalidateAppRscModulesForRequest(url, {
+              allowFullAppFallback: false,
+              skipIfPagesRouteMatches: false,
+              staticExportToken: options?.staticExportToken,
+              requestStaticExportToken:
+                typeof req.headers["x-vinext-static-export"] === "string"
+                  ? req.headers["x-vinext-static-export"]
+                  : undefined,
+            });
+          }
+
+          return false;
         }
 
         server.watcher.on("add", (filePath: string) => {
@@ -1977,16 +2324,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               try {
                 const url = req.url ?? "/";
                 const isRscRequest = url.split("?")[0].endsWith(".rsc");
-                if ((!hasPagesDir || isRscRequest) && shouldInvalidateAppRscRequest(req, url)) {
-                  await invalidateAppRscModulesForRequest(url, {
-                    allowFullAppFallback: false,
-                    skipIfPagesRouteMatches: false,
-                    staticExportToken,
-                    requestStaticExportToken:
-                      typeof req.headers["x-vinext-static-export"] === "string"
-                        ? req.headers["x-vinext-static-export"]
-                        : undefined,
-                  });
+                if (!hasPagesDir || isRscRequest) {
+                  if (await prepareDirectAppRouterRequest(req, _res, url, { staticExportToken })) {
+                    return;
+                  }
                 }
                 next();
               } catch (err) {
@@ -2277,21 +2618,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
               }
 
-              const applyRequestHeadersToNodeRequest = (nextRequestHeaders: Headers) => {
-                for (const key of Object.keys(req.headers)) {
-                  delete req.headers[key];
-                }
-                for (const [key, value] of nextRequestHeaders) {
-                  req.headers[key] = value;
-                }
-              };
-
               const handOffToAppRouter = async (
                 appUrl: string,
                 options?: { allowFullAppFallback?: boolean },
               ) => {
                 if (middlewareRequestHeaders) {
-                  applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
+                  applyRequestHeadersToNodeRequest(req, middlewareRequestHeaders);
                 }
                 req.url = appUrl;
 
@@ -2392,14 +2724,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   );
 
                   if (middlewareRequestHeaders && !hasAppDir) {
-                    applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
+                    applyRequestHeadersToNodeRequest(req, middlewareRequestHeaders);
                   }
 
-                  for (const [key, value] of result.responseHeaders) {
-                    if (!key.startsWith("x-middleware-")) {
-                      res.appendHeader(key, value);
-                    }
-                  }
+                  appendNodeResponseHeaders(res, result.responseHeaders);
                 }
 
                 // Apply middleware rewrite (URL and optional status code)
@@ -2499,7 +2827,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 );
                 const apiMatch = matchRoute(resolvedUrl, apiRoutes);
                 if (apiMatch && middlewareRequestHeaders) {
-                  applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
+                  applyRequestHeadersToNodeRequest(req, middlewareRequestHeaders);
                 }
                 const handled = await handleApiRoute(server, req, res, resolvedUrl, apiRoutes);
                 if (handled) return;
@@ -2550,7 +2878,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               const match = matchRoute(resolvedUrl.split("?")[0], routes);
               if (match) {
                 if (middlewareRequestHeaders) {
-                  applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
+                  applyRequestHeadersToNodeRequest(req, middlewareRequestHeaders);
                 }
                 await handler(req, res, resolvedUrl, mwStatus);
                 return;
@@ -2572,8 +2900,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   const fallbackMatch = matchRoute(fallbackRewrite.split("?")[0], routes);
                   if (
                     !fallbackMatch &&
-                    hasAppDir &&
-                    shouldInvalidateAppRscRequest(req, fallbackRewrite)
+                    hasAppDir
                   ) {
                     await handOffToAppRouter(fallbackRewrite, {
                       allowFullAppFallback: true,
@@ -2581,7 +2908,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     return;
                   }
                   if (middlewareRequestHeaders) {
-                    applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
+                    applyRequestHeadersToNodeRequest(req, middlewareRequestHeaders);
                   }
                   await handler(req, res, fallbackRewrite, mwStatus);
                   return;

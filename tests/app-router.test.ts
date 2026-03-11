@@ -2136,6 +2136,17 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(html).toContain("About");
   });
 
+  it("fallback rewrites still hand off POST requests to app/api targets", async () => {
+    const res = await fetch(`${baseUrl}/fallback-app-api`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ via: "fallback-rewrite" }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ echo: { via: "fallback-rewrite" } });
+  });
+
   it("fallback rewrites targeting Pages routes still work in mixed app/pages projects", async () => {
     const noAuthRes = await fetch(`${baseUrl}/mw-gated-fallback-pages`);
     expect(noAuthRes.status).toBe(404);
@@ -2189,6 +2200,93 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain("About");
+  });
+});
+
+describe("App Router rewrite freshness in app-only projects", () => {
+  let server: ViteDevServer;
+  let baseUrl: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(
+      path.join(path.resolve(import.meta.dirname, "./fixtures"), "app-only-rewrite-"),
+    );
+    fs.mkdirSync(path.join(tmpDir, "app", "target"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "app-only-rewrite-test", private: true, type: "module" }, null, 2),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
+  async rewrites() {
+    return {
+      beforeFiles: [{ source: "/rewrite-target", destination: "/target" }],
+      afterFiles: [],
+      fallback: [],
+    };
+  },
+};
+
+export default nextConfig;
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "shared-now.ts"),
+      `export const sharedImportedNow = Date.now();\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "app", "target", "page.tsx"),
+      `
+import { sharedImportedNow } from "../../shared-now";
+
+export default function TargetPage() {
+  return <main id="shared-imported-now">{sharedImportedNow}</main>;
+}
+`,
+    );
+    ({ server, baseUrl } = await startFixtureServer(tmpDir, { appRouter: true }));
+  }, 30000);
+
+  afterAll(async () => {
+    await server?.close();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("re-executes App Router modules when rewrites happen within an app-only project", async () => {
+    const res1 = await fetch(`${baseUrl}/rewrite-target`);
+    const html1 = await res1.text();
+    expect(res1.status).toBe(200);
+    const importedNow1 = html1.match(/id="shared-imported-now"[^>]*>(\d+)/)?.[1];
+
+    await new Promise((r) => setTimeout(r, 50));
+
+    const res2 = await fetch(`${baseUrl}/rewrite-target`);
+    expect(res2.status).toBe(200);
+    const html2 = await res2.text();
+    const importedNow2 = html2.match(/id="shared-imported-now"[^>]*>(\d+)/)?.[1];
+
+    expect(importedNow1).toBeTruthy();
+    expect(importedNow2).toBeTruthy();
+    expect(importedNow1).not.toBe(importedNow2);
   });
 });
 

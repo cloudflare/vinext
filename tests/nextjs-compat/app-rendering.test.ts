@@ -154,6 +154,71 @@ describe("Next.js compat: app-rendering", () => {
       expect(importedNow1).not.toBe(importedNow2);
     });
 
+    it("should re-execute modules for direct App Router config rewrite .rsc requests", async () => {
+      const routePath = "/rewrite-shared.rsc";
+      const res1 = await fetch(`${baseUrl}${routePath}`, {
+        headers: { Accept: "text/x-component" },
+      });
+      const rsc1 = await res1.text();
+      const importedNow1 = rsc1.match(/shared-imported-now.*?(\d{10,})/)?.[1];
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const res2 = await fetch(`${baseUrl}${routePath}`, {
+        headers: { Accept: "text/x-component" },
+      });
+      const rsc2 = await res2.text();
+      const importedNow2 = rsc2.match(/shared-imported-now.*?(\d{10,})/)?.[1];
+
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+      expect(importedNow1).toBeTruthy();
+      expect(importedNow2).toBeTruthy();
+      expect(importedNow1).not.toBe(importedNow2);
+    });
+
+    it("should re-execute modules for direct App Router middleware rewrite .rsc requests", async () => {
+      const routePath = "/mw-pages-to-app-rewrite.rsc";
+      const res1 = await fetch(`${baseUrl}${routePath}`, {
+        headers: { Accept: "text/x-component" },
+      });
+      const rsc1 = await res1.text();
+      const importedNow1 = rsc1.match(/shared-imported-now.*?(\d{10,})/)?.[1];
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const res2 = await fetch(`${baseUrl}${routePath}`, {
+        headers: { Accept: "text/x-component" },
+      });
+      const rsc2 = await res2.text();
+      const importedNow2 = rsc2.match(/shared-imported-now.*?(\d{10,})/)?.[1];
+
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+      expect(importedNow1).toBeTruthy();
+      expect(importedNow2).toBeTruthy();
+      expect(importedNow1).not.toBe(importedNow2);
+    });
+
+    it("should re-execute dynamic metadata routes on subsequent requests", async () => {
+      const routePath = "/nextjs-compat/fresh-metadata/sitemap.xml";
+      const res1 = await fetch(`${baseUrl}${routePath}`);
+      const xml1 = await res1.text();
+      const importedNow1 = xml1.match(/fresh\/(\d{10,})/)?.[1];
+
+      await new Promise((r) => setTimeout(r, 50));
+
+      const res2 = await fetch(`${baseUrl}${routePath}`);
+      const xml2 = await res2.text();
+      const importedNow2 = xml2.match(/fresh\/(\d{10,})/)?.[1];
+
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+      expect(importedNow1).toBeTruthy();
+      expect(importedNow2).toBeTruthy();
+      expect(importedNow1).not.toBe(importedNow2);
+    });
+
     it("should re-execute dotted App Router paths on subsequent requests", async () => {
       const routePath = "/nextjs-compat/isr-dotted/jane.doe";
       const { html: html1 } = await fetchHtml(baseUrl, routePath);

@@ -74,6 +74,9 @@ const nextConfig: NextConfig = {
       beforeFiles: [
         // Used by Vitest: app-router.test.ts
         { source: "/rewrite-about", destination: "/about" },
+        // Used by Vitest: app-rendering.test.ts — direct App Router rewrite target
+        // should still get fresh RSC module execution on .rsc requests.
+        { source: "/rewrite-shared", destination: "/nextjs-compat/isr-shared-module" },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
           source: "/repeat-rewrite/:slug",
@@ -120,6 +123,13 @@ const nextConfig: NextConfig = {
           source: "/mw-gated-fallback-pages",
           has: [{ type: "cookie", key: "mw-pages-fallback-user" }],
           destination: "/pages-header-override-delete",
+        },
+        // Used by Vitest: app-router.test.ts — fallback rewrites to app/api/*
+        // must still hand off on POST requests even though those requests do
+        // not participate in per-request RSC invalidation.
+        {
+          source: "/fallback-app-api",
+          destination: "/api/hello",
         },
       ],
     };
