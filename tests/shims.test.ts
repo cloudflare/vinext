@@ -4162,7 +4162,7 @@ describe("proxyExternalRequest", () => {
     }
   });
 
-  it("strips credential and x-middleware-* headers from proxied requests", async () => {
+  it("forwards credential headers and strips x-middleware-* headers from proxied requests", async () => {
     const { proxyExternalRequest } =
       await import("../packages/vinext/src/config/config-matchers.js");
 
@@ -4190,11 +4190,11 @@ describe("proxyExternalRequest", () => {
     try {
       await proxyExternalRequest(request, "https://api.example.com/data");
       expect(capturedHeaders).toBeDefined();
-      // Credential headers must be stripped to prevent leaking secrets
-      expect(capturedHeaders!.get("cookie")).toBeNull();
-      expect(capturedHeaders!.get("authorization")).toBeNull();
-      expect(capturedHeaders!.get("x-api-key")).toBeNull();
-      expect(capturedHeaders!.get("proxy-authorization")).toBeNull();
+      // Credential headers must be forwarded to match Next.js external rewrite proxying.
+      expect(capturedHeaders!.get("cookie")).toBe("session=secret123");
+      expect(capturedHeaders!.get("authorization")).toBe("Bearer tok_secret");
+      expect(capturedHeaders!.get("x-api-key")).toBe("sk_live_secret");
+      expect(capturedHeaders!.get("proxy-authorization")).toBe("Basic cHJveHk=");
       // Internal middleware headers must be stripped
       expect(capturedHeaders!.get("x-middleware-rewrite")).toBeNull();
       expect(capturedHeaders!.get("x-middleware-next")).toBeNull();
