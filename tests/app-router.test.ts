@@ -2295,6 +2295,11 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.headers.get("x-page-header")).toBe("about-page");
   });
 
+  it("encoded slashes stay within a single segment for config header matching", async () => {
+    const res = await fetch(`${baseUrl}/api%2Fhello`);
+    expect(res.headers.get("x-custom-header")).toBeNull();
+  });
+
   it("percent-encoded rewrite path is decoded before config matching", async () => {
     // /rewrite-%61bout decodes to /rewrite-about → /about (beforeFiles rewrite)
     const res = await fetch(`${baseUrl}/rewrite-%61bout`);

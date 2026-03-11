@@ -21,7 +21,7 @@ import {
 // Request context
 // ---------------------------------------------------------------------------
 
-interface HeadersContext {
+export interface HeadersContext {
   headers: Headers;
   cookies: Map<string, string>;
   accessError?: Error;
@@ -32,7 +32,7 @@ interface HeadersContext {
 
 export type HeadersAccessPhase = "render" | "action" | "route-handler";
 
-type VinextHeadersShimState = {
+export type VinextHeadersShimState = {
   headersContext: HeadersContext | null;
   dynamicUsageDetected: boolean;
   pendingSetCookies: string[];
@@ -63,7 +63,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 
 function _getState(): VinextHeadersShimState {
   if (isInsideUnifiedScope()) {
-    return getRequestContext() as unknown as VinextHeadersShimState;
+    return getRequestContext();
   }
   return _als.getStore() ?? _fallbackState;
 }
@@ -207,27 +207,11 @@ export function runWithHeadersContext<T>(
 ): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
-      const previous = {
-        headersContext: uCtx.headersContext,
-        dynamicUsageDetected: uCtx.dynamicUsageDetected,
-        pendingSetCookies: uCtx.pendingSetCookies,
-        draftModeCookieHeader: uCtx.draftModeCookieHeader,
-        phase: uCtx.phase,
-      };
-
-      uCtx.headersContext = ctx as unknown;
+      uCtx.headersContext = ctx;
       uCtx.dynamicUsageDetected = false;
       uCtx.pendingSetCookies = [];
       uCtx.draftModeCookieHeader = null;
       uCtx.phase = "render";
-
-      return () => {
-        uCtx.headersContext = previous.headersContext;
-        uCtx.dynamicUsageDetected = previous.dynamicUsageDetected;
-        uCtx.pendingSetCookies = previous.pendingSetCookies;
-        uCtx.draftModeCookieHeader = previous.draftModeCookieHeader;
-        uCtx.phase = previous.phase;
-      };
     }, fn);
   }
 

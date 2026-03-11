@@ -11,6 +11,16 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import type {
+  CacheState,
+  ExecutionContextLike,
+  FetchCacheState,
+  HeadState,
+  NavigationState,
+  PrivateCacheState,
+  RouterState,
+  VinextHeadersShimState,
+} from "./request-state-types.js";
 
 // ---------------------------------------------------------------------------
 // Unified context shape
@@ -23,46 +33,18 @@ import { AsyncLocalStorage } from "node:async_hooks";
  *
  * Each field group is documented with its source shim module.
  */
-export interface UnifiedRequestContext {
-  // ── headers.ts (VinextHeadersShimState) ────────────────────────────
-  /** The request's headers/cookies context, or null before setup. */
-  headersContext: unknown;
-  /** Set to true when a component calls connection/cookies/headers/noStore. */
-  dynamicUsageDetected: boolean;
-  /** Accumulated Set-Cookie header strings from cookies().set()/delete(). */
-  pendingSetCookies: string[];
-  /** Set-Cookie header from draftMode().enable()/disable(). */
-  draftModeCookieHeader: string | null;
-  /** Current request phase — determines cookie mutability. */
-  phase: "render" | "action" | "route-handler";
-
-  // ── navigation-state.ts (NavigationState) ──────────────────────────
-  /** Server-side navigation context (pathname, searchParams, params). */
-  serverContext: unknown;
-  /** useServerInsertedHTML callbacks for CSS-in-JS etc. */
-  serverInsertedHTMLCallbacks: Array<() => unknown>;
-
-  // ── cache.ts (CacheState) ──────────────────────────────────────────
-  /** Request-scoped cacheLife config from page-level "use cache". */
-  requestScopedCacheLife: unknown;
-
-  // ── cache-runtime.ts (PrivateCacheState) — lazy ────────────────────
-  /** Per-request cache for "use cache: private". Null until first access. */
-  _privateCache: Map<string, unknown> | null;
-
-  // ── fetch-cache.ts (FetchCacheState) ───────────────────────────────
-  /** Tags collected from fetch() calls during this render pass. */
-  currentRequestTags: string[];
-
+export interface UnifiedRequestContext
+  extends
+    VinextHeadersShimState,
+    NavigationState,
+    CacheState,
+    PrivateCacheState,
+    FetchCacheState,
+    RouterState,
+    HeadState {
   // ── request-context.ts ─────────────────────────────────────────────
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
-  executionContext: unknown;
-
-  // ── router-state.ts / head-state.ts (Pages Router) ────────────────
-  /** Pages Router SSR context used by next/router during SSR. */
-  ssrContext: unknown;
-  /** Collected SSR <Head> HTML for the Pages Router. */
-  ssrHeadElements: string[];
+  executionContext: ExecutionContextLike | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -71,28 +53,19 @@ export interface UnifiedRequestContext {
 // ---------------------------------------------------------------------------
 
 const _ALS_KEY = Symbol.for("vinext.unifiedRequestContext.als");
-const _FALLBACK_KEY = Symbol.for("vinext.unifiedRequestContext.fallback");
 const _REQUEST_CONTEXT_ALS_KEY = Symbol.for("vinext.requestContext.als");
 const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 const _als = (_g[_ALS_KEY] ??=
   new AsyncLocalStorage<UnifiedRequestContext>()) as AsyncLocalStorage<UnifiedRequestContext>;
 
-function _getInheritedExecutionContext(): unknown {
+function _getInheritedExecutionContext(): ExecutionContextLike | null {
   const unifiedStore = _als.getStore();
   if (unifiedStore) return unifiedStore.executionContext;
 
   const executionContextAls = _g[_REQUEST_CONTEXT_ALS_KEY] as
-    | AsyncLocalStorage<unknown | null>
+    | AsyncLocalStorage<ExecutionContextLike | null>
     | undefined;
   return executionContextAls?.getStore() ?? null;
-}
-
-function _isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
-  return (
-    (typeof value === "object" || typeof value === "function") &&
-    value !== null &&
-    typeof (value as Promise<T>).then === "function"
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -122,9 +95,6 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
   };
 }
 
-/** Module-level fallback for environments without ALS wrapping (dev, tests). */
-const _fallbackState = (_g[_FALLBACK_KEY] ??= createRequestContext()) as UnifiedRequestContext;
-
 /**
  * Run `fn` within a unified request context scope.
  * All shim modules will read/write their state from `ctx` for the
@@ -138,40 +108,34 @@ export function runWithRequestContext<T>(
 }
 
 /**
- * Apply a temporary mutation to the current unified store, then restore it
- * after `fn` completes. Used by legacy runWith* wrappers to preserve their
- * nested-scope semantics without creating another ALS layer.
+ * Run `fn` in a nested unified scope derived from the current request context.
+ * Used by legacy runWith* wrappers to reset or override one sub-state while
+ * preserving proper async isolation for continuations created inside `fn`.
+ * The child scope is a shallow clone of the parent store, so untouched fields
+ * keep sharing their existing references while overridden slices can be reset.
  *
  * @internal
  */
 export function runWithUnifiedStateMutation<T>(
-  mutate: (ctx: UnifiedRequestContext) => () => void,
+  mutate: (ctx: UnifiedRequestContext) => void,
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
-  const ctx = _als.getStore();
-  if (!ctx) return fn();
+  const parentCtx = _als.getStore();
+  if (!parentCtx) return fn();
 
-  const restore = mutate(ctx);
-  try {
-    const result = fn();
-    if (_isPromiseLike(result)) {
-      return Promise.resolve(result).finally(restore) as Promise<T>;
-    }
-    restore();
-    return result;
-  } catch (error) {
-    restore();
-    throw error;
-  }
+  const childCtx = { ...parentCtx };
+  mutate(childCtx);
+  return _als.run(childCtx, fn);
 }
 
 /**
  * Get the current unified request context.
  * Returns the ALS store when inside a `runWithRequestContext()` scope,
- * or the module-level fallback otherwise.
+ * or a fresh detached context otherwise. Mutations to the detached value do
+ * not persist across calls.
  */
 export function getRequestContext(): UnifiedRequestContext {
-  return _als.getStore() ?? _fallbackState;
+  return _als.getStore() ?? createRequestContext();
 }
 
 /**

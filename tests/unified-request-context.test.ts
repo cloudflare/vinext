@@ -25,7 +25,7 @@ describe("unified-request-context", () => {
   });
 
   describe("getRequestContext", () => {
-    it("returns fallback with default values outside any scope", () => {
+    it("returns default values outside any scope", () => {
       const ctx = getRequestContext();
       expect(ctx).toBeDefined();
       expect(ctx.headersContext).toBeNull();
@@ -41,6 +41,17 @@ describe("unified-request-context", () => {
       expect(ctx.executionContext).toBeNull();
       expect(ctx.ssrContext).toBeNull();
       expect(ctx.ssrHeadElements).toEqual([]);
+    });
+
+    it("returns a fresh detached context on each call outside any scope", () => {
+      const first = getRequestContext();
+      first.dynamicUsageDetected = true;
+      first.pendingSetCookies.push("first=1");
+
+      const second = getRequestContext();
+      expect(second).not.toBe(first);
+      expect(second.dynamicUsageDetected).toBe(false);
+      expect(second.pendingSetCookies).toEqual([]);
     });
   });
 
@@ -106,11 +117,15 @@ describe("unified-request-context", () => {
               cookies: new Map(),
             },
             currentRequestTags: [`tag-${i}`],
-            serverContext: { pathname: `/path-${i}` },
+            serverContext: {
+              pathname: `/path-${i}`,
+              searchParams: new URLSearchParams(),
+              params: {},
+            },
           });
           return runWithRequestContext(reqCtx, async () => {
-            // Simulate async work with varying delays
-            await new Promise<void>((resolve) => setTimeout(resolve, Math.random() * 10));
+            const delayMs = (i % 10) + 1;
+            await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
             const ctx = getRequestContext();
             return {
               headerId: (ctx.headersContext as any)?.headers?.get("x-id"),
@@ -246,7 +261,7 @@ describe("unified-request-context", () => {
         pendingSetCookies: ["a=b"],
         draftModeCookieHeader: "c=d",
         phase: "action",
-        serverContext: { pathname: "/test" },
+        serverContext: { pathname: "/test", searchParams: new URLSearchParams(), params: {} },
         serverInsertedHTMLCallbacks: [() => "html"],
         requestScopedCacheLife: { stale: 10, revalidate: 20 },
         currentRequestTags: ["tag1"],
@@ -319,8 +334,44 @@ describe("unified-request-context", () => {
       );
     });
 
+    it("runWithHeadersContext keeps spawned async work on the inner sub-state", async () => {
+      const { runWithHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+
+      let releaseInnerRead!: () => void;
+      const waitForInnerRead = new Promise<void>((resolve) => {
+        releaseInnerRead = resolve;
+      });
+      let innerRead!: Promise<string | null>;
+
+      await runWithRequestContext(
+        createRequestContext({
+          headersContext: {
+            headers: new Headers({ "x-id": "outer" }),
+            cookies: new Map(),
+          },
+        }),
+        async () => {
+          runWithHeadersContext(
+            {
+              headers: new Headers({ "x-id": "inner" }),
+              cookies: new Map(),
+            },
+            () => {
+              innerRead = (async () => {
+                await waitForInnerRead;
+                return (getRequestContext().headersContext as any)?.headers?.get("x-id") ?? null;
+              })();
+            },
+          );
+
+          expect((getRequestContext().headersContext as any)?.headers?.get("x-id")).toBe("outer");
+          releaseInnerRead();
+          await expect(innerRead).resolves.toBe("inner");
+        },
+      );
+    });
+
     it("runWithNavigationContext restores the outer navigation sub-state", async () => {
-      await import("../packages/vinext/src/shims/navigation-state.js");
       const { runWithNavigationContext } =
         await import("../packages/vinext/src/shims/navigation-state.js");
       const { setNavigationContext, getNavigationContext } =

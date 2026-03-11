@@ -1421,7 +1421,7 @@ export default async function handler(request, ctx) {
       if (__configHeaders.length) {
         const url = new URL(request.url);
         let pathname;
-        try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
+        try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
         ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
         const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
         for (const h of extraHeaders) {

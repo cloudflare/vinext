@@ -229,8 +229,8 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
 // Uses AsyncLocalStorage for request isolation so concurrent requests
 // on Workers don't share private cache entries.
 // ---------------------------------------------------------------------------
-interface PrivateCacheState {
-  cache: Map<string, unknown>;
+export interface PrivateCacheState {
+  _privateCache: Map<string, unknown> | null;
 }
 
 const _PRIVATE_ALS_KEY = Symbol.for("vinext.cacheRuntime.privateAls");
@@ -240,7 +240,7 @@ const _privateAls = (_g[_PRIVATE_ALS_KEY] ??=
   new AsyncLocalStorage<PrivateCacheState>()) as AsyncLocalStorage<PrivateCacheState>;
 
 const _privateFallbackState = (_g[_PRIVATE_FALLBACK_KEY] ??= {
-  cache: new Map<string, unknown>(),
+  _privateCache: new Map<string, unknown>(),
 } satisfies PrivateCacheState) as PrivateCacheState;
 
 function _getPrivateState(): PrivateCacheState {
@@ -249,7 +249,7 @@ function _getPrivateState(): PrivateCacheState {
     if (ctx._privateCache === null) {
       ctx._privateCache = new Map();
     }
-    return { cache: ctx._privateCache };
+    return ctx;
   }
   return _privateAls.getStore() ?? _privateFallbackState;
 }
@@ -262,15 +262,11 @@ function _getPrivateState(): PrivateCacheState {
 export function runWithPrivateCache<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
-      const previous = uCtx._privateCache;
       uCtx._privateCache = new Map();
-      return () => {
-        uCtx._privateCache = previous;
-      };
     }, fn);
   }
   const state: PrivateCacheState = {
-    cache: new Map(),
+    _privateCache: new Map(),
   };
   return _privateAls.run(state, fn);
 }
@@ -286,9 +282,9 @@ export function clearPrivateCache(): void {
   }
   const state = _privateAls.getStore();
   if (state) {
-    state.cache = new Map();
+    state._privateCache = new Map();
   } else {
-    _privateFallbackState.cache = new Map();
+    _privateFallbackState._privateCache = new Map();
   }
 }
 
@@ -357,7 +353,7 @@ export function registerCachedFunction<T extends (...args: any[]) => Promise<any
 
     // "use cache: private" uses per-request in-memory cache
     if (cacheVariant === "private") {
-      const privateCache = _getPrivateState().cache;
+      const privateCache = _getPrivateState()._privateCache!;
       const privateHit = privateCache.get(cacheKey);
       if (privateHit !== undefined) {
         return privateHit;

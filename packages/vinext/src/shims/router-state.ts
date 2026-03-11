@@ -20,7 +20,7 @@ import {
 // ALS setup
 // ---------------------------------------------------------------------------
 
-interface SSRContext {
+export interface SSRContext {
   pathname: string;
   query: Record<string, string | string[]>;
   asPath: string;
@@ -29,7 +29,7 @@ interface SSRContext {
   defaultLocale?: string;
 }
 
-interface RouterState {
+export interface RouterState {
   ssrContext: SSRContext | null;
 }
 
@@ -45,7 +45,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 
 function _getState(): RouterState {
   if (isInsideUnifiedScope()) {
-    return getRequestContext() as unknown as RouterState;
+    return getRequestContext();
   }
   return _als.getStore() ?? _fallbackState;
 }
@@ -58,11 +58,7 @@ function _getState(): RouterState {
 export function runWithRouterState<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
-      const previous = uCtx.ssrContext;
       uCtx.ssrContext = null;
-      return () => {
-        uCtx.ssrContext = previous;
-      };
     }, fn);
   }
 
@@ -83,7 +79,7 @@ _registerRouterStateAccessors({
 
   setSSRContext(ctx: SSRContext | null): void {
     if (isInsideUnifiedScope()) {
-      getRequestContext().ssrContext = ctx as unknown;
+      getRequestContext().ssrContext = ctx;
       return;
     }
     const state = _als.getStore();

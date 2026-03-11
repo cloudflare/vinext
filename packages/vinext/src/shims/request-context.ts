@@ -71,11 +71,7 @@ export function runWithExecutionContext<T>(
 ): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
-      const previous = uCtx.executionContext;
       uCtx.executionContext = ctx;
-      return () => {
-        uCtx.executionContext = previous;
-      };
     }, fn);
   }
   return _als.run(ctx, fn);

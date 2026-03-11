@@ -713,26 +713,26 @@ async function _renderPage(request, url, manifest) {
   const __uCtx = _createUnifiedCtx();
   return _runWithUnifiedCtx(__uCtx, async () => {
     ensureFetchPatch();
-  try {
-    if (typeof setSSRContext === "function") {
-      setSSRContext({
-        pathname: patternToNextFormat(route.pattern),
-        query: { ...params, ...parseQuery(routeUrl) },
-        asPath: routeUrl,
-        locale: locale,
-        locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
-      });
-    }
+    try {
+      if (typeof setSSRContext === "function") {
+        setSSRContext({
+          pathname: patternToNextFormat(route.pattern),
+          query: { ...params, ...parseQuery(routeUrl) },
+          asPath: routeUrl,
+          locale: locale,
+          locales: i18nConfig ? i18nConfig.locales : undefined,
+          defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+        });
+      }
 
-    if (i18nConfig) {
-      globalThis.__VINEXT_LOCALE__ = locale;
-      globalThis.__VINEXT_LOCALES__ = i18nConfig.locales;
-      globalThis.__VINEXT_DEFAULT_LOCALE__ = i18nConfig.defaultLocale;
-    }
+      if (i18nConfig) {
+        globalThis.__VINEXT_LOCALE__ = locale;
+        globalThis.__VINEXT_LOCALES__ = i18nConfig.locales;
+        globalThis.__VINEXT_DEFAULT_LOCALE__ = i18nConfig.defaultLocale;
+      }
 
-    const pageModule = route.module;
-    const PageComponent = pageModule.default;
+      const pageModule = route.module;
+      const PageComponent = pageModule.default;
     if (!PageComponent) {
       return new Response("Page has no default export", { status: 500 });
     }

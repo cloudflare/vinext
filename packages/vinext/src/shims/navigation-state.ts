@@ -23,7 +23,7 @@ import {
 // ALS setup — same pattern as headers.ts
 // ---------------------------------------------------------------------------
 
-interface NavigationState {
+export interface NavigationState {
   serverContext: NavigationContext | null;
   serverInsertedHTMLCallbacks: Array<() => unknown>;
 }
@@ -41,7 +41,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 
 function _getState(): NavigationState {
   if (isInsideUnifiedScope()) {
-    return getRequestContext() as unknown as NavigationState;
+    return getRequestContext();
   }
   return _als.getStore() ?? _fallbackState;
 }
@@ -54,16 +54,8 @@ function _getState(): NavigationState {
 export function runWithNavigationContext<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
-      const previousServerContext = uCtx.serverContext;
-      const previousCallbacks = uCtx.serverInsertedHTMLCallbacks;
-
       uCtx.serverContext = null;
       uCtx.serverInsertedHTMLCallbacks = [];
-
-      return () => {
-        uCtx.serverContext = previousServerContext;
-        uCtx.serverInsertedHTMLCallbacks = previousCallbacks;
-      };
     }, fn);
   }
   const state: NavigationState = {

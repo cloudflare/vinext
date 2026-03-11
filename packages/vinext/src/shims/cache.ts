@@ -388,7 +388,7 @@ export { unstable_noStore as noStore };
 //
 // Uses AsyncLocalStorage for request isolation on concurrent workers.
 // ---------------------------------------------------------------------------
-interface CacheState {
+export interface CacheState {
   requestScopedCacheLife: CacheLifeConfig | null;
 }
 
@@ -404,7 +404,7 @@ const _cacheFallbackState = (_g[_FALLBACK_KEY] ??= {
 
 function _getCacheState(): CacheState {
   if (isInsideUnifiedScope()) {
-    return getRequestContext() as unknown as CacheState;
+    return getRequestContext();
   }
   return _cacheAls.getStore() ?? _cacheFallbackState;
 }
@@ -418,11 +418,7 @@ function _getCacheState(): CacheState {
 export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
-      const previous = uCtx.requestScopedCacheLife;
       uCtx.requestScopedCacheLife = null;
-      return () => {
-        uCtx.requestScopedCacheLife = previous;
-      };
     }, fn);
   }
   const state: CacheState = {

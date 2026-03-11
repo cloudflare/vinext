@@ -428,7 +428,7 @@ const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??=
 // Uses Symbol.for() on globalThis so the storage is shared across Vite's
 // multi-environment module instances.
 // ---------------------------------------------------------------------------
-interface FetchCacheState {
+export interface FetchCacheState {
   currentRequestTags: string[];
 }
 
@@ -444,7 +444,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 
 function _getState(): FetchCacheState {
   if (isInsideUnifiedScope()) {
-    return getRequestContext() as unknown as FetchCacheState;
+    return getRequestContext();
   }
   return _als.getStore() ?? _fallbackState;
 }
@@ -747,11 +747,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
   _ensurePatchInstalled();
   if (isInsideUnifiedScope()) {
     return await runWithUnifiedStateMutation((uCtx) => {
-      const previousTags = uCtx.currentRequestTags;
       uCtx.currentRequestTags = [];
-      return () => {
-        uCtx.currentRequestTags = previousTags;
-      };
     }, fn);
   }
   return _als.run({ currentRequestTags: [] }, fn);

@@ -20,7 +20,7 @@ import {
 // ALS setup
 // ---------------------------------------------------------------------------
 
-interface HeadState {
+export interface HeadState {
   ssrHeadElements: string[];
 }
 
@@ -35,7 +35,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 
 function _getState(): HeadState {
   if (isInsideUnifiedScope()) {
-    return getRequestContext() as unknown as HeadState;
+    return getRequestContext();
   }
   return _als.getStore() ?? _fallbackState;
 }
@@ -48,11 +48,7 @@ function _getState(): HeadState {
 export function runWithHeadState<T>(fn: () => T | Promise<T>): T | Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
-      const previous = uCtx.ssrHeadElements;
       uCtx.ssrHeadElements = [];
-      return () => {
-        uCtx.ssrHeadElements = previous;
-      };
     }, fn);
   }
 
