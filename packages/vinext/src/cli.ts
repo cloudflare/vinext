@@ -103,7 +103,7 @@ function parseArgs(args: string[]): ParsedArgs {
     const arg = args[i];
     if (arg === "--help" || arg === "-h") {
       result.help = true;
-    } else if (arg === "--verbose") {
+    } else if (arg === "--verbose" || arg === "-v") {
       result.verbose = true;
     } else if (arg === "--turbopack") {
       result.turbopack = true; // no-op, accepted for script compat
