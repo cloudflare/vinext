@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vitest";
 import vinext from "../packages/vinext/src/index.js";
 import type { Plugin } from "vite";
 import fs from "node:fs";
@@ -41,6 +41,8 @@ afterAll(async () => {
 // ── Tests ─────────────────────────────────────────────────────
 
 describe("vinext:og-inline-fetch-assets plugin", () => {
+  afterEach(() => vi.restoreAllMocks());
+
   it("exists in the plugin array", () => {
     const plugin = getOgInlinePlugin();
     expect(plugin.name).toBe("vinext:og-inline-fetch-assets");
@@ -132,7 +134,5 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
       (call) => call[0] === path.join(tmpDir, "noto-sans.ttf"),
     );
     expect(calls.length).toBe(1);
-
-    readFileSpy.mockRestore();
   });
 });

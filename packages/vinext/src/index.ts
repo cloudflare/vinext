@@ -2860,7 +2860,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const absPath = path.resolve(moduleDir, relPath);
 
             let fileBase64 = _ogInlineCache.get(absPath);
-            if (!fileBase64) {
+            if (fileBase64 === undefined) {
               try {
                 const buf = await fs.promises.readFile(absPath);
                 fileBase64 = buf.toString("base64");
@@ -2900,7 +2900,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const absPath = path.resolve(moduleDir, relPath);
 
             let fileBase64 = _ogInlineCache.get(absPath);
-            if (!fileBase64) {
+            if (fileBase64 === undefined) {
               try {
                 const buf = await fs.promises.readFile(absPath);
                 fileBase64 = buf.toString("base64");
