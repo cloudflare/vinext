@@ -224,9 +224,11 @@ export function storePrefetchResponse(rscUrl: string, response: Response): void 
   // Sweep expired entries before resorting to FIFO eviction
   if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
     const now = Date.now();
+    const prefetched = getPrefetchedUrls();
     for (const [key, entry] of cache) {
       if (now - entry.timestamp >= PREFETCH_CACHE_TTL) {
         cache.delete(key);
+        prefetched.delete(key);
       }
     }
   }
@@ -234,7 +236,10 @@ export function storePrefetchResponse(rscUrl: string, response: Response): void 
   // FIFO fallback if still at capacity after sweep
   if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
     const oldest = cache.keys().next().value;
-    if (oldest !== undefined) cache.delete(oldest);
+    if (oldest !== undefined) {
+      cache.delete(oldest);
+      getPrefetchedUrls().delete(oldest);
+    }
   }
 
   cache.set(rscUrl, { response, timestamp: Date.now() });

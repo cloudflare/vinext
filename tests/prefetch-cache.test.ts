@@ -14,6 +14,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
 let storePrefetchResponse: Navigation["storePrefetchResponse"];
 let getPrefetchCache: Navigation["getPrefetchCache"];
+let getPrefetchedUrls: Navigation["getPrefetchedUrls"];
 let MAX_PREFETCH_CACHE_SIZE: Navigation["MAX_PREFETCH_CACHE_SIZE"];
 let PREFETCH_CACHE_TTL: Navigation["PREFETCH_CACHE_TTL"];
 
@@ -31,6 +32,7 @@ beforeEach(async () => {
   const nav = await import("../packages/vinext/src/shims/navigation.js");
   storePrefetchResponse = nav.storePrefetchResponse;
   getPrefetchCache = nav.getPrefetchCache;
+  getPrefetchedUrls = nav.getPrefetchedUrls;
   MAX_PREFETCH_CACHE_SIZE = nav.MAX_PREFETCH_CACHE_SIZE;
   PREFETCH_CACHE_TTL = nav.PREFETCH_CACHE_TTL;
 });
@@ -43,11 +45,11 @@ afterEach(() => {
 /** Helper: fill cache with `count` entries at a given timestamp. */
 function fillCache(count: number, timestamp: number, keyPrefix = "/page-"): void {
   const cache = getPrefetchCache();
+  const prefetched = getPrefetchedUrls();
   for (let i = 0; i < count; i++) {
-    cache.set(`${keyPrefix}${i}.rsc`, {
-      response: new Response(`body-${i}`),
-      timestamp,
-    });
+    const key = `${keyPrefix}${i}.rsc`;
+    cache.set(key, { response: new Response(`body-${i}`), timestamp });
+    prefetched.add(key);
   }
 }
 
@@ -58,6 +60,7 @@ describe("prefetch cache eviction", () => {
 
     fillCache(MAX_PREFETCH_CACHE_SIZE, expired);
     expect(getPrefetchCache().size).toBe(MAX_PREFETCH_CACHE_SIZE);
+    expect(getPrefetchedUrls().size).toBe(MAX_PREFETCH_CACHE_SIZE);
 
     vi.spyOn(Date, "now").mockReturnValue(now);
     storePrefetchResponse("/new.rsc", new Response("new"));
@@ -65,6 +68,8 @@ describe("prefetch cache eviction", () => {
     const cache = getPrefetchCache();
     expect(cache.size).toBe(1);
     expect(cache.has("/new.rsc")).toBe(true);
+    // All evicted entries should be removed from prefetched URL set
+    expect(getPrefetchedUrls().size).toBe(0);
   });
 
   it("falls back to FIFO when all entries are fresh", () => {
@@ -72,6 +77,7 @@ describe("prefetch cache eviction", () => {
 
     fillCache(MAX_PREFETCH_CACHE_SIZE, now);
     expect(getPrefetchCache().size).toBe(MAX_PREFETCH_CACHE_SIZE);
+    expect(getPrefetchedUrls().size).toBe(MAX_PREFETCH_CACHE_SIZE);
 
     vi.spyOn(Date, "now").mockReturnValue(now);
     storePrefetchResponse("/new.rsc", new Response("new"));
@@ -84,47 +90,57 @@ describe("prefetch cache eviction", () => {
     expect(cache.has("/page-0.rsc")).toBe(false);
     // Second entry should survive
     expect(cache.has("/page-1.rsc")).toBe(true);
+    // FIFO-evicted entry should be removed from prefetched URL set
+    expect(getPrefetchedUrls().size).toBe(MAX_PREFETCH_CACHE_SIZE - 1);
+    expect(getPrefetchedUrls().has("/page-0.rsc")).toBe(false);
   });
 
   it("sweeps only expired entries when cache has a mix", () => {
     const now = Date.now();
     const expired = now - PREFETCH_CACHE_TTL - 1_000;
 
-    // 25 expired + 25 fresh = at capacity
-    fillCache(25, expired, "/expired-");
-    fillCache(25, now, "/fresh-");
+    const half = Math.floor(MAX_PREFETCH_CACHE_SIZE / 2);
+    const rest = MAX_PREFETCH_CACHE_SIZE - half;
+
+    fillCache(half, expired, "/expired-");
+    fillCache(rest, now, "/fresh-");
     expect(getPrefetchCache().size).toBe(MAX_PREFETCH_CACHE_SIZE);
+    expect(getPrefetchedUrls().size).toBe(MAX_PREFETCH_CACHE_SIZE);
 
     vi.spyOn(Date, "now").mockReturnValue(now);
     storePrefetchResponse("/new.rsc", new Response("new"));
 
     const cache = getPrefetchCache();
-    // 25 expired swept, 25 fresh kept, 1 new added
-    expect(cache.size).toBe(26);
+    // expired swept, fresh kept, 1 new added
+    expect(cache.size).toBe(rest + 1);
     expect(cache.has("/new.rsc")).toBe(true);
 
     // All expired entries should be gone
-    for (let i = 0; i < 25; i++) {
+    for (let i = 0; i < half; i++) {
       expect(cache.has(`/expired-${i}.rsc`)).toBe(false);
     }
     // All fresh entries should survive
-    for (let i = 0; i < 25; i++) {
+    for (let i = 0; i < rest; i++) {
       expect(cache.has(`/fresh-${i}.rsc`)).toBe(true);
     }
+    // Only fresh entries remain in prefetched URL set
+    expect(getPrefetchedUrls().size).toBe(rest);
   });
 
   it("does not sweep when cache is below capacity", () => {
     const now = Date.now();
     const expired = now - PREFETCH_CACHE_TTL - 1_000;
 
-    // Below capacity — even expired entries should not be swept
-    fillCache(10, expired);
+    const belowCapacity = MAX_PREFETCH_CACHE_SIZE - 1;
+    fillCache(belowCapacity, expired);
 
     vi.spyOn(Date, "now").mockReturnValue(now);
     storePrefetchResponse("/new.rsc", new Response("new"));
 
     const cache = getPrefetchCache();
-    // 10 expired still there + 1 new = 11
-    expect(cache.size).toBe(11);
+    // Below capacity — no eviction, all entries kept + 1 new
+    expect(cache.size).toBe(belowCapacity + 1);
+    // Prefetched URL set unchanged (no eviction triggered)
+    expect(getPrefetchedUrls().size).toBe(belowCapacity);
   });
 });
