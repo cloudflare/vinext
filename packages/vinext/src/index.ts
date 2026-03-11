@@ -291,9 +291,7 @@ const _postcssCache = new Map<string, Promise<{ plugins: any[] } | undefined>>()
  * Returns the resolved PostCSS config object to inject into Vite's
  * `css.postcss`, or `undefined` if no resolution is needed.
  */
-function resolvePostcssStringPlugins(
-  projectRoot: string,
-): Promise<{ plugins: any[] } | undefined> {
+function resolvePostcssStringPlugins(projectRoot: string): Promise<{ plugins: any[] } | undefined> {
   if (_postcssCache.has(projectRoot)) return _postcssCache.get(projectRoot)!;
 
   const promise = _resolvePostcssStringPluginsUncached(projectRoot);
@@ -304,7 +302,6 @@ function resolvePostcssStringPlugins(
 async function _resolvePostcssStringPluginsUncached(
   projectRoot: string,
 ): Promise<{ plugins: any[] } | undefined> {
-
   // Find the PostCSS config file
   let configPath: string | null = null;
   for (const name of POSTCSS_CONFIG_FILES) {
