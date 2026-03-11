@@ -20,6 +20,7 @@
  */
 
 import { getCacheHandler, type CachedFetchValue } from "./cache.js";
+import { getRequestExecutionContext } from "./request-context.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 // ---------------------------------------------------------------------------
@@ -580,9 +581,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
         const staleData = cached.value.data;
 
-        // Background refetch
+        // Background refetch — register with waitUntil so Cloudflare Workers
+        // keeps the isolate alive until the refetch completes.
         const cleanInit = stripNextFromInit(init);
-        originalFetch(input, cleanInit)
+        const refetchPromise = originalFetch(input, cleanInit)
           .then(async (freshResp) => {
             const freshBody = await freshResp.text();
             const freshHeaders: Record<string, string> = {};
@@ -615,6 +617,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
           .catch((err) => {
             console.error("[vinext] fetch cache background revalidation failed:", err);
           });
+
+        getRequestExecutionContext()?.waitUntil(refetchPromise);
 
         // Return stale data immediately
         return new Response(staleData.body, {
