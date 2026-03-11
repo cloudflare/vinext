@@ -8,7 +8,7 @@ import {
 } from "./routing/pages-router.js";
 import { generateServerEntry as _generateServerEntry } from "./entries/pages-server-entry.js";
 import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
-import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
+import { appRouter, invalidateAppRouteCache, type AppRoute } from "./routing/app-router.js";
 import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
@@ -60,6 +60,7 @@ import MagicString from "magic-string";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import commonjs from "vite-plugin-commonjs";
 
@@ -1655,6 +1656,213 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         }
 
+        function normalizeAppRequestPath(url: string): string | null {
+          const [rawPathname] = url.split("?");
+          if (
+            url.startsWith("/@") ||
+            url.startsWith("/__vite") ||
+            url.startsWith("/node_modules")
+          ) {
+            return null;
+          }
+
+          let normalizedUrl = url;
+          if (rawPathname.endsWith("/index.html")) {
+            normalizedUrl = normalizedUrl.replace("/index.html", "/");
+          } else if (rawPathname.endsWith(".html")) {
+            normalizedUrl = normalizedUrl.replace(/\.html(?=\?|$)/, "");
+          }
+
+          let pathname = normalizedUrl.split("?")[0];
+          if (pathname.endsWith(".rsc")) pathname = pathname.slice(0, -4) || "/";
+          if (pathname.includes(".")) return null;
+
+          pathname = pathname.replaceAll("\\", "/");
+          if (pathname.startsWith("//")) return null;
+
+          try {
+            pathname = normalizePath(decodeURIComponent(pathname));
+          } catch {
+            return null;
+          }
+
+          const bp = nextConfig?.basePath ?? "";
+          if (bp && pathname.startsWith(bp)) {
+            pathname = pathname.slice(bp.length) || "/";
+          }
+
+          return pathname || "/";
+        }
+
+        function cleanViteModuleId(moduleId: string): string {
+          const hashIndex = moduleId.indexOf("#");
+          const queryIndex = moduleId.indexOf("?");
+          const cutIndex =
+            hashIndex === -1
+              ? queryIndex
+              : queryIndex === -1
+                ? hashIndex
+                : Math.min(hashIndex, queryIndex);
+          return cutIndex === -1 ? moduleId : moduleId.slice(0, cutIndex);
+        }
+
+        function shouldTraverseAppRscDependency(moduleId: string): boolean {
+          if (!moduleId || moduleId.startsWith("\0")) return false;
+          const cleanId = cleanViteModuleId(moduleId);
+          if (!path.isAbsolute(cleanId)) return false;
+          if (cleanId.includes("/node_modules/")) return false;
+          if (cleanId.startsWith(__dirname)) return false;
+          return true;
+        }
+
+        function collectAppRouteModuleFiles(route: AppRoute): string[] {
+          const files = new Set<string>();
+          const add = (filePath: string | null | undefined) => {
+            if (filePath) files.add(filePath);
+          };
+
+          add(route.pagePath);
+          add(route.routePath);
+          for (const layout of route.layouts) add(layout);
+          for (const tmpl of route.templates) add(tmpl);
+          add(route.loadingPath);
+          add(route.errorPath);
+          for (const layoutErrorPath of route.layoutErrorPaths) add(layoutErrorPath);
+          add(route.notFoundPath);
+          for (const notFoundPath of route.notFoundPaths) add(notFoundPath);
+          add(route.forbiddenPath);
+          add(route.unauthorizedPath);
+          for (const slot of route.parallelSlots) {
+            add(slot.pagePath);
+            add(slot.defaultPath);
+            add(slot.layoutPath);
+            add(slot.loadingPath);
+            add(slot.errorPath);
+            for (const interceptingRoute of slot.interceptingRoutes) {
+              add(interceptingRoute.pagePath);
+            }
+          }
+
+          return [...files];
+        }
+
+        function getRscModulesByFile(rscEnv: any, filePath: string): any[] {
+          const modulesByFile = rscEnv.moduleGraph.getModulesByFile?.(filePath);
+          if (modulesByFile && modulesByFile.size > 0) {
+            return [...modulesByFile];
+          }
+
+          const modules: any[] = [];
+          for (const mod of rscEnv.moduleGraph.idToModuleMap.values()) {
+            if (mod.id && cleanViteModuleId(mod.id) === filePath) {
+              modules.push(mod);
+            }
+          }
+          return modules;
+        }
+
+        function collectAppRscModules(rscEnv: any, routeModuleFiles: Iterable<string>): Set<any> {
+          const queue: any[] = [];
+          const visited = new Set<string>();
+          const collected = new Set<any>();
+
+          for (const filePath of routeModuleFiles) {
+            for (const mod of getRscModulesByFile(rscEnv, filePath)) {
+              queue.push(mod);
+            }
+          }
+
+          while (queue.length > 0) {
+            const mod = queue.pop();
+            if (!mod?.id) continue;
+            if (visited.has(mod.id)) continue;
+            visited.add(mod.id);
+
+            if (!shouldTraverseAppRscDependency(mod.id)) continue;
+
+            collected.add(mod);
+            for (const imported of mod.importedModules ?? []) {
+              if (imported?.id && shouldTraverseAppRscDependency(imported.id)) {
+                queue.push(imported);
+              }
+            }
+          }
+
+          return collected;
+        }
+
+        async function resolveAppRscRouteModuleFilesForRequest(
+          url: string,
+          options: {
+            allowFullAppFallback: boolean;
+            skipIfPagesRouteMatches: boolean;
+          },
+        ): Promise<string[] | null> {
+          const pathname = normalizeAppRequestPath(url);
+          if (!pathname) return null;
+
+          const appRoutes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
+          const appMatch = matchRoute(pathname, appRoutes as any);
+          if (appMatch) {
+            return collectAppRouteModuleFiles(appMatch.route as unknown as AppRoute);
+          }
+
+          if (options.skipIfPagesRouteMatches && hasPagesDir) {
+            const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+            if (matchRoute(pathname, pageRoutes)) return null;
+          }
+
+          if (!options.allowFullAppFallback) return null;
+
+          const files = new Set<string>();
+          for (const route of appRoutes) {
+            for (const filePath of collectAppRouteModuleFiles(route)) {
+              files.add(filePath);
+            }
+          }
+          return [...files];
+        }
+
+        async function invalidateAppRscModulesForRequest(
+          url: string,
+          options?: {
+            allowFullAppFallback?: boolean;
+            skipIfPagesRouteMatches?: boolean;
+            staticExportToken?: string;
+            requestStaticExportToken?: string;
+          },
+        ) {
+          if (hasCloudflarePlugin) return;
+
+          const rscEnv = server.environments["rsc"];
+          if (!rscEnv) return;
+
+          // Static export crawls the dev server to materialize HTML files.
+          // Those requests are build-time, not interactive dev requests, so
+          // skip per-request invalidation to avoid recompiling the full App
+          // Router tree for every exported page.
+          if (
+            options?.staticExportToken &&
+            options.requestStaticExportToken &&
+            options.requestStaticExportToken === options.staticExportToken
+          ) {
+            return;
+          }
+
+          const routeModuleFiles = await resolveAppRscRouteModuleFilesForRequest(url, {
+            allowFullAppFallback: options?.allowFullAppFallback ?? !hasPagesDir,
+            skipIfPagesRouteMatches: options?.skipIfPagesRouteMatches ?? hasPagesDir,
+          });
+          if (!routeModuleFiles || routeModuleFiles.length === 0) return;
+
+          for (const mod of collectAppRscModules(rscEnv, routeModuleFiles)) {
+            rscEnv.moduleGraph.invalidateModule(mod);
+          }
+
+          const entryModule = rscEnv.moduleGraph.getModuleById(RESOLVED_RSC_ENTRY);
+          if (entryModule) rscEnv.moduleGraph.invalidateModule(entryModule);
+        }
+
         server.watcher.on("add", (filePath: string) => {
           if (hasPagesDir && filePath.startsWith(pagesDir) && pageExtensions.test(filePath)) {
             invalidateRouteCache(pagesDir);
@@ -1727,15 +1935,42 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               console.error("[vinext] Instrumentation error:", err);
             });
           }
+          const staticExportToken = hasAppDir ? randomUUID() : undefined;
+          if (staticExportToken) {
+            (server as any).__vinextStaticExportToken = staticExportToken;
+          }
           // App Router request logging in dev server
           //
           // For App Router, the RSC plugin handles requests internally.
           // We install a timing middleware here that:
+          //   0. Invalidates the generated RSC entry and its route modules so
+          //      server components are re-executed on every dev request.
           //   1. Intercepts writeHead() to pluck the X-Vinext-Timing header
           //      (compileMs,renderMs) that the RSC entry attaches before
           //      it is flushed to the client.
           //   2. Logs the full request after res finishes, using those timings.
           if (hasAppDir) {
+            server.middlewares.use(async (req, _res, next) => {
+              try {
+                const url = req.url ?? "/";
+                const isRscRequest = url.split("?")[0].endsWith(".rsc");
+                if (!hasPagesDir || isRscRequest) {
+                  await invalidateAppRscModulesForRequest(url, {
+                    allowFullAppFallback: true,
+                    skipIfPagesRouteMatches: false,
+                    staticExportToken,
+                    requestStaticExportToken:
+                      typeof req.headers["x-vinext-static-export"] === "string"
+                        ? req.headers["x-vinext-static-export"]
+                        : undefined,
+                  });
+                }
+                next();
+              } catch (err) {
+                next(err);
+              }
+            });
+
             server.middlewares.use((req, res, next) => {
               const url = req.url ?? "/";
               // Skip Vite internals, HMR, and static assets.
@@ -2224,7 +2459,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
                 // No API route matched — if app dir exists, let the RSC plugin handle it
                 // (app/api/* route handlers live there). Otherwise hard-404.
-                if (hasAppDir) return next();
+                if (hasAppDir) {
+                  await invalidateAppRscModulesForRequest(resolvedUrl, {
+                    allowFullAppFallback: true,
+                    skipIfPagesRouteMatches: false,
+                    staticExportToken,
+                    requestStaticExportToken:
+                      typeof req.headers["x-vinext-static-export"] === "string"
+                        ? req.headers["x-vinext-static-export"]
+                        : undefined,
+                  });
+                  return next();
+                }
 
                 res.statusCode = 404;
                 res.end("404 - API route not found");
@@ -2286,6 +2532,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   }
                   const fallbackMatch = matchRoute(fallbackRewrite.split("?")[0], routes);
                   if (!fallbackMatch && hasAppDir) {
+                    await invalidateAppRscModulesForRequest(fallbackRewrite, {
+                      allowFullAppFallback: true,
+                      skipIfPagesRouteMatches: false,
+                      staticExportToken,
+                      requestStaticExportToken:
+                        typeof req.headers["x-vinext-static-export"] === "string"
+                          ? req.headers["x-vinext-static-export"]
+                          : undefined,
+                    });
                     return next();
                   }
                   if (middlewareRequestHeaders) {
@@ -2298,7 +2553,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
               // No fallback matched - if app dir exists, let the RSC plugin handle it,
               // otherwise render via the pages SSR handler (will 404 for unknown routes).
-              if (hasAppDir) return next();
+              if (hasAppDir) {
+                await invalidateAppRscModulesForRequest(resolvedUrl, {
+                  allowFullAppFallback: true,
+                  skipIfPagesRouteMatches: false,
+                  staticExportToken,
+                  requestStaticExportToken:
+                    typeof req.headers["x-vinext-static-export"] === "string"
+                      ? req.headers["x-vinext-static-export"]
+                      : undefined,
+                });
+                return next();
+              }
 
               await handler(req, res, resolvedUrl, mwStatus);
             } catch (e) {

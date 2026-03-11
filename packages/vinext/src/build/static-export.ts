@@ -625,6 +625,10 @@ export async function staticExportApp(
   options: AppStaticExportOptions,
 ): Promise<StaticExportResult> {
   const { baseUrl, routes, server, outDir, config } = options;
+  const staticExportToken =
+    typeof (server as any).__vinextStaticExportToken === "string"
+      ? ((server as any).__vinextStaticExportToken as string)
+      : null;
   const result: StaticExportResult = {
     pageCount: 0,
     files: [],
@@ -709,7 +713,14 @@ export async function staticExportApp(
   // Fetch each URL from the dev server and write HTML
   for (const urlPath of urlsToRender) {
     try {
-      const res = await fetch(`${baseUrl}${urlPath}`);
+      const res = await fetch(
+        `${baseUrl}${urlPath}`,
+        staticExportToken
+          ? {
+              headers: { "x-vinext-static-export": staticExportToken },
+            }
+          : undefined,
+      );
       if (!res.ok) {
         result.errors.push({
           route: urlPath,
@@ -736,7 +747,14 @@ export async function staticExportApp(
 
   // Render 404 page
   try {
-    const res = await fetch(`${baseUrl}/__nonexistent_page_for_404__`);
+    const res = await fetch(
+      `${baseUrl}/__nonexistent_page_for_404__`,
+      staticExportToken
+        ? {
+            headers: { "x-vinext-static-export": staticExportToken },
+          }
+        : undefined,
+    );
     if (res.status === 404) {
       const html = await res.text();
       if (html.length > 0) {

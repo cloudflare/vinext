@@ -49,6 +49,10 @@ export function middleware(request: NextRequest) {
     return NextResponse.rewrite(new URL("/", request.url));
   }
 
+  if (pathname === "/mw-pages-to-app-rewrite") {
+    return NextResponse.rewrite(new URL("/nextjs-compat/isr-shared-module", request.url));
+  }
+
   // Rewrite with custom status code
   // Ref: opennextjs-cloudflare middleware.ts — NextResponse.rewrite with status
   if (pathname === "/middleware-rewrite-status") {
@@ -149,6 +153,7 @@ export const config = {
     "/about",
     "/middleware-redirect",
     "/middleware-rewrite",
+    "/mw-pages-to-app-rewrite",
     "/middleware-rewrite-status",
     "/middleware-blocked",
     "/middleware-throw",
