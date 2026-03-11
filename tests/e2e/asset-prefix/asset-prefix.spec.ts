@@ -35,10 +35,9 @@ test.describe("assetPrefix — script and link tags in rendered HTML", () => {
     ).toBeGreaterThan(0);
 
     for (const src of scriptSrcs) {
-      expect(
-        src,
-        `<script src="${src}"> should start with CDN origin`,
-      ).toMatch(new RegExp(`^${CDN}/`));
+      expect(src, `<script src="${src}"> should start with CDN origin`).toMatch(
+        new RegExp(`^${CDN}/`),
+      );
     }
   });
 
@@ -72,17 +71,16 @@ test.describe("assetPrefix — script and link tags in rendered HTML", () => {
     expect(response.status()).toBe(200);
     const html = await response.text();
 
-    const cssHrefs = [
-      ...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g),
-    ].map((m) => m[1]);
+    const cssHrefs = [...html.matchAll(/<link[^>]+rel="stylesheet"[^>]+href="([^"]+)"/g)].map(
+      (m) => m[1],
+    );
 
     // If any stylesheet link tags exist, all of them must be CDN-prefixed.
     // (CSS injection depends on whether the build produces a separate CSS chunk.)
     for (const href of cssHrefs) {
-      expect(
-        href,
-        `<link rel="stylesheet" href="${href}"> should start with CDN origin`,
-      ).toMatch(new RegExp(`^${CDN}/`));
+      expect(href, `<link rel="stylesheet" href="${href}"> should start with CDN origin`).toMatch(
+        new RegExp(`^${CDN}/`),
+      );
     }
   });
 
