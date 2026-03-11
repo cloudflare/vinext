@@ -86,7 +86,7 @@ export function runWithExecutionContext<T>(
  */
 export function getRequestExecutionContext(): ExecutionContextLike | null {
   if (isInsideUnifiedScope()) {
-    return getRequestContext().executionContext as ExecutionContextLike | null;
+    return getRequestContext().executionContext;
   }
   // getStore() returns undefined when called outside an ALS scope;
   // normalise to null for a consistent return type.

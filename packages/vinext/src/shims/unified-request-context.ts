@@ -124,6 +124,9 @@ export function runWithUnifiedStateMutation<T>(
   if (!parentCtx) return fn();
 
   const childCtx = { ...parentCtx };
+  // NOTE: This is a shallow clone. Callers must replace array/object slices
+  // instead of mutating inherited references in-place, or the parent scope
+  // will observe those changes too.
   mutate(childCtx);
   return _als.run(childCtx, fn);
 }

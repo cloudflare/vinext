@@ -78,16 +78,6 @@ _registerRouterStateAccessors({
   },
 
   setSSRContext(ctx: SSRContext | null): void {
-    if (isInsideUnifiedScope()) {
-      getRequestContext().ssrContext = ctx;
-      return;
-    }
-    const state = _als.getStore();
-    if (state) {
-      state.ssrContext = ctx;
-    } else {
-      // No ALS scope — fallback for environments without als.run() wrapping.
-      _fallbackState.ssrContext = ctx;
-    }
+    _getState().ssrContext = ctx;
   },
 });

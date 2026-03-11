@@ -68,15 +68,6 @@ _registerHeadStateAccessors({
   },
 
   resetSSRHead(): void {
-    if (isInsideUnifiedScope()) {
-      getRequestContext().ssrHeadElements = [];
-      return;
-    }
-    const state = _als.getStore();
-    if (state) {
-      state.ssrHeadElements = [];
-    } else {
-      _fallbackState.ssrHeadElements = [];
-    }
+    _getState().ssrHeadElements = [];
   },
 });
