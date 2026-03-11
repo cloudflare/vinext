@@ -154,11 +154,15 @@ describe("vinext:og-inline-fetch-assets plugin", () => {
     const moduleId = path.join(tmpDir, "og.tsx");
 
     const firstResult = await transform.call(plugin, code, moduleId);
-    expect(firstResult.code).toContain(`Buffer.from(${JSON.stringify(initialFontBase64)},"base64")`);
+    expect(firstResult.code).toContain(
+      `Buffer.from(${JSON.stringify(initialFontBase64)},"base64")`,
+    );
 
     await fsp.writeFile(devFontPath, Buffer.from("dev-font-v2"));
 
     const secondResult = await transform.call(plugin, code, moduleId);
-    expect(secondResult.code).toContain(`Buffer.from(${JSON.stringify(updatedFontBase64)},"base64")`);
+    expect(secondResult.code).toContain(
+      `Buffer.from(${JSON.stringify(updatedFontBase64)},"base64")`,
+    );
   });
 });
