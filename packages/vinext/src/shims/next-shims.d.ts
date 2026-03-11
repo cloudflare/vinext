@@ -115,6 +115,7 @@ declare module "next/navigation" {
     response: Response;
     timestamp: number;
   }
+  export const MAX_PREFETCH_CACHE_SIZE: number;
   export const PREFETCH_CACHE_TTL: number;
   export function toRscUrl(href: string): string;
   export function getPrefetchCache(): Map<string, PrefetchCacheEntry>;

@@ -55,8 +55,9 @@ function fillCache(count: number, timestamp: number, keyPrefix = "/page-"): void
 
 describe("prefetch cache eviction", () => {
   it("sweeps all expired entries before FIFO", () => {
-    const now = Date.now();
-    const expired = now - PREFETCH_CACHE_TTL - 1_000; // 31s ago
+    // Use fixed arbitrary values to avoid any dependency on the real wall clock
+    const now = 1_000_000;
+    const expired = now - PREFETCH_CACHE_TTL - 1_000; // 31s before `now`
 
     fillCache(MAX_PREFETCH_CACHE_SIZE, expired);
     expect(getPrefetchCache().size).toBe(MAX_PREFETCH_CACHE_SIZE);
@@ -73,7 +74,8 @@ describe("prefetch cache eviction", () => {
   });
 
   it("falls back to FIFO when all entries are fresh", () => {
-    const now = Date.now();
+    // Use fixed arbitrary values to avoid any dependency on the real wall clock
+    const now = 1_000_000;
 
     fillCache(MAX_PREFETCH_CACHE_SIZE, now);
     expect(getPrefetchCache().size).toBe(MAX_PREFETCH_CACHE_SIZE);
@@ -96,7 +98,8 @@ describe("prefetch cache eviction", () => {
   });
 
   it("sweeps only expired entries when cache has a mix", () => {
-    const now = Date.now();
+    // Use fixed arbitrary values to avoid any dependency on the real wall clock
+    const now = 1_000_000;
     const expired = now - PREFETCH_CACHE_TTL - 1_000;
 
     const half = Math.floor(MAX_PREFETCH_CACHE_SIZE / 2);
@@ -128,7 +131,8 @@ describe("prefetch cache eviction", () => {
   });
 
   it("does not sweep when cache is below capacity", () => {
-    const now = Date.now();
+    // Use fixed arbitrary values to avoid any dependency on the real wall clock
+    const now = 1_000_000;
     const expired = now - PREFETCH_CACHE_TTL - 1_000;
 
     const belowCapacity = MAX_PREFETCH_CACHE_SIZE - 1;
@@ -140,7 +144,10 @@ describe("prefetch cache eviction", () => {
     const cache = getPrefetchCache();
     // Below capacity — no eviction, all entries kept + 1 new
     expect(cache.size).toBe(belowCapacity + 1);
-    // Prefetched URL set unchanged (no eviction triggered)
+    // storePrefetchResponse only manages the prefetch cache — the caller
+    // (router.prefetch()) is responsible for adding to prefetchedUrls. So
+    // the new entry (/new.rsc) is NOT in prefetchedUrls here, and the count
+    // stays at belowCapacity (no evictions triggered).
     expect(getPrefetchedUrls().size).toBe(belowCapacity);
   });
 });

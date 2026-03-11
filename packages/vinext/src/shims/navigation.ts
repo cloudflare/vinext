@@ -220,10 +220,10 @@ export function getPrefetchedUrls(): Set<string> {
  */
 export function storePrefetchResponse(rscUrl: string, response: Response): void {
   const cache = getPrefetchCache();
+  const now = Date.now();
 
   // Sweep expired entries before resorting to FIFO eviction
   if (cache.size >= MAX_PREFETCH_CACHE_SIZE) {
-    const now = Date.now();
     const prefetched = getPrefetchedUrls();
     for (const [key, entry] of cache) {
       if (now - entry.timestamp >= PREFETCH_CACHE_TTL) {
@@ -242,7 +242,7 @@ export function storePrefetchResponse(rscUrl: string, response: Response): void 
     }
   }
 
-  cache.set(rscUrl, { response, timestamp: Date.now() });
+  cache.set(rscUrl, { response, timestamp: now });
 }
 
 // Client navigation listeners
