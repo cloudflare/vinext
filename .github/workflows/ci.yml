@@ -99,6 +99,14 @@ jobs:
           kill "$SERVER_PID" 2>/dev/null || true
           exit 1
 
+  shim-coverage:
+    name: Shim Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-pnpm
+      - run: pnpm dlx tsx scripts/check-shim-coverage.ts
+
   e2e:
     name: E2E (${{ matrix.project }})
     runs-on: ubuntu-latest

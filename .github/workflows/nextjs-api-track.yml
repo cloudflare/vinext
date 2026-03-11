@@ -1,0 +1,93 @@
+name: "Next.js API Tracking"
+
+on:
+  schedule:
+    - cron: "0 8 * * 1" # Monday 8am UTC
+  workflow_dispatch: # manual trigger
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: nextjs-api-track
+  cancel-in-progress: true
+
+jobs:
+  track:
+    name: Check for API changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-pnpm
+
+      - name: Get latest stable Next.js version
+        id: next-version
+        run: |
+          LATEST=$(npm view next version)
+          CURRENT=$(node -e "console.log(JSON.parse(require('fs').readFileSync('api-manifest.json','utf-8')).version)")
+          echo "latest=$LATEST" >> "$GITHUB_OUTPUT"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [ "$LATEST" = "$CURRENT" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract new API manifest
+        if: steps.next-version.outputs.changed == 'true'
+        run: |
+          npm install --no-save "next@${{ steps.next-version.outputs.latest }}"
+          pnpm tsx scripts/extract-nextjs-api.ts node_modules/next new-manifest.json
+
+      - name: Diff manifests
+        if: steps.next-version.outputs.changed == 'true'
+        id: diff
+        run: |
+          DIFF=$(pnpm tsx scripts/diff-nextjs-api.ts api-manifest.json new-manifest.json 2>&1) || true
+          echo "diff<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$DIFF" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Open tracking issue
+        if: steps.next-version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT_LATEST: ${{ steps.next-version.outputs.latest }}
+          NEXT_CURRENT: ${{ steps.next-version.outputs.current }}
+          API_DIFF: ${{ steps.diff.outputs.diff }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Check if an issue already exists for this version
+          EXISTING=$(gh issue list --label "next-api-tracking" --search "Next.js $NEXT_LATEST" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            echo "Issue #$EXISTING already exists for next@$NEXT_LATEST, skipping"
+            exit 0
+          fi
+
+          gh issue create \
+            --title "Next.js API update: ${NEXT_CURRENT} → ${NEXT_LATEST}" \
+            --label "next-api-tracking" \
+            --body "$(cat <<BODY
+          ## Next.js API Surface Change Detected
+
+          **Previous version:** ${NEXT_CURRENT}
+          **New version:** ${NEXT_LATEST}
+
+          ### API Diff
+
+          \`\`\`
+          ${API_DIFF}
+          \`\`\`
+
+          ### Action Items
+
+          - [ ] Review API changes
+          - [ ] Update shims for new exports
+          - [ ] Update \`known-gaps.json\` for intentionally unsupported features
+          - [ ] Regenerate \`api-manifest.json\` with \`pnpm tsx scripts/extract-nextjs-api.ts\`
+          - [ ] Run \`pnpm tsx scripts/check-shim-coverage.ts\` to verify coverage
+
+          _This issue was automatically created by the [Next.js API Tracking workflow](https://github.com/${REPO}/actions/workflows/nextjs-api-track.yml)._
+          BODY
+          )"

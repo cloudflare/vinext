@@ -1,0 +1,47 @@
+{
+  "next/jest": {
+    "exports": ["*"],
+    "status": "wont-fix",
+    "reason": "vinext uses Vitest, not Jest"
+  },
+  "next/client": {
+    "exports": ["*"],
+    "status": "wont-fix",
+    "reason": "Internal Next.js client module (emitter, hydrate, initialize, router, version), not a public API"
+  },
+  "next/app": {
+    "exports": ["*"],
+    "status": "wont-fix",
+    "reason": "next/app only exports a default type (AppProps). Our shim has types but no runtime default export."
+  },
+  "next/navigation": {
+    "exports": ["unstable_rethrow", "unstable_isUnrecognizedActionError"],
+    "status": "planned",
+    "reason": "Error rethrowing and action error detection not yet implemented"
+  },
+  "next/router": {
+    "exports": ["Router", "createRouter", "makePublicRouterInstance", "withRouter"],
+    "status": "planned",
+    "reason": "Router named export and legacy utilities (createRouter, makePublicRouterInstance, withRouter) not yet exported"
+  },
+  "next/server": {
+    "exports": ["ImageResponse"],
+    "status": "planned",
+    "reason": "ImageResponse is in next/og shim but not re-exported from next/server yet"
+  },
+  "next/head": {
+    "exports": ["defaultHead"],
+    "status": "planned",
+    "reason": "defaultHead utility not yet exported"
+  },
+  "next/dynamic": {
+    "exports": ["noSSR"],
+    "status": "planned",
+    "reason": "noSSR standalone function not yet exported (ssr:false option works via dynamic())"
+  },
+  "next/cache": {
+    "exports": ["unstable_cacheLife", "unstable_cacheTag"],
+    "status": "planned",
+    "reason": "Deprecated aliases for cacheLife/cacheTag not yet exported"
+  }
+}

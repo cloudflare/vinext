@@ -2,6 +2,11 @@ name: "Next.js tip"
 
 on:
   workflow_dispatch: # disabled schedule — re-enable once ecosystem tests are stable
+    inputs:
+      run_compat_tests:
+        description: "Run vinext compatibility tests"
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -31,6 +36,21 @@ jobs:
     with:
       repo_url: ${{ matrix.repo.url }}
       next_version: "canary"
+
+  compat-tests:
+    name: Compat Tests
+    if: inputs.run_compat_tests != false
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-node-pnpm
+      - name: Install next@canary
+        run: pnpm add -D next@canary --filter vinext
+      - name: Build plugin
+        run: pnpm run build
+      - name: Run compat tests
+        run: pnpm test tests/nextjs-compat/
 
   notify-on-failure:
     name: Send failure email

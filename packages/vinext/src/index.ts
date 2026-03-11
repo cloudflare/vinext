@@ -54,6 +54,7 @@ import { hasBasePath } from "./utils/base-path.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
+import { buildShimMap } from "./shims/registry.js";
 import tsconfigPaths from "vite-tsconfig-paths";
 import react, { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
@@ -927,89 +928,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
         // Build the shim alias map — used by both resolve.alias and resolveId
         // (resolveId handles .js extension variants for libraries like nuqs)
-        nextShimMap = {
-          ...nextConfig.aliases,
-          "next/link": path.join(shimsDir, "link"),
-          "next/head": path.join(shimsDir, "head"),
-          "next/router": path.join(shimsDir, "router"),
-          "next/compat/router": path.join(shimsDir, "compat-router"),
-          "next/image": path.join(shimsDir, "image"),
-          "next/legacy/image": path.join(shimsDir, "legacy-image"),
-          "next/dynamic": path.join(shimsDir, "dynamic"),
-          "next/app": path.join(shimsDir, "app"),
-          "next/document": path.join(shimsDir, "document"),
-          "next/config": path.join(shimsDir, "config"),
-          "next/script": path.join(shimsDir, "script"),
-          "next/server": path.join(shimsDir, "server"),
-          "next/navigation": path.join(shimsDir, "navigation"),
-          "next/headers": path.join(shimsDir, "headers"),
-          "next/font/google": path.join(shimsDir, "font-google"),
-          "next/font/local": path.join(shimsDir, "font-local"),
-          "next/cache": path.join(shimsDir, "cache"),
-          "next/form": path.join(shimsDir, "form"),
-          "next/og": path.join(shimsDir, "og"),
-          "next/web-vitals": path.join(shimsDir, "web-vitals"),
-          "next/amp": path.join(shimsDir, "amp"),
-          "next/error": path.join(shimsDir, "error"),
-          "next/constants": path.join(shimsDir, "constants"),
-          // Internal next/dist/* paths used by popular libraries
-          // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
-          "next/dist/shared/lib/app-router-context.shared-runtime": path.join(
-            shimsDir,
-            "internal",
-            "app-router-context",
-          ),
-          "next/dist/shared/lib/app-router-context": path.join(
-            shimsDir,
-            "internal",
-            "app-router-context",
-          ),
-          "next/dist/shared/lib/router-context.shared-runtime": path.join(
-            shimsDir,
-            "internal",
-            "router-context",
-          ),
-          "next/dist/shared/lib/utils": path.join(shimsDir, "internal", "utils"),
-          "next/dist/server/api-utils": path.join(shimsDir, "internal", "api-utils"),
-          "next/dist/server/web/spec-extension/cookies": path.join(shimsDir, "internal", "cookies"),
-          "next/dist/compiled/@edge-runtime/cookies": path.join(shimsDir, "internal", "cookies"),
-          "next/dist/server/app-render/work-unit-async-storage.external": path.join(
-            shimsDir,
-            "internal",
-            "work-unit-async-storage",
-          ),
-          "next/dist/client/components/work-unit-async-storage.external": path.join(
-            shimsDir,
-            "internal",
-            "work-unit-async-storage",
-          ),
-          "next/dist/client/components/request-async-storage.external": path.join(
-            shimsDir,
-            "internal",
-            "work-unit-async-storage",
-          ),
-          "next/dist/client/components/request-async-storage": path.join(
-            shimsDir,
-            "internal",
-            "work-unit-async-storage",
-          ),
-          // Re-export public modules for internal path imports
-          "next/dist/client/components/navigation": path.join(shimsDir, "navigation"),
-          "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
-          // server-only / client-only marker packages
-          "server-only": path.join(shimsDir, "server-only"),
-          "client-only": path.join(shimsDir, "client-only"),
-          "vinext/error-boundary": path.join(shimsDir, "error-boundary"),
-          "vinext/layout-segment-context": path.join(shimsDir, "layout-segment-context"),
-          "vinext/metadata": path.join(shimsDir, "metadata"),
-          "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
-          "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
-          "vinext/navigation-state": path.join(shimsDir, "navigation-state"),
-          "vinext/router-state": path.join(shimsDir, "router-state"),
-          "vinext/head-state": path.join(shimsDir, "head-state"),
-          "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
-          "vinext/html": path.resolve(__dirname, "server", "html"),
-        };
+        nextShimMap = buildShimMap(shimsDir, __dirname, nextConfig.aliases);
 
         // Detect if Cloudflare's vite plugin is present — if so, skip
         // SSR externals (Workers bundle everything, can't have Node.js externals).

@@ -1,0 +1,8 @@
+{
+  "version": "99.0.0",
+  "extractedAt": "2026-01-01T00:00:00.000Z",
+  "modules": {
+    "next/foo": ["bar", "baz"],
+    "next/qux": ["alpha", "beta"]
+  }
+}
