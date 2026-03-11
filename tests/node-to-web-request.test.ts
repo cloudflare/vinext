@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import type { IncomingMessage } from "node:http";
+import { Readable } from "node:stream";
 
 /**
  * Tests for the nodeToWebRequest helper in prod-server.ts.
@@ -9,7 +10,7 @@ import type { IncomingMessage } from "node:http";
  * RSC handler downstream.
  */
 
-/** Minimal mock that satisfies nodeToWebRequest's usage of IncomingMessage (GET only). */
+/** Minimal mock that satisfies nodeToWebRequest's usage of IncomingMessage. */
 function mockReq(overrides: Partial<IncomingMessage> = {}): IncomingMessage {
   return {
     headers: { host: "localhost:3000" },
@@ -62,7 +63,6 @@ describe("nodeToWebRequest", () => {
   });
 
   it("preserves headers and host when urlOverride is used", () => {
-    // GET request (no body needed, avoids Readable.toWeb mock issues)
     const req = mockReq({
       url: "/raw/url",
       method: "GET",
@@ -88,5 +88,27 @@ describe("nodeToWebRequest", () => {
 
     const parsed = new URL(webReq.url);
     expect(parsed.pathname).toBe("/");
+  });
+
+  it("urlOverride works for POST requests without affecting the body stream", async () => {
+    const bodyContent = JSON.stringify({ hello: "world" });
+    // Build a real Readable and graft the IncomingMessage properties onto it
+    // so that Readable.toWeb() (used internally for POST bodies) works correctly.
+    const readable = Readable.from([Buffer.from(bodyContent)]) as unknown as IncomingMessage;
+    readable.headers = { host: "localhost:3000", "content-type": "application/json" };
+    readable.url = "/raw/unnormalized//api/submit";
+    readable.method = "POST";
+
+    const webReq = nodeToWebRequest(readable, "/api/submit");
+
+    // URL is overridden correctly
+    const parsed = new URL(webReq.url);
+    expect(parsed.pathname).toBe("/api/submit");
+    expect(webReq.method).toBe("POST");
+
+    // Body stream is present and readable
+    expect(webReq.body).not.toBeNull();
+    const text = await webReq.text();
+    expect(text).toBe(bodyContent);
   });
 });

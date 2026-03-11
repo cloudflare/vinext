@@ -272,8 +272,12 @@ const POSTCSS_CONFIG_FILES = [
   ".postcssrc.yml",
 ];
 
-/** Module-level cache for resolvePostcssStringPlugins — avoids re-scanning per Vite environment. */
-const _postcssCache = new Map<string, { plugins: any[] } | undefined>();
+/**
+ * Module-level cache for resolvePostcssStringPlugins — avoids re-scanning per Vite environment.
+ * Stores the Promise itself so concurrent calls (RSC/SSR/Client config() hooks firing in
+ * parallel) all await the same in-flight scan rather than each starting their own.
+ */
+const _postcssCache = new Map<string, Promise<{ plugins: any[] } | undefined>>();
 
 /**
  * Resolve PostCSS string plugin names in a project's PostCSS config.
@@ -287,10 +291,19 @@ const _postcssCache = new Map<string, { plugins: any[] } | undefined>();
  * Returns the resolved PostCSS config object to inject into Vite's
  * `css.postcss`, or `undefined` if no resolution is needed.
  */
-async function resolvePostcssStringPlugins(
+function resolvePostcssStringPlugins(
   projectRoot: string,
 ): Promise<{ plugins: any[] } | undefined> {
-  if (_postcssCache.has(projectRoot)) return _postcssCache.get(projectRoot);
+  if (_postcssCache.has(projectRoot)) return _postcssCache.get(projectRoot)!;
+
+  const promise = _resolvePostcssStringPluginsUncached(projectRoot);
+  _postcssCache.set(projectRoot, promise);
+  return promise;
+}
+
+async function _resolvePostcssStringPluginsUncached(
+  projectRoot: string,
+): Promise<{ plugins: any[] } | undefined> {
 
   // Find the PostCSS config file
   let configPath: string | null = null;
@@ -302,7 +315,6 @@ async function resolvePostcssStringPlugins(
     }
   }
   if (!configPath) {
-    _postcssCache.set(projectRoot, undefined);
     return undefined;
   }
 
@@ -315,7 +327,6 @@ async function resolvePostcssStringPlugins(
       configPath.endsWith(".yml")
     ) {
       // JSON/YAML configs use object form — postcss-load-config handles these fine
-      _postcssCache.set(projectRoot, undefined);
       return undefined;
     }
     // For .postcssrc without extension, check if it's JSON
@@ -323,7 +334,6 @@ async function resolvePostcssStringPlugins(
       const content = fs.readFileSync(configPath, "utf-8").trim();
       if (content.startsWith("{")) {
         // JSON format — postcss-load-config handles object form
-        _postcssCache.set(projectRoot, undefined);
         return undefined;
       }
     }
@@ -331,21 +341,18 @@ async function resolvePostcssStringPlugins(
     config = mod.default ?? mod;
   } catch {
     // If we can't load the config, let Vite/postcss-load-config handle it
-    _postcssCache.set(projectRoot, undefined);
     return undefined;
   }
 
   // Only process array-form plugins that contain string entries
   // (either bare strings or tuple form ["plugin-name", { options }])
   if (!config || !Array.isArray(config.plugins)) {
-    _postcssCache.set(projectRoot, undefined);
     return undefined;
   }
   const hasStringPlugins = config.plugins.some(
     (p: any) => typeof p === "string" || (Array.isArray(p) && typeof p[0] === "string"),
   );
   if (!hasStringPlugins) {
-    _postcssCache.set(projectRoot, undefined);
     return undefined;
   }
 
@@ -373,9 +380,7 @@ async function resolvePostcssStringPlugins(
     }),
   );
 
-  const result = { plugins: resolved };
-  _postcssCache.set(projectRoot, result);
-  return result;
+  return { plugins: resolved };
 }
 
 // Virtual module IDs for Pages Router production build
