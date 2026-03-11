@@ -2734,7 +2734,7 @@ describe("double-encoded path handling in middleware", () => {
       },
     ]);
     // Extract the matchRoute function from generated code
-    const matchRouteMatch = code.match(/function matchRoute\(url, routes\) \{[\s\S]*?\n\}/);
+    const matchRouteMatch = code.match(/function matchRoute\(url\) \{[\s\S]*?\n\}/);
     expect(matchRouteMatch).toBeTruthy();
     const matchRouteCode = matchRouteMatch![0];
     // Verify it does NOT call decodeURIComponent (the comment mentions it but
