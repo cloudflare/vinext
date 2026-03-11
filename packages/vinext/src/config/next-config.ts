@@ -450,7 +450,7 @@ export async function resolveNextConfig(
         `[vinext] Found ${externalRewrites.length} ${noun} that proxy requests to third-party origins:\n` +
           `${listing}\n` +
           `All request headers (including cookies, authorization tokens, and other credentials) are forwarded to the external origin. ` +
-          `If this is unintentional, consider using a server-side fetch in an API route (which gives you control over which headers are forwarded) or proxying at the CDN/edge level instead.`,
+          `If this is unintentional, consider using a server-side fetch in an API route or route handler (where you control exactly which headers are forwarded) or proxying at the CDN/edge level instead.`,
       );
     }
   }

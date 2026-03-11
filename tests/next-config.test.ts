@@ -662,6 +662,9 @@ describe("resolveNextConfig external rewrite warning", () => {
     expect(externalWarning![0]).toContain("https://one.example.com/api");
     expect(externalWarning![0]).toContain("https://two.example.com/api");
     expect(externalWarning![0]).toContain("https://three.example.com/api");
+    expect(externalWarning![0]).toContain("/proxy1");
+    expect(externalWarning![0]).toContain("/proxy2");
+    expect(externalWarning![0]).toContain("/proxy3");
   });
 
   it("does not warn when no rewrites are configured", async () => {
