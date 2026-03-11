@@ -952,6 +952,13 @@ export async function proxyExternalRequest(
     headers.delete(key);
   }
 
+  // Strip credential headers to prevent leaking secrets to third-party origins.
+  // Users who need to forward credentials should use API routes or route handlers.
+  const CREDENTIAL_HEADERS = ["authorization", "cookie", "proxy-authorization", "x-api-key"];
+  for (const key of CREDENTIAL_HEADERS) {
+    headers.delete(key);
+  }
+
   const method = request.method;
   const hasBody = method !== "GET" && method !== "HEAD";
 
