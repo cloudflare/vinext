@@ -1,3 +1,4 @@
+import type { IncomingMessage } from "node:http";
 import type { Plugin, PluginOption, UserConfig, ViteDevServer } from "vite";
 import { loadEnv, parseAst } from "vite";
 import {
@@ -1693,6 +1694,27 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           return pathname || "/";
         }
 
+        function shouldInvalidateAppRscRequest(req: IncomingMessage, url: string): boolean {
+          const method = (req.method ?? "GET").toUpperCase();
+          if (method !== "GET" && method !== "HEAD") return false;
+
+          // Server action POSTs re-use action identifiers from the already
+          // rendered client tree. Invalidating the live RSC module graph before
+          // handling them can swap out that graph mid-session and break action
+          // execution.
+          if (typeof req.headers["x-rsc-action"] === "string") return false;
+
+          const pathname = normalizeAppRequestPath(url);
+          if (!pathname) return false;
+
+          // App Route Handlers (app/api/*) are request handlers, not RSC page
+          // renders. Re-executing them per request breaks legitimate module-
+          // scoped state such as instrumentation and next/after test fixtures.
+          if (pathname === "/api" || pathname.startsWith("/api/")) return false;
+
+          return true;
+        }
+
         function cleanViteModuleId(moduleId: string): string {
           const hashIndex = moduleId.indexOf("#");
           const queryIndex = moduleId.indexOf("?");
@@ -1721,7 +1743,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           };
 
           add(route.pagePath);
-          add(route.routePath);
           for (const layout of route.layouts) add(layout);
           for (const tmpl of route.templates) add(tmpl);
           add(route.loadingPath);
@@ -1799,11 +1820,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         ): Promise<string[] | null> {
           const pathname = normalizeAppRequestPath(url);
           if (!pathname) return null;
+          if (pathname === "/api" || pathname.startsWith("/api/")) return null;
 
           const appRoutes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
           const appMatch = matchRoute(pathname, appRoutes as any);
           if (appMatch) {
-            return collectAppRouteModuleFiles(appMatch.route as unknown as AppRoute);
+            const matchedRoute = appMatch.route as unknown as AppRoute;
+            if (!matchedRoute.pagePath) return null;
+            return collectAppRouteModuleFiles(matchedRoute);
           }
 
           if (options.skipIfPagesRouteMatches && hasPagesDir) {
@@ -1953,9 +1977,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               try {
                 const url = req.url ?? "/";
                 const isRscRequest = url.split("?")[0].endsWith(".rsc");
-                if (!hasPagesDir || isRscRequest) {
+                if ((!hasPagesDir || isRscRequest) && shouldInvalidateAppRscRequest(req, url)) {
                   await invalidateAppRscModulesForRequest(url, {
-                    allowFullAppFallback: true,
+                    allowFullAppFallback: false,
                     skipIfPagesRouteMatches: false,
                     staticExportToken,
                     requestStaticExportToken:
@@ -2262,6 +2286,30 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
               };
 
+              const handOffToAppRouter = async (
+                appUrl: string,
+                options?: { allowFullAppFallback?: boolean },
+              ) => {
+                if (middlewareRequestHeaders) {
+                  applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
+                }
+                req.url = appUrl;
+
+                if (shouldInvalidateAppRscRequest(req, appUrl)) {
+                  await invalidateAppRscModulesForRequest(appUrl, {
+                    allowFullAppFallback: options?.allowFullAppFallback ?? false,
+                    skipIfPagesRouteMatches: false,
+                    staticExportToken,
+                    requestStaticExportToken:
+                      typeof req.headers["x-vinext-static-export"] === "string"
+                        ? req.headers["x-vinext-static-export"]
+                        : undefined,
+                  });
+                }
+
+                next();
+              };
+
               let middlewareRequestHeaders: Headers | null = null;
 
               // Run middleware.ts if present
@@ -2459,16 +2507,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // No API route matched — if app dir exists, let the RSC plugin handle it
                 // (app/api/* route handlers live there). Otherwise hard-404.
                 if (hasAppDir) {
-                  await invalidateAppRscModulesForRequest(resolvedUrl, {
-                    allowFullAppFallback: true,
-                    skipIfPagesRouteMatches: false,
-                    staticExportToken,
-                    requestStaticExportToken:
-                      typeof req.headers["x-vinext-static-export"] === "string"
-                        ? req.headers["x-vinext-static-export"]
-                        : undefined,
-                  });
-                  return next();
+                  await handOffToAppRouter(resolvedUrl);
+                  return;
                 }
 
                 res.statusCode = 404;
@@ -2530,18 +2570,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     return;
                   }
                   const fallbackMatch = matchRoute(fallbackRewrite.split("?")[0], routes);
-                  if (!fallbackMatch && hasAppDir) {
-                    await invalidateAppRscModulesForRequest(fallbackRewrite, {
-                      allowFullAppFallback: true,
-                      skipIfPagesRouteMatches: false,
-                      staticExportToken,
-                      requestStaticExportToken:
-                        typeof req.headers["x-vinext-static-export"] === "string"
-                          ? req.headers["x-vinext-static-export"]
-                          : undefined,
-                    });
-                    return next();
-                  }
+                  if (
+                    !fallbackMatch &&
+                    hasAppDir &&
+                    shouldInvalidateAppRscRequest(req, fallbackRewrite)
+                  ) {
+                  await handOffToAppRouter(fallbackRewrite, {
+                    allowFullAppFallback: true,
+                  });
+                  return;
+                }
                   if (middlewareRequestHeaders) {
                     applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                   }
@@ -2553,16 +2591,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // No fallback matched - if app dir exists, let the RSC plugin handle it,
               // otherwise render via the pages SSR handler (will 404 for unknown routes).
               if (hasAppDir) {
-                await invalidateAppRscModulesForRequest(resolvedUrl, {
-                  allowFullAppFallback: true,
-                  skipIfPagesRouteMatches: false,
-                  staticExportToken,
-                  requestStaticExportToken:
-                    typeof req.headers["x-vinext-static-export"] === "string"
-                      ? req.headers["x-vinext-static-export"]
-                      : undefined,
-                });
-                return next();
+                await handOffToAppRouter(resolvedUrl);
+                return;
               }
 
               await handler(req, res, resolvedUrl, mwStatus);

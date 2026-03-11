@@ -2057,6 +2057,36 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(importedNow1).not.toBe(importedNow2);
   });
 
+  it("does not invalidate the App Router RSC graph for /_vinext/image requests", async () => {
+    const rscEnv = server.environments["rsc"] as any;
+    const invalidateSpy = vi.spyOn(rscEnv.moduleGraph, "invalidateModule");
+    try {
+      const res = await fetch(
+        `${baseUrl}/_vinext/image?url=${encodeURIComponent("/missing-dev-image.png")}&w=64&q=75`,
+        { redirect: "manual" },
+      );
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toContain("/missing-dev-image.png");
+      expect(invalidateSpy).not.toHaveBeenCalled();
+    } finally {
+      invalidateSpy.mockRestore();
+    }
+  });
+
+  it("does not invalidate the App Router RSC graph for missing asset requests", async () => {
+    const rscEnv = server.environments["rsc"] as any;
+    const invalidateSpy = vi.spyOn(rscEnv.moduleGraph, "invalidateModule");
+    try {
+      const res = await fetch(`${baseUrl}/missing-dev-asset.js`, { redirect: "manual" });
+
+      expect(res.status).toBe(404);
+      expect(invalidateSpy).not.toHaveBeenCalled();
+    } finally {
+      invalidateSpy.mockRestore();
+    }
+  });
+
   it("applies rewrites with repeated dynamic params in the destination", async () => {
     const res = await fetch(`${baseUrl}/repeat-rewrite/hello`);
     expect(res.status).toBe(200);
