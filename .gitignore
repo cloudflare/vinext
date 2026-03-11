@@ -1,5 +1,7 @@
 node_modules/
 dist/
+!tests/fixtures/next-api-manifest/**/dist/
+!tests/fixtures/next-api-manifest/**/dist/**
 out/
 *.tsbuildinfo
 .vite/

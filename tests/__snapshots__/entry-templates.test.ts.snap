@@ -1914,7 +1914,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
               actionRedirect = {
                 url: decodeURIComponent(parts[2]),
                 type: parts[1] || "replace",       // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
+                status: parts[3] ? parseInt(parts[3], 10) : 303,
               };
               returnValue = { ok: true, data: undefined };
             } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
@@ -4629,7 +4629,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
               actionRedirect = {
                 url: decodeURIComponent(parts[2]),
                 type: parts[1] || "replace",       // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
+                status: parts[3] ? parseInt(parts[3], 10) : 303,
               };
               returnValue = { ok: true, data: undefined };
             } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
@@ -7371,7 +7371,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
               actionRedirect = {
                 url: decodeURIComponent(parts[2]),
                 type: parts[1] || "replace",       // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
+                status: parts[3] ? parseInt(parts[3], 10) : 303,
               };
               returnValue = { ok: true, data: undefined };
             } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
@@ -10123,7 +10123,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
               actionRedirect = {
                 url: decodeURIComponent(parts[2]),
                 type: parts[1] || "replace",       // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
+                status: parts[3] ? parseInt(parts[3], 10) : 303,
               };
               returnValue = { ok: true, data: undefined };
             } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
@@ -12842,7 +12842,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
               actionRedirect = {
                 url: decodeURIComponent(parts[2]),
                 type: parts[1] || "replace",       // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
+                status: parts[3] ? parseInt(parts[3], 10) : 303,
               };
               returnValue = { ok: true, data: undefined };
             } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
@@ -15832,7 +15832,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
               actionRedirect = {
                 url: decodeURIComponent(parts[2]),
                 type: parts[1] || "replace",       // "push" or "replace"
-                status: parts[3] ? parseInt(parts[3], 10) : 307,
+                status: parts[3] ? parseInt(parts[3], 10) : 303,
               };
               returnValue = { ok: true, data: undefined };
             } else if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
