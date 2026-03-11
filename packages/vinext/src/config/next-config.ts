@@ -127,6 +127,8 @@ export interface NextConfig {
   env?: Record<string, string>;
   /** Base URL path prefix */
   basePath?: string;
+  /** CDN URL prefix for all static assets (JS chunks, CSS, fonts). Trailing slash stripped. */
+  assetPrefix?: string;
   /** Whether to add trailing slashes */
   trailingSlash?: boolean;
   /** Internationalization routing config */
@@ -204,6 +206,8 @@ export interface NextConfig {
 export interface ResolvedNextConfig {
   env: Record<string, string>;
   basePath: string;
+  /** Resolved CDN URL prefix for static assets. Empty string if not set. */
+  assetPrefix: string;
   trailingSlash: boolean;
   output: "" | "export" | "standalone";
   pageExtensions: string[];
@@ -393,6 +397,7 @@ export async function resolveNextConfig(
     const resolved: ResolvedNextConfig = {
       env: {},
       basePath: "",
+      assetPrefix: "",
       trailingSlash: false,
       output: "",
       pageExtensions: normalizePageExtensions(),
@@ -526,6 +531,7 @@ export async function resolveNextConfig(
   const resolved: ResolvedNextConfig = {
     env: config.env ?? {},
     basePath: config.basePath ?? "",
+    assetPrefix: typeof config.assetPrefix === "string" ? config.assetPrefix.replace(/\/$/, "") : "",
     trailingSlash: config.trailingSlash ?? false,
     output: output === "export" || output === "standalone" ? output : "",
     pageExtensions,
@@ -542,6 +548,13 @@ export async function resolveNextConfig(
     serverActionsBodySizeLimit,
     buildId,
   };
+
+  // If assetPrefix is empty and basePath is set, inherit basePath as assetPrefix.
+  // This matches Next.js behavior: static assets are served under basePath when
+  // no explicit CDN prefix is configured.
+  if (resolved.assetPrefix === "" && resolved.basePath !== "") {
+    resolved.assetPrefix = resolved.basePath;
+  }
 
   // Auto-detect next-intl (lowest priority — explicit aliases from
   // webpack/turbopack already in `aliases` take precedence)

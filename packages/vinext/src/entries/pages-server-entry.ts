@@ -97,6 +97,7 @@ export async function generateServerEntry(
   // so prod-server.ts can apply them without loading next.config.js at runtime.
   const vinextConfigJson = JSON.stringify({
     basePath: nextConfig?.basePath ?? "",
+    assetPrefix: nextConfig?.assetPrefix ?? "",
     trailingSlash: nextConfig?.trailingSlash ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -423,8 +424,8 @@ function collectAssetTags(manifest, moduleIds) {
   if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
     const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
     seen.add(entry);
-    tags.push('<link rel="modulepreload" href="/' + entry + '" />');
-    tags.push('<script type="module" src="/' + entry + '" crossorigin></script>');
+    tags.push('<link rel="modulepreload" href="' + (vinextConfig.assetPrefix || "") + '/' + entry + '" />');
+    tags.push('<script type="module" src="' + (vinextConfig.assetPrefix || "") + '/' + entry + '" crossorigin></script>');
   }
   if (m) {
     // Always inject shared chunks (framework, vinext runtime, entry) and
@@ -499,13 +500,13 @@ function collectAssetTags(manifest, moduleIds) {
       if (seen.has(tf)) continue;
       seen.add(tf);
       if (tf.endsWith(".css")) {
-        tags.push('<link rel="stylesheet" href="/' + tf + '" />');
+        tags.push('<link rel="stylesheet" href="' + (vinextConfig.assetPrefix || "") + '/' + tf + '" />');
       } else if (tf.endsWith(".js")) {
         // Skip lazy chunks — they are behind dynamic import() boundaries
         // (React.lazy, next/dynamic) and should only be fetched on demand.
         if (lazySet && lazySet.has(tf)) continue;
-        tags.push('<link rel="modulepreload" href="/' + tf + '" />');
-        tags.push('<script type="module" src="/' + tf + '" crossorigin></script>');
+        tags.push('<link rel="modulepreload" href="' + (vinextConfig.assetPrefix || "") + '/' + tf + '" />');
+        tags.push('<script type="module" src="' + (vinextConfig.assetPrefix || "") + '/' + tf + '" crossorigin></script>');
       }
     }
   }

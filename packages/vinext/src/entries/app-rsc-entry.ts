@@ -82,9 +82,11 @@ export function generateRscEntry(
   trailingSlash?: boolean,
   config?: AppRouterConfig,
   instrumentationPath?: string | null,
+  assetPrefix?: string,
 ): string {
   const bp = basePath ?? "";
   const ts = trailingSlash ?? false;
+  const ap = assetPrefix ?? "";
   const redirects = config?.redirects ?? [];
   const rewrites = config?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
   const headers = config?.headers ?? [];
@@ -1278,6 +1280,7 @@ async function buildPageElement(route, params, opts, searchParams) {
 ${middlewarePath ? generateMiddlewareMatcherCode("modern") : ""}
 
 const __basePath = ${JSON.stringify(bp)};
+const __assetPrefix = ${JSON.stringify(ap)};
 const __trailingSlash = ${JSON.stringify(ts)};
 const __i18nConfig = ${JSON.stringify(i18nConfig)};
 const __configRedirects = ${JSON.stringify(redirects)};

@@ -1235,6 +1235,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           define: defines,
           // Set base path if configured
           ...(nextConfig.basePath ? { base: nextConfig.basePath + "/" } : {}),
+          // When assetPrefix is set, rewrite built asset/chunk URLs to the CDN origin.
+          // SSR environments stay relative so server-side imports resolve correctly.
+          ...(nextConfig.assetPrefix
+            ? {
+                experimental: {
+                  renderBuiltUrl(
+                    filename: string,
+                    { type, ssr }: { type: string; ssr: boolean },
+                  ) {
+                    if (ssr) return { relative: true }
+                    if (type === "asset" || type === "chunk") {
+                      return nextConfig.assetPrefix + "/" + filename
+                    }
+                    return { relative: true }
+                  },
+                },
+              }
+            : {}),
           // Inject resolved PostCSS plugins if string names were found
           ...(postcssOverride ? { css: { postcss: postcssOverride } } : {}),
         };
@@ -1526,6 +1544,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               i18n: nextConfig?.i18n,
             },
             instrumentationPath,
+            nextConfig?.assetPrefix,
           );
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
@@ -3135,7 +3154,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
               for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
                 if (value && value.isEntry && value.file) {
-                  clientEntryFile = manifestFileWithBase(value.file, clientBase);
+                  // When assetPrefix is set, store the raw filename (without the Vite
+                  // base prefix) so that collectAssetTags can prepend assetPrefix at
+                  // render time without double-prefixing.
+                  if (nextConfig?.assetPrefix) {
+                    clientEntryFile = normalizeManifestFile(value.file)
+                  } else {
+                    clientEntryFile = manifestFileWithBase(value.file, clientBase)
+                  }
                   break;
                 }
               }

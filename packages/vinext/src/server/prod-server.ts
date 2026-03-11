@@ -732,6 +732,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
   // Extract config values (embedded at build time in the server entry)
   const basePath: string = vinextConfig?.basePath ?? "";
+  // assetBase is used only for internal manifest path lookups and dedup
+  // (e.g. mapping SSR manifest keys to lazy-chunk filenames). It is NOT
+  // used to construct href attributes in HTML — those are handled by
+  // collectAssetTags in the generated server entry, which applies assetPrefix.
   const assetBase = basePath ? `${basePath}/` : "/";
   const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
   const configRedirects = vinextConfig?.redirects ?? [];
