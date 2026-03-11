@@ -315,14 +315,16 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
 
   // Resolve metadataBase for URL composition
   const base = metadata.metadataBase;
-  function resolveUrl(url: string | undefined): string | undefined {
+  function resolveUrl(url: string | URL | undefined): string | undefined {
     if (!url) return undefined;
-    if (!base) return url;
-    if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("//")) return url;
+    // Coerce URL objects to strings (Next.js metadata allows string | URL)
+    const s = typeof url === "string" ? url : url instanceof URL ? url.toString() : String(url);
+    if (!base) return s;
+    if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("//")) return s;
     try {
-      return new URL(url, base).toString();
+      return new URL(s, base).toString();
     } catch {
-      return url;
+      return s;
     }
   }
 
