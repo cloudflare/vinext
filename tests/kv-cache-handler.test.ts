@@ -523,40 +523,28 @@ describe("KVCacheHandler", () => {
     });
 
     it("TTL expiry triggers fresh KV fetch", async () => {
-      vi.useFakeTimers();
-      try {
-        const now = 10_000;
-        vi.setSystemTime(now);
+      // Use tagCacheTtlMs: 0 so entries expire immediately — no fake timers needed.
+      const shortTtlHandler = new KVCacheHandler(kv as any, { tagCacheTtlMs: 0 });
 
-        const entryTime = 1000;
-        store.set(
-          "cache:ttl-page",
-          JSON.stringify({
-            value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
-            tags: ["t1"],
-            lastModified: entryTime,
-            revalidateAt: null,
-          }),
-        );
+      const entryTime = 1000;
+      store.set(
+        "cache:ttl-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["t1"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
 
-        // First get() — populates local tag cache
-        await handler.get("ttl-page");
-        expect(kv.get).toHaveBeenCalledTimes(2); // entry + tag
-        kv.get.mockClear();
+      // First get() — populates local tag cache (entry + tag = 2 calls)
+      await shortTtlHandler.get("ttl-page");
+      expect(kv.get).toHaveBeenCalledTimes(2);
+      kv.get.mockClear();
 
-        // Second get() within TTL — uses local cache
-        vi.setSystemTime(now + 4_000); // 4s < 5s TTL
-        await handler.get("ttl-page");
-        expect(kv.get).toHaveBeenCalledTimes(1); // entry only
-        kv.get.mockClear();
-
-        // Third get() after TTL — must re-fetch from KV
-        vi.setSystemTime(now + 6_000); // 6s > 5s TTL
-        await handler.get("ttl-page");
-        expect(kv.get).toHaveBeenCalledTimes(2); // entry + tag
-      } finally {
-        vi.useRealTimers();
-      }
+      // Second get() — TTL is 0ms so entry is already expired; must re-fetch tag from KV
+      await shortTtlHandler.get("ttl-page");
+      expect(kv.get).toHaveBeenCalledTimes(2); // entry + tag again
     });
 
     it("tag invalidation works end-to-end with local cache", async () => {
@@ -661,6 +649,42 @@ describe("KVCacheHandler", () => {
 
       // kv.get: 1 for entry, 0 for tag (NaN was cached locally)
       expect(kv.get).toHaveBeenCalledTimes(1);
+    });
+
+    it("resetRequestCache() forces tags to be re-fetched from KV", async () => {
+      const entryTime = 1000;
+      store.set(
+        "cache:reset-page",
+        JSON.stringify({
+          value: { kind: "PAGES", html: "<p>hi</p>", pageData: {}, status: 200 },
+          tags: ["t1", "t2"],
+          lastModified: entryTime,
+          revalidateAt: null,
+        }),
+      );
+
+      // First get() — populates local tag cache (1 entry + 2 tags = 3 calls)
+      const result1 = await handler.get("reset-page");
+      expect(result1).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledTimes(3);
+      kv.get.mockClear();
+
+      // Second get() without reset — tags served from local cache (1 entry only)
+      const result2 = await handler.get("reset-page");
+      expect(result2).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledTimes(1);
+      kv.get.mockClear();
+
+      // Clear the local cache
+      handler.resetRequestCache();
+
+      // Third get() after reset — tags must be re-fetched from KV (1 entry + 2 tags = 3 calls)
+      const result3 = await handler.get("reset-page");
+      expect(result3).not.toBeNull();
+      expect(kv.get).toHaveBeenCalledTimes(3);
+      expect(kv.get).toHaveBeenCalledWith("cache:reset-page");
+      expect(kv.get).toHaveBeenCalledWith("__tag:t1");
+      expect(kv.get).toHaveBeenCalledWith("__tag:t2");
     });
   });
 

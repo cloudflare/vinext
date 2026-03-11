@@ -101,16 +101,23 @@ export class KVCacheHandler implements CacheHandler {
   /** Local in-memory cache for tag invalidation timestamps. Avoids redundant KV reads. */
   private _tagCache = new Map<string, { timestamp: number; fetchedAt: number }>();
   /** TTL (ms) for local tag cache entries. After this, re-fetch from KV. */
-  private static TAG_CACHE_TTL = 5_000;
+  private _tagCacheTtl: number;
 
   constructor(
     kvNamespace: KVNamespace,
-    options?: { appPrefix?: string; ctx?: ExecutionContext; ttlSeconds?: number },
+    options?: {
+      appPrefix?: string;
+      ctx?: ExecutionContext;
+      ttlSeconds?: number;
+      /** TTL in milliseconds for the local tag cache. Defaults to 5000ms. */
+      tagCacheTtlMs?: number;
+    },
   ) {
     this.kv = kvNamespace;
     this.prefix = options?.appPrefix ? `${options.appPrefix}:` : "";
     this.ctx = options?.ctx;
     this.ttlSeconds = options?.ttlSeconds ?? 30 * 24 * 3600;
+    this._tagCacheTtl = options?.tagCacheTtlMs ?? 5_000;
   }
 
   async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
@@ -152,33 +159,44 @@ export class KVCacheHandler implements CacheHandler {
       const now = Date.now();
       const uncachedTags: string[] = [];
 
-      // First pass: check local cache for each tag
+      // First pass: check local cache for each tag.
+      // Delete expired entries to prevent unbounded Map growth in long-lived isolates.
       for (const tag of entry.tags) {
         const cached = this._tagCache.get(tag);
-        if (cached && now - cached.fetchedAt < KVCacheHandler.TAG_CACHE_TTL) {
+        if (cached && now - cached.fetchedAt < this._tagCacheTtl) {
           // Local cache hit — check invalidation inline
           if (Number.isNaN(cached.timestamp) || cached.timestamp >= entry.lastModified) {
             this._deleteInBackground(kvKey);
             return null;
           }
         } else {
+          // Expired or absent — evict stale entry and re-fetch from KV
+          if (cached) this._tagCache.delete(tag);
           uncachedTags.push(tag);
         }
       }
 
-      // Second pass: fetch uncached tags from KV in parallel
+      // Second pass: fetch uncached tags from KV in parallel.
+      // Populate the local cache for ALL fetched tags before checking invalidation,
+      // so that KV round-trips are not wasted when an earlier tag triggers an
+      // early return — subsequent get() calls benefit from the already-fetched results.
       if (uncachedTags.length > 0) {
         const tagResults = await Promise.all(
           uncachedTags.map((tag) => this.kv.get(this.prefix + TAG_PREFIX + tag)),
         );
+
+        // Populate cache for all results first
         for (let i = 0; i < uncachedTags.length; i++) {
           const tagTime = tagResults[i];
           const tagTimestamp = tagTime ? Number(tagTime) : 0;
-
-          // Populate local cache (0 for missing tags, NaN for corrupted)
           this._tagCache.set(uncachedTags[i], { timestamp: tagTimestamp, fetchedAt: now });
+        }
 
+        // Then check for invalidation
+        for (let i = 0; i < uncachedTags.length; i++) {
+          const tagTime = tagResults[i];
           if (tagTime) {
+            const tagTimestamp = Number(tagTime);
             if (Number.isNaN(tagTimestamp) || tagTimestamp >= entry.lastModified) {
               this._deleteInBackground(kvKey);
               return null;
@@ -292,6 +310,20 @@ export class KVCacheHandler implements CacheHandler {
     }
   }
 
+  /**
+   * Clear the in-memory tag cache for this KVCacheHandler instance.
+   *
+   * Note: KVCacheHandler instances are typically reused across multiple
+   * requests in a Cloudflare Worker. The `_tagCache` is intentionally
+   * cross-request — it reduces redundant KV reads for recently-seen tags
+   * across all requests hitting the same isolate, bounded by `tagCacheTtlMs`
+   * (default 5s). vinext does NOT call this method per request.
+   *
+   * This is an opt-in escape hatch for callers that need stricter isolation
+   * (e.g., tests, or environments with custom lifecycle management).
+   * Callers that require per-request isolation should either construct a
+   * fresh KVCacheHandler per request or invoke this method explicitly.
+   */
   resetRequestCache(): void {
     this._tagCache.clear();
   }
