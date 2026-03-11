@@ -1,5 +1,5 @@
 /**
- * Radix trie for O(depth) route matching.
+ * Trie (prefix tree) for O(depth) route matching.
  *
  * Replaces the O(n) linear scan over pre-sorted routes with a trie-based
  * lookup. Priority is enforced by traversal order at each node:

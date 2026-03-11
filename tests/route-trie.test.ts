@@ -191,19 +191,15 @@ describe("buildRouteTrie + trieMatch", () => {
       const routes = [r("/api/users/me"), r("/api/:resource/:id")];
       const trie = buildRouteTrie(routes);
 
-      // "users" matches static, but "123" doesn't match "me" → backtrack
-      // Actually "users" → static child exists, "123" has no static child → go to dynamic
-      // Wait, this isn't backtracking. Let me think...
-      // /api/users/me is the static path. /api/users/123 should match dynamic.
-      // The trie has: api -> users (static) -> me (static), and api -> :resource (dynamic) -> :id (dynamic)
-      // For /api/users/123: api(static) -> users(static) -> 123 not "me" → no static child
-      // → no dynamic child at that node → backtrack to api -> :resource(dynamic) matches "users" -> :id matches "123"
+      // /api/users/me is fully static. /api/:resource/:id is fully dynamic.
+      // For /api/users/123: api → users matches the static branch, but 123 ≠ "me",
+      // so that branch is a dead-end and the matcher backtracks to api → :resource → :id.
       const result = trieMatch(trie, ["api", "users", "123"]);
       expect(result).not.toBeNull();
       expect(result!.route.pattern).toBe("/api/:resource/:id");
       expect(result!.params).toEqual({ resource: "users", id: "123" });
 
-      // But /api/users/me should still match static
+      // /api/users/me should still prefer the more specific static route
       const meResult = trieMatch(trie, ["api", "users", "me"]);
       expect(meResult!.route.pattern).toBe("/api/users/me");
     });
