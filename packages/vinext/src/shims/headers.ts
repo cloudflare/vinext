@@ -448,7 +448,8 @@ export function headersContextFromRequest(request: Request): HeadersContext {
       const src = _mutable ?? target;
 
       if (typeof prop !== "string") {
-        return Reflect.get(src, prop, receiver);
+        const value = Reflect.get(src, prop, src);
+        return typeof value === "function" ? value.bind(src) : value;
       }
 
       // Intercept mutating methods: materialise on first write.
@@ -545,7 +546,8 @@ export function cookies(): Promise<RequestCookies> & RequestCookies {
   if (!state.headersContext) {
     return _decorateRejectedRequestApiPromise<RequestCookies>(
       new Error(
-        "cookies() can only be called from a Server Component, Route Handler, or Server Action.",
+        "`cookies` was called outside a request scope. " +
+          "cookies() can only be called from a Server Component, Route Handler, or Server Action.",
       ),
     );
   }

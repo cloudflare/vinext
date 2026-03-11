@@ -2039,6 +2039,14 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(html).toContain("About");
   });
 
+  it("matches next.config.js headers against the source path for rewritten requests", async () => {
+    const res = await fetch(`${baseUrl}/rewrite-about`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-rewrite-source-header")).toBe("rewrite-about");
+    expect(res.headers.get("x-page-header")).toBeNull();
+  });
+
   it("re-executes App Router modules when middleware rewrites a Pages path into app/", async () => {
     const res1 = await fetch(`${baseUrl}/mw-pages-to-app-rewrite`);
     expect(res1.status).toBe(200);
@@ -2634,9 +2642,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("__safeDevHosts");
     // Should call dev origin validation inside _handleRequest
     const callSite = code.indexOf("const __originBlock = __validateDevRequestOrigin(request)");
-    const handleRequestIdx = code.indexOf(
-      "async function _handleRequest(request, __reqCtx, _mwCtx, ctx)",
-    );
+    const handleRequestIdx = code.indexOf("async function _handleRequest(");
     expect(callSite).toBeGreaterThan(-1);
     expect(handleRequestIdx).toBeGreaterThan(-1);
     // The call should be inside the function body (after the function declaration)

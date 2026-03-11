@@ -244,6 +244,22 @@ describe("next/headers shim", () => {
     setHeadersContext(null);
   });
 
+  it("awaited headers() can be cloned with the standard Headers constructor", async () => {
+    const { setHeadersContext, headers } = await import("../packages/vinext/src/shims/headers.js");
+    setHeadersContext({
+      headers: new Headers({
+        cookie: "session=abc123",
+        "x-clone-test": "clone-value",
+      }),
+      cookies: new Map(),
+    });
+
+    const cloned = new Headers(await headers());
+    expect(cloned.get("x-clone-test")).toBe("clone-value");
+    expect(cloned.get("cookie")).toBe("session=abc123");
+    setHeadersContext(null);
+  });
+
   it("headers() is read-only for both sync and awaited access", async () => {
     // Ported from Next.js:
     // packages/next/src/server/web/spec-extension/adapters/headers.test.ts

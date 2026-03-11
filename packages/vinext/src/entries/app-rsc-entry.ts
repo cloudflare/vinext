@@ -2735,8 +2735,41 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx, __hostPrepared) {
   // Check for draftMode Set-Cookie header (from draftMode().enable()/disable())
   const draftCookie = getDraftModeCookieHeader();
 
-  setHeadersContext(null);
-  setNavigationContext(null);
+  // Keep request-scoped headers/navigation state alive until the HTML stream is
+  // fully consumed. Libraries like better-auth call cookies() from async hooks
+  // that run after handleSsr() returns, while the response is still streaming.
+  let __requestStateCleaned = false;
+  function __cleanupRequestState() {
+    if (__requestStateCleaned) return;
+    __requestStateCleaned = true;
+    setHeadersContext(null);
+    setNavigationContext(null);
+  }
+
+  const __htmlReader = htmlStream.getReader();
+  htmlStream = new ReadableStream({
+    async pull(controller) {
+      try {
+        const chunk = await __htmlReader.read();
+        if (chunk.done) {
+          controller.close();
+          __cleanupRequestState();
+          return;
+        }
+        controller.enqueue(chunk.value);
+      } catch (error) {
+        __cleanupRequestState();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      try {
+        await __htmlReader.cancel(reason);
+      } finally {
+        __cleanupRequestState();
+      }
+    },
+  });
 
   // Helper to attach draftMode cookie, middleware headers, font Link header, and rewrite status to a response
   function attachMiddlewareContext(response) {

@@ -147,6 +147,13 @@ const nextConfig: NextConfig = {
         source: "/about",
         headers: [{ key: "X-Page-Header", value: "about-page" }],
       },
+      // Used by Vitest: app-router.test.ts — config headers should keep
+      // matching the incoming source path even when a beforeFiles rewrite
+      // routes the request to /about.
+      {
+        source: "/rewrite-about",
+        headers: [{ key: "X-Rewrite-Source-Header", value: "rewrite-about" }],
+      },
       // Used by E2E: config-redirect.spec.ts — has/missing on headers rules
       {
         source: "/about",
