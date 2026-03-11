@@ -2575,11 +2575,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     hasAppDir &&
                     shouldInvalidateAppRscRequest(req, fallbackRewrite)
                   ) {
-                  await handOffToAppRouter(fallbackRewrite, {
-                    allowFullAppFallback: true,
-                  });
-                  return;
-                }
+                    await handOffToAppRouter(fallbackRewrite, {
+                      allowFullAppFallback: true,
+                    });
+                    return;
+                  }
                   if (middlewareRequestHeaders) {
                     applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                   }
