@@ -3599,15 +3599,3 @@ export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
 export { stripServerExports as _stripServerExports };
 export { asyncHooksStubPlugin as _asyncHooksStubPlugin };
-
-// Exported for testing (build report helpers)
-export {
-  hasNamedExport as _hasNamedExport,
-  extractExportConstString as _extractExportConstString,
-  extractExportConstNumber as _extractExportConstNumber,
-  extractGetStaticPropsRevalidate as _extractGetStaticPropsRevalidate,
-  classifyPagesRoute as _classifyPagesRoute,
-  classifyAppRoute as _classifyAppRoute,
-  buildReportRows as _buildReportRows,
-  formatBuildReport as _formatBuildReport,
-} from "./build/report.js";
