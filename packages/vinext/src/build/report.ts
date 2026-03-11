@@ -266,9 +266,9 @@ const LABELS: Record<RouteType, string> = {
  * Example output:
  *   Route (pages)
  *   ┌ ○ /
- *   ├ ◐ /blog/:slug  (ISR, 60s)
- *   ├ ƒ /dashboard   (Dynamic)
- *   └ λ /api/posts   (API)
+ *   ├ ◐ /blog/:slug  (60s)
+ *   ├ ƒ /dashboard
+ *   └ λ /api/posts
  *
  *   ○ Static  ◐ ISR  ƒ Dynamic  λ API
  */
