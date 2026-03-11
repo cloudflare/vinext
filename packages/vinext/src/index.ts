@@ -284,9 +284,14 @@ const POSTCSS_CONFIG_FILES = [
  * Returns the resolved PostCSS config object to inject into Vite's
  * `css.postcss`, or `undefined` if no resolution is needed.
  */
+/** Module-level cache for resolvePostcssStringPlugins — avoids re-scanning per Vite environment. */
+const _postcssCache = new Map<string, { plugins: any[] } | undefined>();
+
 async function resolvePostcssStringPlugins(
   projectRoot: string,
 ): Promise<{ plugins: any[] } | undefined> {
+  if (_postcssCache.has(projectRoot)) return _postcssCache.get(projectRoot);
+
   // Find the PostCSS config file
   let configPath: string | null = null;
   for (const name of POSTCSS_CONFIG_FILES) {
@@ -296,7 +301,10 @@ async function resolvePostcssStringPlugins(
       break;
     }
   }
-  if (!configPath) return undefined;
+  if (!configPath) {
+    _postcssCache.set(projectRoot, undefined);
+    return undefined;
+  }
 
   // Load the config file
   let config: any;
@@ -307,6 +315,7 @@ async function resolvePostcssStringPlugins(
       configPath.endsWith(".yml")
     ) {
       // JSON/YAML configs use object form — postcss-load-config handles these fine
+      _postcssCache.set(projectRoot, undefined);
       return undefined;
     }
     // For .postcssrc without extension, check if it's JSON
@@ -314,6 +323,7 @@ async function resolvePostcssStringPlugins(
       const content = fs.readFileSync(configPath, "utf-8").trim();
       if (content.startsWith("{")) {
         // JSON format — postcss-load-config handles object form
+        _postcssCache.set(projectRoot, undefined);
         return undefined;
       }
     }
@@ -321,16 +331,23 @@ async function resolvePostcssStringPlugins(
     config = mod.default ?? mod;
   } catch {
     // If we can't load the config, let Vite/postcss-load-config handle it
+    _postcssCache.set(projectRoot, undefined);
     return undefined;
   }
 
   // Only process array-form plugins that contain string entries
   // (either bare strings or tuple form ["plugin-name", { options }])
-  if (!config || !Array.isArray(config.plugins)) return undefined;
+  if (!config || !Array.isArray(config.plugins)) {
+    _postcssCache.set(projectRoot, undefined);
+    return undefined;
+  }
   const hasStringPlugins = config.plugins.some(
     (p: any) => typeof p === "string" || (Array.isArray(p) && typeof p[0] === "string"),
   );
-  if (!hasStringPlugins) return undefined;
+  if (!hasStringPlugins) {
+    _postcssCache.set(projectRoot, undefined);
+    return undefined;
+  }
 
   // Resolve string plugin names to actual plugin functions
   const req = createRequire(path.join(projectRoot, "package.json"));
@@ -356,7 +373,9 @@ async function resolvePostcssStringPlugins(
     }),
   );
 
-  return { plugins: resolved };
+  const result = { plugins: resolved };
+  _postcssCache.set(projectRoot, result);
+  return result;
 }
 
 // Virtual module IDs for Pages Router production build
@@ -3551,14 +3570,22 @@ function findFileWithExts(
   return null;
 }
 
+/** Module-level cache for hasMdxFiles — avoids re-scanning per Vite environment. */
+const _mdxScanCache = new Map<string, boolean>();
+
 /**
  * Check if the project has .mdx files in app/ or pages/ directories.
  */
 function hasMdxFiles(root: string, appDir: string | null, pagesDir: string | null): boolean {
+  if (_mdxScanCache.has(root)) return _mdxScanCache.get(root)!;
   const dirs = [appDir, pagesDir].filter(Boolean) as string[];
   for (const dir of dirs) {
-    if (fs.existsSync(dir) && scanDirForMdx(dir)) return true;
+    if (fs.existsSync(dir) && scanDirForMdx(dir)) {
+      _mdxScanCache.set(root, true);
+      return true;
+    }
   }
+  _mdxScanCache.set(root, false);
   return false;
 }
 
@@ -3596,6 +3623,9 @@ export type { NextConfig } from "./config/next-config.js";
 export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig, computeLazyChunks };
 export { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
+export { _postcssCache };
+export { hasMdxFiles as _hasMdxFiles };
+export { _mdxScanCache };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
 export { stripServerExports as _stripServerExports };
 export { asyncHooksStubPlugin as _asyncHooksStubPlugin };
