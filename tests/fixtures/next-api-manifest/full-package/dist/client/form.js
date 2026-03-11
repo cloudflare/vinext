@@ -1,12 +1,12 @@
-'use client';
+"use client";
 "use strict";
 Object.defineProperty(exports, "__esModule", {
-    value: true
+  value: true,
 });
 Object.defineProperty(exports, "default", {
-    enumerable: true,
-    get: function() {
-        return _default;
-    }
+  enumerable: true,
+  get: function () {
+    return _default;
+  },
 });
 const _default = function Form() {};
