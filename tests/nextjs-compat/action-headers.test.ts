@@ -11,7 +11,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ViteDevServer } from "vite";
-import { APP_FIXTURE_DIR, startFixtureServer } from "../helpers.js";
+import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "../helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -116,15 +116,13 @@ describe("Next.js compat: headers() and cookies() in Server Actions", () => {
   // ── Fixture page renders ────────────────────────────────────────────────
 
   it("action-headers page renders without error", async () => {
-    const res = await fetch(`${baseUrl}/nextjs-compat/action-headers`);
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/action-headers");
     expect(res.status).toBe(200);
-    const html = await res.text();
     expect(html).toContain("Action Headers Test");
   });
 
   it("action-headers page exposes form action IDs for both actions", async () => {
-    const res = await fetch(`${baseUrl}/nextjs-compat/action-headers`);
-    const html = await res.text();
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/action-headers");
     expect(extractActionId(html, "formGetHeader")).toBeDefined();
     expect(extractActionId(html, "formGetCookie")).toBeDefined();
   });
@@ -133,8 +131,7 @@ describe("Next.js compat: headers() and cookies() in Server Actions", () => {
   // Next.js behaviour: headers() MUST resolve inside a server action (phase="action").
 
   it("headers() resolves in a server action (does not throw)", async () => {
-    const pageRes = await fetch(`${baseUrl}/nextjs-compat/action-headers`);
-    const html = await pageRes.text();
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/action-headers");
     const actionId = extractActionId(html, "formGetHeader");
     expect(actionId).toBeDefined();
 
@@ -153,8 +150,7 @@ describe("Next.js compat: headers() and cookies() in Server Actions", () => {
   });
 
   it("cookies() resolves in a server action (does not throw)", async () => {
-    const pageRes = await fetch(`${baseUrl}/nextjs-compat/action-headers`);
-    const html = await pageRes.text();
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/action-headers");
     const actionId = extractActionId(html, "formGetCookie");
     expect(actionId).toBeDefined();
 

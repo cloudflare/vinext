@@ -18,13 +18,15 @@ export default function ActionHeadersPage() {
   return (
     <main>
       <h1>Action Headers Test</h1>
-      {/* Form bound to getHeaderFromAction — action ID extracted by tests */}
+      {/* Wrapper closure — invokes getHeaderFromAction but discards return value.
+          Tests use the named export directly to assert returned values. */}
       <form action={formGetHeader}>
         <button id="get-header-btn" type="submit">
           Get Header
         </button>
       </form>
-      {/* Form bound to getCookieFromAction — action ID extracted by tests */}
+      {/* Wrapper closure — invokes getCookieFromAction but discards return value.
+          Tests use the named export directly to assert returned values. */}
       <form action={formGetCookie}>
         <button id="get-cookie-btn" type="submit">
           Get Cookie
