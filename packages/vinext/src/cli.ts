@@ -572,8 +572,8 @@ function printHelp(cmd?: string) {
   runs the appropriate multi-environment build via Vite.
 
   Options:
-    --verbose     Show full Vite/Rollup build output (suppressed by default)
-    -h, --help    Show this help
+    -v, --verbose     Show full Vite/Rollup build output (suppressed by default)
+    -h, --help        Show this help
 `);
     return;
   }
