@@ -482,6 +482,15 @@ describe("generatePagesRouterWorkerEntry", () => {
     expect(middlewarePos).toBeLessThan(apiRoutePos);
   });
 
+  it("applies next.config.js redirects before middleware", () => {
+    const content = generatePagesRouterWorkerEntry();
+    const redirectPos = content.indexOf("matchRedirect(pathname, configRedirects, reqCtx)");
+    const middlewarePos = content.indexOf("runMiddleware(request, ctx)");
+    expect(redirectPos).toBeGreaterThan(-1);
+    expect(middlewarePos).toBeGreaterThan(-1);
+    expect(redirectPos).toBeLessThan(middlewarePos);
+  });
+
   it("handles middleware redirects", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("result.redirectUrl");
@@ -514,7 +523,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("applies next.config.js redirects", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("configRedirects");
-    expect(content).toContain("matchRedirect(resolvedPathname");
+    expect(content).toContain("matchRedirect(pathname");
   });
 
   it("applies next.config.js rewrites (beforeFiles, afterFiles, fallback)", () => {
@@ -528,7 +537,7 @@ describe("generatePagesRouterWorkerEntry", () => {
   it("applies next.config.js custom headers", () => {
     const content = generatePagesRouterWorkerEntry();
     expect(content).toContain("configHeaders");
-    expect(content).toContain("matchHeaders(resolvedPathname");
+    expect(content).toContain("matchHeaders(pathname");
   });
 
   it("handles basePath stripping and creates a new request with stripped URL for middleware", () => {

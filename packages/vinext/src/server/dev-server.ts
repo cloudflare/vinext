@@ -365,7 +365,7 @@ export function createSSRHandler(
                         const routerShim = await server.ssrLoadModule("next/router");
                         if (typeof routerShim.setSSRContext === "function") {
                           routerShim.setSSRContext({
-                            pathname: localeStrippedUrl.split("?")[0],
+                            pathname: patternToNextFormat(route.pattern),
                             query: { ...params, ...parseQuery(url) },
                             asPath: url,
                             locale: locale ?? i18nConfig?.defaultLocale,

@@ -259,6 +259,7 @@ import { runWithPrivateCache } from "vinext/cache-runtime";
 import { runWithRouterState } from "vinext/router-state";
 import { runWithHeadState } from "vinext/head-state";
 import { safeJsonStringify } from "vinext/html";
+import { decode as decodeQueryString } from "node:querystring";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 import { parseCookies } from ${JSON.stringify(path.resolve(__dirname, "../config/config-matchers.js").replace(/\\/g, "/"))};
@@ -276,6 +277,14 @@ const buildId = ${buildIdJson};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
+
+class ApiBodyParseError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.statusCode = statusCode;
+    this.name = "ApiBodyParseError";
+  }
+}
 
 // ISR cache helpers (inlined for the server entry)
 async function isrGet(key) {
@@ -631,8 +640,16 @@ function createReqRes(request, url, query, body) {
       res.end(JSON.stringify(data));
     },
     send: function(data) {
-      if (typeof data === "object" && data !== null) { res.json(data); }
-      else { if (!resHeaders["content-type"]) resHeaders["content-type"] = "text/plain"; res.end(String(data)); }
+      if (Buffer.isBuffer(data)) {
+        if (!resHeaders["content-type"]) resHeaders["content-type"] = "application/octet-stream";
+        resHeaders["content-length"] = String(data.length);
+        res.end(data);
+      } else if (typeof data === "object" && data !== null) {
+        res.json(data);
+      } else {
+        if (!resHeaders["content-type"]) resHeaders["content-type"] = "text/plain";
+        res.end(String(data));
+      }
     },
     redirect: function(statusOrUrl, url2) {
       if (typeof statusOrUrl === "string") { res.writeHead(307, { Location: statusOrUrl }); }
@@ -715,7 +732,7 @@ async function _renderPage(request, url, manifest) {
   try {
     if (typeof setSSRContext === "function") {
       setSSRContext({
-        pathname: routeUrl.split("?")[0],
+        pathname: patternToNextFormat(route.pattern),
         query: { ...params, ...parseQuery(routeUrl) },
         asPath: routeUrl,
         locale: locale,
@@ -1038,28 +1055,32 @@ export async function handleApiRoute(request, url) {
   if (contentLength > 1 * 1024 * 1024) {
     return new Response("Request body too large", { status: 413 });
   }
-  let body;
-  const ct = request.headers.get("content-type") || "";
-  let rawBody;
-  try { rawBody = await readBodyWithLimit(request, 1 * 1024 * 1024); }
-  catch { return new Response("Request body too large", { status: 413 }); }
-  if (!rawBody) {
-    body = undefined;
-  } else if (ct.includes("application/json")) {
-    try { body = JSON.parse(rawBody); } catch { body = rawBody; }
-  } else {
-    body = rawBody;
-  }
-
-  const { req, res, responsePromise } = createReqRes(request, url, query, body);
-
   try {
+    let body;
+    const ct = request.headers.get("content-type") || "";
+    let rawBody;
+    try { rawBody = await readBodyWithLimit(request, 1 * 1024 * 1024); }
+    catch { return new Response("Request body too large", { status: 413 }); }
+    if (!rawBody) {
+      body = undefined;
+    } else if (ct.includes("application/json")) {
+      try { body = JSON.parse(rawBody); } catch { throw new ApiBodyParseError("Invalid JSON", 400); }
+    } else if (ct.includes("application/x-www-form-urlencoded")) {
+      body = decodeQueryString(rawBody);
+    } else {
+      body = rawBody;
+    }
+
+    const { req, res, responsePromise } = createReqRes(request, url, query, body);
     await handler(req, res);
     // If handler didn't call res.end(), end it now.
     // The end() method is idempotent — safe to call twice.
     res.end();
     return await responsePromise;
   } catch (e) {
+    if (e instanceof ApiBodyParseError) {
+      return new Response(e.message, { status: e.statusCode });
+    }
     console.error("[vinext] API error:", e);
     return new Response("Internal Server Error", { status: 500 });
   }

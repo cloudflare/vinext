@@ -105,7 +105,7 @@ describe("Pages Router integration", () => {
     expect(html).toMatch(/Post:\s*(<!--\s*-->)?\s*42/);
     expect(html).toContain("post-title");
     // Router should have correct pathname and query during SSR
-    expect(html).toMatch(/Pathname:\s*(<!--\s*-->)?\s*\/posts\/42/);
+    expect(html).toMatch(/Pathname:\s*(<!--\s*-->)?\s*\/posts\/\[id\]/);
     expect(html).toMatch(/Query ID:\s*(<!--\s*-->)?\s*42/);
   });
 
@@ -187,6 +187,43 @@ describe("Pages Router integration", () => {
     expect(data).toEqual({ user: { id: "123", name: "User 123" } });
   });
 
+  it("preserves repeated urlencoded API body keys", async () => {
+    const res = await fetch(`${baseUrl}/api/echo-body`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: "a=1&a=2&b=3",
+    });
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data).toEqual({ body: { a: ["1", "2"], b: "3" } });
+  });
+
+  it("returns 400 for malformed JSON API bodies", async () => {
+    const res = await fetch(`${baseUrl}/api/echo-body`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: "{invalid json",
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe("Invalid JSON");
+  });
+
+  it("sends Buffer payloads from res.send() as raw bytes", async () => {
+    const res = await fetch(`${baseUrl}/api/send-buffer`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/octet-stream");
+    expect(res.headers.get("content-length")).toBe("3");
+
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(Buffer.from([1, 2, 3]))).toBe(true);
+  });
+
   it("returns 404 for non-existent API routes", async () => {
     const res = await fetch(`${baseUrl}/api/nonexistent`);
     expect(res.status).toBe(404);
@@ -251,6 +288,45 @@ describe("Pages Router integration", () => {
     const res = await fetch(`${baseUrl}/old-about`, { redirect: "manual" });
     expect(res.status).toBe(308);
     expect(res.headers.get("location")).toBe("/about");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  // and
+  // test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("applies next.config.js headers using the pre-middleware pathname after a rewrite in dev", async () => {
+    const res = await fetch(`${baseUrl}/headers-before-middleware-rewrite`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-rewrite-source-header")).toBe("1");
+    const html = await res.text();
+    expect(html).toContain("Server-Side Rendered");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  // and
+  // test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("applies next.config.js redirects before middleware rewrites in dev", async () => {
+    const res = await fetch(`${baseUrl}/redirect-before-middleware-rewrite`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  it("applies next.config.js redirects before middleware responses in dev", async () => {
+    const res = await fetch(`${baseUrl}/redirect-before-middleware-response`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
   });
 
   it("applies redirects with repeated dynamic params in the destination", async () => {
@@ -1725,6 +1801,45 @@ describe("Production server middleware (Pages Router)", () => {
     expect(html).toContain("Server-Side Rendered");
   });
 
+  // Ported from Next.js:
+  // test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  // and
+  // test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("applies next.config.js headers using the pre-middleware pathname after a rewrite", async () => {
+    const res = await fetch(`${prodUrl}/headers-before-middleware-rewrite`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-rewrite-source-header")).toBe("1");
+    const html = await res.text();
+    expect(html).toContain("Server-Side Rendered");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  // and
+  // test/e2e/middleware-rewrites/test/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-rewrites/test/index.test.ts
+  it("applies next.config.js redirects before middleware rewrites in production", async () => {
+    const res = await fetch(`${prodUrl}/redirect-before-middleware-rewrite`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
+  it("applies next.config.js redirects before middleware responses in production", async () => {
+    const res = await fetch(`${prodUrl}/redirect-before-middleware-response`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(307);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
   it("blocks /blocked with 403 via middleware", async () => {
     const res = await fetch(`${prodUrl}/blocked`);
     expect(res.status).toBe(403);
@@ -1795,6 +1910,43 @@ describe("Production server middleware (Pages Router)", () => {
     // Must match exactly: invalid UTF-8-leading bytes + null + ASCII tail.
     // This catches any accidental text() decode/re-encode in prod-server.
     expect(body.equals(Buffer.from([0xff, 0xfe, 0xfd, 0x00, 0x61, 0x62, 0x63]))).toBe(true);
+  });
+
+  it("preserves repeated urlencoded API body keys in production", async () => {
+    const res = await fetch(`${prodUrl}/api/echo-body`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: "a=1&a=2&b=3",
+    });
+    expect(res.status).toBe(200);
+
+    const data = await res.json();
+    expect(data).toEqual({ body: { a: ["1", "2"], b: "3" } });
+  });
+
+  it("returns 400 for malformed JSON API bodies in production", async () => {
+    const res = await fetch(`${prodUrl}/api/echo-body`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: "{invalid json",
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.text()).toBe("Invalid JSON");
+  });
+
+  it("sends Buffer payloads from res.send() as raw bytes in production", async () => {
+    const res = await fetch(`${prodUrl}/api/send-buffer`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/octet-stream");
+    expect(res.headers.get("content-length")).toBe("3");
+
+    const body = Buffer.from(await res.arrayBuffer());
+    expect(body.equals(Buffer.from([1, 2, 3]))).toBe(true);
   });
 
   it("defaults to application/octet-stream for API routes without Content-Type", async () => {

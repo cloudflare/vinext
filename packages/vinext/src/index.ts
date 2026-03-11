@@ -2019,6 +2019,44 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
               }
 
+              // When @cloudflare/vite-plugin is present, delegate the entire
+              // Pages Router request pipeline to the Worker/miniflare side.
+              // That keeps middleware, headers, redirects, rewrites, API
+              // routes, and rendering in one place instead of mutating the
+              // host request and forwarding post-middleware state downstream.
+              if (hasCloudflarePlugin) return next();
+
+              // Snapshot of req.headers before middleware runs. Used for both
+              // preMiddlewareReqCtx and the middleware Request itself. Intentionally
+              // captured once here — applyRequestHeadersToNodeRequest() mutates
+              // req.headers later, but by then this Headers object is no longer read.
+              const nodeRequestHeaders = new Headers(
+                Object.fromEntries(
+                  Object.entries(req.headers)
+                    .filter(([, v]) => v !== undefined)
+                    .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
+                ),
+              );
+
+              const requestOrigin = `http://${req.headers.host || "localhost"}`;
+              const preMiddlewareReqUrl = new URL(url, requestOrigin);
+              const preMiddlewareReqCtx: RequestContext = requestContextFromRequest(
+                new Request(preMiddlewareReqUrl, { headers: nodeRequestHeaders }),
+              );
+
+              // Config redirects run before middleware, but still match against
+              // the original normalized pathname and request headers/cookies.
+              if (nextConfig?.redirects.length) {
+                const redirected = applyRedirects(
+                  pathname,
+                  res,
+                  nextConfig.redirects,
+                  preMiddlewareReqCtx,
+                  nextConfig.basePath ?? "",
+                );
+                if (redirected) return;
+              }
+
               const applyRequestHeadersToNodeRequest = (nextRequestHeaders: Headers) => {
                 for (const key of Object.keys(req.headers)) {
                   delete req.headers[key];
@@ -2045,11 +2083,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 const origin = `${mwProto}://${req.headers.host || "localhost"}`;
                 const middlewareRequest = new Request(new URL(url, origin), {
                   method: req.method,
-                  headers: Object.fromEntries(
-                    Object.entries(req.headers)
-                      .filter(([, v]) => v !== undefined)
-                      .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
-                  ),
+                  headers: nodeRequestHeaders,
                 });
                 const result = await runMiddleware(
                   getPagesRunner(),
@@ -2138,60 +2172,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 }
               }
 
-              // ── Cloudflare Workers dev mode ────────────────────────────
-              // When @cloudflare/vite-plugin is present, ALL rendering runs
-              // inside the miniflare Worker subprocess — both App Router (via
-              // virtual:vinext-rsc-entry) and Pages Router (via
-              // virtual:vinext-server-entry → renderPage/handleApiRoute).
-              //
-              // The Worker entry already handles config redirects, rewrites,
-              // headers, and all routing internally. Running them here too
-              // would duplicate that logic and produce incorrect behaviour
-              // (double redirects, headers set on the wrong object, etc.).
-              //
-              // Middleware.ts is the only thing that belongs in the host connect
-              // handler — it has already run above. Any terminal middleware
-              // result (redirect, block response) has already been sent.
-              // Any rewrite has been written back to req.url above so the
-              // Cloudflare plugin's handler sees the correct path.
-              //
-              // Call next() to hand off to the Cloudflare plugin's connect
-              // handler, which dispatches the request to miniflare.
-              if (hasCloudflarePlugin) return next();
-
               // Build request context once for has/missing condition checks
-              // across headers, redirects, and rewrites.
+              // for config rules that execute after middleware (rewrites).
               // Convert Node.js IncomingMessage headers to a Web Request for
               // requestContextFromRequest(), which uses the standard Web API.
-              const reqUrl = new URL(url, `http://${req.headers.host || "localhost"}`);
-              const reqCtxHeaders =
-                middlewareRequestHeaders ??
-                new Headers(
-                  Object.fromEntries(
-                    Object.entries(req.headers)
-                      .filter(([, v]) => v !== undefined)
-                      .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
-                  ),
-                );
+              const reqUrl = new URL(url, requestOrigin);
+              const reqCtxHeaders = middlewareRequestHeaders ?? nodeRequestHeaders;
               const reqCtx: RequestContext = requestContextFromRequest(
                 new Request(reqUrl, { headers: reqCtxHeaders }),
               );
 
               // Apply custom headers from next.config.js
+              // Header matching still uses the original normalized pathname and
+              // pre-middleware request state; middleware response headers win
+              // later because they are already on the outgoing response.
               if (nextConfig?.headers.length) {
-                applyHeaders(pathname, res, nextConfig.headers, reqCtx);
-              }
-
-              // Apply redirects from next.config.js
-              if (nextConfig?.redirects.length) {
-                const redirected = applyRedirects(
-                  pathname,
-                  res,
-                  nextConfig.redirects,
-                  reqCtx,
-                  nextConfig.basePath ?? "",
-                );
-                if (redirected) return;
+                applyHeaders(pathname, res, nextConfig.headers, preMiddlewareReqCtx);
               }
 
               // Apply rewrites from next.config.js (beforeFiles)

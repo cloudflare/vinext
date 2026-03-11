@@ -259,7 +259,7 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
-import { runWithFetchCache } from "vinext/fetch-cache";
+import { getCollectedFetchTags, runWithFetchCache } from "vinext/fetch-cache";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
 import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
@@ -307,9 +307,18 @@ async function __isrGet(key) {
   if (!result || !result.value) return null;
   return { value: result, isStale: result.cacheState === "stale" };
 }
-async function __isrSet(key, data, revalidateSeconds) {
+async function __isrSet(key, data, revalidateSeconds, tags) {
   const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: [] });
+  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
+}
+function __pageCacheTags(pathname, extraTags) {
+  const tags = [pathname, "_N_T_" + pathname];
+  if (Array.isArray(extraTags)) {
+    for (const tag of extraTags) {
+      if (!tags.includes(tag)) tags.push(tag);
+    }
+  }
+  return tags;
 }
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -1404,7 +1413,7 @@ export default async function handler(request, ctx) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -1440,7 +1449,7 @@ export default async function handler(request, ctx) {
   return ctx ? _runWithExecutionContext(ctx, _run) : _run();
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+async function _handleRequest(request, __reqCtx, _mwCtx) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
   let __compileEnd;
   let __renderEnd;
@@ -1934,16 +1943,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
     const hasDefault = typeof handler["default"] === "function";
 
+    // Route handlers need the same middleware header/status merge behavior as
+    // page responses. This keeps middleware response headers visible on API
+    // routes in Workers/dev, and preserves custom rewrite status overrides.
+    function attachRouteHandlerMiddlewareContext(response) {
+      // _mwCtx.headers is only set (non-null) when middleware actually ran and
+      // produced a continue/rewrite response. An empty Headers object (middleware
+      // ran but produced no response headers) is a harmless edge case: the early
+      // return is skipped, but the copy loop below is a no-op, so no incorrect
+      // headers are added. The allocation cost in that case is acceptable.
+      if (!_mwCtx.headers && _mwCtx.status == null) return response;
+      const responseHeaders = new Headers(response.headers);
+      if (_mwCtx.headers) {
+        for (const [key, value] of _mwCtx.headers) {
+          responseHeaders.append(key, value);
+        }
+      }
+      return new Response(response.body, {
+        status: _mwCtx.status ?? response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+      });
+    }
+
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
       const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
       if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
-      return new Response(null, {
+      return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
         headers: { "Allow": allowMethods.join(", ") },
-      });
+      }));
     }
 
     // HEAD auto-implementation: run GET handler and strip body
@@ -1987,28 +2019,28 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           if (draftCookie) newHeaders.append("Set-Cookie", draftCookie);
 
           if (isAutoHead) {
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: response.status,
               statusText: response.statusText,
               headers: newHeaders,
-            });
+            }));
           }
-          return new Response(response.body, {
+          return attachRouteHandlerMiddlewareContext(new Response(response.body, {
             status: response.status,
             statusText: response.statusText,
             headers: newHeaders,
-          });
+          }));
         }
 
         if (isAutoHead) {
           // Strip body for auto-HEAD, preserve headers and status
-          return new Response(null, {
+          return attachRouteHandlerMiddlewareContext(new Response(null, {
             status: response.status,
             statusText: response.statusText,
             headers: response.headers,
-          });
+          }));
         }
-        return response;
+        return attachRouteHandlerMiddlewareContext(response);
       } catch (err) {
         getAndClearPendingCookies(); // Clear any pending cookies on error
         // Catch redirect() / notFound() thrown from route handlers
@@ -2020,16 +2052,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: statusCode,
               headers: { Location: new URL(redirectUrl, request.url).toString() },
-            });
+            }));
           }
           if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
             const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, { status: statusCode });
+            return attachRouteHandlerMiddlewareContext(new Response(null, { status: statusCode }));
           }
         }
         setHeadersContext(null);
@@ -2042,17 +2074,17 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         ).catch((reportErr) => {
           console.error("[vinext] Failed to report route handler error:", reportErr);
         });
-        return new Response(null, { status: 500 });
+        return attachRouteHandlerMiddlewareContext(new Response(null, { status: 500 }));
       } finally {
         setHeadersAccessPhase(previousHeadersPhase);
       }
     }
     setHeadersContext(null);
     setNavigationContext(null);
-    return new Response(null, {
+    return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
       headers: { Allow: exportedMethods.join(", ") },
-    });
+    }));
   }
 
   // Build the component tree: layouts wrapping the page
@@ -2215,7 +2247,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
                     __revalChunks.push(__revalDecoder.decode());
                     const __freshHtml = __revalChunks.join("");
                     const __freshRscData = await __rscDataPromise;
-                    return { html: __freshHtml, rscData: __freshRscData };
+                    const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+                    return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
                   })
                 )
               )
@@ -2223,8 +2256,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           );
           // Write HTML and RSC to their own keys independently — no races
           await Promise.all([
-            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
-            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
+            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
           ]);
           __isrDebug?.("regen complete", cleanPathname);
         });
@@ -2637,13 +2670,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const __rscWritePromise = (async () => {
         try {
           const __rscDataForCache = await __isrRscDataPromise;
-          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc);
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc, __pageTags);
           __isrDebug?.("RSC cache written", __isrKeyRsc);
         } catch (__rscWriteErr) {
           console.error("[vinext] ISR RSC cache write error:", __rscWriteErr);
         }
       })();
-      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__rscWritePromise);
+      _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
     return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
@@ -2842,18 +2876,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             }
             __chunks.push(__decoder.decode());
             const __fullHtml = __chunks.join("");
+            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
             // Write HTML and RSC to their own keys independently.
             // RSC data was captured by the tee above (before isRscRequest branch)
             // so an initial browser visit (HTML request) also populates the RSC key,
             // ensuring the first client-side navigation after a direct visit is a
             // cache hit rather than a miss.
             const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
             ];
             if (__capturedRscDataPromise) {
               __writes.push(
                 __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs)
+                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
                 )
               );
             }
@@ -2863,9 +2898,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
           }
         })();
-        // Register with ExecutionContext so the Workers runtime keeps the isolate
-        // alive until the cache write finishes, even after the response is sent.
-        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__cachePromise);
+        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+        // the isolate alive until the cache write finishes, even after the response is sent.
+        _getRequestExecutionContext()?.waitUntil(__cachePromise);
         return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
       }
       return __isrResponseProd;

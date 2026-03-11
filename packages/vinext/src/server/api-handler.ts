@@ -9,6 +9,7 @@
  */
 import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { decode as decodeQueryString } from "node:querystring";
 import { type Route, matchRoute } from "../routing/pages-router.js";
 import { reportRequestError } from "./instrumentation.js";
 import { addQueryParam } from "../utils/query.js";
@@ -38,6 +39,16 @@ interface NextApiResponse extends ServerResponse {
  * Prevents denial-of-service via unbounded request body buffering.
  */
 const MAX_BODY_SIZE = 1 * 1024 * 1024;
+
+class ApiBodyParseError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number,
+  ) {
+    super(message);
+    this.name = "ApiBodyParseError";
+  }
+}
 
 /**
  * Parse the request body based on content-type.
@@ -77,15 +88,10 @@ async function parseBody(req: IncomingMessage): Promise<unknown> {
         try {
           resolve(JSON.parse(raw));
         } catch {
-          resolve(raw);
+          reject(new ApiBodyParseError("Invalid JSON", 400));
         }
       } else if (contentType.includes("application/x-www-form-urlencoded")) {
-        const params = new URLSearchParams(raw);
-        const obj: Record<string, string> = {};
-        for (const [key, value] of params) {
-          obj[key] = value;
-        }
-        resolve(obj);
+        resolve(decodeQueryString(raw));
       } else {
         resolve(raw);
       }
@@ -135,6 +141,15 @@ function enhanceApiObjects(
   };
 
   apiRes.send = function (data: unknown) {
+    if (Buffer.isBuffer(data)) {
+      if (!this.getHeader("Content-Type")) {
+        this.setHeader("Content-Type", "application/octet-stream");
+      }
+      this.setHeader("Content-Length", String(data.length));
+      this.end(data);
+      return;
+    }
+
     if (typeof data === "object" && data !== null) {
       this.setHeader("Content-Type", "application/json");
       this.end(JSON.stringify(data));
@@ -206,6 +221,12 @@ export async function handleApiRoute(
     await handler(apiReq, apiRes);
     return true;
   } catch (e) {
+    if (e instanceof ApiBodyParseError) {
+      res.statusCode = e.statusCode;
+      res.end(e.message);
+      return true;
+    }
+
     server.ssrFixStacktrace(e as Error);
     console.error(e);
     reportRequestError(
