@@ -1957,7 +1957,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     if (typeof handlerFn === "function") {
       const previousHeadersPhase = setHeadersAccessPhase("route-handler");
       try {
-        const response = await handlerFn(request, { params });
+        const response = await handlerFn(request, { params: makeThenableParams(params) });
         const dynamicUsedInHandler = consumeDynamicUsage();
 
         // Apply Cache-Control from route segment config (export const revalidate = N).

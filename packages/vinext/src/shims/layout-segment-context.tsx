@@ -1,11 +1,10 @@
-"use client";
-
 /**
  * Layout segment context provider.
  *
- * This is a "use client" module because it needs React's createContext
- * and useContext, which are NOT available in the react-server condition.
- * The RSC entry renders this as a client component boundary.
+ * Does NOT use "use client" — this module is imported directly by the RSC
+ * entry which runs in the react-server condition. getLayoutSegmentContext()
+ * returns null when React.createContext is unavailable (RSC), and the
+ * provider gracefully falls back to passing children through unchanged.
  *
  * The context is shared with navigation.ts via getLayoutSegmentContext()
  * to avoid creating separate contexts in different modules.
