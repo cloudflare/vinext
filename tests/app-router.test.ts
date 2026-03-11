@@ -2489,7 +2489,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     // Should call dev origin validation inside _handleRequest
     const callSite = code.indexOf("const __originBlock = __validateDevRequestOrigin(request)");
     const handleRequestIdx = code.indexOf(
-      "async function _handleRequest(request, __reqCtx, _mwCtx, ctx)",
+      "async function _handleRequest(request, __reqCtx, _mwCtx)",
     );
     expect(callSite).toBeGreaterThan(-1);
     expect(handleRequestIdx).toBeGreaterThan(-1);
