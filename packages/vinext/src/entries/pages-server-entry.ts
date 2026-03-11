@@ -845,25 +845,32 @@ async function _renderPage(request, url, manifest) {
 
         if (cached && cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
           triggerBackgroundRegeneration(cacheKey, async function() {
-            const freshResult = await pageModule.getStaticProps({ params });
-            if (
-              freshResult &&
-              freshResult.props &&
-              typeof freshResult.revalidate === "number" &&
-              freshResult.revalidate > 0
-            ) {
-              await isrSet(
-                cacheKey,
-                {
-                  kind: "PAGES",
-                  html: cached.value.value.html,
-                  pageData: freshResult.props,
-                  headers: undefined,
-                  status: undefined,
-                },
-                freshResult.revalidate,
-              );
-            }
+            // Create a fresh unified context for background regeneration.
+            // This ensures patched fetch (for cache tagging) and ALS-based
+            // context are available, matching App Router behavior.
+            const revalCtx = _createUnifiedCtx({ executionContext: _getRequestExecutionContext() });
+            return _runWithUnifiedCtx(revalCtx, async () => {
+              ensureFetchPatch();
+              const freshResult = await pageModule.getStaticProps({ params });
+              if (
+                freshResult &&
+                freshResult.props &&
+                typeof freshResult.revalidate === "number" &&
+                freshResult.revalidate > 0
+              ) {
+                await isrSet(
+                  cacheKey,
+                  {
+                    kind: "PAGES",
+                    html: cached.value.value.html,
+                    pageData: freshResult.props,
+                    headers: undefined,
+                    status: undefined,
+                  },
+                  freshResult.revalidate,
+                );
+              }
+            });
           });
           var _staleHeaders = {
             "Content-Type": "text/html", "X-Vinext-Cache": "STALE",

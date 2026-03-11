@@ -292,6 +292,25 @@ describe("Pages Router entry templates", () => {
     expect(waitUntilCall).toBeGreaterThan(renderFnCall);
   });
 
+  it("server entry wraps ISR regeneration in unified context for fetch patch", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    // Find the triggerBackgroundRegeneration call for stale cache handling
+    const staleRegenIndex = code.indexOf(
+      "triggerBackgroundRegeneration(cacheKey, async function()",
+    );
+    expect(staleRegenIndex).toBeGreaterThan(-1);
+
+    // Extract the callback body (roughly next 500 chars after the call)
+    const callbackSection = code.slice(staleRegenIndex, staleRegenIndex + 800);
+
+    // The callback should use _runWithUnifiedCtx to provide context for patched fetch
+    expect(callbackSection).toContain("_runWithUnifiedCtx");
+
+    // It should also call ensureFetchPatch() to enable cache tagging during regen
+    expect(callbackSection).toContain("ensureFetchPatch");
+  });
+
   it("client entry snapshot", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-client-entry");
     expect(stabilize(code)).toMatchSnapshot();
