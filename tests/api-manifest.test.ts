@@ -4,34 +4,47 @@ import {
   extractExportsFromRootFile,
   resolveReExportTarget,
   extractExportsFromDistFile,
+  discoverPublicEntrypoints,
   getModuleExports,
   buildManifest,
-  PUBLIC_MODULES,
-  SUBDIRECTORY_MODULES,
 } from "../scripts/extract-nextjs-api.js";
 
 const FIXTURE_DIR = path.join(import.meta.dirname, "fixtures/next-api-manifest");
 
-describe("module lists", () => {
-  it("PUBLIC_MODULES has 20 entries", () => {
-    expect(PUBLIC_MODULES).toHaveLength(20);
-    expect(PUBLIC_MODULES).toContain("web-vitals");
-  });
+describe("discoverPublicEntrypoints", () => {
+  it("discovers root and nested public entry files without a hard-coded module list", () => {
+    const dir = path.join(FIXTURE_DIR, "full-package");
+    const discovered = discoverPublicEntrypoints(dir);
 
-  it("SUBDIRECTORY_MODULES has 4 entries", () => {
-    expect(SUBDIRECTORY_MODULES).toHaveLength(4);
-    expect(SUBDIRECTORY_MODULES.map((m) => m.name)).toEqual([
-      "compat/router",
-      "legacy/image",
-      "font/google",
-      "font/local",
+    expect(discovered.map((entry) => entry.specifier)).toEqual([
+      "next/babel",
+      "next/compat/router",
+      "next/experimental/testmode/proxy",
+      "next/font/google",
+      "next/font/local",
+      "next/form",
+      "next/headers",
+      "next/legacy/image",
+      "next/navigation",
+      "next/web-vitals",
     ]);
   });
 
-  it("SUBDIRECTORY_MODULES entries have correct entryFile paths", () => {
-    for (const mod of SUBDIRECTORY_MODULES) {
-      expect(mod.entryFile).toMatch(/\.js$/);
-    }
+  it("records entryFile paths relative to the package root", () => {
+    const dir = path.join(FIXTURE_DIR, "full-package");
+    const discovered = discoverPublicEntrypoints(dir);
+    expect(discovered.find((entry) => entry.specifier === "next/compat/router")?.entryFile).toBe(
+      "compat/router.js",
+    );
+    expect(
+      discovered.find((entry) => entry.specifier === "next/experimental/testmode/proxy")?.entryFile,
+    ).toBe("experimental/testmode/proxy.js");
+  });
+
+  it("skips dist/ files from discovery", () => {
+    const dir = path.join(FIXTURE_DIR, "full-package");
+    const discovered = discoverPublicEntrypoints(dir);
+    expect(discovered.some((entry) => entry.entryFile.startsWith("dist/"))).toBe(false);
   });
 });
 
@@ -252,6 +265,22 @@ describe("getModuleExports (integration with fixtures)", () => {
     const result = getModuleExports(dir, "font/google", "font/google/index.js");
     expect(result).toEqual([]);
   });
+
+  it("resolves newly discovered root modules outside the previous allowlist", () => {
+    const dir = path.join(FIXTURE_DIR, "full-package");
+    const result = getModuleExports(dir, "babel", "babel.js");
+    expect(result).toEqual(["default"]);
+  });
+
+  it("resolves re-export targets that point at a directory index", () => {
+    const dir = path.join(FIXTURE_DIR, "full-package");
+    const result = getModuleExports(
+      dir,
+      "experimental/testmode/proxy",
+      "experimental/testmode/proxy.js",
+    );
+    expect(result).toEqual(["createProxyServer"]);
+  });
 });
 
 describe("buildManifest", () => {
@@ -264,16 +293,19 @@ describe("buildManifest", () => {
   it("has all non-empty modules including subdirectory modules", () => {
     const dir = path.join(FIXTURE_DIR, "full-package");
     const manifest = buildManifest(dir);
-    // Root modules: headers.js, navigation.js, form.js, web-vitals.js
+
     expect(manifest.modules).toHaveProperty("next/headers");
     expect(manifest.modules).toHaveProperty("next/navigation");
     expect(manifest.modules).toHaveProperty("next/form");
     expect(manifest.modules).toHaveProperty("next/web-vitals");
-    // Subdirectory modules: compat/router, legacy/image
+    expect(manifest.modules).toHaveProperty("next/babel");
     expect(manifest.modules).toHaveProperty("next/compat/router");
+    expect(manifest.modules).toHaveProperty("next/experimental/testmode/proxy");
     expect(manifest.modules).toHaveProperty("next/legacy/image");
-    // Verify exports
+
+    expect(manifest.modules["next/babel"]).toEqual(["default"]);
     expect(manifest.modules["next/compat/router"]).toEqual(["useRouter"]);
+    expect(manifest.modules["next/experimental/testmode/proxy"]).toEqual(["createProxyServer"]);
     expect(manifest.modules["next/legacy/image"]).toEqual(["default"]);
     expect(manifest.modules["next/web-vitals"]).toEqual(["useReportWebVitals"]);
   });
@@ -287,6 +319,7 @@ describe("buildManifest", () => {
     // font/google and font/local have empty entry files
     expect(manifest.modules).not.toHaveProperty("next/font/google");
     expect(manifest.modules).not.toHaveProperty("next/font/local");
+    expect(manifest.modules).not.toHaveProperty("next/root-params");
   });
 
   it("exports are sorted alphabetically", () => {

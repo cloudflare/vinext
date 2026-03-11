@@ -37,8 +37,11 @@ jobs:
       - name: Extract new API manifest
         if: steps.next-version.outputs.changed == 'true'
         run: |
-          npm install --no-save "next@${{ steps.next-version.outputs.latest }}"
-          pnpm dlx tsx scripts/extract-nextjs-api.ts node_modules/next new-manifest.json
+          TMP_DIR=$(mktemp -d)
+          cd "$TMP_DIR"
+          TARBALL=$(npm pack "next@${{ steps.next-version.outputs.latest }}" --silent)
+          tar -xzf "$TARBALL"
+          pnpm dlx tsx "$GITHUB_WORKSPACE/scripts/extract-nextjs-api.ts" "$TMP_DIR/package" "$GITHUB_WORKSPACE/new-manifest.json"
 
       - name: Diff manifests
         if: steps.next-version.outputs.changed == 'true'
@@ -64,8 +67,8 @@ jobs:
           API_DIFF: ${{ steps.diff.outputs.diff }}
           REPO: ${{ github.repository }}
         run: |
-          # Check if an issue already exists for this version
-          EXISTING=$(gh issue list --label "next-api-tracking" --search "Next.js $NEXT_LATEST" --json number --jq '.[0].number // empty')
+          MARKER="<!-- next-api-track: next@${NEXT_LATEST} -->"
+          EXISTING=$(gh issue list --state open --search "\"next-api-track: next@${NEXT_LATEST}\" in:body" --json number --jq '.[0].number // empty')
           if [ -n "$EXISTING" ]; then
             echo "Issue #$EXISTING already exists for next@$NEXT_LATEST, skipping"
             exit 0
@@ -76,6 +79,8 @@ jobs:
 
           **Previous version:** ${NEXT_CURRENT}
           **New version:** ${NEXT_LATEST}
+
+          ${MARKER}
 
           ### API Diff
 

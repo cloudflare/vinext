@@ -1,42 +1,55 @@
 import fs from "node:fs";
 import path from "node:path";
 
-// Public entry points to scan (maps to next/*.js files)
-export const PUBLIC_MODULES = [
-  "app",
-  "cache",
-  "client",
-  "constants",
-  "document",
-  "dynamic",
-  "error",
-  "form",
-  "head",
-  "headers",
-  "image",
-  "jest",
-  "link",
-  "navigation",
-  "og",
-  "root-params",
-  "router",
-  "script",
-  "server",
-  "web-vitals",
-];
-
-// Public entry points in subdirectories (not at package root)
-export const SUBDIRECTORY_MODULES: Array<{ name: string; entryFile: string }> = [
-  { name: "compat/router", entryFile: "compat/router.js" },
-  { name: "legacy/image", entryFile: "legacy/image.js" },
-  { name: "font/google", entryFile: "font/google/index.js" },
-  { name: "font/local", entryFile: "font/local/index.js" },
-];
+export interface PublicEntrypoint {
+  specifier: string;
+  entryFile: string;
+}
 
 export interface ApiManifest {
   version: string;
   extractedAt: string;
   modules: Record<string, string[]>; // "next/headers" -> ["cookies", "headers", "draftMode"]
+}
+
+/**
+ * Discover public Next.js entry files from the published package layout.
+ *
+ * We treat any .js file outside dist/ as a candidate public entrypoint and
+ * let export extraction decide whether it has runtime exports worth tracking.
+ * This keeps the manifest resilient to newly added entrypoints without
+ * maintaining a second hard-coded module list.
+ */
+export function discoverPublicEntrypoints(nextPkgDir: string): PublicEntrypoint[] {
+  const found: PublicEntrypoint[] = [];
+
+  function walk(currentDir: string, relativeDir = ""): void {
+    const dirents = fs
+      .readdirSync(currentDir, { withFileTypes: true })
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const dirent of dirents) {
+      const relativePath = relativeDir ? path.posix.join(relativeDir, dirent.name) : dirent.name;
+
+      if (dirent.isDirectory()) {
+        if (relativePath === "dist") continue;
+        walk(path.join(currentDir, dirent.name), relativePath);
+        continue;
+      }
+
+      if (!dirent.isFile() || !dirent.name.endsWith(".js")) continue;
+
+      const modulePath = relativePath.replace(/\.js$/, "").replace(/\/index$/, "");
+
+      found.push({
+        specifier: `next/${modulePath}`,
+        entryFile: relativePath,
+      });
+    }
+  }
+
+  walk(nextPkgDir);
+  return found.sort((a, b) => a.specifier.localeCompare(b.specifier));
 }
 
 /**
@@ -174,15 +187,17 @@ export function getModuleExports(
   // Handle both './dist/...' (relative to entry file) and 'next/dist/...' paths
   let targetPath: string;
   if (target.startsWith("next/")) {
-    targetPath = path.join(nextPkgDir, target.slice(5) + ".js");
+    targetPath = path.join(nextPkgDir, target.slice(5));
   } else {
     const entryDir = path.dirname(rootFile);
-    targetPath = path.join(entryDir, target + ".js");
+    targetPath = path.join(entryDir, target);
   }
 
-  if (!fs.existsSync(targetPath)) return [];
+  const candidatePaths = [`${targetPath}.js`, path.join(targetPath, "index.js")];
+  const resolvedTargetPath = candidatePaths.find((candidate) => fs.existsSync(candidate));
+  if (!resolvedTargetPath) return [];
 
-  const distSource = fs.readFileSync(targetPath, "utf-8");
+  const distSource = fs.readFileSync(resolvedTargetPath, "utf-8");
   return extractExportsFromDistFile(distSource);
 }
 
@@ -193,18 +208,10 @@ export function buildManifest(nextPkgDir: string): ApiManifest {
   const pkgJson = JSON.parse(fs.readFileSync(path.join(nextPkgDir, "package.json"), "utf-8"));
 
   const modules: Record<string, string[]> = {};
-  for (const mod of PUBLIC_MODULES) {
-    const moduleExports = getModuleExports(nextPkgDir, mod);
+  for (const { specifier, entryFile } of discoverPublicEntrypoints(nextPkgDir)) {
+    const moduleExports = getModuleExports(nextPkgDir, specifier.slice(5), entryFile);
     if (moduleExports.length > 0) {
-      modules[`next/${mod}`] = moduleExports.sort();
-    }
-  }
-
-  // Subdirectory modules
-  for (const { name, entryFile } of SUBDIRECTORY_MODULES) {
-    const moduleExports = getModuleExports(nextPkgDir, name, entryFile);
-    if (moduleExports.length > 0) {
-      modules[`next/${name}`] = moduleExports.sort();
+      modules[specifier] = moduleExports.sort();
     }
   }
 

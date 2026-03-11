@@ -4,6 +4,11 @@
     "status": "wont-fix",
     "reason": "vinext uses Vitest, not Jest"
   },
+  "next/babel": {
+    "exports": ["*"],
+    "status": "wont-fix",
+    "reason": "vinext uses Vite and does not provide Next.js's Babel preset entrypoint"
+  },
   "next/client": {
     "exports": ["*"],
     "status": "wont-fix",
@@ -12,7 +17,27 @@
   "next/app": {
     "exports": ["*"],
     "status": "wont-fix",
-    "reason": "next/app only exports a default type (AppProps). Our shim has types but no runtime default export."
+    "reason": "next/app is a Pages Router entrypoint that vinext does not emulate as a standalone runtime module"
+  },
+  "next/experimental/testing/server": {
+    "exports": ["*"],
+    "status": "wont-fix",
+    "reason": "Experimental testing helpers are outside vinext's compatibility target"
+  },
+  "next/experimental/testmode/playwright": {
+    "exports": ["*"],
+    "status": "wont-fix",
+    "reason": "Experimental Playwright helpers are outside vinext's compatibility target"
+  },
+  "next/experimental/testmode/playwright/msw": {
+    "exports": ["*"],
+    "status": "wont-fix",
+    "reason": "Experimental Playwright/MSW helpers are outside vinext's compatibility target"
+  },
+  "next/experimental/testmode/proxy": {
+    "exports": ["*"],
+    "status": "wont-fix",
+    "reason": "Experimental testmode proxy helpers are outside vinext's compatibility target"
   },
   "next/navigation": {
     "exports": ["unstable_rethrow", "unstable_isUnrecognizedActionError"],

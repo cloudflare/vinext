@@ -59,7 +59,7 @@ export async function startFixtureServer(
     optimizeDeps: {
       holdUntilCrawlEnd: true,
     },
-    server: { port: 0, cors: false },
+    server: { host: "127.0.0.1", port: 0, cors: false },
     logLevel: "silent",
   });
 
@@ -68,7 +68,7 @@ export async function startFixtureServer(
     await server.listen();
     const addr = server.httpServer?.address();
     if (addr && typeof addr === "object") {
-      baseUrl = `http://localhost:${addr.port}`;
+      baseUrl = `http://127.0.0.1:${addr.port}`;
     }
   }
 

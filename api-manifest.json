@@ -1,8 +1,9 @@
 {
   "version": "16.1.6",
-  "extractedAt": "2026-03-11T07:32:38.066Z",
+  "extractedAt": "2026-03-11T07:56:13.539Z",
   "modules": {
     "next/app": ["default"],
+    "next/babel": ["default"],
     "next/cache": [
       "cacheLife",
       "cacheTag",
@@ -16,6 +17,7 @@
       "updateTag"
     ],
     "next/client": ["emitter", "hydrate", "initialize", "router", "version"],
+    "next/compat/router": ["useRouter"],
     "next/constants": [
       "APP_CLIENT_INTERNALS",
       "APP_PATHS_MANIFEST",
@@ -90,11 +92,21 @@
     "next/document": ["Head", "Html", "Main", "NextScript", "default"],
     "next/dynamic": ["default", "noSSR"],
     "next/error": ["default"],
+    "next/experimental/testing/server": ["getRedirectUrl", "getRewrittenUrl", "isRewrite"],
+    "next/experimental/testmode/playwright": [
+      "default",
+      "defaultPlaywrightConfig",
+      "defineConfig",
+      "test"
+    ],
+    "next/experimental/testmode/playwright/msw": ["default", "defineConfig", "test"],
+    "next/experimental/testmode/proxy": ["createProxyServer"],
     "next/form": ["default"],
     "next/head": ["default", "defaultHead"],
     "next/headers": ["cookies", "draftMode", "headers"],
     "next/image": ["default", "getImageProps"],
     "next/jest": ["default"],
+    "next/legacy/image": ["default"],
     "next/link": ["default", "useLinkStatus"],
     "next/navigation": [
       "ReadonlyURLSearchParams",
@@ -135,8 +147,6 @@
       "userAgent",
       "userAgentFromString"
     ],
-    "next/web-vitals": ["useReportWebVitals"],
-    "next/compat/router": ["useRouter"],
-    "next/legacy/image": ["default"]
+    "next/web-vitals": ["useReportWebVitals"]
   }
 }

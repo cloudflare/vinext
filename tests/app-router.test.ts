@@ -874,6 +874,34 @@ describe("App Router integration", () => {
     expect(html).toContain('data-testid="message-input"');
   });
 
+  it("uses 303 for server action redirects", async () => {
+    // Ported from Next.js:
+    // - test/e2e/app-dir/actions/app-action.test.ts
+    // - test/e2e/app-dir/actions/app-action-progressive-enhancement.test.ts
+    const pageRes = await fetch(`${baseUrl}/contracts/redirect-from-action`);
+    expect(pageRes.status).toBe(200);
+
+    const html = await pageRes.text();
+    const actionIdMatch = html.match(/\$ACTION_ID_([^"]+)/);
+    expect(actionIdMatch).not.toBeNull();
+
+    const res = await fetch(`${baseUrl}/contracts/redirect-from-action`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/plain",
+        "x-rsc-action": actionIdMatch![1],
+        Accept: "text/x-component",
+        Origin: baseUrl,
+      },
+      body: "[]",
+      redirect: "manual",
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-action-redirect-status")).toBe("303");
+    expect(res.headers.get("x-action-redirect")).toContain("/about");
+  });
+
   it("renders template.tsx wrapper around page content", async () => {
     const { html } = await fetchHtml(baseUrl, "/");
     expect(html).toContain('data-testid="root-template"');

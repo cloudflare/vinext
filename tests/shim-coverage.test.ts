@@ -200,4 +200,19 @@ describe("checkModuleCoverage", () => {
     expect(result.passed).toBe(true);
     expect(result.coveredModules).toEqual(["next/navigation"]);
   });
+
+  it("ignores registry-only shims that are outside the current manifest", () => {
+    const manifest = makeManifest({
+      "next/headers": ["cookies"],
+    });
+    const registry = new Set(["next/headers", "next/config"]);
+    const shimExports = {
+      "next/headers": new Set(["cookies"]),
+      "next/config": new Set(["default"]),
+    };
+    const result = checkModuleCoverage(manifest, registry, shimExports, {});
+    expect(result.passed).toBe(true);
+    expect(result.coveredModules).toEqual(["next/headers"]);
+    expect(result.missingModules).toEqual([]);
+  });
 });
