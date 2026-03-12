@@ -596,3 +596,85 @@ describe("generateBuildId", () => {
     expect(b.buildId).toBe("stable-id");
   });
 });
+
+describe("resolveNextConfig external rewrite warning", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("emits a warning when rewrites contain external destinations", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      rewrites: async () => [
+        { source: "/api/:path*", destination: "https://api.example.com/:path*" },
+        { source: "/internal", destination: "/other" },
+      ],
+    });
+
+    const externalWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
+    );
+
+    expect(externalWarning).toBeDefined();
+    expect(externalWarning![0]).toContain("1 external rewrite that");
+    expect(externalWarning![0]).toContain("https://api.example.com/:path*");
+    expect(externalWarning![0]).toContain("/api/:path*");
+    expect(externalWarning![0]).toContain("→");
+    expect(externalWarning![0]).toContain("credential headers");
+    expect(externalWarning![0]).toContain("forwarded");
+    expect(externalWarning![0]).toContain("match Next.js behavior");
+    expect(externalWarning![0]).not.toContain("/other");
+  });
+
+  it("does not warn when all rewrites are internal", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      rewrites: async () => [
+        { source: "/old", destination: "/new" },
+        { source: "/a", destination: "/b" },
+      ],
+    });
+
+    const externalWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
+    );
+    expect(externalWarning).toBeUndefined();
+  });
+
+  it("warns about multiple external rewrites across beforeFiles, afterFiles, and fallback", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({
+      rewrites: async () => ({
+        beforeFiles: [{ source: "/proxy1", destination: "https://one.example.com/api" }],
+        afterFiles: [{ source: "/proxy2", destination: "https://two.example.com/api" }],
+        fallback: [{ source: "/proxy3", destination: "https://three.example.com/api" }],
+      }),
+    });
+
+    const externalWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
+    );
+    expect(externalWarning).toBeDefined();
+    expect(externalWarning![0]).toContain("3 external rewrites");
+    expect(externalWarning![0]).toContain("https://one.example.com/api");
+    expect(externalWarning![0]).toContain("https://two.example.com/api");
+    expect(externalWarning![0]).toContain("https://three.example.com/api");
+    expect(externalWarning![0]).toContain("/proxy1");
+    expect(externalWarning![0]).toContain("/proxy2");
+    expect(externalWarning![0]).toContain("/proxy3");
+  });
+
+  it("does not warn when no rewrites are configured", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await resolveNextConfig({ env: {} });
+
+    const externalWarning = warn.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
+    );
+    expect(externalWarning).toBeUndefined();
+  });
+});

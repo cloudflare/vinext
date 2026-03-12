@@ -10,6 +10,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { PHASE_DEVELOPMENT_SERVER } from "../shims/constants.js";
 import { normalizePageExtensions } from "../routing/file-matcher.js";
+import { isExternalUrl } from "./config-matchers.js";
 
 /**
  * Parse a body size limit value (string or number) into bytes.
@@ -435,6 +436,26 @@ export async function resolveNextConfig(
         afterFiles: result.afterFiles ?? [],
         fallback: result.fallback ?? [],
       };
+    }
+  }
+
+  {
+    const allRewrites = [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback];
+    const externalRewrites = allRewrites.filter((rewrite) => isExternalUrl(rewrite.destination));
+
+    if (externalRewrites.length > 0) {
+      const noun = externalRewrites.length === 1 ? "external rewrite" : "external rewrites";
+      const listing = externalRewrites
+        .map((rewrite) => `  ${rewrite.source} → ${rewrite.destination}`)
+        .join("\n");
+
+      console.warn(
+        `[vinext] Found ${externalRewrites.length} ${noun} that proxy requests to external origins:\n` +
+          `${listing}\n` +
+          `Request headers, including credential headers (cookie, authorization, proxy-authorization, x-api-key), ` +
+          `are forwarded to the external origin to match Next.js behavior. ` +
+          `If you do not want to forward credentials, use an API route or route handler where you control exactly which headers are sent.`,
+      );
     }
   }
 

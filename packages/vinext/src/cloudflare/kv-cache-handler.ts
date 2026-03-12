@@ -28,8 +28,10 @@
  *   }
  */
 
+import { Buffer } from "node:buffer";
+
 import type { CacheHandler, CacheHandlerValue, IncrementalCacheValue } from "../shims/cache.js";
-import { getRequestExecutionContext } from "../shims/request-context.js";
+import { getRequestExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
 
 // Cloudflare KV namespace interface (matches Workers types)
 interface KVNamespace {
@@ -46,19 +48,6 @@ interface KVNamespace {
     list_complete: boolean;
     cursor?: string;
   }>;
-}
-
-/**
- * Minimal ExecutionContext interface for Cloudflare Workers.
- * Background KV operations (cleanup deletes, cache writes) are registered
- * with ctx.waitUntil() so they are not killed when the Response is returned.
- *
- * The preferred way to supply ctx is via runWithExecutionContext() in the
- * worker entry (see vinext/shims/request-context). The constructor option
- * is kept as a fallback for callers that set it explicitly.
- */
-interface ExecutionContext {
-  waitUntil(promise: Promise<unknown>): void;
 }
 
 /** Shape stored in KV for each cache entry. */
@@ -79,6 +68,9 @@ const ENTRY_PREFIX = "cache:";
 /** Max tag length to prevent KV key abuse. */
 const MAX_TAG_LENGTH = 256;
 
+/** Matches a valid base64 string (standard alphabet with optional padding). */
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
+
 /**
  * Validate a cache tag. Returns null if invalid.
  * Note: `:` is rejected because TAG_PREFIX and ENTRY_PREFIX use `:` as a
@@ -86,26 +78,40 @@ const MAX_TAG_LENGTH = 256;
  */
 function validateTag(tag: string): string | null {
   if (typeof tag !== "string" || tag.length === 0 || tag.length > MAX_TAG_LENGTH) return null;
-  // Block control characters, path separators, and KV-special characters.
+  // Block control characters and reserved separators used in our own key format.
+  // Slash is allowed because revalidatePath() relies on pathname tags like
+  // "/posts/hello" and "_N_T_/posts/hello".
   // eslint-disable-next-line no-control-regex -- intentional: reject control chars in tags
-  if (/[\x00-\x1f/\\:]/.test(tag)) return null;
+  if (/[\x00-\x1f\\:]/.test(tag)) return null;
   return tag;
 }
 
 export class KVCacheHandler implements CacheHandler {
   private kv: KVNamespace;
   private prefix: string;
-  private ctx: ExecutionContext | undefined;
+  private ctx: ExecutionContextLike | undefined;
   private ttlSeconds: number;
+
+  /** Local in-memory cache for tag invalidation timestamps. Avoids redundant KV reads. */
+  private _tagCache = new Map<string, { timestamp: number; fetchedAt: number }>();
+  /** TTL (ms) for local tag cache entries. After this, re-fetch from KV. */
+  private _tagCacheTtl: number;
 
   constructor(
     kvNamespace: KVNamespace,
-    options?: { appPrefix?: string; ctx?: ExecutionContext; ttlSeconds?: number },
+    options?: {
+      appPrefix?: string;
+      ctx?: ExecutionContextLike;
+      ttlSeconds?: number;
+      /** TTL in milliseconds for the local tag cache. Defaults to 5000ms. */
+      tagCacheTtlMs?: number;
+    },
   ) {
     this.kv = kvNamespace;
     this.prefix = options?.appPrefix ? `${options.appPrefix}:` : "";
     this.ctx = options?.ctx;
     this.ttlSeconds = options?.ttlSeconds ?? 30 * 24 * 3600;
+    this._tagCacheTtl = options?.tagCacheTtlMs ?? 5_000;
   }
 
   async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
@@ -141,20 +147,56 @@ export class KVCacheHandler implements CacheHandler {
       }
     }
 
-    // Check tag-based invalidation (parallel for lower latency)
+    // Check tag-based invalidation.
+    // Uses a local in-memory cache to avoid redundant KV reads for recently-seen tags.
     if (entry.tags.length > 0) {
-      const tagResults = await Promise.all(
-        entry.tags.map((tag) => this.kv.get(this.prefix + TAG_PREFIX + tag)),
-      );
-      for (let i = 0; i < entry.tags.length; i++) {
-        const tagTime = tagResults[i];
-        if (tagTime) {
-          const tagTimestamp = Number(tagTime);
-          if (Number.isNaN(tagTimestamp) || tagTimestamp >= entry.lastModified) {
-            // Tag was invalidated after this entry, or timestamp is corrupted
-            // — treat as miss to force re-render
+      const now = Date.now();
+      const uncachedTags: string[] = [];
+
+      // First pass: check local cache for each tag.
+      // Delete expired entries to prevent unbounded Map growth in long-lived isolates.
+      for (const tag of entry.tags) {
+        const cached = this._tagCache.get(tag);
+        if (cached && now - cached.fetchedAt < this._tagCacheTtl) {
+          // Local cache hit — check invalidation inline
+          if (Number.isNaN(cached.timestamp) || cached.timestamp >= entry.lastModified) {
             this._deleteInBackground(kvKey);
             return null;
+          }
+        } else {
+          // Expired or absent — evict stale entry and re-fetch from KV
+          if (cached) this._tagCache.delete(tag);
+          uncachedTags.push(tag);
+        }
+      }
+
+      // Second pass: fetch uncached tags from KV in parallel.
+      // Populate the local cache for ALL fetched tags before checking invalidation,
+      // so that KV round-trips are not wasted when an earlier tag triggers an
+      // early return — subsequent get() calls benefit from the already-fetched results.
+      if (uncachedTags.length > 0) {
+        const tagResults = await Promise.all(
+          uncachedTags.map((tag) => this.kv.get(this.prefix + TAG_PREFIX + tag)),
+        );
+
+        // Populate cache for all results first, then check for invalidation.
+        // Two-loop structure ensures all tag results are cached even when an
+        // earlier tag would cause an early return — so subsequent get() calls
+        // for entries sharing those tags don't redundantly re-fetch from KV.
+        for (let i = 0; i < uncachedTags.length; i++) {
+          const tagTime = tagResults[i];
+          const tagTimestamp = tagTime ? Number(tagTime) : 0;
+          this._tagCache.set(uncachedTags[i], { timestamp: tagTimestamp, fetchedAt: now });
+        }
+
+        // Then check for invalidation using the now-cached timestamps
+        for (const tag of uncachedTags) {
+          const cached = this._tagCache.get(tag)!;
+          if (cached.timestamp !== 0) {
+            if (Number.isNaN(cached.timestamp) || cached.timestamp >= entry.lastModified) {
+              this._deleteInBackground(kvKey);
+              return null;
+            }
           }
         }
       }
@@ -196,22 +238,24 @@ export class KVCacheHandler implements CacheHandler {
     }
     const tags = [...tagSet];
 
-    // Determine revalidation time
-    let revalidateAt: number | null = null;
+    // Resolve effective revalidate — data overrides ctx.
+    // revalidate: 0 means "don't cache", so skip storage entirely.
+    let effectiveRevalidate: number | undefined;
     if (ctx) {
       const revalidate = (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
-      if (typeof revalidate === "number" && revalidate > 0) {
-        revalidateAt = Date.now() + revalidate * 1000;
+      if (typeof revalidate === "number") {
+        effectiveRevalidate = revalidate;
       }
     }
-    if (
-      data &&
-      "revalidate" in data &&
-      typeof data.revalidate === "number" &&
-      data.revalidate > 0
-    ) {
-      revalidateAt = Date.now() + data.revalidate * 1000;
+    if (data && "revalidate" in data && typeof data.revalidate === "number") {
+      effectiveRevalidate = data.revalidate;
     }
+    if (effectiveRevalidate === 0) return Promise.resolve();
+
+    const revalidateAt =
+      typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
+        ? Date.now() + effectiveRevalidate * 1000
+        : null;
 
     // Prepare entry — convert ArrayBuffers to base64 for JSON storage
     const serializable = data ? serializeForJSON(data) : null;
@@ -257,10 +301,29 @@ export class KVCacheHandler implements CacheHandler {
         }),
       ),
     );
+    // Update local tag cache immediately so invalidations are reflected
+    // without waiting for the TTL to expire
+    for (const tag of validTags) {
+      this._tagCache.set(tag, { timestamp: now, fetchedAt: now });
+    }
   }
 
+  /**
+   * Clear the in-memory tag cache for this KVCacheHandler instance.
+   *
+   * Note: KVCacheHandler instances are typically reused across multiple
+   * requests in a Cloudflare Worker. The `_tagCache` is intentionally
+   * cross-request — it reduces redundant KV reads for recently-seen tags
+   * across all requests hitting the same isolate, bounded by `tagCacheTtlMs`
+   * (default 5s). vinext does NOT call this method per request.
+   *
+   * This is an opt-in escape hatch for callers that need stricter isolation
+   * (e.g., tests, or environments with custom lifecycle management).
+   * Callers that require per-request isolation should either construct a
+   * fresh KVCacheHandler per request or invoke this method explicitly.
+   */
   resetRequestCache(): void {
-    // No-op — KV is stateless per request
+    this._tagCache.clear();
   }
 
   /**
@@ -379,26 +442,25 @@ function restoreArrayBuffers(value: IncrementalCacheValue): boolean {
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
+  return Buffer.from(buffer).toString("base64");
 }
 
+/**
+ * Decode a base64 string to an ArrayBuffer.
+ * Validates the input against the base64 alphabet before decoding,
+ * since Buffer.from(str, "base64") silently ignores invalid characters.
+ */
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+  if (!BASE64_RE.test(base64) || base64.length % 4 !== 0) {
+    throw new Error("Invalid base64 string");
   }
-  return bytes.buffer;
+  const buf = Buffer.from(base64, "base64");
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
 /**
  * Safely decode base64 to ArrayBuffer. Returns null on invalid input
- * instead of throwing a DOMException.
+ * instead of throwing.
  */
 function safeBase64ToArrayBuffer(base64: string): ArrayBuffer | null {
   try {

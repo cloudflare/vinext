@@ -37,6 +37,9 @@
   },
   "packageManager": "pnpm@10.30.0",
   "pnpm": {
+    "overrides": {
+      "rollup": "^4.59.0"
+    },
     "peerDependencyRules": {
       "ignoreMissing": [
         "next",

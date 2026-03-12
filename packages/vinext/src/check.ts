@@ -81,7 +81,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   redirects: { status: "supported" },
   rewrites: { status: "supported" },
   headers: { status: "supported" },
-  i18n: { status: "supported", detail: "path-prefix routing (domains not yet supported)" },
+  i18n: { status: "supported", detail: "path-prefix routing; domain routing for Pages Router" },
   env: { status: "supported" },
   images: { status: "partial", detail: "remotePatterns validated, no local optimization" },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
@@ -97,7 +97,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "server actions via 'use server' directive",
   },
-  "i18n.domains": { status: "unsupported", detail: "domain-based i18n routing not implemented" },
+  "i18n.domains": {
+    status: "partial",
+    detail: "supported for Pages Router; App Router unchanged",
+  },
   reactStrictMode: { status: "supported", detail: "always enabled" },
   poweredByHeader: {
     status: "supported",

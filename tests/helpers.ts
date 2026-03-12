@@ -7,6 +7,9 @@
  * - Static export setup
  */
 
+import http, { type IncomingHttpHeaders } from "node:http";
+import fs from "node:fs/promises";
+import os from "node:os";
 import { createServer, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
@@ -14,6 +17,14 @@ import path from "node:path";
 // ── Fixture paths ─────────────────────────────────────────────
 export const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 export const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic");
+export const PAGES_I18N_DOMAINS_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/pages-i18n-domains",
+);
+export const PAGES_I18N_DOMAINS_BASEPATH_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/pages-i18n-domains-basepath",
+);
 
 // ── Shared RSC virtual module entries (used by @vitejs/plugin-rsc) ──
 export const RSC_ENTRIES = {
@@ -40,7 +51,16 @@ export interface TestServerResult {
  */
 export async function startFixtureServer(
   fixtureDir: string,
-  opts?: { appRouter?: boolean; listen?: boolean },
+  opts?: {
+    appRouter?: boolean;
+    listen?: boolean;
+    server?: {
+      host?: string;
+      allowedHosts?: true | string[];
+      cors?: boolean;
+      port?: number;
+    };
+  },
 ): Promise<TestServerResult> {
   // vinext() auto-registers @vitejs/plugin-rsc when app/ is detected.
   // Pass appDir explicitly since tests run with configFile: false and
@@ -59,7 +79,11 @@ export async function startFixtureServer(
     optimizeDeps: {
       holdUntilCrawlEnd: true,
     },
-    server: { port: 0, cors: false },
+    server: {
+      port: 0,
+      cors: false,
+      ...opts?.server,
+    },
     logLevel: "silent",
   });
 
@@ -101,4 +125,55 @@ export async function fetchJson(
   const res = await fetch(`${baseUrl}${urlPath}`, init);
   const data = await res.json();
   return { res, data };
+}
+
+export interface NodeHttpResponse {
+  status: number;
+  headers: IncomingHttpHeaders;
+  body: string;
+}
+
+export async function createIsolatedFixture(fixtureDir: string, prefix: string): Promise<string> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  await fs.cp(fixtureDir, tmpDir, { recursive: true });
+
+  const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+  await fs.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+  return tmpDir;
+}
+
+export async function requestNodeServerWithHost(
+  port: number,
+  requestPath: string,
+  host: string,
+  headers: Record<string, string> = {},
+): Promise<NodeHttpResponse> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        host: "127.0.0.1",
+        port,
+        path: requestPath,
+        method: "GET",
+        headers: {
+          Host: host,
+          ...headers,
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
 }

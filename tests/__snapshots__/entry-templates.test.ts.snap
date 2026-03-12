@@ -356,7 +356,8 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
-import { runWithFetchCache } from "vinext/fetch-cache";
+import { getCollectedFetchTags, runWithFetchCache } from "vinext/fetch-cache";
+import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
 import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
@@ -404,9 +405,18 @@ async function __isrGet(key) {
   if (!result || !result.value) return null;
   return { value: result, isStale: result.cacheState === "stale" };
 }
-async function __isrSet(key, data, revalidateSeconds) {
+async function __isrSet(key, data, revalidateSeconds, tags) {
   const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: [] });
+  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
+}
+function __pageCacheTags(pathname, extraTags) {
+  const tags = [pathname, "_N_T_" + pathname];
+  if (Array.isArray(extraTags)) {
+    for (const tag of extraTags) {
+      if (!tags.includes(tag)) tags.push(tag);
+    }
+  }
+  return tags;
 }
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -617,9 +627,7 @@ function rscOnError(error, requestInfo, errorContext) {
       error instanceof Error ? error : new Error(String(error)),
       requestInfo,
       errorContext,
-    ).catch((reportErr) => {
-      console.error("[vinext] Failed to report render error:", reportErr);
-    });
+    );
   }
 
   // In production, generate a digest hash for non-navigation errors
@@ -751,6 +759,7 @@ const routes = [
     unauthorized: null,
   }
 ];
+const _routeTrie = _buildRouteTrie(routes);
 
 const metadataRoutes = [
 
@@ -1016,20 +1025,17 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
   });
 }
 
-function matchRoute(url, routes) {
+function matchRoute(url) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
    // NOTE: Do NOT decodeURIComponent here. The caller is responsible for decoding
    // the pathname exactly once at the request entry point. Decoding again here
    // would cause inconsistent path matching between middleware and routing.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) return { route, params };
-  }
-  return null;
+  return _trieMatch(_routeTrie, urlParts);
 }
 
+// matchPattern is kept for findIntercept (linear scan over small interceptLookup array).
 function matchPattern(urlParts, patternParts) {
   const params = Object.create(null);
   for (let i = 0; i < patternParts.length; i++) {
@@ -1533,6 +1539,32 @@ function __normalizePath(pathname) {
   return "/" + resolved.join("/");
 }
 
+const __pathDelimiterRegex = /([/#?\\\\]|%(2f|23|3f|5c))/gi;
+function __decodeRouteSegment(segment) {
+  return decodeURIComponent(segment).replace(__pathDelimiterRegex, function (char) {
+    return encodeURIComponent(char);
+  });
+}
+function __decodeRouteSegmentSafe(segment) {
+  try { return __decodeRouteSegment(segment); } catch (e) { return segment; }
+}
+function __normalizePathnameForRouteMatch(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegmentSafe(segments[i]));
+  }
+  return normalized.join("/");
+}
+function __normalizePathnameForRouteMatchStrict(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegment(segments[i]));
+  }
+  return normalized.join("/");
+}
+
 // ── Config pattern matching, redirects, rewrites, headers, CSRF validation,
 //    external URL proxy, cookie parsing, and request context are imported from
 //    config-matchers.ts and request-pipeline.ts (see import statements above).
@@ -1650,7 +1682,7 @@ export default async function handler(request, ctx) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -1658,7 +1690,7 @@ export default async function handler(request, ctx) {
               if (__configHeaders.length) {
                 const url = new URL(request.url);
                 let pathname;
-                try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
+                try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
                 
                 const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
                 for (const h of extraHeaders) {
@@ -1686,7 +1718,7 @@ export default async function handler(request, ctx) {
   return ctx ? _runWithExecutionContext(ctx, _run) : _run();
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+async function _handleRequest(request, __reqCtx, _mwCtx) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
   let __compileEnd;
   let __renderEnd;
@@ -1707,11 +1739,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   const __protoGuard = guardProtocolRelativeUrl(url.pathname);
   if (__protoGuard) return __protoGuard;
 
-  // Decode percent-encoding and normalize pathname to canonical form.
-  // decodeURIComponent prevents /%61dmin from bypassing /admin matchers.
+  // Decode percent-encoding segment-wise and normalize pathname to canonical form.
+  // This preserves encoded path delimiters like %2F within a single segment.
   // __normalizePath collapses //foo///bar → /foo/bar, resolves . and .. segments.
   let decodedUrlPathname;
-  try { decodedUrlPathname = decodeURIComponent(url.pathname); } catch (e) {
+  try { decodedUrlPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
     return new Response("Bad Request", { status: 400 });
   }
   let pathname = __normalizePath(decodedUrlPathname);
@@ -1812,39 +1844,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       // Skip — the base servedUrl is not served when generateSitemaps exists
       continue;
     }
-    if (cleanPathname === metaRoute.servedUrl) {
-      if (metaRoute.isDynamic) {
-        // Dynamic metadata route — call the default export and serialize
-        const metaFn = metaRoute.module.default;
-        if (typeof metaFn === "function") {
-          const result = await metaFn();
-          let body;
-          // If it's already a Response (e.g., ImageResponse), return directly
-          if (result instanceof Response) return result;
-          // Serialize based on type
-          if (metaRoute.type === "sitemap") body = sitemapToXml(result);
-          else if (metaRoute.type === "robots") body = robotsToText(result);
-          else if (metaRoute.type === "manifest") body = manifestToJson(result);
-          else body = JSON.stringify(result);
-          return new Response(body, {
-            headers: { "Content-Type": metaRoute.contentType },
-          });
-        }
-      } else {
-        // Static metadata file — decode from embedded base64 data
-        try {
-          const binary = atob(metaRoute.fileDataBase64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          return new Response(bytes, {
-            headers: {
-              "Content-Type": metaRoute.contentType,
-              "Cache-Control": "public, max-age=0, must-revalidate",
-            },
-          });
-        } catch {
-          return new Response("Not Found", { status: 404 });
-        }
+    // Match metadata route — use pattern matching for dynamic segments,
+    // strict equality for static paths.
+    var _metaParams = null;
+    if (metaRoute.patternParts) {
+      var _metaUrlParts = cleanPathname.split("/").filter(Boolean);
+      _metaParams = matchPattern(_metaUrlParts, metaRoute.patternParts);
+      if (!_metaParams) continue;
+    } else if (cleanPathname !== metaRoute.servedUrl) {
+      continue;
+    }
+    if (metaRoute.isDynamic) {
+      // Dynamic metadata route — call the default export and serialize
+      const metaFn = metaRoute.module.default;
+      if (typeof metaFn === "function") {
+        const result = await metaFn({ params: makeThenableParams(_metaParams || {}) });
+        let body;
+        // If it's already a Response (e.g., ImageResponse), return directly
+        if (result instanceof Response) return result;
+        // Serialize based on type
+        if (metaRoute.type === "sitemap") body = sitemapToXml(result);
+        else if (metaRoute.type === "robots") body = robotsToText(result);
+        else if (metaRoute.type === "manifest") body = manifestToJson(result);
+        else body = JSON.stringify(result);
+        return new Response(body, {
+          headers: { "Content-Type": metaRoute.contentType },
+        });
+      }
+    } else {
+      // Static metadata file — decode from embedded base64 data
+      try {
+        const binary = atob(metaRoute.fileDataBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new Response(bytes, {
+          headers: {
+            "Content-Type": metaRoute.contentType,
+            "Cache-Control": "public, max-age=0, must-revalidate",
+          },
+        });
+      } catch {
+        return new Response("Not Found", { status: 404 });
       }
     }
   }
@@ -1963,7 +2003,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
 
       // After the action, re-render the current page so the client
       // gets an updated React tree reflecting any mutations.
-      const match = matchRoute(cleanPathname, routes);
+      const match = matchRoute(cleanPathname);
       let element;
       if (match) {
         const { route: actionRoute, params: actionParams } = match;
@@ -2011,9 +2051,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         err instanceof Error ? err : new Error(String(err)),
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      ).catch((reportErr) => {
-        console.error("[vinext] Failed to report server action error:", reportErr);
-      });
+      );
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response(
@@ -2038,7 +2076,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
   }
 
-  let match = matchRoute(cleanPathname, routes);
+  let match = matchRoute(cleanPathname);
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
@@ -2050,7 +2088,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         return proxyExternalRequest(request, __fallbackRewritten);
       }
       cleanPathname = __fallbackRewritten;
-      match = matchRoute(cleanPathname, routes);
+      match = matchRoute(cleanPathname);
     }
   }
 
@@ -2087,16 +2125,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
     const hasDefault = typeof handler["default"] === "function";
 
+    // Route handlers need the same middleware header/status merge behavior as
+    // page responses. This keeps middleware response headers visible on API
+    // routes in Workers/dev, and preserves custom rewrite status overrides.
+    function attachRouteHandlerMiddlewareContext(response) {
+      // _mwCtx.headers is only set (non-null) when middleware actually ran and
+      // produced a continue/rewrite response. An empty Headers object (middleware
+      // ran but produced no response headers) is a harmless edge case: the early
+      // return is skipped, but the copy loop below is a no-op, so no incorrect
+      // headers are added. The allocation cost in that case is acceptable.
+      if (!_mwCtx.headers && _mwCtx.status == null) return response;
+      const responseHeaders = new Headers(response.headers);
+      if (_mwCtx.headers) {
+        for (const [key, value] of _mwCtx.headers) {
+          responseHeaders.append(key, value);
+        }
+      }
+      return new Response(response.body, {
+        status: _mwCtx.status ?? response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+      });
+    }
+
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
       const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
       if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
-      return new Response(null, {
+      return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
         headers: { "Allow": allowMethods.join(", ") },
-      });
+      }));
     }
 
     // HEAD auto-implementation: run GET handler and strip body
@@ -2140,28 +2201,28 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           if (draftCookie) newHeaders.append("Set-Cookie", draftCookie);
 
           if (isAutoHead) {
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: response.status,
               statusText: response.statusText,
               headers: newHeaders,
-            });
+            }));
           }
-          return new Response(response.body, {
+          return attachRouteHandlerMiddlewareContext(new Response(response.body, {
             status: response.status,
             statusText: response.statusText,
             headers: newHeaders,
-          });
+          }));
         }
 
         if (isAutoHead) {
           // Strip body for auto-HEAD, preserve headers and status
-          return new Response(null, {
+          return attachRouteHandlerMiddlewareContext(new Response(null, {
             status: response.status,
             statusText: response.statusText,
             headers: response.headers,
-          });
+          }));
         }
-        return response;
+        return attachRouteHandlerMiddlewareContext(response);
       } catch (err) {
         getAndClearPendingCookies(); // Clear any pending cookies on error
         // Catch redirect() / notFound() thrown from route handlers
@@ -2173,16 +2234,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: statusCode,
               headers: { Location: new URL(redirectUrl, request.url).toString() },
-            });
+            }));
           }
           if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
             const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, { status: statusCode });
+            return attachRouteHandlerMiddlewareContext(new Response(null, { status: statusCode }));
           }
         }
         setHeadersContext(null);
@@ -2192,20 +2253,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           err instanceof Error ? err : new Error(String(err)),
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        ).catch((reportErr) => {
-          console.error("[vinext] Failed to report route handler error:", reportErr);
-        });
-        return new Response(null, { status: 500 });
+        );
+        return attachRouteHandlerMiddlewareContext(new Response(null, { status: 500 }));
       } finally {
         setHeadersAccessPhase(previousHeadersPhase);
       }
     }
     setHeadersContext(null);
     setNavigationContext(null);
-    return new Response(null, {
+    return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
       headers: { Allow: exportedMethods.join(", ") },
-    });
+    }));
   }
 
   // Build the component tree: layouts wrapping the page
@@ -2368,7 +2427,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
                     __revalChunks.push(__revalDecoder.decode());
                     const __freshHtml = __revalChunks.join("");
                     const __freshRscData = await __rscDataPromise;
-                    return { html: __freshHtml, rscData: __freshRscData };
+                    const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+                    return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
                   })
                 )
               )
@@ -2376,8 +2436,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           );
           // Write HTML and RSC to their own keys independently — no races
           await Promise.all([
-            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
-            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
+            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
           ]);
           __isrDebug?.("regen complete", cleanPathname);
         });
@@ -2462,7 +2522,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const sourceRoute = routes[intercept.sourceRouteIndex];
       if (sourceRoute && sourceRoute !== route) {
         // Render the source route (e.g. /feed) with the intercepting page in the slot
-        const sourceMatch = matchRoute(sourceRoute.pattern, routes);
+        const sourceMatch = matchRoute(sourceRoute.pattern);
         const sourceParams = sourceMatch ? sourceMatch.params : {};
         setNavigationContext({
           pathname: cleanPathname,
@@ -2790,13 +2850,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const __rscWritePromise = (async () => {
         try {
           const __rscDataForCache = await __isrRscDataPromise;
-          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc);
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc, __pageTags);
           __isrDebug?.("RSC cache written", __isrKeyRsc);
         } catch (__rscWriteErr) {
           console.error("[vinext] ISR RSC cache write error:", __rscWriteErr);
         }
       })();
-      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__rscWritePromise);
+      _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
     return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
@@ -2983,18 +3044,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             }
             __chunks.push(__decoder.decode());
             const __fullHtml = __chunks.join("");
+            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
             // Write HTML and RSC to their own keys independently.
             // RSC data was captured by the tee above (before isRscRequest branch)
             // so an initial browser visit (HTML request) also populates the RSC key,
             // ensuring the first client-side navigation after a direct visit is a
             // cache hit rather than a miss.
             const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
             ];
             if (__capturedRscDataPromise) {
               __writes.push(
                 __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs)
+                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
                 )
               );
             }
@@ -3004,9 +3066,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
           }
         })();
-        // Register with ExecutionContext so the Workers runtime keeps the isolate
-        // alive until the cache write finishes, even after the response is sent.
-        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__cachePromise);
+        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+        // the isolate alive until the cache write finishes, even after the response is sent.
+        _getRequestExecutionContext()?.waitUntil(__cachePromise);
         return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
       }
       return __isrResponseProd;
@@ -3068,7 +3130,8 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
-import { runWithFetchCache } from "vinext/fetch-cache";
+import { getCollectedFetchTags, runWithFetchCache } from "vinext/fetch-cache";
+import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
 import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
@@ -3116,9 +3179,18 @@ async function __isrGet(key) {
   if (!result || !result.value) return null;
   return { value: result, isStale: result.cacheState === "stale" };
 }
-async function __isrSet(key, data, revalidateSeconds) {
+async function __isrSet(key, data, revalidateSeconds, tags) {
   const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: [] });
+  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
+}
+function __pageCacheTags(pathname, extraTags) {
+  const tags = [pathname, "_N_T_" + pathname];
+  if (Array.isArray(extraTags)) {
+    for (const tag of extraTags) {
+      if (!tags.includes(tag)) tags.push(tag);
+    }
+  }
+  return tags;
 }
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -3329,9 +3401,7 @@ function rscOnError(error, requestInfo, errorContext) {
       error instanceof Error ? error : new Error(String(error)),
       requestInfo,
       errorContext,
-    ).catch((reportErr) => {
-      console.error("[vinext] Failed to report render error:", reportErr);
-    });
+    );
   }
 
   // In production, generate a digest hash for non-navigation errors
@@ -3463,6 +3533,7 @@ const routes = [
     unauthorized: null,
   }
 ];
+const _routeTrie = _buildRouteTrie(routes);
 
 const metadataRoutes = [
 
@@ -3728,20 +3799,17 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
   });
 }
 
-function matchRoute(url, routes) {
+function matchRoute(url) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
    // NOTE: Do NOT decodeURIComponent here. The caller is responsible for decoding
    // the pathname exactly once at the request entry point. Decoding again here
    // would cause inconsistent path matching between middleware and routing.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) return { route, params };
-  }
-  return null;
+  return _trieMatch(_routeTrie, urlParts);
 }
 
+// matchPattern is kept for findIntercept (linear scan over small interceptLookup array).
 function matchPattern(urlParts, patternParts) {
   const params = Object.create(null);
   for (let i = 0; i < patternParts.length; i++) {
@@ -4245,6 +4313,32 @@ function __normalizePath(pathname) {
   return "/" + resolved.join("/");
 }
 
+const __pathDelimiterRegex = /([/#?\\\\]|%(2f|23|3f|5c))/gi;
+function __decodeRouteSegment(segment) {
+  return decodeURIComponent(segment).replace(__pathDelimiterRegex, function (char) {
+    return encodeURIComponent(char);
+  });
+}
+function __decodeRouteSegmentSafe(segment) {
+  try { return __decodeRouteSegment(segment); } catch (e) { return segment; }
+}
+function __normalizePathnameForRouteMatch(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegmentSafe(segments[i]));
+  }
+  return normalized.join("/");
+}
+function __normalizePathnameForRouteMatchStrict(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegment(segments[i]));
+  }
+  return normalized.join("/");
+}
+
 // ── Config pattern matching, redirects, rewrites, headers, CSRF validation,
 //    external URL proxy, cookie parsing, and request context are imported from
 //    config-matchers.ts and request-pipeline.ts (see import statements above).
@@ -4362,7 +4456,7 @@ export default async function handler(request, ctx) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -4370,7 +4464,7 @@ export default async function handler(request, ctx) {
               if (__configHeaders.length) {
                 const url = new URL(request.url);
                 let pathname;
-                try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
+                try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
                 if (pathname.startsWith("/base")) pathname = pathname.slice("/base".length) || "/";
                 const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
                 for (const h of extraHeaders) {
@@ -4398,7 +4492,7 @@ export default async function handler(request, ctx) {
   return ctx ? _runWithExecutionContext(ctx, _run) : _run();
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+async function _handleRequest(request, __reqCtx, _mwCtx) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
   let __compileEnd;
   let __renderEnd;
@@ -4419,11 +4513,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   const __protoGuard = guardProtocolRelativeUrl(url.pathname);
   if (__protoGuard) return __protoGuard;
 
-  // Decode percent-encoding and normalize pathname to canonical form.
-  // decodeURIComponent prevents /%61dmin from bypassing /admin matchers.
+  // Decode percent-encoding segment-wise and normalize pathname to canonical form.
+  // This preserves encoded path delimiters like %2F within a single segment.
   // __normalizePath collapses //foo///bar → /foo/bar, resolves . and .. segments.
   let decodedUrlPathname;
-  try { decodedUrlPathname = decodeURIComponent(url.pathname); } catch (e) {
+  try { decodedUrlPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
     return new Response("Bad Request", { status: 400 });
   }
   let pathname = __normalizePath(decodedUrlPathname);
@@ -4527,39 +4621,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       // Skip — the base servedUrl is not served when generateSitemaps exists
       continue;
     }
-    if (cleanPathname === metaRoute.servedUrl) {
-      if (metaRoute.isDynamic) {
-        // Dynamic metadata route — call the default export and serialize
-        const metaFn = metaRoute.module.default;
-        if (typeof metaFn === "function") {
-          const result = await metaFn();
-          let body;
-          // If it's already a Response (e.g., ImageResponse), return directly
-          if (result instanceof Response) return result;
-          // Serialize based on type
-          if (metaRoute.type === "sitemap") body = sitemapToXml(result);
-          else if (metaRoute.type === "robots") body = robotsToText(result);
-          else if (metaRoute.type === "manifest") body = manifestToJson(result);
-          else body = JSON.stringify(result);
-          return new Response(body, {
-            headers: { "Content-Type": metaRoute.contentType },
-          });
-        }
-      } else {
-        // Static metadata file — decode from embedded base64 data
-        try {
-          const binary = atob(metaRoute.fileDataBase64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          return new Response(bytes, {
-            headers: {
-              "Content-Type": metaRoute.contentType,
-              "Cache-Control": "public, max-age=0, must-revalidate",
-            },
-          });
-        } catch {
-          return new Response("Not Found", { status: 404 });
-        }
+    // Match metadata route — use pattern matching for dynamic segments,
+    // strict equality for static paths.
+    var _metaParams = null;
+    if (metaRoute.patternParts) {
+      var _metaUrlParts = cleanPathname.split("/").filter(Boolean);
+      _metaParams = matchPattern(_metaUrlParts, metaRoute.patternParts);
+      if (!_metaParams) continue;
+    } else if (cleanPathname !== metaRoute.servedUrl) {
+      continue;
+    }
+    if (metaRoute.isDynamic) {
+      // Dynamic metadata route — call the default export and serialize
+      const metaFn = metaRoute.module.default;
+      if (typeof metaFn === "function") {
+        const result = await metaFn({ params: makeThenableParams(_metaParams || {}) });
+        let body;
+        // If it's already a Response (e.g., ImageResponse), return directly
+        if (result instanceof Response) return result;
+        // Serialize based on type
+        if (metaRoute.type === "sitemap") body = sitemapToXml(result);
+        else if (metaRoute.type === "robots") body = robotsToText(result);
+        else if (metaRoute.type === "manifest") body = manifestToJson(result);
+        else body = JSON.stringify(result);
+        return new Response(body, {
+          headers: { "Content-Type": metaRoute.contentType },
+        });
+      }
+    } else {
+      // Static metadata file — decode from embedded base64 data
+      try {
+        const binary = atob(metaRoute.fileDataBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new Response(bytes, {
+          headers: {
+            "Content-Type": metaRoute.contentType,
+            "Cache-Control": "public, max-age=0, must-revalidate",
+          },
+        });
+      } catch {
+        return new Response("Not Found", { status: 404 });
       }
     }
   }
@@ -4678,7 +4780,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
 
       // After the action, re-render the current page so the client
       // gets an updated React tree reflecting any mutations.
-      const match = matchRoute(cleanPathname, routes);
+      const match = matchRoute(cleanPathname);
       let element;
       if (match) {
         const { route: actionRoute, params: actionParams } = match;
@@ -4726,9 +4828,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         err instanceof Error ? err : new Error(String(err)),
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      ).catch((reportErr) => {
-        console.error("[vinext] Failed to report server action error:", reportErr);
-      });
+      );
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response(
@@ -4753,7 +4853,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
   }
 
-  let match = matchRoute(cleanPathname, routes);
+  let match = matchRoute(cleanPathname);
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
@@ -4765,7 +4865,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         return proxyExternalRequest(request, __fallbackRewritten);
       }
       cleanPathname = __fallbackRewritten;
-      match = matchRoute(cleanPathname, routes);
+      match = matchRoute(cleanPathname);
     }
   }
 
@@ -4802,16 +4902,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
     const hasDefault = typeof handler["default"] === "function";
 
+    // Route handlers need the same middleware header/status merge behavior as
+    // page responses. This keeps middleware response headers visible on API
+    // routes in Workers/dev, and preserves custom rewrite status overrides.
+    function attachRouteHandlerMiddlewareContext(response) {
+      // _mwCtx.headers is only set (non-null) when middleware actually ran and
+      // produced a continue/rewrite response. An empty Headers object (middleware
+      // ran but produced no response headers) is a harmless edge case: the early
+      // return is skipped, but the copy loop below is a no-op, so no incorrect
+      // headers are added. The allocation cost in that case is acceptable.
+      if (!_mwCtx.headers && _mwCtx.status == null) return response;
+      const responseHeaders = new Headers(response.headers);
+      if (_mwCtx.headers) {
+        for (const [key, value] of _mwCtx.headers) {
+          responseHeaders.append(key, value);
+        }
+      }
+      return new Response(response.body, {
+        status: _mwCtx.status ?? response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+      });
+    }
+
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
       const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
       if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
-      return new Response(null, {
+      return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
         headers: { "Allow": allowMethods.join(", ") },
-      });
+      }));
     }
 
     // HEAD auto-implementation: run GET handler and strip body
@@ -4855,28 +4978,28 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           if (draftCookie) newHeaders.append("Set-Cookie", draftCookie);
 
           if (isAutoHead) {
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: response.status,
               statusText: response.statusText,
               headers: newHeaders,
-            });
+            }));
           }
-          return new Response(response.body, {
+          return attachRouteHandlerMiddlewareContext(new Response(response.body, {
             status: response.status,
             statusText: response.statusText,
             headers: newHeaders,
-          });
+          }));
         }
 
         if (isAutoHead) {
           // Strip body for auto-HEAD, preserve headers and status
-          return new Response(null, {
+          return attachRouteHandlerMiddlewareContext(new Response(null, {
             status: response.status,
             statusText: response.statusText,
             headers: response.headers,
-          });
+          }));
         }
-        return response;
+        return attachRouteHandlerMiddlewareContext(response);
       } catch (err) {
         getAndClearPendingCookies(); // Clear any pending cookies on error
         // Catch redirect() / notFound() thrown from route handlers
@@ -4888,16 +5011,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: statusCode,
               headers: { Location: new URL(redirectUrl, request.url).toString() },
-            });
+            }));
           }
           if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
             const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, { status: statusCode });
+            return attachRouteHandlerMiddlewareContext(new Response(null, { status: statusCode }));
           }
         }
         setHeadersContext(null);
@@ -4907,20 +5030,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           err instanceof Error ? err : new Error(String(err)),
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        ).catch((reportErr) => {
-          console.error("[vinext] Failed to report route handler error:", reportErr);
-        });
-        return new Response(null, { status: 500 });
+        );
+        return attachRouteHandlerMiddlewareContext(new Response(null, { status: 500 }));
       } finally {
         setHeadersAccessPhase(previousHeadersPhase);
       }
     }
     setHeadersContext(null);
     setNavigationContext(null);
-    return new Response(null, {
+    return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
       headers: { Allow: exportedMethods.join(", ") },
-    });
+    }));
   }
 
   // Build the component tree: layouts wrapping the page
@@ -5083,7 +5204,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
                     __revalChunks.push(__revalDecoder.decode());
                     const __freshHtml = __revalChunks.join("");
                     const __freshRscData = await __rscDataPromise;
-                    return { html: __freshHtml, rscData: __freshRscData };
+                    const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+                    return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
                   })
                 )
               )
@@ -5091,8 +5213,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           );
           // Write HTML and RSC to their own keys independently — no races
           await Promise.all([
-            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
-            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
+            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
           ]);
           __isrDebug?.("regen complete", cleanPathname);
         });
@@ -5177,7 +5299,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const sourceRoute = routes[intercept.sourceRouteIndex];
       if (sourceRoute && sourceRoute !== route) {
         // Render the source route (e.g. /feed) with the intercepting page in the slot
-        const sourceMatch = matchRoute(sourceRoute.pattern, routes);
+        const sourceMatch = matchRoute(sourceRoute.pattern);
         const sourceParams = sourceMatch ? sourceMatch.params : {};
         setNavigationContext({
           pathname: cleanPathname,
@@ -5505,13 +5627,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const __rscWritePromise = (async () => {
         try {
           const __rscDataForCache = await __isrRscDataPromise;
-          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc);
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc, __pageTags);
           __isrDebug?.("RSC cache written", __isrKeyRsc);
         } catch (__rscWriteErr) {
           console.error("[vinext] ISR RSC cache write error:", __rscWriteErr);
         }
       })();
-      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__rscWritePromise);
+      _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
     return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
@@ -5698,18 +5821,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             }
             __chunks.push(__decoder.decode());
             const __fullHtml = __chunks.join("");
+            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
             // Write HTML and RSC to their own keys independently.
             // RSC data was captured by the tee above (before isRscRequest branch)
             // so an initial browser visit (HTML request) also populates the RSC key,
             // ensuring the first client-side navigation after a direct visit is a
             // cache hit rather than a miss.
             const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
             ];
             if (__capturedRscDataPromise) {
               __writes.push(
                 __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs)
+                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
                 )
               );
             }
@@ -5719,9 +5843,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
           }
         })();
-        // Register with ExecutionContext so the Workers runtime keeps the isolate
-        // alive until the cache write finishes, even after the response is sent.
-        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__cachePromise);
+        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+        // the isolate alive until the cache write finishes, even after the response is sent.
+        _getRequestExecutionContext()?.waitUntil(__cachePromise);
         return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
       }
       return __isrResponseProd;
@@ -5783,7 +5907,8 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
-import { runWithFetchCache } from "vinext/fetch-cache";
+import { getCollectedFetchTags, runWithFetchCache } from "vinext/fetch-cache";
+import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
 import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
@@ -5831,9 +5956,18 @@ async function __isrGet(key) {
   if (!result || !result.value) return null;
   return { value: result, isStale: result.cacheState === "stale" };
 }
-async function __isrSet(key, data, revalidateSeconds) {
+async function __isrSet(key, data, revalidateSeconds, tags) {
   const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: [] });
+  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
+}
+function __pageCacheTags(pathname, extraTags) {
+  const tags = [pathname, "_N_T_" + pathname];
+  if (Array.isArray(extraTags)) {
+    for (const tag of extraTags) {
+      if (!tags.includes(tag)) tags.push(tag);
+    }
+  }
+  return tags;
 }
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -6044,9 +6178,7 @@ function rscOnError(error, requestInfo, errorContext) {
       error instanceof Error ? error : new Error(String(error)),
       requestInfo,
       errorContext,
-    ).catch((reportErr) => {
-      console.error("[vinext] Failed to report render error:", reportErr);
-    });
+    );
   }
 
   // In production, generate a digest hash for non-navigation errors
@@ -6179,6 +6311,7 @@ const routes = [
     unauthorized: null,
   }
 ];
+const _routeTrie = _buildRouteTrie(routes);
 
 const metadataRoutes = [
 
@@ -6465,20 +6598,17 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
   });
 }
 
-function matchRoute(url, routes) {
+function matchRoute(url) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
    // NOTE: Do NOT decodeURIComponent here. The caller is responsible for decoding
    // the pathname exactly once at the request entry point. Decoding again here
    // would cause inconsistent path matching between middleware and routing.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) return { route, params };
-  }
-  return null;
+  return _trieMatch(_routeTrie, urlParts);
 }
 
+// matchPattern is kept for findIntercept (linear scan over small interceptLookup array).
 function matchPattern(urlParts, patternParts) {
   const params = Object.create(null);
   for (let i = 0; i < patternParts.length; i++) {
@@ -6990,6 +7120,32 @@ function __normalizePath(pathname) {
   return "/" + resolved.join("/");
 }
 
+const __pathDelimiterRegex = /([/#?\\\\]|%(2f|23|3f|5c))/gi;
+function __decodeRouteSegment(segment) {
+  return decodeURIComponent(segment).replace(__pathDelimiterRegex, function (char) {
+    return encodeURIComponent(char);
+  });
+}
+function __decodeRouteSegmentSafe(segment) {
+  try { return __decodeRouteSegment(segment); } catch (e) { return segment; }
+}
+function __normalizePathnameForRouteMatch(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegmentSafe(segments[i]));
+  }
+  return normalized.join("/");
+}
+function __normalizePathnameForRouteMatchStrict(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegment(segments[i]));
+  }
+  return normalized.join("/");
+}
+
 // ── Config pattern matching, redirects, rewrites, headers, CSRF validation,
 //    external URL proxy, cookie parsing, and request context are imported from
 //    config-matchers.ts and request-pipeline.ts (see import statements above).
@@ -7107,7 +7263,7 @@ export default async function handler(request, ctx) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -7115,7 +7271,7 @@ export default async function handler(request, ctx) {
               if (__configHeaders.length) {
                 const url = new URL(request.url);
                 let pathname;
-                try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
+                try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
                 
                 const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
                 for (const h of extraHeaders) {
@@ -7143,7 +7299,7 @@ export default async function handler(request, ctx) {
   return ctx ? _runWithExecutionContext(ctx, _run) : _run();
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+async function _handleRequest(request, __reqCtx, _mwCtx) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
   let __compileEnd;
   let __renderEnd;
@@ -7164,11 +7320,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   const __protoGuard = guardProtocolRelativeUrl(url.pathname);
   if (__protoGuard) return __protoGuard;
 
-  // Decode percent-encoding and normalize pathname to canonical form.
-  // decodeURIComponent prevents /%61dmin from bypassing /admin matchers.
+  // Decode percent-encoding segment-wise and normalize pathname to canonical form.
+  // This preserves encoded path delimiters like %2F within a single segment.
   // __normalizePath collapses //foo///bar → /foo/bar, resolves . and .. segments.
   let decodedUrlPathname;
-  try { decodedUrlPathname = decodeURIComponent(url.pathname); } catch (e) {
+  try { decodedUrlPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
     return new Response("Bad Request", { status: 400 });
   }
   let pathname = __normalizePath(decodedUrlPathname);
@@ -7269,39 +7425,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       // Skip — the base servedUrl is not served when generateSitemaps exists
       continue;
     }
-    if (cleanPathname === metaRoute.servedUrl) {
-      if (metaRoute.isDynamic) {
-        // Dynamic metadata route — call the default export and serialize
-        const metaFn = metaRoute.module.default;
-        if (typeof metaFn === "function") {
-          const result = await metaFn();
-          let body;
-          // If it's already a Response (e.g., ImageResponse), return directly
-          if (result instanceof Response) return result;
-          // Serialize based on type
-          if (metaRoute.type === "sitemap") body = sitemapToXml(result);
-          else if (metaRoute.type === "robots") body = robotsToText(result);
-          else if (metaRoute.type === "manifest") body = manifestToJson(result);
-          else body = JSON.stringify(result);
-          return new Response(body, {
-            headers: { "Content-Type": metaRoute.contentType },
-          });
-        }
-      } else {
-        // Static metadata file — decode from embedded base64 data
-        try {
-          const binary = atob(metaRoute.fileDataBase64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          return new Response(bytes, {
-            headers: {
-              "Content-Type": metaRoute.contentType,
-              "Cache-Control": "public, max-age=0, must-revalidate",
-            },
-          });
-        } catch {
-          return new Response("Not Found", { status: 404 });
-        }
+    // Match metadata route — use pattern matching for dynamic segments,
+    // strict equality for static paths.
+    var _metaParams = null;
+    if (metaRoute.patternParts) {
+      var _metaUrlParts = cleanPathname.split("/").filter(Boolean);
+      _metaParams = matchPattern(_metaUrlParts, metaRoute.patternParts);
+      if (!_metaParams) continue;
+    } else if (cleanPathname !== metaRoute.servedUrl) {
+      continue;
+    }
+    if (metaRoute.isDynamic) {
+      // Dynamic metadata route — call the default export and serialize
+      const metaFn = metaRoute.module.default;
+      if (typeof metaFn === "function") {
+        const result = await metaFn({ params: makeThenableParams(_metaParams || {}) });
+        let body;
+        // If it's already a Response (e.g., ImageResponse), return directly
+        if (result instanceof Response) return result;
+        // Serialize based on type
+        if (metaRoute.type === "sitemap") body = sitemapToXml(result);
+        else if (metaRoute.type === "robots") body = robotsToText(result);
+        else if (metaRoute.type === "manifest") body = manifestToJson(result);
+        else body = JSON.stringify(result);
+        return new Response(body, {
+          headers: { "Content-Type": metaRoute.contentType },
+        });
+      }
+    } else {
+      // Static metadata file — decode from embedded base64 data
+      try {
+        const binary = atob(metaRoute.fileDataBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new Response(bytes, {
+          headers: {
+            "Content-Type": metaRoute.contentType,
+            "Cache-Control": "public, max-age=0, must-revalidate",
+          },
+        });
+      } catch {
+        return new Response("Not Found", { status: 404 });
       }
     }
   }
@@ -7420,7 +7584,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
 
       // After the action, re-render the current page so the client
       // gets an updated React tree reflecting any mutations.
-      const match = matchRoute(cleanPathname, routes);
+      const match = matchRoute(cleanPathname);
       let element;
       if (match) {
         const { route: actionRoute, params: actionParams } = match;
@@ -7468,9 +7632,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         err instanceof Error ? err : new Error(String(err)),
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      ).catch((reportErr) => {
-        console.error("[vinext] Failed to report server action error:", reportErr);
-      });
+      );
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response(
@@ -7495,7 +7657,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
   }
 
-  let match = matchRoute(cleanPathname, routes);
+  let match = matchRoute(cleanPathname);
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
@@ -7507,7 +7669,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         return proxyExternalRequest(request, __fallbackRewritten);
       }
       cleanPathname = __fallbackRewritten;
-      match = matchRoute(cleanPathname, routes);
+      match = matchRoute(cleanPathname);
     }
   }
 
@@ -7544,16 +7706,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
     const hasDefault = typeof handler["default"] === "function";
 
+    // Route handlers need the same middleware header/status merge behavior as
+    // page responses. This keeps middleware response headers visible on API
+    // routes in Workers/dev, and preserves custom rewrite status overrides.
+    function attachRouteHandlerMiddlewareContext(response) {
+      // _mwCtx.headers is only set (non-null) when middleware actually ran and
+      // produced a continue/rewrite response. An empty Headers object (middleware
+      // ran but produced no response headers) is a harmless edge case: the early
+      // return is skipped, but the copy loop below is a no-op, so no incorrect
+      // headers are added. The allocation cost in that case is acceptable.
+      if (!_mwCtx.headers && _mwCtx.status == null) return response;
+      const responseHeaders = new Headers(response.headers);
+      if (_mwCtx.headers) {
+        for (const [key, value] of _mwCtx.headers) {
+          responseHeaders.append(key, value);
+        }
+      }
+      return new Response(response.body, {
+        status: _mwCtx.status ?? response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+      });
+    }
+
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
       const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
       if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
-      return new Response(null, {
+      return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
         headers: { "Allow": allowMethods.join(", ") },
-      });
+      }));
     }
 
     // HEAD auto-implementation: run GET handler and strip body
@@ -7597,28 +7782,28 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           if (draftCookie) newHeaders.append("Set-Cookie", draftCookie);
 
           if (isAutoHead) {
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: response.status,
               statusText: response.statusText,
               headers: newHeaders,
-            });
+            }));
           }
-          return new Response(response.body, {
+          return attachRouteHandlerMiddlewareContext(new Response(response.body, {
             status: response.status,
             statusText: response.statusText,
             headers: newHeaders,
-          });
+          }));
         }
 
         if (isAutoHead) {
           // Strip body for auto-HEAD, preserve headers and status
-          return new Response(null, {
+          return attachRouteHandlerMiddlewareContext(new Response(null, {
             status: response.status,
             statusText: response.statusText,
             headers: response.headers,
-          });
+          }));
         }
-        return response;
+        return attachRouteHandlerMiddlewareContext(response);
       } catch (err) {
         getAndClearPendingCookies(); // Clear any pending cookies on error
         // Catch redirect() / notFound() thrown from route handlers
@@ -7630,16 +7815,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: statusCode,
               headers: { Location: new URL(redirectUrl, request.url).toString() },
-            });
+            }));
           }
           if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
             const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, { status: statusCode });
+            return attachRouteHandlerMiddlewareContext(new Response(null, { status: statusCode }));
           }
         }
         setHeadersContext(null);
@@ -7649,20 +7834,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           err instanceof Error ? err : new Error(String(err)),
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        ).catch((reportErr) => {
-          console.error("[vinext] Failed to report route handler error:", reportErr);
-        });
-        return new Response(null, { status: 500 });
+        );
+        return attachRouteHandlerMiddlewareContext(new Response(null, { status: 500 }));
       } finally {
         setHeadersAccessPhase(previousHeadersPhase);
       }
     }
     setHeadersContext(null);
     setNavigationContext(null);
-    return new Response(null, {
+    return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
       headers: { Allow: exportedMethods.join(", ") },
-    });
+    }));
   }
 
   // Build the component tree: layouts wrapping the page
@@ -7825,7 +8008,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
                     __revalChunks.push(__revalDecoder.decode());
                     const __freshHtml = __revalChunks.join("");
                     const __freshRscData = await __rscDataPromise;
-                    return { html: __freshHtml, rscData: __freshRscData };
+                    const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+                    return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
                   })
                 )
               )
@@ -7833,8 +8017,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           );
           // Write HTML and RSC to their own keys independently — no races
           await Promise.all([
-            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
-            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
+            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
           ]);
           __isrDebug?.("regen complete", cleanPathname);
         });
@@ -7919,7 +8103,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const sourceRoute = routes[intercept.sourceRouteIndex];
       if (sourceRoute && sourceRoute !== route) {
         // Render the source route (e.g. /feed) with the intercepting page in the slot
-        const sourceMatch = matchRoute(sourceRoute.pattern, routes);
+        const sourceMatch = matchRoute(sourceRoute.pattern);
         const sourceParams = sourceMatch ? sourceMatch.params : {};
         setNavigationContext({
           pathname: cleanPathname,
@@ -8247,13 +8431,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const __rscWritePromise = (async () => {
         try {
           const __rscDataForCache = await __isrRscDataPromise;
-          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc);
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc, __pageTags);
           __isrDebug?.("RSC cache written", __isrKeyRsc);
         } catch (__rscWriteErr) {
           console.error("[vinext] ISR RSC cache write error:", __rscWriteErr);
         }
       })();
-      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__rscWritePromise);
+      _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
     return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
@@ -8448,18 +8633,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             }
             __chunks.push(__decoder.decode());
             const __fullHtml = __chunks.join("");
+            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
             // Write HTML and RSC to their own keys independently.
             // RSC data was captured by the tee above (before isRscRequest branch)
             // so an initial browser visit (HTML request) also populates the RSC key,
             // ensuring the first client-side navigation after a direct visit is a
             // cache hit rather than a miss.
             const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
             ];
             if (__capturedRscDataPromise) {
               __writes.push(
                 __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs)
+                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
                 )
               );
             }
@@ -8469,9 +8655,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
           }
         })();
-        // Register with ExecutionContext so the Workers runtime keeps the isolate
-        // alive until the cache write finishes, even after the response is sent.
-        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__cachePromise);
+        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+        // the isolate alive until the cache write finishes, even after the response is sent.
+        _getRequestExecutionContext()?.waitUntil(__cachePromise);
         return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
       }
       return __isrResponseProd;
@@ -8533,7 +8719,8 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
-import { runWithFetchCache } from "vinext/fetch-cache";
+import { getCollectedFetchTags, runWithFetchCache } from "vinext/fetch-cache";
+import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
 import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
@@ -8581,9 +8768,18 @@ async function __isrGet(key) {
   if (!result || !result.value) return null;
   return { value: result, isStale: result.cacheState === "stale" };
 }
-async function __isrSet(key, data, revalidateSeconds) {
+async function __isrSet(key, data, revalidateSeconds, tags) {
   const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: [] });
+  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
+}
+function __pageCacheTags(pathname, extraTags) {
+  const tags = [pathname, "_N_T_" + pathname];
+  if (Array.isArray(extraTags)) {
+    for (const tag of extraTags) {
+      if (!tags.includes(tag)) tags.push(tag);
+    }
+  }
+  return tags;
 }
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -8794,9 +8990,7 @@ function rscOnError(error, requestInfo, errorContext) {
       error instanceof Error ? error : new Error(String(error)),
       requestInfo,
       errorContext,
-    ).catch((reportErr) => {
-      console.error("[vinext] Failed to report render error:", reportErr);
-    });
+    );
   }
 
   // In production, generate a digest hash for non-navigation errors
@@ -8957,6 +9151,7 @@ const routes = [
     unauthorized: null,
   }
 ];
+const _routeTrie = _buildRouteTrie(routes);
 
 const metadataRoutes = [
 
@@ -9222,20 +9417,17 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
   });
 }
 
-function matchRoute(url, routes) {
+function matchRoute(url) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
    // NOTE: Do NOT decodeURIComponent here. The caller is responsible for decoding
    // the pathname exactly once at the request entry point. Decoding again here
    // would cause inconsistent path matching between middleware and routing.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) return { route, params };
-  }
-  return null;
+  return _trieMatch(_routeTrie, urlParts);
 }
 
+// matchPattern is kept for findIntercept (linear scan over small interceptLookup array).
 function matchPattern(urlParts, patternParts) {
   const params = Object.create(null);
   for (let i = 0; i < patternParts.length; i++) {
@@ -9739,6 +9931,32 @@ function __normalizePath(pathname) {
   return "/" + resolved.join("/");
 }
 
+const __pathDelimiterRegex = /([/#?\\\\]|%(2f|23|3f|5c))/gi;
+function __decodeRouteSegment(segment) {
+  return decodeURIComponent(segment).replace(__pathDelimiterRegex, function (char) {
+    return encodeURIComponent(char);
+  });
+}
+function __decodeRouteSegmentSafe(segment) {
+  try { return __decodeRouteSegment(segment); } catch (e) { return segment; }
+}
+function __normalizePathnameForRouteMatch(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegmentSafe(segments[i]));
+  }
+  return normalized.join("/");
+}
+function __normalizePathnameForRouteMatchStrict(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegment(segments[i]));
+  }
+  return normalized.join("/");
+}
+
 // ── Config pattern matching, redirects, rewrites, headers, CSRF validation,
 //    external URL proxy, cookie parsing, and request context are imported from
 //    config-matchers.ts and request-pipeline.ts (see import statements above).
@@ -9859,7 +10077,7 @@ export default async function handler(request, ctx) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -9867,7 +10085,7 @@ export default async function handler(request, ctx) {
               if (__configHeaders.length) {
                 const url = new URL(request.url);
                 let pathname;
-                try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
+                try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
                 
                 const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
                 for (const h of extraHeaders) {
@@ -9895,7 +10113,7 @@ export default async function handler(request, ctx) {
   return ctx ? _runWithExecutionContext(ctx, _run) : _run();
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+async function _handleRequest(request, __reqCtx, _mwCtx) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
   let __compileEnd;
   let __renderEnd;
@@ -9916,11 +10134,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   const __protoGuard = guardProtocolRelativeUrl(url.pathname);
   if (__protoGuard) return __protoGuard;
 
-  // Decode percent-encoding and normalize pathname to canonical form.
-  // decodeURIComponent prevents /%61dmin from bypassing /admin matchers.
+  // Decode percent-encoding segment-wise and normalize pathname to canonical form.
+  // This preserves encoded path delimiters like %2F within a single segment.
   // __normalizePath collapses //foo///bar → /foo/bar, resolves . and .. segments.
   let decodedUrlPathname;
-  try { decodedUrlPathname = decodeURIComponent(url.pathname); } catch (e) {
+  try { decodedUrlPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
     return new Response("Bad Request", { status: 400 });
   }
   let pathname = __normalizePath(decodedUrlPathname);
@@ -10021,39 +10239,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       // Skip — the base servedUrl is not served when generateSitemaps exists
       continue;
     }
-    if (cleanPathname === metaRoute.servedUrl) {
-      if (metaRoute.isDynamic) {
-        // Dynamic metadata route — call the default export and serialize
-        const metaFn = metaRoute.module.default;
-        if (typeof metaFn === "function") {
-          const result = await metaFn();
-          let body;
-          // If it's already a Response (e.g., ImageResponse), return directly
-          if (result instanceof Response) return result;
-          // Serialize based on type
-          if (metaRoute.type === "sitemap") body = sitemapToXml(result);
-          else if (metaRoute.type === "robots") body = robotsToText(result);
-          else if (metaRoute.type === "manifest") body = manifestToJson(result);
-          else body = JSON.stringify(result);
-          return new Response(body, {
-            headers: { "Content-Type": metaRoute.contentType },
-          });
-        }
-      } else {
-        // Static metadata file — decode from embedded base64 data
-        try {
-          const binary = atob(metaRoute.fileDataBase64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          return new Response(bytes, {
-            headers: {
-              "Content-Type": metaRoute.contentType,
-              "Cache-Control": "public, max-age=0, must-revalidate",
-            },
-          });
-        } catch {
-          return new Response("Not Found", { status: 404 });
-        }
+    // Match metadata route — use pattern matching for dynamic segments,
+    // strict equality for static paths.
+    var _metaParams = null;
+    if (metaRoute.patternParts) {
+      var _metaUrlParts = cleanPathname.split("/").filter(Boolean);
+      _metaParams = matchPattern(_metaUrlParts, metaRoute.patternParts);
+      if (!_metaParams) continue;
+    } else if (cleanPathname !== metaRoute.servedUrl) {
+      continue;
+    }
+    if (metaRoute.isDynamic) {
+      // Dynamic metadata route — call the default export and serialize
+      const metaFn = metaRoute.module.default;
+      if (typeof metaFn === "function") {
+        const result = await metaFn({ params: makeThenableParams(_metaParams || {}) });
+        let body;
+        // If it's already a Response (e.g., ImageResponse), return directly
+        if (result instanceof Response) return result;
+        // Serialize based on type
+        if (metaRoute.type === "sitemap") body = sitemapToXml(result);
+        else if (metaRoute.type === "robots") body = robotsToText(result);
+        else if (metaRoute.type === "manifest") body = manifestToJson(result);
+        else body = JSON.stringify(result);
+        return new Response(body, {
+          headers: { "Content-Type": metaRoute.contentType },
+        });
+      }
+    } else {
+      // Static metadata file — decode from embedded base64 data
+      try {
+        const binary = atob(metaRoute.fileDataBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new Response(bytes, {
+          headers: {
+            "Content-Type": metaRoute.contentType,
+            "Cache-Control": "public, max-age=0, must-revalidate",
+          },
+        });
+      } catch {
+        return new Response("Not Found", { status: 404 });
       }
     }
   }
@@ -10172,7 +10398,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
 
       // After the action, re-render the current page so the client
       // gets an updated React tree reflecting any mutations.
-      const match = matchRoute(cleanPathname, routes);
+      const match = matchRoute(cleanPathname);
       let element;
       if (match) {
         const { route: actionRoute, params: actionParams } = match;
@@ -10220,9 +10446,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         err instanceof Error ? err : new Error(String(err)),
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      ).catch((reportErr) => {
-        console.error("[vinext] Failed to report server action error:", reportErr);
-      });
+      );
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response(
@@ -10247,7 +10471,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
   }
 
-  let match = matchRoute(cleanPathname, routes);
+  let match = matchRoute(cleanPathname);
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
@@ -10259,7 +10483,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         return proxyExternalRequest(request, __fallbackRewritten);
       }
       cleanPathname = __fallbackRewritten;
-      match = matchRoute(cleanPathname, routes);
+      match = matchRoute(cleanPathname);
     }
   }
 
@@ -10296,16 +10520,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
     const hasDefault = typeof handler["default"] === "function";
 
+    // Route handlers need the same middleware header/status merge behavior as
+    // page responses. This keeps middleware response headers visible on API
+    // routes in Workers/dev, and preserves custom rewrite status overrides.
+    function attachRouteHandlerMiddlewareContext(response) {
+      // _mwCtx.headers is only set (non-null) when middleware actually ran and
+      // produced a continue/rewrite response. An empty Headers object (middleware
+      // ran but produced no response headers) is a harmless edge case: the early
+      // return is skipped, but the copy loop below is a no-op, so no incorrect
+      // headers are added. The allocation cost in that case is acceptable.
+      if (!_mwCtx.headers && _mwCtx.status == null) return response;
+      const responseHeaders = new Headers(response.headers);
+      if (_mwCtx.headers) {
+        for (const [key, value] of _mwCtx.headers) {
+          responseHeaders.append(key, value);
+        }
+      }
+      return new Response(response.body, {
+        status: _mwCtx.status ?? response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+      });
+    }
+
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
       const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
       if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
-      return new Response(null, {
+      return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
         headers: { "Allow": allowMethods.join(", ") },
-      });
+      }));
     }
 
     // HEAD auto-implementation: run GET handler and strip body
@@ -10349,28 +10596,28 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           if (draftCookie) newHeaders.append("Set-Cookie", draftCookie);
 
           if (isAutoHead) {
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: response.status,
               statusText: response.statusText,
               headers: newHeaders,
-            });
+            }));
           }
-          return new Response(response.body, {
+          return attachRouteHandlerMiddlewareContext(new Response(response.body, {
             status: response.status,
             statusText: response.statusText,
             headers: newHeaders,
-          });
+          }));
         }
 
         if (isAutoHead) {
           // Strip body for auto-HEAD, preserve headers and status
-          return new Response(null, {
+          return attachRouteHandlerMiddlewareContext(new Response(null, {
             status: response.status,
             statusText: response.statusText,
             headers: response.headers,
-          });
+          }));
         }
-        return response;
+        return attachRouteHandlerMiddlewareContext(response);
       } catch (err) {
         getAndClearPendingCookies(); // Clear any pending cookies on error
         // Catch redirect() / notFound() thrown from route handlers
@@ -10382,16 +10629,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: statusCode,
               headers: { Location: new URL(redirectUrl, request.url).toString() },
-            });
+            }));
           }
           if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
             const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, { status: statusCode });
+            return attachRouteHandlerMiddlewareContext(new Response(null, { status: statusCode }));
           }
         }
         setHeadersContext(null);
@@ -10401,20 +10648,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           err instanceof Error ? err : new Error(String(err)),
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        ).catch((reportErr) => {
-          console.error("[vinext] Failed to report route handler error:", reportErr);
-        });
-        return new Response(null, { status: 500 });
+        );
+        return attachRouteHandlerMiddlewareContext(new Response(null, { status: 500 }));
       } finally {
         setHeadersAccessPhase(previousHeadersPhase);
       }
     }
     setHeadersContext(null);
     setNavigationContext(null);
-    return new Response(null, {
+    return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
       headers: { Allow: exportedMethods.join(", ") },
-    });
+    }));
   }
 
   // Build the component tree: layouts wrapping the page
@@ -10577,7 +10822,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
                     __revalChunks.push(__revalDecoder.decode());
                     const __freshHtml = __revalChunks.join("");
                     const __freshRscData = await __rscDataPromise;
-                    return { html: __freshHtml, rscData: __freshRscData };
+                    const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+                    return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
                   })
                 )
               )
@@ -10585,8 +10831,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           );
           // Write HTML and RSC to their own keys independently — no races
           await Promise.all([
-            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
-            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
+            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
           ]);
           __isrDebug?.("regen complete", cleanPathname);
         });
@@ -10671,7 +10917,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const sourceRoute = routes[intercept.sourceRouteIndex];
       if (sourceRoute && sourceRoute !== route) {
         // Render the source route (e.g. /feed) with the intercepting page in the slot
-        const sourceMatch = matchRoute(sourceRoute.pattern, routes);
+        const sourceMatch = matchRoute(sourceRoute.pattern);
         const sourceParams = sourceMatch ? sourceMatch.params : {};
         setNavigationContext({
           pathname: cleanPathname,
@@ -10999,13 +11245,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const __rscWritePromise = (async () => {
         try {
           const __rscDataForCache = await __isrRscDataPromise;
-          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc);
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc, __pageTags);
           __isrDebug?.("RSC cache written", __isrKeyRsc);
         } catch (__rscWriteErr) {
           console.error("[vinext] ISR RSC cache write error:", __rscWriteErr);
         }
       })();
-      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__rscWritePromise);
+      _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
     return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
@@ -11192,18 +11439,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             }
             __chunks.push(__decoder.decode());
             const __fullHtml = __chunks.join("");
+            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
             // Write HTML and RSC to their own keys independently.
             // RSC data was captured by the tee above (before isRscRequest branch)
             // so an initial browser visit (HTML request) also populates the RSC key,
             // ensuring the first client-side navigation after a direct visit is a
             // cache hit rather than a miss.
             const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
             ];
             if (__capturedRscDataPromise) {
               __writes.push(
                 __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs)
+                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
                 )
               );
             }
@@ -11213,9 +11461,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
           }
         })();
-        // Register with ExecutionContext so the Workers runtime keeps the isolate
-        // alive until the cache write finishes, even after the response is sent.
-        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__cachePromise);
+        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+        // the isolate alive until the cache write finishes, even after the response is sent.
+        _getRequestExecutionContext()?.waitUntil(__cachePromise);
         return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
       }
       return __isrResponseProd;
@@ -11277,7 +11525,8 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
-import { runWithFetchCache } from "vinext/fetch-cache";
+import { getCollectedFetchTags, runWithFetchCache } from "vinext/fetch-cache";
+import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
 import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
@@ -11325,9 +11574,18 @@ async function __isrGet(key) {
   if (!result || !result.value) return null;
   return { value: result, isStale: result.cacheState === "stale" };
 }
-async function __isrSet(key, data, revalidateSeconds) {
+async function __isrSet(key, data, revalidateSeconds, tags) {
   const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: [] });
+  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
+}
+function __pageCacheTags(pathname, extraTags) {
+  const tags = [pathname, "_N_T_" + pathname];
+  if (Array.isArray(extraTags)) {
+    for (const tag of extraTags) {
+      if (!tags.includes(tag)) tags.push(tag);
+    }
+  }
+  return tags;
 }
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -11538,9 +11796,7 @@ function rscOnError(error, requestInfo, errorContext) {
       error instanceof Error ? error : new Error(String(error)),
       requestInfo,
       errorContext,
-    ).catch((reportErr) => {
-      console.error("[vinext] Failed to report render error:", reportErr);
-    });
+    );
   }
 
   // In production, generate a digest hash for non-navigation errors
@@ -11673,6 +11929,7 @@ const routes = [
     unauthorized: null,
   }
 ];
+const _routeTrie = _buildRouteTrie(routes);
 
 const metadataRoutes = [
   {
@@ -11944,20 +12201,17 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
   });
 }
 
-function matchRoute(url, routes) {
+function matchRoute(url) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
    // NOTE: Do NOT decodeURIComponent here. The caller is responsible for decoding
    // the pathname exactly once at the request entry point. Decoding again here
    // would cause inconsistent path matching between middleware and routing.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) return { route, params };
-  }
-  return null;
+  return _trieMatch(_routeTrie, urlParts);
 }
 
+// matchPattern is kept for findIntercept (linear scan over small interceptLookup array).
 function matchPattern(urlParts, patternParts) {
   const params = Object.create(null);
   for (let i = 0; i < patternParts.length; i++) {
@@ -12461,6 +12715,32 @@ function __normalizePath(pathname) {
   return "/" + resolved.join("/");
 }
 
+const __pathDelimiterRegex = /([/#?\\\\]|%(2f|23|3f|5c))/gi;
+function __decodeRouteSegment(segment) {
+  return decodeURIComponent(segment).replace(__pathDelimiterRegex, function (char) {
+    return encodeURIComponent(char);
+  });
+}
+function __decodeRouteSegmentSafe(segment) {
+  try { return __decodeRouteSegment(segment); } catch (e) { return segment; }
+}
+function __normalizePathnameForRouteMatch(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegmentSafe(segments[i]));
+  }
+  return normalized.join("/");
+}
+function __normalizePathnameForRouteMatchStrict(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegment(segments[i]));
+  }
+  return normalized.join("/");
+}
+
 // ── Config pattern matching, redirects, rewrites, headers, CSRF validation,
 //    external URL proxy, cookie parsing, and request context are imported from
 //    config-matchers.ts and request-pipeline.ts (see import statements above).
@@ -12578,7 +12858,7 @@ export default async function handler(request, ctx) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -12586,7 +12866,7 @@ export default async function handler(request, ctx) {
               if (__configHeaders.length) {
                 const url = new URL(request.url);
                 let pathname;
-                try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
+                try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
                 
                 const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
                 for (const h of extraHeaders) {
@@ -12614,7 +12894,7 @@ export default async function handler(request, ctx) {
   return ctx ? _runWithExecutionContext(ctx, _run) : _run();
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+async function _handleRequest(request, __reqCtx, _mwCtx) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
   let __compileEnd;
   let __renderEnd;
@@ -12635,11 +12915,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   const __protoGuard = guardProtocolRelativeUrl(url.pathname);
   if (__protoGuard) return __protoGuard;
 
-  // Decode percent-encoding and normalize pathname to canonical form.
-  // decodeURIComponent prevents /%61dmin from bypassing /admin matchers.
+  // Decode percent-encoding segment-wise and normalize pathname to canonical form.
+  // This preserves encoded path delimiters like %2F within a single segment.
   // __normalizePath collapses //foo///bar → /foo/bar, resolves . and .. segments.
   let decodedUrlPathname;
-  try { decodedUrlPathname = decodeURIComponent(url.pathname); } catch (e) {
+  try { decodedUrlPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
     return new Response("Bad Request", { status: 400 });
   }
   let pathname = __normalizePath(decodedUrlPathname);
@@ -12740,39 +13020,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       // Skip — the base servedUrl is not served when generateSitemaps exists
       continue;
     }
-    if (cleanPathname === metaRoute.servedUrl) {
-      if (metaRoute.isDynamic) {
-        // Dynamic metadata route — call the default export and serialize
-        const metaFn = metaRoute.module.default;
-        if (typeof metaFn === "function") {
-          const result = await metaFn();
-          let body;
-          // If it's already a Response (e.g., ImageResponse), return directly
-          if (result instanceof Response) return result;
-          // Serialize based on type
-          if (metaRoute.type === "sitemap") body = sitemapToXml(result);
-          else if (metaRoute.type === "robots") body = robotsToText(result);
-          else if (metaRoute.type === "manifest") body = manifestToJson(result);
-          else body = JSON.stringify(result);
-          return new Response(body, {
-            headers: { "Content-Type": metaRoute.contentType },
-          });
-        }
-      } else {
-        // Static metadata file — decode from embedded base64 data
-        try {
-          const binary = atob(metaRoute.fileDataBase64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          return new Response(bytes, {
-            headers: {
-              "Content-Type": metaRoute.contentType,
-              "Cache-Control": "public, max-age=0, must-revalidate",
-            },
-          });
-        } catch {
-          return new Response("Not Found", { status: 404 });
-        }
+    // Match metadata route — use pattern matching for dynamic segments,
+    // strict equality for static paths.
+    var _metaParams = null;
+    if (metaRoute.patternParts) {
+      var _metaUrlParts = cleanPathname.split("/").filter(Boolean);
+      _metaParams = matchPattern(_metaUrlParts, metaRoute.patternParts);
+      if (!_metaParams) continue;
+    } else if (cleanPathname !== metaRoute.servedUrl) {
+      continue;
+    }
+    if (metaRoute.isDynamic) {
+      // Dynamic metadata route — call the default export and serialize
+      const metaFn = metaRoute.module.default;
+      if (typeof metaFn === "function") {
+        const result = await metaFn({ params: makeThenableParams(_metaParams || {}) });
+        let body;
+        // If it's already a Response (e.g., ImageResponse), return directly
+        if (result instanceof Response) return result;
+        // Serialize based on type
+        if (metaRoute.type === "sitemap") body = sitemapToXml(result);
+        else if (metaRoute.type === "robots") body = robotsToText(result);
+        else if (metaRoute.type === "manifest") body = manifestToJson(result);
+        else body = JSON.stringify(result);
+        return new Response(body, {
+          headers: { "Content-Type": metaRoute.contentType },
+        });
+      }
+    } else {
+      // Static metadata file — decode from embedded base64 data
+      try {
+        const binary = atob(metaRoute.fileDataBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new Response(bytes, {
+          headers: {
+            "Content-Type": metaRoute.contentType,
+            "Cache-Control": "public, max-age=0, must-revalidate",
+          },
+        });
+      } catch {
+        return new Response("Not Found", { status: 404 });
       }
     }
   }
@@ -12891,7 +13179,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
 
       // After the action, re-render the current page so the client
       // gets an updated React tree reflecting any mutations.
-      const match = matchRoute(cleanPathname, routes);
+      const match = matchRoute(cleanPathname);
       let element;
       if (match) {
         const { route: actionRoute, params: actionParams } = match;
@@ -12939,9 +13227,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         err instanceof Error ? err : new Error(String(err)),
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      ).catch((reportErr) => {
-        console.error("[vinext] Failed to report server action error:", reportErr);
-      });
+      );
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response(
@@ -12966,7 +13252,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
   }
 
-  let match = matchRoute(cleanPathname, routes);
+  let match = matchRoute(cleanPathname);
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
@@ -12978,7 +13264,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         return proxyExternalRequest(request, __fallbackRewritten);
       }
       cleanPathname = __fallbackRewritten;
-      match = matchRoute(cleanPathname, routes);
+      match = matchRoute(cleanPathname);
     }
   }
 
@@ -13015,16 +13301,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
     const hasDefault = typeof handler["default"] === "function";
 
+    // Route handlers need the same middleware header/status merge behavior as
+    // page responses. This keeps middleware response headers visible on API
+    // routes in Workers/dev, and preserves custom rewrite status overrides.
+    function attachRouteHandlerMiddlewareContext(response) {
+      // _mwCtx.headers is only set (non-null) when middleware actually ran and
+      // produced a continue/rewrite response. An empty Headers object (middleware
+      // ran but produced no response headers) is a harmless edge case: the early
+      // return is skipped, but the copy loop below is a no-op, so no incorrect
+      // headers are added. The allocation cost in that case is acceptable.
+      if (!_mwCtx.headers && _mwCtx.status == null) return response;
+      const responseHeaders = new Headers(response.headers);
+      if (_mwCtx.headers) {
+        for (const [key, value] of _mwCtx.headers) {
+          responseHeaders.append(key, value);
+        }
+      }
+      return new Response(response.body, {
+        status: _mwCtx.status ?? response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+      });
+    }
+
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
       const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
       if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
-      return new Response(null, {
+      return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
         headers: { "Allow": allowMethods.join(", ") },
-      });
+      }));
     }
 
     // HEAD auto-implementation: run GET handler and strip body
@@ -13068,28 +13377,28 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           if (draftCookie) newHeaders.append("Set-Cookie", draftCookie);
 
           if (isAutoHead) {
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: response.status,
               statusText: response.statusText,
               headers: newHeaders,
-            });
+            }));
           }
-          return new Response(response.body, {
+          return attachRouteHandlerMiddlewareContext(new Response(response.body, {
             status: response.status,
             statusText: response.statusText,
             headers: newHeaders,
-          });
+          }));
         }
 
         if (isAutoHead) {
           // Strip body for auto-HEAD, preserve headers and status
-          return new Response(null, {
+          return attachRouteHandlerMiddlewareContext(new Response(null, {
             status: response.status,
             statusText: response.statusText,
             headers: response.headers,
-          });
+          }));
         }
-        return response;
+        return attachRouteHandlerMiddlewareContext(response);
       } catch (err) {
         getAndClearPendingCookies(); // Clear any pending cookies on error
         // Catch redirect() / notFound() thrown from route handlers
@@ -13101,16 +13410,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: statusCode,
               headers: { Location: new URL(redirectUrl, request.url).toString() },
-            });
+            }));
           }
           if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
             const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, { status: statusCode });
+            return attachRouteHandlerMiddlewareContext(new Response(null, { status: statusCode }));
           }
         }
         setHeadersContext(null);
@@ -13120,20 +13429,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           err instanceof Error ? err : new Error(String(err)),
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        ).catch((reportErr) => {
-          console.error("[vinext] Failed to report route handler error:", reportErr);
-        });
-        return new Response(null, { status: 500 });
+        );
+        return attachRouteHandlerMiddlewareContext(new Response(null, { status: 500 }));
       } finally {
         setHeadersAccessPhase(previousHeadersPhase);
       }
     }
     setHeadersContext(null);
     setNavigationContext(null);
-    return new Response(null, {
+    return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
       headers: { Allow: exportedMethods.join(", ") },
-    });
+    }));
   }
 
   // Build the component tree: layouts wrapping the page
@@ -13296,7 +13603,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
                     __revalChunks.push(__revalDecoder.decode());
                     const __freshHtml = __revalChunks.join("");
                     const __freshRscData = await __rscDataPromise;
-                    return { html: __freshHtml, rscData: __freshRscData };
+                    const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+                    return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
                   })
                 )
               )
@@ -13304,8 +13612,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           );
           // Write HTML and RSC to their own keys independently — no races
           await Promise.all([
-            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
-            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
+            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
           ]);
           __isrDebug?.("regen complete", cleanPathname);
         });
@@ -13390,7 +13698,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const sourceRoute = routes[intercept.sourceRouteIndex];
       if (sourceRoute && sourceRoute !== route) {
         // Render the source route (e.g. /feed) with the intercepting page in the slot
-        const sourceMatch = matchRoute(sourceRoute.pattern, routes);
+        const sourceMatch = matchRoute(sourceRoute.pattern);
         const sourceParams = sourceMatch ? sourceMatch.params : {};
         setNavigationContext({
           pathname: cleanPathname,
@@ -13718,13 +14026,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const __rscWritePromise = (async () => {
         try {
           const __rscDataForCache = await __isrRscDataPromise;
-          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc);
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc, __pageTags);
           __isrDebug?.("RSC cache written", __isrKeyRsc);
         } catch (__rscWriteErr) {
           console.error("[vinext] ISR RSC cache write error:", __rscWriteErr);
         }
       })();
-      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__rscWritePromise);
+      _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
     return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
@@ -13911,18 +14220,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             }
             __chunks.push(__decoder.decode());
             const __fullHtml = __chunks.join("");
+            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
             // Write HTML and RSC to their own keys independently.
             // RSC data was captured by the tee above (before isRscRequest branch)
             // so an initial browser visit (HTML request) also populates the RSC key,
             // ensuring the first client-side navigation after a direct visit is a
             // cache hit rather than a miss.
             const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
             ];
             if (__capturedRscDataPromise) {
               __writes.push(
                 __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs)
+                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
                 )
               );
             }
@@ -13932,9 +14242,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
           }
         })();
-        // Register with ExecutionContext so the Workers runtime keeps the isolate
-        // alive until the cache write finishes, even after the response is sent.
-        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__cachePromise);
+        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+        // the isolate alive until the cache write finishes, even after the response is sent.
+        _getRequestExecutionContext()?.waitUntil(__cachePromise);
         return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
       }
       return __isrResponseProd;
@@ -13996,7 +14306,8 @@ import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, 
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from "<ROOT>/packages/vinext/src/server/request-pipeline.js";
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
-import { runWithFetchCache } from "vinext/fetch-cache";
+import { getCollectedFetchTags, runWithFetchCache } from "vinext/fetch-cache";
+import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
 import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
@@ -14044,9 +14355,18 @@ async function __isrGet(key) {
   if (!result || !result.value) return null;
   return { value: result, isStale: result.cacheState === "stale" };
 }
-async function __isrSet(key, data, revalidateSeconds) {
+async function __isrSet(key, data, revalidateSeconds, tags) {
   const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: [] });
+  await handler.set(key, data, { revalidate: revalidateSeconds, tags: Array.isArray(tags) ? tags : [] });
+}
+function __pageCacheTags(pathname, extraTags) {
+  const tags = [pathname, "_N_T_" + pathname];
+  if (Array.isArray(extraTags)) {
+    for (const tag of extraTags) {
+      if (!tags.includes(tag)) tags.push(tag);
+    }
+  }
+  return tags;
 }
 // Note: cache entries are written with \`headers: undefined\`. Next.js stores
 // response headers (e.g. set-cookie from cookies().set() during render) in the
@@ -14257,9 +14577,7 @@ function rscOnError(error, requestInfo, errorContext) {
       error instanceof Error ? error : new Error(String(error)),
       requestInfo,
       errorContext,
-    ).catch((reportErr) => {
-      console.error("[vinext] Failed to report render error:", reportErr);
-    });
+    );
   }
 
   // In production, generate a digest hash for non-navigation errors
@@ -14391,6 +14709,7 @@ const routes = [
     unauthorized: null,
   }
 ];
+const _routeTrie = _buildRouteTrie(routes);
 
 const metadataRoutes = [
 
@@ -14656,20 +14975,17 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
   });
 }
 
-function matchRoute(url, routes) {
+function matchRoute(url) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
    // NOTE: Do NOT decodeURIComponent here. The caller is responsible for decoding
    // the pathname exactly once at the request entry point. Decoding again here
    // would cause inconsistent path matching between middleware and routing.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) return { route, params };
-  }
-  return null;
+  return _trieMatch(_routeTrie, urlParts);
 }
 
+// matchPattern is kept for findIntercept (linear scan over small interceptLookup array).
 function matchPattern(urlParts, patternParts) {
   const params = Object.create(null);
   for (let i = 0; i < patternParts.length; i++) {
@@ -15020,17 +15336,50 @@ async function buildPageElement(route, params, opts, searchParams) {
 
 
 const __mwPatternCache = new Map();
+function __extractConstraint(str, re) {
+  if (str[re.lastIndex] !== "(") return null;
+  const start = re.lastIndex + 1;
+  let depth = 1;
+  let i = start;
+  while (i < str.length && depth > 0) {
+    if (str[i] === "(") depth++;
+    else if (str[i] === ")") depth--;
+    i++;
+  }
+  if (depth !== 0) return null;
+  re.lastIndex = i;
+  return str.slice(start, i - 1);
+}
 function __compileMwPattern(pattern) {
-  if (pattern.includes("(") || pattern.includes("\\\\")) {
+  const hasConstraints = /:[\\w-]+[*+]?\\(/.test(pattern);
+  if (!hasConstraints && (pattern.includes("(") || pattern.includes("\\\\"))) {
     return __safeRegExp("^" + pattern + "$");
   }
   let regexStr = "";
   const tokenRe = /\\/:([\\w-]+)\\*|\\/:([\\w-]+)\\+|:([\\w-]+)|[.]|[^/:.]+|./g;
   let tok;
   while ((tok = tokenRe.exec(pattern)) !== null) {
-    if (tok[1] !== undefined) { regexStr += "(?:/.*)?"; }
-    else if (tok[2] !== undefined) { regexStr += "(?:/.+)"; }
-    else if (tok[3] !== undefined) { regexStr += "([^/]+)"; }
+    if (tok[1] !== undefined) {
+      const c1 = hasConstraints ? __extractConstraint(pattern, tokenRe) : null;
+      regexStr += c1 !== null ? "(?:/(" + c1 + "))?" : "(?:/.*)?";
+    }
+    else if (tok[2] !== undefined) {
+      const c2 = hasConstraints ? __extractConstraint(pattern, tokenRe) : null;
+      regexStr += c2 !== null ? "(?:/(" + c2 + "))" : "(?:/.+)";
+    }
+    else if (tok[3] !== undefined) {
+      const constraint = hasConstraints ? __extractConstraint(pattern, tokenRe) : null;
+      const isOptional = pattern[tokenRe.lastIndex] === "?";
+      if (isOptional) tokenRe.lastIndex += 1;
+      const group = constraint !== null ? "(" + constraint + ")" : "([^/]+)";
+      if (isOptional && regexStr.endsWith("/")) {
+        regexStr = regexStr.slice(0, -1) + "(?:/" + group + ")?";
+      } else if (isOptional) {
+        regexStr += group + "?";
+      } else {
+        regexStr += group;
+      }
+    }
     else if (tok[0] === ".") { regexStr += "\\\\."; }
     else { regexStr += tok[0]; }
   }
@@ -15369,6 +15718,32 @@ function __normalizePath(pathname) {
   return "/" + resolved.join("/");
 }
 
+const __pathDelimiterRegex = /([/#?\\\\]|%(2f|23|3f|5c))/gi;
+function __decodeRouteSegment(segment) {
+  return decodeURIComponent(segment).replace(__pathDelimiterRegex, function (char) {
+    return encodeURIComponent(char);
+  });
+}
+function __decodeRouteSegmentSafe(segment) {
+  try { return __decodeRouteSegment(segment); } catch (e) { return segment; }
+}
+function __normalizePathnameForRouteMatch(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegmentSafe(segments[i]));
+  }
+  return normalized.join("/");
+}
+function __normalizePathnameForRouteMatchStrict(pathname) {
+  const segments = pathname.split("/");
+  const normalized = [];
+  for (let i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegment(segments[i]));
+  }
+  return normalized.join("/");
+}
+
 // ── Config pattern matching, redirects, rewrites, headers, CSRF validation,
 //    external URL proxy, cookie parsing, and request context are imported from
 //    config-matchers.ts and request-pipeline.ts (see import statements above).
@@ -15486,7 +15861,7 @@ export default async function handler(request, ctx) {
             // _handleRequest which fills in .headers and .status;
             // avoids module-level variables that race on Workers.
             const _mwCtx = { headers: null, status: null };
-            const response = await _handleRequest(request, __reqCtx, _mwCtx, ctx);
+            const response = await _handleRequest(request, __reqCtx, _mwCtx);
             // Apply custom headers from next.config.js to non-redirect responses.
             // Skip redirects (3xx) because Response.redirect() creates immutable headers,
             // and Next.js doesn't apply custom headers to redirects anyway.
@@ -15494,7 +15869,7 @@ export default async function handler(request, ctx) {
               if (__configHeaders.length) {
                 const url = new URL(request.url);
                 let pathname;
-                try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
+                try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
                 
                 const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
                 for (const h of extraHeaders) {
@@ -15522,7 +15897,7 @@ export default async function handler(request, ctx) {
   return ctx ? _runWithExecutionContext(ctx, _run) : _run();
 }
 
-async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
+async function _handleRequest(request, __reqCtx, _mwCtx) {
   const __reqStart = process.env.NODE_ENV !== "production" ? performance.now() : 0;
   let __compileEnd;
   let __renderEnd;
@@ -15543,11 +15918,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
   const __protoGuard = guardProtocolRelativeUrl(url.pathname);
   if (__protoGuard) return __protoGuard;
 
-  // Decode percent-encoding and normalize pathname to canonical form.
-  // decodeURIComponent prevents /%61dmin from bypassing /admin matchers.
+  // Decode percent-encoding segment-wise and normalize pathname to canonical form.
+  // This preserves encoded path delimiters like %2F within a single segment.
   // __normalizePath collapses //foo///bar → /foo/bar, resolves . and .. segments.
   let decodedUrlPathname;
-  try { decodedUrlPathname = decodeURIComponent(url.pathname); } catch (e) {
+  try { decodedUrlPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
     return new Response("Bad Request", { status: 400 });
   }
   let pathname = __normalizePath(decodedUrlPathname);
@@ -15637,6 +16012,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           if (rewriteUrl) {
             const rewriteParsed = new URL(rewriteUrl, request.url);
             cleanPathname = rewriteParsed.pathname;
+            // Carry over query params from the rewrite URL so that
+            // searchParams props, useSearchParams(), and navigation context
+            // reflect the rewrite destination, not the original request.
+            url.search = rewriteParsed.search;
             // Capture custom status code from rewrite (e.g. NextResponse.rewrite(url, { status: 403 }))
             if (mwResponse.status !== 200) {
               _mwCtx.status = mwResponse.status;
@@ -15730,39 +16109,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       // Skip — the base servedUrl is not served when generateSitemaps exists
       continue;
     }
-    if (cleanPathname === metaRoute.servedUrl) {
-      if (metaRoute.isDynamic) {
-        // Dynamic metadata route — call the default export and serialize
-        const metaFn = metaRoute.module.default;
-        if (typeof metaFn === "function") {
-          const result = await metaFn();
-          let body;
-          // If it's already a Response (e.g., ImageResponse), return directly
-          if (result instanceof Response) return result;
-          // Serialize based on type
-          if (metaRoute.type === "sitemap") body = sitemapToXml(result);
-          else if (metaRoute.type === "robots") body = robotsToText(result);
-          else if (metaRoute.type === "manifest") body = manifestToJson(result);
-          else body = JSON.stringify(result);
-          return new Response(body, {
-            headers: { "Content-Type": metaRoute.contentType },
-          });
-        }
-      } else {
-        // Static metadata file — decode from embedded base64 data
-        try {
-          const binary = atob(metaRoute.fileDataBase64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          return new Response(bytes, {
-            headers: {
-              "Content-Type": metaRoute.contentType,
-              "Cache-Control": "public, max-age=0, must-revalidate",
-            },
-          });
-        } catch {
-          return new Response("Not Found", { status: 404 });
-        }
+    // Match metadata route — use pattern matching for dynamic segments,
+    // strict equality for static paths.
+    var _metaParams = null;
+    if (metaRoute.patternParts) {
+      var _metaUrlParts = cleanPathname.split("/").filter(Boolean);
+      _metaParams = matchPattern(_metaUrlParts, metaRoute.patternParts);
+      if (!_metaParams) continue;
+    } else if (cleanPathname !== metaRoute.servedUrl) {
+      continue;
+    }
+    if (metaRoute.isDynamic) {
+      // Dynamic metadata route — call the default export and serialize
+      const metaFn = metaRoute.module.default;
+      if (typeof metaFn === "function") {
+        const result = await metaFn({ params: makeThenableParams(_metaParams || {}) });
+        let body;
+        // If it's already a Response (e.g., ImageResponse), return directly
+        if (result instanceof Response) return result;
+        // Serialize based on type
+        if (metaRoute.type === "sitemap") body = sitemapToXml(result);
+        else if (metaRoute.type === "robots") body = robotsToText(result);
+        else if (metaRoute.type === "manifest") body = manifestToJson(result);
+        else body = JSON.stringify(result);
+        return new Response(body, {
+          headers: { "Content-Type": metaRoute.contentType },
+        });
+      }
+    } else {
+      // Static metadata file — decode from embedded base64 data
+      try {
+        const binary = atob(metaRoute.fileDataBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new Response(bytes, {
+          headers: {
+            "Content-Type": metaRoute.contentType,
+            "Cache-Control": "public, max-age=0, must-revalidate",
+          },
+        });
+      } catch {
+        return new Response("Not Found", { status: 404 });
       }
     }
   }
@@ -15881,7 +16268,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
 
       // After the action, re-render the current page so the client
       // gets an updated React tree reflecting any mutations.
-      const match = matchRoute(cleanPathname, routes);
+      const match = matchRoute(cleanPathname);
       let element;
       if (match) {
         const { route: actionRoute, params: actionParams } = match;
@@ -15929,9 +16316,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         err instanceof Error ? err : new Error(String(err)),
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      ).catch((reportErr) => {
-        console.error("[vinext] Failed to report server action error:", reportErr);
-      });
+      );
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response(
@@ -15956,7 +16341,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
   }
 
-  let match = matchRoute(cleanPathname, routes);
+  let match = matchRoute(cleanPathname);
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
@@ -15968,7 +16353,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
         return proxyExternalRequest(request, __fallbackRewritten);
       }
       cleanPathname = __fallbackRewritten;
-      match = matchRoute(cleanPathname, routes);
+      match = matchRoute(cleanPathname);
     }
   }
 
@@ -16005,16 +16390,39 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
     }
     const hasDefault = typeof handler["default"] === "function";
 
+    // Route handlers need the same middleware header/status merge behavior as
+    // page responses. This keeps middleware response headers visible on API
+    // routes in Workers/dev, and preserves custom rewrite status overrides.
+    function attachRouteHandlerMiddlewareContext(response) {
+      // _mwCtx.headers is only set (non-null) when middleware actually ran and
+      // produced a continue/rewrite response. An empty Headers object (middleware
+      // ran but produced no response headers) is a harmless edge case: the early
+      // return is skipped, but the copy loop below is a no-op, so no incorrect
+      // headers are added. The allocation cost in that case is acceptable.
+      if (!_mwCtx.headers && _mwCtx.status == null) return response;
+      const responseHeaders = new Headers(response.headers);
+      if (_mwCtx.headers) {
+        for (const [key, value] of _mwCtx.headers) {
+          responseHeaders.append(key, value);
+        }
+      }
+      return new Response(response.body, {
+        status: _mwCtx.status ?? response.status,
+        statusText: response.statusText,
+        headers: responseHeaders,
+      });
+    }
+
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
       const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
       if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
-      return new Response(null, {
+      return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
         headers: { "Allow": allowMethods.join(", ") },
-      });
+      }));
     }
 
     // HEAD auto-implementation: run GET handler and strip body
@@ -16058,28 +16466,28 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           if (draftCookie) newHeaders.append("Set-Cookie", draftCookie);
 
           if (isAutoHead) {
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: response.status,
               statusText: response.statusText,
               headers: newHeaders,
-            });
+            }));
           }
-          return new Response(response.body, {
+          return attachRouteHandlerMiddlewareContext(new Response(response.body, {
             status: response.status,
             statusText: response.statusText,
             headers: newHeaders,
-          });
+          }));
         }
 
         if (isAutoHead) {
           // Strip body for auto-HEAD, preserve headers and status
-          return new Response(null, {
+          return attachRouteHandlerMiddlewareContext(new Response(null, {
             status: response.status,
             statusText: response.statusText,
             headers: response.headers,
-          });
+          }));
         }
-        return response;
+        return attachRouteHandlerMiddlewareContext(response);
       } catch (err) {
         getAndClearPendingCookies(); // Clear any pending cookies on error
         // Catch redirect() / notFound() thrown from route handlers
@@ -16091,16 +16499,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, {
+            return attachRouteHandlerMiddlewareContext(new Response(null, {
               status: statusCode,
               headers: { Location: new URL(redirectUrl, request.url).toString() },
-            });
+            }));
           }
           if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
             const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
             setHeadersContext(null);
             setNavigationContext(null);
-            return new Response(null, { status: statusCode });
+            return attachRouteHandlerMiddlewareContext(new Response(null, { status: statusCode }));
           }
         }
         setHeadersContext(null);
@@ -16110,20 +16518,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           err instanceof Error ? err : new Error(String(err)),
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        ).catch((reportErr) => {
-          console.error("[vinext] Failed to report route handler error:", reportErr);
-        });
-        return new Response(null, { status: 500 });
+        );
+        return attachRouteHandlerMiddlewareContext(new Response(null, { status: 500 }));
       } finally {
         setHeadersAccessPhase(previousHeadersPhase);
       }
     }
     setHeadersContext(null);
     setNavigationContext(null);
-    return new Response(null, {
+    return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
       headers: { Allow: exportedMethods.join(", ") },
-    });
+    }));
   }
 
   // Build the component tree: layouts wrapping the page
@@ -16286,7 +16692,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
                     __revalChunks.push(__revalDecoder.decode());
                     const __freshHtml = __revalChunks.join("");
                     const __freshRscData = await __rscDataPromise;
-                    return { html: __freshHtml, rscData: __freshRscData };
+                    const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+                    return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
                   })
                 )
               )
@@ -16294,8 +16701,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
           );
           // Write HTML and RSC to their own keys independently — no races
           await Promise.all([
-            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
-            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
+            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
           ]);
           __isrDebug?.("regen complete", cleanPathname);
         });
@@ -16380,7 +16787,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const sourceRoute = routes[intercept.sourceRouteIndex];
       if (sourceRoute && sourceRoute !== route) {
         // Render the source route (e.g. /feed) with the intercepting page in the slot
-        const sourceMatch = matchRoute(sourceRoute.pattern, routes);
+        const sourceMatch = matchRoute(sourceRoute.pattern);
         const sourceParams = sourceMatch ? sourceMatch.params : {};
         setNavigationContext({
           pathname: cleanPathname,
@@ -16708,13 +17115,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
       const __rscWritePromise = (async () => {
         try {
           const __rscDataForCache = await __isrRscDataPromise;
-          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc);
+          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc, __pageTags);
           __isrDebug?.("RSC cache written", __isrKeyRsc);
         } catch (__rscWriteErr) {
           console.error("[vinext] ISR RSC cache write error:", __rscWriteErr);
         }
       })();
-      if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__rscWritePromise);
+      _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
     }
     return new Response(__rscForResponse, { status: _mwCtx.status || 200, headers: responseHeaders });
   }
@@ -16901,18 +17309,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             }
             __chunks.push(__decoder.decode());
             const __fullHtml = __chunks.join("");
+            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
             // Write HTML and RSC to their own keys independently.
             // RSC data was captured by the tee above (before isRscRequest branch)
             // so an initial browser visit (HTML request) also populates the RSC key,
             // ensuring the first client-side navigation after a direct visit is a
             // cache hit rather than a miss.
             const __writes = [
-              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs),
+              __isrSet(__isrKey, { kind: "APP_PAGE", html: __fullHtml, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags),
             ];
             if (__capturedRscDataPromise) {
               __writes.push(
                 __capturedRscDataPromise.then((__rscBuf) =>
-                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs)
+                  __isrSet(__isrKeyRscFromHtml, { kind: "APP_PAGE", html: "", rscData: __rscBuf, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __pageTags)
                 )
               );
             }
@@ -16922,9 +17331,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx, ctx) {
             console.error("[vinext] ISR cache write error:", __cacheErr);
           }
         })();
-        // Register with ExecutionContext so the Workers runtime keeps the isolate
-        // alive until the cache write finishes, even after the response is sent.
-        if (ctx && typeof ctx.waitUntil === "function") ctx.waitUntil(__cachePromise);
+        // Register with ExecutionContext (from ALS) so the Workers runtime keeps
+        // the isolate alive until the cache write finishes, even after the response is sent.
+        _getRequestExecutionContext()?.waitUntil(__cachePromise);
         return new Response(__streamForClient, { status: __isrResponseProd.status, headers: __isrResponseProd.headers });
       }
       return __isrResponseProd;
@@ -17514,11 +17923,17 @@ import { _runWithCacheState } from "next/cache";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { runWithRouterState } from "vinext/router-state";
 import { runWithHeadState } from "vinext/head-state";
+import { runWithI18nState } from "vinext/i18n-state";
+import { setI18nContext } from "vinext/i18n-context";
 import { safeJsonStringify } from "vinext/html";
+import { decode as decodeQueryString } from "node:querystring";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 import { parseCookies } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
+import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
+import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
+import { resolvePagesI18nRequest } from "<ROOT>/packages/vinext/src/server/pages-i18n.js";
 import * as _instrumentation from "<ROOT>/tests/fixtures/pages-basic/instrumentation.ts";
 import * as middlewareModule from "<ROOT>/tests/fixtures/pages-basic/middleware.ts";
 import { NextRequest, NextFetchEvent } from "next/server";
@@ -17542,7 +17957,15 @@ const i18nConfig = null;
 const buildId = "test-build-id";
 
 // Full resolved config for production server (embedded at build time)
-export const vinextConfig = {"basePath":"","trailingSlash":false,"redirects":[{"source":"/old-about","destination":"/about","permanent":true},{"source":"/repeat-redirect/:id","destination":"/docs/:id/:id","permanent":false}],"rewrites":{"beforeFiles":[{"source":"/before-rewrite","destination":"/about"},{"source":"/repeat-rewrite/:id","destination":"/docs/:id/:id"},{"source":"/mw-gated-before","has":[{"type":"cookie","key":"mw-before-user"}],"destination":"/about"}],"afterFiles":[{"source":"/after-rewrite","destination":"/about"},{"source":"/mw-gated-rewrite","has":[{"type":"cookie","key":"mw-user"}],"destination":"/about"}],"fallback":[{"source":"/fallback-rewrite","destination":"/about"}]},"headers":[{"source":"/api/(.*)","headers":[{"key":"X-Custom-Header","value":"vinext"}]},{"source":"/about","has":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Auth-Only-Header","value":"1"}]},{"source":"/about","missing":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Guest-Only-Header","value":"1"}]},{"source":"/ssr","headers":[{"key":"Vary","value":"Accept-Language"}]}],"i18n":null,"images":{}};
+export const vinextConfig = {"basePath":"","trailingSlash":false,"redirects":[{"source":"/old-about","destination":"/about","permanent":true},{"source":"/repeat-redirect/:id","destination":"/docs/:id/:id","permanent":false},{"source":"/redirect-before-middleware-rewrite","destination":"/about","permanent":false},{"source":"/redirect-before-middleware-response","destination":"/about","permanent":false}],"rewrites":{"beforeFiles":[{"source":"/before-rewrite","destination":"/about"},{"source":"/repeat-rewrite/:id","destination":"/docs/:id/:id"},{"source":"/mw-gated-before","has":[{"type":"cookie","key":"mw-before-user"}],"destination":"/about"}],"afterFiles":[{"source":"/after-rewrite","destination":"/about"},{"source":"/mw-gated-rewrite","has":[{"type":"cookie","key":"mw-user"}],"destination":"/about"}],"fallback":[{"source":"/fallback-rewrite","destination":"/about"}]},"headers":[{"source":"/api/(.*)","headers":[{"key":"X-Custom-Header","value":"vinext"}]},{"source":"/about","has":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Auth-Only-Header","value":"1"}]},{"source":"/about","missing":[{"type":"cookie","key":"logged-in"}],"headers":[{"key":"X-Guest-Only-Header","value":"1"}]},{"source":"/ssr","headers":[{"key":"Vary","value":"Accept-Language"}]},{"source":"/headers-before-middleware-rewrite","headers":[{"key":"X-Rewrite-Source-Header","value":"1"}]}],"i18n":null,"images":{}};
+
+class ApiBodyParseError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.statusCode = statusCode;
+    this.name = "ApiBodyParseError";
+  }
+}
 
 // ISR cache helpers (inlined for the server entry)
 async function isrGet(key) {
@@ -17591,6 +18014,16 @@ function isrCacheKey(router, pathname) {
   return prefix + ":__hash:" + fnv1a64(normalized);
 }
 
+function getMediaType(contentType) {
+  var type = (contentType || "text/plain").split(";")[0];
+  type = type && type.trim().toLowerCase();
+  return type || "text/plain";
+}
+
+function isJsonMediaType(mediaType) {
+  return mediaType === "application/json" || mediaType === "application/ld+json";
+}
+
 async function renderToStringAsync(element) {
   const stream = await renderToReadableStream(element);
   await stream.allReady;
@@ -17630,12 +18063,15 @@ import * as page_29 from "<ROOT>/tests/fixtures/pages-basic/pages/products/[pid]
 import * as page_30 from "<ROOT>/tests/fixtures/pages-basic/pages/docs/[...slug].tsx";
 import * as page_31 from "<ROOT>/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx";
 import * as api_0 from "<ROOT>/tests/fixtures/pages-basic/pages/api/binary.ts";
-import * as api_1 from "<ROOT>/tests/fixtures/pages-basic/pages/api/error-route.ts";
-import * as api_2 from "<ROOT>/tests/fixtures/pages-basic/pages/api/hello.ts";
-import * as api_3 from "<ROOT>/tests/fixtures/pages-basic/pages/api/instrumentation-test.ts";
-import * as api_4 from "<ROOT>/tests/fixtures/pages-basic/pages/api/middleware-test.ts";
-import * as api_5 from "<ROOT>/tests/fixtures/pages-basic/pages/api/no-content-type.ts";
-import * as api_6 from "<ROOT>/tests/fixtures/pages-basic/pages/api/users/[id].ts";
+import * as api_1 from "<ROOT>/tests/fixtures/pages-basic/pages/api/echo-body.ts";
+import * as api_2 from "<ROOT>/tests/fixtures/pages-basic/pages/api/error-route.ts";
+import * as api_3 from "<ROOT>/tests/fixtures/pages-basic/pages/api/hello.ts";
+import * as api_4 from "<ROOT>/tests/fixtures/pages-basic/pages/api/instrumentation-test.ts";
+import * as api_5 from "<ROOT>/tests/fixtures/pages-basic/pages/api/middleware-test.ts";
+import * as api_6 from "<ROOT>/tests/fixtures/pages-basic/pages/api/no-content-type.ts";
+import * as api_7 from "<ROOT>/tests/fixtures/pages-basic/pages/api/parse.ts";
+import * as api_8 from "<ROOT>/tests/fixtures/pages-basic/pages/api/send-buffer.ts";
+import * as api_9 from "<ROOT>/tests/fixtures/pages-basic/pages/api/users/[id].ts";
 
 import { default as AppComponent } from "<ROOT>/tests/fixtures/pages-basic/pages/_app.tsx";
 import { default as DocumentComponent } from "<ROOT>/tests/fixtures/pages-basic/pages/_document.tsx";
@@ -17674,16 +18110,21 @@ const pageRoutes = [
   { pattern: "/docs/:slug+", patternParts: ["docs",":slug+"], isDynamic: true, params: ["slug"], module: page_30, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/docs/[...slug].tsx" },
   { pattern: "/sign-up/:sign-up*", patternParts: ["sign-up",":sign-up*"], isDynamic: true, params: ["sign-up"], module: page_31, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/sign-up/[[...sign-up]]/index.tsx" }
 ];
+const _pageRouteTrie = _buildRouteTrie(pageRoutes);
 
 const apiRoutes = [
   { pattern: "/api/binary", patternParts: ["api","binary"], isDynamic: false, params: [], module: api_0 },
-  { pattern: "/api/error-route", patternParts: ["api","error-route"], isDynamic: false, params: [], module: api_1 },
-  { pattern: "/api/hello", patternParts: ["api","hello"], isDynamic: false, params: [], module: api_2 },
-  { pattern: "/api/instrumentation-test", patternParts: ["api","instrumentation-test"], isDynamic: false, params: [], module: api_3 },
-  { pattern: "/api/middleware-test", patternParts: ["api","middleware-test"], isDynamic: false, params: [], module: api_4 },
-  { pattern: "/api/no-content-type", patternParts: ["api","no-content-type"], isDynamic: false, params: [], module: api_5 },
-  { pattern: "/api/users/:id", patternParts: ["api","users",":id"], isDynamic: true, params: ["id"], module: api_6 }
+  { pattern: "/api/echo-body", patternParts: ["api","echo-body"], isDynamic: false, params: [], module: api_1 },
+  { pattern: "/api/error-route", patternParts: ["api","error-route"], isDynamic: false, params: [], module: api_2 },
+  { pattern: "/api/hello", patternParts: ["api","hello"], isDynamic: false, params: [], module: api_3 },
+  { pattern: "/api/instrumentation-test", patternParts: ["api","instrumentation-test"], isDynamic: false, params: [], module: api_4 },
+  { pattern: "/api/middleware-test", patternParts: ["api","middleware-test"], isDynamic: false, params: [], module: api_5 },
+  { pattern: "/api/no-content-type", patternParts: ["api","no-content-type"], isDynamic: false, params: [], module: api_6 },
+  { pattern: "/api/parse", patternParts: ["api","parse"], isDynamic: false, params: [], module: api_7 },
+  { pattern: "/api/send-buffer", patternParts: ["api","send-buffer"], isDynamic: false, params: [], module: api_8 },
+  { pattern: "/api/users/:id", patternParts: ["api","users",":id"], isDynamic: true, params: ["id"], module: api_9 }
 ];
+const _apiRouteTrie = _buildRouteTrie(apiRoutes);
 
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
@@ -17691,40 +18132,8 @@ function matchRoute(url, routes) {
   // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
   // the entry point. Decoding again would create a double-decode vector.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) return { route, params };
-  }
-  return null;
-}
-
-function matchPattern(urlParts, patternParts) {
-  const params = Object.create(null);
-  for (let i = 0; i < patternParts.length; i++) {
-    const pp = patternParts[i];
-    if (pp.endsWith("+")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      if (remaining.length === 0) return null;
-      params[paramName] = remaining;
-      return params;
-    }
-    if (pp.endsWith("*")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      params[paramName] = urlParts.slice(i);
-      return params;
-    }
-    if (pp.startsWith(":")) {
-      if (i >= urlParts.length) return null;
-      params[pp.slice(1)] = urlParts[i];
-      continue;
-    }
-    if (i >= urlParts.length || urlParts[i] !== pp) return null;
-  }
-  if (urlParts.length !== patternParts.length) return null;
-  return params;
+  const trie = routes === pageRoutes ? _pageRouteTrie : _apiRouteTrie;
+  return _trieMatch(trie, urlParts);
 }
 
 function parseQuery(url) {
@@ -17972,8 +18381,16 @@ function createReqRes(request, url, query, body) {
       res.end(JSON.stringify(data));
     },
     send: function(data) {
-      if (typeof data === "object" && data !== null) { res.json(data); }
-      else { if (!resHeaders["content-type"]) resHeaders["content-type"] = "text/plain"; res.end(String(data)); }
+      if (Buffer.isBuffer(data)) {
+        if (!resHeaders["content-type"]) resHeaders["content-type"] = "application/octet-stream";
+        resHeaders["content-length"] = String(data.length);
+        res.end(data);
+      } else if (typeof data === "object" && data !== null) {
+        res.json(data);
+      } else {
+        if (!resHeaders["content-type"]) resHeaders["content-type"] = "text/plain";
+        res.end(String(data));
+      }
     },
     redirect: function(statusOrUrl, url2) {
       if (typeof statusOrUrl === "string") { res.writeHead(307, { Location: statusOrUrl }); }
@@ -18022,23 +18439,25 @@ export async function renderPage(request, url, manifest, ctx) {
 }
 
 async function _renderPage(request, url, manifest) {
-  const localeInfo = extractLocale(url);
+  const localeInfo = i18nConfig
+    ? resolvePagesI18nRequest(
+        url,
+        i18nConfig,
+        request.headers,
+        new URL(request.url).hostname,
+        vinextConfig.basePath,
+        vinextConfig.trailingSlash,
+      )
+    : { locale: undefined, url, hadPrefix: false, domainLocale: undefined, redirectUrl: undefined };
   const locale = localeInfo.locale;
   const routeUrl = localeInfo.url;
-  const cookieHeader = request.headers.get("cookie") || "";
+  const currentDefaultLocale = i18nConfig
+    ? (localeInfo.domainLocale ? localeInfo.domainLocale.defaultLocale : i18nConfig.defaultLocale)
+    : undefined;
+  const domainLocales = i18nConfig ? i18nConfig.domains : undefined;
 
-  // i18n redirect: check NEXT_LOCALE cookie first, then Accept-Language
-  if (i18nConfig && !localeInfo.hadPrefix) {
-    const cookieLocale = parseCookieLocaleFromHeader(cookieHeader);
-    if (cookieLocale && cookieLocale !== i18nConfig.defaultLocale) {
-      return new Response(null, { status: 307, headers: { Location: "/" + cookieLocale + routeUrl } });
-    }
-    if (!cookieLocale && i18nConfig.localeDetection !== false) {
-      const detected = detectLocaleFromHeaders(request.headers);
-      if (detected && detected !== i18nConfig.defaultLocale) {
-        return new Response(null, { status: 307, headers: { Location: "/" + detected + routeUrl } });
-      }
-    }
+  if (localeInfo.redirectUrl) {
+    return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
   }
 
   const match = matchRoute(routeUrl, pageRoutes);
@@ -18050,25 +18469,31 @@ async function _renderPage(request, url, manifest) {
   const { route, params } = match;
   return runWithRouterState(() =>
     runWithHeadState(() =>
-      _runWithCacheState(() =>
-        runWithPrivateCache(() =>
-          runWithFetchCache(async () => {
+      runWithI18nState(() =>
+        _runWithCacheState(() =>
+          runWithPrivateCache(() =>
+            runWithFetchCache(async () => {
   try {
     if (typeof setSSRContext === "function") {
       setSSRContext({
-        pathname: routeUrl.split("?")[0],
+        pathname: patternToNextFormat(route.pattern),
         query: { ...params, ...parseQuery(routeUrl) },
         asPath: routeUrl,
         locale: locale,
         locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+        defaultLocale: currentDefaultLocale,
+        domainLocales: domainLocales,
       });
     }
 
     if (i18nConfig) {
-      globalThis.__VINEXT_LOCALE__ = locale;
-      globalThis.__VINEXT_LOCALES__ = i18nConfig.locales;
-      globalThis.__VINEXT_DEFAULT_LOCALE__ = i18nConfig.defaultLocale;
+      setI18nContext({
+        locale: locale,
+        locales: i18nConfig.locales,
+        defaultLocale: currentDefaultLocale,
+        domainLocales: domainLocales,
+        hostname: new URL(request.url).hostname,
+      });
     }
 
     const pageModule = route.module;
@@ -18081,7 +18506,7 @@ async function _renderPage(request, url, manifest) {
     if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
       const pathsResult = await pageModule.getStaticPaths({
         locales: i18nConfig ? i18nConfig.locales : [],
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : "",
+        defaultLocale: currentDefaultLocale || "",
       });
       const fallback = pathsResult && pathsResult.fallback !== undefined ? pathsResult.fallback : false;
 
@@ -18114,7 +18539,7 @@ async function _renderPage(request, url, manifest) {
         resolvedUrl: routeUrl,
         locale: locale,
         locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+        defaultLocale: currentDefaultLocale,
       };
       const result = await pageModule.getServerSideProps(ctx);
       // If gSSP called res.end() directly (short-circuit), return that response.
@@ -18163,9 +18588,60 @@ async function _renderPage(request, url, manifest) {
 
       if (cached && cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
         triggerBackgroundRegeneration(cacheKey, async function() {
-          const freshResult = await pageModule.getStaticProps({ params });
+          var freshResult = await pageModule.getStaticProps({
+            params: params,
+            locale: locale,
+            locales: i18nConfig ? i18nConfig.locales : undefined,
+            defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+          });
           if (freshResult && freshResult.props && typeof freshResult.revalidate === "number" && freshResult.revalidate > 0) {
-            await isrSet(cacheKey, { kind: "PAGES", html: cached.value.value.html, pageData: freshResult.props, headers: undefined, status: undefined }, freshResult.revalidate);
+            var _fp = freshResult.props;
+            // Re-render the page with fresh props
+            var _el = AppComponent
+              ? React.createElement(AppComponent, { Component: PageComponent, pageProps: _fp })
+              : React.createElement(PageComponent, _fp);
+            _el = wrapWithRouterContext(_el);
+            var _freshBody = await renderToStringAsync(_el);
+            // Rebuild __NEXT_DATA__ with fresh props
+            var _regenPayload = {
+              props: { pageProps: _fp }, page: patternToNextFormat(route.pattern),
+              query: params, buildId: buildId, isFallback: false,
+            };
+            if (i18nConfig) {
+              _regenPayload.locale = locale;
+              _regenPayload.locales = i18nConfig.locales;
+              _regenPayload.defaultLocale = i18nConfig.defaultLocale;
+            }
+            var _lGlobals = i18nConfig
+              ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
+                ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
+                ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(i18nConfig.defaultLocale)
+              : "";
+            var _freshNDS = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(_regenPayload) + _lGlobals + "</script>";
+            // Reconstruct ISR HTML preserving the document shell from the
+            // cached entry (head, fonts, assets, custom _document markup).
+            var _cachedStr = cached.value.value.html;
+            var _btag = '<div id="__next">';
+            var _bstart = _cachedStr.indexOf(_btag);
+            var _bodyStart = _bstart >= 0 ? _bstart + _btag.length : -1;
+            // Locate __NEXT_DATA__ script to split body from suffix
+            var _ndMarker = '<script>window.__NEXT_DATA__';
+            var _ndStart = _cachedStr.indexOf(_ndMarker);
+            var _freshHtml;
+            if (_bodyStart >= 0 && _ndStart >= 0) {
+              // Region between body start and __NEXT_DATA__ contains:
+              // BODY_HTML + </div> + optional gap (custom _document content)
+              var _region = _cachedStr.slice(_bodyStart, _ndStart);
+              var _lastClose = _region.lastIndexOf('</div>');
+              var _gap = _lastClose >= 0 ? _region.slice(_lastClose + 6) : '';
+              // Tail: everything after the old __NEXT_DATA__ </script>
+              var _ndEnd = _cachedStr.indexOf('</script>', _ndStart) + 9;
+              var _tail = _cachedStr.slice(_ndEnd);
+              _freshHtml = _cachedStr.slice(0, _bodyStart) + _freshBody + '</div>' + _gap + _freshNDS + _tail;
+            } else {
+              _freshHtml = '<!DOCTYPE html>\\n<html>\\n<head>\\n</head>\\n<body>\\n  <div id="__next">' + _freshBody + '</div>\\n  ' + _freshNDS + '\\n</body>\\n</html>';
+            }
+            await isrSet(cacheKey, { kind: "PAGES", html: _freshHtml, pageData: _fp, headers: undefined, status: undefined }, freshResult.revalidate);
           }
         });
         var _staleHeaders = {
@@ -18180,7 +18656,7 @@ async function _renderPage(request, url, manifest) {
         params,
         locale: locale,
         locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+        defaultLocale: currentDefaultLocale,
       };
       const result = await pageModule.getStaticProps(ctx);
       if (result && result.props) pageProps = result.props;
@@ -18233,12 +18709,13 @@ async function _renderPage(request, url, manifest) {
     if (i18nConfig) {
       nextDataPayload.locale = locale;
       nextDataPayload.locales = i18nConfig.locales;
-      nextDataPayload.defaultLocale = i18nConfig.defaultLocale;
+      nextDataPayload.defaultLocale = currentDefaultLocale;
+      nextDataPayload.domainLocales = domainLocales;
     }
     const localeGlobals = i18nConfig
       ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
         ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
-        ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(i18nConfig.defaultLocale)
+        ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(currentDefaultLocale)
       : "";
     const nextDataScript = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(nextDataPayload) + localeGlobals + "</script>";
 
@@ -18337,11 +18814,17 @@ async function _renderPage(request, url, manifest) {
     return new Response(compositeStream, { status: finalStatus, headers: responseHeaders });
   } catch (e) {
     console.error("[vinext] SSR error:", e);
+    _reportRequestError(
+      e instanceof Error ? e : new Error(String(e)),
+      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+      { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
+    );
     return new Response("Internal Server Error", { status: 500 });
   }
-          }) // end runWithFetchCache
-        ) // end runWithPrivateCache
-      ) // end _runWithCacheState
+            }) // end runWithFetchCache
+          ) // end runWithPrivateCache
+        ) // end _runWithCacheState
+      ) // end runWithI18nState
     ) // end runWithHeadState
   ); // end runWithRouterState
 }
@@ -18379,29 +18862,43 @@ export async function handleApiRoute(request, url) {
   if (contentLength > 1 * 1024 * 1024) {
     return new Response("Request body too large", { status: 413 });
   }
-  let body;
-  const ct = request.headers.get("content-type") || "";
-  let rawBody;
-  try { rawBody = await readBodyWithLimit(request, 1 * 1024 * 1024); }
-  catch { return new Response("Request body too large", { status: 413 }); }
-  if (!rawBody) {
-    body = undefined;
-  } else if (ct.includes("application/json")) {
-    try { body = JSON.parse(rawBody); } catch { body = rawBody; }
-  } else {
-    body = rawBody;
-  }
-
-  const { req, res, responsePromise } = createReqRes(request, url, query, body);
-
   try {
+    let body;
+    const mediaType = getMediaType(request.headers.get("content-type"));
+    let rawBody;
+    try { rawBody = await readBodyWithLimit(request, 1 * 1024 * 1024); }
+    catch { return new Response("Request body too large", { status: 413 }); }
+    if (!rawBody) {
+      body = isJsonMediaType(mediaType)
+        ? {}
+        : mediaType === "application/x-www-form-urlencoded"
+          ? decodeQueryString(rawBody)
+          : undefined;
+    } else if (isJsonMediaType(mediaType)) {
+      try { body = JSON.parse(rawBody); }
+      catch { throw new ApiBodyParseError("Invalid JSON", 400); }
+    } else if (mediaType === "application/x-www-form-urlencoded") {
+      body = decodeQueryString(rawBody);
+    } else {
+      body = rawBody;
+    }
+
+    const { req, res, responsePromise } = createReqRes(request, url, query, body);
     await handler(req, res);
     // If handler didn't call res.end(), end it now.
     // The end() method is idempotent — safe to call twice.
     res.end();
     return await responsePromise;
   } catch (e) {
+    if (e instanceof ApiBodyParseError) {
+      return new Response(e.message, { status: e.statusCode, statusText: e.message });
+    }
     console.error("[vinext] API error:", e);
+    _reportRequestError(
+      e instanceof Error ? e : new Error(String(e)),
+      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+      { routerKind: "Pages Router", routePath: route.pattern, routeType: "route" },
+    );
     return new Response("Internal Server Error", { status: 500 });
   }
 }
@@ -18431,6 +18928,32 @@ function __normalizePath(pathname) {
     else { resolved.push(seg); }
   }
   return "/" + resolved.join("/");
+}
+
+var __pathDelimiterRegex = /([/#?\\\\]|%(2f|23|3f|5c))/gi;
+function __decodeRouteSegment(segment) {
+  return decodeURIComponent(segment).replace(__pathDelimiterRegex, function (char) {
+    return encodeURIComponent(char);
+  });
+}
+function __decodeRouteSegmentSafe(segment) {
+  try { return __decodeRouteSegment(segment); } catch (e) { return segment; }
+}
+function __normalizePathnameForRouteMatch(pathname) {
+  var segments = pathname.split("/");
+  var normalized = [];
+  for (var i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegmentSafe(segments[i]));
+  }
+  return normalized.join("/");
+}
+function __normalizePathnameForRouteMatchStrict(pathname) {
+  var segments = pathname.split("/");
+  var normalized = [];
+  for (var i = 0; i < segments.length; i++) {
+    normalized.push(__decodeRouteSegment(segments[i]));
+  }
+  return normalized.join("/");
 }
 
 function __isSafeRegex(pattern) {
@@ -18502,17 +19025,50 @@ function __safeRegExp(pattern, flags) {
 }
 
 var __mwPatternCache = new Map();
+function __extractConstraint(str, re) {
+  if (str[re.lastIndex] !== "(") return null;
+  var start = re.lastIndex + 1;
+  var depth = 1;
+  var i = start;
+  while (i < str.length && depth > 0) {
+    if (str[i] === "(") depth++;
+    else if (str[i] === ")") depth--;
+    i++;
+  }
+  if (depth !== 0) return null;
+  re.lastIndex = i;
+  return str.slice(start, i - 1);
+}
 function __compileMwPattern(pattern) {
-  if (pattern.includes("(") || pattern.includes("\\\\")) {
+  var hasConstraints = /:[\\w-]+[*+]?\\(/.test(pattern);
+  if (!hasConstraints && (pattern.includes("(") || pattern.includes("\\\\"))) {
     return __safeRegExp("^" + pattern + "$");
   }
   var regexStr = "";
   var tokenRe = /\\/:([\\w-]+)\\*|\\/:([\\w-]+)\\+|:([\\w-]+)|[.]|[^/:.]+|./g;
   var tok;
   while ((tok = tokenRe.exec(pattern)) !== null) {
-    if (tok[1] !== undefined) { regexStr += "(?:/.*)?"; }
-    else if (tok[2] !== undefined) { regexStr += "(?:/.+)"; }
-    else if (tok[3] !== undefined) { regexStr += "([^/]+)"; }
+    if (tok[1] !== undefined) {
+      var c1 = hasConstraints ? __extractConstraint(pattern, tokenRe) : null;
+      regexStr += c1 !== null ? "(?:/(" + c1 + "))?" : "(?:/.*)?";
+    }
+    else if (tok[2] !== undefined) {
+      var c2 = hasConstraints ? __extractConstraint(pattern, tokenRe) : null;
+      regexStr += c2 !== null ? "(?:/(" + c2 + "))" : "(?:/.+)";
+    }
+    else if (tok[3] !== undefined) {
+      var constraint = hasConstraints ? __extractConstraint(pattern, tokenRe) : null;
+      var isOptional = pattern[tokenRe.lastIndex] === "?";
+      if (isOptional) tokenRe.lastIndex += 1;
+      var group = constraint !== null ? "(" + constraint + ")" : "([^/]+)";
+      if (isOptional && regexStr.endsWith("/")) {
+        regexStr = regexStr.slice(0, -1) + "(?:/" + group + ")?";
+      } else if (isOptional) {
+        regexStr += group + "?";
+      } else {
+        regexStr += group;
+      }
+    }
     else if (tok[0] === ".") { regexStr += "\\\\."; }
     else { regexStr += tok[0]; }
   }
@@ -18721,7 +19277,7 @@ async function _runMiddleware(request) {
   // Normalize pathname before matching to prevent path-confusion bypasses
   // (percent-encoding like /%61dmin, double slashes like /dashboard//settings).
   var decodedPathname;
-  try { decodedPathname = decodeURIComponent(url.pathname); } catch (e) {
+  try { decodedPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
     return { continue: false, response: new Response("Bad Request", { status: 400 }) };
   }
   var normalizedPathname = __normalizePath(decodedPathname);

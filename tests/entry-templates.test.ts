@@ -277,9 +277,20 @@ describe("Pages Router entry templates", () => {
     expect(stabilize(code)).toMatchSnapshot();
   });
 
-  it("server entry rejects malformed non-terminal catch-all patterns", async () => {
+  it("server entry uses trie-based route matching", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
-    expect(stabilize(code)).toContain("if (i !== patternParts.length - 1) return null;");
+    expect(stabilize(code)).toContain("buildRouteTrie");
+    expect(stabilize(code)).toContain("trieMatch");
+  });
+
+  it("server entry calls reportRequestError for SSR and API errors", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+    // The generated prod entry must import reportRequestError
+    expect(code).toContain("reportRequestError");
+    // SSR page render catch block should report with routeType "render"
+    expect(code).toContain('"render"');
+    // API route catch block should report with routeType "route"
+    expect(code).toContain('"route"');
   });
 
   it("client entry snapshot", async () => {

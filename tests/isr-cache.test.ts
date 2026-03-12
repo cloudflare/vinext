@@ -17,6 +17,7 @@ import {
   getRevalidateDuration,
   triggerBackgroundRegeneration,
 } from "../packages/vinext/src/server/isr-cache.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 // ─── isrCacheKey ────────────────────────────────────────────────────────
 
@@ -237,7 +238,7 @@ describe("triggerBackgroundRegeneration", () => {
     expect(renderFnB).toHaveBeenCalledOnce();
   });
 
-  it("calls ctx.waitUntil with the regen promise when ctx is provided", async () => {
+  it("calls ctx.waitUntil with the regen promise when ctx is in ALS", async () => {
     const waitUntil = vi.fn();
     const ctx = { waitUntil };
 
@@ -247,7 +248,9 @@ describe("triggerBackgroundRegeneration", () => {
     });
     const renderFn = vi.fn().mockReturnValue(renderPromise);
 
-    triggerBackgroundRegeneration("regen-ctx-1", renderFn, ctx);
+    await runWithExecutionContext(ctx, async () => {
+      triggerBackgroundRegeneration("regen-ctx-1", renderFn);
+    });
 
     expect(waitUntil).toHaveBeenCalledOnce();
     expect(waitUntil).toHaveBeenCalledWith(expect.any(Promise));

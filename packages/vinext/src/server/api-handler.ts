@@ -9,6 +9,7 @@
  */
 import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { decode as decodeQueryString } from "node:querystring";
 import { type Route, matchRoute } from "../routing/pages-router.js";
 import { reportRequestError } from "./instrumentation.js";
 import { addQueryParam } from "../utils/query.js";
@@ -39,6 +40,24 @@ interface NextApiResponse extends ServerResponse {
  */
 const MAX_BODY_SIZE = 1 * 1024 * 1024;
 
+class ApiBodyParseError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number,
+  ) {
+    super(message);
+    this.name = "ApiBodyParseError";
+  }
+}
+
+function getMediaType(contentType: string | undefined): string {
+  const [type] = (contentType ?? "text/plain").split(";");
+  return type?.trim().toLowerCase() || "text/plain";
+}
+
+function isJsonMediaType(mediaType: string): boolean {
+  return mediaType === "application/json" || mediaType === "application/ld+json";
+}
 /**
  * Parse the request body based on content-type.
  * Enforces a size limit to prevent memory exhaustion attacks.
@@ -68,24 +87,25 @@ async function parseBody(req: IncomingMessage): Promise<unknown> {
       if (settled) return;
       settled = true;
       const raw = Buffer.concat(chunks).toString("utf-8");
+      const mediaType = getMediaType(req.headers["content-type"]);
       if (!raw) {
-        resolve(undefined);
+        resolve(
+          isJsonMediaType(mediaType)
+            ? {}
+            : mediaType === "application/x-www-form-urlencoded"
+              ? decodeQueryString(raw)
+              : undefined,
+        );
         return;
       }
-      const contentType = req.headers["content-type"] ?? "";
-      if (contentType.includes("application/json")) {
+      if (isJsonMediaType(mediaType)) {
         try {
           resolve(JSON.parse(raw));
         } catch {
-          resolve(raw);
+          reject(new ApiBodyParseError("Invalid JSON", 400));
         }
-      } else if (contentType.includes("application/x-www-form-urlencoded")) {
-        const params = new URLSearchParams(raw);
-        const obj: Record<string, string> = {};
-        for (const [key, value] of params) {
-          obj[key] = value;
-        }
-        resolve(obj);
+      } else if (mediaType === "application/x-www-form-urlencoded") {
+        resolve(decodeQueryString(raw));
       } else {
         resolve(raw);
       }
@@ -135,6 +155,15 @@ function enhanceApiObjects(
   };
 
   apiRes.send = function (data: unknown) {
+    if (Buffer.isBuffer(data)) {
+      if (!this.getHeader("Content-Type")) {
+        this.setHeader("Content-Type", "application/octet-stream");
+      }
+      this.setHeader("Content-Length", String(data.length));
+      this.end(data);
+      return;
+    }
+
     if (typeof data === "object" && data !== null) {
       this.setHeader("Content-Type", "application/json");
       this.end(JSON.stringify(data));
@@ -206,6 +235,13 @@ export async function handleApiRoute(
     await handler(apiReq, apiRes);
     return true;
   } catch (e) {
+    if (e instanceof ApiBodyParseError) {
+      res.statusCode = e.statusCode;
+      res.statusMessage = e.message;
+      res.end(e.message);
+      return true;
+    }
+
     server.ssrFixStacktrace(e as Error);
     console.error(e);
     reportRequestError(
@@ -221,15 +257,17 @@ export async function handleApiRoute(
         ),
       },
       { routerKind: "Pages Router", routePath: match.route.pattern, routeType: "route" },
-    ).catch(() => {
-      /* ignore reporting errors */
-    });
-    if ((e as Error).message === "Request body too large") {
-      res.statusCode = 413;
-      res.end("Request body too large");
-    } else {
-      res.statusCode = 500;
-      res.end("Internal Server Error");
+    );
+    if (!res.headersSent) {
+      if ((e as Error).message === "Request body too large") {
+        res.statusCode = 413;
+        res.end("Request body too large");
+      } else {
+        res.statusCode = 500;
+        res.end("Internal Server Error");
+      }
+    } else if (!res.writableEnded) {
+      res.end();
     }
     return true;
   }

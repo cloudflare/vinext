@@ -230,7 +230,10 @@ describe("sitemapToXml", () => {
     expect(xml).toContain("<video:tag>launch</video:tag>");
   });
 
-  it("matches Next's raw interpolation for XML-sensitive values", () => {
+  it("escapes XML-sensitive values instead of raw-interpolating them", () => {
+    // Next.js raw-interpolates these values, producing invalid XML.
+    // vinext intentionally diverges to produce well-formed XML that
+    // search engines can actually parse.
     const entries: SitemapEntry[] = [
       {
         url: "https://example.com?a=1&b=2",
@@ -253,13 +256,12 @@ describe("sitemapToXml", () => {
       },
     ];
     const xml = sitemapToXml(entries);
-    expectSitemapToMatchNext(entries);
-    expect(xml).toContain("<loc>https://example.com?a=1&b=2</loc>");
-    expect(xml).toContain('href="https://example.com/fr?a=1&b=2"');
-    expect(xml).toContain('<video:title>Fish & "Chips"</video:title>');
-    expect(xml).toContain("<video:description>Tasty <b>meal</b></video:description>");
+    expect(xml).toContain("<loc>https://example.com?a=1&amp;b=2</loc>");
+    expect(xml).toContain('href="https://example.com/fr?a=1&amp;b=2"');
+    expect(xml).toContain("<video:title>Fish &amp; &quot;Chips&quot;</video:title>");
+    expect(xml).toContain("<video:description>Tasty &lt;b&gt;meal&lt;/b&gt;</video:description>");
     expect(xml).toContain(
-      '<video:uploader info="https://example.com/authors/jane?bio="yes"&x=1">Jane & Co</video:uploader>',
+      '<video:uploader info="https://example.com/authors/jane?bio=&quot;yes&quot;&amp;x=1">Jane &amp; Co</video:uploader>',
     );
   });
 
@@ -392,9 +394,53 @@ describe("sitemapToXml", () => {
     ];
     expectSitemapToMatchNext(entries);
   });
+
+  it("escapes XML special characters in URLs and text content", () => {
+    const entries: SitemapEntry[] = [
+      {
+        url: "https://example.com/search?q=a&b=2",
+        images: ["https://example.com/img?w=100&h=200"],
+        alternates: {
+          languages: {
+            de: "https://example.com/de/search?q=a&b=2",
+          },
+        },
+      },
+    ];
+    const xml = sitemapToXml(entries);
+    // Bare & must be escaped as &amp; in XML
+    expect(xml).toContain("<loc>https://example.com/search?q=a&amp;b=2</loc>");
+    expect(xml).toContain("<image:loc>https://example.com/img?w=100&amp;h=200</image:loc>");
+    expect(xml).toContain('href="https://example.com/de/search?q=a&amp;b=2"');
+    // Must NOT contain bare & followed by a non-amp; entity
+    expect(xml).not.toMatch(/&(?!amp;|lt;|gt;|quot;|apos;)/);
+  });
+
+  it("escapes XML special characters in video fields", () => {
+    const entries: SitemapEntry[] = [
+      {
+        url: "https://example.com",
+        videos: [
+          {
+            title: "Tom & Jerry <2>",
+            thumbnail_loc: "https://example.com/thumb?a=1&b=2",
+            description: 'He said "hello" & <goodbye>',
+          },
+        ],
+      },
+    ];
+    const xml = sitemapToXml(entries);
+    expect(xml).toContain("<video:title>Tom &amp; Jerry &lt;2&gt;</video:title>");
+    expect(xml).toContain(
+      "<video:thumbnail_loc>https://example.com/thumb?a=1&amp;b=2</video:thumbnail_loc>",
+    );
+    expect(xml).toContain(
+      "<video:description>He said &quot;hello&quot; &amp; &lt;goodbye&gt;</video:description>",
+    );
+  });
 });
 
-// ─── robotsToText ───────────────────────────────────────────────────────
+// ─── robotsToText ────────────────────────────────────────────────────────
 
 describe("robotsToText", () => {
   it("generates basic robots.txt", () => {

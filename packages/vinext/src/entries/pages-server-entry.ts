@@ -17,6 +17,7 @@ import {
   generateSafeRegExpCode,
   generateMiddlewareMatcherCode,
   generateNormalizePathCode,
+  generateRouteMatchNormalizationCode,
 } from "../server/middleware-codegen.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 
@@ -24,6 +25,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const _requestContextShimPath = fileURLToPath(
   new URL("../shims/request-context.js", import.meta.url),
 ).replace(/\\/g, "/");
+const _routeTriePath = fileURLToPath(new URL("../routing/route-trie.js", import.meta.url)).replace(
+  /\\/g,
+  "/",
+);
+const _pagesI18nPath = fileURLToPath(new URL("../server/pages-i18n.js", import.meta.url)).replace(
+  /\\/g,
+  "/",
+);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -81,6 +90,7 @@ export async function generateServerEntry(
         locales: nextConfig.i18n.locales,
         defaultLocale: nextConfig.i18n.defaultLocale,
         localeDetection: nextConfig.i18n.localeDetection,
+        domains: nextConfig.i18n.domains,
       })
     : "null";
 
@@ -145,6 +155,7 @@ import { NextRequest, NextFetchEvent } from "next/server";`
     ? `
 // --- Middleware support (generated from middleware-codegen.ts) ---
 ${generateNormalizePathCode("es5")}
+${generateRouteMatchNormalizationCode("es5")}
 ${generateSafeRegExpCode("es5")}
 ${generateMiddlewareMatcherCode("es5")}
 
@@ -171,7 +182,7 @@ async function _runMiddleware(request) {
   // Normalize pathname before matching to prevent path-confusion bypasses
   // (percent-encoding like /%61dmin, double slashes like /dashboard//settings).
   var decodedPathname;
-  try { decodedPathname = decodeURIComponent(url.pathname); } catch (e) {
+  try { decodedPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
     return { continue: false, response: new Response("Bad Request", { status: 400 }) };
   }
   var normalizedPathname = __normalizePath(decodedPathname);
@@ -258,11 +269,17 @@ import { _runWithCacheState } from "next/cache";
 import { runWithPrivateCache } from "vinext/cache-runtime";
 import { runWithRouterState } from "vinext/router-state";
 import { runWithHeadState } from "vinext/head-state";
+import { runWithI18nState } from "vinext/i18n-state";
+import { setI18nContext } from "vinext/i18n-context";
 import { safeJsonStringify } from "vinext/html";
+import { decode as decodeQueryString } from "node:querystring";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 import { parseCookies } from ${JSON.stringify(path.resolve(__dirname, "../config/config-matchers.js").replace(/\\/g, "/"))};
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
+import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
+import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
+import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
 
@@ -276,6 +293,14 @@ const buildId = ${buildIdJson};
 
 // Full resolved config for production server (embedded at build time)
 export const vinextConfig = ${vinextConfigJson};
+
+class ApiBodyParseError extends Error {
+  constructor(message, statusCode) {
+    super(message);
+    this.statusCode = statusCode;
+    this.name = "ApiBodyParseError";
+  }
+}
 
 // ISR cache helpers (inlined for the server entry)
 async function isrGet(key) {
@@ -324,6 +349,16 @@ function isrCacheKey(router, pathname) {
   return prefix + ":__hash:" + fnv1a64(normalized);
 }
 
+function getMediaType(contentType) {
+  var type = (contentType || "text/plain").split(";")[0];
+  type = type && type.trim().toLowerCase();
+  return type || "text/plain";
+}
+
+function isJsonMediaType(mediaType) {
+  return mediaType === "application/json" || mediaType === "application/ld+json";
+}
+
 async function renderToStringAsync(element) {
   const stream = await renderToReadableStream(element);
   await stream.allReady;
@@ -339,10 +374,12 @@ ${docImportCode}
 const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
+const _pageRouteTrie = _buildRouteTrie(pageRoutes);
 
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}
 ];
+const _apiRouteTrie = _buildRouteTrie(apiRoutes);
 
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
@@ -350,40 +387,8 @@ function matchRoute(url, routes) {
   // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
   // the entry point. Decoding again would create a double-decode vector.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) return { route, params };
-  }
-  return null;
-}
-
-function matchPattern(urlParts, patternParts) {
-  const params = Object.create(null);
-  for (let i = 0; i < patternParts.length; i++) {
-    const pp = patternParts[i];
-    if (pp.endsWith("+")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      if (remaining.length === 0) return null;
-      params[paramName] = remaining;
-      return params;
-    }
-    if (pp.endsWith("*")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      params[paramName] = urlParts.slice(i);
-      return params;
-    }
-    if (pp.startsWith(":")) {
-      if (i >= urlParts.length) return null;
-      params[pp.slice(1)] = urlParts[i];
-      continue;
-    }
-    if (i >= urlParts.length || urlParts[i] !== pp) return null;
-  }
-  if (urlParts.length !== patternParts.length) return null;
-  return params;
+  const trie = routes === pageRoutes ? _pageRouteTrie : _apiRouteTrie;
+  return _trieMatch(trie, urlParts);
 }
 
 function parseQuery(url) {
@@ -631,8 +636,16 @@ function createReqRes(request, url, query, body) {
       res.end(JSON.stringify(data));
     },
     send: function(data) {
-      if (typeof data === "object" && data !== null) { res.json(data); }
-      else { if (!resHeaders["content-type"]) resHeaders["content-type"] = "text/plain"; res.end(String(data)); }
+      if (Buffer.isBuffer(data)) {
+        if (!resHeaders["content-type"]) resHeaders["content-type"] = "application/octet-stream";
+        resHeaders["content-length"] = String(data.length);
+        res.end(data);
+      } else if (typeof data === "object" && data !== null) {
+        res.json(data);
+      } else {
+        if (!resHeaders["content-type"]) resHeaders["content-type"] = "text/plain";
+        res.end(String(data));
+      }
     },
     redirect: function(statusOrUrl, url2) {
       if (typeof statusOrUrl === "string") { res.writeHead(307, { Location: statusOrUrl }); }
@@ -681,23 +694,25 @@ export async function renderPage(request, url, manifest, ctx) {
 }
 
 async function _renderPage(request, url, manifest) {
-  const localeInfo = extractLocale(url);
+  const localeInfo = i18nConfig
+    ? resolvePagesI18nRequest(
+        url,
+        i18nConfig,
+        request.headers,
+        new URL(request.url).hostname,
+        vinextConfig.basePath,
+        vinextConfig.trailingSlash,
+      )
+    : { locale: undefined, url, hadPrefix: false, domainLocale: undefined, redirectUrl: undefined };
   const locale = localeInfo.locale;
   const routeUrl = localeInfo.url;
-  const cookieHeader = request.headers.get("cookie") || "";
+  const currentDefaultLocale = i18nConfig
+    ? (localeInfo.domainLocale ? localeInfo.domainLocale.defaultLocale : i18nConfig.defaultLocale)
+    : undefined;
+  const domainLocales = i18nConfig ? i18nConfig.domains : undefined;
 
-  // i18n redirect: check NEXT_LOCALE cookie first, then Accept-Language
-  if (i18nConfig && !localeInfo.hadPrefix) {
-    const cookieLocale = parseCookieLocaleFromHeader(cookieHeader);
-    if (cookieLocale && cookieLocale !== i18nConfig.defaultLocale) {
-      return new Response(null, { status: 307, headers: { Location: "/" + cookieLocale + routeUrl } });
-    }
-    if (!cookieLocale && i18nConfig.localeDetection !== false) {
-      const detected = detectLocaleFromHeaders(request.headers);
-      if (detected && detected !== i18nConfig.defaultLocale) {
-        return new Response(null, { status: 307, headers: { Location: "/" + detected + routeUrl } });
-      }
-    }
+  if (localeInfo.redirectUrl) {
+    return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
   }
 
   const match = matchRoute(routeUrl, pageRoutes);
@@ -709,25 +724,31 @@ async function _renderPage(request, url, manifest) {
   const { route, params } = match;
   return runWithRouterState(() =>
     runWithHeadState(() =>
-      _runWithCacheState(() =>
-        runWithPrivateCache(() =>
-          runWithFetchCache(async () => {
+      runWithI18nState(() =>
+        _runWithCacheState(() =>
+          runWithPrivateCache(() =>
+            runWithFetchCache(async () => {
   try {
     if (typeof setSSRContext === "function") {
       setSSRContext({
-        pathname: routeUrl.split("?")[0],
+        pathname: patternToNextFormat(route.pattern),
         query: { ...params, ...parseQuery(routeUrl) },
         asPath: routeUrl,
         locale: locale,
         locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+        defaultLocale: currentDefaultLocale,
+        domainLocales: domainLocales,
       });
     }
 
     if (i18nConfig) {
-      globalThis.__VINEXT_LOCALE__ = locale;
-      globalThis.__VINEXT_LOCALES__ = i18nConfig.locales;
-      globalThis.__VINEXT_DEFAULT_LOCALE__ = i18nConfig.defaultLocale;
+      setI18nContext({
+        locale: locale,
+        locales: i18nConfig.locales,
+        defaultLocale: currentDefaultLocale,
+        domainLocales: domainLocales,
+        hostname: new URL(request.url).hostname,
+      });
     }
 
     const pageModule = route.module;
@@ -740,7 +761,7 @@ async function _renderPage(request, url, manifest) {
     if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
       const pathsResult = await pageModule.getStaticPaths({
         locales: i18nConfig ? i18nConfig.locales : [],
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : "",
+        defaultLocale: currentDefaultLocale || "",
       });
       const fallback = pathsResult && pathsResult.fallback !== undefined ? pathsResult.fallback : false;
 
@@ -773,7 +794,7 @@ async function _renderPage(request, url, manifest) {
         resolvedUrl: routeUrl,
         locale: locale,
         locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+        defaultLocale: currentDefaultLocale,
       };
       const result = await pageModule.getServerSideProps(ctx);
       // If gSSP called res.end() directly (short-circuit), return that response.
@@ -822,9 +843,60 @@ async function _renderPage(request, url, manifest) {
 
       if (cached && cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
         triggerBackgroundRegeneration(cacheKey, async function() {
-          const freshResult = await pageModule.getStaticProps({ params });
+          var freshResult = await pageModule.getStaticProps({
+            params: params,
+            locale: locale,
+            locales: i18nConfig ? i18nConfig.locales : undefined,
+            defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+          });
           if (freshResult && freshResult.props && typeof freshResult.revalidate === "number" && freshResult.revalidate > 0) {
-            await isrSet(cacheKey, { kind: "PAGES", html: cached.value.value.html, pageData: freshResult.props, headers: undefined, status: undefined }, freshResult.revalidate);
+            var _fp = freshResult.props;
+            // Re-render the page with fresh props
+            var _el = AppComponent
+              ? React.createElement(AppComponent, { Component: PageComponent, pageProps: _fp })
+              : React.createElement(PageComponent, _fp);
+            _el = wrapWithRouterContext(_el);
+            var _freshBody = await renderToStringAsync(_el);
+            // Rebuild __NEXT_DATA__ with fresh props
+            var _regenPayload = {
+              props: { pageProps: _fp }, page: patternToNextFormat(route.pattern),
+              query: params, buildId: buildId, isFallback: false,
+            };
+            if (i18nConfig) {
+              _regenPayload.locale = locale;
+              _regenPayload.locales = i18nConfig.locales;
+              _regenPayload.defaultLocale = i18nConfig.defaultLocale;
+            }
+            var _lGlobals = i18nConfig
+              ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
+                ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
+                ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(i18nConfig.defaultLocale)
+              : "";
+            var _freshNDS = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(_regenPayload) + _lGlobals + "</script>";
+            // Reconstruct ISR HTML preserving the document shell from the
+            // cached entry (head, fonts, assets, custom _document markup).
+            var _cachedStr = cached.value.value.html;
+            var _btag = '<div id="__next">';
+            var _bstart = _cachedStr.indexOf(_btag);
+            var _bodyStart = _bstart >= 0 ? _bstart + _btag.length : -1;
+            // Locate __NEXT_DATA__ script to split body from suffix
+            var _ndMarker = '<script>window.__NEXT_DATA__';
+            var _ndStart = _cachedStr.indexOf(_ndMarker);
+            var _freshHtml;
+            if (_bodyStart >= 0 && _ndStart >= 0) {
+              // Region between body start and __NEXT_DATA__ contains:
+              // BODY_HTML + </div> + optional gap (custom _document content)
+              var _region = _cachedStr.slice(_bodyStart, _ndStart);
+              var _lastClose = _region.lastIndexOf('</div>');
+              var _gap = _lastClose >= 0 ? _region.slice(_lastClose + 6) : '';
+              // Tail: everything after the old __NEXT_DATA__ </script>
+              var _ndEnd = _cachedStr.indexOf('</script>', _ndStart) + 9;
+              var _tail = _cachedStr.slice(_ndEnd);
+              _freshHtml = _cachedStr.slice(0, _bodyStart) + _freshBody + '</div>' + _gap + _freshNDS + _tail;
+            } else {
+              _freshHtml = '<!DOCTYPE html>\\n<html>\\n<head>\\n</head>\\n<body>\\n  <div id="__next">' + _freshBody + '</div>\\n  ' + _freshNDS + '\\n</body>\\n</html>';
+            }
+            await isrSet(cacheKey, { kind: "PAGES", html: _freshHtml, pageData: _fp, headers: undefined, status: undefined }, freshResult.revalidate);
           }
         });
         var _staleHeaders = {
@@ -839,7 +911,7 @@ async function _renderPage(request, url, manifest) {
         params,
         locale: locale,
         locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+        defaultLocale: currentDefaultLocale,
       };
       const result = await pageModule.getStaticProps(ctx);
       if (result && result.props) pageProps = result.props;
@@ -892,12 +964,13 @@ async function _renderPage(request, url, manifest) {
     if (i18nConfig) {
       nextDataPayload.locale = locale;
       nextDataPayload.locales = i18nConfig.locales;
-      nextDataPayload.defaultLocale = i18nConfig.defaultLocale;
+      nextDataPayload.defaultLocale = currentDefaultLocale;
+      nextDataPayload.domainLocales = domainLocales;
     }
     const localeGlobals = i18nConfig
       ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
         ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
-        ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(i18nConfig.defaultLocale)
+        ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(currentDefaultLocale)
       : "";
     const nextDataScript = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(nextDataPayload) + localeGlobals + "</script>";
 
@@ -996,11 +1069,17 @@ async function _renderPage(request, url, manifest) {
     return new Response(compositeStream, { status: finalStatus, headers: responseHeaders });
   } catch (e) {
     console.error("[vinext] SSR error:", e);
+    _reportRequestError(
+      e instanceof Error ? e : new Error(String(e)),
+      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+      { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
+    );
     return new Response("Internal Server Error", { status: 500 });
   }
-          }) // end runWithFetchCache
-        ) // end runWithPrivateCache
-      ) // end _runWithCacheState
+            }) // end runWithFetchCache
+          ) // end runWithPrivateCache
+        ) // end _runWithCacheState
+      ) // end runWithI18nState
     ) // end runWithHeadState
   ); // end runWithRouterState
 }
@@ -1038,29 +1117,43 @@ export async function handleApiRoute(request, url) {
   if (contentLength > 1 * 1024 * 1024) {
     return new Response("Request body too large", { status: 413 });
   }
-  let body;
-  const ct = request.headers.get("content-type") || "";
-  let rawBody;
-  try { rawBody = await readBodyWithLimit(request, 1 * 1024 * 1024); }
-  catch { return new Response("Request body too large", { status: 413 }); }
-  if (!rawBody) {
-    body = undefined;
-  } else if (ct.includes("application/json")) {
-    try { body = JSON.parse(rawBody); } catch { body = rawBody; }
-  } else {
-    body = rawBody;
-  }
-
-  const { req, res, responsePromise } = createReqRes(request, url, query, body);
-
   try {
+    let body;
+    const mediaType = getMediaType(request.headers.get("content-type"));
+    let rawBody;
+    try { rawBody = await readBodyWithLimit(request, 1 * 1024 * 1024); }
+    catch { return new Response("Request body too large", { status: 413 }); }
+    if (!rawBody) {
+      body = isJsonMediaType(mediaType)
+        ? {}
+        : mediaType === "application/x-www-form-urlencoded"
+          ? decodeQueryString(rawBody)
+          : undefined;
+    } else if (isJsonMediaType(mediaType)) {
+      try { body = JSON.parse(rawBody); }
+      catch { throw new ApiBodyParseError("Invalid JSON", 400); }
+    } else if (mediaType === "application/x-www-form-urlencoded") {
+      body = decodeQueryString(rawBody);
+    } else {
+      body = rawBody;
+    }
+
+    const { req, res, responsePromise } = createReqRes(request, url, query, body);
     await handler(req, res);
     // If handler didn't call res.end(), end it now.
     // The end() method is idempotent — safe to call twice.
     res.end();
     return await responsePromise;
   } catch (e) {
+    if (e instanceof ApiBodyParseError) {
+      return new Response(e.message, { status: e.statusCode, statusText: e.message });
+    }
     console.error("[vinext] API error:", e);
+    _reportRequestError(
+      e instanceof Error ? e : new Error(String(e)),
+      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+      { routerKind: "Pages Router", routePath: route.pattern, routeType: "route" },
+    );
     return new Response("Internal Server Error", { status: 500 });
   }
 }

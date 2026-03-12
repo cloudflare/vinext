@@ -54,6 +54,129 @@ test.describe("router.events (Pages Router)", () => {
     expect(events).toContain("complete:/about");
   });
 
+  test("beforeHistoryChange fires between routeChangeStart and routeChangeComplete", async ({
+    page,
+  }) => {
+    await page.click('[data-testid="push-about"]');
+    await expect(page.locator("h1")).toHaveText("About");
+
+    const events: string[] = await page.evaluate((key) => {
+      const raw = sessionStorage.getItem(key);
+      return raw ? JSON.parse(raw) : [];
+    }, STORAGE_KEY);
+
+    const startIdx = events.findIndex((e) => e === "start:/about");
+    const beforeIdx = events.findIndex((e) => e === "beforeHistoryChange:/about");
+    const completeIdx = events.findIndex((e) => e === "complete:/about");
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(beforeIdx).toBeGreaterThan(startIdx);
+    expect(completeIdx).toBeGreaterThan(beforeIdx);
+  });
+
+  test("hashChangeStart and hashChangeComplete fire on hash-only push with full URL", async ({
+    page,
+  }) => {
+    await page.click('[data-testid="push-hash"]');
+
+    const events: string[] = await page.evaluate((key) => {
+      const raw = sessionStorage.getItem(key);
+      return raw ? JSON.parse(raw) : [];
+    }, STORAGE_KEY);
+
+    // Event URL should include pathname, not just the fragment
+    expect(events).toContain("hashChangeStart:/router-events-test#section-1");
+    expect(events).toContain("hashChangeComplete:/router-events-test#section-1");
+    // Should NOT fire routeChange or beforeHistoryChange events for hash-only navigation
+    expect(events.some((e) => e.startsWith("start:"))).toBe(false);
+    expect(events.some((e) => e.startsWith("complete:"))).toBe(false);
+    expect(events.some((e) => e.startsWith("beforeHistoryChange:"))).toBe(false);
+  });
+
+  test("hashChangeStart fires before hashChangeComplete on hash push", async ({ page }) => {
+    await page.click('[data-testid="push-hash"]');
+
+    const events: string[] = await page.evaluate((key) => {
+      const raw = sessionStorage.getItem(key);
+      return raw ? JSON.parse(raw) : [];
+    }, STORAGE_KEY);
+
+    const startIdx = events.findIndex((e) => e.startsWith("hashChangeStart:"));
+    const completeIdx = events.findIndex((e) => e.startsWith("hashChangeComplete:"));
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(completeIdx).toBeGreaterThan(startIdx);
+  });
+
+  test("hashChangeStart and hashChangeComplete fire on hash-only replace with full URL", async ({
+    page,
+  }) => {
+    await page.click('[data-testid="replace-hash"]');
+
+    const events: string[] = await page.evaluate((key) => {
+      const raw = sessionStorage.getItem(key);
+      return raw ? JSON.parse(raw) : [];
+    }, STORAGE_KEY);
+
+    expect(events).toContain("hashChangeStart:/router-events-test#section-2");
+    expect(events).toContain("hashChangeComplete:/router-events-test#section-2");
+    expect(events.some((e) => e.startsWith("start:"))).toBe(false);
+    expect(events.some((e) => e.startsWith("complete:"))).toBe(false);
+    expect(events.some((e) => e.startsWith("beforeHistoryChange:"))).toBe(false);
+  });
+
+  test("hash-only back/forward emits hashChange events, not routeChange", async ({ page }) => {
+    // Push a hash change, then go back — popstate should detect hash-only navigation
+    await page.click('[data-testid="push-hash"]');
+    await page.click('[data-testid="clear-events"]');
+    await page.goBack();
+
+    // Wait for popstate handler to record events
+    await page.waitForFunction((key) => {
+      const raw = sessionStorage.getItem(key);
+      return raw ? JSON.parse(raw).length > 0 : false;
+    }, STORAGE_KEY);
+
+    const events: string[] = await page.evaluate((key) => {
+      const raw = sessionStorage.getItem(key);
+      return raw ? JSON.parse(raw) : [];
+    }, STORAGE_KEY);
+
+    // Should emit hashChange events for hash-only back navigation
+    expect(events.some((e) => e.startsWith("hashChangeStart:"))).toBe(true);
+    expect(events.some((e) => e.startsWith("hashChangeComplete:"))).toBe(true);
+    // Should NOT emit routeChange or beforeHistoryChange events
+    expect(events.some((e) => e.startsWith("start:"))).toBe(false);
+    expect(events.some((e) => e.startsWith("complete:"))).toBe(false);
+    expect(events.some((e) => e.startsWith("beforeHistoryChange:"))).toBe(false);
+  });
+
+  test("hash-only forward emits hashChange events, not routeChange", async ({ page }) => {
+    // Push a hash, go back, wait for popstate to settle, clear events, then go forward
+    await page.click('[data-testid="push-hash"]');
+    await page.goBack();
+    await page.waitForFunction((key) => {
+      const raw = sessionStorage.getItem(key);
+      return raw ? JSON.parse(raw).length > 0 : false;
+    }, STORAGE_KEY);
+    await page.click('[data-testid="clear-events"]');
+    await page.goForward();
+
+    await page.waitForFunction((key) => {
+      const raw = sessionStorage.getItem(key);
+      return raw ? JSON.parse(raw).length > 0 : false;
+    }, STORAGE_KEY);
+
+    const events: string[] = await page.evaluate((key) => {
+      const raw = sessionStorage.getItem(key);
+      return raw ? JSON.parse(raw) : [];
+    }, STORAGE_KEY);
+
+    expect(events.some((e) => e.startsWith("hashChangeStart:"))).toBe(true);
+    expect(events.some((e) => e.startsWith("hashChangeComplete:"))).toBe(true);
+    expect(events.some((e) => e.startsWith("start:"))).toBe(false);
+    expect(events.some((e) => e.startsWith("complete:"))).toBe(false);
+    expect(events.some((e) => e.startsWith("beforeHistoryChange:"))).toBe(false);
+  });
+
   test("multiple navigations produce multiple event pairs", async ({ page }) => {
     // Navigate to about
     await page.click('[data-testid="push-about"]');
