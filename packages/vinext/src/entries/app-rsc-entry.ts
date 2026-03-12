@@ -9,19 +9,19 @@
  */
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { AppRoute } from "../routing/app-router.js";
-import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import type {
-  NextRedirect,
-  NextRewrite,
   NextHeader,
   NextI18nConfig,
+  NextRedirect,
+  NextRewrite,
 } from "../config/next-config.js";
+import type { AppRoute } from "../routing/app-router.js";
 import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
+import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import {
-  generateSafeRegExpCode,
   generateMiddlewareMatcherCode,
   generateNormalizePathCode,
+  generateSafeRegExpCode,
 } from "../server/middleware-codegen.js";
 import { isProxyFile } from "../server/middleware.js";
 
@@ -37,6 +37,29 @@ const requestPipelinePath = fileURLToPath(
 const requestContextShimPath = fileURLToPath(
   new URL("../shims/request-context.js", import.meta.url),
 ).replace(/\\/g, "/");
+
+// Canonical order of HTTP method handlers supported by route.ts modules.
+const ROUTE_HANDLER_HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
+
+function collectRouteHandlerMethods(handler: Record<string, unknown>): string[] {
+  const methods = ROUTE_HANDLER_HTTP_METHODS.filter((method) => typeof handler[method] === "function");
+  if (methods.includes("GET") && !methods.includes("HEAD")) {
+    methods.push("HEAD");
+  }
+  return methods;
+}
+
+function buildRouteHandlerAllowHeader(
+  exportedMethods: string[],
+  hasDefaultHandler: boolean,
+  includeImplicitOptions: boolean,
+): string[] {
+  const base = hasDefaultHandler ? [...ROUTE_HANDLER_HTTP_METHODS] : [...exportedMethods];
+  if (includeImplicitOptions && !base.includes("OPTIONS")) {
+    base.push("OPTIONS");
+  }
+  return base;
+}
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -1935,13 +1958,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const revalidateSeconds = typeof handler.revalidate === "number" && handler.revalidate > 0 ? handler.revalidate : null;
 
     // Collect exported HTTP methods for OPTIONS auto-response and Allow header
-    const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
-    const exportedMethods = HTTP_METHODS.filter((m) => typeof handler[m] === "function");
-    // If GET is exported, HEAD is implicitly supported
-    if (exportedMethods.includes("GET") && !exportedMethods.includes("HEAD")) {
-      exportedMethods.push("HEAD");
-    }
+    const exportedMethods = collectRouteHandlerMethods(handler);
     const hasDefault = typeof handler["default"] === "function";
+    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, true);
 
     // Route handlers need the same middleware header/status merge behavior as
     // page responses. This keeps middleware response headers visible on API
@@ -1968,13 +1987,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
-      const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
-      if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
       return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
-        headers: { "Allow": allowMethods.join(", ") },
+        headers: { "Allow": allowHeaderForOptions.join(", ") },
       }));
     }
 
@@ -2081,9 +2098,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
     setHeadersContext(null);
     setNavigationContext(null);
+    const methodNotAllowedAllowHeader = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, false);
     return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
-      headers: { Allow: exportedMethods.join(", ") },
+      headers: { Allow: methodNotAllowedAllowHeader.join(", ") },
     }));
   }
 

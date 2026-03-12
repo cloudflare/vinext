@@ -714,7 +714,7 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 | 4   | PATCH returns 202 with timestamp                 | PASS          | New test                                                     |
 | 5   | DELETE returns 204                               | PASS          | New test                                                     |
 | 6   | HEAD returns 200 with custom headers, empty body | PASS          | Already tested                                               |
-| 7   | OPTIONS returns 204 with Allow header            | FIXME         | vinext auto-OPTIONS does not set Allow header — feature gap  |
+| 7   | OPTIONS returns 204 with Allow header            | PASS          | Auto-OPTIONS now shares Allow list builder with 405 responses |
 | 8   | formData POST works                              | PASS          | New test                                                     |
 | 9   | Cookies set via route handler                    | PASS          | Already tested                                               |
 | 10  | redirect() in route handler returns 307          | PASS          | Already tested                                               |
