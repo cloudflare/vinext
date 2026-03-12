@@ -512,8 +512,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     if (og.title) elements.push(<meta key={key++} property="og:title" content={og.title} />);
     if (og.description)
       elements.push(<meta key={key++} property="og:description" content={og.description} />);
-    if (og.url)
-      elements.push(<meta key={key++} property="og:url" content={resolveUrl(og.url)} />);
+    if (og.url) elements.push(<meta key={key++} property="og:url" content={resolveUrl(og.url)} />);
     if (og.siteName)
       elements.push(<meta key={key++} property="og:site_name" content={og.siteName} />);
     if (og.type) elements.push(<meta key={key++} property="og:type" content={og.type} />);
@@ -557,9 +556,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     if (og.videos) {
       for (const video of og.videos) {
-        elements.push(
-          <meta key={key++} property="og:video" content={resolveUrl(video.url)} />,
-        );
+        elements.push(<meta key={key++} property="og:video" content={resolveUrl(video.url)} />);
         if (video.width)
           elements.push(
             <meta key={key++} property="og:video:width" content={String(video.width)} />,
@@ -572,9 +569,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     if (og.audio) {
       for (const audio of og.audio) {
-        elements.push(
-          <meta key={key++} property="og:audio" content={resolveUrl(audio.url)} />,
-        );
+        elements.push(<meta key={key++} property="og:audio" content={resolveUrl(audio.url)} />);
       }
     }
   }
@@ -612,15 +607,9 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
       for (const player of players) {
         const playerUrl = player.playerUrl.toString();
         const streamUrl = player.streamUrl.toString();
+        elements.push(<meta key={key++} name="twitter:player" content={resolveUrl(playerUrl)} />);
         elements.push(
-          <meta key={key++} name="twitter:player" content={resolveUrl(playerUrl)} />,
-        );
-        elements.push(
-          <meta
-            key={key++}
-            name="twitter:player:stream"
-            content={resolveUrl(streamUrl)}
-          />,
+          <meta key={key++} name="twitter:player:stream" content={resolveUrl(streamUrl)} />,
         );
         elements.push(
           <meta key={key++} name="twitter:player:width" content={String(player.width)} />,
@@ -651,11 +640,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
         if (app.url?.[platform] !== undefined) {
           const appUrl = app.url[platform]!.toString();
           elements.push(
-            <meta
-              key={key++}
-              name={`twitter:app:url:${platform}`}
-              content={resolveUrl(appUrl)}
-            />,
+            <meta key={key++} name={`twitter:app:url:${platform}`} content={resolveUrl(appUrl)} />,
           );
         }
       }
@@ -720,38 +705,28 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
 
   // Manifest
   if (metadata.manifest) {
-    elements.push(
-      <link key={key++} rel="manifest" href={resolveUrl(metadata.manifest)} />,
-    );
+    elements.push(<link key={key++} rel="manifest" href={resolveUrl(metadata.manifest)} />);
   }
 
   // Alternates
   if (metadata.alternates) {
     const alt = metadata.alternates;
     if (alt.canonical) {
-      elements.push(
-        <link key={key++} rel="canonical" href={resolveUrl(alt.canonical)} />,
-      );
+      elements.push(<link key={key++} rel="canonical" href={resolveUrl(alt.canonical)} />);
     }
     if (alt.languages) {
       for (const [lang, href] of Object.entries(alt.languages)) {
-        elements.push(
-          <link key={key++} rel="alternate" hrefLang={lang} href={resolveUrl(href)} />,
-        );
+        elements.push(<link key={key++} rel="alternate" hrefLang={lang} href={resolveUrl(href)} />);
       }
     }
     if (alt.media) {
       for (const [media, href] of Object.entries(alt.media)) {
-        elements.push(
-          <link key={key++} rel="alternate" media={media} href={resolveUrl(href)} />,
-        );
+        elements.push(<link key={key++} rel="alternate" media={media} href={resolveUrl(href)} />);
       }
     }
     if (alt.types) {
       for (const [type, href] of Object.entries(alt.types)) {
-        elements.push(
-          <link key={key++} rel="alternate" type={type} href={resolveUrl(href)} />,
-        );
+        elements.push(<link key={key++} rel="alternate" type={type} href={resolveUrl(href)} />);
       }
     }
   }
