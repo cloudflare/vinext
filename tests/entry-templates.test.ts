@@ -331,12 +331,20 @@ describe("Pages Router entry templates", () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
 
     expect(code).toContain("async function renderIsrPassToStringAsync(element)");
+    expect(code).toContain("runWithServerInsertedHTMLState(() =>");
     expect(code).toContain("runWithHeadState(() =>");
     expect(code).toContain("_runWithCacheState(() =>");
     expect(code).toContain(
       "runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element)))",
     );
     expect(code).toContain("var isrHtml = await renderIsrPassToStringAsync(isrElement);");
+  });
+
+  it("server entry registers i18n state without wrapping the unified request scope", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain('import "vinext/i18n-state";');
+    expect(code).not.toContain("return runWithI18nState(() =>");
   });
 
   it("server entry calls reportRequestError for SSR and API errors", async () => {

@@ -267,8 +267,9 @@ import { runWithPrivateCache } from "vinext/cache-runtime";
 import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import "vinext/router-state";
+import { runWithServerInsertedHTMLState } from "vinext/navigation-state";
 import { runWithHeadState } from "vinext/head-state";
-import { runWithI18nState } from "vinext/i18n-state";
+import "vinext/i18n-state";
 import { setI18nContext } from "vinext/i18n-context";
 import { safeJsonStringify } from "vinext/html";
 import { decode as decodeQueryString } from "node:querystring";
@@ -368,9 +369,13 @@ async function renderIsrPassToStringAsync(element) {
   // The cache-fill render is a second render pass for the same request.
   // Reset render-scoped state so it cannot leak from the streamed response
   // render or affect async work that is still draining from that stream.
-  return await runWithHeadState(() =>
-    _runWithCacheState(() =>
-      runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element))),
+  // Keep request identity state (pathname/query/locale/executionContext)
+  // intact: this second pass still belongs to the same request.
+  return await runWithServerInsertedHTMLState(() =>
+    runWithHeadState(() =>
+      _runWithCacheState(() =>
+        runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element))),
+      ),
     ),
   );
 }
@@ -735,10 +740,9 @@ async function _renderPage(request, url, manifest) {
   const __uCtx = _createUnifiedCtx({
     executionContext: _getRequestExecutionContext(),
   });
-  return runWithI18nState(() =>
-    _runWithUnifiedCtx(__uCtx, async () => {
-      ensureFetchPatch();
-  try {
+  return _runWithUnifiedCtx(__uCtx, async () => {
+    ensureFetchPatch();
+    try {
     if (typeof setSSRContext === "function") {
       setSSRContext({
         pathname: patternToNextFormat(route.pattern),
@@ -856,9 +860,8 @@ async function _renderPage(request, url, manifest) {
           var revalCtx = _createUnifiedCtx({
             executionContext: _getRequestExecutionContext(),
           });
-          return runWithI18nState(() =>
-            _runWithUnifiedCtx(revalCtx, async () => {
-              ensureFetchPatch();
+          return _runWithUnifiedCtx(revalCtx, async () => {
+            ensureFetchPatch();
               var freshResult = await pageModule.getStaticProps({
                 params: params,
                 locale: locale,
@@ -936,8 +939,7 @@ async function _renderPage(request, url, manifest) {
                 }
                 await isrSet(cacheKey, { kind: "PAGES", html: _freshHtml, pageData: _fp, headers: undefined, status: undefined }, freshResult.revalidate);
               }
-            }),
-          );
+            });
         });
         var _staleHeaders = {
           "Content-Type": "text/html", "X-Vinext-Cache": "STALE",
@@ -1107,7 +1109,7 @@ async function _renderPage(request, url, manifest) {
       responseHeaders.set("Link", _fontLinkHeader);
     }
     return new Response(compositeStream, { status: finalStatus, headers: responseHeaders });
-  } catch (e) {
+    } catch (e) {
     console.error("[vinext] SSR error:", e);
     _reportRequestError(
       e instanceof Error ? e : new Error(String(e)),
@@ -1115,9 +1117,8 @@ async function _renderPage(request, url, manifest) {
       { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
     ).catch(() => { /* ignore reporting errors */ });
     return new Response("Internal Server Error", { status: 500 });
-  }
-    }),
-  );
+    }
+  });
 }
 
 export async function handleApiRoute(request, url) {

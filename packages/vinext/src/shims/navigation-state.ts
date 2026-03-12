@@ -65,6 +65,29 @@ export function runWithNavigationContext<T>(fn: () => T | Promise<T>): T | Promi
   return _als.run(state, fn);
 }
 
+/**
+ * Run a function with a fresh useServerInsertedHTML callback list while
+ * preserving the current navigation context.
+ *
+ * Used by the Pages Router ISR cache-fill pass: it is the same request/path,
+ * but it needs a fresh callback collection so CSS-in-JS insertions from the
+ * streamed render cannot accumulate into the cache-fill render.
+ */
+export function runWithServerInsertedHTMLState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      uCtx.serverInsertedHTMLCallbacks = [];
+    }, fn);
+  }
+
+  const parentState = _als.getStore() ?? _fallbackState;
+  const state: NavigationState = {
+    serverContext: parentState.serverContext,
+    serverInsertedHTMLCallbacks: [],
+  };
+  return _als.run(state, fn);
+}
+
 // ---------------------------------------------------------------------------
 // Register ALS-backed accessors into navigation.ts
 // ---------------------------------------------------------------------------

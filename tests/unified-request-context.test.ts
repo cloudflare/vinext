@@ -33,6 +33,7 @@ describe("unified-request-context", () => {
       expect(ctx.pendingSetCookies).toEqual([]);
       expect(ctx.draftModeCookieHeader).toBeNull();
       expect(ctx.phase).toBe("render");
+      expect(ctx.i18nContext).toBeNull();
       expect(ctx.serverContext).toBeNull();
       expect(ctx.serverInsertedHTMLCallbacks).toEqual([]);
       expect(ctx.requestScopedCacheLife).toBeNull();
@@ -84,6 +85,7 @@ describe("unified-request-context", () => {
         expect(ctx.executionContext).toBe(fakeCtx);
         expect(ctx.dynamicUsageDetected).toBe(false);
         expect(ctx.phase).toBe("render");
+        expect(ctx.i18nContext).toBeNull();
         expect(ctx.pendingSetCookies).toEqual([]);
         expect(ctx.currentRequestTags).toEqual([]);
         expect(ctx._privateCache).toBeNull();
@@ -272,6 +274,7 @@ describe("unified-request-context", () => {
         pendingSetCookies: ["a=b"],
         draftModeCookieHeader: "c=d",
         phase: "action",
+        i18nContext: { locale: "fr", defaultLocale: "en" },
         serverContext: { pathname: "/test", searchParams: new URLSearchParams(), params: {} },
         serverInsertedHTMLCallbacks: [() => "html"],
         requestScopedCacheLife: { stale: 10, revalidate: 20 },
@@ -285,6 +288,7 @@ describe("unified-request-context", () => {
         expect(ctx.pendingSetCookies).toEqual(["a=b"]);
         expect(ctx.draftModeCookieHeader).toBe("c=d");
         expect(ctx.phase).toBe("action");
+        expect(ctx.i18nContext).toEqual({ locale: "fr", defaultLocale: "en" });
         expect((ctx.serverContext as any).pathname).toBe("/test");
         expect(ctx.serverInsertedHTMLCallbacks).toHaveLength(1);
         expect(ctx.requestScopedCacheLife).toEqual({
@@ -414,6 +418,44 @@ describe("unified-request-context", () => {
       );
     });
 
+    it("runWithI18nState restores the outer i18n sub-state", async () => {
+      const { runWithI18nState } = await import("../packages/vinext/src/shims/i18n-state.js");
+      const { getI18nContext, setI18nContext } =
+        await import("../packages/vinext/src/shims/i18n-context.js");
+
+      const outerI18n = {
+        locale: "fr",
+        locales: ["en", "fr"],
+        defaultLocale: "en",
+      };
+
+      runWithRequestContext(
+        createRequestContext({
+          i18nContext: outerI18n,
+        }),
+        () => {
+          runWithI18nState(() => {
+            expect(getI18nContext()).toBeNull();
+
+            setI18nContext({
+              locale: "de",
+              locales: ["en", "de"],
+              defaultLocale: "en",
+            });
+
+            expect(getRequestContext().i18nContext).toEqual({
+              locale: "de",
+              locales: ["en", "de"],
+              defaultLocale: "en",
+            });
+          });
+
+          expect(getI18nContext()).toEqual(outerI18n);
+          expect(getRequestContext().i18nContext).toEqual(outerI18n);
+        },
+      );
+    });
+
     it("cache/private/fetch/router/head sub-scopes reset and restore correctly", async () => {
       const { _runWithCacheState } = await import("../packages/vinext/src/shims/cache.js");
       const { runWithPrivateCache } = await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -475,6 +517,7 @@ describe("unified-request-context", () => {
       expect(ctx.pendingSetCookies).toEqual([]);
       expect(ctx.draftModeCookieHeader).toBeNull();
       expect(ctx.phase).toBe("render");
+      expect(ctx.i18nContext).toBeNull();
       expect(ctx.serverContext).toBeNull();
       expect(ctx.serverInsertedHTMLCallbacks).toEqual([]);
       expect(ctx.requestScopedCacheLife).toBeNull();
@@ -493,6 +536,7 @@ describe("unified-request-context", () => {
       expect(ctx.phase).toBe("action");
       expect(ctx.dynamicUsageDetected).toBe(true);
       // Other fields get defaults
+      expect(ctx.i18nContext).toBeNull();
       expect(ctx.headersContext).toBeNull();
       expect(ctx.currentRequestTags).toEqual([]);
       expect(ctx.ssrContext).toBeNull();

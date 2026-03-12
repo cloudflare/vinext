@@ -1,4 +1,5 @@
 export type { HeadersAccessPhase, HeadersContext, VinextHeadersShimState } from "./headers.js";
+export type { I18nState } from "./i18n-state.js";
 export type { NavigationContext } from "./navigation.js";
 export type { NavigationState } from "./navigation-state.js";
 export type { CacheLifeConfig, CacheState } from "./cache.js";

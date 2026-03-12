@@ -16,6 +16,7 @@ import type {
   ExecutionContextLike,
   FetchCacheState,
   HeadState,
+  I18nState,
   NavigationState,
   PrivateCacheState,
   RouterState,
@@ -36,6 +37,7 @@ import type {
 export interface UnifiedRequestContext
   extends
     VinextHeadersShimState,
+    I18nState,
     NavigationState,
     CacheState,
     PrivateCacheState,
@@ -83,12 +85,13 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     pendingSetCookies: [],
     draftModeCookieHeader: null,
     phase: "render",
+    i18nContext: null,
     serverContext: null,
     serverInsertedHTMLCallbacks: [],
     requestScopedCacheLife: null,
     _privateCache: null,
     currentRequestTags: [],
-    executionContext: _getInheritedExecutionContext(),
+    executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
     ssrContext: null,
     ssrHeadElements: [],
     ...opts,
@@ -126,16 +129,15 @@ export function runWithUnifiedStateMutation<T>(
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Array fields (pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadElements), the
-  // _privateCache Map, and object fields (headersContext, serverContext,
-  // ssrContext, executionContext, requestScopedCacheLife) still share
-  // references with the parent until replaced. The mutate callback must
-  // replace those reference-typed slices (for example
+  // _privateCache Map, and object fields (headersContext, i18nContext,
+  // serverContext, ssrContext, executionContext, requestScopedCacheLife)
+  // still share references with the parent until replaced. The mutate
+  // callback must replace those reference-typed slices (for example
   // `ctx.currentRequestTags = []`) rather than mutating them in-place (for
   // example `ctx.currentRequestTags.push(...)`) or the parent scope will
-  // observe those changes too. Keep this list in sync when adding new
-  // reference-typed fields to UnifiedRequestContext; when a new one is added,
-  // include it here and verify it still follows the replace-not-mutate
-  // invariant.
+  // observe those changes too. Keep this enumeration in sync with
+  // UnifiedRequestContext: when adding a new reference-typed field, add it
+  // here too and verify callers still follow the replace-not-mutate rule.
   mutate(childCtx);
   return _als.run(childCtx, fn);
 }

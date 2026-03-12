@@ -11,13 +11,18 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerI18nStateAccessors, type I18nContext } from "./i18n-context.js";
+import {
+  getRequestContext,
+  isInsideUnifiedScope,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // ALS setup
 // ---------------------------------------------------------------------------
 
-interface I18nState {
-  context: I18nContext | null;
+export interface I18nState {
+  i18nContext: I18nContext | null;
 }
 
 const _ALS_KEY = Symbol.for("vinext.i18n.als");
@@ -26,10 +31,13 @@ const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<I18nState>()) as AsyncLocalStorage<I18nState>;
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
-  context: null,
+  i18nContext: null,
 } satisfies I18nState) as I18nState;
 
 function _getState(): I18nState {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext();
+  }
   return _als.getStore() ?? _fallbackState;
 }
 
@@ -38,8 +46,14 @@ function _getState(): I18nState {
  * Ensures per-request isolation for i18n context on concurrent runtimes.
  */
 export function runWithI18nState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      uCtx.i18nContext = null;
+    }, fn);
+  }
+
   const state: I18nState = {
-    context: null,
+    i18nContext: null,
   };
   return _als.run(state, fn);
 }
@@ -50,16 +64,10 @@ export function runWithI18nState<T>(fn: () => T | Promise<T>): T | Promise<T> {
 
 _registerI18nStateAccessors({
   getI18nContext(): I18nContext | null {
-    return _getState().context;
+    return _getState().i18nContext;
   },
 
   setI18nContext(ctx: I18nContext | null): void {
-    const state = _als.getStore();
-    if (state) {
-      state.context = ctx;
-    } else {
-      // No ALS scope — fallback for environments without als.run() wrapping.
-      _fallbackState.context = ctx;
-    }
+    _getState().i18nContext = ctx;
   },
 });
