@@ -3540,7 +3540,7 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("function __pageCacheTags(pathname, extraTags)");
     expect(code).toContain('const tags = [pathname, "_N_T_" + pathname]');
     expect(code).toContain(
-      "const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags())",
+      "const __pageTags = __pageCacheTags(__cachePathname, getCollectedFetchTags())",
     );
     expect(code).toContain("Array.isArray(tags) ? tags : []");
   });
