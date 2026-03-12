@@ -13,12 +13,14 @@ import {
   getRevalidateDuration,
 } from "./isr-cache.js";
 import type { CachedPagesValue } from "../shims/cache.js";
-import { ensureFetchPatch } from "../shims/fetch-cache.js";
+import { _runWithCacheState } from "../shims/cache.js";
+import { runWithPrivateCache } from "../shims/cache-runtime.js";
+import { ensureFetchPatch, runWithFetchCache } from "../shims/fetch-cache.js";
 import { createRequestContext, runWithRequestContext } from "../shims/unified-request-context.js";
 // Import server-only state modules to register ALS-backed accessors.
 // These modules must be imported before any rendering occurs.
 import "../shims/router-state.js";
-import "../shims/head-state.js";
+import { runWithHeadState } from "../shims/head-state.js";
 import { reportRequestError } from "./instrumentation.js";
 import { safeJsonStringify } from "./html.js";
 import { parseQueryString as parseQuery } from "../utils/query.js";
@@ -40,6 +42,17 @@ async function renderToStringAsync(element: React.ReactElement): Promise<string>
   const stream = await renderToReadableStream(element);
   await stream.allReady;
   return new Response(stream).text();
+}
+
+async function renderIsrPassToStringAsync(element: React.ReactElement): Promise<string> {
+  // The cache-fill render is a second render pass for the same request.
+  // Reset render-scoped state so it cannot leak from the streamed response
+  // render or affect async work that is still draining from that stream.
+  return await runWithHeadState(() =>
+    _runWithCacheState(() =>
+      runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element))),
+    ),
+  );
 }
 
 /** Body placeholder used to split the document shell for streaming. */
@@ -880,7 +893,7 @@ hydrate();
           if (wrapWithRouterContext) {
             isrElement = wrapWithRouterContext(isrElement);
           }
-          const isrBodyHtml = await renderToStringAsync(isrElement);
+          const isrBodyHtml = await renderIsrPassToStringAsync(isrElement);
           const isrHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${isrBodyHtml}</div>${allScripts}</body></html>`;
           const cacheKey = isrCacheKey(
             "pages",

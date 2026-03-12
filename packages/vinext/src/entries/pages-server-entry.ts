@@ -258,11 +258,12 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext, wrapWithRouterContext } from "next/router";
-import { getCacheHandler } from "next/cache";
-import { ensureFetchPatch } from "vinext/fetch-cache";
+import { getCacheHandler, _runWithCacheState } from "next/cache";
+import { runWithPrivateCache } from "vinext/cache-runtime";
+import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import "vinext/router-state";
-import "vinext/head-state";
+import { runWithHeadState } from "vinext/head-state";
 import { safeJsonStringify } from "vinext/html";
 import { decode as decodeQueryString } from "node:querystring";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
@@ -354,6 +355,17 @@ async function renderToStringAsync(element) {
   const stream = await renderToReadableStream(element);
   await stream.allReady;
   return new Response(stream).text();
+}
+
+async function renderIsrPassToStringAsync(element) {
+  // The cache-fill render is a second render pass for the same request.
+  // Reset render-scoped state so it cannot leak from the streamed response
+  // render or affect async work that is still draining from that stream.
+  return await runWithHeadState(() =>
+    _runWithCacheState(() =>
+      runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element))),
+    ),
+  );
 }
 
 ${pageImports.join("\n")}
@@ -1049,7 +1061,7 @@ async function _renderPage(request, url, manifest) {
           isrElement = React.createElement(PageComponent, pageProps);
         }
         isrElement = wrapWithRouterContext(isrElement);
-        var isrHtml = await renderToStringAsync(isrElement);
+        var isrHtml = await renderIsrPassToStringAsync(isrElement);
         var fullHtml = shellPrefix + isrHtml + shellSuffix;
         var isrPathname = url.split("?")[0];
         var _cacheKey = isrCacheKey("pages", isrPathname);

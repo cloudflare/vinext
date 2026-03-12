@@ -327,6 +327,18 @@ describe("Pages Router entry templates", () => {
     expect(callbackSection).toContain("ensureFetchPatch");
   });
 
+  it("server entry isolates the ISR cache-fill rerender in fresh render sub-scopes", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain("async function renderIsrPassToStringAsync(element)");
+    expect(code).toContain("runWithHeadState(() =>");
+    expect(code).toContain("_runWithCacheState(() =>");
+    expect(code).toContain(
+      "runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element)))",
+    );
+    expect(code).toContain("var isrHtml = await renderIsrPassToStringAsync(isrElement);");
+  });
+
   it("server entry calls reportRequestError for SSR and API errors", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
     // The generated prod entry must import reportRequestError
