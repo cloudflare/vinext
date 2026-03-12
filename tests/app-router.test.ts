@@ -1682,6 +1682,47 @@ describe("App Router Production server (startProdServer)", () => {
     expect(reqId3).not.toBe(reqId1);
     expect(res3.headers.get("x-vinext-cache")).toBe("MISS");
   });
+
+  it("preserves the canonical pathname when stale ISR regeneration runs on a rewritten route", async () => {
+    const sourcePath = "/nextjs-compat/isr-rewrite-source";
+
+    const res1 = await fetch(`${baseUrl}${sourcePath}`);
+    expect(res1.status).toBe(200);
+    const html1 = await res1.text();
+    expect(html1).toContain(`<p id="current-pathname">${sourcePath}</p>`);
+    expect(res1.headers.get("x-vinext-cache")).toBe("MISS");
+
+    const res2 = await fetch(`${baseUrl}${sourcePath}`);
+    expect(res2.status).toBe(200);
+    const html2 = await res2.text();
+    expect(html2).toContain(`<p id="current-pathname">${sourcePath}</p>`);
+    expect(res2.headers.get("x-vinext-cache")).toBe("HIT");
+
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+
+    const staleRes = await fetch(`${baseUrl}${sourcePath}`);
+    expect(staleRes.status).toBe(200);
+    const staleHtml = await staleRes.text();
+    expect(staleHtml).toContain(`<p id="current-pathname">${sourcePath}</p>`);
+    expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
+
+    let hitHtml = "";
+    let sawHit = false;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const hitRes = await fetch(`${baseUrl}${sourcePath}`);
+      expect(hitRes.status).toBe(200);
+      hitHtml = await hitRes.text();
+      if (hitRes.headers.get("x-vinext-cache") === "HIT") {
+        sawHit = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    expect(sawHit).toBe(true);
+    expect(hitHtml).toContain(`<p id="current-pathname">${sourcePath}</p>`);
+    expect(hitHtml).not.toContain('<p id="current-pathname">/nextjs-compat/isr-rewrite-target</p>');
+  });
 });
 
 describe("App Router Production server worker entry compatibility", () => {

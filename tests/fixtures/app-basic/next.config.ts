@@ -84,6 +84,11 @@ const nextConfig: NextConfig = {
           source: "/nextjs-compat/hooks-rewrite-search",
           destination: "/nextjs-compat/hooks-search",
         },
+        // Used by Vitest: tests/app-router.test.ts
+        {
+          source: "/nextjs-compat/isr-rewrite-source",
+          destination: "/nextjs-compat/isr-rewrite-target",
+        },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
           source: "/repeat-rewrite/:slug",
