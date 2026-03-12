@@ -29,6 +29,10 @@ const _routeTriePath = fileURLToPath(new URL("../routing/route-trie.js", import.
   /\\/g,
   "/",
 );
+const _pagesI18nPath = fileURLToPath(new URL("../server/pages-i18n.js", import.meta.url)).replace(
+  /\\/g,
+  "/",
+);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -69,16 +73,15 @@ export async function generateServerEntry(
   // Check for _app and _document
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
-  const hasApp = appFilePath !== null;
-  const hasDoc = docFilePath !== null;
+  const appImportCode =
+    appFilePath !== null
+      ? `import { default as AppComponent } from ${JSON.stringify(appFilePath.replace(/\\/g, "/"))};`
+      : `const AppComponent = null;`;
 
-  const appImportCode = hasApp
-    ? `import { default as AppComponent } from ${JSON.stringify(appFilePath!.replace(/\\/g, "/"))};`
-    : `const AppComponent = null;`;
-
-  const docImportCode = hasDoc
-    ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath!.replace(/\\/g, "/"))};`
-    : `const DocumentComponent = null;`;
+  const docImportCode =
+    docFilePath !== null
+      ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath.replace(/\\/g, "/"))};`
+      : `const DocumentComponent = null;`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n
@@ -86,6 +89,7 @@ export async function generateServerEntry(
         locales: nextConfig.i18n.locales,
         defaultLocale: nextConfig.i18n.defaultLocale,
         localeDetection: nextConfig.i18n.localeDetection,
+        domains: nextConfig.i18n.domains,
       })
     : "null";
 
@@ -264,6 +268,8 @@ import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
 import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
 import "vinext/router-state";
 import { runWithHeadState } from "vinext/head-state";
+import { runWithI18nState } from "vinext/i18n-state";
+import { setI18nContext } from "vinext/i18n-context";
 import { safeJsonStringify } from "vinext/html";
 import { decode as decodeQueryString } from "node:querystring";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
@@ -272,6 +278,7 @@ import { parseCookies } from ${JSON.stringify(path.resolve(__dirname, "../config
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
+import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 ${instrumentationImportCode}
 ${middlewareImportCode}
 
@@ -697,23 +704,25 @@ export async function renderPage(request, url, manifest, ctx) {
 }
 
 async function _renderPage(request, url, manifest) {
-  const localeInfo = extractLocale(url);
+  const localeInfo = i18nConfig
+    ? resolvePagesI18nRequest(
+        url,
+        i18nConfig,
+        request.headers,
+        new URL(request.url).hostname,
+        vinextConfig.basePath,
+        vinextConfig.trailingSlash,
+      )
+    : { locale: undefined, url, hadPrefix: false, domainLocale: undefined, redirectUrl: undefined };
   const locale = localeInfo.locale;
   const routeUrl = localeInfo.url;
-  const cookieHeader = request.headers.get("cookie") || "";
+  const currentDefaultLocale = i18nConfig
+    ? (localeInfo.domainLocale ? localeInfo.domainLocale.defaultLocale : i18nConfig.defaultLocale)
+    : undefined;
+  const domainLocales = i18nConfig ? i18nConfig.domains : undefined;
 
-  // i18n redirect: check NEXT_LOCALE cookie first, then Accept-Language
-  if (i18nConfig && !localeInfo.hadPrefix) {
-    const cookieLocale = parseCookieLocaleFromHeader(cookieHeader);
-    if (cookieLocale && cookieLocale !== i18nConfig.defaultLocale) {
-      return new Response(null, { status: 307, headers: { Location: "/" + cookieLocale + routeUrl } });
-    }
-    if (!cookieLocale && i18nConfig.localeDetection !== false) {
-      const detected = detectLocaleFromHeaders(request.headers);
-      if (detected && detected !== i18nConfig.defaultLocale) {
-        return new Response(null, { status: 307, headers: { Location: "/" + detected + routeUrl } });
-      }
-    }
+  if (localeInfo.redirectUrl) {
+    return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
   }
 
   const match = matchRoute(routeUrl, pageRoutes);
@@ -726,398 +735,389 @@ async function _renderPage(request, url, manifest) {
   const __uCtx = _createUnifiedCtx({
     executionContext: _getRequestExecutionContext(),
   });
-  return _runWithUnifiedCtx(__uCtx, async () => {
-    ensureFetchPatch();
-    try {
-      if (typeof setSSRContext === "function") {
-        setSSRContext({
-          pathname: patternToNextFormat(route.pattern),
-          query: { ...params, ...parseQuery(routeUrl) },
-          asPath: routeUrl,
-          locale: locale,
-          locales: i18nConfig ? i18nConfig.locales : undefined,
-          defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
-        });
-      }
-
-      if (i18nConfig) {
-        globalThis.__VINEXT_LOCALE__ = locale;
-        globalThis.__VINEXT_LOCALES__ = i18nConfig.locales;
-        globalThis.__VINEXT_DEFAULT_LOCALE__ = i18nConfig.defaultLocale;
-      }
-
-      const pageModule = route.module;
-      const PageComponent = pageModule.default;
-      if (!PageComponent) {
-        return new Response("Page has no default export", { status: 500 });
-      }
-
-      // Handle getStaticPaths for dynamic routes
-      if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
-        const pathsResult = await pageModule.getStaticPaths({
-          locales: i18nConfig ? i18nConfig.locales : [],
-          defaultLocale: i18nConfig ? i18nConfig.defaultLocale : "",
-        });
-        const fallback =
-          pathsResult && pathsResult.fallback !== undefined ? pathsResult.fallback : false;
-
-        if (fallback === false) {
-          const paths = pathsResult && pathsResult.paths ? pathsResult.paths : [];
-          const isValidPath = paths.some(function(p) {
-            return Object.entries(p.params).every(function(entry) {
-              var key = entry[0], val = entry[1];
-              var actual = params[key];
-              if (Array.isArray(val)) {
-                return Array.isArray(actual) && val.join("/") === actual.join("/");
-              }
-              return String(val) === String(actual);
-            });
-          });
-          if (!isValidPath) {
-            return new Response(
-              "<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
-              { status: 404, headers: { "Content-Type": "text/html" } },
-            );
-          }
-        }
-      }
-
-      let pageProps = {};
-      var gsspRes = null;
-      if (typeof pageModule.getServerSideProps === "function") {
-        const { req, res, responsePromise } = createReqRes(
-          request,
-          routeUrl,
-          parseQuery(routeUrl),
-          undefined,
-        );
-        const ctx = {
-          params, req, res,
-          query: parseQuery(routeUrl),
-          resolvedUrl: routeUrl,
-          locale: locale,
-          locales: i18nConfig ? i18nConfig.locales : undefined,
-          defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
-        };
-        const result = await pageModule.getServerSideProps(ctx);
-        // If gSSP called res.end() directly (short-circuit), return that response.
-        if (res.headersSent) {
-          return await responsePromise;
-        }
-        if (result && result.props) pageProps = result.props;
-        if (result && result.redirect) {
-          var gsspStatus =
-            result.redirect.statusCode != null
-              ? result.redirect.statusCode
-              : (result.redirect.permanent ? 308 : 307);
-          return new Response(null, {
-            status: gsspStatus,
-            headers: { Location: sanitizeDestinationLocal(result.redirect.destination) },
-          });
-        }
-        if (result && result.notFound) {
-          return new Response("404", { status: 404 });
-        }
-        // Preserve the res object so headers/status/cookies set by gSSP
-        // can be merged into the final HTML response.
-        gsspRes = res;
-      }
-
-      // Build font Link header early so it's available for ISR cached responses too.
-      // Font preloads are module-level state populated at import time and persist across requests.
-      var _fontLinkHeader = "";
-      var _allFp = [];
-      try {
-        var _fpGoogle =
-          typeof _getSSRFontPreloadsGoogle === "function" ? _getSSRFontPreloadsGoogle() : [];
-        var _fpLocal =
-          typeof _getSSRFontPreloadsLocal === "function" ? _getSSRFontPreloadsLocal() : [];
-        _allFp = _fpGoogle.concat(_fpLocal);
-        if (_allFp.length > 0) {
-          _fontLinkHeader = _allFp
-            .map(function(p) {
-              return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin";
-            })
-            .join(", ");
-        }
-      } catch (e) { /* font preloads not available */ }
-
-      let isrRevalidateSeconds = null;
-      if (typeof pageModule.getStaticProps === "function") {
-        const pathname = routeUrl.split("?")[0];
-        const cacheKey = isrCacheKey("pages", pathname);
-        const cached = await isrGet(cacheKey);
-
-        if (cached && !cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
-          var _hitHeaders = {
-            "Content-Type": "text/html", "X-Vinext-Cache": "HIT",
-            "Cache-Control":
-              "s-maxage=" + (cached.value.value.revalidate || 60) + ", stale-while-revalidate",
-          };
-          if (_fontLinkHeader) _hitHeaders["Link"] = _fontLinkHeader;
-          return new Response(cached.value.value.html, { status: 200, headers: _hitHeaders });
-        }
-
-        if (cached && cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
-          triggerBackgroundRegeneration(cacheKey, async function() {
-            // Create a fresh unified context for background regeneration.
-            // This ensures patched fetch (for cache tagging) and ALS-based
-            // context are available, matching App Router behavior.
-            const revalCtx = _createUnifiedCtx({
-              executionContext: _getRequestExecutionContext(),
-            });
-            return _runWithUnifiedCtx(revalCtx, async () => {
-              ensureFetchPatch();
-              const freshResult = await pageModule.getStaticProps({ params });
-              if (
-                freshResult &&
-                freshResult.props &&
-                typeof freshResult.revalidate === "number" &&
-                freshResult.revalidate > 0
-              ) {
-                await isrSet(
-                  cacheKey,
-                  {
-                    kind: "PAGES",
-                    html: cached.value.value.html,
-                    pageData: freshResult.props,
-                    headers: undefined,
-                    status: undefined,
-                  },
-                  freshResult.revalidate,
-                );
-              }
-            });
-          });
-          var _staleHeaders = {
-            "Content-Type": "text/html", "X-Vinext-Cache": "STALE",
-            "Cache-Control": "s-maxage=0, stale-while-revalidate",
-          };
-          if (_fontLinkHeader) _staleHeaders["Link"] = _fontLinkHeader;
-          return new Response(cached.value.value.html, { status: 200, headers: _staleHeaders });
-        }
-
-        const ctx = {
-          params,
-          locale: locale,
-          locales: i18nConfig ? i18nConfig.locales : undefined,
-          defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
-        };
-        const result = await pageModule.getStaticProps(ctx);
-        if (result && result.props) pageProps = result.props;
-        if (result && result.redirect) {
-          var gspStatus =
-            result.redirect.statusCode != null
-              ? result.redirect.statusCode
-              : (result.redirect.permanent ? 308 : 307);
-          return new Response(null, {
-            status: gspStatus,
-            headers: { Location: sanitizeDestinationLocal(result.redirect.destination) },
-          });
-        }
-        if (result && result.notFound) {
-          return new Response("404", { status: 404 });
-        }
-        if (typeof result.revalidate === "number" && result.revalidate > 0) {
-          isrRevalidateSeconds = result.revalidate;
-        }
-      }
-
-      let element;
-      if (AppComponent) {
-        element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
-      } else {
-        element = React.createElement(PageComponent, pageProps);
-      }
-      element = wrapWithRouterContext(element);
-
-      if (typeof resetSSRHead === "function") resetSSRHead();
-      if (typeof flushPreloads === "function") await flushPreloads();
-
-      const ssrHeadHTML = typeof getSSRHeadHTML === "function" ? getSSRHeadHTML() : "";
-
-      // Collect SSR font data (Google Font links, font preloads, font-face styles)
-      var fontHeadHTML = "";
-      function _escAttr(s) { return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;"); }
-      try {
-        var fontLinks = typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
-        for (var fl of fontLinks) {
-          fontHeadHTML += '<link rel="stylesheet" href="' + _escAttr(fl) + '" />\\n  ';
-        }
-      } catch (e) { /* next/font/google not used */ }
-      // Emit <link rel="preload"> for all font files (reuse _allFp collected earlier for Link header)
-      for (var fp of _allFp) {
-        fontHeadHTML +=
-          '<link rel="preload" href="' +
-          _escAttr(fp.href) +
-          '" as="font" type="' +
-          _escAttr(fp.type) +
-          '" crossorigin />\\n  ';
-      }
-      try {
-        var allFontStyles = [];
-        if (typeof _getSSRFontStylesGoogle === "function") {
-          allFontStyles.push(..._getSSRFontStylesGoogle());
-        }
-        if (typeof _getSSRFontStylesLocal === "function") {
-          allFontStyles.push(..._getSSRFontStylesLocal());
-        }
-        if (allFontStyles.length > 0) {
-          fontHeadHTML +=
-            '<style data-vinext-fonts>' + allFontStyles.join("\\n") + "</style>\\n  ";
-        }
-      } catch (e) { /* font styles not available */ }
-
-      const pageModuleIds = route.filePath ? [route.filePath] : [];
-      const assetTags = collectAssetTags(manifest, pageModuleIds);
-      const nextDataPayload = {
-        props: { pageProps }, page: patternToNextFormat(route.pattern), query: params, buildId, isFallback: false,
-      };
-      if (i18nConfig) {
-        nextDataPayload.locale = locale;
-        nextDataPayload.locales = i18nConfig.locales;
-        nextDataPayload.defaultLocale = i18nConfig.defaultLocale;
-      }
-      const localeGlobals = i18nConfig
-        ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
-          ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
-          ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(i18nConfig.defaultLocale)
-        : "";
-      const nextDataScript =
-        "<script>window.__NEXT_DATA__ = " +
-        safeJsonStringify(nextDataPayload) +
-        localeGlobals +
-        "</script>";
-
-      // Build the document shell with a placeholder for the streamed body
-      var BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
-      var shellHtml;
-      if (DocumentComponent) {
-        const docElement = React.createElement(DocumentComponent);
-        shellHtml = await renderToStringAsync(docElement);
-        shellHtml = shellHtml.replace("__NEXT_MAIN__", BODY_MARKER);
-        if (ssrHeadHTML || assetTags || fontHeadHTML) {
-          shellHtml = shellHtml.replace(
-            "</head>",
-            "  " + fontHeadHTML + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>",
-          );
-        }
-        shellHtml = shellHtml.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
-        if (!shellHtml.includes("__NEXT_DATA__")) {
-          shellHtml = shellHtml.replace("</body>", "  " + nextDataScript + "\\n</body>");
-        }
-      } else {
-        shellHtml =
-          "<!DOCTYPE html>\\n<html>\\n<head>\\n  <meta charset=\\"utf-8\\" />\\n  <meta name=\\"viewport\\" content=\\"width=device-width, initial-scale=1\\" />\\n  " +
-          fontHeadHTML +
-          ssrHeadHTML +
-          "\\n  " +
-          assetTags +
-          "\\n</head>\\n<body>\\n  <div id=\\"__next\\">" +
-          BODY_MARKER +
-          "</div>\\n  " +
-          nextDataScript +
-          "\\n</body>\\n</html>";
-      }
-
-      if (typeof setSSRContext === "function") setSSRContext(null);
-
-      // Split the shell at the body marker
-      var markerIdx = shellHtml.indexOf(BODY_MARKER);
-      var shellPrefix = shellHtml.slice(0, markerIdx);
-      var shellSuffix = shellHtml.slice(markerIdx + BODY_MARKER.length);
-
-      // Start the React body stream — progressive SSR (no allReady wait)
-      var bodyStream = await renderToReadableStream(element);
-      var encoder = new TextEncoder();
-
-      // Create a composite stream: prefix + body + suffix
-      var compositeStream = new ReadableStream({
-        async start(controller) {
-          controller.enqueue(encoder.encode(shellPrefix));
-          var reader = bodyStream.getReader();
-          try {
-            for (;;) {
-              var chunk = await reader.read();
-              if (chunk.done) break;
-              controller.enqueue(chunk.value);
-            }
-          } finally {
-            reader.releaseLock();
-          }
-          controller.enqueue(encoder.encode(shellSuffix));
-          controller.close();
-        }
+  return runWithI18nState(() =>
+    _runWithUnifiedCtx(__uCtx, async () => {
+      ensureFetchPatch();
+  try {
+    if (typeof setSSRContext === "function") {
+      setSSRContext({
+        pathname: patternToNextFormat(route.pattern),
+        query: { ...params, ...parseQuery(routeUrl) },
+        asPath: routeUrl,
+        locale: locale,
+        locales: i18nConfig ? i18nConfig.locales : undefined,
+        defaultLocale: currentDefaultLocale,
+        domainLocales: domainLocales,
       });
-
-      // Cache the rendered HTML for ISR (needs the full string — re-render synchronously)
-      if (isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
-        // Tee the stream so we can cache and respond simultaneously would be ideal,
-        // but ISR responses are rare on first hit. Re-render to get complete HTML for cache.
-        var isrElement;
-        if (AppComponent) {
-          isrElement = React.createElement(AppComponent, { Component: PageComponent, pageProps });
-        } else {
-          isrElement = React.createElement(PageComponent, pageProps);
-        }
-        isrElement = wrapWithRouterContext(isrElement);
-        var isrHtml = await renderIsrPassToStringAsync(isrElement);
-        var fullHtml = shellPrefix + isrHtml + shellSuffix;
-        var isrPathname = url.split("?")[0];
-        var _cacheKey = isrCacheKey("pages", isrPathname);
-        await isrSet(
-          _cacheKey,
-          {
-            kind: "PAGES",
-            html: fullHtml,
-            pageData: pageProps,
-            headers: undefined,
-            status: undefined,
-          },
-          isrRevalidateSeconds,
-        );
-      }
-
-      // Merge headers/status/cookies set by getServerSideProps on the res object.
-      // gSSP commonly uses res.setHeader("Set-Cookie", ...) or res.status(304).
-      var finalStatus = 200;
-      const responseHeaders = new Headers({ "Content-Type": "text/html" });
-      if (gsspRes) {
-        finalStatus = gsspRes.statusCode;
-        var gsspHeaders = gsspRes.getHeaders();
-        for (var hk of Object.keys(gsspHeaders)) {
-          var hv = gsspHeaders[hk];
-          if (hk === "set-cookie" && Array.isArray(hv)) {
-            for (var sc of hv) responseHeaders.append("set-cookie", sc);
-          } else if (hv != null) {
-            responseHeaders.set(hk, String(hv));
-          }
-        }
-        // Ensure Content-Type stays text/html (gSSP shouldn't override it for page renders)
-        responseHeaders.set("Content-Type", "text/html");
-      }
-      if (isrRevalidateSeconds) {
-        responseHeaders.set(
-          "Cache-Control",
-          "s-maxage=" + isrRevalidateSeconds + ", stale-while-revalidate",
-        );
-        responseHeaders.set("X-Vinext-Cache", "MISS");
-      }
-      // Set HTTP Link header for font preloading
-      if (_fontLinkHeader) {
-        responseHeaders.set("Link", _fontLinkHeader);
-      }
-      return new Response(compositeStream, { status: finalStatus, headers: responseHeaders });
-    } catch (e) {
-      console.error("[vinext] SSR error:", e);
-      _reportRequestError(
-        e instanceof Error ? e : new Error(String(e)),
-        { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-        { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
-      ).catch(() => { /* ignore reporting errors */ });
-      return new Response("Internal Server Error", { status: 500 });
     }
-  });
+
+    if (i18nConfig) {
+      setI18nContext({
+        locale: locale,
+        locales: i18nConfig.locales,
+        defaultLocale: currentDefaultLocale,
+        domainLocales: domainLocales,
+        hostname: new URL(request.url).hostname,
+      });
+    }
+
+    const pageModule = route.module;
+    const PageComponent = pageModule.default;
+    if (!PageComponent) {
+      return new Response("Page has no default export", { status: 500 });
+    }
+
+    // Handle getStaticPaths for dynamic routes
+    if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
+      const pathsResult = await pageModule.getStaticPaths({
+        locales: i18nConfig ? i18nConfig.locales : [],
+        defaultLocale: currentDefaultLocale || "",
+      });
+      const fallback = pathsResult && pathsResult.fallback !== undefined ? pathsResult.fallback : false;
+
+      if (fallback === false) {
+        const paths = pathsResult && pathsResult.paths ? pathsResult.paths : [];
+        const isValidPath = paths.some(function(p) {
+          return Object.entries(p.params).every(function(entry) {
+            var key = entry[0], val = entry[1];
+            var actual = params[key];
+            if (Array.isArray(val)) {
+              return Array.isArray(actual) && val.join("/") === actual.join("/");
+            }
+            return String(val) === String(actual);
+          });
+        });
+        if (!isValidPath) {
+          return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
+            { status: 404, headers: { "Content-Type": "text/html" } });
+        }
+      }
+    }
+
+    let pageProps = {};
+    var gsspRes = null;
+    if (typeof pageModule.getServerSideProps === "function") {
+      const { req, res, responsePromise } = createReqRes(request, routeUrl, parseQuery(routeUrl), undefined);
+      const ctx = {
+        params, req, res,
+        query: parseQuery(routeUrl),
+        resolvedUrl: routeUrl,
+        locale: locale,
+        locales: i18nConfig ? i18nConfig.locales : undefined,
+        defaultLocale: currentDefaultLocale,
+      };
+      const result = await pageModule.getServerSideProps(ctx);
+      // If gSSP called res.end() directly (short-circuit), return that response.
+      if (res.headersSent) {
+        return await responsePromise;
+      }
+      if (result && result.props) pageProps = result.props;
+      if (result && result.redirect) {
+        var gsspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
+        return new Response(null, { status: gsspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
+      }
+      if (result && result.notFound) {
+        return new Response("404", { status: 404 });
+      }
+      // Preserve the res object so headers/status/cookies set by gSSP
+      // can be merged into the final HTML response.
+      gsspRes = res;
+    }
+    // Build font Link header early so it's available for ISR cached responses too.
+    // Font preloads are module-level state populated at import time and persist across requests.
+    var _fontLinkHeader = "";
+    var _allFp = [];
+    try {
+      var _fpGoogle = typeof _getSSRFontPreloadsGoogle === "function" ? _getSSRFontPreloadsGoogle() : [];
+      var _fpLocal = typeof _getSSRFontPreloadsLocal === "function" ? _getSSRFontPreloadsLocal() : [];
+      _allFp = _fpGoogle.concat(_fpLocal);
+      if (_allFp.length > 0) {
+        _fontLinkHeader = _allFp.map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; }).join(", ");
+      }
+    } catch (e) { /* font preloads not available */ }
+
+    let isrRevalidateSeconds = null;
+    if (typeof pageModule.getStaticProps === "function") {
+      const pathname = routeUrl.split("?")[0];
+      const cacheKey = isrCacheKey("pages", pathname);
+      const cached = await isrGet(cacheKey);
+
+      if (cached && !cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
+        var _hitHeaders = {
+          "Content-Type": "text/html", "X-Vinext-Cache": "HIT",
+          "Cache-Control": "s-maxage=" + (cached.value.value.revalidate || 60) + ", stale-while-revalidate",
+        };
+        if (_fontLinkHeader) _hitHeaders["Link"] = _fontLinkHeader;
+        return new Response(cached.value.value.html, { status: 200, headers: _hitHeaders });
+      }
+
+      if (cached && cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
+        triggerBackgroundRegeneration(cacheKey, async function() {
+          var revalCtx = _createUnifiedCtx({
+            executionContext: _getRequestExecutionContext(),
+          });
+          return runWithI18nState(() =>
+            _runWithUnifiedCtx(revalCtx, async () => {
+              ensureFetchPatch();
+              var freshResult = await pageModule.getStaticProps({
+                params: params,
+                locale: locale,
+                locales: i18nConfig ? i18nConfig.locales : undefined,
+                defaultLocale: currentDefaultLocale,
+              });
+              if (freshResult && freshResult.props && typeof freshResult.revalidate === "number" && freshResult.revalidate > 0) {
+                var _fp = freshResult.props;
+                if (typeof setSSRContext === "function") {
+                  setSSRContext({
+                    pathname: patternToNextFormat(route.pattern),
+                    query: { ...params, ...parseQuery(routeUrl) },
+                    asPath: routeUrl,
+                    locale: locale,
+                    locales: i18nConfig ? i18nConfig.locales : undefined,
+                    defaultLocale: currentDefaultLocale,
+                    domainLocales: domainLocales,
+                  });
+                }
+                if (i18nConfig) {
+                  setI18nContext({
+                    locale: locale,
+                    locales: i18nConfig.locales,
+                    defaultLocale: currentDefaultLocale,
+                    domainLocales: domainLocales,
+                    hostname: new URL(request.url).hostname,
+                  });
+                }
+                // Re-render the page with fresh props inside fresh render sub-scopes
+                // so head/cache state cannot leak across passes.
+                var _el = AppComponent
+                  ? React.createElement(AppComponent, { Component: PageComponent, pageProps: _fp })
+                  : React.createElement(PageComponent, _fp);
+                _el = wrapWithRouterContext(_el);
+                var _freshBody = await renderIsrPassToStringAsync(_el);
+                // Rebuild __NEXT_DATA__ with fresh props
+                var _regenPayload = {
+                  props: { pageProps: _fp }, page: patternToNextFormat(route.pattern),
+                  query: params, buildId: buildId, isFallback: false,
+                };
+                if (i18nConfig) {
+                  _regenPayload.locale = locale;
+                  _regenPayload.locales = i18nConfig.locales;
+                  _regenPayload.defaultLocale = currentDefaultLocale;
+                  _regenPayload.domainLocales = domainLocales;
+                }
+                var _lGlobals = i18nConfig
+                  ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
+                    ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
+                    ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(currentDefaultLocale)
+                  : "";
+                var _freshNDS = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(_regenPayload) + _lGlobals + "</script>";
+                // Reconstruct ISR HTML preserving the document shell from the
+                // cached entry (head, fonts, assets, custom _document markup).
+                var _cachedStr = cached.value.value.html;
+                var _btag = '<div id="__next">';
+                var _bstart = _cachedStr.indexOf(_btag);
+                var _bodyStart = _bstart >= 0 ? _bstart + _btag.length : -1;
+                // Locate __NEXT_DATA__ script to split body from suffix
+                var _ndMarker = '<script>window.__NEXT_DATA__';
+                var _ndStart = _cachedStr.indexOf(_ndMarker);
+                var _freshHtml;
+                if (_bodyStart >= 0 && _ndStart >= 0) {
+                  // Region between body start and __NEXT_DATA__ contains:
+                  // BODY_HTML + </div> + optional gap (custom _document content)
+                  var _region = _cachedStr.slice(_bodyStart, _ndStart);
+                  var _lastClose = _region.lastIndexOf('</div>');
+                  var _gap = _lastClose >= 0 ? _region.slice(_lastClose + 6) : '';
+                  // Tail: everything after the old __NEXT_DATA__ </script>
+                  var _ndEnd = _cachedStr.indexOf('</script>', _ndStart) + 9;
+                  var _tail = _cachedStr.slice(_ndEnd);
+                  _freshHtml = _cachedStr.slice(0, _bodyStart) + _freshBody + '</div>' + _gap + _freshNDS + _tail;
+                } else {
+                  _freshHtml = '<!DOCTYPE html>\\n<html>\\n<head>\\n</head>\\n<body>\\n  <div id="__next">' + _freshBody + '</div>\\n  ' + _freshNDS + '\\n</body>\\n</html>';
+                }
+                await isrSet(cacheKey, { kind: "PAGES", html: _freshHtml, pageData: _fp, headers: undefined, status: undefined }, freshResult.revalidate);
+              }
+            }),
+          );
+        });
+        var _staleHeaders = {
+          "Content-Type": "text/html", "X-Vinext-Cache": "STALE",
+          "Cache-Control": "s-maxage=0, stale-while-revalidate",
+        };
+        if (_fontLinkHeader) _staleHeaders["Link"] = _fontLinkHeader;
+        return new Response(cached.value.value.html, { status: 200, headers: _staleHeaders });
+      }
+
+      const ctx = {
+        params,
+        locale: locale,
+        locales: i18nConfig ? i18nConfig.locales : undefined,
+        defaultLocale: currentDefaultLocale,
+      };
+      const result = await pageModule.getStaticProps(ctx);
+      if (result && result.props) pageProps = result.props;
+      if (result && result.redirect) {
+        var gspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
+        return new Response(null, { status: gspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
+      }
+      if (result && result.notFound) {
+        return new Response("404", { status: 404 });
+      }
+      if (typeof result.revalidate === "number" && result.revalidate > 0) {
+        isrRevalidateSeconds = result.revalidate;
+      }
+    }
+
+    let element;
+    if (AppComponent) {
+      element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+    } else {
+      element = React.createElement(PageComponent, pageProps);
+    }
+    element = wrapWithRouterContext(element);
+
+    if (typeof resetSSRHead === "function") resetSSRHead();
+    if (typeof flushPreloads === "function") await flushPreloads();
+
+    const ssrHeadHTML = typeof getSSRHeadHTML === "function" ? getSSRHeadHTML() : "";
+
+    // Collect SSR font data (Google Font links, font preloads, font-face styles)
+    var fontHeadHTML = "";
+    function _escAttr(s) { return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;"); }
+    try {
+      var fontLinks = typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
+      for (var fl of fontLinks) { fontHeadHTML += '<link rel="stylesheet" href="' + _escAttr(fl) + '" />\\n  '; }
+    } catch (e) { /* next/font/google not used */ }
+    // Emit <link rel="preload"> for all font files (reuse _allFp collected earlier for Link header)
+    for (var fp of _allFp) { fontHeadHTML += '<link rel="preload" href="' + _escAttr(fp.href) + '" as="font" type="' + _escAttr(fp.type) + '" crossorigin />\\n  '; }
+    try {
+      var allFontStyles = [];
+      if (typeof _getSSRFontStylesGoogle === "function") allFontStyles.push(..._getSSRFontStylesGoogle());
+      if (typeof _getSSRFontStylesLocal === "function") allFontStyles.push(..._getSSRFontStylesLocal());
+      if (allFontStyles.length > 0) { fontHeadHTML += '<style data-vinext-fonts>' + allFontStyles.join("\\n") + '</style>\\n  '; }
+    } catch (e) { /* font styles not available */ }
+
+    const pageModuleIds = route.filePath ? [route.filePath] : [];
+    const assetTags = collectAssetTags(manifest, pageModuleIds);
+    const nextDataPayload = {
+      props: { pageProps }, page: patternToNextFormat(route.pattern), query: params, buildId, isFallback: false,
+    };
+    if (i18nConfig) {
+      nextDataPayload.locale = locale;
+      nextDataPayload.locales = i18nConfig.locales;
+      nextDataPayload.defaultLocale = currentDefaultLocale;
+      nextDataPayload.domainLocales = domainLocales;
+    }
+    const localeGlobals = i18nConfig
+      ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
+        ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
+        ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(currentDefaultLocale)
+      : "";
+    const nextDataScript = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(nextDataPayload) + localeGlobals + "</script>";
+
+    // Build the document shell with a placeholder for the streamed body
+    var BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
+    var shellHtml;
+    if (DocumentComponent) {
+      const docElement = React.createElement(DocumentComponent);
+      shellHtml = await renderToStringAsync(docElement);
+      shellHtml = shellHtml.replace("__NEXT_MAIN__", BODY_MARKER);
+      if (ssrHeadHTML || assetTags || fontHeadHTML) {
+        shellHtml = shellHtml.replace("</head>", "  " + fontHeadHTML + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>");
+      }
+      shellHtml = shellHtml.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
+      if (!shellHtml.includes("__NEXT_DATA__")) {
+        shellHtml = shellHtml.replace("</body>", "  " + nextDataScript + "\\n</body>");
+      }
+    } else {
+      shellHtml = "<!DOCTYPE html>\\n<html>\\n<head>\\n  <meta charset=\\"utf-8\\" />\\n  <meta name=\\"viewport\\" content=\\"width=device-width, initial-scale=1\\" />\\n  " + fontHeadHTML + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>\\n<body>\\n  <div id=\\"__next\\">" + BODY_MARKER + "</div>\\n  " + nextDataScript + "\\n</body>\\n</html>";
+    }
+
+    if (typeof setSSRContext === "function") setSSRContext(null);
+
+    // Split the shell at the body marker
+    var markerIdx = shellHtml.indexOf(BODY_MARKER);
+    var shellPrefix = shellHtml.slice(0, markerIdx);
+    var shellSuffix = shellHtml.slice(markerIdx + BODY_MARKER.length);
+
+    // Start the React body stream — progressive SSR (no allReady wait)
+    var bodyStream = await renderToReadableStream(element);
+    var encoder = new TextEncoder();
+
+    // Create a composite stream: prefix + body + suffix
+    var compositeStream = new ReadableStream({
+      async start(controller) {
+        controller.enqueue(encoder.encode(shellPrefix));
+        var reader = bodyStream.getReader();
+        try {
+          for (;;) {
+            var chunk = await reader.read();
+            if (chunk.done) break;
+            controller.enqueue(chunk.value);
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        controller.enqueue(encoder.encode(shellSuffix));
+        controller.close();
+      }
+    });
+
+    // Cache the rendered HTML for ISR (needs the full string — re-render synchronously)
+    if (isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
+      // Tee the stream so we can cache and respond simultaneously would be ideal,
+      // but ISR responses are rare on first hit. Re-render to get complete HTML for cache.
+      var isrElement;
+      if (AppComponent) {
+        isrElement = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+      } else {
+        isrElement = React.createElement(PageComponent, pageProps);
+      }
+      isrElement = wrapWithRouterContext(isrElement);
+      var isrHtml = await renderIsrPassToStringAsync(isrElement);
+      var fullHtml = shellPrefix + isrHtml + shellSuffix;
+      var isrPathname = url.split("?")[0];
+      var _cacheKey = isrCacheKey("pages", isrPathname);
+      await isrSet(_cacheKey, { kind: "PAGES", html: fullHtml, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
+    }
+
+    // Merge headers/status/cookies set by getServerSideProps on the res object.
+    // gSSP commonly uses res.setHeader("Set-Cookie", ...) or res.status(304).
+    var finalStatus = 200;
+    const responseHeaders = new Headers({ "Content-Type": "text/html" });
+    if (gsspRes) {
+      finalStatus = gsspRes.statusCode;
+      var gsspHeaders = gsspRes.getHeaders();
+      for (var hk of Object.keys(gsspHeaders)) {
+        var hv = gsspHeaders[hk];
+        if (hk === "set-cookie" && Array.isArray(hv)) {
+          for (var sc of hv) responseHeaders.append("set-cookie", sc);
+        } else if (hv != null) {
+          responseHeaders.set(hk, String(hv));
+        }
+      }
+      // Ensure Content-Type stays text/html (gSSP shouldn't override it for page renders)
+      responseHeaders.set("Content-Type", "text/html");
+    }
+    if (isrRevalidateSeconds) {
+      responseHeaders.set("Cache-Control", "s-maxage=" + isrRevalidateSeconds + ", stale-while-revalidate");
+      responseHeaders.set("X-Vinext-Cache", "MISS");
+    }
+    // Set HTTP Link header for font preloading
+    if (_fontLinkHeader) {
+      responseHeaders.set("Link", _fontLinkHeader);
+    }
+    return new Response(compositeStream, { status: finalStatus, headers: responseHeaders });
+  } catch (e) {
+    console.error("[vinext] SSR error:", e);
+    _reportRequestError(
+      e instanceof Error ? e : new Error(String(e)),
+      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+      { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
+    ).catch(() => { /* ignore reporting errors */ });
+    return new Response("Internal Server Error", { status: 500 });
+  }
+    }),
+  );
 }
 
 export async function handleApiRoute(request, url) {
@@ -1189,7 +1189,7 @@ export async function handleApiRoute(request, url) {
       e instanceof Error ? e : new Error(String(e)),
       { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
       { routerKind: "Pages Router", routePath: route.pattern, routeType: "route" },
-    ).catch(() => { /* ignore reporting errors */ });
+    );
     return new Response("Internal Server Error", { status: 500 });
   }
 }

@@ -11,7 +11,7 @@
 // would throw at link time for missing bindings. With `import * as React`, the
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
-import { toSameOriginPath } from "./url-utils.js";
+import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 
@@ -21,8 +21,16 @@ import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 // (including route groups, with dynamic params resolved to actual values).
 // Created lazily because `React.createContext` is NOT available in the
 // react-server condition of React. In the RSC environment, this remains null.
-
-let _LayoutSegmentCtx: React.Context<string[]> | null = null;
+// The shared context lives behind a global singleton so provider/hook pairs
+// still line up if Vite loads this shim through multiple resolved module IDs.
+const _LAYOUT_SEGMENT_CTX_KEY = Symbol.for("vinext.layoutSegmentContext");
+const _SERVER_INSERTED_HTML_CTX_KEY = Symbol.for("vinext.serverInsertedHTMLContext");
+type _LayoutSegmentGlobal = typeof globalThis & {
+  [_LAYOUT_SEGMENT_CTX_KEY]?: React.Context<string[]> | null;
+  [_SERVER_INSERTED_HTML_CTX_KEY]?: React.Context<
+    ((callback: () => unknown) => void) | null
+  > | null;
+};
 
 // ─── ServerInsertedHTML context ────────────────────────────────────────────────
 // Used by CSS-in-JS libraries (Apollo Client, styled-components, emotion) to
@@ -38,22 +46,38 @@ let _LayoutSegmentCtx: React.Context<string[]> | null = null;
 // Created eagerly at module load time. In the RSC environment (react-server
 // condition), createContext isn't available so this will be null.
 
+function getServerInsertedHTMLContext(): React.Context<
+  ((callback: () => unknown) => void) | null
+> | null {
+  if (typeof React.createContext !== "function") return null;
+
+  const globalState = globalThis as _LayoutSegmentGlobal;
+  if (!globalState[_SERVER_INSERTED_HTML_CTX_KEY]) {
+    globalState[_SERVER_INSERTED_HTML_CTX_KEY] = React.createContext<
+      ((callback: () => unknown) => void) | null
+    >(null);
+  }
+
+  return globalState[_SERVER_INSERTED_HTML_CTX_KEY] ?? null;
+}
+
 export const ServerInsertedHTMLContext: React.Context<
   ((callback: () => unknown) => void) | null
-> | null =
-  typeof React.createContext === "function"
-    ? React.createContext<((callback: () => unknown) => void) | null>(null)
-    : null;
+> | null = getServerInsertedHTMLContext();
 
 /**
  * Get or create the layout segment context.
  * Returns null in the RSC environment (createContext unavailable).
  */
 export function getLayoutSegmentContext(): React.Context<string[]> | null {
-  if (_LayoutSegmentCtx === null && typeof React.createContext === "function") {
-    _LayoutSegmentCtx = React.createContext<string[]>([]);
+  if (typeof React.createContext !== "function") return null;
+
+  const globalState = globalThis as _LayoutSegmentGlobal;
+  if (!globalState[_LAYOUT_SEGMENT_CTX_KEY]) {
+    globalState[_LAYOUT_SEGMENT_CTX_KEY] = React.createContext<string[]>([]);
   }
-  return _LayoutSegmentCtx;
+
+  return globalState[_LAYOUT_SEGMENT_CTX_KEY] ?? null;
 }
 
 /**
@@ -154,12 +178,6 @@ const isServer = typeof window === "undefined";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
-
-/** Prepend basePath to a path for browser URLs / fetches */
-function withBasePath(p: string): string {
-  if (!__basePath) return p;
-  return __basePath + p;
-}
 
 // ---------------------------------------------------------------------------
 // RSC prefetch cache utilities (shared between link.tsx and browser entry)
@@ -297,7 +315,8 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
 // Track client-side params (set during RSC hydration/navigation)
 // We cache the params object for referential stability — only create a new
 // object when the params actually change (shallow key/value comparison).
-let _clientParams: Record<string, string | string[]> = {};
+const _EMPTY_PARAMS: Record<string, string | string[]> = {};
+let _clientParams: Record<string, string | string[]> = _EMPTY_PARAMS;
 let _clientParamsJson = "{}";
 
 export function setClientParams(params: Record<string, string | string[]>): void {
@@ -305,12 +324,29 @@ export function setClientParams(params: Record<string, string | string[]>): void
   if (json !== _clientParamsJson) {
     _clientParams = params;
     _clientParamsJson = json;
+    // Notify useSyncExternalStore subscribers so useParams() re-renders.
+    notifyListeners();
   }
 }
 
 /** Get the current client params (for testing referential stability). */
 export function getClientParams(): Record<string, string | string[]> {
   return _clientParams;
+}
+
+function getClientParamsSnapshot(): Record<string, string | string[]> {
+  return _clientParams;
+}
+
+function getServerParamsSnapshot(): Record<string, string | string[]> {
+  return _getServerContext()?.params ?? _EMPTY_PARAMS;
+}
+
+function subscribeToNavigation(cb: () => void): () => void {
+  _listeners.add(cb);
+  return () => {
+    _listeners.delete(cb);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -329,12 +365,7 @@ export function usePathname(): string {
   }
   // Client-side: use the hook system for reactivity
   return React.useSyncExternalStore(
-    (cb: () => void) => {
-      _listeners.add(cb);
-      return () => {
-        _listeners.delete(cb);
-      };
-    },
+    subscribeToNavigation,
     getPathnameSnapshot,
     () => _getServerContext()?.pathname ?? "/",
   );
@@ -350,12 +381,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     return getServerSearchParamsSnapshot();
   }
   return React.useSyncExternalStore(
-    (cb: () => void) => {
-      _listeners.add(cb);
-      return () => {
-        _listeners.delete(cb);
-      };
-    },
+    subscribeToNavigation,
     getSearchParamsSnapshot,
     getServerSearchParamsSnapshot,
   );
@@ -369,9 +395,13 @@ export function useParams<
 >(): T {
   if (isServer) {
     // During SSR of "use client" components, the navigation context may not be set.
-    return (_getServerContext()?.params ?? {}) as T;
+    return (_getServerContext()?.params ?? _EMPTY_PARAMS) as T;
   }
-  return _clientParams as T;
+  return React.useSyncExternalStore(
+    subscribeToNavigation,
+    getClientParamsSnapshot as () => T,
+    getServerParamsSnapshot as () => T,
+  );
 }
 
 /**
@@ -417,9 +447,9 @@ function scrollToHash(hash: string): void {
  * (e.g. saving scroll position shouldn't cause re-renders).
  * Captured before the history method patching at the bottom of this module.
  */
-const _nativeReplaceState = !isServer
+const _nativeReplaceState: typeof window.history.replaceState | null = !isServer
   ? window.history.replaceState.bind(window.history)
-  : (null as unknown as typeof window.history.replaceState);
+  : null;
 
 /**
  * Save the current scroll position into the current history state.
@@ -429,6 +459,7 @@ const _nativeReplaceState = !isServer
  * interception (which would cause spurious re-renders from notifyListeners).
  */
 function saveScrollPosition(): void {
+  if (!_nativeReplaceState) return;
   const state = window.history.state ?? {};
   _nativeReplaceState.call(
     window.history,
@@ -492,7 +523,7 @@ async function navigateImpl(
   // Normalize same-origin absolute URLs to local paths for SPA navigation
   let normalizedHref = href;
   if (isExternalUrl(href)) {
-    const localPath = toSameOriginPath(href);
+    const localPath = toSameOriginAppPath(href, __basePath);
     if (localPath == null) {
       // Truly external: use full page navigation
       if (mode === "replace") {
@@ -505,7 +536,7 @@ async function navigateImpl(
     normalizedHref = localPath;
   }
 
-  const fullHref = withBasePath(normalizedHref);
+  const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
 
   // Save scroll position before navigating (for back/forward restoration)
   if (mode === "push") {
@@ -591,7 +622,7 @@ const _appRouter = {
   prefetch(href: string): void {
     if (isServer) return;
     // Prefetch the RSC payload for the target route and store in cache
-    const fullHref = withBasePath(href);
+    const fullHref = toBrowserNavigationHref(href, window.location.href, __basePath);
     const rscUrl = toRscUrl(fullHref);
     const prefetched = getPrefetchedUrls();
     if (prefetched.has(rscUrl)) return;
@@ -737,7 +768,7 @@ export const HTTP_ERROR_FALLBACK_ERROR_CODE = "NEXT_HTTP_ERROR_FALLBACK";
  */
 export function isHTTPAccessFallbackError(error: unknown): boolean {
   if (error && typeof error === "object" && "digest" in error) {
-    const digest = String((error as any).digest);
+    const digest = String((error as { digest: unknown }).digest);
     return (
       digest === "NEXT_NOT_FOUND" || // legacy compat
       digest.startsWith(`${HTTP_ERROR_FALLBACK_ERROR_CODE};`)
@@ -752,7 +783,7 @@ export function isHTTPAccessFallbackError(error: unknown): boolean {
  */
 export function getAccessFallbackHTTPStatus(error: unknown): number {
   if (error && typeof error === "object" && "digest" in error) {
-    const digest = String((error as any).digest);
+    const digest = String((error as { digest: unknown }).digest);
     if (digest === "NEXT_NOT_FOUND") return 404;
     if (digest.startsWith(`${HTTP_ERROR_FALLBACK_ERROR_CODE};`)) {
       return parseInt(digest.split(";")[1], 10);
@@ -770,30 +801,43 @@ export enum RedirectType {
 }
 
 /**
+ * Internal error class used by redirect/notFound/forbidden/unauthorized.
+ * The `digest` field is the serialised control-flow signal read by the
+ * framework's error boundary and server-side request handlers.
+ */
+class VinextNavigationError extends Error {
+  readonly digest: string;
+  constructor(message: string, digest: string) {
+    super(message);
+    this.digest = digest;
+  }
+}
+
+/**
  * Throw a redirect. Caught by the framework to send a redirect response.
  */
 export function redirect(url: string, type?: "replace" | "push" | RedirectType): never {
-  const error = new Error(`NEXT_REDIRECT:${url}`);
-  (error as any).digest = `NEXT_REDIRECT;${type ?? "replace"};${encodeURIComponent(url)}`;
-  throw error;
+  throw new VinextNavigationError(
+    `NEXT_REDIRECT:${url}`,
+    `NEXT_REDIRECT;${type ?? "replace"};${encodeURIComponent(url)}`,
+  );
 }
 
 /**
  * Trigger a permanent redirect (308).
  */
 export function permanentRedirect(url: string): never {
-  const error = new Error(`NEXT_REDIRECT:${url}`);
-  (error as any).digest = `NEXT_REDIRECT;replace;${encodeURIComponent(url)};308`;
-  throw error;
+  throw new VinextNavigationError(
+    `NEXT_REDIRECT:${url}`,
+    `NEXT_REDIRECT;replace;${encodeURIComponent(url)};308`,
+  );
 }
 
 /**
  * Trigger a not-found response (404). Caught by the framework.
  */
 export function notFound(): never {
-  const error = new Error("NEXT_NOT_FOUND");
-  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};404`;
-  throw error;
+  throw new VinextNavigationError("NEXT_NOT_FOUND", `${HTTP_ERROR_FALLBACK_ERROR_CODE};404`);
 }
 
 /**
@@ -802,9 +846,7 @@ export function notFound(): never {
  * support it unconditionally for maximum compatibility.
  */
 export function forbidden(): never {
-  const error = new Error("NEXT_FORBIDDEN");
-  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};403`;
-  throw error;
+  throw new VinextNavigationError("NEXT_FORBIDDEN", `${HTTP_ERROR_FALLBACK_ERROR_CODE};403`);
 }
 
 /**
@@ -813,9 +855,7 @@ export function forbidden(): never {
  * support it unconditionally for maximum compatibility.
  */
 export function unauthorized(): never {
-  const error = new Error("NEXT_UNAUTHORIZED");
-  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};401`;
-  throw error;
+  throw new VinextNavigationError("NEXT_UNAUTHORIZED", `${HTTP_ERROR_FALLBACK_ERROR_CODE};401`);
 }
 
 // ---------------------------------------------------------------------------

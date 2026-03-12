@@ -2157,6 +2157,33 @@ describe("metadata routes integration (App Router)", () => {
     expect(productsSitemap).toBeDefined();
     expect(productsSitemap!.isDynamic).toBe(true);
   });
+
+  it("scanMetadataFiles discovers opengraph-image in dynamic segment", async () => {
+    const { scanMetadataFiles } = await import("../packages/vinext/src/server/metadata-routes.js");
+    const appDir = path.resolve(import.meta.dirname, "./fixtures/app-basic/app");
+    const routes = scanMetadataFiles(appDir);
+    const ogImage = routes.find(
+      (r: { type: string; servedUrl: string }) =>
+        r.type === "opengraph-image" && r.servedUrl === "/blog/[slug]/opengraph-image",
+    );
+    expect(ogImage).toBeDefined();
+    expect(ogImage!.isDynamic).toBe(true);
+  });
+
+  it("serves dynamic opengraph-image in dynamic segment with params", async () => {
+    const res = await fetch(`${baseUrl}/blog/hello-world/opengraph-image`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("image/png");
+    const text = await res.text();
+    expect(text).toBe("og:hello-world");
+  });
+
+  it("serves dynamic opengraph-image with different param values", async () => {
+    const res = await fetch(`${baseUrl}/blog/my-post/opengraph-image`);
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toBe("og:my-post");
+  });
 });
 
 describe("App Router next.config.js features (dev server integration)", () => {
@@ -2949,6 +2976,16 @@ describe("App Router middleware with NextRequest", () => {
     expect(html).toContain('id="middleware-header">hello-from-middleware<');
     expect(html).toContain('"authorization":null');
     expect(html).toContain('"cookie":null');
+  });
+
+  it("middleware rewrite preserves query params from the rewrite URL", async () => {
+    // Middleware rewrites /middleware-rewrite-query → /search-query?searchParams=from-rewrite&extra=injected
+    // The rewrite URL's query string must be visible to the target page.
+    const res = await fetch(`${baseUrl}/middleware-rewrite-query`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // The /search-query page renders searchParams from props
+    expect(html).toContain("from-rewrite");
   });
 
   it("does not leak x-middleware-next or x-middleware-rewrite headers to the client", async () => {

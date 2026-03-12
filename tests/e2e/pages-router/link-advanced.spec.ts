@@ -94,4 +94,26 @@ test.describe("Link advanced props (Pages Router)", () => {
     await expect(link).toHaveAttribute("target", "_blank");
     await expect(link).toHaveAttribute("href", "/about");
   });
+
+  test("onNavigate reports the resolved URL for relative query hrefs", async ({ page }) => {
+    await page.goto(`${BASE}/link-test`);
+    await page.waitForFunction(() => (window as any).__VINEXT_ROOT__);
+
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = true;
+      sessionStorage.removeItem("pages-relative-onNavigate-url");
+    });
+
+    await page.click('[data-testid="link-relative-query"]');
+
+    await expect(page.locator('[data-testid="current-path"]')).toHaveText("/link-test?page=2");
+    expect(page.url()).toBe(`${BASE}/link-test?page=2`);
+    const marker = await page.evaluate(() => (window as any).__NAV_MARKER__);
+    expect(marker).toBe(true);
+
+    const reportedUrl = await page.evaluate(() =>
+      sessionStorage.getItem("pages-relative-onNavigate-url"),
+    );
+    expect(reportedUrl).toBe("/link-test?page=2");
+  });
 });

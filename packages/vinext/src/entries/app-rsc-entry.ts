@@ -215,14 +215,40 @@ ${slotEntries.join(",\n")}
   // For static metadata files, read the file content at code-generation time
   // and embed it as base64. This ensures static metadata files work on runtimes
   // without filesystem access (e.g., Cloudflare Workers).
+  //
+  // For metadata routes in dynamic segments (e.g., /blog/[slug]/opengraph-image),
+  // generate patternParts so the runtime can use matchPattern() instead of strict
+  // equality — the same matching used for intercept routes.
   const metaRouteEntries = effectiveMetaRoutes.map((mr) => {
+    // Convert dynamic segments in servedUrl to matchPattern format.
+    // Keep in sync with routing/app-router.ts patternParts generation.
+    //   [param]       → :param
+    //   [...param]    → :param+
+    //   [[...param]]  → :param*
+    const patternParts =
+      mr.isDynamic && mr.servedUrl.includes("[")
+        ? JSON.stringify(
+            mr.servedUrl
+              .split("/")
+              .filter(Boolean)
+              .map((seg) => {
+                if (seg.startsWith("[[...") && seg.endsWith("]]"))
+                  return ":" + seg.slice(5, -2) + "*";
+                if (seg.startsWith("[...") && seg.endsWith("]"))
+                  return ":" + seg.slice(4, -1) + "+";
+                if (seg.startsWith("[") && seg.endsWith("]")) return ":" + seg.slice(1, -1);
+                return seg;
+              }),
+          )
+        : null;
+
     if (mr.isDynamic) {
       return `  {
     type: ${JSON.stringify(mr.type)},
     isDynamic: true,
     servedUrl: ${JSON.stringify(mr.servedUrl)},
     contentType: ${JSON.stringify(mr.contentType)},
-    module: ${getImportVar(mr.filePath)},
+    module: ${getImportVar(mr.filePath)},${patternParts ? `\n    patternParts: ${patternParts},` : ""}
   }`;
     }
     // Static: read file and embed as base64
@@ -535,9 +561,7 @@ function rscOnError(error, requestInfo, errorContext) {
       error instanceof Error ? error : new Error(String(error)),
       requestInfo,
       errorContext,
-    ).catch((reportErr) => {
-      console.error("[vinext] Failed to report render error:", reportErr);
-    });
+    );
   }
 
   // In production, generate a digest hash for non-navigation errors
@@ -1568,6 +1592,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           if (rewriteUrl) {
             const rewriteParsed = new URL(rewriteUrl, request.url);
             cleanPathname = rewriteParsed.pathname;
+            // Carry over query params from the rewrite URL so that
+            // searchParams props, useSearchParams(), and navigation context
+            // reflect the rewrite destination, not the original request.
+            url.search = rewriteParsed.search;
             // Capture custom status code from rewrite (e.g. NextResponse.rewrite(url, { status: 403 }))
             if (mwResponse.status !== 200) {
               _mwCtx.status = mwResponse.status;
@@ -1663,39 +1691,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       // Skip — the base servedUrl is not served when generateSitemaps exists
       continue;
     }
-    if (cleanPathname === metaRoute.servedUrl) {
-      if (metaRoute.isDynamic) {
-        // Dynamic metadata route — call the default export and serialize
-        const metaFn = metaRoute.module.default;
-        if (typeof metaFn === "function") {
-          const result = await metaFn();
-          let body;
-          // If it's already a Response (e.g., ImageResponse), return directly
-          if (result instanceof Response) return result;
-          // Serialize based on type
-          if (metaRoute.type === "sitemap") body = sitemapToXml(result);
-          else if (metaRoute.type === "robots") body = robotsToText(result);
-          else if (metaRoute.type === "manifest") body = manifestToJson(result);
-          else body = JSON.stringify(result);
-          return new Response(body, {
-            headers: { "Content-Type": metaRoute.contentType },
-          });
-        }
-      } else {
-        // Static metadata file — decode from embedded base64 data
-        try {
-          const binary = atob(metaRoute.fileDataBase64);
-          const bytes = new Uint8Array(binary.length);
-          for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-          return new Response(bytes, {
-            headers: {
-              "Content-Type": metaRoute.contentType,
-              "Cache-Control": "public, max-age=0, must-revalidate",
-            },
-          });
-        } catch {
-          return new Response("Not Found", { status: 404 });
-        }
+    // Match metadata route — use pattern matching for dynamic segments,
+    // strict equality for static paths.
+    var _metaParams = null;
+    if (metaRoute.patternParts) {
+      var _metaUrlParts = cleanPathname.split("/").filter(Boolean);
+      _metaParams = matchPattern(_metaUrlParts, metaRoute.patternParts);
+      if (!_metaParams) continue;
+    } else if (cleanPathname !== metaRoute.servedUrl) {
+      continue;
+    }
+    if (metaRoute.isDynamic) {
+      // Dynamic metadata route — call the default export and serialize
+      const metaFn = metaRoute.module.default;
+      if (typeof metaFn === "function") {
+        const result = await metaFn({ params: makeThenableParams(_metaParams || {}) });
+        let body;
+        // If it's already a Response (e.g., ImageResponse), return directly
+        if (result instanceof Response) return result;
+        // Serialize based on type
+        if (metaRoute.type === "sitemap") body = sitemapToXml(result);
+        else if (metaRoute.type === "robots") body = robotsToText(result);
+        else if (metaRoute.type === "manifest") body = manifestToJson(result);
+        else body = JSON.stringify(result);
+        return new Response(body, {
+          headers: { "Content-Type": metaRoute.contentType },
+        });
+      }
+    } else {
+      // Static metadata file — decode from embedded base64 data
+      try {
+        const binary = atob(metaRoute.fileDataBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return new Response(bytes, {
+          headers: {
+            "Content-Type": metaRoute.contentType,
+            "Cache-Control": "public, max-age=0, must-revalidate",
+          },
+        });
+      } catch {
+        return new Response("Not Found", { status: 404 });
       }
     }
   }
@@ -1862,9 +1898,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         err instanceof Error ? err : new Error(String(err)),
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      ).catch((reportErr) => {
-        console.error("[vinext] Failed to report server action error:", reportErr);
-      });
+      );
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response(
@@ -2066,9 +2100,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           err instanceof Error ? err : new Error(String(err)),
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        ).catch((reportErr) => {
-          console.error("[vinext] Failed to report route handler error:", reportErr);
-        });
+        );
         return attachRouteHandlerMiddlewareContext(new Response(null, { status: 500 }));
       } finally {
         setHeadersAccessPhase(previousHeadersPhase);

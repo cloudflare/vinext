@@ -189,6 +189,62 @@ describe("next/navigation shim", () => {
     expect(typeof nav.useSelectedLayoutSegments).toBe("function");
   });
 
+  it("useSelectedLayoutSegment still works when provider and hook are loaded from different module instances", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const hookPath = "../packages/vinext/src/shims/navigation.js?hook-instance=a";
+    const providerPath =
+      "../packages/vinext/src/shims/layout-segment-context.tsx?provider-instance=b";
+    const hookMod: typeof import("../packages/vinext/src/shims/navigation.js") = await import(
+      hookPath
+    );
+    const providerMod: typeof import("../packages/vinext/src/shims/layout-segment-context.tsx") =
+      await import(providerPath);
+
+    function Probe() {
+      const segment = hookMod.useSelectedLayoutSegment();
+      return React.createElement("span", { "data-testid": "segment" }, segment ?? "null");
+    }
+
+    const html = renderToStaticMarkup(
+      React.createElement(providerMod.LayoutSegmentProvider, {
+        childSegments: ["explore"],
+        children: React.createElement(Probe),
+      }),
+    );
+
+    expect(html).toContain(">explore<");
+  });
+
+  it("ServerInsertedHTMLContext stays shared across multiple module instances", async () => {
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const providerPath = "../packages/vinext/src/shims/navigation.js?inserted-html-provider=a";
+    const consumerPath = "../packages/vinext/src/shims/navigation.js?inserted-html-consumer=b";
+    const [providerMod, consumerMod]: [
+      typeof import("../packages/vinext/src/shims/navigation.js"),
+      typeof import("../packages/vinext/src/shims/navigation.js"),
+    ] = await Promise.all([import(providerPath), import(consumerPath)]);
+    const providerCtx = providerMod.ServerInsertedHTMLContext;
+    const consumerCtx = consumerMod.ServerInsertedHTMLContext;
+    expect(providerCtx).toBeTruthy();
+    expect(consumerCtx).toBeTruthy();
+
+    const register = () => {};
+    let received: unknown = undefined;
+
+    function Probe() {
+      received = React.useContext(consumerCtx!);
+      return null;
+    }
+
+    renderToStaticMarkup(
+      React.createElement(providerCtx!.Provider, { value: register }, React.createElement(Probe)),
+    );
+
+    expect(received).toBe(register);
+  });
+
   it("useSelectedLayoutSegments returns empty array outside React context", async () => {
     const { useSelectedLayoutSegments } =
       await import("../packages/vinext/src/shims/navigation.js");
@@ -2138,12 +2194,48 @@ describe("middleware matcher patterns", () => {
     expect(matchPattern("/user/123/posts", "/user/:id")).toBe(false);
   });
 
+  // Ported from Next.js: middleware matchers support :param(constraint) syntax
+  // https://nextjs.org/docs/app/building-your-application/routing/middleware#matcher
+  it("matchPattern: :param(constraint) applies inline regex constraint", async () => {
+    const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
+    // :id(\d+) should match only digits
+    expect(matchPattern("/blog/123", "/blog/:id(\\d+)")).toBe(true);
+    expect(matchPattern("/blog/0", "/blog/:id(\\d+)")).toBe(true);
+    expect(matchPattern("/blog/abc", "/blog/:id(\\d+)")).toBe(false);
+    expect(matchPattern("/blog/12x", "/blog/:id(\\d+)")).toBe(false);
+
+    // Locale-style alternation constraint: :locale(en|es|fr)
+    expect(matchPattern("/en/about", "/:locale(en|es|fr)/about")).toBe(true);
+    expect(matchPattern("/es/about", "/:locale(en|es|fr)/about")).toBe(true);
+    expect(matchPattern("/de/about", "/:locale(en|es|fr)/about")).toBe(false);
+
+    // Optional locale with ? after constraint
+    expect(matchPattern("/about", "/:locale(en|es|fr)?/about")).toBe(true);
+    expect(matchPattern("/en/about", "/:locale(en|es|fr)?/about")).toBe(true);
+    expect(matchPattern("/de/about", "/:locale(en|es|fr)?/about")).toBe(false);
+  });
+
   it("matchPattern: wildcard (:path*) matches zero or more segments", async () => {
     const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
     expect(matchPattern("/dashboard", "/dashboard/:path*")).toBe(true);
     expect(matchPattern("/dashboard/settings", "/dashboard/:path*")).toBe(true);
     expect(matchPattern("/dashboard/settings/profile", "/dashboard/:path*")).toBe(true);
     expect(matchPattern("/other", "/dashboard/:path*")).toBe(false);
+  });
+
+  it("matchPattern: :param*(constraint) and :param+(constraint)", async () => {
+    const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
+    // /:path*(api|static) — optional segment constrained to api or static
+    expect(matchPattern("/cdn", "/cdn/:path*(api|static)")).toBe(true);
+    expect(matchPattern("/cdn/api", "/cdn/:path*(api|static)")).toBe(true);
+    expect(matchPattern("/cdn/static", "/cdn/:path*(api|static)")).toBe(true);
+    expect(matchPattern("/cdn/other", "/cdn/:path*(api|static)")).toBe(false);
+
+    // /:path+(api|static) — required segment constrained
+    expect(matchPattern("/cdn", "/cdn/:path+(api|static)")).toBe(false);
+    expect(matchPattern("/cdn/api", "/cdn/:path+(api|static)")).toBe(true);
+    expect(matchPattern("/cdn/static", "/cdn/:path+(api|static)")).toBe(true);
+    expect(matchPattern("/cdn/other", "/cdn/:path+(api|static)")).toBe(false);
   });
 
   it("matchPattern: one-or-more (:path+) requires at least one segment", async () => {
@@ -2488,6 +2580,12 @@ describe("middleware codegen parity", () => {
     // Named params
     expect(matchMiddlewarePattern("/user/123", "/user/:id")).toBe(true);
 
+    // :param(constraint) — inline regex constraint on a named param
+    expect(matchMiddlewarePattern("/blog/123", "/blog/:id(\\d+)")).toBe(true);
+    expect(matchMiddlewarePattern("/blog/abc", "/blog/:id(\\d+)")).toBe(false);
+    expect(matchMiddlewarePattern("/en/about", "/:locale(en|es|fr)/about")).toBe(true);
+    expect(matchMiddlewarePattern("/de/about", "/:locale(en|es|fr)/about")).toBe(false);
+
     // Wildcard
     expect(matchMiddlewarePattern("/dashboard/settings", "/dashboard/:path*")).toBe(true);
     expect(matchMiddlewarePattern("/dashboard", "/dashboard/:path*")).toBe(true);
@@ -2545,6 +2643,12 @@ describe("middleware codegen parity", () => {
     // Regex guard (must not corrupt regex patterns via dot-escaping)
     expect(matchMiddlewarePattern("/about", "/((?!api|_next|favicon\\.ico).*)")).toBe(true);
     expect(matchMiddlewarePattern("/api/hello", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
+
+    // :param(constraint) — inline regex constraint on a named param
+    expect(matchMiddlewarePattern("/blog/123", "/blog/:id(\\d+)")).toBe(true);
+    expect(matchMiddlewarePattern("/blog/abc", "/blog/:id(\\d+)")).toBe(false);
+    expect(matchMiddlewarePattern("/en/about", "/:locale(en|es|fr)/about")).toBe(true);
+    expect(matchMiddlewarePattern("/de/about", "/:locale(en|es|fr)/about")).toBe(false);
 
     const headerMatcher = [
       {
@@ -8778,9 +8882,9 @@ describe("KVCacheHandler", () => {
         kind: "FETCH",
         data: { headers: {}, body: '{"result":1}', url: "test" },
         tags: ["my-tag"],
-        revalidate: 0,
+        revalidate: 60,
       },
-      { tags: ["my-tag"] },
+      { revalidate: 60, tags: ["my-tag"] },
     );
 
     // Before invalidation — entry exists

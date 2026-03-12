@@ -286,7 +286,7 @@ describe("analyzeConfig", () => {
     expect(items.find((i) => i.name === "allowedDevOrigins")?.status).toBe("supported");
   });
 
-  it("detects i18n.domains as unsupported", () => {
+  it("detects i18n.domains as partial support", () => {
     writeFile(
       "next.config.js",
       `module.exports = {
@@ -300,7 +300,7 @@ describe("analyzeConfig", () => {
 
     const items = analyzeConfig(tmpDir);
     expect(items.find((i) => i.name === "i18n")?.status).toBe("supported");
-    expect(items.find((i) => i.name === "i18n.domains")?.status).toBe("unsupported");
+    expect(items.find((i) => i.name === "i18n.domains")?.status).toBe("partial");
   });
 
   it("reads next.config.ts files", () => {

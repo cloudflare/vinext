@@ -1160,8 +1160,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       );
     } catch (e) {
       console.error("[vinext] Server error:", e);
-      res.writeHead(500);
-      res.end("Internal Server Error");
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end("Internal Server Error");
+      }
     }
   });
 

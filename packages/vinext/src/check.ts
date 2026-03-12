@@ -81,7 +81,7 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   redirects: { status: "supported" },
   rewrites: { status: "supported" },
   headers: { status: "supported" },
-  i18n: { status: "supported", detail: "path-prefix routing (domains not yet supported)" },
+  i18n: { status: "supported", detail: "path-prefix routing; domain routing for Pages Router" },
   env: { status: "supported" },
   images: { status: "partial", detail: "remotePatterns validated, no local optimization" },
   allowedDevOrigins: { status: "supported", detail: "dev server cross-origin allowlist" },
@@ -97,7 +97,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "server actions via 'use server' directive",
   },
-  "i18n.domains": { status: "unsupported", detail: "domain-based i18n routing not implemented" },
+  "i18n.domains": {
+    status: "partial",
+    detail: "supported for Pages Router; App Router unchanged",
+  },
   reactStrictMode: { status: "supported", detail: "always enabled" },
   poweredByHeader: {
     status: "supported",
@@ -214,8 +217,9 @@ export function scanImports(root: string): CheckItem[] {
         const normalized = mod === "next" ? "next" : mod;
         if (!importUsage.has(normalized)) importUsage.set(normalized, []);
         const relFile = path.relative(root, file);
-        if (!importUsage.get(normalized)!.includes(relFile)) {
-          importUsage.get(normalized)!.push(relFile);
+        const usedInFiles = importUsage.get(normalized) ?? [];
+        if (!usedInFiles.includes(relFile)) {
+          usedInFiles.push(relFile);
         }
       }
     }
@@ -397,15 +401,15 @@ export function checkConventions(root: string): CheckItem[] {
     fs.existsSync(path.join(root, "middleware.ts")) ||
     fs.existsSync(path.join(root, "middleware.js"));
 
-  if (hasPages) {
-    const isSrc = pagesDir!.includes(path.join("src", "pages"));
+  if (pagesDir !== null) {
+    const isSrc = pagesDir.includes(path.join("src", "pages"));
     items.push({
       name: isSrc ? "Pages Router (src/pages/)" : "Pages Router (pages/)",
       status: "supported",
     });
 
     // Count pages
-    const pageFiles = findSourceFiles(pagesDir!);
+    const pageFiles = findSourceFiles(pagesDir);
     const pages = pageFiles.filter(
       (f) =>
         !f.includes("/api/") &&
@@ -428,14 +432,14 @@ export function checkConventions(root: string): CheckItem[] {
     }
   }
 
-  if (hasApp) {
-    const isSrc = appDirPath!.includes(path.join("src", "app"));
+  if (appDirPath !== null) {
+    const isSrc = appDirPath.includes(path.join("src", "app"));
     items.push({
       name: isSrc ? "App Router (src/app/)" : "App Router (app/)",
       status: "supported",
     });
 
-    const appFiles = findSourceFiles(appDirPath!);
+    const appFiles = findSourceFiles(appDirPath);
     const pages = appFiles.filter(
       (f) =>
         f.endsWith("page.tsx") ||

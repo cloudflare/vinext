@@ -612,6 +612,27 @@ describe("Pages Router integration", () => {
     expect(text).toContain("Access Denied");
   });
 
+  it("middleware custom response preserves binary body", async () => {
+    const res = await fetch(`${baseUrl}/binary-response`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    const buf = new Uint8Array(await res.arrayBuffer());
+    // PNG magic bytes
+    expect(buf[0]).toBe(0x89);
+    expect(buf[1]).toBe(0x50); // P
+    expect(buf[2]).toBe(0x4e); // N
+    expect(buf[3]).toBe(0x47); // G
+  });
+
+  it("middleware custom response preserves multiple Set-Cookie headers", async () => {
+    const res = await fetch(`${baseUrl}/multi-cookie-response`);
+    expect(res.status).toBe(200);
+    const setCookies = res.headers.getSetCookie();
+    expect(setCookies).toContain("a=1; Path=/");
+    expect(setCookies).toContain("b=2; Path=/");
+    expect(setCookies).toContain("c=3; Path=/");
+  });
+
   it("object-form matcher requires has and missing conditions", async () => {
     const noHeaderRes = await fetch(`${baseUrl}/mw-object-gated`);
     expect(noHeaderRes.status).toBe(200);

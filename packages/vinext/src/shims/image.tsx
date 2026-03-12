@@ -107,6 +107,8 @@ interface ImageProps {
   className?: string;
   style?: React.CSSProperties;
   onLoad?: React.ReactEventHandler<HTMLImageElement>;
+  /** @deprecated Use onLoad instead. Still supported for migration compat. */
+  onLoadingComplete?: (img: HTMLImageElement) => void;
   onError?: React.ReactEventHandler<HTMLImageElement>;
   onClick?: React.MouseEventHandler<HTMLImageElement>;
   id?: string;
@@ -197,6 +199,8 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
     sizes,
     className,
     style,
+    onLoad,
+    onLoadingComplete,
     unoptimized: _unoptimized,
     overrideSrc: _overrideSrc,
     loading,
@@ -204,6 +208,15 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
   },
   ref,
 ) {
+  // Wire onLoadingComplete (deprecated) into onLoad — matches Next.js behavior.
+  // onLoad fires first, then onLoadingComplete receives the HTMLImageElement.
+  const handleLoad = onLoadingComplete
+    ? (e: React.SyntheticEvent<HTMLImageElement>) => {
+        onLoad?.(e);
+        onLoadingComplete(e.currentTarget);
+      }
+    : onLoad;
+
   // Handle StaticImageData (import result)
   const src = typeof srcProp === "string" ? srcProp : srcProp.src;
   const imgWidth = width ?? (typeof srcProp === "object" ? srcProp.width : undefined);
@@ -225,6 +238,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
         decoding="async"
         sizes={sizes}
         className={className}
+        onLoad={handleLoad}
         style={
           fill
             ? {
@@ -269,6 +283,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           sizes={sizes}
           className={className}
           background={bg}
+          onLoad={handleLoad}
         />
       );
     }
@@ -285,6 +300,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
           sizes={sizes}
           className={className}
           background={bg}
+          onLoad={handleLoad}
         />
       );
     }
@@ -350,6 +366,7 @@ const Image = forwardRef<HTMLImageElement, ImageProps>(function Image(
       sizes={sizes ?? (fill ? "100vw" : undefined)}
       className={className}
       data-nimg={fill ? "fill" : "1"}
+      onLoad={handleLoad}
       style={
         fill
           ? {
@@ -389,6 +406,8 @@ export function getImageProps(props: ImageProps): {
     sizes,
     className,
     style,
+    onLoad: _onLoad,
+    onLoadingComplete: _onLoadingComplete,
     unoptimized: _unoptimized,
     overrideSrc: _overrideSrc,
     loading,

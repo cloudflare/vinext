@@ -956,4 +956,47 @@ describe("KVCacheHandler", () => {
       expect(entry.value.html).toBe("<html>revalidated</html>");
     });
   });
+
+  describe("revalidate: 0 skips storage", () => {
+    it("skips KV write when ctx.revalidate is 0", async () => {
+      await handler.set(
+        "no-cache-ctx",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "test", url: "" },
+          tags: [],
+          revalidate: false,
+        },
+        { revalidate: 0 },
+      );
+
+      expect(store.has("cache:no-cache-ctx")).toBe(false);
+      const result = await handler.get("no-cache-ctx");
+      expect(result).toBeNull();
+    });
+
+    it("skips KV write when data.revalidate is 0", async () => {
+      await handler.set(
+        "no-cache-data",
+        { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 0 },
+        { tags: [] },
+      );
+
+      expect(store.has("cache:no-cache-data")).toBe(false);
+      const result = await handler.get("no-cache-data");
+      expect(result).toBeNull();
+    });
+
+    it("stores entry when ctx.revalidate is 0 but data.revalidate is positive", async () => {
+      await handler.set(
+        "override-positive",
+        { kind: "FETCH", data: { headers: {}, body: "test", url: "" }, tags: [], revalidate: 60 },
+        { revalidate: 0 },
+      );
+
+      expect(store.has("cache:override-positive")).toBe(true);
+      const result = await handler.get("override-positive");
+      expect(result).not.toBeNull();
+    });
+  });
 });

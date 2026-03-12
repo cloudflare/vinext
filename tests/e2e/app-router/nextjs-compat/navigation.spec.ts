@@ -149,4 +149,28 @@ test.describe("Next.js compat: navigation (browser)", () => {
     await page.goBack();
     await expect(page.locator("#link-test-page")).toHaveText("Link Test Page", { timeout: 10_000 });
   });
+
+  test("Link onNavigate reports the resolved URL for relative query hrefs", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
+    await waitForHydration(page);
+    await expect(async () => {
+      const ready = await page.evaluate(() => !!(window as any).__APP_RELATIVE_QUERY_LINK_READY__);
+      expect(ready).toBe(true);
+    }).toPass({ timeout: 10_000 });
+
+    await page.evaluate(() => {
+      delete (window as any).__APP_RELATIVE_ONNAV_URL__;
+    });
+
+    await page.click("#link-relative-query");
+    await expect(page.locator("#relative-query-page")).toHaveText("Current page param: 2", {
+      timeout: 10_000,
+    });
+    expect(page.url()).toBe(`${BASE}/nextjs-compat/nav-link-test?page=2`);
+
+    const reportedUrl = await page.evaluate(
+      () => (window as any).__APP_RELATIVE_ONNAV_URL__ ?? null,
+    );
+    expect(reportedUrl).toBe("/nextjs-compat/nav-link-test?page=2");
+  });
 });

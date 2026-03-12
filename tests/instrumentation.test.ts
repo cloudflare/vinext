@@ -123,6 +123,7 @@ describe("runInstrumentation", () => {
 describe("reportRequestError", () => {
   let runInstrumentation: typeof import("../packages/vinext/src/server/instrumentation.js").runInstrumentation;
   let reportRequestError: typeof import("../packages/vinext/src/server/instrumentation.js").reportRequestError;
+  let runWithExecutionContext: typeof import("../packages/vinext/src/shims/request-context.js").runWithExecutionContext;
 
   const sampleRequest = { path: "/test", method: "GET", headers: {} };
   const sampleContext = {
@@ -136,6 +137,8 @@ describe("reportRequestError", () => {
     const mod = await import("../packages/vinext/src/server/instrumentation.js");
     runInstrumentation = mod.runInstrumentation;
     reportRequestError = mod.reportRequestError;
+    const ctxMod = await import("../packages/vinext/src/shims/request-context.js");
+    runWithExecutionContext = ctxMod.runWithExecutionContext;
   });
 
   it("calls the registered handler with correct args", async () => {
@@ -172,5 +175,37 @@ describe("reportRequestError", () => {
       "handler broke",
     );
     consoleSpy.mockRestore();
+  });
+
+  it("registers the report promise with ctx.waitUntil on Workers", async () => {
+    const onRequestError = vi.fn().mockResolvedValue(undefined);
+    const runner = {
+      import: vi.fn().mockResolvedValue({ onRequestError }),
+    };
+    await runInstrumentation(runner, "/fake/instrumentation.ts");
+
+    const waitUntil = vi.fn();
+    const ctx = { waitUntil };
+
+    await runWithExecutionContext(ctx, () =>
+      reportRequestError(new Error("boom"), sampleRequest, sampleContext),
+    );
+
+    expect(waitUntil).toHaveBeenCalledOnce();
+    // The promise passed to waitUntil should resolve (reportRequestError never rejects)
+    await expect(waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
+  });
+
+  it("does not call waitUntil when no execution context is available", async () => {
+    const onRequestError = vi.fn().mockResolvedValue(undefined);
+    const runner = {
+      import: vi.fn().mockResolvedValue({ onRequestError }),
+    };
+    await runInstrumentation(runner, "/fake/instrumentation.ts");
+
+    // Call outside runWithExecutionContext — should not throw
+    await reportRequestError(new Error("boom"), sampleRequest, sampleContext);
+
+    expect(onRequestError).toHaveBeenCalledOnce();
   });
 });
