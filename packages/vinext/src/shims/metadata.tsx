@@ -145,14 +145,15 @@ export interface Metadata {
   openGraph?: {
     title?: string;
     description?: string;
-    url?: string;
+    url?: string | URL;
     siteName?: string;
     images?:
       | string
-      | { url: string; width?: number; height?: number; alt?: string }
-      | Array<string | { url: string; width?: number; height?: number; alt?: string }>;
-    videos?: Array<{ url: string; width?: number; height?: number }>;
-    audio?: Array<{ url: string }>;
+      | URL
+      | { url: string | URL; width?: number; height?: number; alt?: string }
+      | Array<string | URL | { url: string | URL; width?: number; height?: number; alt?: string }>;
+    videos?: Array<{ url: string | URL; width?: number; height?: number }>;
+    audio?: Array<{ url: string | URL }>;
     locale?: string;
     type?: string;
     publishedTime?: string;
@@ -167,25 +168,26 @@ export interface Metadata {
     description?: string;
     images?:
       | string
-      | { url: string; alt?: string; width?: number; height?: number }
-      | Array<string | { url: string; alt?: string; width?: number; height?: number }>;
+      | URL
+      | { url: string | URL; alt?: string; width?: number; height?: number }
+      | Array<string | URL | { url: string | URL; alt?: string; width?: number; height?: number }>;
     creator?: string;
     creatorId?: string;
     players?: TwitterPlayerDescriptor | TwitterPlayerDescriptor[];
     app?: TwitterAppDescriptor;
   };
   icons?: {
-    icon?: string | Array<{ url: string; sizes?: string; type?: string; media?: string }>;
-    shortcut?: string | string[];
-    apple?: string | Array<{ url: string; sizes?: string; type?: string }>;
-    other?: Array<{ rel: string; url: string; sizes?: string; type?: string }>;
+    icon?: string | URL | Array<{ url: string | URL; sizes?: string; type?: string; media?: string }>;
+    shortcut?: string | URL | Array<string | URL>;
+    apple?: string | URL | Array<{ url: string | URL; sizes?: string; type?: string }>;
+    other?: Array<{ rel: string; url: string | URL; sizes?: string; type?: string }>;
   };
-  manifest?: string;
+  manifest?: string | URL;
   alternates?: {
-    canonical?: string;
-    languages?: Record<string, string>;
-    media?: Record<string, string>;
-    types?: Record<string, string>;
+    canonical?: string | URL;
+    languages?: Record<string, string | URL>;
+    media?: Record<string, string | URL>;
+    types?: Record<string, string | URL>;
   };
   verification?: {
     google?: string;
@@ -376,6 +378,8 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
 
   // Resolve metadataBase for URL composition
   const base = metadata.metadataBase;
+  function resolveUrl(url: string | URL): string;
+  function resolveUrl(url: string | URL | undefined): string | undefined;
   function resolveUrl(url: string | URL | undefined): string | undefined {
     if (!url) return undefined;
     // Coerce URL objects to strings (Next.js metadata allows string | URL)
@@ -526,17 +530,17 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     if (og.images) {
       const imgList =
-        typeof og.images === "string"
+        typeof og.images === "string" || og.images instanceof URL
           ? [{ url: og.images }]
           : Array.isArray(og.images)
             ? og.images
             : [og.images];
       for (const img of imgList) {
-        const imgUrl = typeof img === "string" ? img : img.url;
+        const imgUrl = typeof img === "string" || img instanceof URL ? img : img.url;
         elements.push(
-          <meta key={key++} property="og:image" content={resolveUrl(imgUrl) ?? imgUrl} />,
+          <meta key={key++} property="og:image" content={resolveUrl(imgUrl)} />,
         );
-        if (typeof img !== "string") {
+        if (typeof img !== "string" && !(img instanceof URL)) {
           if (img.width)
             elements.push(
               <meta key={key++} property="og:image:width" content={String(img.width)} />,
@@ -588,17 +592,17 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
       elements.push(<meta key={key++} name="twitter:creator:id" content={tw.creatorId} />);
     if (tw.images) {
       const imgList =
-        typeof tw.images === "string"
+        typeof tw.images === "string" || tw.images instanceof URL
           ? [tw.images]
           : Array.isArray(tw.images)
             ? tw.images
             : [tw.images];
       for (const img of imgList) {
-        const imgUrl = typeof img === "string" ? img : img.url;
+        const imgUrl = typeof img === "string" || img instanceof URL ? img : img.url;
         elements.push(
-          <meta key={key++} name="twitter:image" content={resolveUrl(imgUrl) ?? imgUrl} />,
+          <meta key={key++} name="twitter:image" content={resolveUrl(imgUrl)} />,
         );
-        if (typeof img !== "string" && img.alt) {
+        if (typeof img !== "string" && !(img instanceof URL) && img.alt) {
           elements.push(<meta key={key++} name="twitter:image:alt" content={img.alt} />);
         }
       }
@@ -671,7 +675,8 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     // Icon
     if (icon) {
-      const icons = typeof icon === "string" ? [{ url: icon }] : icon;
+      const icons =
+        typeof icon === "string" || icon instanceof URL ? [{ url: icon }] : icon;
       for (const i of icons) {
         elements.push(
           <link
@@ -687,7 +692,8 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     // Apple touch icon
     if (apple) {
-      const apples = typeof apple === "string" ? [{ url: apple }] : apple;
+      const apples =
+        typeof apple === "string" || apple instanceof URL ? [{ url: apple }] : apple;
       for (const a of apples) {
         elements.push(
           <link
