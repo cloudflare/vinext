@@ -307,6 +307,10 @@ describe("Pages Router entry templates", () => {
     // The callback should use _runWithUnifiedCtx to provide context for patched fetch
     expect(callbackSection).toContain("_runWithUnifiedCtx");
 
+    // Prod regeneration should explicitly read the outer ExecutionContext ALS
+    // instead of relying on createRequestContext() inheritance defaults.
+    expect(callbackSection).toContain("executionContext: _getRequestExecutionContext()");
+
     // It should also call ensureFetchPatch() to enable cache tagging during regen
     expect(callbackSection).toContain("ensureFetchPatch");
   });

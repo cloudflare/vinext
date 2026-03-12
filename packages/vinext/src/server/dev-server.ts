@@ -576,7 +576,10 @@ export function createSSRHandler(
             // Trigger background regeneration: re-run getStaticProps and
             // update the cache so the next request is a HIT with fresh data.
             triggerBackgroundRegeneration(cacheKey, async () => {
-              const regenCtx = createRequestContext();
+              // Dev never has a Workers ExecutionContext. Set it explicitly so
+              // background regeneration cannot inherit an unrelated standalone
+              // ExecutionContext ALS scope if one exists around the caller.
+              const regenCtx = createRequestContext({ executionContext: null });
               return runWithRequestContext(regenCtx, async () => {
                 ensureFetchPatch();
                 const freshResult = await pageModule.getStaticProps({ params });

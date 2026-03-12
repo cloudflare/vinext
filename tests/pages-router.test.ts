@@ -2769,16 +2769,24 @@ describe("Pages Router dev ISR regeneration", () => {
     });
 
     try {
-      const [{ createSSRHandler }, { getRequestContext, isInsideUnifiedScope }] = await Promise.all(
-        [
-          import("../packages/vinext/src/server/dev-server.js"),
-          import("../packages/vinext/src/shims/unified-request-context.js"),
-        ],
-      );
+      const [
+        { createSSRHandler },
+        { getRequestContext, isInsideUnifiedScope },
+        { getRequestExecutionContext, runWithExecutionContext },
+      ] = await Promise.all([
+        import("../packages/vinext/src/server/dev-server.js"),
+        import("../packages/vinext/src/shims/unified-request-context.js"),
+        import("../packages/vinext/src/shims/request-context.js"),
+      ]);
 
       let parentRequestTags: string[] = [];
       let regenSawUnifiedScope = false;
       let regenTags: string[] = [];
+      let regenExecutionContext: unknown;
+      let regenUnifiedExecutionContext: unknown;
+      const outerExecutionContext = {
+        waitUntil() {},
+      };
 
       const routeFile = path.join(FIXTURE_DIR, "pages", "isr-test.tsx");
       const server = {
@@ -2804,6 +2812,8 @@ describe("Pages Router dev ISR regeneration", () => {
               async getStaticProps() {
                 regenSawUnifiedScope = isInsideUnifiedScope();
                 regenTags = [...getRequestContext().currentRequestTags];
+                regenExecutionContext = getRequestExecutionContext();
+                regenUnifiedExecutionContext = getRequestContext().executionContext;
                 return {
                   props: {
                     timestamp: Date.now(),
@@ -2853,7 +2863,9 @@ describe("Pages Router dev ISR regeneration", () => {
         }),
       } as any;
 
-      await handler({ method: "GET", headers: {} } as any, res, "/isr-test");
+      await runWithExecutionContext(outerExecutionContext, () =>
+        handler({ method: "GET", headers: {} } as any, res, "/isr-test"),
+      );
 
       expect(parentRequestTags).toEqual(["outer-tag"]);
       expect(res.writeHead).toHaveBeenCalledWith(
@@ -2871,6 +2883,8 @@ describe("Pages Router dev ISR regeneration", () => {
 
       expect(regenSawUnifiedScope).toBe(true);
       expect(regenTags).toEqual([]);
+      expect(regenExecutionContext).toBeNull();
+      expect(regenUnifiedExecutionContext).toBeNull();
       expect(isrSetSpy).toHaveBeenCalledOnce();
     } finally {
       vi.doUnmock("../packages/vinext/src/server/isr-cache.js");

@@ -127,12 +127,13 @@ export function runWithUnifiedStateMutation<T>(
   // NOTE: This is a shallow clone. Array fields (pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadElements), the
   // _privateCache Map, and object fields (headersContext, serverContext,
-  // requestScopedCacheLife, ssrContext, executionContext) still share
-  // references with the parent until replaced. Callers must replace those
-  // collection/object slices (for example `ctx.currentRequestTags = []`)
-  // rather than mutating them in-place (for example
-  // `ctx.currentRequestTags.push(...)`) or the parent scope will observe those
-  // changes too.
+  // ssrContext, executionContext, requestScopedCacheLife) still share
+  // references with the parent until replaced. The mutate callback must
+  // replace those reference-typed slices (for example
+  // `ctx.currentRequestTags = []`) rather than mutating them in-place (for
+  // example `ctx.currentRequestTags.push(...)`) or the parent scope will
+  // observe those changes too. Keep this list in sync when adding new
+  // reference-typed fields to UnifiedRequestContext.
   mutate(childCtx);
   return _als.run(childCtx, fn);
 }

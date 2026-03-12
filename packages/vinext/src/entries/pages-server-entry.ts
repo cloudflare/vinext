@@ -849,7 +849,9 @@ async function _renderPage(request, url, manifest) {
             // Create a fresh unified context for background regeneration.
             // This ensures patched fetch (for cache tagging) and ALS-based
             // context are available, matching App Router behavior.
-            const revalCtx = _createUnifiedCtx({ executionContext: _getRequestExecutionContext() });
+            const revalCtx = _createUnifiedCtx({
+              executionContext: _getRequestExecutionContext(),
+            });
             return _runWithUnifiedCtx(revalCtx, async () => {
               ensureFetchPatch();
               const freshResult = await pageModule.getStaticProps({ params });
