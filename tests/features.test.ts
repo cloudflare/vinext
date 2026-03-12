@@ -1965,10 +1965,12 @@ describe("basePath + trailingSlash interaction", () => {
 
 describe("metadata title templates", () => {
   let mergeMetadata: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadata;
+  let mergeMetadataForParent: typeof import("../packages/vinext/src/shims/metadata.js").mergeMetadataForParent;
 
   beforeAll(async () => {
     const mod = await import("../packages/vinext/src/shims/metadata.js");
     mergeMetadata = mod.mergeMetadata;
+    mergeMetadataForParent = mod.mergeMetadataForParent;
   });
 
   it("applies layout template to child page string title", () => {
@@ -2023,6 +2025,25 @@ describe("metadata title templates", () => {
       {},
     ]);
     expect(result.title).toBe("Extra Layout Default | Layout");
+  });
+
+  it("replaces every %s occurrence in a title template", () => {
+    const result = mergeMetadata([
+      { title: { template: "%s | %s", default: "Layout" } },
+      { title: "Inner" },
+    ]);
+    expect(result.title).toBe("Inner | Inner");
+  });
+
+  it("preserves resolved parent title.absolute and title.template for child metadata", () => {
+    const result = mergeMetadataForParent([
+      { title: { template: "%s | Root", default: "Root" } },
+      { title: { template: "%s | Nested", default: "Nested Default" } },
+    ]);
+    expect(result.title).toEqual({
+      absolute: "Nested Default | Root",
+      template: "%s | Nested",
+    });
   });
 
   it("preserves non-title metadata during merge", () => {

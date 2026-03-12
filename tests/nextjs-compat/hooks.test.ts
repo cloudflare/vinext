@@ -133,6 +133,11 @@ describe("Next.js compat: hooks", () => {
     expect(html).toContain('<p id="current-pathname">/nextjs-compat/hooks-rewrite-path</p>');
   });
 
+  it("usePathname returns the canonical requested pathname after a middleware rewrite", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-middleware-rewrite");
+    expect(html).toContain('<p id="current-pathname">/nextjs-compat/hooks-middleware-rewrite</p>');
+  });
+
   // Next.js: rewrite searchParams canonical URL coverage
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts#L64-L72
 

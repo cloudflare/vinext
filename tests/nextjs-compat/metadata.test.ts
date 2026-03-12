@@ -23,6 +23,10 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import type { ViteDevServer } from "vite";
 import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml } from "../helpers.js";
 
+function getTitleTags(html: string) {
+  return Array.from(html.matchAll(/<title>(.*?)<\/title>/g)).map((match) => match[1]);
+}
+
 describe("Next.js compat: metadata", () => {
   let server: ViteDevServer;
   let baseUrl: string;
@@ -81,7 +85,7 @@ describe("Next.js compat: metadata", () => {
       baseUrl,
       "/nextjs-compat/metadata-title-template/use-layout-title",
     );
-    expect(html).toContain("<title>title template layout default</title>");
+    expect(getTitleTags(html)).toEqual(["title template layout default"]);
   });
 
   // Next.js: 'should support stashed title in multiple layers'
@@ -89,7 +93,7 @@ describe("Next.js compat: metadata", () => {
 
   it("should prefer the nearest nested title template when a child page provides a title", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/extra/inner");
-    expect(html).toContain("<title>Inner Page | Extra Layout</title>");
+    expect(getTitleTags(html)).toEqual(["Inner Page | Extra Layout"]);
   });
 
   it("should compose nested default titles back through the parent template", async () => {
@@ -97,7 +101,7 @@ describe("Next.js compat: metadata", () => {
       baseUrl,
       "/nextjs-compat/metadata-title-template/extra/inner/deep",
     );
-    expect(html).toContain("<title>extra layout default | Layout</title>");
+    expect(getTitleTags(html)).toEqual(["extra layout default | Layout"]);
   });
 
   // ── Basic metadata tags ──────────────────────────────────────
@@ -333,7 +337,13 @@ describe("Next.js compat: metadata", () => {
 
   it("should render page title from generateMetadata that uses parent", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-parent-generate");
-    expect(html).toContain("<title>parent-generate page</title>");
+    expect(html).toContain("<title>parent-generate page | Parent Layout</title>");
+  });
+
+  it("should expose resolved parent title.absolute and title.template to generateMetadata()", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-parent-generate");
+    expect(html).toMatch(/meta\s+name="creator"\s+content="Parent Layout"/);
+    expect(html).toMatch(/meta\s+name="description"\s+content="%s \| Parent Layout"/);
   });
 
   it("parent parameter should not be undefined (await parent must not throw)", async () => {

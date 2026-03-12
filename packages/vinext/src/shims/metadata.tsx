@@ -274,6 +274,55 @@ interface TwitterAppDescriptor {
   name?: string;
 }
 
+interface ResolvedTitleState {
+  absolute?: string;
+  template?: string;
+}
+
+function applyTitleTemplate(template: string | undefined, title: string) {
+  return template ? template.replace(/%s/g, title) : title;
+}
+
+function resolveTitleState(
+  metadataList: Metadata[],
+  { terminal = true }: { terminal?: boolean } = {},
+): ResolvedTitleState | null {
+  let resolvedAbsolute: string | undefined;
+  let deepestTemplate: string | undefined;
+  let stashedTemplate: string | undefined;
+  let sawTitle = false;
+  const templateCarrierIndex = terminal ? metadataList.length - 2 : metadataList.length - 1;
+
+  for (let i = 0; i < metadataList.length; i++) {
+    const title = metadataList[i].title;
+    if (!title) continue;
+
+    sawTitle = true;
+    const titleTemplate = typeof title === "object" ? title.template : undefined;
+
+    if (typeof title === "string") {
+      resolvedAbsolute = applyTitleTemplate(stashedTemplate, title);
+    } else {
+      if (title.default !== undefined) {
+        resolvedAbsolute = applyTitleTemplate(stashedTemplate, title.default);
+      }
+      if (title.absolute) {
+        resolvedAbsolute = title.absolute;
+      }
+    }
+
+    if (titleTemplate && i <= templateCarrierIndex) {
+      deepestTemplate = titleTemplate;
+    }
+    if (titleTemplate) {
+      stashedTemplate = titleTemplate;
+    }
+  }
+
+  if (!sawTitle) return null;
+  return { absolute: resolvedAbsolute, template: deepestTemplate };
+}
+
 /**
  * Merge metadata from multiple sources (layouts + page).
  *
@@ -300,50 +349,23 @@ export function mergeMetadata(metadataList: Metadata[]): Metadata {
     }
   }
 
-  let resolvedTitle: string | undefined;
-  let titleSourceIndex = -1;
-  let absoluteTitle = false;
-
-  // Find the deepest segment that contributes the actual title string.
-  // `title.template` alone does not render a title; it only decorates child segments.
-  for (let i = metadataList.length - 1; i >= 0; i--) {
-    const title = metadataList[i].title;
-    if (!title) continue;
-
-    if (typeof title === "string") {
-      resolvedTitle = title;
-      titleSourceIndex = i;
-      break;
-    }
-
-    if (title.absolute) {
-      resolvedTitle = title.absolute;
-      titleSourceIndex = i;
-      absoluteTitle = true;
-      break;
-    }
-
-    if (title.default) {
-      resolvedTitle = title.default;
-      titleSourceIndex = i;
-      break;
-    }
+  const resolvedTitle = resolveTitleState(metadataList);
+  if (resolvedTitle?.absolute !== undefined) {
+    merged.title = resolvedTitle.absolute;
   }
 
-  if (resolvedTitle !== undefined) {
-    if (!absoluteTitle && titleSourceIndex > 0) {
-      // Only the nearest ancestor template applies. A nested layout template
-      // shadows any outer template for its descendants.
-      for (let i = titleSourceIndex - 1; i >= 0; i--) {
-        const title = metadataList[i].title;
-        if (title && typeof title === "object" && title.template) {
-          resolvedTitle = title.template.replace("%s", resolvedTitle);
-          break;
-        }
-      }
-    }
+  return merged;
+}
 
-    merged.title = resolvedTitle;
+export function mergeMetadataForParent(metadataList: Metadata[]): Metadata {
+  const merged = mergeMetadata(metadataList);
+  const resolvedTitle = resolveTitleState(metadataList, { terminal: false });
+
+  if (resolvedTitle) {
+    merged.title = {
+      absolute: resolvedTitle.absolute || "",
+      ...(resolvedTitle.template ? { template: resolvedTitle.template } : {}),
+    };
   }
 
   return merged;

@@ -11,8 +11,11 @@ export async function generateMetadata(
 ): Promise<Metadata> {
   const parentMeta = await parent;
   const previousImages = parentMeta.openGraph?.images ?? [];
+  const parentTitle = typeof parentMeta.title === "object" ? parentMeta.title : null;
   return {
     title: "parent-generate page",
+    creator: parentTitle?.absolute,
+    description: parentTitle?.template ?? "missing-parent-title-template",
     openGraph: {
       images: ["/new-image.jpg", ...(previousImages as string[])],
     },

@@ -4,6 +4,10 @@ import type { Metadata } from "next";
 // The child page will access this via the `parent` parameter.
 export async function generateMetadata(): Promise<Metadata> {
   return {
+    title: {
+      default: "Parent Layout",
+      template: "%s | Parent Layout",
+    },
     openGraph: {
       images: ["/base-image.jpg"],
     },

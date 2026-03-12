@@ -306,7 +306,7 @@ import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader,
 import { NextRequest, NextFetchEvent } from "next/server";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
-import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
+import { MetadataHead, mergeMetadata, mergeMetadataForParent, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
 ${middlewarePath ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};` : ""}
 ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath.replace(/\\/g, "/"))};` : ""}
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("../server/metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
@@ -702,7 +702,7 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
       .catch((err) => { console.error("[vinext] Layout generateMetadata() failed:", err); return null; });
     _layoutMetaPromises.push(_metaP);
     _accumulatedMeta = _metaP.then(async (_r) =>
-      _r ? mergeMetadata([await _parentForLayout, _r]) : await _parentForLayout
+      _r ? mergeMetadataForParent([await _parentForLayout, _r]) : await _parentForLayout
     );
   }
   const [_metaResults, _vpResults] = await Promise.all([
@@ -1077,7 +1077,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     layoutMetaPromises.push(metaPromise);
     // Advance accumulator: resolves to merged(layouts[0..i]) once layout[i] is done.
     accumulatedMetaPromise = metaPromise.then(async (result) =>
-      result ? mergeMetadata([await parentForThisLayout, result]) : await parentForThisLayout
+      result ? mergeMetadataForParent([await parentForThisLayout, result]) : await parentForThisLayout
     );
   }
   // Page's parent is the fully-accumulated layout metadata.
