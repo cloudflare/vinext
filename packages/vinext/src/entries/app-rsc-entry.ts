@@ -1561,6 +1561,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
   let cleanPathname = pathname.replace(/\\.rsc$/, "");
   const navigationPathname = cleanPathname;
+  const __cachePathname = navigationPathname;
 
   // Middleware response headers and custom rewrite status are stored in
   // _mwCtx (per-request container) so handler() can merge them into
@@ -2206,7 +2207,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     !isForceDynamic &&
     revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity
   ) {
-    const __cachePathname = navigationPathname;
     const __isrKey = isRscRequest ? __isrRscKey(__cachePathname) : __isrHtmlKey(__cachePathname);
     try {
       const __cached = await __isrGet(__isrKey);
@@ -2898,7 +2898,6 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // revalidate=Infinity means "cache forever" (no periodic revalidation) — treated as
   // static here so we emit s-maxage=31536000 but skip ISR cache management.
   if (revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity) {
-    const __cachePathname = navigationPathname;
     // In production, tee the HTML response body to simultaneously stream to the
     // client and collect the full HTML string for the ISR cache. rscData was
     // already captured above by teeing the RSC stream before SSR.

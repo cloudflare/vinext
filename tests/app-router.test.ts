@@ -3545,6 +3545,22 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("Array.isArray(tags) ? tags : []");
   });
 
+  it("generated code hoists the canonical ISR cache pathname for shared reads and writes", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    const declaration = "const __cachePathname = navigationPathname;";
+    const firstIndex = code.indexOf(declaration);
+    expect(firstIndex).toBeGreaterThanOrEqual(0);
+    expect(code.match(/const __cachePathname = navigationPathname;/g)).toHaveLength(1);
+    expect(firstIndex).toBeLessThan(
+      code.indexOf(
+        "const __isrKey = isRscRequest ? __isrRscKey(__cachePathname) : __isrHtmlKey(__cachePathname);",
+      ),
+    );
+    expect(firstIndex).toBeLessThan(
+      code.indexOf("const __isrKeyRsc = __isrRscKey(__cachePathname);"),
+    );
+  });
+
   it("generated handler exports async function handler(request, ctx)", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     // The handler must accept a ctx param so ExecutionContext is threaded through

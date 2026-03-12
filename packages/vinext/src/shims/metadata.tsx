@@ -306,16 +306,16 @@ function resolveTitleState(
       if (title.default !== undefined) {
         resolvedAbsolute = applyTitleTemplate(stashedTemplate, title.default);
       }
-      if (title.absolute) {
+      if (title.absolute !== undefined) {
         resolvedAbsolute = title.absolute;
       }
     }
 
-    if (titleTemplate && i <= templateCarrierIndex) {
+    if (titleTemplate !== undefined && i <= templateCarrierIndex) {
       deepestTemplate = titleTemplate;
     }
-    if (titleTemplate) {
-      stashedTemplate = titleTemplate;
+    if (titleTemplate !== undefined) {
+      stashedTemplate = titleTemplate ?? undefined;
     }
   }
 

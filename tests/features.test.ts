@@ -1997,6 +1997,14 @@ describe("metadata title templates", () => {
     expect(result.title).toBe("Custom Title");
   });
 
+  it("title.absolute preserves an explicit empty string", () => {
+    const result = mergeMetadata([
+      { title: { template: "%s | My Site", default: "My Site" } },
+      { title: { absolute: "" } },
+    ]);
+    expect(result.title).toBe("");
+  });
+
   it("nearest layout template wins over root", () => {
     const result = mergeMetadata([
       { title: { template: "%s | Root", default: "Root" } },
@@ -2033,6 +2041,15 @@ describe("metadata title templates", () => {
       { title: "Inner" },
     ]);
     expect(result.title).toBe("Inner | Inner");
+  });
+
+  it("title.template null blocks ancestor template inheritance for deeper descendants", () => {
+    const result = mergeMetadata([
+      { title: { template: "%s | Root", default: "Root" } },
+      { title: { default: "Section", template: null } },
+      { title: "Leaf" },
+    ]);
+    expect(result.title).toBe("Leaf");
   });
 
   it("preserves resolved parent title.absolute and title.template for child metadata", () => {
