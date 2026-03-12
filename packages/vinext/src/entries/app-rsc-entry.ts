@@ -2206,7 +2206,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     !isForceDynamic &&
     revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity
   ) {
-    const __isrKey = isRscRequest ? __isrRscKey(cleanPathname) : __isrHtmlKey(cleanPathname);
+    const __cachePathname = navigationPathname;
+    const __isrKey = isRscRequest ? __isrRscKey(__cachePathname) : __isrHtmlKey(__cachePathname);
     try {
       const __cached = await __isrGet(__isrKey);
       if (__cached && !__cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_PAGE") {
@@ -2214,7 +2215,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         const __hasRsc = !!__cachedValue.rscData;
         const __hasHtml = typeof __cachedValue.html === "string" && __cachedValue.html.length > 0;
         if (isRscRequest && __hasRsc) {
-          __isrDebug?.("HIT (RSC)", cleanPathname);
+          __isrDebug?.("HIT (RSC)", __cachePathname);
           setHeadersContext(null);
           setNavigationContext(null);
           return new Response(__cachedValue.rscData, {
@@ -2228,7 +2229,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           });
         }
         if (!isRscRequest && __hasHtml) {
-          __isrDebug?.("HIT (HTML)", cleanPathname);
+          __isrDebug?.("HIT (HTML)", __cachePathname);
           setHeadersContext(null);
           setNavigationContext(null);
           return new Response(__cachedValue.html, {
@@ -2241,7 +2242,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             },
           });
         }
-        __isrDebug?.("MISS (empty cached entry)", cleanPathname);
+        __isrDebug?.("MISS (empty cached entry)", __cachePathname);
       }
       if (__cached && __cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_PAGE") {
         // Stale cache hit — serve stale immediately, trigger background regeneration.
@@ -2249,7 +2250,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         const __staleValue = __cached.value.value;
         const __staleStatus = __staleValue.status || 200;
         const __revalSecs = revalidateSeconds;
-        __triggerBackgroundRegeneration(cleanPathname, async function() {
+        __triggerBackgroundRegeneration(__cachePathname, async function() {
           // Re-render the page to produce fresh HTML + RSC data for the cache
           // Use an empty headers context for background regeneration — not the original
           // user request — to prevent user-specific cookies/auth headers from leaking
@@ -2304,18 +2305,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             __revalChunks.push(__revalDecoder.decode());
             const __freshHtml = __revalChunks.join("");
             const __freshRscData = await __rscDataPromise;
-            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+            const __pageTags = __pageCacheTags(__cachePathname, getCollectedFetchTags());
             return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
           });
           // Write HTML and RSC to their own keys independently — no races
           await Promise.all([
-            __isrSet(__isrHtmlKey(cleanPathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
-            __isrSet(__isrRscKey(cleanPathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
+            __isrSet(__isrHtmlKey(__cachePathname), { kind: "APP_PAGE", html: __revalResult.html, rscData: undefined, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
+            __isrSet(__isrRscKey(__cachePathname), { kind: "APP_PAGE", html: "", rscData: __revalResult.rscData, headers: undefined, postponed: undefined, status: 200 }, __revalSecs, __revalResult.tags),
           ]);
-          __isrDebug?.("regen complete", cleanPathname);
+          __isrDebug?.("regen complete", __cachePathname);
         });
         if (isRscRequest && __staleValue.rscData) {
-          __isrDebug?.("STALE (RSC)", cleanPathname);
+          __isrDebug?.("STALE (RSC)", __cachePathname);
           setHeadersContext(null);
           setNavigationContext(null);
           return new Response(__staleValue.rscData, {
@@ -2329,7 +2330,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           });
         }
         if (!isRscRequest && typeof __staleValue.html === "string" && __staleValue.html.length > 0) {
-          __isrDebug?.("STALE (HTML)", cleanPathname);
+          __isrDebug?.("STALE (HTML)", __cachePathname);
           setHeadersContext(null);
           setNavigationContext(null);
           return new Response(__staleValue.html, {
@@ -2343,10 +2344,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           });
         }
         // Stale entry exists but is empty for this request type — fall through to render
-        __isrDebug?.("STALE MISS (empty stale entry)", cleanPathname);
+        __isrDebug?.("STALE MISS (empty stale entry)", __cachePathname);
       }
       if (!__cached) {
-        __isrDebug?.("MISS (no cache entry)", cleanPathname);
+        __isrDebug?.("MISS (no cache entry)", __cachePathname);
       }
     } catch (__isrReadErr) {
       // Cache read failure — fall through to normal rendering
@@ -2718,12 +2719,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // these writes never race or clobber each other.
     if (process.env.NODE_ENV === "production" && __isrRscDataPromise) {
       responseHeaders["X-Vinext-Cache"] = "MISS";
-      const __isrKeyRsc = __isrRscKey(cleanPathname);
+      const __isrKeyRsc = __isrRscKey(__cachePathname);
       const __revalSecsRsc = revalidateSeconds;
       const __rscWritePromise = (async () => {
         try {
           const __rscDataForCache = await __isrRscDataPromise;
-          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+          const __pageTags = __pageCacheTags(__cachePathname, getCollectedFetchTags());
           await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc, __pageTags);
           __isrDebug?.("RSC cache written", __isrKeyRsc);
         } catch (__rscWriteErr) {
@@ -2897,6 +2898,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // revalidate=Infinity means "cache forever" (no periodic revalidation) — treated as
   // static here so we emit s-maxage=31536000 but skip ISR cache management.
   if (revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity) {
+    const __cachePathname = navigationPathname;
     // In production, tee the HTML response body to simultaneously stream to the
     // client and collect the full HTML string for the ISR cache. rscData was
     // already captured above by teeing the RSC stream before SSR.
@@ -2913,8 +2915,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       }));
       if (__isrResponseProd.body) {
         const [__streamForClient, __streamForCache] = __isrResponseProd.body.tee();
-        const __isrKey = __isrHtmlKey(cleanPathname);
-        const __isrKeyRscFromHtml = __isrRscKey(cleanPathname);
+        const __isrKey = __isrHtmlKey(__cachePathname);
+        const __isrKeyRscFromHtml = __isrRscKey(__cachePathname);
         const __revalSecs = revalidateSeconds;
         const __capturedRscDataPromise = __isrRscDataPromise;
         const __cachePromise = (async () => {
@@ -2929,7 +2931,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             }
             __chunks.push(__decoder.decode());
             const __fullHtml = __chunks.join("");
-            const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
+            const __pageTags = __pageCacheTags(__cachePathname, getCollectedFetchTags());
             // Write HTML and RSC to their own keys independently.
             // RSC data was captured by the tee above (before isRscRequest branch)
             // so an initial browser visit (HTML request) also populates the RSC key,

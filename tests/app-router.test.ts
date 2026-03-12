@@ -1685,6 +1685,7 @@ describe("App Router Production server (startProdServer)", () => {
 
   it("preserves the canonical pathname when stale ISR regeneration runs on a rewritten route", async () => {
     const sourcePath = "/nextjs-compat/isr-rewrite-source";
+    const targetPath = "/nextjs-compat/isr-rewrite-target";
 
     const res1 = await fetch(`${baseUrl}${sourcePath}`);
     expect(res1.status).toBe(200);
@@ -1721,7 +1722,21 @@ describe("App Router Production server (startProdServer)", () => {
 
     expect(sawHit).toBe(true);
     expect(hitHtml).toContain(`<p id="current-pathname">${sourcePath}</p>`);
-    expect(hitHtml).not.toContain('<p id="current-pathname">/nextjs-compat/isr-rewrite-target</p>');
+    expect(hitHtml).not.toContain(`<p id="current-pathname">${targetPath}</p>`);
+
+    const targetMissRes = await fetch(`${baseUrl}${targetPath}`);
+    expect(targetMissRes.status).toBe(200);
+    const targetMissHtml = await targetMissRes.text();
+    expect(targetMissHtml).toContain(`<p id="current-pathname">${targetPath}</p>`);
+    expect(targetMissHtml).not.toContain(`<p id="current-pathname">${sourcePath}</p>`);
+    expect(targetMissRes.headers.get("x-vinext-cache")).toBe("MISS");
+
+    const targetHitRes = await fetch(`${baseUrl}${targetPath}`);
+    expect(targetHitRes.status).toBe(200);
+    const targetHitHtml = await targetHitRes.text();
+    expect(targetHitHtml).toContain(`<p id="current-pathname">${targetPath}</p>`);
+    expect(targetHitHtml).not.toContain(`<p id="current-pathname">${sourcePath}</p>`);
+    expect(targetHitRes.headers.get("x-vinext-cache")).toBe("HIT");
   });
 });
 
