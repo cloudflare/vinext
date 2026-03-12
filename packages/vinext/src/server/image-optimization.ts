@@ -171,7 +171,10 @@ function setImageSecurityHeaders(headers: Headers, config?: ImageConfig): void {
     config?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
   );
   headers.set("X-Content-Type-Options", "nosniff");
-  headers.set("Content-Disposition", config?.contentDispositionType ?? "inline");
+  headers.set(
+    "Content-Disposition",
+    config?.contentDispositionType === "attachment" ? "attachment" : "inline",
+  );
 }
 
 /**

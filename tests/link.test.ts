@@ -9,7 +9,7 @@
  * These tests verify SSR output matches Next.js expectations and that
  * pure helper functions work correctly.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 
@@ -301,7 +301,12 @@ describe("Link locale handling", () => {
 // Tests for the shared same-origin URL normalization utility.
 // Related to: https://github.com/cloudflare/vinext/issues/335
 
-import { toSameOriginPath } from "../packages/vinext/src/shims/url-utils.js";
+import {
+  resolveRelativeHref,
+  toBrowserNavigationHref,
+  toSameOriginAppPath,
+  toSameOriginPath,
+} from "../packages/vinext/src/shims/url-utils.js";
 
 describe("toSameOriginPath", () => {
   it("returns null on the server (no window)", () => {
@@ -372,6 +377,81 @@ describe("toSameOriginPath", () => {
   });
 });
 
+describe("resolveRelativeHref", () => {
+  it("resolves relative search params against the current page", () => {
+    expect(resolveRelativeHref("?page=2", "http://localhost:3000/posts/1")).toBe("/posts/1?page=2");
+  });
+
+  it("preserves the current pathname and search when resolving hash-only hrefs", () => {
+    expect(resolveRelativeHref("#comments", "http://localhost:3000/posts/1?page=2")).toBe(
+      "/posts/1?page=2#comments",
+    );
+  });
+
+  it("resolves dot-segment relative paths against the current page", () => {
+    expect(resolveRelativeHref("../archive?year=2026", "http://localhost:3000/blog/post-1")).toBe(
+      "/archive?year=2026",
+    );
+  });
+
+  it("leaves absolute paths unchanged", () => {
+    expect(resolveRelativeHref("/about", "http://localhost:3000/posts/1")).toBe("/about");
+  });
+
+  it("strips the current basePath before returning the app-relative href", () => {
+    expect(resolveRelativeHref("?page=2", "http://localhost:3000/base/fr/posts/1", "/base")).toBe(
+      "/fr/posts/1?page=2",
+    );
+  });
+});
+
+describe("toBrowserNavigationHref", () => {
+  it("keeps relative hrefs aligned with basePath and locale-prefixed browser URLs", () => {
+    expect(
+      toBrowserNavigationHref("?page=2", "http://localhost:3000/base/fr/posts/1", "/base"),
+    ).toBe("/base/fr/posts/1?page=2");
+  });
+
+  it("does not add a trailing slash for query/hash-only navigations from the bare basePath root", () => {
+    expect(toBrowserNavigationHref("?page=2", "http://localhost:3000/base", "/base")).toBe(
+      "/base?page=2",
+    );
+    expect(toBrowserNavigationHref("#comments", "http://localhost:3000/base", "/base")).toBe(
+      "/base#comments",
+    );
+  });
+
+  it("does not double-prefix same-origin absolute URLs that already include the basePath", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        origin: "http://localhost:3000",
+        href: "http://localhost:3000/base/posts/1",
+      },
+    };
+
+    try {
+      const normalized = toSameOriginAppPath("http://localhost:3000/base/about", "/base");
+      expect(normalized).toBe("/about");
+      expect(
+        toBrowserNavigationHref(normalized!, "http://localhost:3000/base/posts/1", "/base"),
+      ).toBe("/base/about");
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
+  it("still prefixes app-relative paths that happen to start with the basePath segment", () => {
+    expect(
+      toBrowserNavigationHref("/docs/getting-started", "http://localhost:3000/docs", "/docs"),
+    ).toBe("/docs/docs/getting-started");
+  });
+});
+
 // ─── Link with same-origin absolute URL (SSR rendering) ─────────────────
 // Verifies that <Link href="http://..."> renders the absolute URL as the
 // href attribute (the normalization happens at click time, not render time).
@@ -390,5 +470,79 @@ describe("Link with absolute URL", () => {
       React.createElement(Link, { href: "https://example.com/path" }, "Secure External"),
     );
     expect(html).toContain('href="https://example.com/path"');
+  });
+
+  it("preserves relative href rendering under basePath while still prefixing absolute paths", async () => {
+    const previousBasePath = process.env.__NEXT_ROUTER_BASEPATH;
+    process.env.__NEXT_ROUTER_BASEPATH = "/base";
+    vi.resetModules();
+
+    try {
+      const { default: BasePathLink } = await import("../packages/vinext/src/shims/link.js");
+
+      const relativeHtml = ReactDOMServer.renderToString(
+        React.createElement(BasePathLink, { href: "?page=2" }, "Relative Query"),
+      );
+      expect(relativeHtml).toContain('href="?page=2"');
+
+      const absoluteHtml = ReactDOMServer.renderToString(
+        React.createElement(BasePathLink, { href: "/about" }, "About"),
+      );
+      expect(absoluteHtml).toContain('href="/base/about"');
+
+      const sharedPrefixHtml = ReactDOMServer.renderToString(
+        React.createElement(BasePathLink, { href: "/base/getting-started" }, "Shared Prefix"),
+      );
+      expect(sharedPrefixHtml).toContain('href="/base/base/getting-started"');
+    } finally {
+      if (previousBasePath === undefined) {
+        delete process.env.__NEXT_ROUTER_BASEPATH;
+      } else {
+        process.env.__NEXT_ROUTER_BASEPATH = previousBasePath;
+      }
+      vi.resetModules();
+    }
+  });
+});
+
+describe("toSameOriginAppPath", () => {
+  it("strips the configured basePath from same-origin absolute URLs", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        origin: "http://localhost:3000",
+        href: "http://localhost:3000/base/posts/1",
+      },
+    };
+
+    try {
+      expect(toSameOriginAppPath("http://localhost:3000/base/about", "/base")).toBe("/about");
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
+  it("treats same-origin URLs outside the configured basePath as external", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        origin: "http://localhost:3000",
+        href: "http://localhost:3000/base/posts/1",
+      },
+    };
+
+    try {
+      expect(toSameOriginAppPath("http://localhost:3000/other", "/base")).toBeNull();
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
   });
 });

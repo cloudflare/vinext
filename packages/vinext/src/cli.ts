@@ -14,6 +14,7 @@
  */
 
 import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
+import { printBuildReport } from "./build/report.js";
 import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -39,6 +40,7 @@ interface ViteModule {
   createServer: typeof import("vite").createServer;
   build: typeof import("vite").build;
   createBuilder: typeof import("vite").createBuilder;
+  createLogger: typeof import("vite").createLogger;
   version: string;
 }
 
@@ -90,6 +92,7 @@ interface ParsedArgs {
   port?: number;
   hostname?: string;
   help?: boolean;
+  verbose?: boolean;
   turbopack?: boolean; // accepted for compat, always ignored
   experimental?: boolean; // accepted for compat, always ignored
 }
@@ -100,6 +103,8 @@ function parseArgs(args: string[]): ParsedArgs {
     const arg = args[i];
     if (arg === "--help" || arg === "-h") {
       result.help = true;
+    } else if (arg === "--verbose") {
+      result.verbose = true;
     } else if (arg === "--turbopack") {
       result.turbopack = true; // no-op, accepted for script compat
     } else if (arg === "--experimental-https") {
@@ -117,13 +122,102 @@ function parseArgs(args: string[]): ParsedArgs {
   return result;
 }
 
-// ─── Auto-configuration ───────────────────────────────────────────────────────
+// ─── Build logger ─────────────────────────────────────────────────────────────
 
 /**
- * Build the Vite config automatically. If a vite.config.ts exists in the
- * project, Vite will merge our config with it (theirs takes precedence).
- * If there's no vite.config, this provides everything needed.
+ * Create a custom Vite logger for build output.
+ *
+ * By default Vite/Rollup emit a lot of build noise: version banners, progress
+ * lines, chunk size tables, minChunkSize diagnostics, and various internal
+ * warnings that are either not actionable or already handled by vinext at
+ * runtime. This logger suppresses all of that while keeping the things that
+ * actually matter:
+ *
+ *   KEPT
+ *   ✓ N modules transformed.     — confirms the transform phase completed
+ *   ✓ built in Xs                — build timing (useful perf signal)
+ *   Genuine warnings/errors      — anything the user may need to act on
+ *
+ *   SUPPRESSED (info)
+ *   vite vX.Y.Z building...      — Vite version banner
+ *   transforming... / rendering chunks... / computing gzip size...
+ *   Initially, there are N chunks...  — Rollup minChunkSize diagnostics
+ *   After merging chunks, there are...
+ *   X are below minChunkSize.
+ *   Blank lines
+ *   Chunk/asset size table rows  — e.g. "  dist/client/assets/foo.js  42 kB"
+ *   [rsc] / [ssr] / [client] / [worker] — RSC plugin env section headers
+ *
+ *   SUPPRESSED (warn)
+ *   "dynamic import will not move module into another chunk"  — internal chunking note
+ *   "X is not exported by virtual:vinext-*"  — handled gracefully at runtime
  */
+function createBuildLogger(vite: ViteModule): import("vite").Logger {
+  const logger = vite.createLogger("info", { allowClearScreen: false });
+  const originalInfo = logger.info.bind(logger);
+  const originalWarn = logger.warn.bind(logger);
+
+  // Strip ANSI escape codes for pattern matching (keep originals for output).
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, ""); // eslint-disable-line no-control-regex
+
+  logger.info = (msg: string, options?: import("vite").LogOptions) => {
+    const plain = strip(msg);
+
+    // Always keep timing lines ("✓ built in 1.23s", "✓ 75 modules transformed.").
+    if (plain.trimStart().startsWith("✓")) {
+      originalInfo(msg, options);
+      return;
+    }
+
+    // Vite version banner: "vite v6.x.x building for production..."
+    if (/^vite v\d/.test(plain.trim())) return;
+
+    // Rollup progress noise: "transforming...", "rendering chunks...", "computing gzip size..."
+    if (/^(transforming|rendering chunks|computing gzip size)/.test(plain.trim())) return;
+
+    // Rollup minChunkSize diagnostics:
+    //   "Initially, there are\n36 chunks, of which\n..."
+    //   "After merging chunks, there are\n..."
+    //   "X are below minChunkSize."
+    if (/^(Initially,|After merging|are below minChunkSize)/.test(plain.trim())) return;
+
+    // Blank / whitespace-only separator lines.
+    if (/^\s*$/.test(plain)) return;
+
+    // Chunk/asset size table rows — e.g.:
+    //   "  dist/client/assets/foo.js    42.10 kB │ gzip: 6.74 kB"  (TTY: indented)
+    //   "dist/client/assets/foo.js    42.10 kB │ gzip: 6.74 kB"    (non-TTY: at column 0)
+    // Both start with "dist/" (possibly preceded by whitespace).
+    if (/^\s*(dist\/|\.\/)/.test(plain)) return;
+
+    // @vitejs/plugin-rsc environment section headers ("[rsc]", "[ssr]", "[client]", "[worker]").
+    if (/^\s*\[(rsc|ssr|client|worker)\]/.test(plain)) return;
+
+    originalInfo(msg, options);
+  };
+
+  logger.warn = (msg: string, options?: import("vite").LogOptions) => {
+    const plain = strip(msg);
+
+    // Rollup: "dynamic import will not move module into another chunk" — this is
+    // emitted as a [plugin vite:reporter] warning with long absolute file paths.
+    // It's an internal chunking note, not actionable.
+    if (plain.includes("dynamic import will not move module into another chunk")) return;
+
+    // Rollup: "X is not exported by Y" from virtual entry modules — these come from
+    // Rollup's static analysis of the generated virtual:vinext-server-entry when the
+    // user's middleware doesn't export the expected names. The vinext runtime handles
+    // missing exports gracefully, so this is noise.
+    if (plain.includes("is not exported by") && plain.includes("virtual:vinext")) return;
+
+    originalWarn(msg, options);
+  };
+
+  return logger;
+}
+
+// ─── Auto-configuration ───────────────────────────────────────────────────────
+
 function hasAppDir(): boolean {
   return (
     fs.existsSync(path.join(process.cwd(), "app")) ||
@@ -139,7 +233,12 @@ function hasViteConfig(): boolean {
   );
 }
 
-function buildViteConfig(overrides: Record<string, unknown> = {}) {
+/**
+ * Build the Vite config automatically. If a vite.config.ts exists in the
+ * project, Vite will merge our config with it (theirs takes precedence).
+ * If there's no vite.config, this provides everything needed.
+ */
+function buildViteConfig(overrides: Record<string, unknown> = {}, logger?: import("vite").Logger) {
   const hasConfig = hasViteConfig();
 
   // If a vite.config exists, let Vite load it — only set root and overrides.
@@ -149,6 +248,7 @@ function buildViteConfig(overrides: Record<string, unknown> = {}) {
   if (hasConfig) {
     return {
       root: process.cwd(),
+      ...(logger ? { customLogger: logger } : {}),
       ...overrides,
     };
   }
@@ -166,6 +266,7 @@ function buildViteConfig(overrides: Record<string, unknown> = {}) {
     resolve: {
       dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
     },
+    ...(logger ? { customLogger: logger } : {}),
     ...overrides,
   };
 
@@ -249,6 +350,10 @@ async function buildApp() {
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
   const isApp = hasAppDir();
+  // In verbose mode, skip the custom logger so raw Vite/Rollup output is shown.
+  const logger = parsed.verbose
+    ? vite.createLogger("info", { allowClearScreen: false })
+    : createBuildLogger(vite);
 
   // For App Router: upgrade React if needed for react-server-dom-webpack compatibility.
   // Without this, builds with react<19.2.4 produce a Worker that crashes at
@@ -265,7 +370,7 @@ async function buildApp() {
 
   if (isApp) {
     // App Router: use createBuilder for multi-environment RSC builds
-    const config = buildViteConfig();
+    const config = buildViteConfig({}, logger);
     const builder = await vite.createBuilder(config);
     await builder.buildApp();
   } else {
@@ -274,36 +379,43 @@ async function buildApp() {
     // duplicate the vinext() plugin.
     console.log("  Building client...");
     await vite.build(
-      buildViteConfig({
-        build: {
-          outDir: "dist/client",
-          manifest: true,
-          ssrManifest: true,
-          rollupOptions: {
-            input: "virtual:vinext-client-entry",
-            output: clientOutputConfig,
-            treeshake: clientTreeshakeConfig,
+      buildViteConfig(
+        {
+          build: {
+            outDir: "dist/client",
+            manifest: true,
+            ssrManifest: true,
+            rollupOptions: {
+              input: "virtual:vinext-client-entry",
+              output: clientOutputConfig,
+              treeshake: clientTreeshakeConfig,
+            },
           },
         },
-      }),
+        logger,
+      ),
     );
 
     console.log("  Building server...");
     await vite.build(
-      buildViteConfig({
-        build: {
-          outDir: "dist/server",
-          ssr: "virtual:vinext-server-entry",
-          rollupOptions: {
-            output: {
-              entryFileNames: "entry.js",
+      buildViteConfig(
+        {
+          build: {
+            outDir: "dist/server",
+            ssr: "virtual:vinext-server-entry",
+            rollupOptions: {
+              output: {
+                entryFileNames: "entry.js",
+              },
             },
           },
         },
-      }),
+        logger,
+      ),
     );
   }
 
+  await printBuildReport({ root: process.cwd() });
   console.log("\n  Build complete. Run `vinext start` to start the production server.\n");
 }
 
@@ -460,7 +572,8 @@ function printHelp(cmd?: string) {
   runs the appropriate multi-environment build via Vite.
 
   Options:
-    -h, --help    Show this help
+    --verbose         Show full Vite/Rollup build output (suppressed by default)
+    -h, --help        Show this help
 `);
     return;
   }

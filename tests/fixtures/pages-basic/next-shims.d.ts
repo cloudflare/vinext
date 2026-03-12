@@ -25,6 +25,7 @@ declare module "next/link" {
     passHref?: boolean;
     scroll?: boolean;
     locale?: string | false;
+    onNavigate?: (event: { preventDefault(): void }) => void;
     children?: ReactNode;
   }
   const Link: ComponentType<LinkProps>;

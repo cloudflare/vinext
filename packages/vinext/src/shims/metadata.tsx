@@ -171,6 +171,8 @@ export interface Metadata {
       | Array<string | { url: string; alt?: string; width?: number; height?: number }>;
     creator?: string;
     creatorId?: string;
+    players?: TwitterPlayerDescriptor | TwitterPlayerDescriptor[];
+    app?: TwitterAppDescriptor;
   };
   icons?: {
     icon?: string | Array<{ url: string; sizes?: string; type?: string; media?: string }>;
@@ -204,8 +206,67 @@ export interface Metadata {
     telephone?: boolean;
   };
   category?: string;
+  itunes?: {
+    appId: string;
+    appArgument?: string;
+  };
+  appLinks?: {
+    ios?: AppLinksApple | AppLinksApple[];
+    iphone?: AppLinksApple | AppLinksApple[];
+    ipad?: AppLinksApple | AppLinksApple[];
+    android?: AppLinksAndroid | AppLinksAndroid[];
+    windows_phone?: AppLinksWindows | AppLinksWindows[];
+    windows?: AppLinksWindows | AppLinksWindows[];
+    windows_universal?: AppLinksWindows | AppLinksWindows[];
+    web?: AppLinksWeb | AppLinksWeb[];
+  };
   other?: Record<string, string | string[]>;
   [key: string]: unknown;
+}
+
+interface AppLinksApple {
+  url: string | URL;
+  app_store_id?: string | number;
+  app_name?: string;
+}
+
+interface AppLinksAndroid {
+  package: string;
+  url?: string | URL;
+  class?: string;
+  app_name?: string;
+}
+
+interface AppLinksWindows {
+  url: string | URL;
+  app_id?: string;
+  app_name?: string;
+}
+
+interface AppLinksWeb {
+  url: string | URL;
+  should_fallback?: boolean;
+}
+
+interface TwitterPlayerDescriptor {
+  playerUrl: string | URL;
+  streamUrl: string | URL;
+  width: number;
+  height: number;
+}
+
+interface TwitterAppDescriptor {
+  id: {
+    iphone?: string | number;
+    ipad?: string | number;
+    googleplay?: string;
+  };
+  url?: {
+    iphone?: string | URL;
+    ipad?: string | URL;
+    googleplay?: string | URL;
+  };
+  name?: string;
 }
 
 /**
@@ -540,6 +601,60 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
         }
       }
     }
+    // Twitter player cards
+    if (tw.players) {
+      const players = Array.isArray(tw.players) ? tw.players : [tw.players];
+      for (const player of players) {
+        const playerUrl = player.playerUrl.toString();
+        const streamUrl = player.streamUrl.toString();
+        elements.push(
+          <meta key={key++} name="twitter:player" content={resolveUrl(playerUrl) ?? playerUrl} />,
+        );
+        elements.push(
+          <meta
+            key={key++}
+            name="twitter:player:stream"
+            content={resolveUrl(streamUrl) ?? streamUrl}
+          />,
+        );
+        elements.push(
+          <meta key={key++} name="twitter:player:width" content={String(player.width)} />,
+        );
+        elements.push(
+          <meta key={key++} name="twitter:player:height" content={String(player.height)} />,
+        );
+      }
+    }
+    // Twitter app cards
+    if (tw.app) {
+      const { app } = tw;
+      for (const platform of ["iphone", "ipad", "googleplay"] as const) {
+        if (app.name) {
+          elements.push(
+            <meta key={key++} name={`twitter:app:name:${platform}`} content={app.name} />,
+          );
+        }
+        if (app.id[platform] !== undefined) {
+          elements.push(
+            <meta
+              key={key++}
+              name={`twitter:app:id:${platform}`}
+              content={String(app.id[platform])}
+            />,
+          );
+        }
+        if (app.url?.[platform] !== undefined) {
+          const appUrl = app.url[platform]!.toString();
+          elements.push(
+            <meta
+              key={key++}
+              name={`twitter:app:url:${platform}`}
+              content={resolveUrl(appUrl) ?? appUrl}
+            />,
+          );
+        }
+      }
+    }
   }
 
   // Icons
@@ -683,6 +798,44 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
             {...(img.media ? { media: img.media } : {})}
           />,
         );
+      }
+    }
+  }
+
+  // iTunes
+  if (metadata.itunes) {
+    const { appId, appArgument } = metadata.itunes;
+    let content = `app-id=${appId}`;
+    if (appArgument) {
+      content += `, app-argument=${appArgument}`;
+    }
+    elements.push(<meta key={key++} name="apple-itunes-app" content={content} />);
+  }
+
+  // App Links
+  if (metadata.appLinks) {
+    const al = metadata.appLinks;
+    const platforms = [
+      "ios",
+      "iphone",
+      "ipad",
+      "android",
+      "windows_phone",
+      "windows",
+      "windows_universal",
+      "web",
+    ] as const;
+    for (const platform of platforms) {
+      const entries = al[platform];
+      if (!entries) continue;
+      const list = Array.isArray(entries) ? entries : [entries];
+      for (const entry of list) {
+        for (const [k, v] of Object.entries(entry)) {
+          if (v === undefined || v === null) continue;
+          const str = String(v);
+          const content = k === "url" ? (resolveUrl(str) ?? str) : str;
+          elements.push(<meta key={key++} property={`al:${platform}:${k}`} content={content} />);
+        }
       }
     }
   }

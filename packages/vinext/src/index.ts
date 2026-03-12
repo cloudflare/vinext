@@ -16,6 +16,7 @@ import { createDirectRunner } from "./server/dev-module-runner.js";
 import { generateRscEntry } from "./entries/app-rsc-entry.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import { generateBrowserEntry } from "./entries/app-browser-entry.js";
+import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
   loadNextConfig,
   resolveNextConfig,
@@ -249,6 +250,10 @@ function getViteMajorVersion(): number {
   }
 }
 
+type UserResolveConfigWithTsconfigPaths = NonNullable<UserConfig["resolve"]> & {
+  tsconfigPaths?: boolean;
+};
+
 /**
  * PostCSS config file names to search for, in priority order.
  * Matches the same search order as postcss-load-config / lilconfig.
@@ -273,6 +278,13 @@ const POSTCSS_CONFIG_FILES = [
 ];
 
 /**
+ * Module-level cache for resolvePostcssStringPlugins — avoids re-scanning per Vite environment.
+ * Stores the Promise itself so concurrent calls (RSC/SSR/Client config() hooks firing in
+ * parallel) all await the same in-flight scan rather than each starting their own.
+ */
+const _postcssCache = new Map<string, Promise<{ plugins: any[] } | undefined>>();
+
+/**
  * Resolve PostCSS string plugin names in a project's PostCSS config.
  *
  * Next.js (via postcss-load-config) resolves string plugin names in the
@@ -284,7 +296,15 @@ const POSTCSS_CONFIG_FILES = [
  * Returns the resolved PostCSS config object to inject into Vite's
  * `css.postcss`, or `undefined` if no resolution is needed.
  */
-async function resolvePostcssStringPlugins(
+function resolvePostcssStringPlugins(projectRoot: string): Promise<{ plugins: any[] } | undefined> {
+  if (_postcssCache.has(projectRoot)) return _postcssCache.get(projectRoot)!;
+
+  const promise = _resolvePostcssStringPluginsUncached(projectRoot);
+  _postcssCache.set(projectRoot, promise);
+  return promise;
+}
+
+async function _resolvePostcssStringPluginsUncached(
   projectRoot: string,
 ): Promise<{ plugins: any[] } | undefined> {
   // Find the PostCSS config file
@@ -296,7 +316,9 @@ async function resolvePostcssStringPlugins(
       break;
     }
   }
-  if (!configPath) return undefined;
+  if (!configPath) {
+    return undefined;
+  }
 
   // Load the config file
   let config: any;
@@ -326,11 +348,15 @@ async function resolvePostcssStringPlugins(
 
   // Only process array-form plugins that contain string entries
   // (either bare strings or tuple form ["plugin-name", { options }])
-  if (!config || !Array.isArray(config.plugins)) return undefined;
+  if (!config || !Array.isArray(config.plugins)) {
+    return undefined;
+  }
   const hasStringPlugins = config.plugins.some(
     (p: any) => typeof p === "string" || (Array.isArray(p) && typeof p[0] === "string"),
   );
-  if (!hasStringPlugins) return undefined;
+  if (!hasStringPlugins) {
+    return undefined;
+  }
 
   // Resolve string plugin names to actual plugin functions
   const req = createRequire(path.join(projectRoot, "package.json"));
@@ -682,6 +708,7 @@ export interface VinextOptions {
 }
 
 export default function vinext(options: VinextOptions = {}): PluginOption[] {
+  const viteMajorVersion = getViteMajorVersion();
   let root: string;
   let pagesDir: string;
   let appDir: string;
@@ -699,6 +726,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
+
+  // Build-only cache for og-inline-fetch-assets to avoid repeated file reads
+  // during a single production build. Dev mode skips the cache so asset edits
+  // are picked up without restarting the Vite server.
+  const _ogInlineCache = new Map<string, string>();
+  let _ogInlineIsBuild = false;
 
   /**
    * Generate the virtual SSR server entry module.
@@ -796,7 +829,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
-    tsconfigPaths(),
+    // Vite 8+ supports this natively via resolve.tsconfigPaths.
+    ...(viteMajorVersion >= 8 ? [] : [tsconfigPaths()]),
     // React Fast Refresh + JSX transform for client components.
     reactPlugin,
     // Transform CJS require()/module.exports to ESM before other plugins
@@ -808,6 +842,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
       async config(config, env) {
         root = config.root ?? process.cwd();
+        const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
+        const shouldEnableNativeTsconfigPaths =
+          viteMajorVersion >= 8 && userResolve?.tsconfigPaths === undefined;
 
         // Load .env files into process.env before anything else.
         // Next.js loads .env files before evaluating next.config.js, so
@@ -925,33 +962,55 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // previous deploy are never served by the new one.
         defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
 
-        // Build the shim alias map — used by both resolve.alias and resolveId
-        // (resolveId handles .js extension variants for libraries like nuqs)
+        // Build the shim alias map. Exact `.js` variants are included for the
+        // public Next entrypoints that are file-backed in `next/package.json`.
+        // Some libraries (for example `nuqs`) import `next/navigation.js`
+        // directly; aliasing the `.js` form ensures optimizeDeps pre-bundles
+        // vinext's shim instead of real Next.
         nextShimMap = {
           ...nextConfig.aliases,
           "next/link": path.join(shimsDir, "link"),
+          "next/link.js": path.join(shimsDir, "link"),
           "next/head": path.join(shimsDir, "head"),
+          "next/head.js": path.join(shimsDir, "head"),
           "next/router": path.join(shimsDir, "router"),
+          "next/router.js": path.join(shimsDir, "router"),
           "next/compat/router": path.join(shimsDir, "compat-router"),
+          "next/compat/router.js": path.join(shimsDir, "compat-router"),
           "next/image": path.join(shimsDir, "image"),
+          "next/image.js": path.join(shimsDir, "image"),
           "next/legacy/image": path.join(shimsDir, "legacy-image"),
+          "next/legacy/image.js": path.join(shimsDir, "legacy-image"),
           "next/dynamic": path.join(shimsDir, "dynamic"),
+          "next/dynamic.js": path.join(shimsDir, "dynamic"),
           "next/app": path.join(shimsDir, "app"),
+          "next/app.js": path.join(shimsDir, "app"),
           "next/document": path.join(shimsDir, "document"),
+          "next/document.js": path.join(shimsDir, "document"),
           "next/config": path.join(shimsDir, "config"),
           "next/script": path.join(shimsDir, "script"),
+          "next/script.js": path.join(shimsDir, "script"),
           "next/server": path.join(shimsDir, "server"),
+          "next/server.js": path.join(shimsDir, "server"),
           "next/navigation": path.join(shimsDir, "navigation"),
+          "next/navigation.js": path.join(shimsDir, "navigation"),
           "next/headers": path.join(shimsDir, "headers"),
+          "next/headers.js": path.join(shimsDir, "headers"),
           "next/font/google": path.join(shimsDir, "font-google"),
           "next/font/local": path.join(shimsDir, "font-local"),
           "next/cache": path.join(shimsDir, "cache"),
+          "next/cache.js": path.join(shimsDir, "cache"),
           "next/form": path.join(shimsDir, "form"),
+          "next/form.js": path.join(shimsDir, "form"),
           "next/og": path.join(shimsDir, "og"),
+          "next/og.js": path.join(shimsDir, "og"),
           "next/web-vitals": path.join(shimsDir, "web-vitals"),
+          "next/web-vitals.js": path.join(shimsDir, "web-vitals"),
           "next/amp": path.join(shimsDir, "amp"),
           "next/error": path.join(shimsDir, "error"),
+          "next/error.js": path.join(shimsDir, "error"),
           "next/constants": path.join(shimsDir, "constants"),
+          "next/constants.js": path.join(shimsDir, "constants"),
           // Internal next/dist/* paths used by popular libraries
           // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
           "next/dist/shared/lib/app-router-context.shared-runtime": path.join(
@@ -1188,6 +1247,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // causing cryptic "Invalid hook call" errors. This is a no-op
             // when only one copy exists.
             dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
+            ...(shouldEnableNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
           },
           // Exclude vinext from dependency optimization so esbuild doesn't
           // scan dist files containing virtual module imports (virtual:vinext-*)
@@ -1200,7 +1260,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           },
           // Enable JSX in .tsx/.jsx files
           // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`
-          ...(getViteMajorVersion() >= 8
+          ...(viteMajorVersion >= 8
             ? { oxc: { jsx: { runtime: "automatic" } } }
             : { esbuild: { jsx: "automatic" } }),
           // Define env vars for client bundle
@@ -1305,6 +1365,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               consumer: "client",
               optimizeDeps: {
                 exclude: ["vinext"],
+                // Crawl app/ source files up front so client-only deps imported
+                // by user components are discovered during startup instead of
+                // triggering a late re-optimisation + full page reload.
+                entries: appEntries,
                 // React packages aren't crawled from app/ source files,
                 // so must be pre-included to avoid late discovery (#25).
                 include: [
@@ -1408,19 +1472,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // ID (with \0 prefix). We need to re-resolve it so the client
           // environment's import-analysis can find it.
           const cleanId = id.startsWith("\0") ? id.slice(1) : id;
-
-          // Handle next/* imports with .js extension (e.g. "next/navigation.js")
-          // Libraries like nuqs import "next/navigation.js" which doesn't match
-          // our resolve.alias for "next/navigation". Strip the .js and resolve
-          // through our shim map, appending .js to the resolved path.
-          if (cleanId.startsWith("next/") && cleanId.endsWith(".js")) {
-            const withoutExt = cleanId.slice(0, -3);
-            if (nextShimMap[withoutExt]) {
-              const shimPath = nextShimMap[withoutExt];
-              // Alias values don't include .js — append it for resolveId
-              return shimPath.endsWith(".js") ? shimPath : shimPath + ".js";
-            }
-          }
 
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
@@ -1968,7 +2019,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // decodeURIComponent prevents /%61dmin bypassing /admin matchers.
               // normalizePath collapses // and resolves . / .. segments.
               try {
-                pathname = normalizePath(decodeURIComponent(pathname));
+                pathname = normalizePath(normalizePathnameForRouteMatchStrict(pathname));
               } catch {
                 // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of crashing.
                 res.writeHead(400);
@@ -2118,7 +2169,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     for (const [key, value] of result.response.headers) {
                       res.appendHeader(key, value);
                     }
-                    const body = await result.response.text();
+                    const body = Buffer.from(await result.response.arrayBuffer());
                     res.end(body);
                     return;
                   }
@@ -2835,12 +2886,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     {
       name: "vinext:og-inline-fetch-assets",
       enforce: "pre",
-      transform(code, id) {
+      configResolved(config) {
+        _ogInlineIsBuild = config.command === "build";
+      },
+      buildStart() {
+        if (_ogInlineIsBuild) {
+          _ogInlineCache.clear();
+        }
+      },
+      async transform(code, id) {
         // Quick bail-out: only process modules that use new URL(..., import.meta.url)
         if (!code.includes("import.meta.url")) {
           return null;
         }
 
+        const useCache = _ogInlineIsBuild;
         const moduleDir = path.dirname(id);
         let newCode = code;
         let didReplace = false;
@@ -2856,12 +2916,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
             const absPath = path.resolve(moduleDir, relPath);
 
-            let fileBase64: string;
-            try {
-              fileBase64 = fs.readFileSync(absPath).toString("base64");
-            } catch {
-              // File not found on disk — skip (may be a runtime-only asset)
-              continue;
+            let fileBase64 = useCache ? _ogInlineCache.get(absPath) : undefined;
+            if (fileBase64 === undefined) {
+              try {
+                const buf = await fs.promises.readFile(absPath);
+                fileBase64 = buf.toString("base64");
+                if (useCache) {
+                  _ogInlineCache.set(absPath, fileBase64);
+                }
+              } catch {
+                // File not found on disk — skip (may be a runtime-only asset)
+                continue;
+              }
             }
 
             // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
@@ -2892,12 +2958,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
             const absPath = path.resolve(moduleDir, relPath);
 
-            let fileBase64: string;
-            try {
-              fileBase64 = fs.readFileSync(absPath).toString("base64");
-            } catch {
-              // File not found on disk — skip
-              continue;
+            let fileBase64 = useCache ? _ogInlineCache.get(absPath) : undefined;
+            if (fileBase64 === undefined) {
+              try {
+                const buf = await fs.promises.readFile(absPath);
+                fileBase64 = buf.toString("base64");
+                if (useCache) {
+                  _ogInlineCache.set(absPath, fileBase64);
+                }
+              } catch {
+                // File not found on disk — skip
+                continue;
+              }
             }
 
             // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
@@ -3547,14 +3619,23 @@ function findFileWithExts(
   return null;
 }
 
+/** Module-level cache for hasMdxFiles — avoids re-scanning per Vite environment. */
+const _mdxScanCache = new Map<string, boolean>();
+
 /**
  * Check if the project has .mdx files in app/ or pages/ directories.
  */
 function hasMdxFiles(root: string, appDir: string | null, pagesDir: string | null): boolean {
+  const cacheKey = `${root}\0${appDir ?? ""}\0${pagesDir ?? ""}`;
+  if (_mdxScanCache.has(cacheKey)) return _mdxScanCache.get(cacheKey)!;
   const dirs = [appDir, pagesDir].filter(Boolean) as string[];
   for (const dir of dirs) {
-    if (fs.existsSync(dir) && scanDirForMdx(dir)) return true;
+    if (fs.existsSync(dir) && scanDirForMdx(dir)) {
+      _mdxScanCache.set(cacheKey, true);
+      return true;
+    }
   }
+  _mdxScanCache.set(cacheKey, false);
   return false;
 }
 
@@ -3592,6 +3673,9 @@ export type { NextConfig } from "./config/next-config.js";
 export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig, computeLazyChunks };
 export { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
+export { _postcssCache };
+export { hasMdxFiles as _hasMdxFiles };
+export { _mdxScanCache };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
 export { stripServerExports as _stripServerExports };
 export { asyncHooksStubPlugin as _asyncHooksStubPlugin };

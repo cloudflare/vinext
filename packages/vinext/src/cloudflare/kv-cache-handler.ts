@@ -28,6 +28,8 @@
  *   }
  */
 
+import { Buffer } from "node:buffer";
+
 import type { CacheHandler, CacheHandlerValue, IncrementalCacheValue } from "../shims/cache.js";
 import { getRequestExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
 
@@ -65,6 +67,9 @@ const ENTRY_PREFIX = "cache:";
 
 /** Max tag length to prevent KV key abuse. */
 const MAX_TAG_LENGTH = 256;
+
+/** Matches a valid base64 string (standard alphabet with optional padding). */
+const BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/;
 
 /**
  * Validate a cache tag. Returns null if invalid.
@@ -435,26 +440,25 @@ function restoreArrayBuffers(value: IncrementalCacheValue): boolean {
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
+  return Buffer.from(buffer).toString("base64");
 }
 
+/**
+ * Decode a base64 string to an ArrayBuffer.
+ * Validates the input against the base64 alphabet before decoding,
+ * since Buffer.from(str, "base64") silently ignores invalid characters.
+ */
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
+  if (!BASE64_RE.test(base64) || base64.length % 4 !== 0) {
+    throw new Error("Invalid base64 string");
   }
-  return bytes.buffer;
+  const buf = Buffer.from(base64, "base64");
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
 /**
  * Safely decode base64 to ArrayBuffer. Returns null on invalid input
- * instead of throwing a DOMException.
+ * instead of throwing.
  */
 function safeBase64ToArrayBuffer(base64: string): ArrayBuffer | null {
   try {

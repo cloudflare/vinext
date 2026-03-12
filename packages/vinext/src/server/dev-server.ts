@@ -594,21 +594,85 @@ export function createSSRHandler(
                               cachedHtml,
                             );
 
-                            // Trigger background regeneration: re-run getStaticProps and
-                            // update the cache so the next request is a HIT with fresh data.
+                            // Trigger background regeneration: re-run getStaticProps,
+                            // re-render the page, and cache the fresh HTML.
                             triggerBackgroundRegeneration(cacheKey, async () => {
-                              const freshResult = await pageModule.getStaticProps({ params });
+                              const freshResult = await pageModule.getStaticProps({
+                                params,
+                                locale: locale ?? i18nConfig?.defaultLocale,
+                                locales: i18nConfig?.locales,
+                                defaultLocale: i18nConfig?.defaultLocale,
+                              });
                               if (freshResult && "props" in freshResult) {
                                 const revalidate =
                                   typeof freshResult.revalidate === "number"
                                     ? freshResult.revalidate
                                     : 0;
                                 if (revalidate > 0) {
+                                  const freshProps = freshResult.props;
+
+                                  // Re-render the page with fresh props
+                                  let RegenApp: any = null;
+                                  const appPath = path.join(pagesDir, "_app");
+                                  if (findFileWithExtensions(appPath, matcher)) {
+                                    try {
+                                      const appMod = await server.ssrLoadModule(appPath);
+                                      RegenApp = appMod.default ?? null;
+                                    } catch {
+                                      // _app failed to load
+                                    }
+                                  }
+
+                                  let el = RegenApp
+                                    ? React.createElement(RegenApp, {
+                                        Component: pageModule.default,
+                                        pageProps: freshProps,
+                                      })
+                                    : React.createElement(pageModule.default, freshProps);
+                                  if (routerShim.wrapWithRouterContext) {
+                                    el = routerShim.wrapWithRouterContext(el);
+                                  }
+                                  const freshBody = await renderToStringAsync(el);
+
+                                  // Rebuild __NEXT_DATA__ with fresh props. The hydration
+                                  // script (module URLs) is stable across regenerations —
+                                  // extract it from the cached HTML to avoid duplication.
+                                  const viteRoot = server.config.root;
+                                  const regenPageUrl =
+                                    "/" + path.relative(viteRoot, route.filePath);
+                                  const regenAppUrl = RegenApp
+                                    ? "/" + path.relative(viteRoot, path.join(pagesDir, "_app"))
+                                    : null;
+
+                                  const freshNextData = `<script>window.__NEXT_DATA__ = ${safeJsonStringify(
+                                    {
+                                      props: { pageProps: freshProps },
+                                      page: patternToNextFormat(route.pattern),
+                                      query: params,
+                                      buildId: process.env.__VINEXT_BUILD_ID,
+                                      isFallback: false,
+                                      locale: locale ?? i18nConfig?.defaultLocale,
+                                      locales: i18nConfig?.locales,
+                                      defaultLocale: i18nConfig?.defaultLocale,
+                                      __vinext: {
+                                        pageModuleUrl: regenPageUrl,
+                                        appModuleUrl: regenAppUrl,
+                                      },
+                                    },
+                                  )}${i18nConfig ? `;window.__VINEXT_LOCALE__=${safeJsonStringify(locale ?? i18nConfig.defaultLocale)};window.__VINEXT_LOCALES__=${safeJsonStringify(i18nConfig.locales)};window.__VINEXT_DEFAULT_LOCALE__=${safeJsonStringify(i18nConfig.defaultLocale)}` : ""}</script>`;
+
+                                  const hydrationMatch = cachedHtml.match(
+                                    /<script type="module">[\s\S]*?<\/script>/,
+                                  );
+                                  const hydrationScript = hydrationMatch?.[0] ?? "";
+
+                                  const freshHtml = `<!DOCTYPE html><html><head></head><body><div id="__next">${freshBody}</div>${freshNextData}\n  ${hydrationScript}</body></html>`;
                                   await isrSet(
                                     cacheKey,
-                                    buildPagesCacheValue(cachedHtml, freshResult.props),
+                                    buildPagesCacheValue(freshHtml, freshProps),
                                     revalidate,
                                   );
+                                  setRevalidateDuration(cacheKey, revalidate);
                                 }
                               }
                             });
@@ -941,9 +1005,7 @@ hydrate();
                             routePath: route.pattern,
                             routeType: "render",
                           },
-                        ).catch(() => {
-                          /* ignore reporting errors */
-                        });
+                        );
                         // Try to render custom 500 error page
                         try {
                           await renderErrorPage(

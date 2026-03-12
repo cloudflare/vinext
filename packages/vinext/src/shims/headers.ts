@@ -443,16 +443,12 @@ export function headersContextFromRequest(request: Request): HeadersContext {
   let _mutable: Headers | null = null;
 
   const headersProxy = new Proxy(request.headers, {
-    get(target, prop: string | symbol, receiver) {
+    get(target, prop: string | symbol) {
       // Route to the materialised copy if it exists.
       const src = _mutable ?? target;
 
-      if (typeof prop !== "string") {
-        return Reflect.get(src, prop, receiver);
-      }
-
       // Intercept mutating methods: materialise on first write.
-      if (_HEADERS_MUTATING_METHODS.has(prop)) {
+      if (typeof prop === "string" && _HEADERS_MUTATING_METHODS.has(prop)) {
         return (...args: unknown[]) => {
           if (!_mutable) {
             _mutable = new Headers(target);

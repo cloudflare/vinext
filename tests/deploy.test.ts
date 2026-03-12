@@ -29,6 +29,7 @@ import {
 import { manifestFileWithBase } from "../packages/vinext/src/utils/manifest-paths.js";
 import { computeLazyChunks } from "../packages/vinext/src/index.js";
 import { mergeHeaders } from "../packages/vinext/src/server/worker-utils.js";
+import { domainCandidates, parseWranglerConfig } from "../packages/vinext/src/cloudflare/tpr.js";
 
 // ─── Test Helpers ────────────────────────────────────────────────────────────
 
@@ -2293,5 +2294,68 @@ describe("ensureViteConfigCompatibility — issue #184", () => {
     // Only the workspace package should be modified
     expect(webPkg.type).toBe("module");
     expect(rootPkg.type).toBeUndefined();
+  });
+});
+
+// ─── domainCandidates ────────────────────────────────────────────────────────
+
+describe("domainCandidates", () => {
+  it("returns a single candidate for a bare domain", () => {
+    expect(domainCandidates("example.com")).toEqual(["example.com"]);
+  });
+
+  it("starts from the shortest suffix for a simple subdomain", () => {
+    expect(domainCandidates("shop.example.com")).toEqual(["example.com", "shop.example.com"]);
+  });
+
+  it("handles multi-part TLDs by trying progressively longer candidates", () => {
+    expect(domainCandidates("shop.example.co.uk")).toEqual([
+      "co.uk",
+      "example.co.uk",
+      "shop.example.co.uk",
+    ]);
+  });
+
+  it("handles deeply nested subdomains", () => {
+    expect(domainCandidates("a.b.c.example.com")).toEqual([
+      "example.com",
+      "c.example.com",
+      "b.c.example.com",
+      "a.b.c.example.com",
+    ]);
+  });
+});
+
+// ─── parseWranglerConfig — TPR fields ────────────────────────────────────────
+
+describe("parseWranglerConfig — custom domain extraction", () => {
+  it("extracts custom domain from routes array (string form)", () => {
+    writeFile(tmpDir, "wrangler.jsonc", JSON.stringify({ routes: ["example.co.uk/*"] }));
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("example.co.uk");
+  });
+
+  it("extracts custom domain from custom_domains array", () => {
+    writeFile(tmpDir, "wrangler.json", JSON.stringify({ custom_domains: ["shop.example.com.au"] }));
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBe("shop.example.com.au");
+  });
+
+  it("ignores workers.dev domains", () => {
+    writeFile(tmpDir, "wrangler.json", JSON.stringify({ routes: ["my-app.workers.dev/*"] }));
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.customDomain).toBeUndefined();
+  });
+
+  it("extracts KV namespace ID for VINEXT_CACHE", () => {
+    writeFile(
+      tmpDir,
+      "wrangler.json",
+      JSON.stringify({
+        kv_namespaces: [{ binding: "VINEXT_CACHE", id: "abc123" }],
+      }),
+    );
+    const config = parseWranglerConfig(tmpDir);
+    expect(config?.kvNamespaceId).toBe("abc123");
   });
 });

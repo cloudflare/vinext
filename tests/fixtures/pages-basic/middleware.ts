@@ -43,6 +43,30 @@ export function middleware(request: NextRequest) {
     return new Response("Access Denied", { status: 403, statusText: "Blocked by Middleware" });
   }
 
+  // Return a binary response (PNG 1x1 pixel) to test binary body preservation
+  if (url.pathname === "/binary-response") {
+    const pixel = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+      0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
+      0x77, 0x53, 0xde, 0x00, 0x00, 0x00, 0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8,
+      0xcf, 0xc0, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0xe2, 0x21, 0xbc, 0x33, 0x00, 0x00, 0x00,
+      0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ]);
+    return new Response(pixel, {
+      status: 200,
+      headers: { "content-type": "image/png" },
+    });
+  }
+
+  // Return a response with multiple Set-Cookie headers
+  if (url.pathname === "/multi-cookie-response") {
+    const res = new Response("cookies set", { status: 200 });
+    res.headers.append("set-cookie", "a=1; Path=/");
+    res.headers.append("set-cookie", "b=2; Path=/");
+    res.headers.append("set-cookie", "c=3; Path=/");
+    return res;
+  }
+
   // Throw an error to test that middleware errors return 500, not bypass auth
   if (url.pathname === "/middleware-throw") {
     throw new Error("middleware crash");

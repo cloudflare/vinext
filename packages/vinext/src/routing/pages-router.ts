@@ -1,11 +1,12 @@
 import path from "node:path";
-import { compareRoutes } from "./utils.js";
+import { compareRoutes, decodeRouteSegment, normalizePathnameForRouteMatch } from "./utils.js";
 import {
   createValidFileMatcher,
   scanWithExtensions,
   type ValidFileMatcher,
 } from "./file-matcher.js";
 import { patternToNextFormat, validateRoutePatterns } from "./route-validation.js";
+import { buildRouteTrie, trieMatch, type TrieNode } from "./route-trie.js";
 
 export interface Route {
   /** URL pattern, e.g. "/" or "/about" or "/posts/:id" */
@@ -141,7 +142,7 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
       continue;
     }
 
-    urlSegments.push(segment);
+    urlSegments.push(decodeRouteSegment(segment));
   }
 
   const pattern = "/" + urlSegments.join("/");
@@ -155,6 +156,18 @@ function fileToRoute(file: string, pagesDir: string, matcher: ValidFileMatcher):
   };
 }
 
+// Trie cache — keyed by route array identity (same array = same trie)
+const trieCache = new WeakMap<Route[], TrieNode<Route>>();
+
+function getOrBuildTrie(routes: Route[]): TrieNode<Route> {
+  let trie = trieCache.get(routes);
+  if (!trie) {
+    trie = buildRouteTrie(routes);
+    trieCache.set(routes, trie);
+  }
+  return trie;
+}
+
 /**
  * Match a URL path against a route pattern.
  * Returns the matched params or null if no match.
@@ -166,23 +179,12 @@ export function matchRoute(
   // Normalize: strip query string and trailing slash
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  try {
-    normalizedUrl = decodeURIComponent(normalizedUrl);
-  } catch {
-    /* malformed percent-encoding — match as-is */
-  }
+  normalizedUrl = normalizePathnameForRouteMatch(normalizedUrl);
 
-  // Split URL once, reuse across all route match attempts
+  // Split URL once, look up via trie
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) {
-      return { route, params };
-    }
-  }
-
-  return null;
+  const trie = getOrBuildTrie(routes);
+  return trieMatch(trie, urlParts);
 }
 
 /**
@@ -238,52 +240,6 @@ async function scanApiRoutes(pagesDir: string, matcher: ValidFileMatcher): Promi
   routes.sort(compareRoutes);
 
   return routes;
-}
-
-function matchPattern(
-  urlParts: string[],
-  patternParts: string[],
-): Record<string, string | string[]> | null {
-  const params: Record<string, string | string[]> = Object.create(null);
-
-  for (let i = 0; i < patternParts.length; i++) {
-    const pp = patternParts[i];
-
-    // Catch-all: :slug+
-    if (pp.endsWith("+")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      if (remaining.length === 0) return null;
-      params[paramName] = remaining;
-      return params;
-    }
-
-    // Optional catch-all: :slug*
-    if (pp.endsWith("*")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      params[paramName] = remaining;
-      return params;
-    }
-
-    // Dynamic segment: :id
-    if (pp.startsWith(":")) {
-      const paramName = pp.slice(1);
-      if (i >= urlParts.length) return null;
-      params[paramName] = urlParts[i];
-      continue;
-    }
-
-    // Static segment
-    if (i >= urlParts.length || urlParts[i] !== pp) return null;
-  }
-
-  // All pattern parts matched - check url doesn't have extra segments
-  if (urlParts.length !== patternParts.length) return null;
-
-  return params;
 }
 
 /**

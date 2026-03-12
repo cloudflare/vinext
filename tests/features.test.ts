@@ -489,6 +489,48 @@ describe("ISR (Pages Router)", () => {
     expect(res3.headers.get("x-vinext-cache")).toBe("HIT");
   });
 
+  it("background regeneration re-renders HTML with fresh props", async () => {
+    // Ensure cache is populated (may already be from prior tests)
+    await fetch(`${baseUrl}/isr-test`);
+
+    // Wait for TTL to expire (revalidate: 1 second)
+    await new Promise((r) => setTimeout(r, 1200));
+
+    // Trigger background regeneration via STALE request and capture old HTML
+    const staleRes = await fetch(`${baseUrl}/isr-test`);
+    expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
+    const staleHtml = await staleRes.text();
+    const staleTimestamp = staleHtml.match(/data-testid="timestamp">(\d+)</);
+    expect(staleTimestamp).toBeTruthy();
+    const oldTimestamp = Number(staleTimestamp![1]);
+
+    // Wait for background regeneration to complete
+    await new Promise((r) => setTimeout(r, 500));
+
+    // The regenerated HIT should have DIFFERENT HTML — the page must have been
+    // re-rendered with fresh getStaticProps data, not just the old HTML cached
+    // again with new pageData.
+    const hitRes = await fetch(`${baseUrl}/isr-test`);
+    expect(hitRes.headers.get("x-vinext-cache")).toBe("HIT");
+    const hitHtml = await hitRes.text();
+    const hitTimestamp = hitHtml.match(/data-testid="timestamp">(\d+)</);
+    expect(hitTimestamp).toBeTruthy();
+    const newTimestamp = Number(hitTimestamp![1]);
+
+    // The HTML timestamp must have changed — proves the page was re-rendered,
+    // not just getStaticProps re-run with old HTML cached again.
+    expect(newTimestamp).toBeGreaterThan(oldTimestamp);
+
+    // __NEXT_DATA__ must also contain the fresh timestamp, proving both the
+    // server-rendered HTML and the hydration data are in sync.
+    const nextDataMatch = hitHtml.match(
+      /window\.__NEXT_DATA__\s*=\s*(\{[\s\S]*?\})(?:;|<\/script>)/,
+    );
+    expect(nextDataMatch).toBeTruthy();
+    const nextData = JSON.parse(nextDataMatch![1]);
+    expect(nextData.props.pageProps.timestamp).toBe(newTimestamp);
+  });
+
   it("sets Cache-Control header for ISR pages", async () => {
     const res = await fetch(`${baseUrl}/isr-test`);
     const cacheControl = res.headers.get("cache-control");
