@@ -48,8 +48,8 @@ import { getRequestExecutionContext, type ExecutionContextLike } from "../shims/
 type SerializedCachedAppPageValue = Omit<CachedAppPageValue, "rscData"> & {
   rscData: string | undefined;
 };
-type SerializedCachedRouteValue = Omit<CachedRouteValue, "body"> & { body: string };
-type SerializedCachedImageValue = Omit<CachedImageValue, "buffer"> & { buffer: string };
+type SerializedCachedRouteValue = Omit<CachedRouteValue, "body"> & { body?: string };
+type SerializedCachedImageValue = Omit<CachedImageValue, "buffer"> & { buffer?: string };
 
 /**
  * A variant of `IncrementalCacheValue` safe for JSON serialization:
@@ -455,21 +455,28 @@ function serializeForJSON(value: IncrementalCacheValue): SerializedIncrementalCa
  */
 function restoreArrayBuffers(value: SerializedIncrementalCacheValue): IncrementalCacheValue | null {
   if (value.kind === "APP_PAGE") {
-    const rscDataResult =
-      value.rscData !== undefined ? safeBase64ToArrayBuffer(value.rscData) : undefined;
-    if (value.rscData !== undefined && !rscDataResult) return null;
-    const rscData = rscDataResult ?? undefined;
-    return { ...value, rscData };
+    if (typeof value.rscData === "string") {
+      const decoded = safeBase64ToArrayBuffer(value.rscData);
+      if (!decoded) return null;
+      return { ...value, rscData: decoded };
+    }
+    return value as IncrementalCacheValue;
   }
   if (value.kind === "APP_ROUTE") {
-    const body = safeBase64ToArrayBuffer(value.body);
-    if (!body) return null;
-    return { ...value, body };
+    if (typeof value.body === "string") {
+      const decoded = safeBase64ToArrayBuffer(value.body);
+      if (!decoded) return null;
+      return { ...value, body: decoded };
+    }
+    return value as unknown as IncrementalCacheValue;
   }
   if (value.kind === "IMAGE") {
-    const buffer = safeBase64ToArrayBuffer(value.buffer);
-    if (!buffer) return null;
-    return { ...value, buffer };
+    if (typeof value.buffer === "string") {
+      const decoded = safeBase64ToArrayBuffer(value.buffer);
+      if (!decoded) return null;
+      return { ...value, buffer: decoded };
+    }
+    return value as unknown as IncrementalCacheValue;
   }
   return value;
 }
