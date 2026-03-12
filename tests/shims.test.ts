@@ -510,6 +510,69 @@ describe("next/headers shim", () => {
     expect(req.headers.get("x-foo")).toBe("bar");
   });
 
+  it("headersContextFromRequest preserves iterator-based reads before copy-on-write", async () => {
+    // Ported from Next.js:
+    // packages/next/src/server/web/spec-extension/adapters/headers.test.ts
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/adapters/headers.test.ts
+    const { headersContextFromRequest } = await import("../packages/vinext/src/shims/headers.js");
+    const ctx = headersContextFromRequest(
+      new Request("https://example.com", {
+        headers: {
+          "x-iter-a": "alpha",
+          "x-iter-b": "beta",
+        },
+      }),
+    );
+
+    expect(Array.from(ctx.headers)).toEqual([
+      ["x-iter-a", "alpha"],
+      ["x-iter-b", "beta"],
+    ]);
+    expect(Array.from(ctx.headers.entries())).toEqual([
+      ["x-iter-a", "alpha"],
+      ["x-iter-b", "beta"],
+    ]);
+    expect(Array.from(ctx.headers.keys())).toEqual(["x-iter-a", "x-iter-b"]);
+    expect(Array.from(ctx.headers.values())).toEqual(["alpha", "beta"]);
+    expect(Object.fromEntries(ctx.headers)).toEqual({
+      "x-iter-a": "alpha",
+      "x-iter-b": "beta",
+    });
+  });
+
+  it("headers() preserves iterator-based reads for sync and awaited access", async () => {
+    const { headersContextFromRequest, runWithHeadersContext, headers } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const ctx = headersContextFromRequest(
+      new Request("https://example.com", {
+        headers: {
+          "x-iter-a": "alpha",
+          "x-iter-b": "beta",
+        },
+      }),
+    );
+
+    await runWithHeadersContext(ctx, async () => {
+      const syncHeaders = headers();
+      expect(Array.from(syncHeaders)).toEqual([
+        ["x-iter-a", "alpha"],
+        ["x-iter-b", "beta"],
+      ]);
+      expect(Array.from(syncHeaders.keys())).toEqual(["x-iter-a", "x-iter-b"]);
+
+      const awaitedHeaders = await headers();
+      expect(Array.from(awaitedHeaders.entries())).toEqual([
+        ["x-iter-a", "alpha"],
+        ["x-iter-b", "beta"],
+      ]);
+      expect(Array.from(awaitedHeaders.values())).toEqual(["alpha", "beta"]);
+      expect(Object.fromEntries(awaitedHeaders)).toEqual({
+        "x-iter-a": "alpha",
+        "x-iter-b": "beta",
+      });
+    });
+  });
+
   it("headersContextFromRequest defers cookie parsing until first access", async () => {
     // Cookie parsing should be deferred: accessing ctx.cookies triggers parsing,
     // but merely calling headersContextFromRequest must not.

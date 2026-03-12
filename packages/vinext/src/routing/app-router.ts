@@ -289,6 +289,7 @@ function discoverSlotSubRoutes(
 
     // Find the default.tsx for the children slot at the parent directory
     const childrenDefault = findFile(parentPageDir, "default", matcher);
+    if (!childrenDefault) continue;
 
     for (const { rawSegments, converted: convertedSubRoute, slotPages } of subPathMap.values()) {
       const {

@@ -17802,6 +17802,7 @@ import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getS
 import { parseCookies } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
+import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import * as _instrumentation from "<ROOT>/tests/fixtures/pages-basic/instrumentation.ts";
 import * as middlewareModule from "<ROOT>/tests/fixtures/pages-basic/middleware.ts";
 import { NextRequest, NextFetchEvent } from "next/server";
@@ -18716,6 +18717,11 @@ async function _renderPage(request, url, manifest) {
       return new Response(compositeStream, { status: finalStatus, headers: responseHeaders });
     } catch (e) {
       console.error("[vinext] SSR error:", e);
+      _reportRequestError(
+        e instanceof Error ? e : new Error(String(e)),
+        { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+        { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
+      ).catch(() => { /* ignore reporting errors */ });
       return new Response("Internal Server Error", { status: 500 });
     }
   });
@@ -18786,6 +18792,11 @@ export async function handleApiRoute(request, url) {
       return new Response(e.message, { status: e.statusCode, statusText: e.message });
     }
     console.error("[vinext] API error:", e);
+    _reportRequestError(
+      e instanceof Error ? e : new Error(String(e)),
+      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+      { routerKind: "Pages Router", routePath: route.pattern, routeType: "route" },
+    ).catch(() => { /* ignore reporting errors */ });
     return new Response("Internal Server Error", { status: 500 });
   }
 }

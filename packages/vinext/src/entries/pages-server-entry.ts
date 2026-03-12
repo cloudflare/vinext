@@ -270,6 +270,7 @@ import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getS
 import { parseCookies } from ${JSON.stringify(path.resolve(__dirname, "../config/config-matchers.js").replace(/\\/g, "/"))};
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
+import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 ${instrumentationImportCode}
 ${middlewareImportCode}
 
@@ -1093,6 +1094,11 @@ async function _renderPage(request, url, manifest) {
       return new Response(compositeStream, { status: finalStatus, headers: responseHeaders });
     } catch (e) {
       console.error("[vinext] SSR error:", e);
+      _reportRequestError(
+        e instanceof Error ? e : new Error(String(e)),
+        { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+        { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
+      ).catch(() => { /* ignore reporting errors */ });
       return new Response("Internal Server Error", { status: 500 });
     }
   });
@@ -1163,6 +1169,11 @@ export async function handleApiRoute(request, url) {
       return new Response(e.message, { status: e.statusCode, statusText: e.message });
     }
     console.error("[vinext] API error:", e);
+    _reportRequestError(
+      e instanceof Error ? e : new Error(String(e)),
+      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+      { routerKind: "Pages Router", routePath: route.pattern, routeType: "route" },
+    ).catch(() => { /* ignore reporting errors */ });
     return new Response("Internal Server Error", { status: 500 });
   }
 }

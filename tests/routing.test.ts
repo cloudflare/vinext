@@ -499,6 +499,42 @@ describe("appRouter - route discovery", () => {
     });
   });
 
+  it("does not create nested @slot sub-routes without a children default fallback", async () => {
+    await withTempDir("vinext-app-slot-missing-children-default-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "inbox", "@modal", "profile"), { recursive: true });
+      await writeFile(path.join(appDir, "inbox", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "inbox", "@modal", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "inbox", "@modal", "profile", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const patterns = routes.map((route) => route.pattern);
+
+      expect(patterns).toContain("/inbox");
+      expect(patterns).not.toContain("/inbox/profile");
+      expect(matchAppRoute("/inbox/profile", routes)).toBeNull();
+    });
+  });
+
+  it("does not discover nested @slot sub-routes when the slot root has no page or default", async () => {
+    await withTempDir("vinext-app-slot-nested-only-rootless-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "inbox", "@modal", "profile"), { recursive: true });
+      await writeFile(path.join(appDir, "inbox", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "inbox", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "inbox", "@modal", "profile", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const patterns = routes.map((route) => route.pattern);
+
+      expect(patterns).toContain("/inbox");
+      expect(patterns).not.toContain("/inbox/profile");
+      expect(matchAppRoute("/inbox/profile", routes)).toBeNull();
+    });
+  });
+
   it("rejects non-terminal catch-all intercept targets", async () => {
     await withTempDir("vinext-app-intercept-nonterminal-catchall-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");

@@ -311,6 +311,16 @@ describe("Pages Router entry templates", () => {
     expect(callbackSection).toContain("ensureFetchPatch");
   });
 
+  it("server entry calls reportRequestError for SSR and API errors", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+    // The generated prod entry must import reportRequestError
+    expect(code).toContain("reportRequestError");
+    // SSR page render catch block should report with routeType "render"
+    expect(code).toContain('"render"');
+    // API route catch block should report with routeType "route"
+    expect(code).toContain('"route"');
+  });
+
   it("client entry snapshot", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-client-entry");
     expect(stabilize(code)).toMatchSnapshot();

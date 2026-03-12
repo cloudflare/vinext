@@ -334,6 +334,64 @@ describe("Next.js compat: metadata", () => {
     expect(html).toContain("<title>search: (none)</title>");
   });
 
+  // ── iTunes meta tag ──────────────
+  // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+  // 'should support apple related tags itunes and appWebApp'
+
+  it("should render apple-itunes-app meta tag", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-itunes");
+    expect(html).toContain(
+      '<meta name="apple-itunes-app" content="app-id=123456789, app-argument=myapp://content/123"/>',
+    );
+  });
+
+  // ── App Links ──────────────
+  // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+  // 'should support appLinks tags'
+
+  it("should render appLinks meta tags", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-applinks");
+    expect(html).toContain('property="al:ios:url" content="https://example.com/ios"');
+    expect(html).toContain('property="al:ios:app_store_id" content="123456789"');
+    expect(html).toContain('property="al:ios:app_name" content="My iOS App"');
+    expect(html).toContain('property="al:android:package" content="com.example.app"');
+    expect(html).toContain('property="al:android:url" content="https://example.com/android"');
+    expect(html).toContain('property="al:android:app_name" content="My Android App"');
+    expect(html).toContain('property="al:web:url" content="https://example.com"');
+    expect(html).toContain('property="al:web:should_fallback" content="true"');
+  });
+
+  // ── Twitter player cards ──────────────
+  // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+  // 'should support twitter player/app cards'
+
+  it("should render twitter player card meta tags", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-twitter-player");
+    expect(html).toContain('name="twitter:card" content="player"');
+    expect(html).toContain('name="twitter:player" content="https://example.com/player"');
+    expect(html).toContain('name="twitter:player:stream" content="https://example.com/stream"');
+    expect(html).toContain('name="twitter:player:width" content="480"');
+    expect(html).toContain('name="twitter:player:height" content="360"');
+  });
+
+  // ── Twitter app cards ──────────────
+
+  it("should render twitter app card meta tags", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-twitter-app");
+    expect(html).toContain('name="twitter:card" content="app"');
+    expect(html).toContain('name="twitter:app:name:iphone" content="My App"');
+    expect(html).toContain('name="twitter:app:id:iphone" content="id123456789"');
+    expect(html).toContain('name="twitter:app:url:iphone" content="https://example.com/iphone"');
+    expect(html).toContain('name="twitter:app:name:ipad" content="My App"');
+    expect(html).toContain('name="twitter:app:id:ipad" content="id123456789"');
+    expect(html).toContain('name="twitter:app:url:ipad" content="https://example.com/ipad"');
+    expect(html).toContain('name="twitter:app:name:googleplay" content="My App"');
+    expect(html).toContain('name="twitter:app:id:googleplay" content="com.example.app"');
+    expect(html).toContain(
+      'name="twitter:app:url:googleplay" content="https://example.com/android"',
+    );
+  });
+
   // ── Browser-only tests (documented, not ported) ──────────────
   //
   // N/A: 'should apply metadata when navigating client-side'
@@ -342,16 +400,10 @@ describe("Next.js compat: metadata", () => {
   // N/A: 'should support title template' (browser eval)
   //   Some template tests use browser.eval('document.title') — ported above at SSR level
   //
-  // N/A: 'should support apple related tags itunes and appWebApp'
-  //   Would need dedicated fixture page
-  //
   // N/A: 'should support socials related tags'
   //   Would need dedicated fixture page (fb:app_id, pinterest)
   //
   // N/A: 'should support verification tags'
-  //   Would need dedicated fixture page
-  //
-  // N/A: 'should support appLinks tags'
   //   Would need dedicated fixture page
   //
   // N/A: 'should support icons field' (basic, string, descriptor)
@@ -359,9 +411,6 @@ describe("Next.js compat: metadata", () => {
   //
   // N/A: 'should pick up opengraph-image and twitter-image as static metadata files'
   //   Tests file-based metadata images — different feature
-  //
-  // N/A: 'should support twitter player/app cards'
-  //   Would need dedicated fixture pages
   //
   // N/A: Static routes (favicon.ico, robots.txt, sitemap.xml)
   //   Tests file serving, not metadata export — separate feature
