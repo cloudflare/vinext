@@ -8,6 +8,7 @@
  * Covers real App Router request behavior for:
  * - legacy sync access to headers() / cookies()
  * - readonly headers() in both pages and route handlers
+ * - iterator-based headers() access in route handlers
  * - readonly cookies() in Server Component render paths
  * - mutable cookies() in route handlers, including sync access
  */
@@ -95,6 +96,33 @@ describe("Next.js compat: request-apis", () => {
     expect(data).toEqual({
       error: expect.stringContaining("Headers cannot be modified"),
       value: "original-route-header",
+    });
+  });
+
+  it("supports iterator-based headers() access in route handlers", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/headers-iterate`, {
+      headers: {
+        "x-iterate-a": "alpha",
+        "x-iterate-b": "beta",
+      },
+    });
+    const data = await res.json();
+
+    expect(data).toEqual({
+      syncEntries: [
+        ["x-iterate-a", "alpha"],
+        ["x-iterate-b", "beta"],
+      ],
+      awaitedEntries: [
+        ["x-iterate-a", "alpha"],
+        ["x-iterate-b", "beta"],
+      ],
+      keys: ["x-iterate-a", "x-iterate-b"],
+      values: expect.arrayContaining(["alpha", "beta"]),
+      object: {
+        "x-iterate-a": "alpha",
+        "x-iterate-b": "beta",
+      },
     });
   });
 

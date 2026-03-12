@@ -155,6 +155,8 @@ declare module "next/image" {
     className?: string;
     style?: CSSProperties;
     onLoad?: ReactEventHandler<HTMLImageElement>;
+    /** @deprecated Use onLoad instead. Still supported for migration compat. */
+    onLoadingComplete?: (img: HTMLImageElement) => void;
     onError?: ReactEventHandler<HTMLImageElement>;
     onClick?: MouseEventHandler<HTMLImageElement>;
     id?: string;

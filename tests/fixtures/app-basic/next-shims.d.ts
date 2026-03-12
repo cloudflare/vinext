@@ -8,6 +8,7 @@ declare module "next/link" {
     replace?: boolean;
     prefetch?: boolean;
     scroll?: boolean;
+    onNavigate?: (event: { preventDefault(): void }) => void;
     children?: ReactNode;
   }
   const Link: ComponentType<LinkProps>;

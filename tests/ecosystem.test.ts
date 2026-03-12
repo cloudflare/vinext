@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const FIXTURES_DIR = path.resolve(__dirname, "fixtures", "ecosystem");
@@ -191,6 +192,7 @@ describe("next-view-transitions", () => {
 describe("nuqs", () => {
   let proc: ChildProcess | null = null;
   let fetchPage: (path: string) => Promise<{ html: string; status: number }>;
+  const fixtureRoot = path.join(FIXTURES_DIR, "nuqs");
 
   beforeAll(async () => {
     const fixture = await startFixture("nuqs", 4402);
@@ -223,6 +225,23 @@ describe("nuqs", () => {
     const { html } = await fetchPage("/");
     expect(html).toContain('data-testid="prev-page"');
     expect(html).toContain('data-testid="next-page"');
+  });
+
+  it("prebundles next/navigation.js imports against vinext shims", async () => {
+    await fetchPage("/");
+
+    const depsDir = path.join(fixtureRoot, "node_modules", ".vite", "deps");
+    const metadata = JSON.parse(readFileSync(path.join(depsDir, "_metadata.json"), "utf8")) as {
+      optimized?: Record<string, { file?: string }>;
+    };
+    const optimizedAdapterFile = metadata.optimized?.["nuqs/adapters/next/app"]?.file;
+
+    expect(optimizedAdapterFile).toBeDefined();
+
+    const optimizedAdapter = readFileSync(path.join(depsDir, optimizedAdapterFile!), "utf8");
+
+    expect(optimizedAdapter).toMatch(/shims\/navigation\.js/);
+    expect(optimizedAdapter).not.toContain("node_modules/.pnpm/next@");
   });
 });
 

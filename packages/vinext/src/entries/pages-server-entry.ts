@@ -17,6 +17,7 @@ import {
   generateSafeRegExpCode,
   generateMiddlewareMatcherCode,
   generateNormalizePathCode,
+  generateRouteMatchNormalizationCode,
 } from "../server/middleware-codegen.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 
@@ -24,6 +25,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const _requestContextShimPath = fileURLToPath(
   new URL("../shims/request-context.js", import.meta.url),
 ).replace(/\\/g, "/");
+const _routeTriePath = fileURLToPath(new URL("../routing/route-trie.js", import.meta.url)).replace(
+  /\\/g,
+  "/",
+);
 
 /**
  * Generate the virtual SSR server entry module.
@@ -145,6 +150,7 @@ import { NextRequest, NextFetchEvent } from "next/server";`
     ? `
 // --- Middleware support (generated from middleware-codegen.ts) ---
 ${generateNormalizePathCode("es5")}
+${generateRouteMatchNormalizationCode("es5")}
 ${generateSafeRegExpCode("es5")}
 ${generateMiddlewareMatcherCode("es5")}
 
@@ -171,7 +177,7 @@ async function _runMiddleware(request) {
   // Normalize pathname before matching to prevent path-confusion bypasses
   // (percent-encoding like /%61dmin, double slashes like /dashboard//settings).
   var decodedPathname;
-  try { decodedPathname = decodeURIComponent(url.pathname); } catch (e) {
+  try { decodedPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
     return { continue: false, response: new Response("Bad Request", { status: 400 }) };
   }
   var normalizedPathname = __normalizePath(decodedPathname);
@@ -264,6 +270,8 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 import { parseCookies } from ${JSON.stringify(path.resolve(__dirname, "../config/config-matchers.js").replace(/\\/g, "/"))};
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(_requestContextShimPath)};
+import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(_routeTriePath)};
+import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 ${instrumentationImportCode}
 ${middlewareImportCode}
 
@@ -358,10 +366,12 @@ ${docImportCode}
 const pageRoutes = [
 ${pageRouteEntries.join(",\n")}
 ];
+const _pageRouteTrie = _buildRouteTrie(pageRoutes);
 
 const apiRoutes = [
 ${apiRouteEntries.join(",\n")}
 ];
+const _apiRouteTrie = _buildRouteTrie(apiRoutes);
 
 function matchRoute(url, routes) {
   const pathname = url.split("?")[0];
@@ -369,40 +379,8 @@ function matchRoute(url, routes) {
   // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
   // the entry point. Decoding again would create a double-decode vector.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) return { route, params };
-  }
-  return null;
-}
-
-function matchPattern(urlParts, patternParts) {
-  const params = Object.create(null);
-  for (let i = 0; i < patternParts.length; i++) {
-    const pp = patternParts[i];
-    if (pp.endsWith("+")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      if (remaining.length === 0) return null;
-      params[paramName] = remaining;
-      return params;
-    }
-    if (pp.endsWith("*")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      params[paramName] = urlParts.slice(i);
-      return params;
-    }
-    if (pp.startsWith(":")) {
-      if (i >= urlParts.length) return null;
-      params[pp.slice(1)] = urlParts[i];
-      continue;
-    }
-    if (i >= urlParts.length || urlParts[i] !== pp) return null;
-  }
-  if (urlParts.length !== patternParts.length) return null;
-  return params;
+  const trie = routes === pageRoutes ? _pageRouteTrie : _apiRouteTrie;
+  return _trieMatch(trie, urlParts);
 }
 
 function parseQuery(url) {
@@ -849,9 +827,60 @@ async function _renderPage(request, url, manifest) {
 
       if (cached && cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
         triggerBackgroundRegeneration(cacheKey, async function() {
-          const freshResult = await pageModule.getStaticProps({ params });
+          var freshResult = await pageModule.getStaticProps({
+            params: params,
+            locale: locale,
+            locales: i18nConfig ? i18nConfig.locales : undefined,
+            defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+          });
           if (freshResult && freshResult.props && typeof freshResult.revalidate === "number" && freshResult.revalidate > 0) {
-            await isrSet(cacheKey, { kind: "PAGES", html: cached.value.value.html, pageData: freshResult.props, headers: undefined, status: undefined }, freshResult.revalidate);
+            var _fp = freshResult.props;
+            // Re-render the page with fresh props
+            var _el = AppComponent
+              ? React.createElement(AppComponent, { Component: PageComponent, pageProps: _fp })
+              : React.createElement(PageComponent, _fp);
+            _el = wrapWithRouterContext(_el);
+            var _freshBody = await renderToStringAsync(_el);
+            // Rebuild __NEXT_DATA__ with fresh props
+            var _regenPayload = {
+              props: { pageProps: _fp }, page: patternToNextFormat(route.pattern),
+              query: params, buildId: buildId, isFallback: false,
+            };
+            if (i18nConfig) {
+              _regenPayload.locale = locale;
+              _regenPayload.locales = i18nConfig.locales;
+              _regenPayload.defaultLocale = i18nConfig.defaultLocale;
+            }
+            var _lGlobals = i18nConfig
+              ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
+                ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
+                ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(i18nConfig.defaultLocale)
+              : "";
+            var _freshNDS = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(_regenPayload) + _lGlobals + "</script>";
+            // Reconstruct ISR HTML preserving the document shell from the
+            // cached entry (head, fonts, assets, custom _document markup).
+            var _cachedStr = cached.value.value.html;
+            var _btag = '<div id="__next">';
+            var _bstart = _cachedStr.indexOf(_btag);
+            var _bodyStart = _bstart >= 0 ? _bstart + _btag.length : -1;
+            // Locate __NEXT_DATA__ script to split body from suffix
+            var _ndMarker = '<script>window.__NEXT_DATA__';
+            var _ndStart = _cachedStr.indexOf(_ndMarker);
+            var _freshHtml;
+            if (_bodyStart >= 0 && _ndStart >= 0) {
+              // Region between body start and __NEXT_DATA__ contains:
+              // BODY_HTML + </div> + optional gap (custom _document content)
+              var _region = _cachedStr.slice(_bodyStart, _ndStart);
+              var _lastClose = _region.lastIndexOf('</div>');
+              var _gap = _lastClose >= 0 ? _region.slice(_lastClose + 6) : '';
+              // Tail: everything after the old __NEXT_DATA__ </script>
+              var _ndEnd = _cachedStr.indexOf('</script>', _ndStart) + 9;
+              var _tail = _cachedStr.slice(_ndEnd);
+              _freshHtml = _cachedStr.slice(0, _bodyStart) + _freshBody + '</div>' + _gap + _freshNDS + _tail;
+            } else {
+              _freshHtml = '<!DOCTYPE html>\\n<html>\\n<head>\\n</head>\\n<body>\\n  <div id="__next">' + _freshBody + '</div>\\n  ' + _freshNDS + '\\n</body>\\n</html>';
+            }
+            await isrSet(cacheKey, { kind: "PAGES", html: _freshHtml, pageData: _fp, headers: undefined, status: undefined }, freshResult.revalidate);
           }
         });
         var _staleHeaders = {
@@ -1023,6 +1052,11 @@ async function _renderPage(request, url, manifest) {
     return new Response(compositeStream, { status: finalStatus, headers: responseHeaders });
   } catch (e) {
     console.error("[vinext] SSR error:", e);
+    _reportRequestError(
+      e instanceof Error ? e : new Error(String(e)),
+      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+      { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
+    );
     return new Response("Internal Server Error", { status: 500 });
   }
           }) // end runWithFetchCache
@@ -1097,6 +1131,11 @@ export async function handleApiRoute(request, url) {
       return new Response(e.message, { status: e.statusCode, statusText: e.message });
     }
     console.error("[vinext] API error:", e);
+    _reportRequestError(
+      e instanceof Error ? e : new Error(String(e)),
+      { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
+      { routerKind: "Pages Router", routePath: route.pattern, routeType: "route" },
+    );
     return new Response("Internal Server Error", { status: 500 });
   }
 }

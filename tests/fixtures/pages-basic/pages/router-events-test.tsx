@@ -42,14 +42,33 @@ export default function RouterEventsTest() {
       setEvents(getStoredEvents());
     };
 
+    const onBeforeHistoryChange = (url: string) => {
+      storeEvent(`beforeHistoryChange:${url}`);
+      setEvents(getStoredEvents());
+    };
+    const onHashStart = (url: string) => {
+      storeEvent(`hashChangeStart:${url}`);
+      setEvents(getStoredEvents());
+    };
+    const onHashComplete = (url: string) => {
+      storeEvent(`hashChangeComplete:${url}`);
+      setEvents(getStoredEvents());
+    };
+
     router.events.on("routeChangeStart", onStart);
     router.events.on("routeChangeComplete", onComplete);
     router.events.on("routeChangeError", onError);
+    router.events.on("beforeHistoryChange", onBeforeHistoryChange);
+    router.events.on("hashChangeStart", onHashStart);
+    router.events.on("hashChangeComplete", onHashComplete);
 
     return () => {
       router.events.off("routeChangeStart", onStart);
       router.events.off("routeChangeComplete", onComplete);
       router.events.off("routeChangeError", onError);
+      router.events.off("beforeHistoryChange", onBeforeHistoryChange);
+      router.events.off("hashChangeStart", onHashStart);
+      router.events.off("hashChangeComplete", onHashComplete);
     };
   }, [router]);
 
@@ -64,6 +83,12 @@ export default function RouterEventsTest() {
       </button>
       <button data-testid="push-ssr" onClick={() => router.push("/ssr")}>
         Push SSR
+      </button>
+      <button data-testid="push-hash" onClick={() => router.push("#section-1")}>
+        Push Hash
+      </button>
+      <button data-testid="replace-hash" onClick={() => router.replace("#section-2")}>
+        Replace Hash
       </button>
       <button
         data-testid="clear-events"

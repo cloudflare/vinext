@@ -64,6 +64,16 @@ describe("App Router integration", () => {
     expect(html).toContain("hello-world");
   });
 
+  it("does not collapse encoded slashes onto nested routes in dev", async () => {
+    const encodedRes = await fetch(`${baseUrl}/headers%2Foverride-from-middleware`);
+    expect(encodedRes.status).toBe(404);
+    expect(encodedRes.headers.get("e2e-headers")).not.toBe("middleware");
+
+    const nestedRes = await fetch(`${baseUrl}/headers/override-from-middleware`);
+    expect(nestedRes.status).toBe(200);
+    expect(nestedRes.headers.get("e2e-headers")).toBe("middleware");
+  });
+
   it("handles GET API route handlers", async () => {
     const res = await fetch(`${baseUrl}/api/hello`);
     expect(res.status).toBe(200);
@@ -1068,24 +1078,29 @@ describe("App Router integration", () => {
     expect(html).not.toContain("Enter a search term");
   });
 
-  it("sets optimizeDeps.entries for rsc and ssr environments so deps are discovered at startup", () => {
+  it("sets optimizeDeps.entries for rsc, ssr, and client environments so deps are discovered at startup", () => {
     // Without optimizeDeps.entries, Vite only crawls build.rollupOptions.input
     // for dependency discovery — but those are virtual modules that don't
     // import user dependencies. This causes lazy discovery, re-optimisation
     // cascades, and "Invalid hook call" errors on first load.
     const rscEntries = server.config.environments.rsc?.optimizeDeps?.entries;
     const ssrEntries = server.config.environments.ssr?.optimizeDeps?.entries;
+    const clientEntries = server.config.environments.client?.optimizeDeps?.entries;
 
     expect(rscEntries).toBeDefined();
     expect(ssrEntries).toBeDefined();
+    expect(clientEntries).toBeDefined();
     expect(Array.isArray(rscEntries)).toBe(true);
     expect(Array.isArray(ssrEntries)).toBe(true);
+    expect(Array.isArray(clientEntries)).toBe(true);
 
     // Entries should include a glob pattern that covers app/ source files
     const rscGlob = (rscEntries as string[]).join(",");
     const ssrGlob = (ssrEntries as string[]).join(",");
+    const clientGlob = (clientEntries as string[]).join(",");
     expect(rscGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
     expect(ssrGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
+    expect(clientGlob).toMatch(/app\/\*\*\/\*\.\{tsx,ts,jsx,js\}/);
   });
 
   it("pre-includes framework dependencies in optimizeDeps.include to avoid late discovery", () => {
@@ -1485,6 +1500,16 @@ describe("App Router Production server (startProdServer)", () => {
     const html = await res.text();
     expect(html).toContain("Welcome to App Router");
     expect(html).toContain("<script");
+  });
+
+  it("does not collapse encoded slashes onto nested routes in production", async () => {
+    const encodedRes = await fetch(`${baseUrl}/headers%2Foverride-from-middleware`);
+    expect(encodedRes.status).toBe(404);
+    expect(encodedRes.headers.get("e2e-headers")).not.toBe("middleware");
+
+    const nestedRes = await fetch(`${baseUrl}/headers/override-from-middleware`);
+    expect(nestedRes.status).toBe(200);
+    expect(nestedRes.headers.get("e2e-headers")).toBe("middleware");
   });
 
   it("serves dynamic routes", async () => {
@@ -3219,11 +3244,11 @@ describe("RSC plugin auto-registration", () => {
   });
 });
 
-// ── External rewrite proxy credential stripping (App Router) ─────────────────
+// ── External rewrite proxy credential forwarding (App Router) ────────────────
 // Regression test: the proxyExternalRequest (imported from config-matchers) in the generated RSC entry
-// must strip Cookie, Authorization, x-api-key, proxy-authorization, and
+// must forward credential headers like Next.js while still stripping
 // x-middleware-* headers before forwarding to external rewrite destinations.
-describe("App Router external rewrite proxy credential stripping", () => {
+describe("App Router external rewrite proxy credential forwarding", () => {
   let mockServer: import("node:http").Server;
   let mockPort: number;
   let capturedHeaders: import("node:http").IncomingHttpHeaders | null = null;
@@ -3270,7 +3295,7 @@ describe("App Router external rewrite proxy credential stripping", () => {
     await new Promise<void>((resolve) => mockServer?.close(() => resolve()));
   });
 
-  it("forwards credential headers through proxied requests to external rewrite targets", async () => {
+  it("forwards credential headers and strips x-middleware-* headers from proxied requests to external rewrite targets", async () => {
     mockResponseMode = "plain";
     capturedHeaders = null;
     capturedUrl = null;
@@ -3287,7 +3312,7 @@ describe("App Router external rewrite proxy credential stripping", () => {
     });
 
     expect(capturedHeaders).not.toBeNull();
-    // Credential headers must be forwarded (matching Next.js behavior)
+    // Credential headers must be forwarded to match Next.js external rewrite proxying.
     expect(capturedHeaders!["cookie"]).toBe("session=secret123");
     expect(capturedHeaders!["authorization"]).toBe("Bearer tok_secret");
     expect(capturedHeaders!["x-api-key"]).toBe("sk_live_secret");

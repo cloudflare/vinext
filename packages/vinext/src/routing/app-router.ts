@@ -15,13 +15,14 @@
  */
 import path from "node:path";
 import fs from "node:fs";
-import { compareRoutes } from "./utils.js";
+import { compareRoutes, decodeRouteSegment, normalizePathnameForRouteMatch } from "./utils.js";
 import {
   createValidFileMatcher,
   scanWithExtensions,
   type ValidFileMatcher,
 } from "./file-matcher.js";
 import { validateRoutePatterns } from "./route-validation.js";
+import { buildRouteTrie, trieMatch, type TrieNode } from "./route-trie.js";
 
 export interface InterceptingRoute {
   /** The interception convention: "." | ".." | "../.." | "..." */
@@ -146,27 +147,20 @@ export async function appRouter(
 
   // Find all page.tsx and route.ts files, excluding @slot directories
   // (slot pages are not standalone routes — they're rendered as props of their parent layout)
+  // and _private folders (Next.js convention for colocated non-route files).
   const routes: AppRoute[] = [];
+
+  const excludeDir = (name: string) => name.startsWith("@") || name.startsWith("_");
 
   // Process page files in a single pass
   // Use function form of exclude for Node < 22.14 compatibility (string arrays require >= 22.14)
-  for await (const file of scanWithExtensions(
-    "**/page",
-    appDir,
-    matcher.extensions,
-    (name: string) => name.startsWith("@"),
-  )) {
+  for await (const file of scanWithExtensions("**/page", appDir, matcher.extensions, excludeDir)) {
     const route = fileToAppRoute(file, appDir, "page", matcher);
     if (route) routes.push(route);
   }
 
   // Process route handler files (API routes) in a single pass
-  for await (const file of scanWithExtensions(
-    "**/route",
-    appDir,
-    matcher.extensions,
-    (name: string) => name.startsWith("@"),
-  )) {
+  for await (const file of scanWithExtensions("**/route", appDir, matcher.extensions, excludeDir)) {
     const route = fileToAppRoute(file, appDir, "route", matcher);
     if (route) routes.push(route);
   }
@@ -288,6 +282,7 @@ function discoverSlotSubRoutes(
 
     // Find the default.tsx for the children slot at the parent directory
     const childrenDefault = findFile(parentPageDir, "default", matcher);
+    if (!childrenDefault) continue;
 
     for (const { rawSegments, converted: convertedSubRoute, slotPages } of subPathMap.values()) {
       const {
@@ -771,6 +766,8 @@ function scanForInterceptingPages(
 
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    // Skip private folders (prefixed with _)
+    if (entry.name.startsWith("_")) continue;
 
     // Check if this directory name starts with an interception convention
     const interceptMatch = matchInterceptConvention(entry.name);
@@ -857,6 +854,8 @@ function collectInterceptingPages(
   const entries = fs.readdirSync(currentDir, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
+    // Skip private folders (prefixed with _)
+    if (entry.name.startsWith("_")) continue;
     collectInterceptingPages(
       path.join(currentDir, entry.name),
       interceptRoot,
@@ -987,11 +986,7 @@ function convertSegmentsToRouteParts(
       continue;
     }
 
-    try {
-      urlSegments.push(decodeURIComponent(segment));
-    } catch {
-      urlSegments.push(segment);
-    }
+    urlSegments.push(decodeRouteSegment(segment));
   }
 
   return { urlSegments, params, isDynamic };
@@ -1008,6 +1003,18 @@ function hasRemainingVisibleSegments(segments: string[], startIndex: number): bo
   return false;
 }
 
+// Trie cache — keyed by route array identity (same array = same trie)
+const appTrieCache = new WeakMap<AppRoute[], TrieNode<AppRoute>>();
+
+function getOrBuildAppTrie(routes: AppRoute[]): TrieNode<AppRoute> {
+  let trie = appTrieCache.get(routes);
+  if (!trie) {
+    trie = buildRouteTrie(routes);
+    appTrieCache.set(routes, trie);
+  }
+  return trie;
+}
+
 function joinRoutePattern(basePattern: string, subPath: string): string {
   if (!subPath) return basePattern;
   return basePattern === "/" ? `/${subPath}` : `${basePattern}/${subPath}`;
@@ -1022,62 +1029,10 @@ export function matchAppRoute(
 ): { route: AppRoute; params: Record<string, string | string[]> } | null {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\/$/, "");
-  try {
-    normalizedUrl = decodeURIComponent(normalizedUrl);
-  } catch {
-    /* malformed percent-encoding — match as-is */
-  }
+  normalizedUrl = normalizePathnameForRouteMatch(normalizedUrl);
 
-  // Split URL once, reuse across all route match attempts
+  // Split URL once, look up via trie
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) {
-      return { route, params };
-    }
-  }
-
-  return null;
-}
-
-function matchPattern(
-  urlParts: string[],
-  patternParts: string[],
-): Record<string, string | string[]> | null {
-  const params: Record<string, string | string[]> = Object.create(null);
-
-  for (let i = 0; i < patternParts.length; i++) {
-    const pp = patternParts[i];
-
-    if (pp.endsWith("+")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      if (remaining.length === 0) return null;
-      params[paramName] = remaining;
-      return params;
-    }
-
-    if (pp.endsWith("*")) {
-      if (i !== patternParts.length - 1) return null;
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      params[paramName] = remaining;
-      return params;
-    }
-
-    if (pp.startsWith(":")) {
-      const paramName = pp.slice(1);
-      if (i >= urlParts.length) return null;
-      params[paramName] = urlParts[i];
-      continue;
-    }
-
-    if (i >= urlParts.length || urlParts[i] !== pp) return null;
-  }
-
-  if (urlParts.length !== patternParts.length) return null;
-
-  return params;
+  const trie = getOrBuildAppTrie(routes);
+  return trieMatch(trie, urlParts);
 }

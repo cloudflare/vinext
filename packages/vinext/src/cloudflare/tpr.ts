@@ -309,56 +309,53 @@ function extractFromTOML(content: string): WranglerConfig {
 
 // ─── Cloudflare API ──────────────────────────────────────────────────────────
 
+/**
+ * Generate zone lookup candidates from shortest (2-part) to longest.
+ * Tries the most common case first (e.g., "example.com") and progressively
+ * adds labels for multi-part TLDs (e.g., "co.uk" → "example.co.uk").
+ *
+ * "shop.example.com"    → ["example.com", "shop.example.com"]
+ * "shop.example.co.uk"  → ["co.uk", "example.co.uk", "shop.example.co.uk"]
+ * "example.com"         → ["example.com"]
+ */
+export function domainCandidates(domain: string): string[] {
+  const parts = domain.split(".");
+  const candidates: string[] = [];
+  for (let i = parts.length - 2; i >= 0; i--) {
+    candidates.push(parts.slice(i).join("."));
+  }
+  return candidates;
+}
+
 /** Resolve zone ID from a domain name via the Cloudflare API. */
 async function resolveZoneId(domain: string, apiToken: string): Promise<string | null> {
-  // Extract the registrable domain (e.g., "shop.example.com" → "example.com").
-  // TODO: This doesn't handle multi-part TLDs like .co.uk, .com.br, .com.au.
-  // For those, we'd need a public suffix list. For now, we try the simple
-  // two-part extraction first, then fall back to the full domain if the zone
-  // lookup fails. Cloudflare's zone API will match on the correct registrable
-  // domain regardless.
-  const parts = domain.split(".");
-  const MULTI_PART_TLDS = [
-    "co.uk",
-    "com.br",
-    "com.au",
-    "co.jp",
-    "co.kr",
-    "co.nz",
-    "co.za",
-    "com.mx",
-    "com.ar",
-    "com.cn",
-    "org.uk",
-    "net.au",
-  ];
-  const lastTwo = parts.slice(-2).join(".");
-  let rootDomain: string;
-  if (MULTI_PART_TLDS.includes(lastTwo) && parts.length > 2) {
-    rootDomain = parts.slice(-3).join(".");
-  } else {
-    rootDomain = parts.length > 2 ? parts.slice(-2).join(".") : domain;
+  // Try progressively longer domain candidates until one matches a zone.
+  // This handles all public suffixes without a hardcoded TLD list —
+  // for simple TLDs (.com, .io) the 2-part candidate hits on the first try;
+  // for multi-part TLDs (.co.uk, .com.au) it takes one extra call.
+  for (const candidate of domainCandidates(domain)) {
+    const response = await fetch(
+      `https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(candidate)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${apiToken}`,
+          "Content-Type": "application/json",
+        },
+      },
+    );
+
+    if (!response.ok) continue;
+
+    const data = (await response.json()) as {
+      success: boolean;
+      result?: Array<{ id: string }>;
+    };
+    if (data.success && data.result?.length) {
+      return data.result[0].id;
+    }
   }
 
-  const response = await fetch(
-    `https://api.cloudflare.com/client/v4/zones?name=${encodeURIComponent(rootDomain)}`,
-    {
-      headers: {
-        Authorization: `Bearer ${apiToken}`,
-        "Content-Type": "application/json",
-      },
-    },
-  );
-
-  if (!response.ok) return null;
-
-  const data = (await response.json()) as {
-    success: boolean;
-    result?: Array<{ id: string }>;
-  };
-  if (!data.success || !data.result?.length) return null;
-
-  return data.result[0].id;
+  return null;
 }
 
 /** Resolve the account ID associated with the API token. */

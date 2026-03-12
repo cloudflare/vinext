@@ -10,6 +10,31 @@ import vinext from "../packages/vinext/src/index.js";
 import { PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
+const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps }) {
+  return <Component {...pageProps} />;
+}
+`;
+
+function writeEncodedSlashPagesFixture(rootDir: string): void {
+  fs.mkdirSync(path.join(rootDir, "pages", "a"), { recursive: true });
+  const nmLink = path.join(rootDir, "node_modules");
+  if (!fs.existsSync(nmLink)) {
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), nmLink);
+  }
+  fs.writeFileSync(path.join(rootDir, "pages", "_app.tsx"), PAGES_APP_COMPONENT);
+  fs.writeFileSync(
+    path.join(rootDir, "pages", "a", "b.tsx"),
+    "export default function Page() { return <div>nested pages route</div>; }\n",
+  );
+  fs.writeFileSync(
+    path.join(rootDir, "middleware.ts"),
+    `export const config = { matcher: "/a/b" };
+export default function middleware() {
+  return new Response("nested blocked", { status: 418 });
+}
+`,
+  );
+}
 
 describe("Pages Router integration", () => {
   let server: ViteDevServer;
@@ -108,6 +133,28 @@ describe("Pages Router integration", () => {
     // Router should have correct pathname and query during SSR
     expect(html).toMatch(/Pathname:\s*(<!--\s*-->)?\s*\/posts\/\[id\]/);
     expect(html).toMatch(/Query ID:\s*(<!--\s*-->)?\s*42/);
+  });
+
+  it("does not collapse encoded slashes onto nested routes in dev", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-encoded-dev-"));
+    writeEncodedSlashPagesFixture(tmpDir);
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      const encodedRes = await fetch(`${started.baseUrl}/a%2Fb`);
+      expect(encodedRes.status).toBe(404);
+      expect(await encodedRes.text()).not.toContain("nested blocked");
+
+      const nestedRes = await fetch(`${started.baseUrl}/a/b`);
+      expect(nestedRes.status).toBe(418);
+      expect(await nestedRes.text()).toBe("nested blocked");
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("returns 404 with custom 404 page for non-existent routes", async () => {
@@ -547,6 +594,27 @@ describe("Pages Router integration", () => {
     expect(res.status).toBe(403);
     const text = await res.text();
     expect(text).toContain("Access Denied");
+  });
+
+  it("middleware custom response preserves binary body", async () => {
+    const res = await fetch(`${baseUrl}/binary-response`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    const buf = new Uint8Array(await res.arrayBuffer());
+    // PNG magic bytes
+    expect(buf[0]).toBe(0x89);
+    expect(buf[1]).toBe(0x50); // P
+    expect(buf[2]).toBe(0x4e); // N
+    expect(buf[3]).toBe(0x47); // G
+  });
+
+  it("middleware custom response preserves multiple Set-Cookie headers", async () => {
+    const res = await fetch(`${baseUrl}/multi-cookie-response`);
+    expect(res.status).toBe(200);
+    const setCookies = res.headers.getSetCookie();
+    expect(setCookies).toContain("a=1; Path=/");
+    expect(setCookies).toContain("b=2; Path=/");
+    expect(setCookies).toContain("c=3; Path=/");
   });
 
   it("object-form matcher requires has and missing conditions", async () => {
@@ -1849,6 +1917,58 @@ describe("Production server middleware (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/old-page`, { redirect: "manual" });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("does not collapse encoded slashes onto nested routes in production", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-encoded-prod-"));
+    writeEncodedSlashPagesFixture(tmpDir);
+
+    let prodServer: import("node:http").Server | undefined;
+    try {
+      await build({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(tmpDir, "dist", "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: { output: { entryFileNames: "entry.js" } },
+        },
+      });
+      await build({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(tmpDir, "dist", "client"),
+          manifest: true,
+          ssrManifest: true,
+          rollupOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      prodServer = await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir: path.join(tmpDir, "dist"),
+      });
+      const addr = prodServer.address() as { port: number };
+      const tempProdUrl = `http://127.0.0.1:${addr.port}`;
+
+      const encodedRes = await fetch(`${tempProdUrl}/a%2Fb`);
+      expect(encodedRes.status).toBe(404);
+      expect(await encodedRes.text()).not.toContain("nested blocked");
+
+      const nestedRes = await fetch(`${tempProdUrl}/a/b`);
+      expect(nestedRes.status).toBe(418);
+      expect(await nestedRes.text()).toBe("nested blocked");
+    } finally {
+      await new Promise<void>((resolve) => prodServer?.close(() => resolve()) ?? resolve());
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("preserves Set-Cookie headers on middleware redirect", async () => {

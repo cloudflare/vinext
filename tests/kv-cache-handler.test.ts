@@ -423,6 +423,69 @@ describe("KVCacheHandler", () => {
   });
 
   // -------------------------------------------------------------------------
+  // ArrayBuffer base64 roundtrip edge cases
+  // -------------------------------------------------------------------------
+
+  describe("ArrayBuffer base64 roundtrip edge cases", () => {
+    it("round-trips a large buffer (1 MiB)", async () => {
+      const size = 1024 * 1024; // 1 MiB
+      const original = new Uint8Array(size);
+      for (let i = 0; i < size; i++) {
+        original[i] = i % 256;
+      }
+
+      await handler.set("large-buf", {
+        kind: "APP_ROUTE",
+        body: original.buffer as ArrayBuffer,
+        status: 200,
+        headers: { "content-type": "application/octet-stream" },
+      });
+
+      const result = await handler.get("large-buf");
+      expect(result).not.toBeNull();
+      const restored = new Uint8Array((result!.value as any).body);
+      expect(restored.byteLength).toBe(size);
+      // Verify every byte survived the roundtrip
+      expect(restored).toEqual(original);
+    });
+
+    it("round-trips a buffer containing null bytes", async () => {
+      const original = new Uint8Array([0, 0, 0, 72, 101, 108, 108, 111, 0, 0, 0]);
+
+      await handler.set("null-bytes", {
+        kind: "APP_ROUTE",
+        body: original.buffer as ArrayBuffer,
+        status: 200,
+        headers: {},
+      });
+
+      const result = await handler.get("null-bytes");
+      expect(result).not.toBeNull();
+      const restored = new Uint8Array((result!.value as any).body);
+      expect(restored).toEqual(original);
+    });
+
+    it("round-trips a buffer with all 256 byte values", async () => {
+      const original = new Uint8Array(256);
+      for (let i = 0; i < 256; i++) {
+        original[i] = i;
+      }
+
+      await handler.set("all-bytes", {
+        kind: "APP_ROUTE",
+        body: original.buffer as ArrayBuffer,
+        status: 200,
+        headers: {},
+      });
+
+      const result = await handler.get("all-bytes");
+      expect(result).not.toBeNull();
+      const restored = new Uint8Array((result!.value as any).body);
+      expect(restored).toEqual(original);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // ctx.waitUntil registration
   // -------------------------------------------------------------------------
 

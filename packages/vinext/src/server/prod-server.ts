@@ -47,6 +47,7 @@ import { normalizePath } from "./normalize-path.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { computeLazyChunks } from "../index.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
+import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "../shims/request-context.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
@@ -357,15 +358,21 @@ const trustProxy = process.env.VINEXT_TRUST_PROXY === "1" || trustedHosts.size >
 
 /**
  * Convert a Node.js IncomingMessage to a Web Request object.
+ *
+ * When `urlOverride` is provided, it is used as the path + query string
+ * instead of `req.url`. This avoids redundant path normalization when the
+ * caller has already decoded and normalized the pathname (e.g. the App
+ * Router prod server normalizes before static-asset lookup, and can pass
+ * the result here so the downstream RSC handler doesn't re-normalize).
  */
-function nodeToWebRequest(req: IncomingMessage): Request {
+function nodeToWebRequest(req: IncomingMessage, urlOverride?: string): Request {
   const rawProto = trustProxy
     ? (req.headers["x-forwarded-proto"] as string)?.split(",")[0]?.trim()
     : undefined;
   const proto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
   const host = resolveHost(req, "localhost");
   const origin = `${proto}://${host}`;
-  const url = new URL(req.url ?? "/", origin);
+  const url = new URL(urlOverride ?? req.url ?? "/", origin);
 
   const headers = new Headers();
   for (const [key, value] of Object.entries(req.headers)) {
@@ -601,12 +608,12 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const rscHandler = resolveAppRouterHandler(rscModule.default);
 
   const server = createServer(async (req, res) => {
-    const url = req.url ?? "/";
+    const rawUrl = req.url ?? "/";
     // Normalize backslashes (browsers treat /\ as //), then decode and normalize path.
-    const rawPathname = url.split("?")[0].replaceAll("\\", "/");
+    const rawPathname = rawUrl.split("?")[0].replaceAll("\\", "/");
     let pathname: string;
     try {
-      pathname = normalizePath(decodeURIComponent(rawPathname));
+      pathname = normalizePath(normalizePathnameForRouteMatchStrict(rawPathname));
     } catch {
       // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of crashing.
       res.writeHead(400);
@@ -630,7 +637,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // Image optimization passthrough (Node.js prod server has no Images binding;
     // serves the original file with cache headers and security headers)
     if (pathname === IMAGE_OPTIMIZATION_PATH) {
-      const parsedUrl = new URL(url, "http://localhost");
+      const parsedUrl = new URL(rawUrl, "http://localhost");
       const defaultAllowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
       const params = parseImageParams(parsedUrl, defaultAllowedWidths);
       if (!params) {
@@ -652,7 +659,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         "Content-Security-Policy":
           imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": imageConfig?.contentDispositionType ?? "inline",
+        "Content-Disposition":
+          imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
       };
       if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
@@ -663,8 +671,14 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
 
     try {
+      // Build the normalized URL (pathname + original query string) so the
+      // RSC handler receives an already-canonical path and doesn't need to
+      // re-normalize. This deduplicates the normalizePath work done above.
+      const qs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
+      const normalizedUrl = pathname + qs;
+
       // Convert Node.js request to Web Request and call the RSC handler
-      const request = nodeToWebRequest(req);
+      const request = nodeToWebRequest(req, normalizedUrl);
       const response = await rscHandler(request);
 
       // Stream the Web Response back to the Node.js response
@@ -776,7 +790,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
     const rawQs = rawUrl.includes("?") ? rawUrl.slice(rawUrl.indexOf("?")) : "";
     let pathname: string;
     try {
-      pathname = normalizePath(decodeURIComponent(rawPagesPathname));
+      pathname = normalizePath(normalizePathnameForRouteMatchStrict(rawPagesPathname));
     } catch {
       // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of crashing.
       res.writeHead(400);
@@ -828,7 +842,8 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         "Content-Security-Policy":
           pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
         "X-Content-Type-Options": "nosniff",
-        "Content-Disposition": pagesImageConfig?.contentDispositionType ?? "inline",
+        "Content-Disposition":
+          pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
       };
       if (tryServeStatic(req, res, clientDir, params.imageUrl, false, imageSecurityHeaders)) {
         return;
@@ -1145,8 +1160,10 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       );
     } catch (e) {
       console.error("[vinext] Server error:", e);
-      res.writeHead(500);
-      res.end("Internal Server Error");
+      if (!res.headersSent) {
+        res.writeHead(500);
+        res.end("Internal Server Error");
+      }
     }
   });
 

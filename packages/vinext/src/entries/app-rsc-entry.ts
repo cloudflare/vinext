@@ -22,6 +22,7 @@ import {
   generateMiddlewareMatcherCode,
   generateNormalizePathCode,
   generateSafeRegExpCode,
+  generateRouteMatchNormalizationCode,
 } from "../server/middleware-codegen.js";
 import { isProxyFile } from "../server/middleware.js";
 
@@ -37,6 +38,10 @@ const requestPipelinePath = fileURLToPath(
 const requestContextShimPath = fileURLToPath(
   new URL("../shims/request-context.js", import.meta.url),
 ).replace(/\\/g, "/");
+const routeTriePath = fileURLToPath(new URL("../routing/route-trie.js", import.meta.url)).replace(
+  /\\/g,
+  "/",
+);
 
 // Canonical order of HTTP method handlers supported by route.ts modules.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
@@ -285,6 +290,7 @@ import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBase
 import { _consumeRequestScopedCacheLife, _runWithCacheState, getCacheHandler } from "next/cache";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
 import { getCollectedFetchTags, runWithFetchCache } from "vinext/fetch-cache";
+import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSON.stringify(routeTriePath)};
 import { runWithPrivateCache as _runWithPrivateCache } from "vinext/cache-runtime";
 // Import server-only state module to register ALS-backed accessors.
 import { runWithNavigationContext as _runWithNavigationContext } from "vinext/navigation-state";
@@ -555,9 +561,7 @@ function rscOnError(error, requestInfo, errorContext) {
       error instanceof Error ? error : new Error(String(error)),
       requestInfo,
       errorContext,
-    ).catch((reportErr) => {
-      console.error("[vinext] Failed to report render error:", reportErr);
-    });
+    );
   }
 
   // In production, generate a digest hash for non-navigation errors
@@ -625,6 +629,7 @@ async function __ensureInstrumentation() {
 const routes = [
 ${routeEntries.join(",\n")}
 ];
+const _routeTrie = _buildRouteTrie(routes);
 
 const metadataRoutes = [
 ${metaRouteEntries.join(",\n")}
@@ -923,20 +928,17 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
   });
 }
 
-function matchRoute(url, routes) {
+function matchRoute(url) {
   const pathname = url.split("?")[0];
   let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
    // NOTE: Do NOT decodeURIComponent here. The caller is responsible for decoding
    // the pathname exactly once at the request entry point. Decoding again here
    // would cause inconsistent path matching between middleware and routing.
   const urlParts = normalizedUrl.split("/").filter(Boolean);
-  for (const route of routes) {
-    const params = matchPattern(urlParts, route.patternParts);
-    if (params !== null) return { route, params };
-  }
-  return null;
+  return _trieMatch(_routeTrie, urlParts);
 }
 
+// matchPattern is kept for findIntercept (linear scan over small interceptLookup array).
 function matchPattern(urlParts, patternParts) {
   const params = Object.create(null);
   for (let i = 0; i < patternParts.length; i++) {
@@ -1314,6 +1316,7 @@ ${generateSafeRegExpCode("modern")}
 
 // ── Path normalization ──────────────────────────────────────────────────
 ${generateNormalizePathCode("modern")}
+${generateRouteMatchNormalizationCode("modern")}
 
 // ── Config pattern matching, redirects, rewrites, headers, CSRF validation,
 //    external URL proxy, cookie parsing, and request context are imported from
@@ -1447,7 +1450,7 @@ export default async function handler(request, ctx) {
               if (__configHeaders.length) {
                 const url = new URL(request.url);
                 let pathname;
-                try { pathname = __normalizePath(decodeURIComponent(url.pathname)); } catch { pathname = url.pathname; }
+                try { pathname = __normalizePath(__normalizePathnameForRouteMatch(url.pathname)); } catch { pathname = url.pathname; }
                 ${bp ? `if (pathname.startsWith(${JSON.stringify(bp)})) pathname = pathname.slice(${JSON.stringify(bp)}.length) || "/";` : ""}
                 const extraHeaders = matchHeaders(pathname, __configHeaders, __reqCtx);
                 for (const h of extraHeaders) {
@@ -1496,11 +1499,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   const __protoGuard = guardProtocolRelativeUrl(url.pathname);
   if (__protoGuard) return __protoGuard;
 
-  // Decode percent-encoding and normalize pathname to canonical form.
-  // decodeURIComponent prevents /%61dmin from bypassing /admin matchers.
+  // Decode percent-encoding segment-wise and normalize pathname to canonical form.
+  // This preserves encoded path delimiters like %2F within a single segment.
   // __normalizePath collapses //foo///bar → /foo/bar, resolves . and .. segments.
   let decodedUrlPathname;
-  try { decodedUrlPathname = decodeURIComponent(url.pathname); } catch (e) {
+  try { decodedUrlPathname = __normalizePathnameForRouteMatchStrict(url.pathname); } catch (e) {
     return new Response("Bad Request", { status: 400 });
   }
   let pathname = __normalizePath(decodedUrlPathname);
@@ -1845,7 +1848,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
       // After the action, re-render the current page so the client
       // gets an updated React tree reflecting any mutations.
-      const match = matchRoute(cleanPathname, routes);
+      const match = matchRoute(cleanPathname);
       let element;
       if (match) {
         const { route: actionRoute, params: actionParams } = match;
@@ -1893,9 +1896,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         err instanceof Error ? err : new Error(String(err)),
         { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
         { routerKind: "App Router", routePath: cleanPathname, routeType: "action" },
-      ).catch((reportErr) => {
-        console.error("[vinext] Failed to report server action error:", reportErr);
-      });
+      );
       setHeadersContext(null);
       setNavigationContext(null);
       return new Response(
@@ -1920,7 +1921,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
   }
 
-  let match = matchRoute(cleanPathname, routes);
+  let match = matchRoute(cleanPathname);
 
   // ── Fallback rewrites from next.config.js (if no route matched) ───────
   if (!match && __configRewrites.fallback && __configRewrites.fallback.length) {
@@ -1932,7 +1933,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         return proxyExternalRequest(request, __fallbackRewritten);
       }
       cleanPathname = __fallbackRewritten;
-      match = matchRoute(cleanPathname, routes);
+      match = matchRoute(cleanPathname);
     }
   }
 
@@ -2091,9 +2092,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           err instanceof Error ? err : new Error(String(err)),
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        ).catch((reportErr) => {
-          console.error("[vinext] Failed to report route handler error:", reportErr);
-        });
+        );
         return attachRouteHandlerMiddlewareContext(new Response(null, { status: 500 }));
       } finally {
         setHeadersAccessPhase(previousHeadersPhase);
@@ -2363,7 +2362,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const sourceRoute = routes[intercept.sourceRouteIndex];
       if (sourceRoute && sourceRoute !== route) {
         // Render the source route (e.g. /feed) with the intercepting page in the slot
-        const sourceMatch = matchRoute(sourceRoute.pattern, routes);
+        const sourceMatch = matchRoute(sourceRoute.pattern);
         const sourceParams = sourceMatch ? sourceMatch.params : {};
         setNavigationContext({
           pathname: cleanPathname,
