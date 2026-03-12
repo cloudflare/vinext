@@ -754,11 +754,12 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Install the patched fetch without creating an ALS scope.
- * Used by the unified request context which manages its own scope.
- * The unified store owns per-request tag isolation via `currentRequestTags`,
- * so this helper only installs the fetch monkey-patch and leaves scope
- * creation to `runWithRequestContext()`.
+ * Install the patched fetch without creating a standalone ALS scope.
+ *
+ * `runWithFetchCache()` is the standalone helper: it installs the patch and
+ * creates an isolated per-request tag store. The unified request context owns
+ * that isolation itself via `currentRequestTags`, so callers inside
+ * `runWithRequestContext()` only need the process-global fetch monkey-patch.
  */
 export function ensureFetchPatch(): void {
   _ensurePatchInstalled();

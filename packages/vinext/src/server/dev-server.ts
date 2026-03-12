@@ -576,18 +576,22 @@ export function createSSRHandler(
             // Trigger background regeneration: re-run getStaticProps and
             // update the cache so the next request is a HIT with fresh data.
             triggerBackgroundRegeneration(cacheKey, async () => {
-              const freshResult = await pageModule.getStaticProps({ params });
-              if (freshResult && "props" in freshResult) {
-                const revalidate =
-                  typeof freshResult.revalidate === "number" ? freshResult.revalidate : 0;
-                if (revalidate > 0) {
-                  await isrSet(
-                    cacheKey,
-                    buildPagesCacheValue(cachedHtml, freshResult.props),
-                    revalidate,
-                  );
+              const regenCtx = createRequestContext();
+              return runWithRequestContext(regenCtx, async () => {
+                ensureFetchPatch();
+                const freshResult = await pageModule.getStaticProps({ params });
+                if (freshResult && "props" in freshResult) {
+                  const revalidate =
+                    typeof freshResult.revalidate === "number" ? freshResult.revalidate : 0;
+                  if (revalidate > 0) {
+                    await isrSet(
+                      cacheKey,
+                      buildPagesCacheValue(cachedHtml, freshResult.props),
+                      revalidate,
+                    );
+                  }
                 }
-              }
+              });
             });
 
             const revalidateSecs = getRevalidateDuration(cacheKey) ?? 60;

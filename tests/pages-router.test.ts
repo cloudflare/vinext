@@ -2735,3 +2735,147 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     expect(nextData.props.pageProps.gsspCallId).toBeGreaterThan(0);
   });
 });
+
+describe("Pages Router dev ISR regeneration", () => {
+  it("wraps stale regeneration in a fresh unified request context", async () => {
+    vi.resetModules();
+
+    let regenPromise: Promise<void> | null = null;
+    const isrSetSpy = vi.fn().mockResolvedValue(undefined);
+
+    vi.doMock("../packages/vinext/src/server/isr-cache.js", async () => {
+      const actual = await vi.importActual<
+        typeof import("../packages/vinext/src/server/isr-cache.js")
+      >("../packages/vinext/src/server/isr-cache.js");
+
+      return {
+        ...actual,
+        getRevalidateDuration: vi.fn(() => 1),
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: true,
+          value: {
+            value: actual.buildPagesCacheValue("<html><body>stale</body></html>", {
+              timestamp: 1,
+              message: "stale",
+            }),
+            cacheState: "stale",
+          },
+        }),
+        isrSet: isrSetSpy,
+        triggerBackgroundRegeneration: vi.fn((_key: string, renderFn: () => Promise<void>) => {
+          regenPromise = renderFn();
+        }),
+      };
+    });
+
+    try {
+      const [{ createSSRHandler }, { getRequestContext, isInsideUnifiedScope }] = await Promise.all(
+        [
+          import("../packages/vinext/src/server/dev-server.js"),
+          import("../packages/vinext/src/shims/unified-request-context.js"),
+        ],
+      );
+
+      let parentRequestTags: string[] = [];
+      let regenSawUnifiedScope = false;
+      let regenTags: string[] = [];
+
+      const routeFile = path.join(FIXTURE_DIR, "pages", "isr-test.tsx");
+      const server = {
+        transformIndexHtml: vi.fn(async (_url: string, html: string) => html),
+        ssrLoadModule: vi.fn(async (id: string) => {
+          if (id === "next/router") {
+            return {
+              setSSRContext() {
+                getRequestContext().currentRequestTags.push("outer-tag");
+                parentRequestTags = [...getRequestContext().currentRequestTags];
+              },
+              wrapWithRouterContext(element: unknown) {
+                return element;
+              },
+            };
+          }
+
+          if (id === routeFile) {
+            return {
+              default() {
+                return null;
+              },
+              async getStaticProps() {
+                regenSawUnifiedScope = isInsideUnifiedScope();
+                regenTags = [...getRequestContext().currentRequestTags];
+                return {
+                  props: {
+                    timestamp: Date.now(),
+                    message: "fresh",
+                  },
+                  revalidate: 1,
+                };
+              },
+            };
+          }
+
+          throw new Error(`Unexpected module load: ${id}`);
+        }),
+      } as unknown as ViteDevServer;
+
+      const handler = createSSRHandler(
+        server,
+        [
+          {
+            pattern: "/isr-test",
+            patternParts: ["isr-test"],
+            filePath: routeFile,
+            isDynamic: false,
+            params: [],
+          },
+        ],
+        path.join(FIXTURE_DIR, "pages"),
+      );
+
+      const finishListeners: Array<() => void> = [];
+      const res = {
+        statusCode: 200,
+        on(event: string, listener: () => void) {
+          if (event === "finish") {
+            finishListeners.push(listener);
+          }
+          return this;
+        },
+        writeHead: vi.fn(function (this: { statusCode: number }, status: number) {
+          this.statusCode = status;
+          return this;
+        }),
+        end: vi.fn(() => {
+          for (const listener of finishListeners) {
+            listener();
+          }
+        }),
+      } as any;
+
+      await handler({ method: "GET", headers: {} } as any, res, "/isr-test");
+
+      expect(parentRequestTags).toEqual(["outer-tag"]);
+      expect(res.writeHead).toHaveBeenCalledWith(
+        200,
+        expect.objectContaining({
+          "X-Vinext-Cache": "STALE",
+        }),
+      );
+
+      if (!regenPromise) {
+        throw new Error("expected stale ISR request to start background regeneration");
+      }
+
+      await regenPromise;
+
+      expect(regenSawUnifiedScope).toBe(true);
+      expect(regenTags).toEqual([]);
+      expect(isrSetSpy).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("../packages/vinext/src/server/isr-cache.js");
+      vi.resetModules();
+      vi.restoreAllMocks();
+    }
+  });
+});

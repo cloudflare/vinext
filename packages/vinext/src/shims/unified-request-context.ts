@@ -125,11 +125,14 @@ export function runWithUnifiedStateMutation<T>(
 
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Array fields (pendingSetCookies,
-  // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadElements) and the
-  // _privateCache Map still share references with the parent until replaced.
-  // Callers must replace those slices (for example `ctx.currentRequestTags = []`)
-  // rather than mutating them in-place (for example `ctx.currentRequestTags.push(...)`)
-  // or the parent scope will observe those changes too.
+  // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadElements), the
+  // _privateCache Map, and object fields (headersContext, serverContext,
+  // requestScopedCacheLife, ssrContext, executionContext) still share
+  // references with the parent until replaced. Callers must replace those
+  // collection/object slices (for example `ctx.currentRequestTags = []`)
+  // rather than mutating them in-place (for example
+  // `ctx.currentRequestTags.push(...)`) or the parent scope will observe those
+  // changes too.
   mutate(childCtx);
   return _als.run(childCtx, fn);
 }
@@ -137,8 +140,10 @@ export function runWithUnifiedStateMutation<T>(
 /**
  * Get the current unified request context.
  * Returns the ALS store when inside a `runWithRequestContext()` scope,
- * or a fresh detached context otherwise. Mutations to the detached value do
- * not persist across calls.
+ * or a fresh detached context otherwise. Unlike the legacy per-shim fallback
+ * singletons, this detached value is ephemeral — mutations do not persist
+ * across calls. This is intentional to prevent state leakage outside request
+ * scopes.
  *
  * Only direct callers observe this detached fallback. Shim `_getState()`
  * helpers should continue to gate on `isInsideUnifiedScope()` and fall back
