@@ -367,6 +367,25 @@ import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getS
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
 
+const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
+
+function collectRouteHandlerMethods(handler) {
+  const methods = ROUTE_HANDLER_HTTP_METHODS.filter((method) => typeof handler[method] === "function");
+  if (methods.includes("GET") && !methods.includes("HEAD")) {
+    methods.push("HEAD");
+  }
+  return methods;
+}
+
+function buildRouteHandlerAllowHeader(exportedMethods, hasDefaultHandler, includeImplicitOptions) {
+  const base = hasDefaultHandler ? [...ROUTE_HANDLER_HTTP_METHODS] : [...exportedMethods];
+  if (includeImplicitOptions && !base.includes("OPTIONS")) {
+    base.push("OPTIONS");
+  }
+  return base;
+}
+
+
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
 // console.error once at module load (instead of per-request) avoids the
@@ -2109,13 +2128,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const revalidateSeconds = typeof handler.revalidate === "number" && handler.revalidate > 0 ? handler.revalidate : null;
 
     // Collect exported HTTP methods for OPTIONS auto-response and Allow header
-    const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
-    const exportedMethods = HTTP_METHODS.filter((m) => typeof handler[m] === "function");
-    // If GET is exported, HEAD is implicitly supported
-    if (exportedMethods.includes("GET") && !exportedMethods.includes("HEAD")) {
-      exportedMethods.push("HEAD");
-    }
+    const exportedMethods = collectRouteHandlerMethods(handler);
     const hasDefault = typeof handler["default"] === "function";
+    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, true);
 
     // Route handlers need the same middleware header/status merge behavior as
     // page responses. This keeps middleware response headers visible on API
@@ -2142,13 +2157,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
-      const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
-      if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
       return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
-        headers: { "Allow": allowMethods.join(", ") },
+        headers: { "Allow": allowHeaderForOptions.join(", ") },
       }));
     }
 
@@ -2253,9 +2266,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
     setHeadersContext(null);
     setNavigationContext(null);
+    const methodNotAllowedAllowHeader = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, false);
     return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
-      headers: { Allow: exportedMethods.join(", ") },
+      headers: { Allow: methodNotAllowedAllowHeader.join(", ") },
     }));
   }
 
@@ -3132,6 +3146,25 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
+
+function collectRouteHandlerMethods(handler) {
+  const methods = ROUTE_HANDLER_HTTP_METHODS.filter((method) => typeof handler[method] === "function");
+  if (methods.includes("GET") && !methods.includes("HEAD")) {
+    methods.push("HEAD");
+  }
+  return methods;
+}
+
+function buildRouteHandlerAllowHeader(exportedMethods, hasDefaultHandler, includeImplicitOptions) {
+  const base = hasDefaultHandler ? [...ROUTE_HANDLER_HTTP_METHODS] : [...exportedMethods];
+  if (includeImplicitOptions && !base.includes("OPTIONS")) {
+    base.push("OPTIONS");
+  }
+  return base;
+}
+
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -4878,13 +4911,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const revalidateSeconds = typeof handler.revalidate === "number" && handler.revalidate > 0 ? handler.revalidate : null;
 
     // Collect exported HTTP methods for OPTIONS auto-response and Allow header
-    const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
-    const exportedMethods = HTTP_METHODS.filter((m) => typeof handler[m] === "function");
-    // If GET is exported, HEAD is implicitly supported
-    if (exportedMethods.includes("GET") && !exportedMethods.includes("HEAD")) {
-      exportedMethods.push("HEAD");
-    }
+    const exportedMethods = collectRouteHandlerMethods(handler);
     const hasDefault = typeof handler["default"] === "function";
+    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, true);
 
     // Route handlers need the same middleware header/status merge behavior as
     // page responses. This keeps middleware response headers visible on API
@@ -4911,13 +4940,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
-      const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
-      if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
       return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
-        headers: { "Allow": allowMethods.join(", ") },
+        headers: { "Allow": allowHeaderForOptions.join(", ") },
       }));
     }
 
@@ -5022,9 +5049,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
     setHeadersContext(null);
     setNavigationContext(null);
+    const methodNotAllowedAllowHeader = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, false);
     return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
-      headers: { Allow: exportedMethods.join(", ") },
+      headers: { Allow: methodNotAllowedAllowHeader.join(", ") },
     }));
   }
 
@@ -5901,6 +5929,25 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
+
+function collectRouteHandlerMethods(handler) {
+  const methods = ROUTE_HANDLER_HTTP_METHODS.filter((method) => typeof handler[method] === "function");
+  if (methods.includes("GET") && !methods.includes("HEAD")) {
+    methods.push("HEAD");
+  }
+  return methods;
+}
+
+function buildRouteHandlerAllowHeader(exportedMethods, hasDefaultHandler, includeImplicitOptions) {
+  const base = hasDefaultHandler ? [...ROUTE_HANDLER_HTTP_METHODS] : [...exportedMethods];
+  if (includeImplicitOptions && !base.includes("OPTIONS")) {
+    base.push("OPTIONS");
+  }
+  return base;
+}
+
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -7674,13 +7721,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const revalidateSeconds = typeof handler.revalidate === "number" && handler.revalidate > 0 ? handler.revalidate : null;
 
     // Collect exported HTTP methods for OPTIONS auto-response and Allow header
-    const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
-    const exportedMethods = HTTP_METHODS.filter((m) => typeof handler[m] === "function");
-    // If GET is exported, HEAD is implicitly supported
-    if (exportedMethods.includes("GET") && !exportedMethods.includes("HEAD")) {
-      exportedMethods.push("HEAD");
-    }
+    const exportedMethods = collectRouteHandlerMethods(handler);
     const hasDefault = typeof handler["default"] === "function";
+    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, true);
 
     // Route handlers need the same middleware header/status merge behavior as
     // page responses. This keeps middleware response headers visible on API
@@ -7707,13 +7750,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
-      const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
-      if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
       return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
-        headers: { "Allow": allowMethods.join(", ") },
+        headers: { "Allow": allowHeaderForOptions.join(", ") },
       }));
     }
 
@@ -7818,9 +7859,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
     setHeadersContext(null);
     setNavigationContext(null);
+    const methodNotAllowedAllowHeader = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, false);
     return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
-      headers: { Allow: exportedMethods.join(", ") },
+      headers: { Allow: methodNotAllowedAllowHeader.join(", ") },
     }));
   }
 
@@ -8705,6 +8747,25 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
+
+function collectRouteHandlerMethods(handler) {
+  const methods = ROUTE_HANDLER_HTTP_METHODS.filter((method) => typeof handler[method] === "function");
+  if (methods.includes("GET") && !methods.includes("HEAD")) {
+    methods.push("HEAD");
+  }
+  return methods;
+}
+
+function buildRouteHandlerAllowHeader(exportedMethods, hasDefaultHandler, includeImplicitOptions) {
+  const base = hasDefaultHandler ? [...ROUTE_HANDLER_HTTP_METHODS] : [...exportedMethods];
+  if (includeImplicitOptions && !base.includes("OPTIONS")) {
+    base.push("OPTIONS");
+  }
+  return base;
+}
+
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -10480,13 +10541,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const revalidateSeconds = typeof handler.revalidate === "number" && handler.revalidate > 0 ? handler.revalidate : null;
 
     // Collect exported HTTP methods for OPTIONS auto-response and Allow header
-    const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
-    const exportedMethods = HTTP_METHODS.filter((m) => typeof handler[m] === "function");
-    // If GET is exported, HEAD is implicitly supported
-    if (exportedMethods.includes("GET") && !exportedMethods.includes("HEAD")) {
-      exportedMethods.push("HEAD");
-    }
+    const exportedMethods = collectRouteHandlerMethods(handler);
     const hasDefault = typeof handler["default"] === "function";
+    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, true);
 
     // Route handlers need the same middleware header/status merge behavior as
     // page responses. This keeps middleware response headers visible on API
@@ -10513,13 +10570,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
-      const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
-      if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
       return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
-        headers: { "Allow": allowMethods.join(", ") },
+        headers: { "Allow": allowHeaderForOptions.join(", ") },
       }));
     }
 
@@ -10624,9 +10679,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
     setHeadersContext(null);
     setNavigationContext(null);
+    const methodNotAllowedAllowHeader = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, false);
     return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
-      headers: { Allow: exportedMethods.join(", ") },
+      headers: { Allow: methodNotAllowedAllowHeader.join(", ") },
     }));
   }
 
@@ -11503,6 +11559,25 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
+
+function collectRouteHandlerMethods(handler) {
+  const methods = ROUTE_HANDLER_HTTP_METHODS.filter((method) => typeof handler[method] === "function");
+  if (methods.includes("GET") && !methods.includes("HEAD")) {
+    methods.push("HEAD");
+  }
+  return methods;
+}
+
+function buildRouteHandlerAllowHeader(exportedMethods, hasDefaultHandler, includeImplicitOptions) {
+  const base = hasDefaultHandler ? [...ROUTE_HANDLER_HTTP_METHODS] : [...exportedMethods];
+  if (includeImplicitOptions && !base.includes("OPTIONS")) {
+    base.push("OPTIONS");
+  }
+  return base;
+}
+
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -13253,13 +13328,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const revalidateSeconds = typeof handler.revalidate === "number" && handler.revalidate > 0 ? handler.revalidate : null;
 
     // Collect exported HTTP methods for OPTIONS auto-response and Allow header
-    const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
-    const exportedMethods = HTTP_METHODS.filter((m) => typeof handler[m] === "function");
-    // If GET is exported, HEAD is implicitly supported
-    if (exportedMethods.includes("GET") && !exportedMethods.includes("HEAD")) {
-      exportedMethods.push("HEAD");
-    }
+    const exportedMethods = collectRouteHandlerMethods(handler);
     const hasDefault = typeof handler["default"] === "function";
+    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, true);
 
     // Route handlers need the same middleware header/status merge behavior as
     // page responses. This keeps middleware response headers visible on API
@@ -13286,13 +13357,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
-      const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
-      if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
       return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
-        headers: { "Allow": allowMethods.join(", ") },
+        headers: { "Allow": allowHeaderForOptions.join(", ") },
       }));
     }
 
@@ -13397,9 +13466,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
     setHeadersContext(null);
     setNavigationContext(null);
+    const methodNotAllowedAllowHeader = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, false);
     return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
-      headers: { Allow: exportedMethods.join(", ") },
+      headers: { Allow: methodNotAllowedAllowHeader.join(", ") },
     }));
   }
 
@@ -14276,6 +14346,25 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
+const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
+
+function collectRouteHandlerMethods(handler) {
+  const methods = ROUTE_HANDLER_HTTP_METHODS.filter((method) => typeof handler[method] === "function");
+  if (methods.includes("GET") && !methods.includes("HEAD")) {
+    methods.push("HEAD");
+  }
+  return methods;
+}
+
+function buildRouteHandlerAllowHeader(exportedMethods, hasDefaultHandler, includeImplicitOptions) {
+  const base = hasDefaultHandler ? [...ROUTE_HANDLER_HTTP_METHODS] : [...exportedMethods];
+  if (includeImplicitOptions && !base.includes("OPTIONS")) {
+    base.push("OPTIONS");
+  }
+  return base;
+}
+
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -16330,13 +16419,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const revalidateSeconds = typeof handler.revalidate === "number" && handler.revalidate > 0 ? handler.revalidate : null;
 
     // Collect exported HTTP methods for OPTIONS auto-response and Allow header
-    const HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
-    const exportedMethods = HTTP_METHODS.filter((m) => typeof handler[m] === "function");
-    // If GET is exported, HEAD is implicitly supported
-    if (exportedMethods.includes("GET") && !exportedMethods.includes("HEAD")) {
-      exportedMethods.push("HEAD");
-    }
+    const exportedMethods = collectRouteHandlerMethods(handler);
     const hasDefault = typeof handler["default"] === "function";
+    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, true);
 
     // Route handlers need the same middleware header/status merge behavior as
     // page responses. This keeps middleware response headers visible on API
@@ -16363,13 +16448,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
-      const allowMethods = hasDefault ? HTTP_METHODS : exportedMethods;
-      if (!allowMethods.includes("OPTIONS")) allowMethods.push("OPTIONS");
       setHeadersContext(null);
       setNavigationContext(null);
       return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
-        headers: { "Allow": allowMethods.join(", ") },
+        headers: { "Allow": allowHeaderForOptions.join(", ") },
       }));
     }
 
@@ -16474,9 +16557,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
     setHeadersContext(null);
     setNavigationContext(null);
+    const methodNotAllowedAllowHeader = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, false);
     return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
-      headers: { Allow: exportedMethods.join(", ") },
+      headers: { Allow: methodNotAllowedAllowHeader.join(", ") },
     }));
   }
 

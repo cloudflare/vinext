@@ -64,4 +64,3 @@ export async function HEAD() {
     },
   });
 }
-
