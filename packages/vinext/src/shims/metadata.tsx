@@ -145,14 +145,15 @@ export interface Metadata {
   openGraph?: {
     title?: string;
     description?: string;
-    url?: string;
+    url?: string | URL;
     siteName?: string;
     images?:
       | string
-      | { url: string; width?: number; height?: number; alt?: string }
-      | Array<string | { url: string; width?: number; height?: number; alt?: string }>;
-    videos?: Array<{ url: string; width?: number; height?: number }>;
-    audio?: Array<{ url: string }>;
+      | URL
+      | { url: string | URL; width?: number; height?: number; alt?: string }
+      | Array<string | URL | { url: string | URL; width?: number; height?: number; alt?: string }>;
+    videos?: Array<{ url: string | URL; width?: number; height?: number }>;
+    audio?: Array<{ url: string | URL }>;
     locale?: string;
     type?: string;
     publishedTime?: string;
@@ -167,23 +168,29 @@ export interface Metadata {
     description?: string;
     images?:
       | string
-      | { url: string; alt?: string; width?: number; height?: number }
-      | Array<string | { url: string; alt?: string; width?: number; height?: number }>;
+      | URL
+      | { url: string | URL; alt?: string; width?: number; height?: number }
+      | Array<string | URL | { url: string | URL; alt?: string; width?: number; height?: number }>;
     creator?: string;
     creatorId?: string;
+    players?: TwitterPlayerDescriptor | TwitterPlayerDescriptor[];
+    app?: TwitterAppDescriptor;
   };
   icons?: {
-    icon?: string | Array<{ url: string; sizes?: string; type?: string; media?: string }>;
-    shortcut?: string | string[];
-    apple?: string | Array<{ url: string; sizes?: string; type?: string }>;
-    other?: Array<{ rel: string; url: string; sizes?: string; type?: string }>;
+    icon?:
+      | string
+      | URL
+      | Array<{ url: string | URL; sizes?: string; type?: string; media?: string }>;
+    shortcut?: string | URL | Array<string | URL>;
+    apple?: string | URL | Array<{ url: string | URL; sizes?: string; type?: string }>;
+    other?: Array<{ rel: string; url: string | URL; sizes?: string; type?: string }>;
   };
-  manifest?: string;
+  manifest?: string | URL;
   alternates?: {
-    canonical?: string;
-    languages?: Record<string, string>;
-    media?: Record<string, string>;
-    types?: Record<string, string>;
+    canonical?: string | URL;
+    languages?: Record<string, string | URL>;
+    media?: Record<string, string | URL>;
+    types?: Record<string, string | URL>;
   };
   verification?: {
     google?: string;
@@ -204,8 +211,67 @@ export interface Metadata {
     telephone?: boolean;
   };
   category?: string;
+  itunes?: {
+    appId: string;
+    appArgument?: string;
+  };
+  appLinks?: {
+    ios?: AppLinksApple | AppLinksApple[];
+    iphone?: AppLinksApple | AppLinksApple[];
+    ipad?: AppLinksApple | AppLinksApple[];
+    android?: AppLinksAndroid | AppLinksAndroid[];
+    windows_phone?: AppLinksWindows | AppLinksWindows[];
+    windows?: AppLinksWindows | AppLinksWindows[];
+    windows_universal?: AppLinksWindows | AppLinksWindows[];
+    web?: AppLinksWeb | AppLinksWeb[];
+  };
   other?: Record<string, string | string[]>;
   [key: string]: unknown;
+}
+
+interface AppLinksApple {
+  url: string | URL;
+  app_store_id?: string | number;
+  app_name?: string;
+}
+
+interface AppLinksAndroid {
+  package: string;
+  url?: string | URL;
+  class?: string;
+  app_name?: string;
+}
+
+interface AppLinksWindows {
+  url: string | URL;
+  app_id?: string;
+  app_name?: string;
+}
+
+interface AppLinksWeb {
+  url: string | URL;
+  should_fallback?: boolean;
+}
+
+interface TwitterPlayerDescriptor {
+  playerUrl: string | URL;
+  streamUrl: string | URL;
+  width: number;
+  height: number;
+}
+
+interface TwitterAppDescriptor {
+  id: {
+    iphone?: string | number;
+    ipad?: string | number;
+    googleplay?: string;
+  };
+  url?: {
+    iphone?: string | URL;
+    ipad?: string | URL;
+    googleplay?: string | URL;
+  };
+  name?: string;
 }
 
 /**
@@ -315,14 +381,18 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
 
   // Resolve metadataBase for URL composition
   const base = metadata.metadataBase;
-  function resolveUrl(url: string | undefined): string | undefined {
+  function resolveUrl(url: string | URL): string;
+  function resolveUrl(url: string | URL | undefined): string | undefined;
+  function resolveUrl(url: string | URL | undefined): string | undefined {
     if (!url) return undefined;
-    if (!base) return url;
-    if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("//")) return url;
+    // Coerce URL objects to strings (Next.js metadata allows string | URL)
+    const s = typeof url === "string" ? url : url instanceof URL ? url.toString() : String(url);
+    if (!base) return s;
+    if (s.startsWith("http://") || s.startsWith("https://") || s.startsWith("//")) return s;
     try {
-      return new URL(url, base).toString();
+      return new URL(s, base).toString();
     } catch {
-      return url;
+      return s;
     }
   }
 
@@ -442,8 +512,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     if (og.title) elements.push(<meta key={key++} property="og:title" content={og.title} />);
     if (og.description)
       elements.push(<meta key={key++} property="og:description" content={og.description} />);
-    if (og.url)
-      elements.push(<meta key={key++} property="og:url" content={resolveUrl(og.url) ?? og.url} />);
+    if (og.url) elements.push(<meta key={key++} property="og:url" content={resolveUrl(og.url)} />);
     if (og.siteName)
       elements.push(<meta key={key++} property="og:site_name" content={og.siteName} />);
     if (og.type) elements.push(<meta key={key++} property="og:type" content={og.type} />);
@@ -463,17 +532,15 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     if (og.images) {
       const imgList =
-        typeof og.images === "string"
+        typeof og.images === "string" || og.images instanceof URL
           ? [{ url: og.images }]
           : Array.isArray(og.images)
             ? og.images
             : [og.images];
       for (const img of imgList) {
-        const imgUrl = typeof img === "string" ? img : img.url;
-        elements.push(
-          <meta key={key++} property="og:image" content={resolveUrl(imgUrl) ?? imgUrl} />,
-        );
-        if (typeof img !== "string") {
+        const imgUrl = typeof img === "string" || img instanceof URL ? img : img.url;
+        elements.push(<meta key={key++} property="og:image" content={resolveUrl(imgUrl)} />);
+        if (typeof img !== "string" && !(img instanceof URL)) {
           if (img.width)
             elements.push(
               <meta key={key++} property="og:image:width" content={String(img.width)} />,
@@ -489,9 +556,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     if (og.videos) {
       for (const video of og.videos) {
-        elements.push(
-          <meta key={key++} property="og:video" content={resolveUrl(video.url) ?? video.url} />,
-        );
+        elements.push(<meta key={key++} property="og:video" content={resolveUrl(video.url)} />);
         if (video.width)
           elements.push(
             <meta key={key++} property="og:video:width" content={String(video.width)} />,
@@ -504,9 +569,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     if (og.audio) {
       for (const audio of og.audio) {
-        elements.push(
-          <meta key={key++} property="og:audio" content={resolveUrl(audio.url) ?? audio.url} />,
-        );
+        elements.push(<meta key={key++} property="og:audio" content={resolveUrl(audio.url)} />);
       }
     }
   }
@@ -525,18 +588,60 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
       elements.push(<meta key={key++} name="twitter:creator:id" content={tw.creatorId} />);
     if (tw.images) {
       const imgList =
-        typeof tw.images === "string"
+        typeof tw.images === "string" || tw.images instanceof URL
           ? [tw.images]
           : Array.isArray(tw.images)
             ? tw.images
             : [tw.images];
       for (const img of imgList) {
-        const imgUrl = typeof img === "string" ? img : img.url;
-        elements.push(
-          <meta key={key++} name="twitter:image" content={resolveUrl(imgUrl) ?? imgUrl} />,
-        );
-        if (typeof img !== "string" && img.alt) {
+        const imgUrl = typeof img === "string" || img instanceof URL ? img : img.url;
+        elements.push(<meta key={key++} name="twitter:image" content={resolveUrl(imgUrl)} />);
+        if (typeof img !== "string" && !(img instanceof URL) && img.alt) {
           elements.push(<meta key={key++} name="twitter:image:alt" content={img.alt} />);
+        }
+      }
+    }
+    // Twitter player cards
+    if (tw.players) {
+      const players = Array.isArray(tw.players) ? tw.players : [tw.players];
+      for (const player of players) {
+        const playerUrl = player.playerUrl.toString();
+        const streamUrl = player.streamUrl.toString();
+        elements.push(<meta key={key++} name="twitter:player" content={resolveUrl(playerUrl)} />);
+        elements.push(
+          <meta key={key++} name="twitter:player:stream" content={resolveUrl(streamUrl)} />,
+        );
+        elements.push(
+          <meta key={key++} name="twitter:player:width" content={String(player.width)} />,
+        );
+        elements.push(
+          <meta key={key++} name="twitter:player:height" content={String(player.height)} />,
+        );
+      }
+    }
+    // Twitter app cards
+    if (tw.app) {
+      const { app } = tw;
+      for (const platform of ["iphone", "ipad", "googleplay"] as const) {
+        if (app.name) {
+          elements.push(
+            <meta key={key++} name={`twitter:app:name:${platform}`} content={app.name} />,
+          );
+        }
+        if (app.id[platform] !== undefined) {
+          elements.push(
+            <meta
+              key={key++}
+              name={`twitter:app:id:${platform}`}
+              content={String(app.id[platform])}
+            />,
+          );
+        }
+        if (app.url?.[platform] !== undefined) {
+          const appUrl = app.url[platform]!.toString();
+          elements.push(
+            <meta key={key++} name={`twitter:app:url:${platform}`} content={resolveUrl(appUrl)} />,
+          );
         }
       }
     }
@@ -549,18 +654,18 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     if (shortcut) {
       const shortcuts = Array.isArray(shortcut) ? shortcut : [shortcut];
       for (const s of shortcuts) {
-        elements.push(<link key={key++} rel="shortcut icon" href={resolveUrl(s) ?? s} />);
+        elements.push(<link key={key++} rel="shortcut icon" href={resolveUrl(s)} />);
       }
     }
     // Icon
     if (icon) {
-      const icons = typeof icon === "string" ? [{ url: icon }] : icon;
+      const icons = typeof icon === "string" || icon instanceof URL ? [{ url: icon }] : icon;
       for (const i of icons) {
         elements.push(
           <link
             key={key++}
             rel="icon"
-            href={resolveUrl(i.url) ?? i.url}
+            href={resolveUrl(i.url)}
             {...(i.sizes ? { sizes: i.sizes } : {})}
             {...(i.type ? { type: i.type } : {})}
             {...(i.media ? { media: i.media } : {})}
@@ -570,13 +675,13 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     // Apple touch icon
     if (apple) {
-      const apples = typeof apple === "string" ? [{ url: apple }] : apple;
+      const apples = typeof apple === "string" || apple instanceof URL ? [{ url: apple }] : apple;
       for (const a of apples) {
         elements.push(
           <link
             key={key++}
             rel="apple-touch-icon"
-            href={resolveUrl(a.url) ?? a.url}
+            href={resolveUrl(a.url)}
             {...(a.sizes ? { sizes: a.sizes } : {})}
             {...(a.type ? { type: a.type } : {})}
           />,
@@ -590,7 +695,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
           <link
             key={key++}
             rel={o.rel}
-            href={resolveUrl(o.url) ?? o.url}
+            href={resolveUrl(o.url)}
             {...(o.sizes ? { sizes: o.sizes } : {})}
           />,
         );
@@ -600,38 +705,28 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
 
   // Manifest
   if (metadata.manifest) {
-    elements.push(
-      <link key={key++} rel="manifest" href={resolveUrl(metadata.manifest) ?? metadata.manifest} />,
-    );
+    elements.push(<link key={key++} rel="manifest" href={resolveUrl(metadata.manifest)} />);
   }
 
   // Alternates
   if (metadata.alternates) {
     const alt = metadata.alternates;
     if (alt.canonical) {
-      elements.push(
-        <link key={key++} rel="canonical" href={resolveUrl(alt.canonical) ?? alt.canonical} />,
-      );
+      elements.push(<link key={key++} rel="canonical" href={resolveUrl(alt.canonical)} />);
     }
     if (alt.languages) {
       for (const [lang, href] of Object.entries(alt.languages)) {
-        elements.push(
-          <link key={key++} rel="alternate" hrefLang={lang} href={resolveUrl(href) ?? href} />,
-        );
+        elements.push(<link key={key++} rel="alternate" hrefLang={lang} href={resolveUrl(href)} />);
       }
     }
     if (alt.media) {
       for (const [media, href] of Object.entries(alt.media)) {
-        elements.push(
-          <link key={key++} rel="alternate" media={media} href={resolveUrl(href) ?? href} />,
-        );
+        elements.push(<link key={key++} rel="alternate" media={media} href={resolveUrl(href)} />);
       }
     }
     if (alt.types) {
       for (const [type, href] of Object.entries(alt.types)) {
-        elements.push(
-          <link key={key++} rel="alternate" type={type} href={resolveUrl(href) ?? href} />,
-        );
+        elements.push(<link key={key++} rel="alternate" type={type} href={resolveUrl(href)} />);
       }
     }
   }
@@ -679,10 +774,48 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
           <link
             key={key++}
             rel="apple-touch-startup-image"
-            href={resolveUrl(img.url) ?? img.url}
+            href={resolveUrl(img.url)}
             {...(img.media ? { media: img.media } : {})}
           />,
         );
+      }
+    }
+  }
+
+  // iTunes
+  if (metadata.itunes) {
+    const { appId, appArgument } = metadata.itunes;
+    let content = `app-id=${appId}`;
+    if (appArgument) {
+      content += `, app-argument=${appArgument}`;
+    }
+    elements.push(<meta key={key++} name="apple-itunes-app" content={content} />);
+  }
+
+  // App Links
+  if (metadata.appLinks) {
+    const al = metadata.appLinks;
+    const platforms = [
+      "ios",
+      "iphone",
+      "ipad",
+      "android",
+      "windows_phone",
+      "windows",
+      "windows_universal",
+      "web",
+    ] as const;
+    for (const platform of platforms) {
+      const entries = al[platform];
+      if (!entries) continue;
+      const list = Array.isArray(entries) ? entries : [entries];
+      for (const entry of list) {
+        for (const [k, v] of Object.entries(entry)) {
+          if (v === undefined || v === null) continue;
+          const str = String(v);
+          const content = k === "url" ? resolveUrl(str) : str;
+          elements.push(<meta key={key++} property={`al:${platform}:${k}`} content={content} />);
+        }
       }
     }
   }

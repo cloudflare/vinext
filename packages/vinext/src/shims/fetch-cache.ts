@@ -408,6 +408,29 @@ declare global {
 }
 
 // ---------------------------------------------------------------------------
+// Background revalidation dedup — one in-flight refetch per cache key.
+// Uses Symbol.for() on globalThis so the map is shared across Vite's
+// separate RSC and SSR module instances.
+// ---------------------------------------------------------------------------
+
+const _PENDING_KEY = Symbol.for("vinext.fetchCache.pendingRefetches");
+const _gPending = globalThis as unknown as Record<PropertyKey, unknown>;
+const pendingRefetches = (_gPending[_PENDING_KEY] ??= new Map<string, Promise<void>>()) as Map<
+  string,
+  Promise<void>
+>;
+
+// Maximum time a dedup entry can live before being force-cleaned.
+// Guards against hung upstream fetches that never settle, which would
+// permanently suppress background refetches for that cache key.
+const DEDUP_TIMEOUT_MS = 60_000;
+
+/** @internal Reset dedup state — exposed for test isolation only. */
+export function _resetPendingRefetches(): void {
+  pendingRefetches.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Patching
 // ---------------------------------------------------------------------------
 
@@ -581,44 +604,78 @@ function createPatchedFetch(): typeof globalThis.fetch {
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
         const staleData = cached.value.data;
 
-        // Background refetch — register with waitUntil so Cloudflare Workers
-        // keeps the isolate alive until the refetch completes.
-        const cleanInit = stripNextFromInit(init);
-        const refetchPromise = originalFetch(input, cleanInit)
-          .then(async (freshResp) => {
-            const freshBody = await freshResp.text();
-            const freshHeaders: Record<string, string> = {};
-            freshResp.headers.forEach((v, k) => {
-              freshHeaders[k] = v;
+        // Background refetch — deduped so only one in-flight refetch runs
+        // per cache key, preventing thundering herd on popular endpoints.
+        if (!pendingRefetches.has(cacheKey)) {
+          const cleanInit = stripNextFromInit(init);
+          const refetchPromise = originalFetch(input, cleanInit)
+            .then(async (freshResp) => {
+              // Only cache 200 responses — a transient error or unexpected
+              // status must not overwrite previously-good cached data.
+              if (freshResp.status !== 200) return;
+
+              const freshBody = await freshResp.text();
+              const freshHeaders: Record<string, string> = {};
+              freshResp.headers.forEach((v, k) => {
+                freshHeaders[k] = v;
+              });
+
+              const freshValue: CachedFetchValue = {
+                kind: "FETCH",
+                data: {
+                  headers: freshHeaders,
+                  body: freshBody,
+                  url:
+                    typeof input === "string"
+                      ? input
+                      : input instanceof URL
+                        ? input.toString()
+                        : input.url,
+                  status: freshResp.status,
+                },
+                tags,
+                revalidate: revalidateSeconds,
+              };
+              await handler.set(cacheKey, freshValue, {
+                fetchCache: true,
+                tags,
+                revalidate: revalidateSeconds,
+              });
+            })
+            .catch((err) => {
+              const url =
+                typeof input === "string"
+                  ? input
+                  : input instanceof URL
+                    ? input.toString()
+                    : input.url;
+              console.error(
+                `[vinext] fetch cache background revalidation failed for ${url} (key=${cacheKey.slice(0, 12)}...):`,
+                err,
+              );
+            })
+            .finally(() => {
+              // Only clear if we still own the slot — the timeout may have
+              // already replaced it with a newer refetch promise.
+              if (pendingRefetches.get(cacheKey) === refetchPromise) {
+                pendingRefetches.delete(cacheKey);
+              }
+              clearTimeout(timeoutId);
             });
 
-            const freshValue: CachedFetchValue = {
-              kind: "FETCH",
-              data: {
-                headers: freshHeaders,
-                body: freshBody,
-                url:
-                  typeof input === "string"
-                    ? input
-                    : input instanceof URL
-                      ? input.toString()
-                      : input.url,
-                status: freshResp.status,
-              },
-              tags,
-              revalidate: revalidateSeconds,
-            };
-            await handler.set(cacheKey, freshValue, {
-              fetchCache: true,
-              tags,
-              revalidate: revalidateSeconds,
-            });
-          })
-          .catch((err) => {
-            console.error("[vinext] fetch cache background revalidation failed:", err);
-          });
+          pendingRefetches.set(cacheKey, refetchPromise);
 
-        getRequestExecutionContext()?.waitUntil(refetchPromise);
+          // Safety net: if the upstream fetch hangs forever, force-clean the
+          // dedup entry so future stale hits can retry instead of being
+          // permanently suppressed.
+          const timeoutId = setTimeout(() => {
+            if (pendingRefetches.get(cacheKey) === refetchPromise) {
+              pendingRefetches.delete(cacheKey);
+            }
+          }, DEDUP_TIMEOUT_MS);
+
+          getRequestExecutionContext()?.waitUntil(refetchPromise);
+        }
 
         // Return stale data immediately
         return new Response(staleData.body, {
@@ -635,8 +692,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
     const cleanInit = stripNextFromInit(init);
     const response = await originalFetch(input, cleanInit);
 
-    // Only cache successful responses (2xx)
-    if (response.ok) {
+    // Only cache 200 responses
+    if (response.status === 200) {
       // Clone before reading body
       const cloned = response.clone();
       const body = await cloned.text();

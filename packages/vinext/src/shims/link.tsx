@@ -22,8 +22,15 @@ import React, {
 // so this resolves both via the Vite plugin and in direct vitest imports)
 import { toRscUrl, getPrefetchedUrls, storePrefetchResponse } from "./navigation.js";
 import { isDangerousScheme } from "./url-safety.js";
-import { toSameOriginPath } from "./url-utils.js";
+import {
+  resolveRelativeHref,
+  toBrowserNavigationHref,
+  toSameOriginAppPath,
+  withBasePath,
+} from "./url-utils.js";
 import { appendSearchParamsToUrl, type UrlQuery, urlQueryToSearchParams } from "../utils/query.js";
+import { addLocalePrefix, getDomainLocaleUrl, type DomainLocale } from "../utils/domain-locale.js";
+import { getI18nContext } from "./i18n-context.js";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 
 interface NavigateEvent {
@@ -85,19 +92,6 @@ function resolveHref(href: LinkProps["href"]): string {
   return url;
 }
 
-/** Prepend basePath to an internal path for browser URLs / fetches */
-function withBasePath(path: string): string {
-  if (
-    !__basePath ||
-    path.startsWith("http://") ||
-    path.startsWith("https://") ||
-    path.startsWith("//")
-  ) {
-    return path;
-  }
-  return __basePath + path;
-}
-
 /**
  * Check if a href is only a hash change (same pathname, different/added hash).
  * Handles relative hashes like "#foo" and "?query#foo".
@@ -110,30 +104,6 @@ function isHashOnlyChange(href: string): boolean {
     return current.pathname === next.pathname && current.search === next.search && next.hash !== "";
   } catch {
     return false;
-  }
-}
-
-/**
- * Resolve a potentially relative href against the current URL.
- * Handles: "#hash", "?query", "?query#hash", relative paths.
- */
-function resolveRelativeHref(href: string): string {
-  if (typeof window === "undefined") return href;
-  // Already absolute
-  if (
-    href.startsWith("/") ||
-    href.startsWith("http://") ||
-    href.startsWith("https://") ||
-    href.startsWith("//")
-  ) {
-    return href;
-  }
-  // Relative: resolve against current location
-  try {
-    const resolved = new URL(href, window.location.href);
-    return resolved.pathname + resolved.search + resolved.hash;
-  } catch {
-    return href;
   }
 }
 
@@ -172,12 +142,12 @@ function prefetchUrl(href: string): void {
   // Normalize same-origin absolute URLs to local paths before prefetching
   let prefetchHref = href;
   if (href.startsWith("http://") || href.startsWith("https://") || href.startsWith("//")) {
-    const localPath = toSameOriginPath(href);
+    const localPath = toSameOriginAppPath(href, __basePath);
     if (localPath == null) return; // truly external — don't prefetch
     prefetchHref = localPath;
   }
 
-  const fullHref = withBasePath(prefetchHref);
+  const fullHref = toBrowserNavigationHref(prefetchHref, window.location.href, __basePath);
 
   // Don't prefetch the same URL twice (keyed by rscUrl so the browser
   // entry can clear the key when a cache entry is consumed)
@@ -263,7 +233,29 @@ function getDefaultLocale(): string | undefined {
   if (typeof window !== "undefined") {
     return window.__VINEXT_DEFAULT_LOCALE__;
   }
-  return globalThis.__VINEXT_DEFAULT_LOCALE__;
+  return getI18nContext()?.defaultLocale;
+}
+
+function getDomainLocales(): readonly DomainLocale[] | undefined {
+  if (typeof window !== "undefined") {
+    return (window.__NEXT_DATA__ as VinextNextData | undefined)?.domainLocales;
+  }
+  return getI18nContext()?.domainLocales;
+}
+
+function getCurrentHostname(): string | undefined {
+  if (typeof window !== "undefined") return window.location.hostname;
+  return getI18nContext()?.hostname;
+}
+
+function getDomainLocaleHref(href: string, locale: string): string | undefined {
+  // Only cross-domain locale switches need a special absolute URL here.
+  // Same-domain cases fall back to the standard locale-prefix logic below.
+  return getDomainLocaleUrl(href, locale, {
+    basePath: __basePath,
+    currentHostname: getCurrentHostname(),
+    domainItems: getDomainLocales(),
+  });
 }
 
 /**
@@ -289,19 +281,12 @@ function applyLocaleToHref(href: string, locale: string | false | undefined): st
     return href;
   }
 
-  // locale is a string: prepend the locale prefix if not already present
-  const defaultLocale = getDefaultLocale();
-  // For the default locale, Next.js doesn't add a prefix
-  if (locale === defaultLocale) {
-    return href;
+  const domainLocaleHref = getDomainLocaleHref(href, locale);
+  if (domainLocaleHref) {
+    return domainLocaleHref;
   }
 
-  // Check if href already starts with the locale
-  if (href.startsWith(`/${locale}/`) || href === `/${locale}`) {
-    return href;
-  }
-
-  return `/${locale}${href.startsWith("/") ? href : `/${href}`}`;
+  return addLocalePrefix(href, locale, getDefaultLocale() ?? "");
 }
 
 const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
@@ -331,7 +316,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   // won't use the result when isDangerous is true)
   const localizedHref = applyLocaleToHref(isDangerous ? "/" : resolvedHref, locale);
   // Full href with basePath for browser URLs and fetches
-  const fullHref = withBasePath(localizedHref);
+  const fullHref = withBasePath(localizedHref, __basePath);
 
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);
@@ -370,7 +355,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       localizedHref.startsWith("https://") ||
       localizedHref.startsWith("//")
     ) {
-      const localPath = toSameOriginPath(localizedHref);
+      const localPath = toSameOriginAppPath(localizedHref, __basePath);
       if (localPath == null) return; // truly external
       hrefToPrefetch = localPath;
     }
@@ -410,17 +395,26 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       resolvedHref.startsWith("https://") ||
       resolvedHref.startsWith("//")
     ) {
-      const localPath = toSameOriginPath(resolvedHref);
+      const localPath = toSameOriginAppPath(resolvedHref, __basePath);
       if (localPath == null) return; // truly external
       navigateHref = localPath;
     }
 
     e.preventDefault();
 
+    // Resolve relative hrefs (#hash, ?query) against the current URL once so
+    // onNavigate and the actual navigation target stay in sync.
+    const absoluteHref = resolveRelativeHref(navigateHref, window.location.href, __basePath);
+    const absoluteFullHref = toBrowserNavigationHref(
+      navigateHref,
+      window.location.href,
+      __basePath,
+    );
+
     // Call onNavigate callback if provided (Next.js 16 View Transitions support)
     if (onNavigate) {
       try {
-        const navUrl = new URL(localizedHref, window.location.origin);
+        const navUrl = new URL(absoluteFullHref, window.location.origin);
         let prevented = false;
         const navEvent: NavigateEvent = {
           url: navUrl,
@@ -450,10 +444,6 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         "",
       );
     }
-
-    // Resolve relative hrefs (#hash, ?query) against current URL
-    const absoluteHref = resolveRelativeHref(navigateHref);
-    const absoluteFullHref = withBasePath(absoluteHref);
 
     // Hash-only change: update URL and scroll to target, skip RSC fetch
     if (typeof window !== "undefined" && isHashOnlyChange(absoluteFullHref)) {

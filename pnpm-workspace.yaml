@@ -3,3 +3,5 @@ packages:
   - "examples/*"
   - "tests/fixtures/*"
   - "tests/fixtures/ecosystem/*"
+  - "benchmarks/vinext"
+  - "benchmarks/vinext-rolldown"

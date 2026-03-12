@@ -11,7 +11,7 @@
 // would throw at link time for missing bindings. With `import * as React`, the
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
-import { toSameOriginPath } from "./url-utils.js";
+import { toBrowserNavigationHref, toSameOriginAppPath } from "./url-utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 
@@ -21,8 +21,16 @@ import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 // (including route groups, with dynamic params resolved to actual values).
 // Created lazily because `React.createContext` is NOT available in the
 // react-server condition of React. In the RSC environment, this remains null.
-
-let _LayoutSegmentCtx: React.Context<string[]> | null = null;
+// The shared context lives behind a global singleton so provider/hook pairs
+// still line up if Vite loads this shim through multiple resolved module IDs.
+const _LAYOUT_SEGMENT_CTX_KEY = Symbol.for("vinext.layoutSegmentContext");
+const _SERVER_INSERTED_HTML_CTX_KEY = Symbol.for("vinext.serverInsertedHTMLContext");
+type _LayoutSegmentGlobal = typeof globalThis & {
+  [_LAYOUT_SEGMENT_CTX_KEY]?: React.Context<string[]> | null;
+  [_SERVER_INSERTED_HTML_CTX_KEY]?: React.Context<
+    ((callback: () => unknown) => void) | null
+  > | null;
+};
 
 // ─── ServerInsertedHTML context ────────────────────────────────────────────────
 // Used by CSS-in-JS libraries (Apollo Client, styled-components, emotion) to
@@ -38,22 +46,38 @@ let _LayoutSegmentCtx: React.Context<string[]> | null = null;
 // Created eagerly at module load time. In the RSC environment (react-server
 // condition), createContext isn't available so this will be null.
 
+function getServerInsertedHTMLContext(): React.Context<
+  ((callback: () => unknown) => void) | null
+> | null {
+  if (typeof React.createContext !== "function") return null;
+
+  const globalState = globalThis as _LayoutSegmentGlobal;
+  if (!globalState[_SERVER_INSERTED_HTML_CTX_KEY]) {
+    globalState[_SERVER_INSERTED_HTML_CTX_KEY] = React.createContext<
+      ((callback: () => unknown) => void) | null
+    >(null);
+  }
+
+  return globalState[_SERVER_INSERTED_HTML_CTX_KEY] ?? null;
+}
+
 export const ServerInsertedHTMLContext: React.Context<
   ((callback: () => unknown) => void) | null
-> | null =
-  typeof React.createContext === "function"
-    ? React.createContext<((callback: () => unknown) => void) | null>(null)
-    : null;
+> | null = getServerInsertedHTMLContext();
 
 /**
  * Get or create the layout segment context.
  * Returns null in the RSC environment (createContext unavailable).
  */
 export function getLayoutSegmentContext(): React.Context<string[]> | null {
-  if (_LayoutSegmentCtx === null && typeof React.createContext === "function") {
-    _LayoutSegmentCtx = React.createContext<string[]>([]);
+  if (typeof React.createContext !== "function") return null;
+
+  const globalState = globalThis as _LayoutSegmentGlobal;
+  if (!globalState[_LAYOUT_SEGMENT_CTX_KEY]) {
+    globalState[_LAYOUT_SEGMENT_CTX_KEY] = React.createContext<string[]>([]);
   }
-  return _LayoutSegmentCtx;
+
+  return globalState[_LAYOUT_SEGMENT_CTX_KEY] ?? null;
 }
 
 /**
@@ -154,12 +178,6 @@ const isServer = typeof window === "undefined";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
-
-/** Prepend basePath to a path for browser URLs / fetches */
-function withBasePath(p: string): string {
-  if (!__basePath) return p;
-  return __basePath + p;
-}
 
 // ---------------------------------------------------------------------------
 // RSC prefetch cache utilities (shared between link.tsx and browser entry)
@@ -297,7 +315,8 @@ function getServerSearchParamsSnapshot(): ReadonlyURLSearchParams {
 // Track client-side params (set during RSC hydration/navigation)
 // We cache the params object for referential stability — only create a new
 // object when the params actually change (shallow key/value comparison).
-let _clientParams: Record<string, string | string[]> = {};
+const _EMPTY_PARAMS: Record<string, string | string[]> = {};
+let _clientParams: Record<string, string | string[]> = _EMPTY_PARAMS;
 let _clientParamsJson = "{}";
 
 export function setClientParams(params: Record<string, string | string[]>): void {
@@ -305,12 +324,29 @@ export function setClientParams(params: Record<string, string | string[]>): void
   if (json !== _clientParamsJson) {
     _clientParams = params;
     _clientParamsJson = json;
+    // Notify useSyncExternalStore subscribers so useParams() re-renders.
+    notifyListeners();
   }
 }
 
 /** Get the current client params (for testing referential stability). */
 export function getClientParams(): Record<string, string | string[]> {
   return _clientParams;
+}
+
+function getClientParamsSnapshot(): Record<string, string | string[]> {
+  return _clientParams;
+}
+
+function getServerParamsSnapshot(): Record<string, string | string[]> {
+  return _getServerContext()?.params ?? _EMPTY_PARAMS;
+}
+
+function subscribeToNavigation(cb: () => void): () => void {
+  _listeners.add(cb);
+  return () => {
+    _listeners.delete(cb);
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -329,12 +365,7 @@ export function usePathname(): string {
   }
   // Client-side: use the hook system for reactivity
   return React.useSyncExternalStore(
-    (cb: () => void) => {
-      _listeners.add(cb);
-      return () => {
-        _listeners.delete(cb);
-      };
-    },
+    subscribeToNavigation,
     getPathnameSnapshot,
     () => _getServerContext()?.pathname ?? "/",
   );
@@ -350,12 +381,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     return getServerSearchParamsSnapshot();
   }
   return React.useSyncExternalStore(
-    (cb: () => void) => {
-      _listeners.add(cb);
-      return () => {
-        _listeners.delete(cb);
-      };
-    },
+    subscribeToNavigation,
     getSearchParamsSnapshot,
     getServerSearchParamsSnapshot,
   );
@@ -369,9 +395,13 @@ export function useParams<
 >(): T {
   if (isServer) {
     // During SSR of "use client" components, the navigation context may not be set.
-    return (_getServerContext()?.params ?? {}) as T;
+    return (_getServerContext()?.params ?? _EMPTY_PARAMS) as T;
   }
-  return _clientParams as T;
+  return React.useSyncExternalStore(
+    subscribeToNavigation,
+    getClientParamsSnapshot as () => T,
+    getServerParamsSnapshot as () => T,
+  );
 }
 
 /**
@@ -492,7 +522,7 @@ async function navigateImpl(
   // Normalize same-origin absolute URLs to local paths for SPA navigation
   let normalizedHref = href;
   if (isExternalUrl(href)) {
-    const localPath = toSameOriginPath(href);
+    const localPath = toSameOriginAppPath(href, __basePath);
     if (localPath == null) {
       // Truly external: use full page navigation
       if (mode === "replace") {
@@ -505,7 +535,7 @@ async function navigateImpl(
     normalizedHref = localPath;
   }
 
-  const fullHref = withBasePath(normalizedHref);
+  const fullHref = toBrowserNavigationHref(normalizedHref, window.location.href, __basePath);
 
   // Save scroll position before navigating (for back/forward restoration)
   if (mode === "push") {
@@ -591,7 +621,7 @@ const _appRouter = {
   prefetch(href: string): void {
     if (isServer) return;
     // Prefetch the RSC payload for the target route and store in cache
-    const fullHref = withBasePath(href);
+    const fullHref = toBrowserNavigationHref(href, window.location.href, __basePath);
     const rscUrl = toRscUrl(fullHref);
     const prefetched = getPrefetchedUrls();
     if (prefetched.has(rscUrl)) return;

@@ -284,11 +284,36 @@ export function matchPattern(pathname: string, pattern: string): boolean {
 }
 
 /**
+ * Extract a parenthesized constraint from `str` starting at `re.lastIndex`.
+ * Returns the constraint string (without parens) and advances `re.lastIndex`
+ * past the closing `)`, or returns null if the next char is not `(`.
+ */
+function extractConstraint(str: string, re: RegExp): string | null {
+  if (str[re.lastIndex] !== "(") return null;
+  const start = re.lastIndex + 1;
+  let depth = 1;
+  let i = start;
+  while (i < str.length && depth > 0) {
+    if (str[i] === "(") depth++;
+    else if (str[i] === ")") depth--;
+    i++;
+  }
+  if (depth !== 0) return null;
+  re.lastIndex = i;
+  return str.slice(start, i - 1);
+}
+
+/**
  * Compile a matcher pattern into a RegExp (or null if rejected by safeRegExp).
  */
 function compileMatcherPattern(pattern: string): RegExp | null {
-  // Handle regex patterns (contains groups or escapes)
-  if (pattern.includes("(") || pattern.includes("\\")) {
+  // Check if pattern uses :param(constraint) syntax (e.g. :id(\d+), :locale(en|es|fr))
+  // Also matches :param*(constraint) and :param+(constraint) for catch-all variants.
+  const hasConstraints = /:[\w-]+[*+]?\(/.test(pattern);
+
+  // Pure regex patterns: contain parens or escapes that aren't param constraints.
+  // E.g. /((?!api|_next|favicon\.ico).*)
+  if (!hasConstraints && (pattern.includes("(") || pattern.includes("\\"))) {
     return safeRegExp("^" + pattern + "$");
   }
 
@@ -301,13 +326,29 @@ function compileMatcherPattern(pattern: string): RegExp | null {
   while ((tok = tokenRe.exec(pattern)) !== null) {
     if (tok[1] !== undefined) {
       // /:param* → optionally match slash + zero or more segments
-      regexStr += "(?:/.*)?";
+      const constraint = hasConstraints ? extractConstraint(pattern, tokenRe) : null;
+      regexStr += constraint !== null ? `(?:/(${constraint}))?` : "(?:/.*)?";
     } else if (tok[2] !== undefined) {
       // /:param+ → match slash + one or more segments
-      regexStr += "(?:/.+)";
+      const constraint = hasConstraints ? extractConstraint(pattern, tokenRe) : null;
+      regexStr += constraint !== null ? `(?:/(${constraint}))` : "(?:/.+)";
     } else if (tok[3] !== undefined) {
-      // :param → match one segment
-      regexStr += "([^/]+)";
+      // :param — check for inline constraint (e.g. :id(\d+)) and optional ? marker
+      const constraint = hasConstraints ? extractConstraint(pattern, tokenRe) : null;
+      const isOptional = pattern[tokenRe.lastIndex] === "?";
+      if (isOptional) tokenRe.lastIndex += 1;
+
+      const group = constraint !== null ? `(${constraint})` : "([^/]+)";
+
+      if (isOptional && regexStr.endsWith("/")) {
+        // Make the preceding / and the param group optional together:
+        // /:locale(en|es|fr)?/about → (?:/(en|es|fr))?/about
+        regexStr = regexStr.slice(0, -1) + `(?:/${group})?`;
+      } else if (isOptional) {
+        regexStr += `${group}?`;
+      } else {
+        regexStr += group;
+      }
     } else if (tok[0] === ".") {
       regexStr += "\\.";
     } else {

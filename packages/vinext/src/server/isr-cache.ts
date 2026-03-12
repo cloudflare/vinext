@@ -63,10 +63,17 @@ export async function isrSet(
 }
 
 // ---------------------------------------------------------------------------
-// Background regeneration dedup
+// Background regeneration dedup — one in-flight regeneration per cache key.
+// Uses Symbol.for() on globalThis so the map is shared across Vite's
+// separate RSC and SSR module instances.
 // ---------------------------------------------------------------------------
 
-const pendingRegenerations = new Map<string, Promise<void>>();
+const _PENDING_REGEN_KEY = Symbol.for("vinext.isrCache.pendingRegenerations");
+const _g = globalThis as unknown as Record<PropertyKey, unknown>;
+const pendingRegenerations = (_g[_PENDING_REGEN_KEY] ??= new Map<string, Promise<void>>()) as Map<
+  string,
+  Promise<void>
+>;
 
 /**
  * Trigger a background regeneration for a cache key.
@@ -154,7 +161,11 @@ export function isrCacheKey(router: "pages" | "app", pathname: string, buildId?:
 // ---------------------------------------------------------------------------
 
 const MAX_REVALIDATE_ENTRIES = 10_000;
-const revalidateDurations = new Map<string, number>();
+const _REVALIDATE_KEY = Symbol.for("vinext.isrCache.revalidateDurations");
+const revalidateDurations = (_g[_REVALIDATE_KEY] ??= new Map<string, number>()) as Map<
+  string,
+  number
+>;
 
 /**
  * Store the revalidate duration for a cache key.

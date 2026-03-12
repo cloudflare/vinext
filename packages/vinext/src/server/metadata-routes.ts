@@ -177,6 +177,16 @@ export const METADATA_FILE_MAP: Record<
 // Serializers
 // -------------------------------------------------------------------
 
+/** Escape the five XML special characters in text content and attribute values. */
+function escapeXml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 /**
  * Convert a sitemap array to XML string.
  */
@@ -202,18 +212,18 @@ export function sitemapToXml(entries: SitemapEntry[]): string {
 
   for (const entry of entries) {
     content += "<url>\n";
-    content += `<loc>${entry.url}</loc>\n`;
+    content += `<loc>${escapeXml(entry.url)}</loc>\n`;
 
     const languages = entry.alternates?.languages;
     if (languages && Object.keys(languages).length) {
       for (const language in languages) {
-        content += `<xhtml:link rel="alternate" hreflang="${language}" href="${languages[language]}" />\n`;
+        content += `<xhtml:link rel="alternate" hreflang="${escapeXml(language)}" href="${escapeXml(languages[language])}" />\n`;
       }
     }
 
     if (entry.images?.length) {
       for (const image of entry.images) {
-        content += `<image:image>\n<image:loc>${image}</image:loc>\n</image:image>\n`;
+        content += `<image:image>\n<image:loc>${escapeXml(image)}</image:loc>\n</image:image>\n`;
       }
     }
 
@@ -221,14 +231,16 @@ export function sitemapToXml(entries: SitemapEntry[]): string {
       for (const video of entry.videos) {
         const videoFields = [
           "<video:video>",
-          `<video:title>${video.title}</video:title>`,
-          `<video:thumbnail_loc>${video.thumbnail_loc}</video:thumbnail_loc>`,
-          `<video:description>${video.description}</video:description>`,
-          video.content_loc && `<video:content_loc>${video.content_loc}</video:content_loc>`,
-          video.player_loc && `<video:player_loc>${video.player_loc}</video:player_loc>`,
+          `<video:title>${escapeXml(String(video.title))}</video:title>`,
+          `<video:thumbnail_loc>${escapeXml(String(video.thumbnail_loc))}</video:thumbnail_loc>`,
+          `<video:description>${escapeXml(String(video.description))}</video:description>`,
+          video.content_loc &&
+            `<video:content_loc>${escapeXml(String(video.content_loc))}</video:content_loc>`,
+          video.player_loc &&
+            `<video:player_loc>${escapeXml(String(video.player_loc))}</video:player_loc>`,
           video.duration && `<video:duration>${video.duration}</video:duration>`,
           video.view_count && `<video:view_count>${video.view_count}</video:view_count>`,
-          video.tag && `<video:tag>${video.tag}</video:tag>`,
+          video.tag && `<video:tag>${escapeXml(String(video.tag))}</video:tag>`,
           video.rating && `<video:rating>${video.rating}</video:rating>`,
           video.expiration_date &&
             `<video:expiration_date>${video.expiration_date}</video:expiration_date>`,
@@ -240,11 +252,11 @@ export function sitemapToXml(entries: SitemapEntry[]): string {
             `<video:requires_subscription>${video.requires_subscription}</video:requires_subscription>`,
           video.live && `<video:live>${video.live}</video:live>`,
           video.restriction &&
-            `<video:restriction relationship="${video.restriction.relationship}">${video.restriction.content}</video:restriction>`,
+            `<video:restriction relationship="${escapeXml(String(video.restriction.relationship))}">${escapeXml(String(video.restriction.content))}</video:restriction>`,
           video.platform &&
-            `<video:platform relationship="${video.platform.relationship}">${video.platform.content}</video:platform>`,
+            `<video:platform relationship="${escapeXml(String(video.platform.relationship))}">${escapeXml(String(video.platform.content))}</video:platform>`,
           video.uploader &&
-            `<video:uploader${video.uploader.info ? ` info="${video.uploader.info}"` : ""}>${video.uploader.content}</video:uploader>`,
+            `<video:uploader${video.uploader.info ? ` info="${escapeXml(String(video.uploader.info))}"` : ""}>${escapeXml(String(video.uploader.content))}</video:uploader>`,
           "</video:video>\n",
         ].filter(Boolean);
         content += videoFields.join("\n");

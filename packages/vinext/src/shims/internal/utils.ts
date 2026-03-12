@@ -29,6 +29,7 @@ export interface NEXT_DATA {
     domain: string;
     defaultLocale: string;
     locales?: string[];
+    http?: boolean;
   }>;
   scriptLoader?: unknown[];
   isPreview?: boolean;

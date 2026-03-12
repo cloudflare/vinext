@@ -228,6 +228,24 @@ declare global {
   var __VINEXT_DEFAULT_LOCALE__: string | undefined;
 
   /**
+   * Configured Pages Router domain locale mappings, set on `globalThis` for
+   * server-side rendering so `next/link` can resolve cross-domain locale hrefs
+   * before hydration.
+   */
+  // eslint-disable-next-line no-var
+  var __VINEXT_DOMAIN_LOCALES__:
+    | Array<{ domain: string; defaultLocale: string; locales?: string[]; http?: boolean }>
+    | undefined;
+
+  /**
+   * Current request hostname, set on `globalThis` during Pages Router SSR so
+   * locale-domain links can decide whether to render relative or absolute
+   * hrefs.
+   */
+  // eslint-disable-next-line no-var
+  var __VINEXT_HOSTNAME__: string | undefined;
+
+  /**
    * The onRequestError handler registered by instrumentation.ts.
    * Set by the instrumentation.ts register() function.
    *

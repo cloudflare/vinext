@@ -238,22 +238,24 @@ export class KVCacheHandler implements CacheHandler {
     }
     const tags = [...tagSet];
 
-    // Determine revalidation time
-    let revalidateAt: number | null = null;
+    // Resolve effective revalidate — data overrides ctx.
+    // revalidate: 0 means "don't cache", so skip storage entirely.
+    let effectiveRevalidate: number | undefined;
     if (ctx) {
       const revalidate = (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
-      if (typeof revalidate === "number" && revalidate > 0) {
-        revalidateAt = Date.now() + revalidate * 1000;
+      if (typeof revalidate === "number") {
+        effectiveRevalidate = revalidate;
       }
     }
-    if (
-      data &&
-      "revalidate" in data &&
-      typeof data.revalidate === "number" &&
-      data.revalidate > 0
-    ) {
-      revalidateAt = Date.now() + data.revalidate * 1000;
+    if (data && "revalidate" in data && typeof data.revalidate === "number") {
+      effectiveRevalidate = data.revalidate;
     }
+    if (effectiveRevalidate === 0) return Promise.resolve();
+
+    const revalidateAt =
+      typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
+        ? Date.now() + effectiveRevalidate * 1000
+        : null;
 
     // Prepare entry — convert ArrayBuffers to base64 for JSON storage
     const serializable = data ? serializeForJSON(data) : null;

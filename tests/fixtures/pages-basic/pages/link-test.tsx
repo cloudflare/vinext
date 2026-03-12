@@ -47,6 +47,20 @@ export default function LinkTestPage() {
         <Link href="/about" target="_blank" data-testid="link-blank">
           Blank Target Link
         </Link>
+
+        <Link
+          href="?page=2"
+          data-testid="link-relative-query"
+          onNavigate={(event) => {
+            const navEvent = event as typeof event & { url: URL };
+            sessionStorage.setItem(
+              "pages-relative-onNavigate-url",
+              navEvent.url.pathname + navEvent.url.search + navEvent.url.hash,
+            );
+          }}
+        >
+          Relative Query Link
+        </Link>
       </div>
 
       {preventedNav && <div data-testid="prevented-message">Navigation was prevented</div>}

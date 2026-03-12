@@ -38,6 +38,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { getRequestExecutionContext } from "../shims/request-context.js";
 /**
  * Minimal duck-typed interface for the module runner passed to
  * `runInstrumentation`. Only `.import()` is used — this avoids requiring
@@ -157,20 +158,30 @@ export async function runInstrumentation(
  * Reads the handler from globalThis so this function works correctly regardless
  * of which environment it is called from.
  */
-export async function reportRequestError(
+export function reportRequestError(
   error: Error,
   request: { path: string; method: string; headers: Record<string, string> },
   context: OnRequestErrorContext,
 ): Promise<void> {
   const handler = getOnRequestErrorHandler();
-  if (!handler) return;
+  if (!handler) return Promise.resolve();
 
-  try {
-    await handler(error, request, context);
-  } catch (reportErr) {
-    console.error(
-      "[vinext] onRequestError handler threw:",
-      reportErr instanceof Error ? reportErr.message : String(reportErr),
-    );
-  }
+  const promise = (async () => {
+    try {
+      await handler(error, request, context);
+    } catch (reportErr) {
+      console.error(
+        "[vinext] onRequestError handler threw:",
+        reportErr instanceof Error ? reportErr.message : String(reportErr),
+      );
+    }
+  })();
+
+  // On Cloudflare Workers, register with ctx.waitUntil() so the isolate
+  // stays alive until the report completes (e.g. Sentry HTTP request).
+  // On Node.js (dev or vinext start), getRequestExecutionContext() returns
+  // null — fire-and-forget is fine because the process doesn't die.
+  getRequestExecutionContext()?.waitUntil(promise);
+
+  return promise;
 }
