@@ -41,7 +41,12 @@ const requestContextShimPath = fileURLToPath(
 // Canonical order of HTTP method handlers supported by route.ts modules.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
 
-function collectRouteHandlerMethods(handler: Record<string, unknown>): string[] {
+// Runtime helpers injected into the generated RSC entry so OPTIONS/Allow handling
+// logic stays alongside the route handler pipeline.
+const routeHandlerHelperCode = String.raw`
+const ROUTE_HANDLER_HTTP_METHODS = ${JSON.stringify(ROUTE_HANDLER_HTTP_METHODS)};
+
+function collectRouteHandlerMethods(handler) {
   const methods = ROUTE_HANDLER_HTTP_METHODS.filter((method) => typeof handler[method] === "function");
   if (methods.includes("GET") && !methods.includes("HEAD")) {
     methods.push("HEAD");
@@ -49,17 +54,14 @@ function collectRouteHandlerMethods(handler: Record<string, unknown>): string[] 
   return methods;
 }
 
-function buildRouteHandlerAllowHeader(
-  exportedMethods: string[],
-  hasDefaultHandler: boolean,
-  includeImplicitOptions: boolean,
-): string[] {
+function buildRouteHandlerAllowHeader(exportedMethods, hasDefaultHandler, includeImplicitOptions) {
   const base = hasDefaultHandler ? [...ROUTE_HANDLER_HTTP_METHODS] : [...exportedMethods];
   if (includeImplicitOptions && !base.includes("OPTIONS")) {
     base.push("OPTIONS");
   }
   return base;
 }
+`;
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -291,6 +293,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+${routeHandlerHelperCode}
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
