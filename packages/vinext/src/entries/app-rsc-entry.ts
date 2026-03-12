@@ -1560,6 +1560,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get("accept")?.includes("text/x-component");
   let cleanPathname = pathname.replace(/\\.rsc$/, "");
+  const navigationPathname = cleanPathname;
 
   // Middleware response headers and custom rewrite status are stored in
   // _mwCtx (per-request container) so handler() can merge them into
@@ -1766,7 +1767,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // Set navigation context for Server Components.
   // Note: Headers context is already set by runWithRequestContext in the handler wrapper.
   setNavigationContext({
-    pathname: cleanPathname,
+    pathname: navigationPathname,
     searchParams: url.searchParams,
     params: {},
   });
@@ -1882,7 +1883,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       if (match) {
         const { route: actionRoute, params: actionParams } = match;
         setNavigationContext({
-          pathname: cleanPathname,
+          pathname: navigationPathname,
           searchParams: url.searchParams,
           params: actionParams,
         });
@@ -1979,7 +1980,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // Update navigation context with matched params
   setNavigationContext({
-    pathname: cleanPathname,
+    pathname: navigationPathname,
     searchParams: url.searchParams,
     params,
   });
@@ -2158,7 +2159,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (isForceStatic) {
     setHeadersContext({ headers: new Headers(), cookies: new Map() });
     setNavigationContext({
-      pathname: cleanPathname,
+      pathname: navigationPathname,
       searchParams: new URLSearchParams(),
       params,
     });
@@ -2177,7 +2178,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       accessError: new Error(errorMsg),
     });
     setNavigationContext({
-      pathname: cleanPathname,
+      pathname: navigationPathname,
       searchParams: new URLSearchParams(),
       params,
     });
@@ -2393,7 +2394,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         const sourceMatch = matchRoute(sourceRoute.pattern);
         const sourceParams = sourceMatch ? sourceMatch.params : {};
         setNavigationContext({
-          pathname: cleanPathname,
+          pathname: navigationPathname,
           searchParams: url.searchParams,
           params: intercept.matchedParams,
         });

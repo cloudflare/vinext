@@ -2011,9 +2011,18 @@ describe("metadata title templates", () => {
       { title: { template: "%s | Site", default: "Site" } },
       { title: { template: "%s - Page Template", default: "Page Default" } },
     ]);
-    // The page's template should be ignored; the page's default is used
-    // because the page has a title object (not a string), so we use its default
-    expect(result.title).toBe("Page Default");
+    // The page's own template is ignored, but its default title still behaves
+    // like the terminal title value and gets wrapped by the nearest ancestor template.
+    expect(result.title).toBe("Page Default | Site");
+  });
+
+  it("applies the parent template to a nested layout default title", () => {
+    const result = mergeMetadata([
+      { title: { template: "%s | Layout", default: "Layout" } },
+      { title: { template: "%s | Extra Layout", default: "Extra Layout Default" } },
+      {},
+    ]);
+    expect(result.title).toBe("Extra Layout Default | Layout");
   });
 
   it("preserves non-title metadata during merge", () => {

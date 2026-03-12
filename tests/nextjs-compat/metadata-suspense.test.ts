@@ -40,6 +40,20 @@ describe("Next.js compat: metadata-suspense", () => {
     );
   });
 
+  it("should render metadata in head for HTML-limited bot user agents", async () => {
+    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/metadata-suspense-test", {
+      headers: {
+        "User-Agent": "Discordbot/2.0;",
+      },
+    });
+
+    expect(html).toContain("<title>Suspense Metadata Title</title>");
+    expect(html).toMatch(/<meta\s+name="application-name"\s+content="suspense-app"/);
+    expect(html).toMatch(
+      /<meta\s+name="description"\s+content="Testing metadata in suspense layout"/,
+    );
+  });
+
   // Regression test: the shared app-basic root layout used to hardcode
   // <title>App Basic</title>, which made metadata routes appear to emit
   // duplicate titles. Keep this assertion live so metadata fixtures rely on

@@ -74,6 +74,16 @@ const nextConfig: NextConfig = {
       beforeFiles: [
         // Used by Vitest: app-router.test.ts
         { source: "/rewrite-about", destination: "/about" },
+        // Used by Vitest: tests/nextjs-compat/hooks.test.ts
+        {
+          source: "/nextjs-compat/hooks-rewrite-path",
+          destination: "/nextjs-compat/hooks-search",
+        },
+        // Used by Vitest: tests/nextjs-compat/hooks.test.ts
+        {
+          source: "/nextjs-compat/hooks-rewrite-search",
+          destination: "/nextjs-compat/hooks-search",
+        },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
           source: "/repeat-rewrite/:slug",

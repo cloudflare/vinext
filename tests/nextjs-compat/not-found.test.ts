@@ -61,6 +61,15 @@ describe("Next.js compat: not-found", () => {
     expect(html).toContain('<html lang="en">');
   });
 
+  // Next.js: conflict route should coexist with special app/not-found.tsx
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/not-found/conflict-route/index.test.ts#L14-L25
+
+  it("should allow a real /not-found route alongside the special root not-found file", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/not-found");
+    expect(res.status).toBe(200);
+    expect(html).toContain("This is the /not-found route");
+  });
+
   // ── Shell notFound() ───────────────────────────────────────
   // Next.js: it('should return 404 status if notFound() is called in shell', ...)
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/not-found/basic/index.test.ts#L59-L63

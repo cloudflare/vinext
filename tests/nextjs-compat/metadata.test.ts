@@ -73,6 +73,33 @@ describe("Next.js compat: metadata", () => {
     expect(html).toContain("<title>Extra Page | Layout</title>");
   });
 
+  // Next.js: 'should support title template default fallback'
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L49-L54
+
+  it("should fall back to the layout default title when the page exports no title", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-title-template/use-layout-title",
+    );
+    expect(html).toContain("<title>title template layout default</title>");
+  });
+
+  // Next.js: 'should support stashed title in multiple layers'
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L56-L62
+
+  it("should prefer the nearest nested title template when a child page provides a title", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/extra/inner");
+    expect(html).toContain("<title>Inner Page | Extra Layout</title>");
+  });
+
+  it("should compose nested default titles back through the parent template", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-title-template/extra/inner/deep",
+    );
+    expect(html).toContain("<title>extra layout default | Layout</title>");
+  });
+
   // ── Basic metadata tags ──────────────────────────────────────
   // Next.js: 'should support other basic tags'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L52-L89
@@ -361,6 +388,22 @@ describe("Next.js compat: metadata", () => {
     expect(html).toContain('property="al:web:should_fallback" content="true"');
   });
 
+  // ── Social metadata tags ──────────────
+  // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
+  // 'should support socials related tags'
+
+  it("should render facebook and pinterest social metadata tags", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-socials");
+    expect(html).toContain('name="fb:app_id" content="12345678"');
+    expect(html).toContain('name="pinterest-rich-pin" content="false"');
+
+    const adminMatches = html.match(/name="fb:admins" content="/g);
+    expect(adminMatches).toHaveLength(3);
+    expect(html).toContain('name="fb:admins" content="87654321"');
+    expect(html).toContain('name="fb:admins" content="11223344"');
+    expect(html).toContain('name="fb:admins" content="55667788"');
+  });
+
   // ── Twitter player cards ──────────────
   // Ported from Next.js: test/e2e/app-dir/metadata/metadata.test.ts
   // 'should support twitter player/app cards'
@@ -399,9 +442,6 @@ describe("Next.js compat: metadata", () => {
   //
   // N/A: 'should support title template' (browser eval)
   //   Some template tests use browser.eval('document.title') — ported above at SSR level
-  //
-  // N/A: 'should support socials related tags'
-  //   Would need dedicated fixture page (fb:app_id, pinterest)
   //
   // N/A: 'should support verification tags'
   //   Would need dedicated fixture page

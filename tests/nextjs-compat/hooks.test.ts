@@ -125,6 +125,27 @@ describe("Next.js compat: hooks", () => {
     expect(html).toContain("/nextjs-compat/hooks-search");
   });
 
+  // Next.js: rewrite hook canonical URL coverage
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts#L43-L47
+
+  it("usePathname returns the canonical requested pathname after a rewrite", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-rewrite-path");
+    expect(html).toContain('<p id="current-pathname">/nextjs-compat/hooks-rewrite-path</p>');
+  });
+
+  // Next.js: rewrite searchParams canonical URL coverage
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts#L64-L72
+
+  it("useSearchParams preserves the requested query string after a rewrite", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/hooks-rewrite-search?q=rewritten&page=9",
+    );
+    expect(html).toContain('<p id="param-q">rewritten</p>');
+    expect(html).toContain('<p id="param-page">9</p>');
+    expect(html).toContain('<p id="search-string">q=rewritten&amp;page=9</p>');
+  });
+
   // ── useRouter SSR ───────────────────────────────────────────
   // Next.js: 'should have the correct hooks at /adapter-hooks/1'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts

@@ -96,6 +96,21 @@ describe("Next.js compat: app-routes", () => {
     expect(data.ping).toBe("pong");
   });
 
+  // Next.js: 'gets the correct values' (cookies.has)
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L474-L481
+
+  it("can check cookie presence via cookies().has()", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/cookies-has`, {
+      headers: { cookie: "session=present" },
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data).toEqual({
+      hasSession: true,
+      hasMissing: false,
+    });
+  });
+
   // ── JSON body ────────────────────────────────────────────────
   // Next.js: 'can read a JSON encoded body'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L137-L149
@@ -232,6 +247,17 @@ describe("Next.js compat: app-routes", () => {
     expect(res.headers.get("location")).toContain("/about");
   });
 
+  // Next.js: 'can respond correctly' (permanentRedirect)
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L498-L509
+
+  it("permanentRedirect() produces 308 with Location header", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/permanent-redirect`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toContain("/about");
+  });
+
   // ── notFound() in route handlers ─────────────────────────────
   // Next.js: 'can respond correctly in nodejs' (notFound)
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L186-L191
@@ -291,6 +317,15 @@ describe("Next.js compat: app-routes", () => {
     const data = await res.json();
     expect(data.id).toBe("99");
     expect(data.name).toBe("Widget");
+  });
+
+  // Next.js: route groups are transparent for route handler matching
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app-routes/app-custom-routes.test.ts#L166-L173
+
+  it("matches route handlers through transparent route groups", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/api/endpoint/nested`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("grouped nested route handler");
   });
 
   // ── Route segment config: revalidate ────────────────────────
@@ -357,8 +392,6 @@ describe("Next.js compat: app-routes", () => {
   // N/A: 'abort via a request' (various methods)
   //   Tests AbortController on fetch — needs stderr inspection not available in vitest
   //
-  // N/A: 'route groups' — Tests (group) routing syntax, separate feature
-  //
   // N/A: 'can handle a streaming request and streaming response'
   //   Tests streaming body upload — complex streaming setup
   //
@@ -377,8 +410,6 @@ describe("Next.js compat: app-routes", () => {
   // N/A: 'invalid exports' — Tests dev-only console error for default export
   //
   // N/A: 'no response returned' — Tests console error inspection
-  //
-  // N/A: 'permanentRedirect' — Would need fixture, minor variant of redirect
   //
   // N/A: 'catch-all routes' — Would need fixture with [...slug] route handler
 });
