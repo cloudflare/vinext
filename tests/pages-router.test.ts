@@ -1,11 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { createServer, build, type ViteDevServer } from "vite";
-import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
+import { build, createServer, type ViteDevServer } from "vite";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import vinext from "../packages/vinext/src/index.js";
 import { PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
 
@@ -409,7 +409,9 @@ describe("Pages Router integration", () => {
   });
 
   it("applies redirects with repeated dynamic params in the destination", async () => {
-    const res = await fetch(`${baseUrl}/repeat-redirect/hello`, { redirect: "manual" });
+    const res = await fetch(`${baseUrl}/repeat-redirect/hello`, {
+      redirect: "manual",
+    });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toBe("/docs/hello/hello");
   });
@@ -994,7 +996,10 @@ describe("Plugin config", () => {
     expect(configPlugin).toBeDefined();
 
     // Call the config hook with a minimal config
-    const result = await configPlugin.config({ root: FIXTURE_DIR, plugins: [] });
+    const result = await configPlugin.config({
+      root: FIXTURE_DIR,
+      plugins: [],
+    });
 
     expect(result.resolve).toBeDefined();
     expect(result.resolve.dedupe).toBeDefined();
@@ -1009,7 +1014,10 @@ describe("Plugin config", () => {
     const configPlugin = plugins.find((p) => p.name === "vinext:config");
     expect(configPlugin).toBeDefined();
 
-    const result = await configPlugin.config({ root: FIXTURE_DIR, plugins: [] });
+    const result = await configPlugin.config({
+      root: FIXTURE_DIR,
+      plugins: [],
+    });
 
     expect(result.build).toBeDefined();
     expect(result.build.rollupOptions).toBeDefined();
@@ -1466,6 +1474,100 @@ export default function CounterPage() {
         const html = await res.text();
         expect(html).toContain('href="/docs/assets/');
         expect(html).toContain('src="/docs/assets/');
+      } finally {
+        await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      }
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not emit duplicate module tags when basePath and absolute assetPrefix are combined", async () => {
+    const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-basepath-cdn-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    const fixtureOutDir = path.join(tmpRoot, "dist");
+
+    try {
+      await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+      await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+
+      await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+      await fsp.writeFile(
+        path.join(tmpRoot, "next.config.mjs"),
+        `export default { basePath: "/docs", assetPrefix: "https://cdn.example.com" };\n`,
+      );
+      await fsp.writeFile(
+        path.join(tmpRoot, "pages", "counter.tsx"),
+        `import { useState } from "react";
+export default function CounterPage() {
+  const [count, setCount] = useState(0);
+  return (
+    <button data-testid="increment" onClick={() => setCount((c) => c + 1)}>
+      Count: {count}
+    </button>
+  );
+}
+`,
+      );
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "server"),
+          ssr: "virtual:vinext-server-entry",
+          rollupOptions: { output: { entryFileNames: "entry.js" } },
+        },
+      });
+
+      await build({
+        root: tmpRoot,
+        configFile: false,
+        plugins: [vinext()],
+        logLevel: "silent",
+        build: {
+          outDir: path.join(fixtureOutDir, "client"),
+          manifest: true,
+          ssrManifest: true,
+          rollupOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const prodServer = await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir: fixtureOutDir,
+      });
+
+      try {
+        const addr = prodServer.address() as { port: number };
+        const res = await fetch(`http://127.0.0.1:${addr.port}/docs/counter`);
+        expect(res.status).toBe(200);
+        const html = await res.text();
+
+        const moduleScriptSrcs = [
+          ...html.matchAll(/<script[^>]+type="module"[^>]+src="([^"]+)"/g),
+        ].map((match) => match[1]);
+        const modulePreloadHrefs = [
+          ...html.matchAll(/<link[^>]+rel="modulepreload"[^>]+href="([^"]+)"/g),
+        ].map((match) => match[1]);
+
+        expect(moduleScriptSrcs.length).toBeGreaterThan(0);
+        expect(modulePreloadHrefs.length).toBeGreaterThan(0);
+
+        expect(new Set(moduleScriptSrcs).size).toBe(moduleScriptSrcs.length);
+        expect(new Set(modulePreloadHrefs).size).toBe(modulePreloadHrefs.length);
+        expect(moduleScriptSrcs.some((src) => src.includes("/docs/assets/"))).toBe(true);
+
+        for (const src of moduleScriptSrcs) {
+          expect(src.startsWith("https://cdn.example.com/")).toBe(true);
+        }
+        for (const href of modulePreloadHrefs) {
+          expect(href.startsWith("https://cdn.example.com/")).toBe(true);
+        }
       } finally {
         await new Promise<void>((resolve) => prodServer.close(() => resolve()));
       }
@@ -2292,7 +2394,9 @@ describe("Production server next.config.js features (Pages Router)", () => {
   });
 
   it("applies redirects with repeated dynamic params in production", async () => {
-    const res = await fetch(`${prodUrl}/repeat-redirect/hello`, { redirect: "manual" });
+    const res = await fetch(`${prodUrl}/repeat-redirect/hello`, {
+      redirect: "manual",
+    });
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toBe("/docs/hello/hello");
   });

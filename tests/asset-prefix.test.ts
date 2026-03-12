@@ -60,6 +60,16 @@ describe("assetPrefix — resolveNextConfig", () => {
     const resolved = await resolveNextConfig(config);
     expect(resolved.assetPrefix).toBe("https://cdn.example.com/subdir");
   });
+
+  it('treats assetPrefix "/" as empty and falls back to basePath inheritance', async () => {
+    const config: NextConfig = {
+      basePath: "/app",
+      assetPrefix: "/",
+    };
+    const resolved = await resolveNextConfig(config);
+    expect(resolved.basePath).toBe("/app");
+    expect(resolved.assetPrefix).toBe("/app");
+  });
 });
 
 describe("assetPrefix — basePath + assetPrefix combination", () => {
