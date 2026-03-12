@@ -133,7 +133,9 @@ export function runWithUnifiedStateMutation<T>(
   // `ctx.currentRequestTags = []`) rather than mutating them in-place (for
   // example `ctx.currentRequestTags.push(...)`) or the parent scope will
   // observe those changes too. Keep this list in sync when adding new
-  // reference-typed fields to UnifiedRequestContext.
+  // reference-typed fields to UnifiedRequestContext; when a new one is added,
+  // include it here and verify it still follows the replace-not-mutate
+  // invariant.
   mutate(childCtx);
   return _als.run(childCtx, fn);
 }
@@ -149,6 +151,8 @@ export function runWithUnifiedStateMutation<T>(
  * Only direct callers observe this detached fallback. Shim `_getState()`
  * helpers should continue to gate on `isInsideUnifiedScope()` and fall back
  * to their standalone ALS/fallback singletons outside the unified scope.
+ * If called inside a standalone `runWithExecutionContext()` scope, the
+ * detached context still reflects that inherited `executionContext`.
  */
 export function getRequestContext(): UnifiedRequestContext {
   return _als.getStore() ?? createRequestContext();

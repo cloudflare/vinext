@@ -292,6 +292,18 @@ describe("Pages Router entry templates", () => {
     expect(waitUntilCall).toBeGreaterThan(renderFnCall);
   });
 
+  it("server entry seeds the main Pages Router unified context with executionContext", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+    const renderPageIndex = code.indexOf("async function _renderPage(request, url, manifest) {");
+    const unifiedCtxIndex = code.indexOf("const __uCtx = _createUnifiedCtx({", renderPageIndex);
+
+    expect(renderPageIndex).toBeGreaterThan(-1);
+    expect(unifiedCtxIndex).toBeGreaterThan(renderPageIndex);
+
+    const renderPageSection = code.slice(unifiedCtxIndex, unifiedCtxIndex + 200);
+    expect(renderPageSection).toContain("executionContext: _getRequestExecutionContext(),");
+  });
+
   it("server entry wraps ISR regeneration in unified context for fetch patch", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
 

@@ -18334,7 +18334,9 @@ async function _renderPage(request, url, manifest) {
   }
 
   const { route, params } = match;
-  const __uCtx = _createUnifiedCtx();
+  const __uCtx = _createUnifiedCtx({
+    executionContext: _getRequestExecutionContext(),
+  });
   return _runWithUnifiedCtx(__uCtx, async () => {
     ensureFetchPatch();
     try {

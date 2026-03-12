@@ -53,6 +53,17 @@ describe("unified-request-context", () => {
       expect(second.dynamicUsageDetected).toBe(false);
       expect(second.pendingSetCookies).toEqual([]);
     });
+
+    it("inherits the standalone ExecutionContext ALS in detached fallback mode", () => {
+      const outerCtx = {
+        waitUntil() {},
+      };
+
+      runWithExecutionContext(outerCtx, () => {
+        expect(isInsideUnifiedScope()).toBe(false);
+        expect(getRequestContext().executionContext).toBe(outerCtx);
+      });
+    });
   });
 
   describe("runWithRequestContext", () => {
