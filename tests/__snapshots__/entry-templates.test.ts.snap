@@ -1387,7 +1387,6 @@ async function buildPageElement(route, params, opts, searchParams) {
 
 
 const __basePath = "";
-const __assetPrefix = "";
 const __trailingSlash = false;
 const __i18nConfig = null;
 const __configRedirects = [];
@@ -4162,7 +4161,6 @@ async function buildPageElement(route, params, opts, searchParams) {
 
 
 const __basePath = "/base";
-const __assetPrefix = "";
 const __trailingSlash = true;
 const __i18nConfig = null;
 const __configRedirects = [{"source":"/old","destination":"/new","permanent":true}];
@@ -6970,7 +6968,6 @@ async function buildPageElement(route, params, opts, searchParams) {
 
 
 const __basePath = "";
-const __assetPrefix = "";
 const __trailingSlash = false;
 const __i18nConfig = null;
 const __configRedirects = [];
@@ -9782,7 +9779,6 @@ async function buildPageElement(route, params, opts, searchParams) {
 
 
 const __basePath = "";
-const __assetPrefix = "";
 const __trailingSlash = false;
 const __i18nConfig = null;
 const __configRedirects = [];
@@ -12567,7 +12563,6 @@ async function buildPageElement(route, params, opts, searchParams) {
 
 
 const __basePath = "";
-const __assetPrefix = "";
 const __trailingSlash = false;
 const __i18nConfig = null;
 const __configRedirects = [];
@@ -15571,7 +15566,6 @@ function matchesMiddleware(pathname, matcher, request, i18nConfig) {
 }
 
 const __basePath = "";
-const __assetPrefix = "";
 const __trailingSlash = false;
 const __i18nConfig = null;
 const __configRedirects = [];

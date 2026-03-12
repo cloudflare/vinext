@@ -556,7 +556,7 @@ importers:
     devDependencies:
       vite:
         specifier: ^7.0.0
-        version: 7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.31.1)
+        version: 7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.32.0)
 
   tests/fixtures/ecosystem/better-auth:
     dependencies:
