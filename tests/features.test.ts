@@ -2224,8 +2224,8 @@ describe("MetadataHead rendering", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {
         metadata: {
-          alternates: { canonical: new URL("https://example.com/page") as unknown as string },
-          openGraph: { url: new URL("https://example.com/og") as unknown as string },
+          alternates: { canonical: new URL("https://example.com/page") },
+          openGraph: { url: new URL("https://example.com/og") },
         },
       }),
     );

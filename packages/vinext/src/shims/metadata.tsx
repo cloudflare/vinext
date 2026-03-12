@@ -513,7 +513,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     if (og.description)
       elements.push(<meta key={key++} property="og:description" content={og.description} />);
     if (og.url)
-      elements.push(<meta key={key++} property="og:url" content={resolveUrl(og.url) ?? og.url} />);
+      elements.push(<meta key={key++} property="og:url" content={resolveUrl(og.url)} />);
     if (og.siteName)
       elements.push(<meta key={key++} property="og:site_name" content={og.siteName} />);
     if (og.type) elements.push(<meta key={key++} property="og:type" content={og.type} />);
@@ -558,7 +558,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     if (og.videos) {
       for (const video of og.videos) {
         elements.push(
-          <meta key={key++} property="og:video" content={resolveUrl(video.url) ?? video.url} />,
+          <meta key={key++} property="og:video" content={resolveUrl(video.url)} />,
         );
         if (video.width)
           elements.push(
@@ -573,7 +573,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     if (og.audio) {
       for (const audio of og.audio) {
         elements.push(
-          <meta key={key++} property="og:audio" content={resolveUrl(audio.url) ?? audio.url} />,
+          <meta key={key++} property="og:audio" content={resolveUrl(audio.url)} />,
         );
       }
     }
@@ -613,13 +613,13 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
         const playerUrl = player.playerUrl.toString();
         const streamUrl = player.streamUrl.toString();
         elements.push(
-          <meta key={key++} name="twitter:player" content={resolveUrl(playerUrl) ?? playerUrl} />,
+          <meta key={key++} name="twitter:player" content={resolveUrl(playerUrl)} />,
         );
         elements.push(
           <meta
             key={key++}
             name="twitter:player:stream"
-            content={resolveUrl(streamUrl) ?? streamUrl}
+            content={resolveUrl(streamUrl)}
           />,
         );
         elements.push(
@@ -654,7 +654,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
             <meta
               key={key++}
               name={`twitter:app:url:${platform}`}
-              content={resolveUrl(appUrl) ?? appUrl}
+              content={resolveUrl(appUrl)}
             />,
           );
         }
@@ -669,7 +669,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     if (shortcut) {
       const shortcuts = Array.isArray(shortcut) ? shortcut : [shortcut];
       for (const s of shortcuts) {
-        elements.push(<link key={key++} rel="shortcut icon" href={resolveUrl(s) ?? s} />);
+        elements.push(<link key={key++} rel="shortcut icon" href={resolveUrl(s)} />);
       }
     }
     // Icon
@@ -680,7 +680,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
           <link
             key={key++}
             rel="icon"
-            href={resolveUrl(i.url) ?? i.url}
+            href={resolveUrl(i.url)}
             {...(i.sizes ? { sizes: i.sizes } : {})}
             {...(i.type ? { type: i.type } : {})}
             {...(i.media ? { media: i.media } : {})}
@@ -696,7 +696,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
           <link
             key={key++}
             rel="apple-touch-icon"
-            href={resolveUrl(a.url) ?? a.url}
+            href={resolveUrl(a.url)}
             {...(a.sizes ? { sizes: a.sizes } : {})}
             {...(a.type ? { type: a.type } : {})}
           />,
@@ -710,7 +710,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
           <link
             key={key++}
             rel={o.rel}
-            href={resolveUrl(o.url) ?? o.url}
+            href={resolveUrl(o.url)}
             {...(o.sizes ? { sizes: o.sizes } : {})}
           />,
         );
@@ -721,7 +721,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
   // Manifest
   if (metadata.manifest) {
     elements.push(
-      <link key={key++} rel="manifest" href={resolveUrl(metadata.manifest) ?? metadata.manifest} />,
+      <link key={key++} rel="manifest" href={resolveUrl(metadata.manifest)} />,
     );
   }
 
@@ -730,27 +730,27 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     const alt = metadata.alternates;
     if (alt.canonical) {
       elements.push(
-        <link key={key++} rel="canonical" href={resolveUrl(alt.canonical) ?? alt.canonical} />,
+        <link key={key++} rel="canonical" href={resolveUrl(alt.canonical)} />,
       );
     }
     if (alt.languages) {
       for (const [lang, href] of Object.entries(alt.languages)) {
         elements.push(
-          <link key={key++} rel="alternate" hrefLang={lang} href={resolveUrl(href) ?? href} />,
+          <link key={key++} rel="alternate" hrefLang={lang} href={resolveUrl(href)} />,
         );
       }
     }
     if (alt.media) {
       for (const [media, href] of Object.entries(alt.media)) {
         elements.push(
-          <link key={key++} rel="alternate" media={media} href={resolveUrl(href) ?? href} />,
+          <link key={key++} rel="alternate" media={media} href={resolveUrl(href)} />,
         );
       }
     }
     if (alt.types) {
       for (const [type, href] of Object.entries(alt.types)) {
         elements.push(
-          <link key={key++} rel="alternate" type={type} href={resolveUrl(href) ?? href} />,
+          <link key={key++} rel="alternate" type={type} href={resolveUrl(href)} />,
         );
       }
     }
@@ -799,7 +799,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
           <link
             key={key++}
             rel="apple-touch-startup-image"
-            href={resolveUrl(img.url) ?? img.url}
+            href={resolveUrl(img.url)}
             {...(img.media ? { media: img.media } : {})}
           />,
         );
@@ -838,7 +838,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
         for (const [k, v] of Object.entries(entry)) {
           if (v === undefined || v === null) continue;
           const str = String(v);
-          const content = k === "url" ? (resolveUrl(str) ?? str) : str;
+          const content = k === "url" ? resolveUrl(str) : str;
           elements.push(<meta key={key++} property={`al:${platform}:${k}`} content={content} />);
         }
       }
