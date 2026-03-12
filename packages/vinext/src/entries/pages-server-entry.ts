@@ -73,16 +73,15 @@ export async function generateServerEntry(
   // Check for _app and _document
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
-  const hasApp = appFilePath !== null;
-  const hasDoc = docFilePath !== null;
+  const appImportCode =
+    appFilePath !== null
+      ? `import { default as AppComponent } from ${JSON.stringify(appFilePath.replace(/\\/g, "/"))};`
+      : `const AppComponent = null;`;
 
-  const appImportCode = hasApp
-    ? `import { default as AppComponent } from ${JSON.stringify(appFilePath!.replace(/\\/g, "/"))};`
-    : `const AppComponent = null;`;
-
-  const docImportCode = hasDoc
-    ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath!.replace(/\\/g, "/"))};`
-    : `const DocumentComponent = null;`;
+  const docImportCode =
+    docFilePath !== null
+      ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath.replace(/\\/g, "/"))};`
+      : `const DocumentComponent = null;`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n

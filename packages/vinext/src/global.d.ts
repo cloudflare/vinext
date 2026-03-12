@@ -259,6 +259,23 @@ declare global {
 }
 
 // ---------------------------------------------------------------------------
+// process.features — Node.js v22.10.0+ feature flags
+// ---------------------------------------------------------------------------
+//
+// `process.features.typescript` is available since Node.js v22.10.0 and
+// indicates whether the runtime has built-in TypeScript support (--experimental-strip-types).
+// Declared here so we don't have to cast `process.features as any` at the call site.
+
+declare global {
+  namespace NodeJS {
+    interface ProcessFeatures {
+      /** Available since Node.js v22.10.0. `true` when run with --experimental-strip-types. */
+      typescript?: boolean;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // process.env defines — compile-time Vite replacements
 // ---------------------------------------------------------------------------
 //

@@ -51,6 +51,17 @@ class SkipCacheKeyGenerationError extends Error {
 }
 
 /**
+ * Extended RequestInit that carries vinext-internal fields alongside standard fetch options.
+ * - `_ogBody`: the original (unconsumed) body, stashed after stream tee so the real fetch
+ *   can still send it after the body was consumed for cache-key generation.
+ * - `next`: Next.js-specific fetch options (revalidate, tags, etc.).
+ */
+type ExtendedRequestInit = RequestInit & {
+  _ogBody?: BodyInit;
+  next?: unknown;
+};
+
+/**
  * Collect all headers from the request, excluding the blocklist.
  * Merges headers from both the Request object and the init object,
  * with init taking precedence (matching fetch() spec behavior).
@@ -228,12 +239,12 @@ async function serializeBody(
       throw new BodyTooLargeForCacheKeyError();
     }
     pushBodyChunk(decoder.decode(init.body));
-    (init as any)._ogBody = init.body;
-  } else if (init?.body && typeof (init.body as any).getReader === "function") {
+    (init as ExtendedRequestInit)._ogBody = init.body;
+  } else if (init?.body && typeof (init.body as { getReader?: unknown }).getReader === "function") {
     // ReadableStream
     const readableBody = init.body as ReadableStream<Uint8Array | string>;
     const [bodyForHashing, bodyForFetch] = readableBody.tee();
-    (init as any)._ogBody = bodyForFetch;
+    (init as ExtendedRequestInit)._ogBody = bodyForFetch;
     const reader = bodyForHashing.getReader();
 
     try {
@@ -265,14 +276,17 @@ async function serializeBody(
     }
   } else if (init?.body instanceof URLSearchParams) {
     // URLSearchParams — .toString() gives a stable serialization
-    (init as any)._ogBody = init.body;
+    (init as ExtendedRequestInit)._ogBody = init.body;
     pushBodyChunk(init.body.toString());
-  } else if (init?.body && typeof (init.body as any).keys === "function") {
+  } else if (init?.body && typeof (init.body as { keys?: unknown }).keys === "function") {
     // FormData
     const formData = init.body as FormData;
-    (init as any)._ogBody = init.body;
+    (init as ExtendedRequestInit)._ogBody = init.body;
     await serializeFormData(formData, pushBodyChunk, getTotalBodyBytes);
-  } else if (init?.body && typeof (init.body as any).arrayBuffer === "function") {
+  } else if (
+    init?.body &&
+    typeof (init.body as { arrayBuffer?: unknown }).arrayBuffer === "function"
+  ) {
     // Blob
     const blob = init.body as Blob;
     if (blob.size > MAX_CACHE_KEY_BODY_BYTES) {
@@ -280,7 +294,7 @@ async function serializeBody(
     }
     pushBodyChunk(await blob.text());
     const arrayBuffer = await blob.arrayBuffer();
-    (init as any)._ogBody = new Blob([arrayBuffer], { type: blob.type });
+    (init as ExtendedRequestInit)._ogBody = new Blob([arrayBuffer], { type: blob.type });
   } else if (typeof init?.body === "string") {
     // String length is always <= UTF-8 byte length, so this is a
     // cheap lower-bound check that avoids encoder.encode() for huge strings.
@@ -288,7 +302,7 @@ async function serializeBody(
       throw new BodyTooLargeForCacheKeyError();
     }
     pushBodyChunk(init.body);
-    (init as any)._ogBody = init.body;
+    (init as ExtendedRequestInit)._ogBody = init.body;
   } else if (input instanceof Request && input.body) {
     let chunks: Uint8Array[];
     let contentType: string | undefined;
@@ -307,7 +321,7 @@ async function serializeBody(
         const boundedRequest = new Request(input.url, {
           method: input.method,
           headers: contentType ? { "content-type": contentType } : undefined,
-          body: new Blob(chunks as unknown as BlobPart[]),
+          body: new Blob(chunks as Uint8Array<ArrayBuffer>[]),
         });
         const formData = await boundedRequest.formData();
         await serializeFormData(formData, pushBodyChunk, getTotalBodyBytes);
@@ -473,7 +487,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
     input: string | URL | Request,
     init?: RequestInit,
   ): Promise<Response> {
-    const nextOpts = init?.next as NextFetchOptions | undefined;
+    const nextOpts = (init as ExtendedRequestInit | undefined)?.next as
+      | NextFetchOptions
+      | undefined;
     const cacheDirective = init?.cache;
 
     // Determine caching behavior:
@@ -681,7 +697,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
  */
 function stripNextFromInit(init?: RequestInit): RequestInit | undefined {
   if (!init) return init;
-  const castInit = init as RequestInit & { next?: unknown; _ogBody?: BodyInit };
+  const castInit = init as ExtendedRequestInit;
   const { next: _next, _ogBody, ...rest } = castInit;
   // Restore the original body if it was stashed by serializeBody (e.g. after
   // consuming a ReadableStream for cache key generation).

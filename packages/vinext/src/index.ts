@@ -3508,7 +3508,7 @@ async function proxyExternalRewriteNode(
     };
     if (hasBody) {
       const { Readable } = await import("node:stream");
-      init.body = Readable.toWeb(req) as unknown as ReadableStream;
+      init.body = Readable.toWeb(req) as ReadableStream;
       init.duplex = "half";
     }
     const webRequest = new Request(new URL(req.url ?? "/", origin), init);
@@ -3530,7 +3530,7 @@ async function proxyExternalRewriteNode(
     if (proxyResponse.body) {
       const { Readable: ReadableImport } = await import("node:stream");
       const nodeStream = ReadableImport.fromWeb(
-        proxyResponse.body as unknown as import("stream/web").ReadableStream,
+        proxyResponse.body as import("stream/web").ReadableStream,
       );
       nodeStream.pipe(res);
     } else {

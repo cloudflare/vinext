@@ -447,9 +447,9 @@ function scrollToHash(hash: string): void {
  * (e.g. saving scroll position shouldn't cause re-renders).
  * Captured before the history method patching at the bottom of this module.
  */
-const _nativeReplaceState = !isServer
+const _nativeReplaceState: typeof window.history.replaceState | null = !isServer
   ? window.history.replaceState.bind(window.history)
-  : (null as unknown as typeof window.history.replaceState);
+  : null;
 
 /**
  * Save the current scroll position into the current history state.
@@ -459,6 +459,7 @@ const _nativeReplaceState = !isServer
  * interception (which would cause spurious re-renders from notifyListeners).
  */
 function saveScrollPosition(): void {
+  if (!_nativeReplaceState) return;
   const state = window.history.state ?? {};
   _nativeReplaceState.call(
     window.history,
@@ -767,7 +768,7 @@ export const HTTP_ERROR_FALLBACK_ERROR_CODE = "NEXT_HTTP_ERROR_FALLBACK";
  */
 export function isHTTPAccessFallbackError(error: unknown): boolean {
   if (error && typeof error === "object" && "digest" in error) {
-    const digest = String((error as any).digest);
+    const digest = String((error as { digest: unknown }).digest);
     return (
       digest === "NEXT_NOT_FOUND" || // legacy compat
       digest.startsWith(`${HTTP_ERROR_FALLBACK_ERROR_CODE};`)
@@ -782,7 +783,7 @@ export function isHTTPAccessFallbackError(error: unknown): boolean {
  */
 export function getAccessFallbackHTTPStatus(error: unknown): number {
   if (error && typeof error === "object" && "digest" in error) {
-    const digest = String((error as any).digest);
+    const digest = String((error as { digest: unknown }).digest);
     if (digest === "NEXT_NOT_FOUND") return 404;
     if (digest.startsWith(`${HTTP_ERROR_FALLBACK_ERROR_CODE};`)) {
       return parseInt(digest.split(";")[1], 10);
@@ -800,30 +801,43 @@ export enum RedirectType {
 }
 
 /**
+ * Internal error class used by redirect/notFound/forbidden/unauthorized.
+ * The `digest` field is the serialised control-flow signal read by the
+ * framework's error boundary and server-side request handlers.
+ */
+class VinextNavigationError extends Error {
+  readonly digest: string;
+  constructor(message: string, digest: string) {
+    super(message);
+    this.digest = digest;
+  }
+}
+
+/**
  * Throw a redirect. Caught by the framework to send a redirect response.
  */
 export function redirect(url: string, type?: "replace" | "push" | RedirectType): never {
-  const error = new Error(`NEXT_REDIRECT:${url}`);
-  (error as any).digest = `NEXT_REDIRECT;${type ?? "replace"};${encodeURIComponent(url)}`;
-  throw error;
+  throw new VinextNavigationError(
+    `NEXT_REDIRECT:${url}`,
+    `NEXT_REDIRECT;${type ?? "replace"};${encodeURIComponent(url)}`,
+  );
 }
 
 /**
  * Trigger a permanent redirect (308).
  */
 export function permanentRedirect(url: string): never {
-  const error = new Error(`NEXT_REDIRECT:${url}`);
-  (error as any).digest = `NEXT_REDIRECT;replace;${encodeURIComponent(url)};308`;
-  throw error;
+  throw new VinextNavigationError(
+    `NEXT_REDIRECT:${url}`,
+    `NEXT_REDIRECT;replace;${encodeURIComponent(url)};308`,
+  );
 }
 
 /**
  * Trigger a not-found response (404). Caught by the framework.
  */
 export function notFound(): never {
-  const error = new Error("NEXT_NOT_FOUND");
-  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};404`;
-  throw error;
+  throw new VinextNavigationError("NEXT_NOT_FOUND", `${HTTP_ERROR_FALLBACK_ERROR_CODE};404`);
 }
 
 /**
@@ -832,9 +846,7 @@ export function notFound(): never {
  * support it unconditionally for maximum compatibility.
  */
 export function forbidden(): never {
-  const error = new Error("NEXT_FORBIDDEN");
-  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};403`;
-  throw error;
+  throw new VinextNavigationError("NEXT_FORBIDDEN", `${HTTP_ERROR_FALLBACK_ERROR_CODE};403`);
 }
 
 /**
@@ -843,9 +855,7 @@ export function forbidden(): never {
  * support it unconditionally for maximum compatibility.
  */
 export function unauthorized(): never {
-  const error = new Error("NEXT_UNAUTHORIZED");
-  (error as any).digest = `${HTTP_ERROR_FALLBACK_ERROR_CODE};401`;
-  throw error;
+  throw new VinextNavigationError("NEXT_UNAUTHORIZED", `${HTTP_ERROR_FALLBACK_ERROR_CODE};401`);
 }
 
 // ---------------------------------------------------------------------------

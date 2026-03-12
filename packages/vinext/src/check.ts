@@ -217,8 +217,9 @@ export function scanImports(root: string): CheckItem[] {
         const normalized = mod === "next" ? "next" : mod;
         if (!importUsage.has(normalized)) importUsage.set(normalized, []);
         const relFile = path.relative(root, file);
-        if (!importUsage.get(normalized)!.includes(relFile)) {
-          importUsage.get(normalized)!.push(relFile);
+        const usedInFiles = importUsage.get(normalized) ?? [];
+        if (!usedInFiles.includes(relFile)) {
+          usedInFiles.push(relFile);
         }
       }
     }
@@ -400,15 +401,15 @@ export function checkConventions(root: string): CheckItem[] {
     fs.existsSync(path.join(root, "middleware.ts")) ||
     fs.existsSync(path.join(root, "middleware.js"));
 
-  if (hasPages) {
-    const isSrc = pagesDir!.includes(path.join("src", "pages"));
+  if (pagesDir !== null) {
+    const isSrc = pagesDir.includes(path.join("src", "pages"));
     items.push({
       name: isSrc ? "Pages Router (src/pages/)" : "Pages Router (pages/)",
       status: "supported",
     });
 
     // Count pages
-    const pageFiles = findSourceFiles(pagesDir!);
+    const pageFiles = findSourceFiles(pagesDir);
     const pages = pageFiles.filter(
       (f) =>
         !f.includes("/api/") &&
@@ -431,14 +432,14 @@ export function checkConventions(root: string): CheckItem[] {
     }
   }
 
-  if (hasApp) {
-    const isSrc = appDirPath!.includes(path.join("src", "app"));
+  if (appDirPath !== null) {
+    const isSrc = appDirPath.includes(path.join("src", "app"));
     items.push({
       name: isSrc ? "App Router (src/app/)" : "App Router (app/)",
       status: "supported",
     });
 
-    const appFiles = findSourceFiles(appDirPath!);
+    const appFiles = findSourceFiles(appDirPath);
     const pages = appFiles.filter(
       (f) =>
         f.endsWith("page.tsx") ||
