@@ -2221,7 +2221,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   req.url = url;
                 }
                 if (result.rewriteStatus) {
-                  (req as any).__vinextRewriteStatus = result.rewriteStatus;
+                  req.__vinextRewriteStatus = result.rewriteStatus;
                 }
               }
 
@@ -2310,7 +2310,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 nextConfig?.basePath ?? "",
                 nextConfig?.trailingSlash ?? false,
               );
-              const mwStatus = (req as any).__vinextRewriteStatus as number | undefined;
+              const mwStatus = req.__vinextRewriteStatus;
 
               // Try rendering the resolved URL
               const match = matchRoute(resolvedUrl.split("?")[0], routes);

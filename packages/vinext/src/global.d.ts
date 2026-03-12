@@ -276,6 +276,13 @@ declare global {
       __VINEXT_DRAFT_SECRET?: string;
 
       /**
+       * Build ID string injected via Vite `define` at production build time.
+       * Matches `next.config.js` → `buildId` (or a generated UUID when unset).
+       * `undefined` in dev mode.
+       */
+      __VINEXT_BUILD_ID?: string;
+
+      /**
        * JSON-encoded array of `RemotePattern` objects from
        * `next.config.js` → `images.remotePatterns`.
        */
@@ -305,6 +312,22 @@ declare global {
        */
       __VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG?: string;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// node:http augmentations — vinext properties added to IncomingMessage
+// ---------------------------------------------------------------------------
+
+declare module "node:http" {
+  interface IncomingMessage {
+    /**
+     * The HTTP status code set by vinext middleware for Pages Router rewrite
+     * responses (e.g. 307 for a rewrite that should surface as a redirect).
+     * Written in `index.ts` when middleware emits a `rewriteStatus`, read by
+     * the downstream Pages Router handler to decide the final response status.
+     */
+    __vinextRewriteStatus?: number;
   }
 }
 
