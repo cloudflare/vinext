@@ -177,7 +177,10 @@ export interface Metadata {
     app?: TwitterAppDescriptor;
   };
   icons?: {
-    icon?: string | URL | Array<{ url: string | URL; sizes?: string; type?: string; media?: string }>;
+    icon?:
+      | string
+      | URL
+      | Array<{ url: string | URL; sizes?: string; type?: string; media?: string }>;
     shortcut?: string | URL | Array<string | URL>;
     apple?: string | URL | Array<{ url: string | URL; sizes?: string; type?: string }>;
     other?: Array<{ rel: string; url: string | URL; sizes?: string; type?: string }>;
@@ -537,9 +540,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
             : [og.images];
       for (const img of imgList) {
         const imgUrl = typeof img === "string" || img instanceof URL ? img : img.url;
-        elements.push(
-          <meta key={key++} property="og:image" content={resolveUrl(imgUrl)} />,
-        );
+        elements.push(<meta key={key++} property="og:image" content={resolveUrl(imgUrl)} />);
         if (typeof img !== "string" && !(img instanceof URL)) {
           if (img.width)
             elements.push(
@@ -599,9 +600,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
             : [tw.images];
       for (const img of imgList) {
         const imgUrl = typeof img === "string" || img instanceof URL ? img : img.url;
-        elements.push(
-          <meta key={key++} name="twitter:image" content={resolveUrl(imgUrl)} />,
-        );
+        elements.push(<meta key={key++} name="twitter:image" content={resolveUrl(imgUrl)} />);
         if (typeof img !== "string" && !(img instanceof URL) && img.alt) {
           elements.push(<meta key={key++} name="twitter:image:alt" content={img.alt} />);
         }
@@ -675,8 +674,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     // Icon
     if (icon) {
-      const icons =
-        typeof icon === "string" || icon instanceof URL ? [{ url: icon }] : icon;
+      const icons = typeof icon === "string" || icon instanceof URL ? [{ url: icon }] : icon;
       for (const i of icons) {
         elements.push(
           <link
@@ -692,8 +690,7 @@ export function MetadataHead({ metadata }: { metadata: Metadata }) {
     }
     // Apple touch icon
     if (apple) {
-      const apples =
-        typeof apple === "string" || apple instanceof URL ? [{ url: apple }] : apple;
+      const apples = typeof apple === "string" || apple instanceof URL ? [{ url: apple }] : apple;
       for (const a of apples) {
         elements.push(
           <link
