@@ -125,7 +125,7 @@ export function ViewportHead({ viewport }: { viewport: Viewport }) {
 // ---------------------------------------------------------------------------
 
 export interface Metadata {
-  title?: string | { default?: string; template?: string; absolute?: string };
+  title?: string | { default?: string; template?: string | null; absolute?: string };
   description?: string;
   generator?: string;
   applicationName?: string;
@@ -276,7 +276,7 @@ interface TwitterAppDescriptor {
 
 interface ResolvedTitleState {
   absolute?: string;
-  template?: string;
+  template: string | null;
 }
 
 function applyTitleTemplate(template: string | undefined, title: string) {
@@ -288,7 +288,7 @@ function resolveTitleState(
   { terminal = true }: { terminal?: boolean } = {},
 ): ResolvedTitleState | null {
   let resolvedAbsolute: string | undefined;
-  let deepestTemplate: string | undefined;
+  let deepestTemplate: string | null = null;
   let stashedTemplate: string | undefined;
   let sawTitle = false;
   const templateCarrierIndex = terminal ? metadataList.length - 2 : metadataList.length - 1;
@@ -364,7 +364,7 @@ export function mergeMetadataForParent(metadataList: Metadata[]): Metadata {
   if (resolvedTitle) {
     merged.title = {
       absolute: resolvedTitle.absolute || "",
-      ...(resolvedTitle.template ? { template: resolvedTitle.template } : {}),
+      template: resolvedTitle.template,
     };
   }
 

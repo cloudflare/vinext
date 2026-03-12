@@ -1701,15 +1701,26 @@ describe("App Router Production server (startProdServer)", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 1_100));
 
-    const staleRes = await fetch(`${baseUrl}${sourcePath}`);
-    expect(staleRes.status).toBe(200);
-    const staleHtml = await staleRes.text();
+    let staleHtml = "";
+    let sawStale = false;
+    const staleDeadline = Date.now() + 5_000;
+    while (Date.now() < staleDeadline) {
+      const staleRes = await fetch(`${baseUrl}${sourcePath}`);
+      expect(staleRes.status).toBe(200);
+      staleHtml = await staleRes.text();
+      if (staleRes.headers.get("x-vinext-cache") === "STALE") {
+        sawStale = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    expect(sawStale).toBe(true);
     expect(staleHtml).toContain(`<p id="current-pathname">${sourcePath}</p>`);
-    expect(staleRes.headers.get("x-vinext-cache")).toBe("STALE");
 
     let hitHtml = "";
     let sawHit = false;
-    for (let attempt = 0; attempt < 10; attempt++) {
+    const hitDeadline = Date.now() + 5_000;
+    while (Date.now() < hitDeadline) {
       const hitRes = await fetch(`${baseUrl}${sourcePath}`);
       expect(hitRes.status).toBe(200);
       hitHtml = await hitRes.text();

@@ -16,6 +16,27 @@ import {
 
 let ctx: TestServerResult;
 
+async function readUntilHeadCloses(res: Response) {
+  expect(res.body).toBeTruthy();
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let html = "";
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        html += decoder.decode();
+        return html;
+      }
+      html += decoder.decode(value, { stream: true });
+      if (html.includes("</head>")) return html;
+    }
+  } finally {
+    await reader.cancel();
+  }
+}
+
 describe("Next.js compat: metadata-suspense", () => {
   beforeAll(async () => {
     ctx = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true });
@@ -41,17 +62,31 @@ describe("Next.js compat: metadata-suspense", () => {
   });
 
   it("should render metadata in head for HTML-limited bot user agents", async () => {
-    const { html } = await fetchHtml(ctx.baseUrl, "/nextjs-compat/metadata-suspense-test", {
+    const res = await fetch(`${ctx.baseUrl}/nextjs-compat/metadata-suspense-test`, {
       headers: {
         "User-Agent": "Discordbot/2.0;",
       },
     });
+    expect(res.status).toBe(200);
 
-    expect(html).toContain("<title>Suspense Metadata Title</title>");
-    expect(html).toMatch(/<meta\s+name="application-name"\s+content="suspense-app"/);
-    expect(html).toMatch(
+    const headHtml = await readUntilHeadCloses(res);
+    const headCloseIndex = headHtml.indexOf("</head>");
+    const titleIndex = headHtml.indexOf("<title>Suspense Metadata Title</title>");
+    const appNameIndex = headHtml.search(
+      /<meta\s+name="application-name"\s+content="suspense-app"/,
+    );
+    const descriptionIndex = headHtml.search(
       /<meta\s+name="description"\s+content="Testing metadata in suspense layout"/,
     );
+    const pageContentIndex = headHtml.indexOf("Suspense Metadata Page");
+
+    expect(titleIndex).toBeGreaterThanOrEqual(0);
+    expect(appNameIndex).toBeGreaterThanOrEqual(0);
+    expect(descriptionIndex).toBeGreaterThanOrEqual(0);
+    expect(headCloseIndex).toBeGreaterThan(descriptionIndex);
+    if (pageContentIndex !== -1) {
+      expect(pageContentIndex).toBeGreaterThan(headCloseIndex);
+    }
   });
 
   // Regression test: the shared app-basic root layout used to hardcode

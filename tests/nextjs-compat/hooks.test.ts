@@ -138,6 +138,17 @@ describe("Next.js compat: hooks", () => {
     expect(html).toContain('<p id="current-pathname">/nextjs-compat/hooks-middleware-rewrite</p>');
   });
 
+  it("useSearchParams preserves the requested query string after a middleware rewrite", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/hooks-middleware-rewrite?q=middleware&page=7",
+    );
+    expect(html).toContain('<p id="current-pathname">/nextjs-compat/hooks-middleware-rewrite</p>');
+    expect(html).toContain('<p id="param-q">middleware</p>');
+    expect(html).toContain('<p id="param-page">7</p>');
+    expect(html).toContain('<p id="search-string">q=middleware&amp;page=7</p>');
+  });
+
   // Next.js: rewrite searchParams canonical URL coverage
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts#L64-L72
 

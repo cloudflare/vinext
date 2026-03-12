@@ -2046,6 +2046,14 @@ describe("metadata title templates", () => {
     });
   });
 
+  it("normalizes parent title.template to null when no template applies", () => {
+    const result = mergeMetadataForParent([{ title: "Leaf Title" }]);
+    expect(result.title).toEqual({
+      absolute: "Leaf Title",
+      template: null,
+    });
+  });
+
   it("preserves non-title metadata during merge", () => {
     const result = mergeMetadata([
       { title: { template: "%s | Site", default: "Site" }, description: "Root desc" },
