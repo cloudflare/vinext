@@ -1272,6 +1272,30 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           define: defines,
           // Set base path if configured
           ...(nextConfig.basePath ? { base: nextConfig.basePath + "/" } : {}),
+          // When assetPrefix is set (and differs from basePath inheritance),
+          // rewrite built asset/chunk URLs to the configured prefix.
+          // SSR environments stay relative so server-side imports resolve correctly.
+          ...(nextConfig.assetPrefix && nextConfig.assetPrefix !== nextConfig.basePath
+            ? {
+                experimental: {
+                  ...config.experimental,
+                  renderBuiltUrl(filename: string, ctx: { type: string; ssr: boolean }) {
+                    if (ctx.ssr) return { relative: true };
+                    if (ctx.type === "asset" || ctx.type === "chunk") {
+                      return nextConfig.assetPrefix + "/" + filename;
+                    }
+                    const userRenderBuiltUrl = config.experimental?.renderBuiltUrl;
+                    if (typeof userRenderBuiltUrl === "function") {
+                      return userRenderBuiltUrl(
+                        filename,
+                        ctx as Parameters<typeof userRenderBuiltUrl>[1],
+                      );
+                    }
+                    return { relative: true };
+                  },
+                },
+              }
+            : {}),
           // Inject resolved PostCSS plugins if string names were found
           ...(postcssOverride ? { css: { postcss: postcssOverride } } : {}),
         };

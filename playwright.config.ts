@@ -107,6 +107,17 @@ const projectServers = {
       timeout: 30_000,
     },
   },
+  "asset-prefix-prod": {
+    testDir: "./tests/e2e/asset-prefix",
+    server: {
+      command:
+        "npx tsc -p ../../../packages/vinext/tsconfig.json && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4180",
+      cwd: "./tests/fixtures/asset-prefix",
+      port: 4180,
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  },
 };
 
 type ProjectName = keyof typeof projectServers;

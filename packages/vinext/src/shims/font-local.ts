@@ -323,10 +323,18 @@ function collectFontPreloads(options: LocalFontOptions): void {
 
   for (const src of sources) {
     const href = src.path;
-    // Only collect URLs that are absolute (start with /) — relative paths
+    // Only collect URLs that are absolute or CDN-prefixed — relative paths
     // would resolve incorrectly from different page URLs. The vinext:local-fonts
     // Vite transform should have already resolved them to absolute URLs.
-    if (href && href.startsWith("/") && !ssrFontPreloadHrefs.has(href)) {
+    // Accept https://, http://, and protocol-relative // URLs for assetPrefix CDN cases.
+    if (
+      href &&
+      (href.startsWith("/") ||
+        href.startsWith("https://") ||
+        href.startsWith("http://") ||
+        href.startsWith("//")) &&
+      !ssrFontPreloadHrefs.has(href)
+    ) {
       ssrFontPreloadHrefs.add(href);
       ssrFontPreloads.push({ href, type: getFontMimeType(href) });
     }

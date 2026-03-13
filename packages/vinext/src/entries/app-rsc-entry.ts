@@ -9,22 +9,22 @@
  */
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import type { AppRoute } from "../routing/app-router.js";
-import type { MetadataFileRoute } from "../server/metadata-routes.js";
 import type {
-  NextRedirect,
-  NextRewrite,
   NextHeader,
   NextI18nConfig,
+  NextRedirect,
+  NextRewrite,
 } from "../config/next-config.js";
+import type { AppRoute } from "../routing/app-router.js";
 import { generateDevOriginCheckCode } from "../server/dev-origin-check.js";
+import type { MetadataFileRoute } from "../server/metadata-routes.js";
+import { isProxyFile } from "../server/middleware.js";
 import {
-  generateSafeRegExpCode,
   generateMiddlewareMatcherCode,
   generateNormalizePathCode,
   generateRouteMatchNormalizationCode,
+  generateSafeRegExpCode,
 } from "../server/middleware-codegen.js";
-import { isProxyFile } from "../server/middleware.js";
 
 // Pre-computed absolute paths for generated-code imports. The virtual RSC
 // entry can't use relative imports (it has no real file location), so we
@@ -86,7 +86,11 @@ export function generateRscEntry(
   const bp = basePath ?? "";
   const ts = trailingSlash ?? false;
   const redirects = config?.redirects ?? [];
-  const rewrites = config?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] };
+  const rewrites = config?.rewrites ?? {
+    beforeFiles: [],
+    afterFiles: [],
+    fallback: [],
+  };
   const headers = config?.headers ?? [];
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;

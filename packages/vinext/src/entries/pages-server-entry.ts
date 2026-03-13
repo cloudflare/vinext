@@ -101,6 +101,7 @@ export async function generateServerEntry(
   // so prod-server.ts can apply them without loading next.config.js at runtime.
   const vinextConfigJson = JSON.stringify({
     basePath: nextConfig?.basePath ?? "",
+    assetPrefix: nextConfig?.assetPrefix ?? "",
     trailingSlash: nextConfig?.trailingSlash ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -436,6 +437,17 @@ function collectAssetTags(manifest, moduleIds) {
   const tags = [];
   const seen = new Set();
 
+  // Only prepend assetPrefix when it is an absolute CDN URL (https://, http://,
+  // or protocol-relative //). When assetPrefix is a same-origin path like
+  // "/docs", Vite already embeds basePath into every emitted asset path, so
+  // prepending it again would produce a double-prefix like /docs/docs/assets/.
+  var _assetHrefPrefix = (vinextConfig.assetPrefix &&
+    (vinextConfig.assetPrefix.startsWith("https://") ||
+     vinextConfig.assetPrefix.startsWith("http://") ||
+     vinextConfig.assetPrefix.startsWith("//")))
+    ? vinextConfig.assetPrefix
+    : "";
+
   // Load the set of lazy chunk filenames (only reachable via dynamic imports).
   // These should NOT get <link rel="modulepreload"> or <script type="module">
   // tags — they are fetched on demand when the dynamic import() executes (e.g.
@@ -447,8 +459,8 @@ function collectAssetTags(manifest, moduleIds) {
   if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
     const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
     seen.add(entry);
-    tags.push('<link rel="modulepreload" href="/' + entry + '" />');
-    tags.push('<script type="module" src="/' + entry + '" crossorigin></script>');
+    tags.push('<link rel="modulepreload" href="' + _assetHrefPrefix + '/' + entry + '" />');
+    tags.push('<script type="module" src="' + _assetHrefPrefix + '/' + entry + '" crossorigin></script>');
   }
   if (m) {
     // Always inject shared chunks (framework, vinext runtime, entry) and
@@ -523,13 +535,13 @@ function collectAssetTags(manifest, moduleIds) {
       if (seen.has(tf)) continue;
       seen.add(tf);
       if (tf.endsWith(".css")) {
-        tags.push('<link rel="stylesheet" href="/' + tf + '" />');
+        tags.push('<link rel="stylesheet" href="' + _assetHrefPrefix + '/' + tf + '" />');
       } else if (tf.endsWith(".js")) {
         // Skip lazy chunks — they are behind dynamic import() boundaries
         // (React.lazy, next/dynamic) and should only be fetched on demand.
         if (lazySet && lazySet.has(tf)) continue;
-        tags.push('<link rel="modulepreload" href="/' + tf + '" />');
-        tags.push('<script type="module" src="/' + tf + '" crossorigin></script>');
+        tags.push('<link rel="modulepreload" href="' + _assetHrefPrefix + '/' + tf + '" />');
+        tags.push('<script type="module" src="' + _assetHrefPrefix + '/' + tf + '" crossorigin></script>');
       }
     }
   }
