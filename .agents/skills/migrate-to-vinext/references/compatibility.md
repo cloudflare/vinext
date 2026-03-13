@@ -80,9 +80,9 @@ All of these resolve automatically to vinext shims. Do not rewrite imports in ap
 
 ## next.config.js Options
 
-vinext loads and respects: `redirects`, `rewrites`, `headers`, `basePath`, `trailingSlash`, `i18n` (path prefix), `images`, `env`, `NEXT_PUBLIC_*` env vars, `output`.
+vinext loads and respects: `redirects`, `rewrites`, `headers`, `basePath`, `trailingSlash`, `i18n` (path prefix), `images`, `env`, `NEXT_PUBLIC_*` env vars, `output`, `serverExternalPackages` (consider using Vite's `ssr.external` instead).
 
-Ignored: `webpack`, `turbopack`, `experimental.turbo`, `serverExternalPackages` (use Vite's `ssr.external`).
+Ignored: `webpack`, `turbopack`, `experimental.turbo`.
 
 ## Ecosystem Libraries
 
