@@ -227,7 +227,10 @@ export function scanImports(root: string): CheckItem[] {
 
   const items: CheckItem[] = [];
   for (const [mod, usedFiles] of importUsage) {
-    const support = IMPORT_SUPPORT[mod];
+    const support =
+      IMPORT_SUPPORT[
+        mod.startsWith("next/") && mod.endsWith(".js") ? mod.replace(/\.js$/, "") : mod
+      ];
     if (support) {
       items.push({
         name: mod,
