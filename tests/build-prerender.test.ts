@@ -259,4 +259,14 @@ describe("getOutputPath — path-traversal guard", () => {
     expect(getOutputPath("/blog/hello-world", false, "/tmp/out")).toBe("blog/hello-world.html");
     expect(getOutputPath("/", false, "/tmp/out")).toBe("index.html");
   });
+
+  it("rejects backslash-containing paths", async () => {
+    const { getOutputPath } = await import("../packages/vinext/src/build/static-export.js");
+    expect(() => getOutputPath("..\\secret", false, "/tmp/out")).toThrow(
+      "escapes the output directory",
+    );
+    expect(() => getOutputPath("\\etc\\passwd", false, "/tmp/out")).toThrow(
+      "escapes the output directory",
+    );
+  });
 });

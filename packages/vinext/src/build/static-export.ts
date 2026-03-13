@@ -525,11 +525,18 @@ async function renderErrorPage(options: RenderErrorPageOptions): Promise<string 
 
     const bodyHtml = await renderToStringAsync(element);
 
+    // Collect head tags (e.g. <title>, meta) set via next/head during render.
+    const ssrHeadHTML =
+      typeof headShim.getSSRHeadHTML === "function" ? headShim.getSSRHeadHTML() : "";
+
     let html: string;
     if (DocumentComponent) {
       const docElement = createElement(DocumentComponent);
       let docHtml = await renderToStringAsync(docElement);
       docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
+      if (ssrHeadHTML) {
+        docHtml = docHtml.replace("</head>", `  ${ssrHeadHTML}\n</head>`);
+      }
       docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");
       html = docHtml;
     } else {
@@ -538,6 +545,7 @@ async function renderErrorPage(options: RenderErrorPageOptions): Promise<string 
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  ${ssrHeadHTML}
 </head>
 <body>
   <div id="__next">${bodyHtml}</div>
@@ -756,7 +764,13 @@ async function expandDynamicAppRoute(
         }
       }
     } else {
-      paramSets = await generateStaticParams({ params: {} });
+      const raw = await generateStaticParams({ params: {} });
+      if (!Array.isArray(raw)) {
+        throw new Error(
+          `generateStaticParams() for ${route.pattern} must return an array, got ${typeof raw}`,
+        );
+      }
+      paramSets = raw;
     }
   } catch (e) {
     throw new Error(`generateStaticParams() failed for ${route.pattern}: ${(e as Error).message}`);
@@ -881,7 +895,9 @@ export async function staticExportApp(
           route: urlPath,
           error: `Server returned ${res.status}`,
         });
-        await res.body?.cancel(); // release connection
+        // Cancel without awaiting — avoids throwing an AbortError if the
+        // AbortController already fired (same pattern as prerenderStaticPages).
+        res.body?.cancel();
         continue;
       }
 
@@ -893,7 +909,7 @@ export async function staticExportApp(
           route: urlPath,
           error: `Expected text/html but got "${contentType}" — skipping`,
         });
-        await res.body?.cancel();
+        res.body?.cancel();
         continue;
       }
       const html = await res.text();
@@ -929,10 +945,10 @@ export async function staticExportApp(
         result.files.push("404.html");
         result.pageCount++;
       } else {
-        await res.body?.cancel();
+        res.body?.cancel();
       }
     } else {
-      await res.body?.cancel();
+      res.body?.cancel();
     }
   } catch {
     // No custom 404, skip
@@ -1242,7 +1258,7 @@ export async function prerenderStaticPages(options: PrerenderOptions): Promise<P
           // Non-HTML response (e.g. a JSON API route misclassified as static).
           // Writing it as .html would produce a corrupt file — skip instead.
           result.skipped.push(`${urlPath} (non-HTML content-type: ${contentType})`);
-          await res.body?.cancel();
+          res.body?.cancel();
           continue;
         }
         const html = await res.text();
