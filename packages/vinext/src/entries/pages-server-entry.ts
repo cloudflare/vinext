@@ -196,7 +196,8 @@ async function _runMiddleware(request) {
     mwUrl.pathname = normalizedPathname;
     mwRequest = new Request(mwUrl, request);
   }
-  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
+  var __mwNextConfig = (vinextConfig.basePath || i18nConfig) ? { basePath: vinextConfig.basePath, i18n: i18nConfig || undefined } : undefined;
+  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest, __mwNextConfig ? { nextConfig: __mwNextConfig } : undefined);
   var fetchEvent = new NextFetchEvent({ page: normalizedPathname });
   var response;
   try { response = await middlewareFn(nextRequest, fetchEvent); }

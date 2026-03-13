@@ -1631,7 +1631,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const mwUrl = new URL(request.url);
       mwUrl.pathname = cleanPathname;
       const mwRequest = new Request(mwUrl, request);
-      const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
+      const __mwNextConfig = (__basePath || __i18nConfig) ? { basePath: __basePath, i18n: __i18nConfig ?? undefined } : undefined;
+      const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest, __mwNextConfig ? { nextConfig: __mwNextConfig } : undefined);
       const mwFetchEvent = new NextFetchEvent({ page: cleanPathname });
       const mwResponse = await middlewareFn(nextRequest, mwFetchEvent);
       const _mwWaitUntil = mwFetchEvent.drainWaitUntil();

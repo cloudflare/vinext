@@ -394,6 +394,7 @@ export async function runMiddleware(
   middlewarePath: string,
   request: Request,
   i18nConfig?: NextI18nConfig | null,
+  basePath?: string,
 ): Promise<MiddlewareResult> {
   // Load the middleware module via the direct-call ModuleRunner.
   // This bypasses the hot channel entirely and is safe with all Vite plugin
@@ -435,7 +436,14 @@ export async function runMiddleware(
   }
 
   // Wrap in NextRequest so middleware gets .nextUrl, .cookies, .geo, .ip, etc.
-  const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
+  const nextConfig =
+    basePath || i18nConfig
+      ? { basePath: basePath ?? "", i18n: i18nConfig ?? undefined }
+      : undefined;
+  const nextRequest =
+    mwRequest instanceof NextRequest
+      ? mwRequest
+      : new NextRequest(mwRequest, nextConfig ? { nextConfig } : undefined);
   const fetchEvent = new NextFetchEvent({ page: normalizedPathname });
 
   // Execute the middleware

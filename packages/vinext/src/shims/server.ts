@@ -59,7 +59,10 @@ export class NextRequest extends Request {
   private _nextUrl: NextURL;
   private _cookies: RequestCookies;
 
-  constructor(input: URL | RequestInfo, init?: RequestInit) {
+  constructor(
+    input: URL | RequestInfo,
+    init?: RequestInit & { nextConfig?: NextURLConfig["nextConfig"] & { basePath?: string } },
+  ) {
     // Handle the case where input is a Request object - we need to extract URL and init
     // to avoid Node.js undici issues with passing Request objects directly to super()
     if (input instanceof Request) {
@@ -81,7 +84,11 @@ export class NextRequest extends Request {
         : input instanceof URL
           ? input
           : new URL(input.url, "http://localhost");
-    this._nextUrl = new NextURL(url);
+    const nextConfig = init?.nextConfig;
+    const urlConfig: NextURLConfig | undefined = nextConfig
+      ? { basePath: nextConfig.basePath, nextConfig: { i18n: nextConfig.i18n } }
+      : undefined;
+    this._nextUrl = new NextURL(url, undefined, urlConfig);
     this._cookies = new RequestCookies(this.headers);
   }
 
@@ -216,18 +223,82 @@ export class NextResponse<_Body = unknown> extends Response {
 // NextURL — lightweight URL wrapper with pathname helpers
 // ---------------------------------------------------------------------------
 
-export class NextURL {
-  private _url: URL;
+export interface NextURLConfig {
+  basePath?: string;
+  nextConfig?: {
+    i18n?: {
+      locales: string[];
+      defaultLocale: string;
+    };
+  };
+}
 
-  constructor(input: string | URL, base?: string | URL) {
+export class NextURL {
+  /** Internal URL stores the pathname WITHOUT basePath or locale prefix. */
+  private _url: URL;
+  private _basePath: string;
+  private _locale: string | undefined;
+  private _defaultLocale: string | undefined;
+  private _locales: string[] | undefined;
+
+  constructor(input: string | URL, base?: string | URL, config?: NextURLConfig) {
     this._url = new URL(input.toString(), base);
+    this._basePath = config?.basePath ?? "";
+    // Strip basePath from internal pathname so pathname getter returns
+    // the path without basePath, matching Next.js behavior.
+    if (this._basePath && this._url.pathname.startsWith(this._basePath + "/")) {
+      this._url.pathname = this._url.pathname.slice(this._basePath.length) || "/";
+    } else if (this._basePath && this._url.pathname === this._basePath) {
+      this._url.pathname = "/";
+    }
+    const i18n = config?.nextConfig?.i18n;
+    if (i18n) {
+      this._locales = i18n.locales;
+      this._defaultLocale = i18n.defaultLocale;
+      this._analyzeLocale(i18n.locales);
+    }
+  }
+
+  /** Extract locale from pathname, stripping it from the internal URL. */
+  private _analyzeLocale(locales: string[]): void {
+    const segments = this._url.pathname.split("/");
+    const candidate = segments[1]?.toLowerCase();
+    const match = candidate ? locales.find((l) => l.toLowerCase() === candidate) : undefined;
+    if (match) {
+      this._locale = match;
+      this._url.pathname = "/" + segments.slice(2).join("/") || "/";
+    } else {
+      this._locale = this._defaultLocale;
+    }
+  }
+
+  /**
+   * Reconstruct the full pathname with basePath + locale prefix.
+   * Mirrors Next.js's internal formatPathname().
+   */
+  private _formatPathname(): string {
+    let pathname = this._url.pathname;
+    // Add locale prefix (skip for defaultLocale — Next.js doesn't prefix it)
+    if (this._locale && this._locale !== this._defaultLocale) {
+      pathname = "/" + this._locale + (pathname === "/" ? "" : pathname);
+    }
+    // Add basePath prefix
+    if (this._basePath) {
+      pathname = this._basePath + pathname;
+    }
+    return pathname;
   }
 
   get href(): string {
-    return this._url.href;
+    const formatted = this._formatPathname();
+    if (formatted === this._url.pathname) return this._url.href;
+    const u = new URL(this._url.href);
+    u.pathname = formatted;
+    return u.href;
   }
   set href(value: string) {
     this._url.href = value;
+    if (this._locales) this._analyzeLocale(this._locales);
   }
 
   get origin(): string {
@@ -276,6 +347,7 @@ export class NextURL {
     this._url.port = value;
   }
 
+  /** Returns the pathname WITHOUT basePath or locale prefix. */
   get pathname(): string {
     return this._url.pathname;
   }
@@ -301,12 +373,47 @@ export class NextURL {
     this._url.hash = value;
   }
 
+  get basePath(): string {
+    return this._basePath;
+  }
+  set basePath(value: string) {
+    this._basePath = value.startsWith("/") ? value : "/" + value;
+  }
+
+  get locale(): string | undefined {
+    return this._locale;
+  }
+  set locale(value: string | undefined) {
+    if (value && this._locales && !this._locales.includes(value)) {
+      throw new TypeError(
+        `The locale "${value}" is not in the configured locales: ${this._locales.join(", ")}`,
+      );
+    }
+    this._locale = value;
+  }
+
+  get defaultLocale(): string | undefined {
+    return this._defaultLocale;
+  }
+
+  get locales(): string[] | undefined {
+    return this._locales ? [...this._locales] : undefined;
+  }
+
   clone(): NextURL {
-    return new NextURL(this._url.href);
+    const config: NextURLConfig = {
+      basePath: this._basePath,
+      nextConfig: this._locales
+        ? { i18n: { locales: [...this._locales], defaultLocale: this._defaultLocale! } }
+        : undefined,
+    };
+    // Pass the full href (with locale/basePath re-added) so the constructor
+    // can re-analyze and extract locale correctly.
+    return new NextURL(this.href, undefined, config);
   }
 
   toString(): string {
-    return this._url.toString();
+    return this.href;
   }
 
   /**
