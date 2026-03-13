@@ -197,8 +197,187 @@ export const action = buildAction("cfg");
   });
 
   // -------------------------------------------------------------------------
-  // Bug fixes verified by bonk review
+  // Regression tests for bugs identified in bonk review
   // -------------------------------------------------------------------------
+
+  // Bug 1: collectOuterNames collected from sibling scopes (false positives).
+  // The old whole-AST walk treated variables in unrelated sibling functions as
+  // "outer names", causing the inner const to be incorrectly renamed even though
+  // there was no actual collision visible to the action.
+  it("regression (sibling scope): does not rename a local const that only shares a name with a sibling function's var", async () => {
+    const source = `
+function other() { const cookies = 1; }
+function buildAction(config) {
+  async function submitAction(formData) {
+    "use server";
+    const cookies = formData.get("value") + ":" + config;
+    return cookies;
+  }
+  return submitAction;
+}
+export const action = buildAction("cfg");
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // `cookies` in `submitAction` is NOT in scope of `other()` — no collision,
+    // so the plugin must leave the source unchanged.
+    expect(pluginOutput).not.toContain("__local_cookies");
+    expect(pluginOutput).toContain("const cookies = formData.get");
+  });
+
+  // Bug 2: double s.update() crash for nested "use server" functions.
+  // When an outer server function renamed a var, renamingWalk descended into
+  // nested server functions (if they didn't re-declare the name), and then
+  // visitNode also recursed into the same body — causing s.update() to be
+  // called twice on the same range, which MagicString throws on.
+  it("regression (double update): outer and inner 'use server' functions with same collision name do not throw", async () => {
+    const source = `
+function outer(config) {
+  const cookies = "session";
+  async function outerAction(formData) {
+    "use server";
+    const cookies = formData.get("outer");
+    async function innerAction(fd) {
+      "use server";
+      const cookies = fd.get("inner");
+      return cookies;
+    }
+    return { cookies, innerAction };
+  }
+  return outerAction;
+}
+export const action = outer("cfg");
+`.trimStart();
+
+    // Must not throw
+    let pluginOutput: string = source;
+    await expect(async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result != null) {
+        pluginOutput = typeof result === "string" ? result : result.code;
+      }
+    }).not.toThrow();
+
+    // Both actions must have their inner `cookies` renamed
+    expect(pluginOutput).toContain("__local_cookies");
+  });
+
+  // Bug 3: hasUseServerDirective used .some() instead of checking the directive
+  // prologue. A "use server" string mid-function (not in the prologue) is NOT a
+  // directive but the old code treated it as one.
+  it("regression (directive prologue): mid-function 'use server' string is not treated as a directive", async () => {
+    const source = `
+function buildAction(config) {
+  const cookies = "session";
+  async function notAServerFn(formData) {
+    const x = doSomething();
+    "use server";
+    const cookies = formData.get("value");
+    return cookies;
+  }
+  return notAServerFn;
+}
+export const action = buildAction("cfg");
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // "use server" is not in the prologue — plugin must leave the source unchanged
+    expect(pluginOutput).not.toContain("__local_cookies");
+    expect(pluginOutput).toContain("const cookies = formData.get");
+  });
+
+  // Bug 4: renamingWalk's re-declaration check only looked at top-level
+  // VariableDeclaration statements, missing `var` declarations hoisted from
+  // inside if/for/etc. blocks. This caused it to descend into nested functions
+  // and rename references that belonged to that nested function's own `var`.
+  it("regression (hoisted var): does not rename inside a nested function that re-declares via hoisted var", async () => {
+    const source = `
+function buildAction(config) {
+  const cookies = "session";
+  async function submitAction(formData) {
+    "use server";
+    const cookies = formData.get("value");
+    function nested() {
+      if (true) { var cookies = "nested"; }
+      return cookies;
+    }
+    return cookies + nested();
+  }
+  return submitAction;
+}
+export const action = buildAction("cfg");
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // The `var cookies` inside `nested()` means `nested`'s own `return cookies`
+    // refers to its own binding — must not be renamed.
+    expect(pluginOutput).toContain('var cookies = "nested"');
+    // The body of nested() must not have __local_cookies
+    const nestedFnMatch = pluginOutput.match(/function nested\(\)[\s\S]*?return cookies;/);
+    expect(nestedFnMatch?.[0]).not.toContain("__local_cookies");
+  });
+
+  // Bug 5: shorthand property { x } — key and value are the same AST node.
+  // The old guard relied on parent being correctly threaded during recursion.
+  // If the same range was hit twice, MagicString would throw. Verified by
+  // checking the output is correct and no exception is thrown.
+  it("regression (shorthand same-node): shorthand property expansion does not throw and produces correct output", async () => {
+    const source = `
+function buildAction(config) {
+  const cookies = "session";
+  async function submitAction(formData) {
+    "use server";
+    const cookies = formData.get("value");
+    return { cookies };
+  }
+  return submitAction;
+}
+export const action = buildAction("cfg");
+`.trimStart();
+
+    let pluginOutput: string = source;
+    await expect(async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result != null) {
+        pluginOutput = typeof result === "string" ? result : result.code;
+      }
+    }).not.toThrow();
+
+    // Key stays `cookies`, value becomes `__local_cookies`
+    expect(pluginOutput).toContain("cookies: __local_cookies");
+    expect(pluginOutput).not.toContain("__local_cookies: __local_cookies");
+    expect(pluginOutput).not.toContain("{ __local_cookies }");
+  });
 
   it("fix (param collision): detects collision when outer binding is a function parameter, not a var declaration", async () => {
     // collectOuterNames previously only walked VariableDeclaration nodes.

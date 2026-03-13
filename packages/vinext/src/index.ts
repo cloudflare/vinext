@@ -889,73 +889,74 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         }
 
-        // Check if a block body starts with 'use server' directive
+        // Check if a block body has 'use server' as its leading directive prologue.
+        // Only the first contiguous run of string-literal expression statements
+        // counts — a "use server" string mid-function is not a directive.
         function hasUseServerDirective(body: any[]): boolean {
-          return body.some(
-            (stmt: any) =>
+          for (const stmt of body) {
+            if (
               stmt.type === "ExpressionStatement" &&
               stmt.expression?.type === "Literal" &&
-              stmt.expression.value === "use server",
-          );
-        }
-
-        // Collect outer scope variable names by walking up from a function node.
-        // We do this by collecting all variable names declared in all ancestor
-        // function/program bodies, stopping when we hit the use-server function itself.
-        function collectOuterNames(targetNode: any, ast: any): Set<string> {
-          const names = new Set<string>();
-          function walkProgram(n: any) {
-            if (!n || typeof n !== "object") return;
-            if (n === targetNode) return; // don't recurse into the target
-            if (n.type === "VariableDeclaration") {
-              for (const decl of n.declarations) {
-                collectPatternNames(decl.id, names);
-              }
-            }
-            // Function parameters also create bindings that periscopic sees.
-            if (
-              n.type === "FunctionDeclaration" ||
-              n.type === "FunctionExpression" ||
-              n.type === "ArrowFunctionExpression"
+              typeof stmt.expression.value === "string"
             ) {
-              for (const p of n.params ?? []) collectPatternNames(p, names);
+              if (stmt.expression.value === "use server") return true;
+              // Any other string literal in the prologue — keep scanning
+              continue;
             }
-            // catch (e) bindings
-            if (n.type === "CatchClause" && n.param) {
-              collectPatternNames(n.param, names);
-            }
-            for (const key of Object.keys(n)) {
-              if (key === "type") continue;
-              const child = n[key];
-              if (Array.isArray(child)) {
-                for (const c of child) walkProgram(c);
-              } else if (child && typeof child === "object" && child.type) {
-                walkProgram(child);
-              }
-            }
+            // First non-string-literal statement ends the prologue
+            break;
           }
-          walkProgram(ast);
-          return names;
+          return false;
         }
 
-        // Find all 'use server' inline functions and check for collisions
+        // Find all 'use server' inline functions and check for collisions.
+        //
+        // `ancestorNames` accumulates the names that are in scope in all ancestor
+        // function/program bodies as we descend — this is the correct set to
+        // compare against, not a whole-AST walk (which would pick up siblings).
         const s = new MagicString(code);
+        // Track source ranges already rewritten so renamingWalk never calls
+        // s.update() twice on the same span (MagicString throws if it does).
+        const renamedRanges = new Set<string>();
         let changed = false;
 
-        function visitNode(node: any) {
+        function visitNode(node: any, ancestorNames: Set<string>) {
           if (!node || typeof node !== "object") return;
-          const isServerFn =
-            (node.type === "FunctionDeclaration" ||
-              node.type === "FunctionExpression" ||
-              node.type === "ArrowFunctionExpression") &&
-            node.body?.type === "BlockStatement" &&
-            hasUseServerDirective(node.body.body);
+
+          const isFn =
+            node.type === "FunctionDeclaration" ||
+            node.type === "FunctionExpression" ||
+            node.type === "ArrowFunctionExpression";
+
+          if (!isFn) {
+            // Recurse into non-function nodes, passing ancestors unchanged
+            for (const key of Object.keys(node)) {
+              if (key === "type") continue;
+              const child = node[key];
+              if (Array.isArray(child)) {
+                for (const c of child) visitNode(c, ancestorNames);
+              } else if (child && typeof child === "object" && child.type) {
+                visitNode(child, ancestorNames);
+              }
+            }
+            return;
+          }
+
+          // Build the ancestor name set visible inside this function:
+          // everything the parent saw, plus this function's own params.
+          const namesForBody = new Set(ancestorNames);
+          for (const p of node.params ?? []) collectPatternNames(p, namesForBody);
+
+          // Check whether the body has the 'use server' directive.
+          const bodyStmts: any[] = node.body?.type === "BlockStatement" ? node.body.body : [];
+          const isServerFn = hasUseServerDirective(bodyStmts);
 
           if (isServerFn) {
-            // Collect variables declared directly in the function's block body
-            // (these go into the BlockStatement scope in periscopic, not the function scope)
+            // Collect variables declared at the top level of this function body.
+            // periscopic puts these in the BlockStatement scope (not the function
+            // scope), so they get mis-classified as closure vars from the outer scope.
             const localDecls = new Set<string>();
-            for (const stmt of node.body.body) {
+            for (const stmt of bodyStmts) {
               if (stmt.type === "VariableDeclaration") {
                 for (const decl of stmt.declarations) {
                   collectPatternNames(decl.id, localDecls);
@@ -963,77 +964,81 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               }
             }
 
-            if (localDecls.size === 0) {
-              // Visit children and return early
-              for (const key of Object.keys(node)) {
-                if (key === "type") continue;
-                const child = node[key];
-                if (Array.isArray(child)) {
-                  for (const c of child) visitNode(c);
-                } else if (child && typeof child === "object" && child.type) visitNode(child);
-              }
-              return;
-            }
-
-            // Collect outer-scope names
-            const outerNames = collectOuterNames(node, ast);
-
-            // Find collisions: names declared locally that also exist in outer scope
+            // Find collisions: local decls that shadow a name from ancestor scopes
             const collisions = new Set<string>();
             for (const name of localDecls) {
-              if (outerNames.has(name)) {
-                collisions.add(name);
-              }
+              if (namesForBody.has(name)) collisions.add(name);
             }
 
             if (collisions.size > 0) {
-              // Rename each colliding local declaration within this function body only.
-              // We rename both the declaration sites and all references within the body.
-              // We do NOT rename references in nested functions (they capture the local).
               for (const name of collisions) {
-                const renamed = `__local_${name}`;
-                // Rename all Identifier nodes named `name` within node.body
-                renamingWalk(node.body, name, renamed);
+                renamingWalk(node.body, name, `__local_${name}`);
               }
               changed = true;
             }
 
-            // Always recurse into children of a server function after collision
-            // handling — nested 'use server' functions must not be missed.
-            for (const key of Object.keys(node)) {
-              if (key === "type") continue;
-              const child = node[key];
-              if (Array.isArray(child)) {
-                for (const c of child) visitNode(c);
-              } else if (child && typeof child === "object" && child.type) visitNode(child);
+            // Build the ancestor set for children of this server function.
+            // Add vars declared in the body so nested server functions see them.
+            const namesForChildren = new Set(namesForBody);
+            for (const name of localDecls) namesForChildren.add(name);
+
+            // Recurse into children — nested 'use server' functions must be visited.
+            // Skip node.body itself (already handled by renamingWalk above for
+            // collisions); we recurse into each statement individually so that
+            // nested functions inside the body get their own visitNode pass with
+            // the correct ancestorNames.
+            for (const stmt of bodyStmts) {
+              visitNode(stmt, namesForChildren);
             }
+            // Also visit params (they can contain default expressions with closures)
+            for (const p of node.params ?? []) visitNode(p, ancestorNames);
             return;
           }
 
-          // Recurse into children of non-server-function nodes
+          // Not a server function — add vars declared in this body to namesForBody
+          // before descending, so nested functions see them as ancestor names.
+          // Also add CatchClause params (catch (e) bindings are in scope in the body).
+          const namesForChildren = new Set(namesForBody);
+          for (const stmt of bodyStmts) {
+            if (stmt.type === "VariableDeclaration") {
+              for (const decl of stmt.declarations) {
+                collectPatternNames(decl.id, namesForChildren);
+              }
+            }
+          }
+          if (node.type === "CatchClause" && node.param) {
+            collectPatternNames(node.param, namesForChildren);
+          }
+
           for (const key of Object.keys(node)) {
             if (key === "type") continue;
             const child = node[key];
             if (Array.isArray(child)) {
-              for (const c of child) visitNode(c);
-            } else if (child && typeof child === "object" && child.type) visitNode(child);
+              for (const c of child) visitNode(c, namesForChildren);
+            } else if (child && typeof child === "object" && child.type) {
+              visitNode(child, namesForChildren);
+            }
           }
         }
 
-        // Walk an AST subtree renaming all Identifier nodes with a given name.
-        // Skips into nested functions (they keep their own binding).
-        // The `declared` set tracks whether the name was declared in a given
-        // nested scope — if a nested function re-declares it, don't rename there.
+        // Walk an AST subtree renaming all variable-reference Identifier nodes
+        // matching `from` to `to`.
         //
-        // `parent` is passed so we can skip identifiers that are not variable
-        // references (non-computed member expression properties, non-computed
-        // object property keys).  Shorthand properties ({ cookies }) are expanded
-        // to ({ cookies: __local_cookies }) so the object shape is preserved.
+        // Correctness rules:
+        //   - Non-computed MemberExpression.property is NOT a variable reference
+        //   - Non-computed Property.key is NOT a variable reference
+        //   - Shorthand Property { x } must be expanded to { x: __local_x }
+        //   - A nested function that re-declares `from` in its params OR anywhere
+        //     in its body via var/const/let (including inside control flow) is a
+        //     new binding — stop descending into it
+        //   - Never call s.update() on the same source range twice
+        //
+        // `parent` is the direct parent AST node, used to detect property contexts.
         function renamingWalk(node: any, from: string, to: string, parent?: any) {
           if (!node || typeof node !== "object") return;
 
           if (node.type === "Identifier" && node.name === from) {
-            // Skip non-computed MemberExpression properties: obj.cookies
+            // Non-computed member expression property: obj.cookies — not a ref
             if (
               parent?.type === "MemberExpression" &&
               parent.property === node &&
@@ -1042,50 +1047,55 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               return;
             }
 
-            // Handle object Property keys
+            // Non-computed property key in an object literal
             if (parent?.type === "Property" && parent.key === node && !parent.computed) {
               if (parent.shorthand) {
-                // { cookies } → { cookies: __local_cookies }
-                // key and value are the same AST node in a shorthand property,
-                // so we rewrite at the key visit and must not rewrite again at
-                // the value visit (which would overwrite with just `__local_cookies`).
-                s.update(node.start, node.end, `${from}: ${to}`);
+                // { cookies } — key and value are the same AST node.
+                // Expand to { cookies: __local_cookies } by rewriting at the key
+                // visit; skip the value visit via the guard below.
+                const rangeKey = `${node.start}:${node.end}`;
+                if (!renamedRanges.has(rangeKey)) {
+                  renamedRanges.add(rangeKey);
+                  s.update(node.start, node.end, `${from}: ${to}`);
+                }
               }
-              // Non-shorthand key (e.g. { cookies: expr }) — leave the key alone,
-              // the value will be renamed when we recurse into parent.value.
+              // Either way, key is not a variable reference — do not rename it.
               return;
             }
 
-            // Skip the value of a shorthand property — it is the same AST node
-            // as the key and was already handled (and rewritten) above.
+            // Value side of a shorthand property — same node as key, already handled
             if (parent?.type === "Property" && parent.shorthand && parent.value === node) {
               return;
             }
 
-            s.update(node.start, node.end, to);
+            const rangeKey = `${node.start}:${node.end}`;
+            if (!renamedRanges.has(rangeKey)) {
+              renamedRanges.add(rangeKey);
+              s.update(node.start, node.end, to);
+            }
             return;
           }
 
-          // Don't recurse into nested functions that re-declare the same name
+          // For nested function nodes, check whether they re-declare `from`.
+          // If they do, stop — the name in that nested scope is a different binding.
+          // We must check ALL var declarations anywhere in the body (var hoists),
+          // not just top-level statements.
           if (
             node.type === "FunctionDeclaration" ||
             node.type === "FunctionExpression" ||
             node.type === "ArrowFunctionExpression"
           ) {
-            // Check if this nested function re-declares `from` in its params or body
             const nestedDecls = new Set<string>();
-            if (node.params) {
-              for (const p of node.params) collectPatternNames(p, nestedDecls);
-            }
-            if (node.body?.type === "BlockStatement") {
-              for (const stmt of node.body.body) {
-                if (stmt.type === "VariableDeclaration") {
-                  for (const d of stmt.declarations) collectPatternNames(d.id, nestedDecls);
-                }
-              }
-            }
-            if (nestedDecls.has(from)) {
-              // This nested function re-declares `from`, don't rename inside it
+            // Params
+            for (const p of node.params ?? []) collectPatternNames(p, nestedDecls);
+            // Recursively find all var/const/let declarations in the body,
+            // including those nested inside if/for/while/etc.
+            collectAllDeclaredNames(node.body, nestedDecls);
+            if (nestedDecls.has(from)) return;
+
+            // Also stop at nested 'use server' functions — visitNode will handle them
+            // independently with the correct collision set, preventing double-rewrites.
+            if (node.body?.type === "BlockStatement" && hasUseServerDirective(node.body.body)) {
               return;
             }
           }
@@ -1101,7 +1111,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         }
 
-        visitNode(ast);
+        // Recursively collect all variable names declared anywhere inside a node,
+        // crossing into nested blocks/control flow but NOT into nested functions
+        // (their declarations are in a different scope).
+        function collectAllDeclaredNames(node: any, names: Set<string>) {
+          if (!node || typeof node !== "object") return;
+          if (node.type === "VariableDeclaration") {
+            for (const decl of node.declarations) collectPatternNames(decl.id, names);
+          }
+          // Don't cross function boundaries — their vars are in a nested scope
+          if (
+            node.type === "FunctionDeclaration" ||
+            node.type === "FunctionExpression" ||
+            node.type === "ArrowFunctionExpression"
+          ) {
+            return;
+          }
+          for (const key of Object.keys(node)) {
+            if (key === "type") continue;
+            const child = node[key];
+            if (Array.isArray(child)) {
+              for (const c of child) collectAllDeclaredNames(c, names);
+            } else if (child && typeof child === "object" && child.type) {
+              collectAllDeclaredNames(child, names);
+            }
+          }
+        }
+
+        visitNode(ast, new Set());
 
         if (!changed) return null;
         return { code: s.toString(), map: s.generateMap({ hires: "boundary" }) };
