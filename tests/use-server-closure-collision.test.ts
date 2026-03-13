@@ -58,11 +58,16 @@ async function runPipeline(source: string, id = "/app/actions/page.tsx"): Promis
   }
 
   const ast = parseAst(code);
-  const { output } = transformHoistInlineDirective(code, ast, {
-    runtime: (name: string) => `registerServerReference(${name}, "test-module", "${name}")`,
-    decode: (arg: string) => `decryptActionBoundArgs(${arg})`,
-    rejectNonAsyncFunction: false,
-  });
+  const { output } = transformHoistInlineDirective(
+    code,
+    ast as Parameters<typeof transformHoistInlineDirective>[1],
+    {
+      directive: "use server",
+      runtime: (name: string) => `registerServerReference(${name}, "test-module", "${name}")`,
+      decode: (arg: string) => `decryptActionBoundArgs(${arg})`,
+      rejectNonAsyncFunction: false,
+    },
+  );
   return output.toString();
 }
 
@@ -91,8 +96,7 @@ function buildAction(config) {
 }
 
 const { submitAction, outerCookies } = buildAction("cfg");
-export default function Page() { return null; }
-`.trimStart();
+export default function Page() { return null; }`.trimStart();
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -120,11 +124,16 @@ describe("vinext:fix-use-server-closure-collision", () => {
     // → two `const cookies` in the same block.
 
     const ast = parseAst(COLLISION_SOURCE);
-    const { output } = transformHoistInlineDirective(COLLISION_SOURCE, ast, {
-      runtime: (name: string) => `registerServerReference(${name}, "test-module", "${name}")`,
-      decode: (arg: string) => `decryptActionBoundArgs(${arg})`,
-      rejectNonAsyncFunction: false,
-    });
+    const { output } = transformHoistInlineDirective(
+      COLLISION_SOURCE,
+      ast as Parameters<typeof transformHoistInlineDirective>[1],
+      {
+        directive: "use server",
+        runtime: (name: string) => `registerServerReference(${name}, "test-module", "${name}")`,
+        decode: (arg: string) => `decryptActionBoundArgs(${arg})`,
+        rejectNonAsyncFunction: false,
+      },
+    );
     const result = output.toString();
 
     // The injected bindVar destructuring and the original declaration are both present
