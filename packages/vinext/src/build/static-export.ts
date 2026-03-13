@@ -74,7 +74,7 @@ async function createTempViteServer(
   const server = await vite.createServer({
     root,
     configFile: false,
-    plugins: [vinextPlugin({ appDir: root })],
+    plugins: [vinextPlugin({ appDir: root /* project root, not app/ dir — see comment above */ })],
     optimizeDeps: { holdUntilCrawlEnd: true },
     server: { port: 0, cors: false },
     logLevel: "silent",
@@ -885,7 +885,6 @@ export async function staticExportApp(
         continue;
       }
 
-      const html = await res.text();
       const contentType = res.headers.get("content-type") ?? "";
       if (!contentType.includes("text/html")) {
         // Non-HTML response (e.g. a JSON response from a misclassified route).
@@ -894,8 +893,10 @@ export async function staticExportApp(
           route: urlPath,
           error: `Expected text/html but got "${contentType}" — skipping`,
         });
+        await res.body?.cancel();
         continue;
       }
+      const html = await res.text();
       const outputPath = getOutputPath(urlPath, config.trailingSlash, outDir);
       const fullPath = path.join(outDir, outputPath);
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
@@ -1236,14 +1237,15 @@ export async function prerenderStaticPages(options: PrerenderOptions): Promise<P
           continue;
         }
 
-        const html = await res.text();
         const contentType = res.headers.get("content-type") ?? "";
         if (!contentType.includes("text/html")) {
           // Non-HTML response (e.g. a JSON API route misclassified as static).
           // Writing it as .html would produce a corrupt file — skip instead.
           result.skipped.push(`${urlPath} (non-HTML content-type: ${contentType})`);
+          await res.body?.cancel();
           continue;
         }
+        const html = await res.text();
         const outputPath = getOutputPath(urlPath, config.trailingSlash, pagesOutDir);
         const fullPath = path.join(pagesOutDir, outputPath);
         fs.mkdirSync(path.dirname(fullPath), { recursive: true });
@@ -1329,7 +1331,7 @@ async function collectStaticRoutesFromSource(root: string): Promise<CollectedRou
       urls.push(route.pattern);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      skipped.push(`${route.pattern} (failed to read source: ${msg})`);
+      skipped.push(`${route.pattern} (classification error: ${msg})`);
     }
   }
 

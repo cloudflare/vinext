@@ -176,6 +176,32 @@ describe.skipIf(!fixtureBuilt)("Production server — serves pre-rendered HTML",
       fs.rmSync(indexFile);
     }
   });
+
+  it("serves pre-rendered about/index.html for /about (trailingSlash:true layout)", async () => {
+    // When trailingSlash is true, getOutputPath writes pages as <name>/index.html
+    // instead of <name>.html. resolvePrerenderedHtml checks both patterns, so
+    // about/index.html should be served at /about regardless of config.
+    const aboutDir = path.join(pagesDir, "about");
+    const aboutFile = path.join(aboutDir, "index.html");
+    fs.mkdirSync(aboutDir, { recursive: true });
+    fs.writeFileSync(
+      aboutFile,
+      `<!DOCTYPE html><html><body>Pre-rendered about (trailing slash)</body></html>`,
+      "utf-8",
+    );
+
+    try {
+      const res = await fetch(`${baseUrl}/about`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain("Pre-rendered about (trailing slash)");
+    } finally {
+      fs.rmSync(aboutFile);
+      if (fs.existsSync(aboutDir) && fs.readdirSync(aboutDir).length === 0) {
+        fs.rmdirSync(aboutDir);
+      }
+    }
+  });
 });
 
 // ─── prerenderStaticPages — function exists ───────────────────────────────────
