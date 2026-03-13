@@ -266,6 +266,9 @@ describe("parseBodySizeLimit", () => {
 
   it("returns default 1MB and warns for invalid strings", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // In Vitest 4, spyOn on an already-intercepted console returns the same mock,
+    // which may have accumulated calls from earlier tests. Clear before asserting.
+    warn.mockClear();
     expect(parseBodySizeLimit("invalid")).toBe(1 * 1024 * 1024);
     expect(parseBodySizeLimit("10mbb")).toBe(1 * 1024 * 1024);
     expect(warn).toHaveBeenCalledTimes(2);
@@ -273,6 +276,7 @@ describe("parseBodySizeLimit", () => {
     warn.mockRestore();
     // empty string also falls through to the regex (no match), so it warns too
     const warn2 = vi.spyOn(console, "warn").mockImplementation(() => {});
+    warn2.mockClear();
     expect(parseBodySizeLimit("")).toBe(1 * 1024 * 1024);
     expect(warn2).toHaveBeenCalledTimes(1);
     warn2.mockRestore();
