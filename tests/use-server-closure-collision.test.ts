@@ -197,7 +197,7 @@ export const action = buildAction("cfg");
   });
 
   // -------------------------------------------------------------------------
-  // Regression tests for bugs identified in bonk review
+  // Regression tests for bugs identified in bonk review (round 1)
   // -------------------------------------------------------------------------
 
   // Bug 1: collectOuterNames collected from sibling scopes (false positives).
@@ -377,6 +377,153 @@ export const action = buildAction("cfg");
     expect(pluginOutput).toContain("cookies: __local_cookies");
     expect(pluginOutput).not.toContain("__local_cookies: __local_cookies");
     expect(pluginOutput).not.toContain("{ __local_cookies }");
+  });
+
+  // -------------------------------------------------------------------------
+  // Regression tests for bugs identified in bonk review (round 2)
+  // -------------------------------------------------------------------------
+
+  // Bug 1: module-level var/let/const declarations were invisible to the
+  // collision detector. The !isFn branch passed ancestorNames through unchanged,
+  // so Program-level declarations were never added to the ancestor set.
+  it("regression (module-level var): detects collision when outer binding is a module-level declaration", async () => {
+    const source = `
+const cookies = "session";
+export async function action(formData) {
+  "use server";
+  const cookies = formData.get("v");
+  return cookies;
+}
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // The inner `const cookies` shadows the module-level one — must be renamed
+    expect(pluginOutput).toContain("__local_cookies");
+    expect(pluginOutput).not.toMatch(/^\s*const cookies = formData/m);
+  });
+
+  // Bug 2: CatchClause param was unreachable dead code. The CatchClause check
+  // lived inside the isFn branch, but CatchClause is not a function node so it
+  // took the !isFn path which returned early without ever reaching the check.
+  it("regression (catch binding): detects collision when outer binding is a catch clause param", async () => {
+    const source = `
+function outer() {
+  try {} catch (cookies) {
+    async function action(fd) {
+      "use server";
+      const cookies = fd.get("v");
+      return cookies;
+    }
+    return action;
+  }
+}
+export const act = outer();
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // catch (cookies) is an ancestor binding — must be detected and renamed
+    expect(pluginOutput).toContain("__local_cookies");
+  });
+
+  // Bug 3: namesForChildren was built with pre-rename names. After renamingWalk
+  // renamed `cookies` → `__local_cookies` in an outer server function, `cookies`
+  // was still in namesForChildren, causing nested server functions to see it as
+  // an ancestor name and spuriously rename their own independent `cookies`.
+  it("regression (pre-rename false positive): nested server function with same-named local is not spuriously renamed", async () => {
+    const source = `
+function outer(config) {
+  const cookies = "session";
+  async function outerAction(fd) {
+    "use server";
+    const cookies = fd.get("outer");
+    async function innerAction(fd2) {
+      "use server";
+      const cookies = fd2.get("inner");
+      return cookies;
+    }
+    return innerAction;
+  }
+  return outerAction;
+}
+export const action = outer("cfg");
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // outerAction's `const cookies` collides with the outer `const cookies = "session"`
+    // and must be renamed.
+    expect(pluginOutput).toContain("__local_cookies");
+
+    // innerAction's `const cookies` does NOT shadow any ancestor name after the
+    // rename — the original `cookies` binding is removed from the ancestor set
+    // and replaced with `__local_cookies`, so innerAction's own `const cookies`
+    // no longer collides and must be left alone.
+    expect(pluginOutput).not.toContain("__local___local_cookies");
+
+    // innerAction's body must still use `cookies`, not `__local_cookies`
+    const innerActionMatch = pluginOutput.match(
+      /async function innerAction\(fd2\)[\s\S]*?return \w+;\s*\n\s*\}/,
+    );
+    expect(innerActionMatch).not.toBeNull();
+    expect(innerActionMatch![0]).toContain("const cookies");
+    expect(innerActionMatch![0]).not.toContain("const __local_cookies");
+    expect(innerActionMatch![0]).toContain("return cookies");
+  });
+
+  // Bug 4: the non-server-function branch only scanned top-level bodyStmts for
+  // VariableDeclaration, missing `var` declarations hoisted from inside
+  // if/for/while/try blocks. collectAllDeclaredNames now handles this.
+  it("regression (hoisted var in non-server fn): detects collision when outer var is inside a block", async () => {
+    const source = `
+function buildAction(config) {
+  if (config) {
+    var cookies = "session";
+  }
+  async function action(fd) {
+    "use server";
+    const cookies = fd.get("v");
+    return cookies;
+  }
+  return action;
+}
+export const act = buildAction("cfg");
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // `var cookies` is function-scoped and visible to `action` — must be detected
+    expect(pluginOutput).toContain("__local_cookies");
+    expect(pluginOutput).not.toMatch(/^\s*const cookies = fd\.get/m);
   });
 
   it("fix (param collision): detects collision when outer binding is a function parameter, not a var declaration", async () => {

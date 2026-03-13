@@ -929,14 +929,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             node.type === "ArrowFunctionExpression";
 
           if (!isFn) {
-            // Recurse into non-function nodes, passing ancestors unchanged
+            // Non-function nodes (Program, BlockStatement, IfStatement, CatchClause,
+            // etc.) don't introduce a new function scope, but they may contain
+            // variable declarations and catch bindings that are visible to nested
+            // functions as ancestor names.  Accumulate those into a new set before
+            // recursing so we don't mutate the caller's set.
+            const namesForChildren = new Set(ancestorNames);
+
+            // CatchClause: `catch (e)` — `e` is in scope for the catch body
+            if (node.type === "CatchClause" && node.param) {
+              collectPatternNames(node.param, namesForChildren);
+            }
+
+            // Collect all var/const/let declarations reachable from this node
+            // (crossing blocks but not nested function boundaries).  This handles
+            // both module-level declarations (Program children) and var declarations
+            // hoisted from inside if/for/while/try blocks within a function body.
+            collectAllDeclaredNames(node, namesForChildren);
+
             for (const key of Object.keys(node)) {
               if (key === "type") continue;
               const child = node[key];
               if (Array.isArray(child)) {
-                for (const c of child) visitNode(c, ancestorNames);
+                for (const c of child) visitNode(c, namesForChildren);
               } else if (child && typeof child === "object" && child.type) {
-                visitNode(child, ancestorNames);
+                visitNode(child, namesForChildren);
               }
             }
             return;
@@ -978,9 +995,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             }
 
             // Build the ancestor set for children of this server function.
-            // Add vars declared in the body so nested server functions see them.
+            // Colliding names have been renamed in this body: `cookies` →
+            // `__local_cookies`.  The original name no longer exists as a binding
+            // in this scope, so we must remove it from the set and add the renamed
+            // version instead.  Leaving the original name in would cause nested
+            // server functions to see it as an ancestor binding and spuriously flag
+            // their own independent `const cookies` as a collision.
             const namesForChildren = new Set(namesForBody);
-            for (const name of localDecls) namesForChildren.add(name);
+            for (const name of localDecls) {
+              if (collisions.has(name)) {
+                namesForChildren.delete(name);
+                namesForChildren.add(`__local_${name}`);
+              } else {
+                namesForChildren.add(name);
+              }
+            }
 
             // Recurse into children — nested 'use server' functions must be visited.
             // Skip node.body itself (already handled by renamingWalk above for
@@ -995,20 +1024,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return;
           }
 
-          // Not a server function — add vars declared in this body to namesForBody
-          // before descending, so nested functions see them as ancestor names.
-          // Also add CatchClause params (catch (e) bindings are in scope in the body).
+          // Not a server function — collect all vars declared anywhere in the body
+          // (including inside if/for/while/try blocks via collectAllDeclaredNames)
+          // plus params, so nested functions see them as ancestor names.
           const namesForChildren = new Set(namesForBody);
-          for (const stmt of bodyStmts) {
-            if (stmt.type === "VariableDeclaration") {
-              for (const decl of stmt.declarations) {
-                collectPatternNames(decl.id, namesForChildren);
-              }
-            }
-          }
-          if (node.type === "CatchClause" && node.param) {
-            collectPatternNames(node.param, namesForChildren);
-          }
+          collectAllDeclaredNames(node.body, namesForChildren);
 
           for (const key of Object.keys(node)) {
             if (key === "type") continue;
