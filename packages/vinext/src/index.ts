@@ -941,11 +941,23 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               collectPatternNames(node.param, namesForChildren);
             }
 
-            // Collect all var/const/let declarations reachable from this node
-            // (crossing blocks but not nested function boundaries).  This handles
-            // both module-level declarations (Program children) and var declarations
-            // hoisted from inside if/for/while/try blocks within a function body.
-            collectAllDeclaredNames(node, namesForChildren);
+            // Collect names visible at function scope from this node:
+            //   - FunctionDeclaration names (hoisted to enclosing scope)
+            //   - var declarations (hoisted to function scope, found anywhere)
+            // We do NOT collect let/const from nested blocks here — those are
+            // block-scoped and not visible to sibling/outer function declarations.
+            collectFunctionScopedNames(node, namesForChildren);
+            // Also collect let/const/var declared as immediate children of this
+            // node (e.g. top-level Program statements, or the direct body of a
+            // BlockStatement) — those ARE in scope for everything in the same block.
+            const immediateStmts: any[] =
+              node.type === "Program" ? node.body : node.type === "BlockStatement" ? node.body : [];
+            for (const stmt of immediateStmts) {
+              if (stmt?.type === "VariableDeclaration") {
+                for (const decl of stmt.declarations)
+                  collectPatternNames(decl.id, namesForChildren);
+              }
+            }
 
             for (const key of Object.keys(node)) {
               if (key === "type") continue;
@@ -1024,11 +1036,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return;
           }
 
-          // Not a server function — collect all vars declared anywhere in the body
-          // (including inside if/for/while/try blocks via collectAllDeclaredNames)
-          // plus params, so nested functions see them as ancestor names.
+          // Not a server function — build the ancestor set for nested functions:
+          //   - var declarations anywhere in this function body (function-scoped)
+          //   - FunctionDeclaration names anywhere in this function body
+          //   - let/const only from the top-level statements of this function body
+          //     (block-scoped — not visible to nested fns in sibling blocks)
           const namesForChildren = new Set(namesForBody);
-          collectAllDeclaredNames(node.body, namesForChildren);
+          collectFunctionScopedNames(node.body, namesForChildren);
+          for (const stmt of bodyStmts) {
+            if (stmt?.type === "VariableDeclaration" && stmt.kind !== "var") {
+              for (const decl of stmt.declarations) collectPatternNames(decl.id, namesForChildren);
+            }
+          }
 
           for (const key of Object.keys(node)) {
             if (key === "type") continue;
@@ -1131,21 +1150,71 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         }
 
-        // Recursively collect all variable names declared anywhere inside a node,
-        // crossing into nested blocks/control flow but NOT into nested functions
-        // (their declarations are in a different scope).
+        // Collect names that are visible at function scope from a given subtree.
+        //
+        // Two separate helpers with different traversal rules:
+        //
+        //   collectFunctionScopedNames(node, names)
+        //     Collects `var` declarations and `FunctionDeclaration` names anywhere
+        //     in the subtree, crossing block boundaries (if/for/while/try/catch)
+        //     but NOT crossing nested function bodies.  `let`/`const` in nested
+        //     blocks are intentionally skipped — they are block-scoped and not
+        //     visible outside that block.
+        //     Use this when building ancestorNames for nested functions.
+        //
+        //   collectAllDeclaredNames(node, names)
+        //     Collects ALL var/let/const declarations anywhere in the subtree,
+        //     crossing block boundaries but not nested function bodies.
+        //     Used only by renamingWalk's re-declaration check, where we want to
+        //     know if ANY declaration of `from` exists in a nested function's scope
+        //     (params already handled separately).
+
+        function collectFunctionScopedNames(node: any, names: Set<string>) {
+          if (!node || typeof node !== "object") return;
+          // FunctionDeclaration: its name is a binding in the enclosing scope.
+          // Record it, then stop — don't recurse into the body (different scope).
+          if (node.type === "FunctionDeclaration") {
+            if (node.id?.name) names.add(node.id.name);
+            return;
+          }
+          // FunctionExpression / ArrowFunctionExpression names are only in scope
+          // inside their own body, not the enclosing scope — skip entirely.
+          if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+            return;
+          }
+          // var declarations are function-scoped — collect them wherever they appear.
+          // let/const at a nested block level are block-scoped and NOT visible to
+          // sibling or outer function declarations, so skip them here.
+          if (node.type === "VariableDeclaration" && node.kind === "var") {
+            for (const decl of node.declarations) collectPatternNames(decl.id, names);
+          }
+          for (const key of Object.keys(node)) {
+            if (key === "type") continue;
+            const child = node[key];
+            if (Array.isArray(child)) {
+              for (const c of child) collectFunctionScopedNames(c, names);
+            } else if (child && typeof child === "object" && child.type) {
+              collectFunctionScopedNames(child, names);
+            }
+          }
+        }
+
+        // Collect ALL declared names (var/let/const) in a subtree, crossing blocks
+        // but not nested function bodies.  Used by renamingWalk's re-declaration
+        // check where any shadowing declaration — regardless of kind — must stop
+        // the rename from descending further.
         function collectAllDeclaredNames(node: any, names: Set<string>) {
           if (!node || typeof node !== "object") return;
           if (node.type === "VariableDeclaration") {
             for (const decl of node.declarations) collectPatternNames(decl.id, names);
           }
-          // Don't cross function boundaries — their vars are in a nested scope
-          if (
-            node.type === "FunctionDeclaration" ||
-            node.type === "FunctionExpression" ||
-            node.type === "ArrowFunctionExpression"
-          ) {
-            return;
+          // FunctionDeclaration name is a binding in the enclosing scope — record it.
+          if (node.type === "FunctionDeclaration") {
+            if (node.id?.name) names.add(node.id.name);
+            return; // don't recurse into its body
+          }
+          if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+            return; // different scope — stop
           }
           for (const key of Object.keys(node)) {
             if (key === "type") continue;

@@ -526,6 +526,71 @@ export const act = buildAction("cfg");
     expect(pluginOutput).not.toMatch(/^\s*const cookies = fd\.get/m);
   });
 
+  // Bug 1 (round 3): collectAllDeclaredNames stopped at FunctionDeclaration
+  // without recording node.id.name. A `function cookies() {}` at module or
+  // function scope creates a binding named `cookies` in the enclosing scope,
+  // but the plugin never added it to namesForChildren, so the collision with
+  // a same-named `const cookies` inside a 'use server' action was invisible.
+  it("regression (FunctionDeclaration name): detects collision when outer binding is a function declaration", async () => {
+    const source = `
+function cookies() { return "session"; }
+export async function action(formData) {
+  "use server";
+  const cookies = formData.get("v");
+  return cookies;
+}
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // The function declaration `cookies` is a binding in module scope —
+    // the action's `const cookies` must be renamed to avoid the duplicate.
+    expect(pluginOutput).toContain("__local_cookies");
+    expect(pluginOutput).not.toMatch(/^\s*const cookies = formData/m);
+  });
+
+  // Bug 2 (round 3): collectAllDeclaredNames crossed into if/for/while blocks
+  // and added block-scoped let/const to namesForChildren.  A `const cookies`
+  // inside an if block is NOT visible to a sibling function declaration, so it
+  // must not trigger a rename of that function's own `const cookies`.
+  it("regression (block-scoped let/const false positive): does not rename when collision is only with a block-scoped sibling let/const", async () => {
+    const source = `
+function buildAction(config) {
+  async function action(fd) {
+    "use server";
+    const cookies = fd.get("v");
+    return cookies;
+  }
+  if (config) {
+    const cookies = "value";
+  }
+  return action;
+}
+export const act = buildAction("cfg");
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // The `const cookies` inside the if block is block-scoped and not visible
+    // to `action` — the plugin must leave `action`'s `const cookies` alone.
+    expect(pluginOutput).not.toContain("__local_cookies");
+    expect(pluginOutput).toContain("const cookies = fd.get");
+  });
+
   it("fix (param collision): detects collision when outer binding is a function parameter, not a var declaration", async () => {
     // collectOuterNames previously only walked VariableDeclaration nodes.
     // A parameter like `function buildAction(cookies)` is also a binding that
