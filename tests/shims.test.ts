@@ -3199,7 +3199,7 @@ describe("NextFetchEvent passed to middleware", () => {
     let receivedEvent: any;
     const mockRunner = {
       import: async () => ({
-        middleware: (req: any, event: any) => {
+        middleware: (_req: any, event: any) => {
           receivedEvent = event;
           event.waitUntil(Promise.resolve("done"));
           return new Response(null, {
@@ -4218,6 +4218,20 @@ describe("NextURL basePath and locale properties", () => {
     expect(req.nextUrl.basePath).toBe("/app");
     expect(req.nextUrl.locale).toBe("fr");
     expect(req.nextUrl.defaultLocale).toBe("en");
+    expect(req.nextUrl.pathname).toBe("/dashboard");
+  });
+
+  it("NextRequest passes config when input is a Request object", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const raw = new Request("http://localhost/app/fr/dashboard");
+    const req = new NextRequest(raw, {
+      nextConfig: {
+        basePath: "/app",
+        i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+      },
+    });
+    expect(req.nextUrl.basePath).toBe("/app");
+    expect(req.nextUrl.locale).toBe("fr");
     expect(req.nextUrl.pathname).toBe("/dashboard");
   });
 });

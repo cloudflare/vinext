@@ -68,6 +68,9 @@ export class NextRequest extends Request {
       };
     },
   ) {
+    // Strip nextConfig before passing to super() — it's vinext-internal,
+    // not a valid RequestInit property.
+    const { nextConfig: _nextConfig, ...requestInit } = init ?? {};
     // Handle the case where input is a Request object - we need to extract URL and init
     // to avoid Node.js undici issues with passing Request objects directly to super()
     if (input instanceof Request) {
@@ -78,10 +81,10 @@ export class NextRequest extends Request {
         body: req.body,
         // @ts-expect-error - duplex is not in RequestInit type but needed for streams
         duplex: req.body ? "half" : undefined,
-        ...init,
+        ...requestInit,
       });
     } else {
-      super(input, init);
+      super(input, requestInit);
     }
     const url =
       typeof input === "string"
@@ -89,9 +92,8 @@ export class NextRequest extends Request {
         : input instanceof URL
           ? input
           : new URL(input.url, "http://localhost");
-    const nextConfig = init?.nextConfig;
-    const urlConfig: NextURLConfig | undefined = nextConfig
-      ? { basePath: nextConfig.basePath, nextConfig: { i18n: nextConfig.i18n } }
+    const urlConfig: NextURLConfig | undefined = _nextConfig
+      ? { basePath: _nextConfig.basePath, nextConfig: { i18n: _nextConfig.i18n } }
       : undefined;
     this._nextUrl = new NextURL(url, undefined, urlConfig);
     this._cookies = new RequestCookies(this.headers);
@@ -252,7 +254,7 @@ export class NextURL {
     this._stripBasePath();
     const i18n = config?.nextConfig?.i18n;
     if (i18n) {
-      this._locales = i18n.locales;
+      this._locales = [...i18n.locales];
       this._defaultLocale = i18n.defaultLocale;
       this._analyzeLocale(i18n.locales);
     }
