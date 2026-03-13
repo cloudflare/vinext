@@ -761,6 +761,10 @@ async function expandDynamicAppRoute(
           for (const childParams of childResults) {
             paramSets.push({ ...parentParams, ...childParams });
           }
+        } else if (childResults != null) {
+          throw new Error(
+            `generateStaticParams() for ${route.pattern} must return an array, got ${typeof childResults}`,
+          );
         }
       }
     } else {
