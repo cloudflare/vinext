@@ -61,7 +61,12 @@ export class NextRequest extends Request {
 
   constructor(
     input: URL | RequestInfo,
-    init?: RequestInit & { nextConfig?: NextURLConfig["nextConfig"] & { basePath?: string } },
+    init?: RequestInit & {
+      nextConfig?: {
+        basePath?: string;
+        i18n?: { locales: string[]; defaultLocale: string };
+      };
+    },
   ) {
     // Handle the case where input is a Request object - we need to extract URL and init
     // to avoid Node.js undici issues with passing Request objects directly to super()
@@ -244,18 +249,21 @@ export class NextURL {
   constructor(input: string | URL, base?: string | URL, config?: NextURLConfig) {
     this._url = new URL(input.toString(), base);
     this._basePath = config?.basePath ?? "";
-    // Strip basePath from internal pathname so pathname getter returns
-    // the path without basePath, matching Next.js behavior.
-    if (this._basePath && this._url.pathname.startsWith(this._basePath + "/")) {
-      this._url.pathname = this._url.pathname.slice(this._basePath.length) || "/";
-    } else if (this._basePath && this._url.pathname === this._basePath) {
-      this._url.pathname = "/";
-    }
+    this._stripBasePath();
     const i18n = config?.nextConfig?.i18n;
     if (i18n) {
       this._locales = i18n.locales;
       this._defaultLocale = i18n.defaultLocale;
       this._analyzeLocale(i18n.locales);
+    }
+  }
+
+  /** Strip basePath prefix from the internal pathname. */
+  private _stripBasePath(): void {
+    if (this._basePath && this._url.pathname.startsWith(this._basePath + "/")) {
+      this._url.pathname = this._url.pathname.slice(this._basePath.length) || "/";
+    } else if (this._basePath && this._url.pathname === this._basePath) {
+      this._url.pathname = "/";
     }
   }
 
@@ -266,7 +274,7 @@ export class NextURL {
     const match = candidate ? locales.find((l) => l.toLowerCase() === candidate) : undefined;
     if (match) {
       this._locale = match;
-      this._url.pathname = "/" + segments.slice(2).join("/") || "/";
+      this._url.pathname = "/" + segments.slice(2).join("/");
     } else {
       this._locale = this._defaultLocale;
     }
@@ -298,6 +306,7 @@ export class NextURL {
   }
   set href(value: string) {
     this._url.href = value;
+    this._stripBasePath();
     if (this._locales) this._analyzeLocale(this._locales);
   }
 
@@ -377,7 +386,7 @@ export class NextURL {
     return this._basePath;
   }
   set basePath(value: string) {
-    this._basePath = value.startsWith("/") ? value : "/" + value;
+    this._basePath = value === "" ? "" : value.startsWith("/") ? value : "/" + value;
   }
 
   get locale(): string | undefined {

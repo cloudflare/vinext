@@ -4160,6 +4160,29 @@ describe("NextURL basePath and locale properties", () => {
     expect(url.pathname).toBe("/contact");
   });
 
+  it("href setter re-strips basePath before locale analysis", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/app/fr/about", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    url.href = "http://localhost/app/de/contact";
+    expect(url.locale).toBe("de");
+    expect(url.pathname).toBe("/contact");
+    expect(url.basePath).toBe("/app");
+  });
+
+  it("basePath setter to empty string clears basePath", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/dashboard", undefined, {
+      basePath: "/app",
+    });
+    expect(url.basePath).toBe("/app");
+    url.basePath = "";
+    expect(url.basePath).toBe("");
+    expect(url.href).toBe("http://localhost/dashboard");
+  });
+
   // --- clone() ---
 
   it("clone() preserves locale, basePath, and config through constructor", async () => {
