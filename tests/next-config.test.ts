@@ -301,6 +301,44 @@ describe("parseBodySizeLimit", () => {
   });
 });
 
+describe("resolveNextConfig serverExternalPackages", () => {
+  it("defaults to empty array when no config is provided", async () => {
+    const resolved = await resolveNextConfig(null);
+    expect(resolved.serverExternalPackages).toEqual([]);
+  });
+
+  it("defaults to empty array when not configured", async () => {
+    const resolved = await resolveNextConfig({ env: {} });
+    expect(resolved.serverExternalPackages).toEqual([]);
+  });
+
+  it("reads top-level serverExternalPackages", async () => {
+    const resolved = await resolveNextConfig({
+      serverExternalPackages: ["payload", "graphql"],
+    });
+    expect(resolved.serverExternalPackages).toEqual(["payload", "graphql"]);
+  });
+
+  it("falls back to experimental.serverComponentsExternalPackages (legacy name)", async () => {
+    const resolved = await resolveNextConfig({
+      experimental: {
+        serverComponentsExternalPackages: ["jose", "pg-cloudflare"],
+      },
+    });
+    expect(resolved.serverExternalPackages).toEqual(["jose", "pg-cloudflare"]);
+  });
+
+  it("prefers top-level serverExternalPackages over legacy experimental key", async () => {
+    const resolved = await resolveNextConfig({
+      serverExternalPackages: ["payload"],
+      experimental: {
+        serverComponentsExternalPackages: ["jose"],
+      },
+    });
+    expect(resolved.serverExternalPackages).toEqual(["payload"]);
+  });
+});
+
 describe("resolveNextConfig serverActionsBodySizeLimit", () => {
   it("defaults to 1MB when no config is provided", async () => {
     const resolved = await resolveNextConfig(null);
@@ -362,6 +400,7 @@ describe("detectNextIntlConfig", () => {
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      serverExternalPackages: [],
       buildId: "test-build-id",
       ...overrides,
     };

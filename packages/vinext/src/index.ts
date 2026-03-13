@@ -1284,11 +1284,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // like `rsc`. Native addon packages (e.g. better-sqlite3) listed
         // in ssr.external must be externalized from ALL server environments.
         // Vite's SSROptions.external is `string[] | true`; handle both forms.
+        //
+        // Also merge in `serverExternalPackages` from next.config (and the
+        // legacy `experimental.serverComponentsExternalPackages` alias). These
+        // are packages that Next.js intentionally skips bundling and loads
+        // natively — e.g. packages that import Node-specific entry points via
+        // conditional exports (like `file-type` which exports `fileTypeFromFile`
+        // only from its `node` condition, not from the universal `default` one).
+        // Without externalizing them, Vite's optimizer picks the wrong export
+        // condition and the build fails with MISSING_EXPORT errors.
+        const nextServerExternal: string[] = nextConfig?.serverExternalPackages ?? [];
         const userSsrExternal: string[] | true = Array.isArray(config.ssr?.external)
-          ? config.ssr.external
+          ? [...config.ssr.external, ...nextServerExternal]
           : config.ssr?.external === true
             ? true
-            : [];
+            : nextServerExternal;
 
         // If app/ directory exists, configure RSC environments
         if (hasAppDir) {
@@ -1371,7 +1381,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // imports to leak to Node's native ESM loader (ERR_UNSUPPORTED_ESM_URL_SCHEME).
               consumer: "client",
               optimizeDeps: {
-                exclude: ["vinext"],
+                // Exclude server-external packages from the client dep optimizer.
+                // These packages are server-only by design (listed in next.config's
+                // `serverExternalPackages`). If the client optimizer crawls into
+                // them through app/ entries, it will use browser export conditions
+                // and pick the wrong conditional export (e.g. `file-type` exports
+                // `fileTypeFromFile` only from its `node` condition via `index.js`,
+                // but the browser optimizer resolves to `core.js` which lacks it,
+                // causing MISSING_EXPORT build failures).
+                exclude: ["vinext", "@vercel/og", ...nextServerExternal],
                 // Crawl app/ source files up front so client-only deps imported
                 // by user components are discovered during startup instead of
                 // triggering a late re-optimisation + full page reload.
