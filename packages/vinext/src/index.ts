@@ -836,6 +836,222 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     commonjs(),
+    // Fix 'use server' closure variable collision with local declarations.
+    //
+    // @vitejs/plugin-rsc uses `periscopic` to find closure variables for
+    // 'use server' inline functions. Due to how periscopic handles block scopes,
+    // `const X = ...` declared inside a 'use server' function body is tracked in
+    // the BlockStatement scope (not the FunctionDeclaration scope). When periscopic
+    // searches for the owner of a reference `X`, it finds the block scope — which
+    // is neither the function scope nor the module scope — so it incorrectly
+    // classifies `X` as a closure variable from the outer scope.
+    //
+    // The result: plugin-rsc injects `const [X] = await decryptActionBoundArgs(...)`
+    // at the top of the hoisted function, colliding with the existing `const X = ...`
+    // declaration in the body. This causes a SyntaxError.
+    //
+    // Fix: before plugin-rsc sees the file, detect any 'use server' function whose
+    // local `const/let/var` declarations shadow an outer-scope variable, and rename
+    // the inner declarations (+ usages within that function) to `__local_X`. This
+    // eliminates the collision without changing semantics.
+    //
+    // This is a general fix that works for any library — not just @payloadcms/next.
+    {
+      name: "vinext:fix-use-server-closure-collision",
+      enforce: "pre" as const,
+      transform(code: string, id: string) {
+        // Quick bail-out: only files that contain 'use server' inline
+        if (!code.includes("use server")) return null;
+        // Only JS/TS files
+        if (!/\.(js|jsx|ts|tsx|mjs|cjs)$/.test(id.split("?")[0])) return null;
+
+        let ast: any;
+        try {
+          ast = parseAst(code);
+        } catch {
+          return null;
+        }
+
+        function collectPatternNames(pattern: any, names: Set<string>) {
+          if (!pattern) return;
+          if (pattern.type === "Identifier") {
+            names.add(pattern.name);
+          } else if (pattern.type === "ObjectPattern") {
+            for (const prop of pattern.properties) {
+              collectPatternNames(prop.value ?? prop.argument, names);
+            }
+          } else if (pattern.type === "ArrayPattern") {
+            for (const elem of pattern.elements) {
+              collectPatternNames(elem, names);
+            }
+          } else if (pattern.type === "RestElement" || pattern.type === "AssignmentPattern") {
+            collectPatternNames(pattern.left ?? pattern.argument, names);
+          }
+        }
+
+        // Check if a block body starts with 'use server' directive
+        function hasUseServerDirective(body: any[]): boolean {
+          return body.some(
+            (stmt: any) =>
+              stmt.type === "ExpressionStatement" &&
+              stmt.expression?.type === "Literal" &&
+              stmt.expression.value === "use server",
+          );
+        }
+
+        // Collect outer scope variable names by walking up from a function node.
+        // We do this by collecting all variable names declared in all ancestor
+        // function/program bodies, stopping when we hit the use-server function itself.
+        function collectOuterNames(targetNode: any, ast: any): Set<string> {
+          const names = new Set<string>();
+          function walkProgram(n: any) {
+            if (!n || typeof n !== "object") return;
+            if (n === targetNode) return; // don't recurse into the target
+            if (n.type === "VariableDeclaration") {
+              for (const decl of n.declarations) {
+                collectPatternNames(decl.id, names);
+              }
+            }
+            for (const key of Object.keys(n)) {
+              if (key === "type") continue;
+              const child = n[key];
+              if (Array.isArray(child)) {
+                for (const c of child) walkProgram(c);
+              } else if (child && typeof child === "object" && child.type) {
+                walkProgram(child);
+              }
+            }
+          }
+          walkProgram(ast);
+          return names;
+        }
+
+        // Find all 'use server' inline functions and check for collisions
+        const s = new MagicString(code);
+        let changed = false;
+
+        function visitNode(node: any) {
+          if (!node || typeof node !== "object") return;
+          const isServerFn =
+            (node.type === "FunctionDeclaration" ||
+              node.type === "FunctionExpression" ||
+              node.type === "ArrowFunctionExpression") &&
+            node.body?.type === "BlockStatement" &&
+            hasUseServerDirective(node.body.body);
+
+          if (isServerFn) {
+            // Collect variables declared directly in the function's block body
+            // (these go into the BlockStatement scope in periscopic, not the function scope)
+            const localDecls = new Set<string>();
+            for (const stmt of node.body.body) {
+              if (stmt.type === "VariableDeclaration") {
+                for (const decl of stmt.declarations) {
+                  collectPatternNames(decl.id, localDecls);
+                }
+              }
+            }
+
+            if (localDecls.size === 0) {
+              // Visit children and return early
+              for (const key of Object.keys(node)) {
+                if (key === "type") continue;
+                const child = node[key];
+                if (Array.isArray(child)) {
+                  for (const c of child) visitNode(c);
+                } else if (child && typeof child === "object" && child.type) visitNode(child);
+              }
+              return;
+            }
+
+            // Collect outer-scope names
+            const outerNames = collectOuterNames(node, ast);
+
+            // Find collisions: names declared locally that also exist in outer scope
+            const collisions = new Set<string>();
+            for (const name of localDecls) {
+              if (outerNames.has(name)) {
+                collisions.add(name);
+              }
+            }
+
+            if (collisions.size > 0) {
+              // Rename each colliding local declaration within this function body only.
+              // We rename both the declaration sites and all references within the body.
+              // We do NOT rename references in nested functions (they capture the local).
+              for (const name of collisions) {
+                const renamed = `__local_${name}`;
+                // Rename all Identifier nodes named `name` within node.body
+                renamingWalk(node.body, name, renamed);
+              }
+              changed = true;
+            }
+          }
+
+          // Recurse into children (if not a server function we already handled above)
+          if (!isServerFn) {
+            for (const key of Object.keys(node)) {
+              if (key === "type") continue;
+              const child = node[key];
+              if (Array.isArray(child)) {
+                for (const c of child) visitNode(c);
+              } else if (child && typeof child === "object" && child.type) visitNode(child);
+            }
+          }
+        }
+
+        // Walk an AST subtree renaming all Identifier nodes with a given name.
+        // Skips into nested functions (they keep their own binding).
+        // The `declared` set tracks whether the name was declared in a given
+        // nested scope — if a nested function re-declares it, don't rename there.
+        function renamingWalk(node: any, from: string, to: string) {
+          if (!node || typeof node !== "object") return;
+
+          if (node.type === "Identifier" && node.name === from) {
+            s.update(node.start, node.end, to);
+            return;
+          }
+
+          // Don't recurse into nested functions that re-declare the same name
+          if (
+            node.type === "FunctionDeclaration" ||
+            node.type === "FunctionExpression" ||
+            node.type === "ArrowFunctionExpression"
+          ) {
+            // Check if this nested function re-declares `from` in its params or body
+            const nestedDecls = new Set<string>();
+            if (node.params) {
+              for (const p of node.params) collectPatternNames(p, nestedDecls);
+            }
+            if (node.body?.type === "BlockStatement") {
+              for (const stmt of node.body.body) {
+                if (stmt.type === "VariableDeclaration") {
+                  for (const d of stmt.declarations) collectPatternNames(d.id, nestedDecls);
+                }
+              }
+            }
+            if (nestedDecls.has(from)) {
+              // This nested function re-declares `from`, don't rename inside it
+              return;
+            }
+          }
+
+          for (const key of Object.keys(node)) {
+            if (key === "type" || key === "start" || key === "end") continue;
+            const child = node[key];
+            if (Array.isArray(child)) {
+              for (const c of child) renamingWalk(c, from, to);
+            } else if (child && typeof child === "object" && child.type) {
+              renamingWalk(child, from, to);
+            }
+          }
+        }
+
+        visitNode(ast);
+
+        if (!changed) return null;
+        return { code: s.toString(), map: s.generateMap({ hires: "boundary" }) };
+      },
+    },
     {
       name: "vinext:config",
       enforce: "pre",
