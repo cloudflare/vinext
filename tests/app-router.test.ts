@@ -481,11 +481,10 @@ describe("App Router integration", () => {
     expect(data).toEqual({ id: "99", name: "Widget" });
   });
 
-  it("errors when a route handler exports a default function", async () => {
+  it("ignores default export route handlers and returns 405", async () => {
     const res = await fetch(`${baseUrl}/api/invalid-default`);
-    expect(res.status).toBe(500);
-    const body = await res.text();
-    expect(body).toContain("Route handlers cannot export a default function");
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBeNull();
   });
 
   it("cookies().set() in route handler produces Set-Cookie headers", async () => {

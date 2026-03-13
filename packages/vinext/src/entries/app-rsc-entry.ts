@@ -60,11 +60,9 @@ function collectRouteHandlerMethods(handler) {
   return methods;
 }
 
-function buildRouteHandlerAllowHeader(exportedMethods, includeImplicitOptions) {
+function buildRouteHandlerAllowHeader(exportedMethods) {
   const allow = new Set(exportedMethods);
-  if (includeImplicitOptions) {
-    allow.add("OPTIONS");
-  }
+  allow.add("OPTIONS");
   return Array.from(allow).sort().join(", ");
 }
 `;
@@ -1961,15 +1959,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const handler = route.routeHandler;
     const method = request.method.toUpperCase();
     const revalidateSeconds = typeof handler.revalidate === "number" && handler.revalidate > 0 ? handler.revalidate : null;
-    if (typeof handler["default"] === "function") {
-      setHeadersContext(null);
-      setNavigationContext(null);
-      throw new Error("Route handlers cannot export a default function. Export a named HTTP method (GET, POST, etc.) instead.");
+    if (typeof handler["default"] === "function" && process.env.NODE_ENV === "development") {
+      console.error(
+        "[vinext] Detected default export in route handler " + route.pattern + ". Export a named export for each HTTP method instead.",
+      );
     }
 
     // Collect exported HTTP methods for OPTIONS auto-response and Allow header
     const exportedMethods = collectRouteHandlerMethods(handler);
-    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods, true);
+    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods);
 
     // Route handlers need the same middleware header/status merge behavior as
     // page responses. This keeps middleware response headers visible on API

@@ -95,13 +95,12 @@ test.describe("App Router API Route Handlers", () => {
       expect(response.headers()["location"]).toContain("/about");
     });
 
-    test("GET /api/invalid-default returns 500 (default export is unsupported)", async ({
+    test("GET /api/invalid-default returns 405 (default export is ignored)", async ({
       request,
     }) => {
       const response = await request.get(`${BASE}/api/invalid-default`);
-      expect(response.status()).toBe(500);
-      const body = await response.text();
-      expect(body).toContain("Route handlers cannot export a default function");
+      expect(response.status()).toBe(405);
+      expect(response.headers()["allow"]).toBeUndefined();
     });
   });
 
