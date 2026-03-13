@@ -912,6 +912,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 collectPatternNames(decl.id, names);
               }
             }
+            // Function parameters also create bindings that periscopic sees.
+            if (
+              n.type === "FunctionDeclaration" ||
+              n.type === "FunctionExpression" ||
+              n.type === "ArrowFunctionExpression"
+            ) {
+              for (const p of n.params ?? []) collectPatternNames(p, names);
+            }
+            // catch (e) bindings
+            if (n.type === "CatchClause" && n.param) {
+              collectPatternNames(n.param, names);
+            }
             for (const key of Object.keys(n)) {
               if (key === "type") continue;
               const child = n[key];
@@ -985,10 +997,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               }
               changed = true;
             }
-          }
 
-          // Recurse into children (if not a server function we already handled above)
-          if (!isServerFn) {
+            // Always recurse into children of a server function after collision
+            // handling — nested 'use server' functions must not be missed.
             for (const key of Object.keys(node)) {
               if (key === "type") continue;
               const child = node[key];
@@ -996,6 +1007,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 for (const c of child) visitNode(c);
               } else if (child && typeof child === "object" && child.type) visitNode(child);
             }
+            return;
+          }
+
+          // Recurse into children of non-server-function nodes
+          for (const key of Object.keys(node)) {
+            if (key === "type") continue;
+            const child = node[key];
+            if (Array.isArray(child)) {
+              for (const c of child) visitNode(c);
+            } else if (child && typeof child === "object" && child.type) visitNode(child);
           }
         }
 
@@ -1003,10 +1024,44 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Skips into nested functions (they keep their own binding).
         // The `declared` set tracks whether the name was declared in a given
         // nested scope — if a nested function re-declares it, don't rename there.
-        function renamingWalk(node: any, from: string, to: string) {
+        //
+        // `parent` is passed so we can skip identifiers that are not variable
+        // references (non-computed member expression properties, non-computed
+        // object property keys).  Shorthand properties ({ cookies }) are expanded
+        // to ({ cookies: __local_cookies }) so the object shape is preserved.
+        function renamingWalk(node: any, from: string, to: string, parent?: any) {
           if (!node || typeof node !== "object") return;
 
           if (node.type === "Identifier" && node.name === from) {
+            // Skip non-computed MemberExpression properties: obj.cookies
+            if (
+              parent?.type === "MemberExpression" &&
+              parent.property === node &&
+              !parent.computed
+            ) {
+              return;
+            }
+
+            // Handle object Property keys
+            if (parent?.type === "Property" && parent.key === node && !parent.computed) {
+              if (parent.shorthand) {
+                // { cookies } → { cookies: __local_cookies }
+                // key and value are the same AST node in a shorthand property,
+                // so we rewrite at the key visit and must not rewrite again at
+                // the value visit (which would overwrite with just `__local_cookies`).
+                s.update(node.start, node.end, `${from}: ${to}`);
+              }
+              // Non-shorthand key (e.g. { cookies: expr }) — leave the key alone,
+              // the value will be renamed when we recurse into parent.value.
+              return;
+            }
+
+            // Skip the value of a shorthand property — it is the same AST node
+            // as the key and was already handled (and rewritten) above.
+            if (parent?.type === "Property" && parent.shorthand && parent.value === node) {
+              return;
+            }
+
             s.update(node.start, node.end, to);
             return;
           }
@@ -1039,9 +1094,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             if (key === "type" || key === "start" || key === "end") continue;
             const child = node[key];
             if (Array.isArray(child)) {
-              for (const c of child) renamingWalk(c, from, to);
+              for (const c of child) renamingWalk(c, from, to, node);
             } else if (child && typeof child === "object" && child.type) {
-              renamingWalk(child, from, to);
+              renamingWalk(child, from, to, node);
             }
           }
         }

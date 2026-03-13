@@ -195,4 +195,141 @@ export const action = buildAction("cfg");
     // No duplicate `const result`
     expect(countMatches(output, /\bconst result\b/g)).toBe(1);
   });
+
+  // -------------------------------------------------------------------------
+  // Bug fixes verified by bonk review
+  // -------------------------------------------------------------------------
+
+  it("fix (param collision): detects collision when outer binding is a function parameter, not a var declaration", async () => {
+    // collectOuterNames previously only walked VariableDeclaration nodes.
+    // A parameter like `function buildAction(cookies)` is also a binding that
+    // periscopic tracks, so it must also be collected as an outer name.
+    const source = `
+function buildAction(cookies) {
+  async function submitAction(formData) {
+    "use server";
+    const cookies = formData.get("value");
+    return cookies;
+  }
+  return submitAction;
+}
+export const action = buildAction("session");
+`.trimStart();
+
+    const output = await runPipeline(source);
+
+    // The inner `const cookies` must be renamed — no duplicate declaration
+    const duplicateCount = countMatches(output, /\bconst cookies\b/g);
+    expect(
+      duplicateCount,
+      `expected at most 1 'const cookies' after fix, got ${duplicateCount}:\n${output}`,
+    ).toBeLessThanOrEqual(1);
+    expect(output).toContain("__local_cookies");
+  });
+
+  it("fix (member expression): does not rename non-computed member expression properties", async () => {
+    // renamingWalk previously renamed every matching Identifier unconditionally.
+    // `formData.cookies` has an Identifier node for `cookies` as the property
+    // of a MemberExpression — that should NOT be renamed to `formData.__local_cookies`.
+    const source = `
+function buildAction(config) {
+  const cookies = "session";
+  async function submitAction(formData) {
+    "use server";
+    const cookies = formData.cookies + ":" + config;
+    return cookies;
+  }
+  return submitAction;
+}
+export const action = buildAction("cfg");
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // The member expression property must be untouched
+    expect(pluginOutput).toContain("formData.cookies");
+    expect(pluginOutput).not.toContain("formData.__local_cookies");
+
+    // The local declaration and its usages are renamed
+    expect(pluginOutput).toContain("__local_cookies");
+  });
+
+  it("fix (shorthand property): expands shorthand object properties that use the colliding name", async () => {
+    // { cookies } is shorthand for { cookies: cookies }.  renamingWalk must
+    // expand it to { cookies: __local_cookies } — renaming only the value,
+    // not the key — so the object shape is preserved.
+    const source = `
+function buildAction(config) {
+  const cookies = "session";
+  async function submitAction(formData) {
+    "use server";
+    const cookies = formData.get("value");
+    return { cookies };
+  }
+  return submitAction;
+}
+export const action = buildAction("cfg");
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // Shorthand must be expanded: key stays `cookies`, value becomes `__local_cookies`
+    expect(pluginOutput).toContain("cookies: __local_cookies");
+    // Must NOT have renamed the key itself
+    expect(pluginOutput).not.toContain("__local_cookies: __local_cookies");
+    expect(pluginOutput).not.toContain("{ __local_cookies }");
+  });
+
+  it("fix (nested traversal): visits nested 'use server' functions inside a server function with no collisions", async () => {
+    // When isServerFn=true and localDecls.size > 0 but collisions.size === 0,
+    // the old code fell through to `if (!isServerFn)` which was false, so
+    // children were never visited. A nested 'use server' function would be missed.
+    const source = `
+function outer(config) {
+  const unrelated = "x";
+  async function outerAction(formData) {
+    "use server";
+    // no collision with outer scope here — but contains a nested action
+    const value = formData.get("v");
+    async function innerAction(fd) {
+      "use server";
+      const config = fd.get("cfg");
+      return config;
+    }
+    return { value, innerAction };
+  }
+  return outerAction;
+}
+export const action = outer("cfg");
+`.trimStart();
+
+    // The inner action has `const config` which shadows the outer `config` param.
+    // The fix must still reach and fix the innerAction even though outerAction
+    // itself has local decls (unrelated) but no collisions.
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // innerAction's `const config` must be renamed
+    expect(pluginOutput).toContain("__local_config");
+  });
 });
