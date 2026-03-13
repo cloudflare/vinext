@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { createBuilder, createServer, type ViteDevServer } from "vite";
-import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import zlib from "node:zlib";
-import vinext from "../packages/vinext/src/index.js";
-import { APP_FIXTURE_DIR, RSC_ENTRIES, startFixtureServer, fetchHtml } from "./helpers.js";
+import { createBuilder, createServer, type ViteDevServer } from "vite";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import vinext from "../packages/vinext/src/index.js";
+import { APP_FIXTURE_DIR, fetchHtml, RSC_ENTRIES, startFixtureServer } from "./helpers.js";
 
 describe("App Router integration", () => {
   let server: ViteDevServer;
@@ -406,11 +406,9 @@ describe("App Router integration", () => {
   it("returns Method Not Allowed for unsupported HTTP methods on route handlers", async () => {
     const res = await fetch(`${baseUrl}/api/hello`, { method: "DELETE" });
     expect(res.status).toBe(405);
-    // Should include Allow header listing supported methods
+    // Next.js does not emit an Allow header on 405 responses
     const allow = res.headers.get("allow");
-    expect(allow).toBeTruthy();
-    expect(allow).toContain("GET");
-    expect(allow).toContain("POST");
+    expect(allow).toBeNull();
     // Body should be empty for 405
     const body = await res.text();
     expect(body).toBe("");
@@ -430,10 +428,7 @@ describe("App Router integration", () => {
     const res = await fetch(`${baseUrl}/api/get-only`, { method: "OPTIONS" });
     expect(res.status).toBe(204);
     const allow = res.headers.get("allow");
-    expect(allow).toBeTruthy();
-    expect(allow).toContain("GET");
-    expect(allow).toContain("HEAD");
-    expect(allow).toContain("OPTIONS");
+    expect(allow).toBe("GET, HEAD, OPTIONS");
     // Body should be empty
     const body = await res.text();
     expect(body).toBe("");
@@ -443,11 +438,7 @@ describe("App Router integration", () => {
     const res = await fetch(`${baseUrl}/api/hello`, { method: "OPTIONS" });
     expect(res.status).toBe(204);
     const allow = res.headers.get("allow");
-    expect(allow).toBeTruthy();
-    expect(allow).toContain("GET");
-    expect(allow).toContain("POST");
-    expect(allow).toContain("HEAD");
-    expect(allow).toContain("OPTIONS");
+    expect(allow).toBe("GET, HEAD, OPTIONS, POST");
   });
 
   it("returns 500 with empty body when route handler throws", async () => {
@@ -488,6 +479,13 @@ describe("App Router integration", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toEqual({ id: "99", name: "Widget" });
+  });
+
+  it("errors when a route handler exports a default function", async () => {
+    const res = await fetch(`${baseUrl}/api/invalid-default`);
+    expect(res.status).toBe(500);
+    const body = await res.text();
+    expect(body).toContain("Route handlers cannot export a default function");
   });
 
   it("cookies().set() in route handler produces Set-Cookie headers", async () => {

@@ -49,6 +49,7 @@ const ROUTE_HANDLER_HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PAT
 // Runtime helpers injected into the generated RSC entry so OPTIONS/Allow handling
 // logic stays alongside the route handler pipeline.
 const routeHandlerHelperCode = String.raw`
+// Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ${JSON.stringify(ROUTE_HANDLER_HTTP_METHODS)};
 
 function collectRouteHandlerMethods(handler) {
@@ -59,12 +60,12 @@ function collectRouteHandlerMethods(handler) {
   return methods;
 }
 
-function buildRouteHandlerAllowHeader(exportedMethods, hasDefaultHandler, includeImplicitOptions) {
-  const base = hasDefaultHandler ? [...ROUTE_HANDLER_HTTP_METHODS] : [...exportedMethods];
-  if (includeImplicitOptions && !base.includes("OPTIONS")) {
-    base.push("OPTIONS");
+function buildRouteHandlerAllowHeader(exportedMethods, includeImplicitOptions) {
+  const allow = new Set(exportedMethods);
+  if (includeImplicitOptions) {
+    allow.add("OPTIONS");
   }
-  return base;
+  return Array.from(allow).sort().join(", ");
 }
 `;
 
@@ -1960,11 +1961,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const handler = route.routeHandler;
     const method = request.method.toUpperCase();
     const revalidateSeconds = typeof handler.revalidate === "number" && handler.revalidate > 0 ? handler.revalidate : null;
+    if (typeof handler["default"] === "function") {
+      setHeadersContext(null);
+      setNavigationContext(null);
+      throw new Error("Route handlers cannot export a default function. Export a named HTTP method (GET, POST, etc.) instead.");
+    }
 
     // Collect exported HTTP methods for OPTIONS auto-response and Allow header
     const exportedMethods = collectRouteHandlerMethods(handler);
-    const hasDefault = typeof handler["default"] === "function";
-    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, true);
+    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods, true);
 
     // Route handlers need the same middleware header/status merge behavior as
     // page responses. This keeps middleware response headers visible on API
@@ -1995,12 +2000,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       setNavigationContext(null);
       return attachRouteHandlerMiddlewareContext(new Response(null, {
         status: 204,
-        headers: { "Allow": allowHeaderForOptions.join(", ") },
+        headers: { "Allow": allowHeaderForOptions },
       }));
     }
 
     // HEAD auto-implementation: run GET handler and strip body
-    let handlerFn = handler[method] || handler["default"];
+    let handlerFn = handler[method];
     let isAutoHead = false;
     if (method === "HEAD" && typeof handler["HEAD"] !== "function" && typeof handler["GET"] === "function") {
       handlerFn = handler["GET"];
@@ -2100,10 +2105,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
     setHeadersContext(null);
     setNavigationContext(null);
-    const methodNotAllowedAllowHeader = buildRouteHandlerAllowHeader(exportedMethods, hasDefault, false);
     return attachRouteHandlerMiddlewareContext(new Response(null, {
       status: 405,
-      headers: { Allow: methodNotAllowedAllowHeader.join(", ") },
     }));
   }
 
