@@ -3014,6 +3014,15 @@ describe("App Router middleware with NextRequest", () => {
     expect(html).toContain("Welcome to App Router");
   });
 
+  it("middleware rewrite can inject query params for the rewritten target", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/middleware-rewrite-query");
+    expect(res.status).toBe(200);
+    expect(html).toContain("Search Query Test");
+    expect(html).toMatch(
+      /data-testid="props-params">Search Params via Props:\s*(?:<!-- -->)?from-rewrite</,
+    );
+  });
+
   it("middleware can return custom response", async () => {
     const res = await fetch(`${baseUrl}/middleware-blocked`);
     expect(res.status).toBe(403);

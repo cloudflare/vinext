@@ -337,6 +337,17 @@ function resolveTitleState(
 export function mergeMetadata(metadataList: Metadata[]): Metadata {
   if (metadataList.length === 0) return {};
 
+  const merged = mergeNonTitleMetadata(metadataList);
+  const resolvedTitle = resolveTitleState(metadataList);
+
+  if (resolvedTitle?.absolute !== undefined) {
+    merged.title = resolvedTitle.absolute;
+  }
+
+  return merged;
+}
+
+function mergeNonTitleMetadata(metadataList: Metadata[]): Metadata {
   const merged: Metadata = {};
 
   for (let i = 0; i < metadataList.length; i++) {
@@ -349,21 +360,18 @@ export function mergeMetadata(metadataList: Metadata[]): Metadata {
     }
   }
 
-  const resolvedTitle = resolveTitleState(metadataList);
-  if (resolvedTitle?.absolute !== undefined) {
-    merged.title = resolvedTitle.absolute;
-  }
-
   return merged;
 }
 
 export function mergeMetadataForParent(metadataList: Metadata[]): Metadata {
-  const merged = mergeMetadata(metadataList);
+  if (metadataList.length === 0) return {};
+
+  const merged = mergeNonTitleMetadata(metadataList);
   const resolvedTitle = resolveTitleState(metadataList, { terminal: false });
 
   if (resolvedTitle) {
     merged.title = {
-      absolute: resolvedTitle.absolute || "",
+      absolute: resolvedTitle.absolute ?? "",
       template: resolvedTitle.template,
     };
   }

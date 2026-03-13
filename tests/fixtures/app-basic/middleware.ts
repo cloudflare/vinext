@@ -50,7 +50,7 @@ export function middleware(request: NextRequest) {
   }
 
   // Rewrite with query params — the rewrite URL's query string should be
-  // visible to the target page via searchParams props and useSearchParams().
+  // visible to the target page via searchParams props.
   if (pathname === "/middleware-rewrite-query") {
     return NextResponse.rewrite(
       new URL("/search-query?searchParams=from-rewrite&extra=injected", request.url),
@@ -161,7 +161,6 @@ export const config = {
     "/about",
     "/middleware-redirect",
     "/middleware-rewrite",
-    "/middleware-rewrite-query",
     "/nextjs-compat/hooks-middleware-rewrite",
     "/middleware-rewrite-query",
     "/middleware-rewrite-status",
