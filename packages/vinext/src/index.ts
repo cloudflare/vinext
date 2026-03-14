@@ -1342,8 +1342,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           // Capture top-level optimizeDeps populated by earlier plugins
           // (e.g. @lingui/vite-plugin) so we merge rather than overwrite.
-          const incomingExclude: string[] = (config.optimizeDeps?.exclude as string[] | undefined) ?? [];
-          const incomingInclude: string[] = (config.optimizeDeps?.include as string[] | undefined) ?? [];
+          const incomingExclude: string[] =
+            (config.optimizeDeps?.exclude as string[] | undefined) ?? [];
+          const incomingInclude: string[] =
+            (config.optimizeDeps?.include as string[] | undefined) ?? [];
 
           viteConfig.environments = {
             rsc: {
@@ -1423,14 +1425,25 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // `fileTypeFromFile` only from its `node` condition via `index.js`,
                 // but the browser optimizer resolves to `core.js` which lacks it,
                 // causing MISSING_EXPORT build failures).
-                exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og", ...nextServerExternal])],
+                exclude: [
+                  ...new Set([...incomingExclude, "vinext", "@vercel/og", ...nextServerExternal]),
+                ],
                 // Crawl app/ source files up front so client-only deps imported
                 // by user components are discovered during startup instead of
                 // triggering a late re-optimisation + full page reload.
                 entries: appEntries,
                 // React packages aren't crawled from app/ source files,
                 // so must be pre-included to avoid late discovery (#25).
-                include: [...new Set([...incomingInclude, "react", "react-dom", "react-dom/client", "react/jsx-runtime", "react/jsx-dev-runtime"])],
+                include: [
+                  ...new Set([
+                    ...incomingInclude,
+                    "react",
+                    "react-dom",
+                    "react-dom/client",
+                    "react/jsx-runtime",
+                    "react/jsx-dev-runtime",
+                  ]),
+                ],
               },
               build: {
                 // When targeting Cloudflare Workers, enable manifest generation

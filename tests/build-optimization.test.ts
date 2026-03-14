@@ -122,6 +122,70 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
+  it("merges top-level optimizeDeps.exclude from other plugins into per-environment configs", async () => {
+    // Simulates plugins like @lingui/vite-plugin that add entries to
+    // config.optimizeDeps.exclude before vinext's config hook runs.
+    // See: https://github.com/cloudflare/vinext/issues/538
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-ts-test-optdeps-merge-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const mockConfig = {
+        root: tmpDir,
+        build: {},
+        plugins: [],
+        optimizeDeps: {
+          exclude: ["@lingui/macro", "@lingui/core/macro"],
+          include: ["some-lib"],
+        },
+      };
+      const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
+
+      // All environments should contain the incoming excludes
+      for (const envName of ["rsc", "ssr", "client"]) {
+        const envExclude = result.environments[envName].optimizeDeps?.exclude;
+        expect(envExclude, `${envName} should contain @lingui/macro`).toContain("@lingui/macro");
+        expect(envExclude, `${envName} should contain @lingui/core/macro`).toContain(
+          "@lingui/core/macro",
+        );
+        // vinext's own excludes should still be present
+        expect(envExclude, `${envName} should contain vinext`).toContain("vinext");
+      }
+
+      // Client environment should merge incoming includes
+      const clientInclude = result.environments.client.optimizeDeps?.include;
+      expect(clientInclude).toContain("some-lib");
+      expect(clientInclude).toContain("react");
+      expect(clientInclude).toContain("react-dom");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
   it("excludes vinext in all environments for App Router builds", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
