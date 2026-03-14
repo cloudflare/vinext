@@ -4,9 +4,10 @@
  * In the Pages Router, <Head> manages document <head> elements.
  * - On the server: collects elements into a module-level array that the
  *   dev-server reads after render and injects into the HTML <head>.
- * - On the client: uses useEffect + DOM manipulation.
+ * - On the client: reduces all mounted <Head> instances into one deduped
+ *   document.head projection and applies it with DOM manipulation.
  */
-import React, { useEffect, Children, isValidElement } from "react";
+import React, { useEffect, useRef, Children, isValidElement } from "react";
 
 interface HeadProps {
   children?: React.ReactNode;
@@ -16,11 +17,12 @@ interface HeadProps {
 // State uses a registration pattern so this module can be bundled for the
 // browser. The ALS-backed implementation lives in head-state.ts (server-only).
 
-let _ssrHeadElements: string[] = [];
+let _ssrHeadChildren: React.ReactNode[] = [];
+const _clientHeadChildren = new Map<symbol, React.ReactNode>();
 
-let _getSSRHeadElements = (): string[] => _ssrHeadElements;
+let _getSSRHeadChildren = (): React.ReactNode[] => _ssrHeadChildren;
 let _resetSSRHeadImpl = (): void => {
-  _ssrHeadElements = [];
+  _ssrHeadChildren = [];
 };
 
 /**
@@ -28,10 +30,10 @@ let _resetSSRHeadImpl = (): void => {
  * @internal
  */
 export function _registerHeadStateAccessors(accessors: {
-  getSSRHeadElements: () => string[];
+  getSSRHeadChildren: () => React.ReactNode[];
   resetSSRHead: () => void;
 }): void {
-  _getSSRHeadElements = accessors.getSSRHeadElements;
+  _getSSRHeadChildren = accessors.getSSRHeadChildren;
   _resetSSRHeadImpl = accessors.resetSSRHead;
 }
 
@@ -42,7 +44,10 @@ export function resetSSRHead(): void {
 
 /** Get collected head HTML. Call after render. */
 export function getSSRHeadHTML(): string {
-  return _getSSRHeadElements().join("\n  ");
+  return reduceHeadChildren(_getSSRHeadChildren())
+    .map(reactElementToHTML)
+    .filter(Boolean)
+    .join("\n  ");
 }
 
 /**
@@ -50,6 +55,130 @@ export function getSSRHeadHTML(): string {
  * This prevents injection of dangerous elements like <iframe>, <object>, etc.
  */
 const ALLOWED_HEAD_TAGS = new Set(["title", "meta", "link", "style", "script", "base", "noscript"]);
+const META_TYPES = ["name", "httpEquiv", "charSet", "itemProp"] as const;
+
+function warnDisallowedHeadTag(tag: string): void {
+  if (process.env.NODE_ENV !== "production") {
+    console.warn(
+      `[vinext] <Head> ignoring disallowed tag <${tag}>. ` +
+        `Only ${[...ALLOWED_HEAD_TAGS].join(", ")} are allowed.`,
+    );
+  }
+}
+
+function collectHeadElements(
+  list: React.ReactElement[],
+  child: React.ReactNode,
+): React.ReactElement[] {
+  if (
+    child == null ||
+    typeof child === "boolean" ||
+    typeof child === "string" ||
+    typeof child === "number"
+  ) {
+    return list;
+  }
+  if (!isValidElement(child)) {
+    return list;
+  }
+  if (child.type === React.Fragment) {
+    return Children.toArray((child.props as { children?: React.ReactNode }).children).reduce(
+      collectHeadElements,
+      list,
+    );
+  }
+  if (typeof child.type !== "string") {
+    return list;
+  }
+  if (!ALLOWED_HEAD_TAGS.has(child.type)) {
+    warnDisallowedHeadTag(child.type);
+    return list;
+  }
+  return list.concat(child);
+}
+
+function normalizeHeadKey(key: React.Key | null): string | null {
+  if (key == null || typeof key === "number") return null;
+  const normalizedKey = String(key);
+  const separatorIndex = normalizedKey.indexOf("$");
+  return separatorIndex > 0 ? normalizedKey.slice(separatorIndex + 1) : null;
+}
+
+function createUniqueHeadFilter(): (child: React.ReactElement) => boolean {
+  const keys = new Set<string>();
+  const tags = new Set<string>();
+  const metaTypes = new Set<string>();
+  const metaCategories = new Map<string, Set<string>>();
+
+  return (child) => {
+    let isUnique = true;
+    const normalizedKey = normalizeHeadKey(child.key);
+    const hasKey = normalizedKey !== null;
+    if (normalizedKey) {
+      if (keys.has(normalizedKey)) {
+        isUnique = false;
+      } else {
+        keys.add(normalizedKey);
+      }
+    }
+
+    switch (child.type) {
+      case "title":
+      case "base":
+        if (tags.has(child.type)) {
+          isUnique = false;
+        } else {
+          tags.add(child.type);
+        }
+        break;
+      case "meta": {
+        const props = child.props as Record<string, unknown>;
+        for (const metaType of META_TYPES) {
+          if (!Object.prototype.hasOwnProperty.call(props, metaType)) continue;
+          if (metaType === "charSet") {
+            if (metaTypes.has(metaType)) {
+              isUnique = false;
+            } else {
+              metaTypes.add(metaType);
+            }
+            continue;
+          }
+
+          const category = props[metaType];
+          if (typeof category !== "string") continue;
+
+          let categories = metaCategories.get(metaType);
+          if (!categories) {
+            categories = new Set<string>();
+            metaCategories.set(metaType, categories);
+          }
+
+          if ((metaType !== "name" || !hasKey) && categories.has(category)) {
+            isUnique = false;
+          } else {
+            categories.add(category);
+          }
+        }
+        break;
+      }
+      default:
+        break;
+    }
+
+    return isUnique;
+  };
+}
+
+export function reduceHeadChildren(headChildren: React.ReactNode[]): React.ReactElement[] {
+  return headChildren
+    .reduce<React.ReactNode[]>((flattenedChildren, child) => {
+      return flattenedChildren.concat(Children.toArray(child));
+    }, [])
+    .reduce(collectHeadElements, [])
+    .reverse()
+    .filter(createUniqueHeadFilter())
+    .reverse();
+}
 
 /**
  * Convert a React element to an HTML string for SSR head injection.
@@ -59,12 +188,7 @@ function reactElementToHTML(child: React.ReactElement): string {
   const tag = child.type as string;
 
   if (!ALLOWED_HEAD_TAGS.has(tag)) {
-    if (process.env.NODE_ENV !== "production") {
-      console.warn(
-        `[vinext] <Head> ignoring disallowed tag <${tag}>. ` +
-          `Only ${[...ALLOWED_HEAD_TAGS].join(", ")} are allowed.`,
-      );
-    }
+    warnDisallowedHeadTag(tag);
     return "";
   }
 
@@ -139,55 +263,58 @@ export function escapeInlineContent(content: string, tag: string): string {
   return content.replace(pattern, "<\\/$1");
 }
 
+function syncClientHead(): void {
+  document.querySelectorAll("[data-vinext-head]").forEach((el) => el.remove());
+
+  for (const child of reduceHeadChildren([..._clientHeadChildren.values()])) {
+    if (typeof child.type !== "string") continue;
+
+    const domEl = document.createElement(child.type);
+    const props = child.props as Record<string, unknown>;
+
+    for (const [key, value] of Object.entries(props)) {
+      if (key === "children" && typeof value === "string") {
+        domEl.textContent = value;
+      } else if (key === "dangerouslySetInnerHTML") {
+        // skip for safety
+      } else if (key === "className") {
+        domEl.setAttribute("class", String(value));
+      } else if (typeof value === "boolean" && value) {
+        domEl.setAttribute(key, "");
+      } else if (key !== "children" && typeof value === "string") {
+        domEl.setAttribute(key, value);
+      }
+    }
+
+    domEl.setAttribute("data-vinext-head", "true");
+    document.head.appendChild(domEl);
+  }
+}
+
 // --- Component ---
 
 function Head({ children }: HeadProps): null {
+  const headInstanceIdRef = useRef<symbol | null>(null);
+  if (headInstanceIdRef.current === null) {
+    headInstanceIdRef.current = Symbol("vinext-head");
+  }
+
   // SSR path: collect elements for later injection
   if (typeof window === "undefined") {
-    Children.forEach(children, (child) => {
-      if (!isValidElement(child)) return;
-      if (typeof child.type !== "string") return;
-      const html = reactElementToHTML(child);
-      if (html) _getSSRHeadElements().push(html);
-    });
+    _getSSRHeadChildren().push(children);
     return null;
   }
 
-  // Client path: useEffect DOM manipulation (runs after hydration)
+  // Client path: update the shared head projection after hydration.
   // eslint-disable-next-line react-hooks/rules-of-hooks
   useEffect(() => {
-    const elements: Element[] = [];
-
-    // Remove previous vinext-managed head elements
-    document.querySelectorAll("[data-vinext-head]").forEach((el) => el.remove());
-
-    Children.forEach(children, (child) => {
-      if (!isValidElement(child)) return;
-      if (typeof child.type !== "string") return;
-      if (!ALLOWED_HEAD_TAGS.has(child.type)) return;
-
-      const domEl = document.createElement(child.type);
-      const props = child.props as Record<string, unknown>;
-
-      for (const [key, value] of Object.entries(props)) {
-        if (key === "children" && typeof value === "string") {
-          domEl.textContent = value;
-        } else if (key === "dangerouslySetInnerHTML") {
-          // skip for safety
-        } else if (key === "className") {
-          domEl.setAttribute("class", String(value));
-        } else if (key !== "children" && typeof value === "string") {
-          domEl.setAttribute(key, value);
-        }
-      }
-
-      domEl.setAttribute("data-vinext-head", "true");
-      document.head.appendChild(domEl);
-      elements.push(domEl);
-    });
+    const instanceId = headInstanceIdRef.current!;
+    _clientHeadChildren.set(instanceId, children);
+    syncClientHead();
 
     return () => {
-      elements.forEach((el) => el.remove());
+      _clientHeadChildren.delete(instanceId);
+      syncClientHead();
     };
   }, [children]);
 

@@ -719,14 +719,46 @@ describe("scanMetadataFiles", () => {
     expect(routes.find((r) => r.type === "favicon")).toBeUndefined();
   });
 
-  it("route groups are transparent in URLs", () => {
+  it("route groups get a unique metadata suffix", () => {
     createFile("(marketing)/icon.png");
     const routes = scanMetadataFiles(tmpDir);
     const icon = routes.find((r) => r.type === "icon");
     expect(icon).toBeDefined();
-    // (marketing) should NOT appear in URL
-    expect(icon!.servedUrl).toBe("/icon");
+    expect(icon!.servedUrl).toMatch(/^\/icon-[0-9a-z]{6}$/);
     expect(icon!.servedUrl).not.toContain("marketing");
+  });
+
+  it("parallel slot directories get a unique metadata suffix", () => {
+    createFile("@modal/icon.png");
+    const routes = scanMetadataFiles(tmpDir);
+    const icon = routes.find((r) => r.type === "icon");
+    expect(icon).toBeDefined();
+    expect(icon!.servedUrl).toMatch(/^\/icon-[0-9a-z]{6}$/);
+    expect(icon!.servedUrl).not.toContain("@modal");
+  });
+
+  it("@children does not get a metadata suffix", () => {
+    createFile("@children/icon.png");
+    const routes = scanMetadataFiles(tmpDir);
+    const icon = routes.find((r) => r.type === "icon");
+    expect(icon).toBeDefined();
+    expect(icon!.servedUrl).toBe("/icon");
+  });
+
+  it("skips metadata files inside private folders", () => {
+    createFile("_private/icon.png");
+    const routes = scanMetadataFiles(tmpDir);
+    expect(routes).toEqual([]);
+  });
+
+  it("root metadata and parallel slot metadata get distinct URLs", () => {
+    createFile("icon.png");
+    createFile("@modal/icon.png");
+    const routes = scanMetadataFiles(tmpDir);
+    const icons = routes.filter((r) => r.type === "icon");
+    expect(icons).toHaveLength(2);
+    expect(icons.some((icon) => icon.servedUrl === "/icon")).toBe(true);
+    expect(icons.some((icon) => /^\/icon-[0-9a-z]{6}$/.test(icon.servedUrl))).toBe(true);
   });
 
   it("dynamic takes priority over static at same URL", () => {

@@ -248,18 +248,20 @@ describe("addScripts", () => {
 // ─── Unit Tests: getInitDeps / isDepInstalled ────────────────────────────────
 
 describe("getInitDeps", () => {
-  it("returns vinext + vite + @vitejs/plugin-rsc + react-server-dom-webpack for App Router", () => {
+  it("returns vinext + vite + @vitejs/plugin-react + App Router deps for App Router", () => {
     const deps = getInitDeps(true);
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
+    expect(deps).toContain("@vitejs/plugin-react");
     expect(deps).toContain("@vitejs/plugin-rsc");
     expect(deps).toContain("react-server-dom-webpack");
   });
 
-  it("returns vinext + vite for Pages Router", () => {
+  it("returns vinext + vite + @vitejs/plugin-react for Pages Router", () => {
     const deps = getInitDeps(false);
     expect(deps).toContain("vinext");
     expect(deps).toContain("vite");
+    expect(deps).toContain("@vitejs/plugin-react");
     expect(deps).not.toContain("@vitejs/plugin-rsc");
     expect(deps).not.toContain("react-server-dom-webpack");
   });
@@ -464,6 +466,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
   });
 
@@ -485,6 +488,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).toContain("@vitejs/plugin-rsc");
     expect(result.installedDeps).toContain("react-server-dom-webpack");
   });
@@ -494,6 +498,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).toContain("react-server-dom-webpack");
   });
 
@@ -502,6 +507,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).not.toContain("@vitejs/plugin-rsc");
   });
 
@@ -510,6 +516,7 @@ describe("init — dependency installation", () => {
 
     const { result } = await runInit(tmpDir);
 
+    expect(result.installedDeps).toContain("@vitejs/plugin-react");
     expect(result.installedDeps).not.toContain("react-server-dom-webpack");
   });
 
@@ -529,7 +536,10 @@ describe("init — dependency installation", () => {
 
     // The second exec call should be the dev deps install (with -D)
     const devDepsCall = execCalls.find(
-      (c) => c.cmd.includes("react-server-dom-webpack") && c.cmd.includes("-D"),
+      (c) =>
+        c.cmd.includes("@vitejs/plugin-react") &&
+        c.cmd.includes("react-server-dom-webpack") &&
+        c.cmd.includes("-D"),
     );
     expect(devDepsCall).toBeDefined();
 

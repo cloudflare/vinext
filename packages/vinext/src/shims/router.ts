@@ -93,7 +93,7 @@ function createRouterEvents(): RouterEvents {
   return {
     on(event: string, handler: (...args: unknown[]) => void) {
       if (!listeners.has(event)) listeners.set(event, new Set());
-      listeners.get(event)!.add(handler);
+      (listeners.get(event) as Set<(...args: unknown[]) => void>).add(handler);
     },
     off(event: string, handler: (...args: unknown[]) => void) {
       listeners.get(event)?.delete(handler);

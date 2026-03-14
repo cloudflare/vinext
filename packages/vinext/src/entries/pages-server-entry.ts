@@ -76,16 +76,15 @@ export async function generateServerEntry(
   // Check for _app and _document
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const docFilePath = findFileWithExts(pagesDir, "_document", fileMatcher);
-  const hasApp = appFilePath !== null;
-  const hasDoc = docFilePath !== null;
+  const appImportCode =
+    appFilePath !== null
+      ? `import { default as AppComponent } from ${JSON.stringify(appFilePath.replace(/\\/g, "/"))};`
+      : `const AppComponent = null;`;
 
-  const appImportCode = hasApp
-    ? `import { default as AppComponent } from ${JSON.stringify(appFilePath!.replace(/\\/g, "/"))};`
-    : `const AppComponent = null;`;
-
-  const docImportCode = hasDoc
-    ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath!.replace(/\\/g, "/"))};`
-    : `const DocumentComponent = null;`;
+  const docImportCode =
+    docFilePath !== null
+      ? `import { default as DocumentComponent } from ${JSON.stringify(docFilePath.replace(/\\/g, "/"))};`
+      : `const DocumentComponent = null;`;
 
   // Serialize i18n config for embedding in the server entry
   const i18nConfigJson = nextConfig?.i18n
@@ -266,13 +265,14 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import { resetSSRHead, getSSRHeadHTML } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import { setSSRContext, wrapWithRouterContext } from "next/router";
-import { getCacheHandler } from "next/cache";
-import { runWithFetchCache } from "vinext/fetch-cache";
-import { _runWithCacheState } from "next/cache";
+import { getCacheHandler, _runWithCacheState } from "next/cache";
 import { runWithPrivateCache } from "vinext/cache-runtime";
-import { runWithRouterState } from "vinext/router-state";
+import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
+import { runWithRequestContext as _runWithUnifiedCtx, createRequestContext as _createUnifiedCtx } from "vinext/unified-request-context";
+import "vinext/router-state";
+import { runWithServerInsertedHTMLState } from "vinext/navigation-state";
 import { runWithHeadState } from "vinext/head-state";
-import { runWithI18nState } from "vinext/i18n-state";
+import "vinext/i18n-state";
 import { setI18nContext } from "vinext/i18n-context";
 import { safeJsonStringify } from "vinext/html";
 import { decode as decodeQueryString } from "node:querystring";
@@ -367,6 +367,21 @@ async function renderToStringAsync(element) {
   const stream = await renderToReadableStream(element);
   await stream.allReady;
   return new Response(stream).text();
+}
+
+async function renderIsrPassToStringAsync(element) {
+  // The cache-fill render is a second render pass for the same request.
+  // Reset render-scoped state so it cannot leak from the streamed response
+  // render or affect async work that is still draining from that stream.
+  // Keep request identity state (pathname/query/locale/executionContext)
+  // intact: this second pass still belongs to the same request.
+  return await runWithServerInsertedHTMLState(() =>
+    runWithHeadState(() =>
+      _runWithCacheState(() =>
+        runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element))),
+      ),
+    ),
+  );
 }
 
 ${pageImports.join("\n")}
@@ -719,13 +734,12 @@ async function _renderPage(request, url, manifest) {
   }
 
   const { route, params } = match;
-  return runWithRouterState(() =>
-    runWithHeadState(() =>
-      runWithI18nState(() =>
-        _runWithCacheState(() =>
-          runWithPrivateCache(() =>
-            runWithFetchCache(async () => {
-  try {
+  const __uCtx = _createUnifiedCtx({
+    executionContext: _getRequestExecutionContext(),
+  });
+  return _runWithUnifiedCtx(__uCtx, async () => {
+    ensureFetchPatch();
+    try {
     if (typeof setSSRContext === "function") {
       setSSRContext({
         pathname: patternToNextFormat(route.pattern),
@@ -840,61 +854,89 @@ async function _renderPage(request, url, manifest) {
 
       if (cached && cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
         triggerBackgroundRegeneration(cacheKey, async function() {
-          var freshResult = await pageModule.getStaticProps({
-            params: params,
-            locale: locale,
-            locales: i18nConfig ? i18nConfig.locales : undefined,
-            defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
+          var revalCtx = _createUnifiedCtx({
+            executionContext: _getRequestExecutionContext(),
           });
-          if (freshResult && freshResult.props && typeof freshResult.revalidate === "number" && freshResult.revalidate > 0) {
-            var _fp = freshResult.props;
-            // Re-render the page with fresh props
-            var _el = AppComponent
-              ? React.createElement(AppComponent, { Component: PageComponent, pageProps: _fp })
-              : React.createElement(PageComponent, _fp);
-            _el = wrapWithRouterContext(_el);
-            var _freshBody = await renderToStringAsync(_el);
-            // Rebuild __NEXT_DATA__ with fresh props
-            var _regenPayload = {
-              props: { pageProps: _fp }, page: patternToNextFormat(route.pattern),
-              query: params, buildId: buildId, isFallback: false,
-            };
-            if (i18nConfig) {
-              _regenPayload.locale = locale;
-              _regenPayload.locales = i18nConfig.locales;
-              _regenPayload.defaultLocale = i18nConfig.defaultLocale;
-            }
-            var _lGlobals = i18nConfig
-              ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
-                ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
-                ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(i18nConfig.defaultLocale)
-              : "";
-            var _freshNDS = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(_regenPayload) + _lGlobals + "</script>";
-            // Reconstruct ISR HTML preserving the document shell from the
-            // cached entry (head, fonts, assets, custom _document markup).
-            var _cachedStr = cached.value.value.html;
-            var _btag = '<div id="__next">';
-            var _bstart = _cachedStr.indexOf(_btag);
-            var _bodyStart = _bstart >= 0 ? _bstart + _btag.length : -1;
-            // Locate __NEXT_DATA__ script to split body from suffix
-            var _ndMarker = '<script>window.__NEXT_DATA__';
-            var _ndStart = _cachedStr.indexOf(_ndMarker);
-            var _freshHtml;
-            if (_bodyStart >= 0 && _ndStart >= 0) {
-              // Region between body start and __NEXT_DATA__ contains:
-              // BODY_HTML + </div> + optional gap (custom _document content)
-              var _region = _cachedStr.slice(_bodyStart, _ndStart);
-              var _lastClose = _region.lastIndexOf('</div>');
-              var _gap = _lastClose >= 0 ? _region.slice(_lastClose + 6) : '';
-              // Tail: everything after the old __NEXT_DATA__ </script>
-              var _ndEnd = _cachedStr.indexOf('</script>', _ndStart) + 9;
-              var _tail = _cachedStr.slice(_ndEnd);
-              _freshHtml = _cachedStr.slice(0, _bodyStart) + _freshBody + '</div>' + _gap + _freshNDS + _tail;
-            } else {
-              _freshHtml = '<!DOCTYPE html>\\n<html>\\n<head>\\n</head>\\n<body>\\n  <div id="__next">' + _freshBody + '</div>\\n  ' + _freshNDS + '\\n</body>\\n</html>';
-            }
-            await isrSet(cacheKey, { kind: "PAGES", html: _freshHtml, pageData: _fp, headers: undefined, status: undefined }, freshResult.revalidate);
-          }
+          return _runWithUnifiedCtx(revalCtx, async () => {
+            ensureFetchPatch();
+              var freshResult = await pageModule.getStaticProps({
+                params: params,
+                locale: locale,
+                locales: i18nConfig ? i18nConfig.locales : undefined,
+                defaultLocale: currentDefaultLocale,
+              });
+              if (freshResult && freshResult.props && typeof freshResult.revalidate === "number" && freshResult.revalidate > 0) {
+                var _fp = freshResult.props;
+                if (typeof setSSRContext === "function") {
+                  setSSRContext({
+                    pathname: patternToNextFormat(route.pattern),
+                    query: { ...params, ...parseQuery(routeUrl) },
+                    asPath: routeUrl,
+                    locale: locale,
+                    locales: i18nConfig ? i18nConfig.locales : undefined,
+                    defaultLocale: currentDefaultLocale,
+                    domainLocales: domainLocales,
+                  });
+                }
+                if (i18nConfig) {
+                  setI18nContext({
+                    locale: locale,
+                    locales: i18nConfig.locales,
+                    defaultLocale: currentDefaultLocale,
+                    domainLocales: domainLocales,
+                    hostname: new URL(request.url).hostname,
+                  });
+                }
+                // Re-render the page with fresh props inside fresh render sub-scopes
+                // so head/cache state cannot leak across passes.
+                var _el = AppComponent
+                  ? React.createElement(AppComponent, { Component: PageComponent, pageProps: _fp })
+                  : React.createElement(PageComponent, _fp);
+                _el = wrapWithRouterContext(_el);
+                var _freshBody = await renderIsrPassToStringAsync(_el);
+                // Rebuild __NEXT_DATA__ with fresh props
+                var _regenPayload = {
+                  props: { pageProps: _fp }, page: patternToNextFormat(route.pattern),
+                  query: params, buildId: buildId, isFallback: false,
+                };
+                if (i18nConfig) {
+                  _regenPayload.locale = locale;
+                  _regenPayload.locales = i18nConfig.locales;
+                  _regenPayload.defaultLocale = currentDefaultLocale;
+                  _regenPayload.domainLocales = domainLocales;
+                }
+                var _lGlobals = i18nConfig
+                  ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
+                    ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
+                    ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(currentDefaultLocale)
+                  : "";
+                var _freshNDS = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(_regenPayload) + _lGlobals + "</script>";
+                // Reconstruct ISR HTML preserving the document shell from the
+                // cached entry (head, fonts, assets, custom _document markup).
+                var _cachedStr = cached.value.value.html;
+                var _btag = '<div id="__next">';
+                var _bstart = _cachedStr.indexOf(_btag);
+                var _bodyStart = _bstart >= 0 ? _bstart + _btag.length : -1;
+                // Locate __NEXT_DATA__ script to split body from suffix
+                var _ndMarker = '<script>window.__NEXT_DATA__';
+                var _ndStart = _cachedStr.indexOf(_ndMarker);
+                var _freshHtml;
+                if (_bodyStart >= 0 && _ndStart >= 0) {
+                  // Region between body start and __NEXT_DATA__ contains:
+                  // BODY_HTML + </div> + optional gap (custom _document content)
+                  var _region = _cachedStr.slice(_bodyStart, _ndStart);
+                  var _lastClose = _region.lastIndexOf('</div>');
+                  var _gap = _lastClose >= 0 ? _region.slice(_lastClose + 6) : '';
+                  // Tail: everything after the old __NEXT_DATA__ </script>
+                  var _ndEnd = _cachedStr.indexOf('</script>', _ndStart) + 9;
+                  var _tail = _cachedStr.slice(_ndEnd);
+                  _freshHtml = _cachedStr.slice(0, _bodyStart) + _freshBody + '</div>' + _gap + _freshNDS + _tail;
+                } else {
+                  _freshHtml = '<!DOCTYPE html>\\n<html>\\n<head>\\n</head>\\n<body>\\n  <div id="__next">' + _freshBody + '</div>\\n  ' + _freshNDS + '\\n</body>\\n</html>';
+                }
+                await isrSet(cacheKey, { kind: "PAGES", html: _freshHtml, pageData: _fp, headers: undefined, status: undefined }, freshResult.revalidate);
+              }
+            });
         });
         var _staleHeaders = {
           "Content-Type": "text/html", "X-Vinext-Cache": "STALE",
@@ -1030,7 +1072,7 @@ async function _renderPage(request, url, manifest) {
         isrElement = React.createElement(PageComponent, pageProps);
       }
       isrElement = wrapWithRouterContext(isrElement);
-      var isrHtml = await renderToStringAsync(isrElement);
+      var isrHtml = await renderIsrPassToStringAsync(isrElement);
       var fullHtml = shellPrefix + isrHtml + shellSuffix;
       var isrPathname = url.split("?")[0];
       var _cacheKey = isrCacheKey("pages", isrPathname);
@@ -1064,21 +1106,16 @@ async function _renderPage(request, url, manifest) {
       responseHeaders.set("Link", _fontLinkHeader);
     }
     return new Response(compositeStream, { status: finalStatus, headers: responseHeaders });
-  } catch (e) {
+    } catch (e) {
     console.error("[vinext] SSR error:", e);
     _reportRequestError(
       e instanceof Error ? e : new Error(String(e)),
       { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
       { routerKind: "Pages Router", routePath: route.pattern, routeType: "render" },
-    );
+    ).catch(() => { /* ignore reporting errors */ });
     return new Response("Internal Server Error", { status: 500 });
-  }
-            }) // end runWithFetchCache
-          ) // end runWithPrivateCache
-        ) // end _runWithCacheState
-      ) // end runWithI18nState
-    ) // end runWithHeadState
-  ); // end runWithRouterState
+    }
+  });
 }
 
 export async function handleApiRoute(request, url) {

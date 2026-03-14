@@ -259,6 +259,23 @@ declare global {
 }
 
 // ---------------------------------------------------------------------------
+// process.features — Node.js v22.10.0+ feature flags
+// ---------------------------------------------------------------------------
+//
+// `process.features.typescript` is available since Node.js v22.10.0 and
+// indicates whether the runtime has built-in TypeScript support (--experimental-strip-types).
+// Declared here so we don't have to cast `process.features as any` at the call site.
+
+declare global {
+  namespace NodeJS {
+    interface ProcessFeatures {
+      /** Available since Node.js v22.10.0. `true` when run with --experimental-strip-types. */
+      typescript?: boolean;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // process.env defines — compile-time Vite replacements
 // ---------------------------------------------------------------------------
 //
@@ -274,6 +291,13 @@ declare global {
        * Generated once at build time and injected via Vite `define`.
        */
       __VINEXT_DRAFT_SECRET?: string;
+
+      /**
+       * Build ID string injected via Vite `define` at production build time.
+       * Matches `next.config.js` → `buildId` (or a generated UUID when unset).
+       * `undefined` in dev mode.
+       */
+      __VINEXT_BUILD_ID?: string;
 
       /**
        * JSON-encoded array of `RemotePattern` objects from
@@ -305,6 +329,22 @@ declare global {
        */
       __VINEXT_IMAGE_DANGEROUSLY_ALLOW_SVG?: string;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// node:http augmentations — vinext properties added to IncomingMessage
+// ---------------------------------------------------------------------------
+
+declare module "node:http" {
+  interface IncomingMessage {
+    /**
+     * The HTTP status code set by vinext middleware for Pages Router rewrite
+     * responses (e.g. 307 for a rewrite that should surface as a redirect).
+     * Written in `index.ts` when middleware emits a `rewriteStatus`, read by
+     * the downstream Pages Router handler to decide the final response status.
+     */
+    __vinextRewriteStatus?: number;
   }
 }
 

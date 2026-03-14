@@ -356,6 +356,34 @@ export interface MetadataFileRoute {
   contentType: string;
 }
 
+function metadataRouteSuffix(parentSegments: string[], metaType: string): string {
+  if (metaType === "sitemap" || metaType === "robots" || metaType === "manifest") {
+    // Sitemap is exempt per Next.js. Robots and manifest are also safe to
+    // exempt because they are root-only in vinext, so invisible parents never apply.
+    return "";
+  }
+
+  const hasInvisibleParent = parentSegments.some(
+    (segment) =>
+      (segment.startsWith("(") && segment.endsWith(")")) ||
+      (segment.startsWith("@") && segment !== "@children"),
+  );
+  if (!hasInvisibleParent) return "";
+
+  const parentPath = `/${parentSegments.join("/")}`;
+  let hash = 5381;
+  for (let i = 0; i < parentPath.length; i++) {
+    hash = ((hash << 5) + hash + parentPath.charCodeAt(i)) & 0xffffffff;
+  }
+  return (hash >>> 0).toString(36).slice(0, 6);
+}
+
+function withMetadataSuffix(urlPath: string, suffix: string): string {
+  if (!suffix) return urlPath;
+  const parsed = path.posix.parse(urlPath);
+  return path.posix.join(parsed.dir || "/", `${parsed.name}-${suffix}${parsed.ext}`);
+}
+
 /**
  * Scan an app directory for metadata files.
  */
@@ -363,17 +391,20 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
   const routes: MetadataFileRoute[] = [];
 
   // Scan the app directory recursively
-  function scan(dir: string, urlPrefix: string): void {
+  function scan(dir: string, urlPrefix: string, parentSegments: string[]): void {
     if (!fs.existsSync(dir)) return;
 
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        // Skip route group parentheses from URL
         const dirName = entry.name;
+        if (dirName.startsWith("_")) continue;
+
         const isRouteGroup = dirName.startsWith("(") && dirName.endsWith(")");
-        const nextUrlPrefix = isRouteGroup ? urlPrefix : `${urlPrefix}/${dirName}`;
-        scan(path.join(dir, dirName), nextUrlPrefix);
+        const isParallelRoute = dirName.startsWith("@");
+        const nextUrlPrefix =
+          isRouteGroup || isParallelRoute ? urlPrefix : `${urlPrefix}/${dirName}`;
+        scan(path.join(dir, dirName), nextUrlPrefix, [...parentSegments, dirName]);
         continue;
       }
 
@@ -394,12 +425,14 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
         const isDynamic = config.dynamicExtensions.includes(ext);
 
         if (!isStatic && !isDynamic) continue;
+        const suffix = metadataRouteSuffix(parentSegments, metaType);
+        const urlPath = withMetadataSuffix(config.urlPath, suffix);
 
         routes.push({
           type: metaType,
           isDynamic,
           filePath: path.join(dir, fileName),
-          servedUrl: urlPrefix === "" ? config.urlPath : `${urlPrefix}${config.urlPath}`,
+          servedUrl: urlPrefix === "" ? urlPath : `${urlPrefix}${urlPath}`,
           contentType: isStatic
             ? getStaticContentType(ext, config.contentType)
             : config.contentType,
@@ -408,7 +441,7 @@ export function scanMetadataFiles(appDir: string): MetadataFileRoute[] {
     }
   }
 
-  scan(appDir, "");
+  scan(appDir, "", []);
 
   // Deduplicate: if both dynamic and static variants exist at the same URL,
   // keep only the dynamic one (matches Next.js behavior).

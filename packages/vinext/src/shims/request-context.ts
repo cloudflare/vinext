@@ -22,6 +22,11 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  isInsideUnifiedScope,
+  getRequestContext,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // ExecutionContext interface
@@ -64,6 +69,11 @@ export function runWithExecutionContext<T>(
   ctx: ExecutionContextLike,
   fn: () => T | Promise<T>,
 ): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      uCtx.executionContext = ctx;
+    }, fn);
+  }
   return _als.run(ctx, fn);
 }
 
@@ -75,6 +85,9 @@ export function runWithExecutionContext<T>(
  * complete before the Worker isolate is torn down.
  */
 export function getRequestExecutionContext(): ExecutionContextLike | null {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext().executionContext;
+  }
   // getStore() returns undefined when called outside an ALS scope;
   // normalise to null for a consistent return type.
   return _als.getStore() ?? null;

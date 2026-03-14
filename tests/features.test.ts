@@ -2219,6 +2219,20 @@ describe("MetadataHead rendering", () => {
     expect(html).toContain('content="https://acme.com/og.png"');
   });
 
+  it("accepts URL objects for canonical and openGraph.url", () => {
+    // Next.js allows string | URL for URL fields; passing a URL object must not throw
+    const html = renderToStaticMarkup(
+      React.createElement(MetadataHead, {
+        metadata: {
+          alternates: { canonical: new URL("https://example.com/page") },
+          openGraph: { url: new URL("https://example.com/og") },
+        },
+      }),
+    );
+    expect(html).toContain('href="https://example.com/page"');
+    expect(html).toContain('content="https://example.com/og"');
+  });
+
   it("renders OG video and audio tags", () => {
     const html = renderToStaticMarkup(
       React.createElement(MetadataHead, {

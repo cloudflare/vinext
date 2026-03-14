@@ -8,13 +8,14 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
-    "react-server-dom-webpack": "19.2.4",
-    "vinext": "file:../../packages/vinext"
+    "@vitejs/plugin-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "vinext": "workspace:*"
   },
   "devDependencies": {
-    "@vitejs/plugin-rsc": "0.5.19",
-    "vite": "7.3.1"
+    "@vitejs/plugin-rsc": "catalog:",
+    "vite": "catalog:"
   }
 }

@@ -43,6 +43,8 @@ const {
 const { getCacheHandler, revalidateTag, MemoryCacheHandler, setCacheHandler } =
   await import("../packages/vinext/src/shims/cache.js");
 const { runWithExecutionContext } = await import("../packages/vinext/src/shims/request-context.js");
+const { createRequestContext, runWithRequestContext } =
+  await import("../packages/vinext/src/shims/unified-request-context.js");
 
 describe("fetch cache shim", () => {
   let cleanup: (() => void) | null = null;
@@ -315,6 +317,36 @@ describe("fetch cache shim", () => {
       // Wait for the refetch to complete
       await waitUntilSpy.mock.calls[0]![0];
       expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("registers stale background refetch with waitUntil inside a unified request scope", async () => {
+    const waitUntilSpy = vi.fn<(p: Promise<unknown>) => void>();
+    const mockCtx = { waitUntil: waitUntilSpy };
+
+    await runWithExecutionContext(mockCtx, async () => {
+      await runWithRequestContext(createRequestContext(), async () => {
+        const res1 = await fetch("https://api.example.com/unified-waituntil-test", {
+          next: { revalidate: 1 },
+        });
+        expect((await res1.json()).count).toBe(1);
+
+        const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+        const store = (handler as any).store as Map<string, any>;
+        for (const [, entry] of store) {
+          entry.revalidateAt = Date.now() - 1000;
+        }
+
+        const res2 = await fetch("https://api.example.com/unified-waituntil-test", {
+          next: { revalidate: 1 },
+        });
+        expect((await res2.json()).count).toBe(1);
+
+        expect(waitUntilSpy).toHaveBeenCalledTimes(1);
+        expect(waitUntilSpy.mock.calls[0]![0]).toBeInstanceOf(Promise);
+        await waitUntilSpy.mock.calls[0]![0];
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      });
     });
   });
 

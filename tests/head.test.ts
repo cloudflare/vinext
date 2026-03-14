@@ -12,6 +12,7 @@ import Head, {
   resetSSRHead,
   getSSRHeadHTML,
   escapeAttr,
+  reduceHeadChildren,
 } from "../packages/vinext/src/shims/head.js";
 
 // ─── SSR rendering (mirrors Next.js test/unit/next-head-rendering.test.ts) ──
@@ -174,6 +175,118 @@ describe("Head SSR collection", () => {
   it("returns empty string when no head elements", () => {
     const headHtml = getSSRHeadHTML();
     expect(headHtml).toBe("");
+  });
+
+  it("dedupes keyed tags across multiple Head instances and keeps the last one", () => {
+    // Next.js documents `key` as the dedupe mechanism for next/head tags:
+    // https://github.com/vercel/next.js/blob/canary/docs/02-pages/04-api-reference/01-components/head.mdx
+    ReactDOMServer.renderToString(
+      React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(
+          Head,
+          null,
+          React.createElement("meta", {
+            property: "og:title",
+            content: "Original Title",
+            key: "og-title",
+          }),
+        ),
+        React.createElement(
+          Head,
+          null,
+          React.createElement("meta", {
+            property: "og:title",
+            content: "Updated Title",
+            key: "og-title",
+          }),
+        ),
+      ),
+    );
+
+    const headHtml = getSSRHeadHTML();
+    expect(headHtml).toContain('content="Updated Title"');
+    expect(headHtml).not.toContain('content="Original Title"');
+    expect(headHtml.match(/property="og:title"/g)).toHaveLength(1);
+  });
+
+  it("dedupes keyed tags across Head instances when one Head has multiple children", () => {
+    ReactDOMServer.renderToString(
+      React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(
+          Head,
+          null,
+          React.createElement("meta", {
+            property: "og:title",
+            content: "Title A",
+            key: "og-title",
+          }),
+          React.createElement("meta", {
+            name: "description",
+            content: "Desc A",
+            key: "desc",
+          }),
+        ),
+        React.createElement(
+          Head,
+          null,
+          React.createElement("meta", {
+            property: "og:title",
+            content: "Title B",
+            key: "og-title",
+          }),
+        ),
+      ),
+    );
+
+    const headHtml = getSSRHeadHTML();
+    expect(headHtml).toContain('content="Title B"');
+    expect(headHtml).toContain('content="Desc A"');
+    expect(headHtml).not.toContain('content="Title A"');
+    expect(headHtml.match(/property="og:title"/g)).toHaveLength(1);
+  });
+});
+
+describe("Head reduction", () => {
+  it("dedupes keyed tags and keeps the last matching element", () => {
+    const reduced = reduceHeadChildren([
+      React.createElement("meta", {
+        property: "og:title",
+        content: "Original Title",
+        key: "og-title",
+      }),
+      React.createElement("meta", {
+        property: "og:title",
+        content: "Updated Title",
+        key: "og-title",
+      }),
+    ]);
+
+    expect(reduced).toHaveLength(1);
+    const dedupedMeta = reduced[0] as React.ReactElement<{ content?: string }> | undefined;
+    expect(dedupedMeta?.props.content).toBe("Updated Title");
+  });
+
+  it("dedupes meta[name] tags without explicit keys using the last value", () => {
+    const reduced = reduceHeadChildren([
+      [
+        React.createElement("meta", {
+          name: "description",
+          content: "Description A",
+        }),
+        React.createElement("meta", {
+          name: "description",
+          content: "Description B",
+        }),
+      ],
+    ]);
+
+    expect(reduced).toHaveLength(1);
+    const dedupedMeta = reduced[0] as React.ReactElement<{ content?: string }> | undefined;
+    expect(dedupedMeta?.props.content).toBe("Description B");
   });
 });
 

@@ -63,7 +63,7 @@ jobs:
         run: pnpm run build
 
       - name: Pack vinext for local install
-        run: npm pack --pack-destination "${{ runner.temp }}"
+        run: pnpm pack --pack-destination "${{ runner.temp }}"
         working-directory: packages/vinext
 
       - name: Scaffold a fresh create-next-app project

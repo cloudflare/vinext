@@ -13,12 +13,17 @@
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerStateAccessors, type NavigationContext } from "./navigation.js";
+import {
+  isInsideUnifiedScope,
+  getRequestContext,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // ALS setup — same pattern as headers.ts
 // ---------------------------------------------------------------------------
 
-interface NavigationState {
+export interface NavigationState {
   serverContext: NavigationContext | null;
   serverInsertedHTMLCallbacks: Array<() => unknown>;
 }
@@ -35,6 +40,9 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
 } satisfies NavigationState) as NavigationState;
 
 function _getState(): NavigationState {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext();
+  }
   return _als.getStore() ?? _fallbackState;
 }
 
@@ -44,8 +52,37 @@ function _getState(): NavigationState {
  * useServerInsertedHTML callbacks on concurrent runtimes.
  */
 export function runWithNavigationContext<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      uCtx.serverContext = null;
+      uCtx.serverInsertedHTMLCallbacks = [];
+    }, fn);
+  }
   const state: NavigationState = {
     serverContext: null,
+    serverInsertedHTMLCallbacks: [],
+  };
+  return _als.run(state, fn);
+}
+
+/**
+ * Run a function with a fresh useServerInsertedHTML callback list while
+ * preserving the current navigation context.
+ *
+ * Used by the Pages Router ISR cache-fill pass: it is the same request/path,
+ * but it needs a fresh callback collection so CSS-in-JS insertions from the
+ * streamed render cannot accumulate into the cache-fill render.
+ */
+export function runWithServerInsertedHTMLState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      uCtx.serverInsertedHTMLCallbacks = [];
+    }, fn);
+  }
+
+  const parentState = _als.getStore() ?? _fallbackState;
+  const state: NavigationState = {
+    serverContext: parentState.serverContext,
     serverInsertedHTMLCallbacks: [],
   };
   return _als.run(state, fn);
@@ -61,13 +98,7 @@ _registerStateAccessors({
   },
 
   setServerContext(ctx: NavigationContext | null): void {
-    const state = _als.getStore();
-    if (state) {
-      state.serverContext = ctx;
-    } else {
-      // No ALS scope — fallback for environments without als.run() wrapping.
-      _fallbackState.serverContext = ctx;
-    }
+    _getState().serverContext = ctx;
   },
 
   getInsertedHTMLCallbacks(): Array<() => unknown> {
@@ -75,11 +106,6 @@ _registerStateAccessors({
   },
 
   clearInsertedHTMLCallbacks(): void {
-    const state = _als.getStore();
-    if (state) {
-      state.serverInsertedHTMLCallbacks = [];
-    } else {
-      _fallbackState.serverInsertedHTMLCallbacks = [];
-    }
+    _getState().serverInsertedHTMLCallbacks = [];
   },
 });

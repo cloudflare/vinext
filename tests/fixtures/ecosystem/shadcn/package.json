@@ -3,19 +3,19 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "@radix-ui/react-slot": "^1.2.3",
-    "@radix-ui/react-dialog": "^1.1.14",
-    "@radix-ui/react-dropdown-menu": "^2.1.15",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
-    "tailwind-merge": "^3.3.0",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "@radix-ui/react-slot": "catalog:",
+    "@radix-ui/react-dialog": "catalog:",
+    "@radix-ui/react-dropdown-menu": "catalog:",
+    "class-variance-authority": "catalog:",
+    "clsx": "catalog:",
+    "tailwind-merge": "catalog:",
     "vinext": "workspace:*",
-    "@vitejs/plugin-rsc": "^0.5.19",
-    "react-server-dom-webpack": "^19.2.4"
+    "@vitejs/plugin-rsc": "catalog:",
+    "react-server-dom-webpack": "catalog:"
   },
   "devDependencies": {
-    "vite": "^7.3.1"
+    "vite": "catalog:"
   }
 }

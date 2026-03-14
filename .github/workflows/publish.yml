@@ -73,7 +73,7 @@ jobs:
 
       - name: Publish (OIDC trusted publishing)
         working-directory: packages/vinext
-        run: npm publish --access public --provenance
+        run: pnpm publish --access public --provenance
 
       - name: Tag release
         run: |

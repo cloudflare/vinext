@@ -94,6 +94,14 @@ test.describe("App Router API Route Handlers", () => {
       expect([301, 302, 303, 307, 308]).toContain(response.status());
       expect(response.headers()["location"]).toContain("/about");
     });
+
+    test("GET /api/invalid-default returns 405 (default export is ignored)", async ({
+      request,
+    }) => {
+      const response = await request.get(`${BASE}/api/invalid-default`);
+      expect(response.status()).toBe(405);
+      expect(response.headers()["allow"]).toBeUndefined();
+    });
   });
 
   test.describe("Cookie routes /api/set-cookie", () => {
@@ -121,6 +129,7 @@ test.describe("App Router API Route Handlers", () => {
     test("DELETE on GET-only route returns 405", async ({ request }) => {
       const response = await request.delete(`${BASE}/api/get-only`);
       expect(response.status()).toBe(405);
+      expect(response.headers()["allow"]).toBeUndefined();
     });
 
     test("PATCH on GET-only route returns 405", async ({ request }) => {
@@ -128,6 +137,7 @@ test.describe("App Router API Route Handlers", () => {
         data: {},
       });
       expect(response.status()).toBe(405);
+      expect(response.headers()["allow"]).toBeUndefined();
     });
   });
 });
@@ -220,12 +230,7 @@ test.describe("Route Handler HTTP Methods (OpenNext compat)", () => {
     // Vinext's auto-OPTIONS sets Allow based on detected exports
     const headers = res.headers();
     const allow = headers["allow"];
-    expect(allow).toBeDefined();
-    // Should list at minimum the methods we export
-    expect(allow).toContain("GET");
-    expect(allow).toContain("POST");
-    expect(allow).toContain("PUT");
-    expect(allow).toContain("DELETE");
+    expect(allow).toBe("DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT");
   });
 
   test("formData should work in POST route handler", async ({ request }) => {

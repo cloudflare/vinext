@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { createBuilder, createServer, type ViteDevServer } from "vite";
-import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import zlib from "node:zlib";
-import vinext from "../packages/vinext/src/index.js";
-import { APP_FIXTURE_DIR, RSC_ENTRIES, startFixtureServer, fetchHtml } from "./helpers.js";
+import { createBuilder, createServer, type ViteDevServer } from "vite";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import vinext from "../packages/vinext/src/index.js";
+import { APP_FIXTURE_DIR, fetchHtml, RSC_ENTRIES, startFixtureServer } from "./helpers.js";
 
 describe("App Router integration", () => {
   let server: ViteDevServer;
@@ -406,11 +406,9 @@ describe("App Router integration", () => {
   it("returns Method Not Allowed for unsupported HTTP methods on route handlers", async () => {
     const res = await fetch(`${baseUrl}/api/hello`, { method: "DELETE" });
     expect(res.status).toBe(405);
-    // Should include Allow header listing supported methods
+    // Next.js does not emit an Allow header on 405 responses
     const allow = res.headers.get("allow");
-    expect(allow).toBeTruthy();
-    expect(allow).toContain("GET");
-    expect(allow).toContain("POST");
+    expect(allow).toBeNull();
     // Body should be empty for 405
     const body = await res.text();
     expect(body).toBe("");
@@ -430,10 +428,7 @@ describe("App Router integration", () => {
     const res = await fetch(`${baseUrl}/api/get-only`, { method: "OPTIONS" });
     expect(res.status).toBe(204);
     const allow = res.headers.get("allow");
-    expect(allow).toBeTruthy();
-    expect(allow).toContain("GET");
-    expect(allow).toContain("HEAD");
-    expect(allow).toContain("OPTIONS");
+    expect(allow).toBe("GET, HEAD, OPTIONS");
     // Body should be empty
     const body = await res.text();
     expect(body).toBe("");
@@ -443,11 +438,7 @@ describe("App Router integration", () => {
     const res = await fetch(`${baseUrl}/api/hello`, { method: "OPTIONS" });
     expect(res.status).toBe(204);
     const allow = res.headers.get("allow");
-    expect(allow).toBeTruthy();
-    expect(allow).toContain("GET");
-    expect(allow).toContain("POST");
-    expect(allow).toContain("HEAD");
-    expect(allow).toContain("OPTIONS");
+    expect(allow).toBe("GET, HEAD, OPTIONS, POST");
   });
 
   it("returns 500 with empty body when route handler throws", async () => {
@@ -488,6 +479,12 @@ describe("App Router integration", () => {
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(data).toEqual({ id: "99", name: "Widget" });
+  });
+
+  it("ignores default export route handlers and returns 405", async () => {
+    const res = await fetch(`${baseUrl}/api/invalid-default`);
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBeNull();
   });
 
   it("cookies().set() in route handler produces Set-Cookie headers", async () => {
@@ -2320,6 +2317,11 @@ describe("App Router next.config.js features (dev server integration)", () => {
     expect(res.headers.get("x-page-header")).toBe("about-page");
   });
 
+  it("encoded slashes stay within a single segment for config header matching", async () => {
+    const res = await fetch(`${baseUrl}/api%2Fhello`);
+    expect(res.headers.get("x-custom-header")).toBeNull();
+  });
+
   it("percent-encoded rewrite path is decoded before config matching", async () => {
     // /rewrite-%61bout decodes to /rewrite-about → /about (beforeFiles rewrite)
     const res = await fetch(`${baseUrl}/rewrite-%61bout`);
@@ -2470,6 +2472,24 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("middlewareModule.proxy ?? middlewareModule.default");
     // Should throw if no valid export found
     expect(code).toContain("must export a function named");
+  });
+
+  it("propagates middleware waitUntil promises to the Workers execution context", () => {
+    const code = generateRscEntry(
+      "/tmp/test/app",
+      minimalRoutes,
+      "/tmp/middleware.ts",
+      [],
+      null,
+      "",
+      false,
+    );
+    // drainWaitUntil() must be registered with the execution context so
+    // Workers keeps the isolate alive for background promises.
+    expect(code).toContain("_getRequestExecutionContext()");
+    expect(code).toContain("waitUntil");
+    // Must NOT discard the drainWaitUntil() return value
+    expect(code).not.toMatch(/^\s*mwFetchEvent\.drainWaitUntil\(\);$/m);
   });
 
   it("applies redirects before middleware in the handler", () => {
@@ -3235,7 +3255,7 @@ describe("RSC plugin auto-registration", () => {
     ).rejects.toThrow("Duplicate @vitejs/plugin-rsc detected");
   }, 30000);
 
-  it("auto-injects RSC plugin when src/app exists but root-level app/ does not", () => {
+  it("auto-injects RSC plugin when src/app exists but root-level app/ does not", async () => {
     // Regression test: the early detection path (before config()) must check
     // both {base}/app and {base}/src/app to match the full config() logic.
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-src-app-"));
@@ -3254,25 +3274,45 @@ describe("RSC plugin auto-registration", () => {
         "junction",
       );
 
-      const plugins = vinext({ appDir: tmpDir });
+      const plugins = vinext({ appDir: tmpDir, react: false });
 
-      // When auto-RSC fires, the returned array includes a Promise<Plugin[]>
-      // for the lazily-loaded @vitejs/plugin-rsc. Verify it's present.
-      const hasRscPromise = plugins.some((p) => p && typeof (p as any).then === "function");
-      expect(hasRscPromise).toBe(true);
+      const resolvedPlugins = (
+        await Promise.all(
+          plugins.map(async (plugin) => {
+            if (plugin && typeof (plugin as any).then === "function") {
+              return await (plugin as Promise<any>);
+            }
+            return plugin;
+          }),
+        )
+      ).flat();
+
+      const hasRscPlugin = resolvedPlugins.some((p) => p && (p as any).name === "rsc");
+      expect(hasRscPlugin).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
-  it("does NOT auto-inject RSC plugin when neither app/ nor src/app/ exists", () => {
+  it("does NOT auto-inject RSC plugin when neither app/ nor src/app/ exists", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-no-app-"));
     try {
       // Empty directory — no app/ or src/app/.
-      const plugins = vinext({ appDir: tmpDir });
+      const plugins = vinext({ appDir: tmpDir, react: false });
 
-      const hasRscPromise = plugins.some((p) => p && typeof (p as any).then === "function");
-      expect(hasRscPromise).toBe(false);
+      const resolvedPlugins = (
+        await Promise.all(
+          plugins.map(async (plugin) => {
+            if (plugin && typeof (plugin as any).then === "function") {
+              return await (plugin as Promise<any>);
+            }
+            return plugin;
+          }),
+        )
+      ).flat();
+
+      const hasRscPlugin = resolvedPlugins.some((p) => p && (p as any).name === "rsc");
+      expect(hasRscPlugin).toBe(false);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -3463,9 +3503,9 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain('"X-Vinext-Cache": "STALE"');
   });
 
-  it("generated code uses ctx.waitUntil for background cache write", () => {
+  it("generated code uses request execution context for background cache write", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("ctx.waitUntil");
+    expect(code).toContain("_getRequestExecutionContext()?.waitUntil");
   });
 
   it("generated code tees the RSC stream to capture rscData for cache", () => {

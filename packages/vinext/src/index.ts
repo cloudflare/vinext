@@ -56,7 +56,7 @@ import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import tsconfigPaths from "vite-tsconfig-paths";
-import react, { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
+import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -65,6 +65,7 @@ import fs from "node:fs";
 import commonjs from "vite-plugin-commonjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+type VitePluginReactModule = typeof import("@vitejs/plugin-react");
 
 /**
  * Fetch Google Fonts CSS, download .woff2 files, cache locally, and return
@@ -699,9 +700,9 @@ export interface VinextOptions {
   rsc?: boolean;
   /**
    * Options passed to @vitejs/plugin-react (React Fast Refresh + JSX transform).
-   * Enabled by default. Set to `false` to disable (e.g. if you already have
-   * @vitejs/plugin-react in your vite.config.ts), or pass an options object
-   * to customize the Babel transform.
+   * Enabled by default. Set to `false` to disable (e.g. if you configure
+   * @vitejs/plugin-react manually in your vite.config.ts), or pass an options
+   * object to customize the Babel transform.
    * @default true
    */
   react?: VitePluginReactOptions | boolean;
@@ -781,8 +782,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Pre-resolve both the main plugin and the /transforms subpath eagerly
   // so all import() calls in this module use consistent resolution.
   const earlyRequire = createRequire(path.join(earlyBaseDir, "package.json"));
+  let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
   let resolvedRscTransformsPath: string | null = null;
+  try {
+    resolvedReactPath = earlyRequire.resolve("@vitejs/plugin-react");
+  } catch {
+    // vinext auto-injects the React plugin by default, so this will usually
+    // surface as an error below. Only react: false skips that follow-up throw.
+  }
   try {
     resolvedRscPath = earlyRequire.resolve("@vitejs/plugin-rsc");
     resolvedRscTransformsPath = earlyRequire.resolve("@vitejs/plugin-rsc/transforms");
@@ -805,16 +813,40 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       );
     }
     const rscImport = import(pathToFileURL(resolvedRscPath).href);
-    rscPluginPromise = rscImport.then((mod) => {
-      const rsc = mod.default;
-      return rsc({
-        entries: {
-          rsc: VIRTUAL_RSC_ENTRY,
-          ssr: VIRTUAL_APP_SSR_ENTRY,
-          client: VIRTUAL_APP_BROWSER_ENTRY,
-        },
+    rscPluginPromise = rscImport
+      .then((mod) => {
+        const rsc = mod.default;
+        return rsc({
+          entries: {
+            rsc: VIRTUAL_RSC_ENTRY,
+            ssr: VIRTUAL_APP_SSR_ENTRY,
+            client: VIRTUAL_APP_BROWSER_ENTRY,
+          },
+        });
+      })
+      .catch((cause) => {
+        throw new Error("vinext: Failed to load @vitejs/plugin-rsc.", { cause });
       });
-    });
+  }
+
+  const reactOptions = options.react && options.react !== true ? options.react : undefined;
+
+  let reactPluginPromise: Promise<PluginOption[]> | null = null;
+  if (options.react !== false) {
+    if (!resolvedReactPath) {
+      throw new Error(
+        "vinext: @vitejs/plugin-react is not installed.\n" +
+          "Run: " +
+          detectPackageManager(process.cwd()) +
+          " @vitejs/plugin-react",
+      );
+    }
+    const reactImport = import(pathToFileURL(resolvedReactPath).href);
+    reactPluginPromise = reactImport
+      .then((mod) => (mod as VitePluginReactModule).default(reactOptions))
+      .catch((cause) => {
+        throw new Error("vinext: Failed to load @vitejs/plugin-react.", { cause });
+      });
   }
 
   const imageImportDimCache = new Map<string, { width: number; height: number }>();
@@ -823,16 +855,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // files are detected and @mdx-js/rollup is installed.
   let mdxDelegate: Plugin | null = null;
 
-  const reactPlugin =
-    options.react === false ? false : react(options.react === true ? undefined : options.react);
-
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
     ...(viteMajorVersion >= 8 ? [] : [tsconfigPaths()]),
     // React Fast Refresh + JSX transform for client components.
-    reactPlugin,
+    reactPluginPromise,
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     commonjs(),
@@ -988,6 +1017,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           "next/document": path.join(shimsDir, "document"),
           "next/document.js": path.join(shimsDir, "document"),
           "next/config": path.join(shimsDir, "config"),
+          "next/config.js": path.join(shimsDir, "config"),
           "next/script": path.join(shimsDir, "script"),
           "next/script.js": path.join(shimsDir, "script"),
           "next/server": path.join(shimsDir, "server"),
@@ -997,7 +1027,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           "next/headers": path.join(shimsDir, "headers"),
           "next/headers.js": path.join(shimsDir, "headers"),
           "next/font/google": path.join(shimsDir, "font-google"),
+          "next/font/google.js": path.join(shimsDir, "font-google"),
           "next/font/local": path.join(shimsDir, "font-local"),
+          "next/font/local.js": path.join(shimsDir, "font-local"),
           "next/cache": path.join(shimsDir, "cache"),
           "next/cache.js": path.join(shimsDir, "cache"),
           "next/form": path.join(shimsDir, "form"),
@@ -1007,6 +1039,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           "next/web-vitals": path.join(shimsDir, "web-vitals"),
           "next/web-vitals.js": path.join(shimsDir, "web-vitals"),
           "next/amp": path.join(shimsDir, "amp"),
+          "next/amp.js": path.join(shimsDir, "amp"),
           "next/error": path.join(shimsDir, "error"),
           "next/error.js": path.join(shimsDir, "error"),
           "next/constants": path.join(shimsDir, "constants"),
@@ -1064,6 +1097,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
           "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
           "vinext/navigation-state": path.join(shimsDir, "navigation-state"),
+          "vinext/unified-request-context": path.join(shimsDir, "unified-request-context"),
           "vinext/router-state": path.join(shimsDir, "router-state"),
           "vinext/head-state": path.join(shimsDir, "head-state"),
           "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
@@ -1279,11 +1313,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // like `rsc`. Native addon packages (e.g. better-sqlite3) listed
         // in ssr.external must be externalized from ALL server environments.
         // Vite's SSROptions.external is `string[] | true`; handle both forms.
+        //
+        // Also merge in `serverExternalPackages` from next.config (and the
+        // legacy `experimental.serverComponentsExternalPackages` alias). These
+        // are packages that Next.js intentionally skips bundling and loads
+        // natively — e.g. packages that import Node-specific entry points via
+        // conditional exports (like `file-type` which exports `fileTypeFromFile`
+        // only from its `node` condition, not from the universal `default` one).
+        // Without externalizing them, Vite's optimizer picks the wrong export
+        // condition and the build fails with MISSING_EXPORT errors.
+        const nextServerExternal: string[] = nextConfig?.serverExternalPackages ?? [];
         const userSsrExternal: string[] | true = Array.isArray(config.ssr?.external)
-          ? config.ssr.external
+          ? [...config.ssr.external, ...nextServerExternal]
           : config.ssr?.external === true
             ? true
-            : [];
+            : nextServerExternal;
 
         // If app/ directory exists, configure RSC environments
         if (hasAppDir) {
@@ -1366,7 +1410,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // imports to leak to Node's native ESM loader (ERR_UNSUPPORTED_ESM_URL_SCHEME).
               consumer: "client",
               optimizeDeps: {
-                exclude: ["vinext"],
+                // Exclude server-external packages from the client dep optimizer.
+                // These packages are server-only by design (listed in next.config's
+                // `serverExternalPackages`). If the client optimizer crawls into
+                // them through app/ entries, it will use browser export conditions
+                // and pick the wrong conditional export (e.g. `file-type` exports
+                // `fileTypeFromFile` only from its `node` condition via `index.js`,
+                // but the browser optimizer resolves to `core.js` which lacks it,
+                // causing MISSING_EXPORT build failures).
+                exclude: ["vinext", "@vercel/og", ...nextServerExternal],
                 // Crawl app/ source files up front so client-only deps imported
                 // by user components are discovered during startup instead of
                 // triggering a late re-optimisation + full page reload.
@@ -1423,6 +1475,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configResolved(config) {
+        // Detect double React plugin registration. When vinext auto-injects
+        // @vitejs/plugin-react AND the user also registers it manually, the
+        // React transform / refresh pipeline runs twice.
+        if (reactPluginPromise) {
+          // Assumes @vitejs/plugin-react top-level plugin names continue to use
+          // the vite:react* prefix across supported versions.
+          const reactRootPlugins = config.plugins.filter(
+            (p: any) => p && typeof p.name === "string" && p.name.startsWith("vite:react"),
+          );
+          const counts = new Map<string, number>();
+          for (const plugin of reactRootPlugins) {
+            counts.set(plugin.name, (counts.get(plugin.name) ?? 0) + 1);
+          }
+          const hasDuplicateReactPlugin = [...counts.values()].some((count) => count > 1);
+          if (hasDuplicateReactPlugin) {
+            throw new Error(
+              "[vinext] Duplicate @vitejs/plugin-react detected.\n" +
+                "         vinext auto-registers @vitejs/plugin-react by default.\n" +
+                "         Your config also registers it manually, which duplicates React transforms.\n\n" +
+                "         Fix: remove the explicit react() call from your plugins array.\n" +
+                "         Or: pass react: false to vinext() if you want to configure react() yourself.",
+            );
+          }
+        }
+
         // Detect double RSC plugin registration. When vinext auto-injects
         // @vitejs/plugin-rsc AND the user also registers it manually, the
         // RSC transform pipeline runs twice — doubling build time.
@@ -1985,7 +2062,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   res.end("Only relative URLs allowed");
                   return;
                 }
-                res.writeHead(302, { Location: imgUrl });
+                const encodedLocation = resolvedImg.pathname + resolvedImg.search;
+                res.writeHead(302, { Location: encodedLocation });
                 res.end();
                 return;
               }
@@ -2221,7 +2299,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   req.url = url;
                 }
                 if (result.rewriteStatus) {
-                  (req as any).__vinextRewriteStatus = result.rewriteStatus;
+                  req.__vinextRewriteStatus = result.rewriteStatus;
                 }
               }
 
@@ -2310,7 +2388,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 nextConfig?.basePath ?? "",
                 nextConfig?.trailingSlash ?? false,
               );
-              const mwStatus = (req as any).__vinextRewriteStatus as number | undefined;
+              const mwStatus = req.__vinextRewriteStatus;
 
               // Try rendering the resolved URL
               const match = matchRoute(resolvedUrl.split("?")[0], routes);
@@ -3508,7 +3586,7 @@ async function proxyExternalRewriteNode(
     };
     if (hasBody) {
       const { Readable } = await import("node:stream");
-      init.body = Readable.toWeb(req) as unknown as ReadableStream;
+      init.body = Readable.toWeb(req) as ReadableStream;
       init.duplex = "half";
     }
     const webRequest = new Request(new URL(req.url ?? "/", origin), init);
@@ -3530,7 +3608,7 @@ async function proxyExternalRewriteNode(
     if (proxyResponse.body) {
       const { Readable: ReadableImport } = await import("node:stream");
       const nodeStream = ReadableImport.fromWeb(
-        proxyResponse.body as unknown as import("stream/web").ReadableStream,
+        proxyResponse.body as import("stream/web").ReadableStream,
       );
       nodeStream.pipe(res);
     } else {

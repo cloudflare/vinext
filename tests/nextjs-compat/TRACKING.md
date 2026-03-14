@@ -706,22 +706,23 @@ against our Vite-based fixture apps. Each test links back to the OpenNext source
 **Source**: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/methods.test.ts
 **Local**: `tests/e2e/app-router/api-routes.spec.ts` (enhanced)
 
-| #   | OpenNext Test                                    | Vinext Status | Notes                                                        |
-| --- | ------------------------------------------------ | ------------- | ------------------------------------------------------------ |
-| 1   | GET returns 200 with JSON                        | PASS          | Already tested                                               |
-| 2   | POST with text body, status-based responses      | PASS          | Already tested                                               |
-| 3   | PUT returns 201 with JSON                        | PASS          | New test                                                     |
-| 4   | PATCH returns 202 with timestamp                 | PASS          | New test                                                     |
-| 5   | DELETE returns 204                               | PASS          | New test                                                     |
-| 6   | HEAD returns 200 with custom headers, empty body | PASS          | Already tested                                               |
-| 7   | OPTIONS returns 204 with Allow header            | FIXME         | vinext auto-OPTIONS does not set Allow header — feature gap  |
-| 8   | formData POST works                              | PASS          | New test                                                     |
-| 9   | Cookies set via route handler                    | PASS          | Already tested                                               |
-| 10  | redirect() in route handler returns 307          | PASS          | Already tested                                               |
-| 11  | Dynamic segment params in route handler          | PASS          | Already tested                                               |
-| 12  | Query parameters in route handler                | PASS          | New test                                                     |
-| 13  | Static GET route has `s-maxage` Cache-Control    | FIXME         | vinext does not read `revalidate` from route handler modules |
-| 14  | Revalidation timing in GET route handler         | FIXME         | Same: route handler cache headers not implemented            |
+| #   | OpenNext Test                                    | Vinext Status | Notes                                                                                                   |
+| --- | ------------------------------------------------ | ------------- | ------------------------------------------------------------------------------------------------------- |
+| 1   | GET returns 200 with JSON                        | PASS          | Already tested                                                                                          |
+| 2   | POST with text body, status-based responses      | PASS          | Already tested                                                                                          |
+| 3   | PUT returns 201 with JSON                        | PASS          | New test                                                                                                |
+| 4   | PATCH returns 202 with timestamp                 | PASS          | New test                                                                                                |
+| 5   | DELETE returns 204                               | PASS          | New test                                                                                                |
+| 6   | HEAD returns 200 with custom headers, empty body | PASS          | Already tested                                                                                          |
+| 7   | OPTIONS returns 204 with Allow header            | PASS          | Auto-OPTIONS now sorts the Allow list to match Next.js and 405 responses no longer emit Allow           |
+| 8   | formData POST works                              | PASS          | New test                                                                                                |
+| 9   | Cookies set via route handler                    | PASS          | Already tested                                                                                          |
+| 10  | redirect() in route handler returns 307          | PASS          | Already tested                                                                                          |
+| 11  | Dynamic segment params in route handler          | PASS          | Already tested                                                                                          |
+| 12  | Query parameters in route handler                | PASS          | New test                                                                                                |
+| 13  | Static GET route has `s-maxage` Cache-Control    | FIXME         | vinext does not read `revalidate` from route handler modules                                            |
+| 14  | Revalidation timing in GET route handler         | FIXME         | Same: route handler cache headers not implemented                                                       |
+| 15  | Route handler default export is ignored          | PASS          | Next.js parity: default export is ignored for dispatch (dev warning only); unmatched methods return 405 |
 
 ### ON-4: SSR + loading.tsx Suspense Timing
 

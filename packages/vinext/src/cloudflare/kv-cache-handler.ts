@@ -30,8 +30,37 @@
 
 import { Buffer } from "node:buffer";
 
-import type { CacheHandler, CacheHandlerValue, IncrementalCacheValue } from "../shims/cache.js";
+import type {
+  CacheHandler,
+  CacheHandlerValue,
+  CachedAppPageValue,
+  CachedRouteValue,
+  CachedImageValue,
+  IncrementalCacheValue,
+} from "../shims/cache.js";
 import { getRequestExecutionContext, type ExecutionContextLike } from "../shims/request-context.js";
+
+// ---------------------------------------------------------------------------
+// Serialized cache value types — ArrayBuffer fields replaced with base64 strings
+// for JSON storage in KV.
+// ---------------------------------------------------------------------------
+
+type SerializedCachedAppPageValue = Omit<CachedAppPageValue, "rscData"> & {
+  rscData: string | undefined;
+};
+type SerializedCachedRouteValue = Omit<CachedRouteValue, "body"> & { body?: string };
+type SerializedCachedImageValue = Omit<CachedImageValue, "buffer"> & { buffer?: string };
+
+/**
+ * A variant of `IncrementalCacheValue` safe for JSON serialization:
+ * `ArrayBuffer` fields on APP_PAGE, APP_ROUTE, and IMAGE entries are stored
+ * as base64 strings and restored to `ArrayBuffer` after `JSON.parse`.
+ */
+type SerializedIncrementalCacheValue =
+  | Exclude<IncrementalCacheValue, CachedAppPageValue | CachedRouteValue | CachedImageValue>
+  | SerializedCachedAppPageValue
+  | SerializedCachedRouteValue
+  | SerializedCachedImageValue;
 
 // Cloudflare KV namespace interface (matches Workers types)
 interface KVNamespace {
@@ -52,7 +81,7 @@ interface KVNamespace {
 
 /** Shape stored in KV for each cache entry. */
 interface KVCacheEntry {
-  value: IncrementalCacheValue | null;
+  value: SerializedIncrementalCacheValue | null;
   tags: string[];
   lastModified: number;
   /** Absolute timestamp (ms) after which the entry is "stale" (but still served). */
@@ -138,9 +167,10 @@ export class KVCacheHandler implements CacheHandler {
     }
 
     // Restore ArrayBuffer fields that were base64-encoded for JSON storage
+    let restoredValue: IncrementalCacheValue | null = null;
     if (entry.value) {
-      const ok = restoreArrayBuffers(entry.value);
-      if (!ok) {
+      restoredValue = restoreArrayBuffers(entry.value);
+      if (!restoredValue) {
         // base64 decode failed — corrupted entry, treat as miss
         this._deleteInBackground(kvKey);
         return null;
@@ -206,14 +236,14 @@ export class KVCacheHandler implements CacheHandler {
     if (entry.revalidateAt !== null && Date.now() > entry.revalidateAt) {
       return {
         lastModified: entry.lastModified,
-        value: entry.value,
+        value: restoredValue,
         cacheState: "stale",
       };
     }
 
     return {
       lastModified: entry.lastModified,
-      value: entry.value,
+      value: restoredValue,
     };
   }
 
@@ -396,23 +426,23 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
  * Deep-clone a cache value, converting ArrayBuffer fields to base64 strings
  * so the entire structure can be JSON.stringify'd for KV storage.
  */
-function serializeForJSON(value: IncrementalCacheValue): IncrementalCacheValue {
+function serializeForJSON(value: IncrementalCacheValue): SerializedIncrementalCacheValue {
   if (value.kind === "APP_PAGE") {
     return {
       ...value,
-      rscData: value.rscData ? (arrayBufferToBase64(value.rscData) as any) : undefined,
+      rscData: value.rscData ? arrayBufferToBase64(value.rscData) : undefined,
     };
   }
   if (value.kind === "APP_ROUTE") {
     return {
       ...value,
-      body: arrayBufferToBase64(value.body) as any,
+      body: arrayBufferToBase64(value.body),
     };
   }
   if (value.kind === "IMAGE") {
     return {
       ...value,
-      buffer: arrayBufferToBase64(value.buffer) as any,
+      buffer: arrayBufferToBase64(value.buffer),
     };
   }
   return value;
@@ -420,25 +450,35 @@ function serializeForJSON(value: IncrementalCacheValue): IncrementalCacheValue {
 
 /**
  * Restore base64 strings back to ArrayBuffers after JSON.parse.
- * Returns false if any base64 decode fails (corrupted entry).
+ * Returns the restored `IncrementalCacheValue`, or `null` if any base64
+ * decode fails (corrupted entry).
  */
-function restoreArrayBuffers(value: IncrementalCacheValue): boolean {
-  if (value.kind === "APP_PAGE" && typeof value.rscData === "string") {
-    const decoded = safeBase64ToArrayBuffer(value.rscData as any);
-    if (!decoded) return false;
-    (value as any).rscData = decoded;
+function restoreArrayBuffers(value: SerializedIncrementalCacheValue): IncrementalCacheValue | null {
+  if (value.kind === "APP_PAGE") {
+    if (typeof value.rscData === "string") {
+      const decoded = safeBase64ToArrayBuffer(value.rscData);
+      if (!decoded) return null;
+      return { ...value, rscData: decoded };
+    }
+    return value as IncrementalCacheValue;
   }
-  if (value.kind === "APP_ROUTE" && typeof value.body === "string") {
-    const decoded = safeBase64ToArrayBuffer(value.body as any);
-    if (!decoded) return false;
-    (value as any).body = decoded;
+  if (value.kind === "APP_ROUTE") {
+    if (typeof value.body === "string") {
+      const decoded = safeBase64ToArrayBuffer(value.body);
+      if (!decoded) return null;
+      return { ...value, body: decoded };
+    }
+    return value as unknown as IncrementalCacheValue;
   }
-  if (value.kind === "IMAGE" && typeof value.buffer === "string") {
-    const decoded = safeBase64ToArrayBuffer(value.buffer as any);
-    if (!decoded) return false;
-    (value as any).buffer = decoded;
+  if (value.kind === "IMAGE") {
+    if (typeof value.buffer === "string") {
+      const decoded = safeBase64ToArrayBuffer(value.buffer);
+      if (!decoded) return null;
+      return { ...value, buffer: decoded };
+    }
+    return value as unknown as IncrementalCacheValue;
   }
-  return true;
+  return value;
 }
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {

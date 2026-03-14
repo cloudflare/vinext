@@ -178,6 +178,24 @@ describe("Pages Router integration", () => {
     expect(headSection).toContain("Hello vinext");
   });
 
+  it("keeps ISR cache-fill rerenders isolated from the streamed render state", async () => {
+    const firstRes = await fetch(`${baseUrl}/isr-second-render-state`);
+    expect(firstRes.status).toBe(200);
+    expect(firstRes.headers.get("x-vinext-cache")).toBe("MISS");
+    const firstHtml = await firstRes.text();
+    expect(firstHtml).toContain('data-testid="head-before">0<');
+    expect(firstHtml).toContain('data-testid="private-cache-before">0<');
+    expect(firstHtml).toContain('data-testid="inserted-html-before">0<');
+
+    const secondRes = await fetch(`${baseUrl}/isr-second-render-state`);
+    expect(secondRes.status).toBe(200);
+    expect(secondRes.headers.get("x-vinext-cache")).toBe("HIT");
+    const secondHtml = await secondRes.text();
+    expect(secondHtml).toContain('data-testid="head-before">0<');
+    expect(secondHtml).toContain('data-testid="private-cache-before">0<');
+    expect(secondHtml).toContain('data-testid="inserted-html-before">0<');
+  });
+
   it("includes __NEXT_DATA__ script tag", async () => {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();
@@ -1009,6 +1027,49 @@ describe("Virtual server entry generation", () => {
 });
 
 describe("Plugin config", () => {
+  it("auto-injects @vitejs/plugin-react as a top-level async plugin", async () => {
+    const plugins = vinext() as any[];
+    const resolvedPlugins = (
+      await Promise.all(
+        plugins.map(async (plugin) => {
+          if (plugin && typeof plugin.then === "function") {
+            return await plugin;
+          }
+          return plugin;
+        }),
+      )
+    ).flat();
+
+    const hasReactPlugin = resolvedPlugins.some(
+      (plugin) => plugin && typeof plugin.name === "string" && plugin.name.startsWith("vite:react"),
+    );
+    expect(hasReactPlugin).toBe(true);
+  });
+
+  it("throws when user double-registers react() alongside auto-registration", async () => {
+    const plugins = vinext() as any[];
+    const configPlugin = plugins.find((p) => p.name === "vinext:config");
+    expect(configPlugin).toBeDefined();
+
+    await configPlugin.config(
+      { root: FIXTURE_DIR, plugins: [] },
+      { command: "serve", mode: "development" },
+    );
+
+    expect(() =>
+      configPlugin.configResolved({
+        command: "serve",
+        configFile: false,
+        plugins: [
+          { name: "vite:react-babel" },
+          { name: "vite:react-refresh" },
+          { name: "vite:react-babel" },
+          { name: "vite:react-refresh" },
+        ],
+      }),
+    ).toThrow("Duplicate @vitejs/plugin-react detected");
+  });
+
   it("adds resolve.dedupe for React packages to prevent dual instance errors", async () => {
     const plugins = vinext() as any[];
     const configPlugin = plugins.find((p) => p.name === "vinext:config");
@@ -1703,6 +1764,22 @@ export default function CounterPage() {
       expect(aboutRes.status).toBe(200);
       const aboutHtml = await aboutRes.text();
       expect(aboutHtml).toContain("About");
+
+      const isrFirstRes = await fetch(`${prodUrl}/isr-second-render-state`);
+      expect(isrFirstRes.status).toBe(200);
+      expect(isrFirstRes.headers.get("x-vinext-cache")).toBe("MISS");
+      const isrFirstHtml = await isrFirstRes.text();
+      expect(isrFirstHtml).toContain('data-testid="head-before">0<');
+      expect(isrFirstHtml).toContain('data-testid="private-cache-before">0<');
+      expect(isrFirstHtml).toContain('data-testid="inserted-html-before">0<');
+
+      const isrSecondRes = await fetch(`${prodUrl}/isr-second-render-state`);
+      expect(isrSecondRes.status).toBe(200);
+      expect(isrSecondRes.headers.get("x-vinext-cache")).toBe("HIT");
+      const isrSecondHtml = await isrSecondRes.text();
+      expect(isrSecondHtml).toContain('data-testid="head-before">0<');
+      expect(isrSecondHtml).toContain('data-testid="private-cache-before">0<');
+      expect(isrSecondHtml).toContain('data-testid="inserted-html-before">0<');
 
       // Test: SSR page with getServerSideProps
       const ssrRes = await fetch(`${prodUrl}/ssr`);
@@ -2788,5 +2865,163 @@ describe("router __NEXT_DATA__ correctness (Pages Router)", () => {
     const nextData = JSON.parse(match![1]);
     expect(nextData.page).toBe("/shallow-test");
     expect(nextData.props.pageProps.gsspCallId).toBeGreaterThan(0);
+  });
+});
+
+describe("Pages Router dev ISR regeneration", () => {
+  it("wraps stale regeneration in a fresh unified request context", async () => {
+    vi.resetModules();
+
+    let regenPromise: Promise<void> | null = null;
+    const isrSetSpy = vi.fn().mockResolvedValue(undefined);
+
+    vi.doMock("../packages/vinext/src/server/isr-cache.js", async () => {
+      const actual = await vi.importActual<
+        typeof import("../packages/vinext/src/server/isr-cache.js")
+      >("../packages/vinext/src/server/isr-cache.js");
+
+      return {
+        ...actual,
+        getRevalidateDuration: vi.fn(() => 1),
+        isrGet: vi.fn().mockResolvedValue({
+          isStale: true,
+          value: {
+            value: actual.buildPagesCacheValue("<html><body>stale</body></html>", {
+              timestamp: 1,
+              message: "stale",
+            }),
+            cacheState: "stale",
+          },
+        }),
+        isrSet: isrSetSpy,
+        triggerBackgroundRegeneration: vi.fn((_key: string, renderFn: () => Promise<void>) => {
+          regenPromise = renderFn();
+        }),
+      };
+    });
+
+    try {
+      const [
+        { createSSRHandler },
+        { getRequestContext, isInsideUnifiedScope },
+        { getRequestExecutionContext, runWithExecutionContext },
+      ] = await Promise.all([
+        import("../packages/vinext/src/server/dev-server.js"),
+        import("../packages/vinext/src/shims/unified-request-context.js"),
+        import("../packages/vinext/src/shims/request-context.js"),
+      ]);
+
+      let parentRequestTags: string[] = [];
+      let regenSawUnifiedScope = false;
+      let regenTags: string[] = [];
+      let regenExecutionContext: unknown;
+      let regenUnifiedExecutionContext: unknown;
+      const outerExecutionContext = {
+        waitUntil() {},
+      };
+
+      const routeFile = path.join(FIXTURE_DIR, "pages", "isr-test.tsx");
+      const server = {
+        transformIndexHtml: vi.fn(async (_url: string, html: string) => html),
+        ssrLoadModule: vi.fn(async (id: string) => {
+          if (id === "next/router") {
+            return {
+              setSSRContext() {
+                getRequestContext().currentRequestTags.push("outer-tag");
+                parentRequestTags = [...getRequestContext().currentRequestTags];
+              },
+              wrapWithRouterContext(element: unknown) {
+                return element;
+              },
+            };
+          }
+
+          if (id === routeFile) {
+            return {
+              default() {
+                return null;
+              },
+              async getStaticProps() {
+                regenSawUnifiedScope = isInsideUnifiedScope();
+                regenTags = [...getRequestContext().currentRequestTags];
+                regenExecutionContext = getRequestExecutionContext();
+                regenUnifiedExecutionContext = getRequestContext().executionContext;
+                return {
+                  props: {
+                    timestamp: Date.now(),
+                    message: "fresh",
+                  },
+                  revalidate: 1,
+                };
+              },
+            };
+          }
+
+          throw new Error(`Unexpected module load: ${id}`);
+        }),
+      } as unknown as ViteDevServer;
+
+      const handler = createSSRHandler(
+        server,
+        [
+          {
+            pattern: "/isr-test",
+            patternParts: ["isr-test"],
+            filePath: routeFile,
+            isDynamic: false,
+            params: [],
+          },
+        ],
+        path.join(FIXTURE_DIR, "pages"),
+      );
+
+      const finishListeners: Array<() => void> = [];
+      const res = {
+        statusCode: 200,
+        on(event: string, listener: () => void) {
+          if (event === "finish") {
+            finishListeners.push(listener);
+          }
+          return this;
+        },
+        writeHead: vi.fn(function (this: { statusCode: number }, status: number) {
+          this.statusCode = status;
+          return this;
+        }),
+        end: vi.fn(() => {
+          for (const listener of finishListeners) {
+            listener();
+          }
+        }),
+      } as any;
+
+      await runWithExecutionContext(outerExecutionContext, () =>
+        handler({ method: "GET", headers: {} } as any, res, "/isr-test"),
+      );
+
+      expect(parentRequestTags).toEqual(["outer-tag"]);
+      expect(res.writeHead).toHaveBeenCalledWith(
+        200,
+        expect.objectContaining({
+          "X-Vinext-Cache": "STALE",
+        }),
+      );
+
+      if (!regenPromise) {
+        throw new Error("expected stale ISR request to start background regeneration");
+      }
+
+      await regenPromise;
+
+      expect(regenSawUnifiedScope).toBe(true);
+      expect(regenTags).toEqual([]);
+      expect(regenExecutionContext).toBeNull();
+      expect(regenUnifiedExecutionContext).toBeNull();
+      expect(isrSetSpy).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("../packages/vinext/src/server/isr-cache.js");
+      vi.resetModules();
+      vi.restoreAllMocks();
+    }
   });
 });

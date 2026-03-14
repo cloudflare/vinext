@@ -719,6 +719,17 @@ describe("generatePagesRouterViteConfig", () => {
 // ─── getMissingDeps ──────────────────────────────────────────────────────────
 
 describe("getMissingDeps", () => {
+  it("reports missing @vitejs/plugin-react", () => {
+    mkdir(tmpDir, "pages");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+
+    const notResolvable = () => false;
+    const missing = getMissingDeps(info, notResolvable);
+    expect(missing).toContainEqual(expect.objectContaining({ name: "@vitejs/plugin-react" }));
+  });
+
   it("reports missing @cloudflare/vite-plugin", () => {
     mkdir(tmpDir, "app");
     const info = detectProject(tmpDir);
@@ -1505,8 +1516,20 @@ describe("getMissingDeps — MDX", () => {
     info.hasCloudflarePlugin = true;
     info.hasWrangler = true;
     info.hasRscPlugin = true;
-    const missing = getMissingDeps(info);
+    const missing = getMissingDeps(info, (root, pkg) => pkg !== "@mdx-js/rollup");
     expect(missing).toContainEqual(expect.objectContaining({ name: "@mdx-js/rollup" }));
+  });
+
+  it("does not report @mdx-js/rollup when it is resolvable", () => {
+    mkdir(tmpDir, "app");
+    writeFile(tmpDir, "app/about/page.mdx", "# About");
+    const info = detectProject(tmpDir);
+    info.hasCloudflarePlugin = true;
+    info.hasWrangler = true;
+    info.hasRscPlugin = true;
+
+    const missing = getMissingDeps(info, () => true);
+    expect(missing).not.toContainEqual(expect.objectContaining({ name: "@mdx-js/rollup" }));
   });
 });
 

@@ -5,7 +5,7 @@
  *
  *   1. Detects App Router vs Pages Router
  *   2. Auto-generates missing config files (wrangler.jsonc, worker/index.ts, vite.config.ts)
- *   3. Ensures dependencies are installed (@cloudflare/vite-plugin, wrangler, @vitejs/plugin-rsc)
+ *   3. Ensures dependencies are installed (@cloudflare/vite-plugin, wrangler, @vitejs/plugin-react, App Router deps)
  *   4. Runs the Vite build
  *   5. Deploys to Cloudflare Workers via wrangler
  *
@@ -957,6 +957,9 @@ export function getMissingDeps(
   if (!info.hasWrangler) {
     missing.push({ name: "wrangler", version: "latest" });
   }
+  if (!_isResolvable(info.root, "@vitejs/plugin-react")) {
+    missing.push({ name: "@vitejs/plugin-react", version: "latest" });
+  }
   if (info.isAppRouter && !info.hasRscPlugin) {
     missing.push({ name: "@vitejs/plugin-rsc", version: "latest" });
   }
@@ -967,9 +970,8 @@ export function getMissingDeps(
     }
   }
   if (info.hasMDX) {
-    // Check if @mdx-js/rollup is already installed (walk up for monorepo hoisting)
-    const hasMdxRollup = _findInNodeModules(info.root, "@mdx-js/rollup") !== null;
-    if (!hasMdxRollup) {
+    // @mdx-js/rollup must be resolvable from the project root for Vite.
+    if (!_isResolvable(info.root, "@mdx-js/rollup")) {
       missing.push({ name: "@mdx-js/rollup", version: "latest" });
     }
   }

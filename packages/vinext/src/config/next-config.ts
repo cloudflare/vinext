@@ -187,6 +187,12 @@ export interface NextConfig {
   cacheComponents?: boolean;
   /** Transpile packages (Vite handles this natively) */
   transpilePackages?: string[];
+  /**
+   * Packages that should be treated as server-external (not bundled by Vite).
+   * Corresponds to Next.js `serverExternalPackages` (or the legacy
+   * `experimental.serverComponentsExternalPackages`).
+   */
+  serverExternalPackages?: string[];
   /** Webpack config (ignored — we use Vite) */
   webpack?: unknown;
   /**
@@ -227,6 +233,12 @@ export interface ResolvedNextConfig {
   serverActionsAllowedOrigins: string[];
   /** Parsed body size limit for server actions in bytes (from experimental.serverActions.bodySizeLimit). Defaults to 1MB. */
   serverActionsBodySizeLimit: number;
+  /**
+   * Packages that should be treated as server-external (not bundled by Vite).
+   * Sourced from `serverExternalPackages` or the legacy
+   * `experimental.serverComponentsExternalPackages` in next.config.
+   */
+  serverExternalPackages: string[];
   /** Resolved build ID (from generateBuildId, or a random UUID if not provided). */
   buildId: string;
 }
@@ -407,6 +419,7 @@ export async function resolveNextConfig(
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
       serverActionsBodySizeLimit: 1 * 1024 * 1024,
+      serverExternalPackages: [],
       buildId,
     };
     detectNextIntlConfig(root, resolved);
@@ -486,6 +499,16 @@ export async function resolveNextConfig(
     serverActionsConfig?.bodySizeLimit as string | number | undefined,
   );
 
+  // Resolve serverExternalPackages — support the current top-level key and the
+  // legacy experimental.serverComponentsExternalPackages name that Next.js still
+  // accepts (it moved out of experimental in Next.js 14.2).
+  const legacyServerComponentsExternal = experimental?.serverComponentsExternalPackages;
+  const serverExternalPackages: string[] = Array.isArray(config.serverExternalPackages)
+    ? (config.serverExternalPackages as string[])
+    : Array.isArray(legacyServerComponentsExternal)
+      ? (legacyServerComponentsExternal as string[])
+      : [];
+
   // Warn about unsupported webpack usage. We preserve alias injection and
   // extract MDX settings, but all other webpack customization is still ignored.
   if (config.webpack !== undefined) {
@@ -540,6 +563,7 @@ export async function resolveNextConfig(
     allowedDevOrigins,
     serverActionsAllowedOrigins,
     serverActionsBodySizeLimit,
+    serverExternalPackages,
     buildId,
   };
 

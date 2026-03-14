@@ -8,15 +8,21 @@
  * be bundled for the browser.
  */
 
+import type React from "react";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { _registerHeadStateAccessors } from "./head.js";
+import {
+  getRequestContext,
+  isInsideUnifiedScope,
+  runWithUnifiedStateMutation,
+} from "./unified-request-context.js";
 
 // ---------------------------------------------------------------------------
 // ALS setup
 // ---------------------------------------------------------------------------
 
-interface HeadState {
-  ssrHeadElements: string[];
+export interface HeadState {
+  ssrHeadChildren: React.ReactNode[];
 }
 
 const _ALS_KEY = Symbol.for("vinext.head.als");
@@ -25,10 +31,13 @@ const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 const _als = (_g[_ALS_KEY] ??= new AsyncLocalStorage<HeadState>()) as AsyncLocalStorage<HeadState>;
 
 const _fallbackState = (_g[_FALLBACK_KEY] ??= {
-  ssrHeadElements: [],
+  ssrHeadChildren: [],
 } satisfies HeadState) as HeadState;
 
 function _getState(): HeadState {
+  if (isInsideUnifiedScope()) {
+    return getRequestContext();
+  }
   return _als.getStore() ?? _fallbackState;
 }
 
@@ -38,8 +47,14 @@ function _getState(): HeadState {
  * on concurrent runtimes.
  */
 export function runWithHeadState<T>(fn: () => T | Promise<T>): T | Promise<T> {
+  if (isInsideUnifiedScope()) {
+    return runWithUnifiedStateMutation((uCtx) => {
+      uCtx.ssrHeadChildren = [];
+    }, fn);
+  }
+
   const state: HeadState = {
-    ssrHeadElements: [],
+    ssrHeadChildren: [],
   };
   return _als.run(state, fn);
 }
@@ -49,16 +64,11 @@ export function runWithHeadState<T>(fn: () => T | Promise<T>): T | Promise<T> {
 // ---------------------------------------------------------------------------
 
 _registerHeadStateAccessors({
-  getSSRHeadElements(): string[] {
-    return _getState().ssrHeadElements;
+  getSSRHeadChildren(): React.ReactNode[] {
+    return _getState().ssrHeadChildren;
   },
 
   resetSSRHead(): void {
-    const state = _als.getStore();
-    if (state) {
-      state.ssrHeadElements = [];
-    } else {
-      _fallbackState.ssrHeadElements = [];
-    }
+    _getState().ssrHeadChildren = [];
   },
 });

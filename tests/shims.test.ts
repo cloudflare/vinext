@@ -3,6 +3,8 @@ import path from "node:path";
 import { PAGES_FIXTURE_DIR } from "./helpers.js";
 import { isExternalUrl, isHashOnlyChange } from "../packages/vinext/src/shims/router.js";
 import { isValidModulePath } from "../packages/vinext/src/client/validate-module-path.js";
+import vinext from "../packages/vinext/src/index.js";
+import type { Plugin } from "vite";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -3013,8 +3015,9 @@ describe("double-encoded path handling in middleware", () => {
     expect(entryCode).not.toMatch(/normalizedRequest\s*=\s*new Request\(normalizedUrl/);
     // It should still validate malformed encoding (return 400)
     expect(entryCode).toContain("decodeURIComponent(rawPathname)");
-    // The delegate call should pass `request` (not normalizedRequest)
-    expect(entryCode).toMatch(/rscHandler\(request\)/);
+    // The delegate call should pass the original request object through,
+    // without reconstructing a normalized Request before delegation.
+    expect(entryCode).toMatch(/rscHandler\(request(?:,\s*ctx)?\)/);
   });
 });
 
@@ -3218,6 +3221,174 @@ describe("RequestCookies API", () => {
     const data = cookies.get("data");
     expect(data).toBeDefined();
     expect(data!.value).toBe("base64=encoded=value");
+  });
+
+  it("set() adds a cookie and updates the Cookie header", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1" });
+    const cookies = new RequestCookies(headers);
+
+    cookies.set("b", "2");
+
+    expect(cookies.get("b")).toEqual({ name: "b", value: "2" });
+    // The underlying Cookie header should be updated
+    expect(headers.get("cookie")).toContain("b=2");
+    // Original cookie should still be there
+    expect(cookies.get("a")).toEqual({ name: "a", value: "1" });
+  });
+
+  it("set() overwrites an existing cookie value", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "token=old" });
+    const cookies = new RequestCookies(headers);
+
+    cookies.set("token", "new");
+
+    expect(cookies.get("token")).toEqual({ name: "token", value: "new" });
+    expect(headers.get("cookie")).toContain("token=new");
+    expect(headers.get("cookie")).not.toContain("token=old");
+  });
+
+  it("set() accepts an object with name and value", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    cookies.set({ name: "session", value: "abc" });
+
+    expect(cookies.get("session")).toEqual({ name: "session", value: "abc" });
+  });
+
+  it("set() returns this for chaining", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    const result = cookies.set("a", "1").set("b", "2");
+
+    expect(result).toBe(cookies);
+    expect(cookies.get("a")).toEqual({ name: "a", value: "1" });
+    expect(cookies.get("b")).toEqual({ name: "b", value: "2" });
+  });
+
+  it("delete() removes a cookie from the Cookie header", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1; b=2; c=3" });
+    const cookies = new RequestCookies(headers);
+
+    cookies.delete("b");
+
+    expect(cookies.has("b")).toBe(false);
+    expect(cookies.get("b")).toBeUndefined();
+    // Other cookies remain
+    expect(cookies.get("a")).toEqual({ name: "a", value: "1" });
+    expect(cookies.get("c")).toEqual({ name: "c", value: "3" });
+  });
+
+  it("delete() returns true when cookie existed, false otherwise", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1; b=2" });
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.delete("a")).toBe(true);
+    expect(cookies.delete("nonexistent")).toBe(false);
+  });
+
+  it("delete() accepts an array of names", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1; b=2; c=3" });
+    const cookies = new RequestCookies(headers);
+
+    const results = cookies.delete(["a", "missing", "c"]);
+
+    expect(results).toEqual([true, false, true]);
+    expect(cookies.has("a")).toBe(false);
+    expect(cookies.has("c")).toBe(false);
+    expect(cookies.get("b")).toEqual({ name: "b", value: "2" });
+  });
+
+  it("delete() is a no-op for missing cookies", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1" });
+    const cookies = new RequestCookies(headers);
+
+    cookies.delete("nonexistent");
+
+    expect(cookies.get("a")).toEqual({ name: "a", value: "1" });
+  });
+
+  it("size returns the number of cookies", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1; b=2; c=3" });
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.size).toBe(3);
+  });
+
+  it("size is 0 for empty cookie header", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    expect(cookies.size).toBe(0);
+  });
+
+  it("toString() serializes cookies back to a cookie header string", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1; b=2" });
+    const cookies = new RequestCookies(headers);
+
+    const str = cookies.toString();
+    expect(str).toContain("a=1");
+    expect(str).toContain("b=2");
+  });
+
+  it("set() round-trips values with special characters", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new RequestCookies(headers);
+
+    cookies.set("data", "hello;world=foo");
+
+    expect(cookies.get("data")).toEqual({ name: "data", value: "hello;world=foo" });
+    // Header should be encoded
+    expect(headers.get("cookie")).toBe("data=hello%3Bworld%3Dfoo");
+  });
+
+  it("set() preserves existing percent-encoded cookies", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "token=100%25done; sid=abc" });
+    const cookies = new RequestCookies(headers);
+
+    cookies.set("new", "value");
+
+    expect(cookies.get("token")).toEqual({ name: "token", value: "100%done" });
+    expect(cookies.get("new")).toEqual({ name: "new", value: "value" });
+  });
+
+  it("delete() after set() removes the cookie", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1" });
+    const cookies = new RequestCookies(headers);
+
+    cookies.set("b", "2");
+    expect(cookies.get("b")).toEqual({ name: "b", value: "2" });
+
+    cookies.delete("b");
+    expect(cookies.has("b")).toBe(false);
+    expect(cookies.get("a")).toEqual({ name: "a", value: "1" });
+  });
+
+  it("clear() removes all cookies", async () => {
+    const { RequestCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers({ cookie: "a=1; b=2; c=3" });
+    const cookies = new RequestCookies(headers);
+
+    cookies.clear();
+
+    expect(cookies.size).toBe(0);
+    expect(cookies.getAll()).toHaveLength(0);
+    expect(headers.get("cookie")).toBeNull();
   });
 });
 
@@ -8074,12 +8245,15 @@ describe("handleImageOptimization", () => {
     const { handleImageOptimization } =
       await import("../packages/vinext/src/server/image-optimization.js");
     const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    let fetchCount = 0;
     const handlers = {
-      fetchAsset: async () =>
-        new Response("original", {
+      fetchAsset: async () => {
+        fetchCount += 1;
+        return new Response("original", {
           status: 200,
           headers: { "Content-Type": "image/png" },
-        }),
+        });
+      },
       transformImage: async () => {
         throw new Error("transform failed");
       },
@@ -8087,6 +8261,113 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("original");
+    expect(fetchCount).toBe(1);
+  });
+
+  it("refetches the source when transform consumes the stream before failing", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    let fetchCount = 0;
+    const handlers = {
+      fetchAsset: async () => {
+        fetchCount += 1;
+        return new Response(fetchCount === 1 ? "original" : "refetched", {
+          status: 200,
+          headers: { "Content-Type": "image/png" },
+        });
+      },
+      transformImage: async (body: ReadableStream) => {
+        await new Response(body).arrayBuffer();
+        throw new Error("transform failed after consuming stream");
+      },
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe("refetched");
+    expect(fetchCount).toBe(2);
+  });
+
+  it("uses refetched source headers when consumed transform falls back", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    let fetchCount = 0;
+    const handlers = {
+      fetchAsset: async () => {
+        fetchCount += 1;
+        return new Response(fetchCount === 1 ? "original" : "refetched", {
+          status: 200,
+          headers: {
+            "Content-Type": fetchCount === 1 ? "image/png" : "image/jpeg",
+            ETag: fetchCount === 1 ? '"source-etag"' : '"refetched-etag"',
+          },
+        });
+      },
+      transformImage: async (body: ReadableStream) => {
+        await new Response(body).arrayBuffer();
+        throw new Error("transform failed after consuming stream");
+      },
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(response.status).toBe(200);
+    expect(fetchCount).toBe(2);
+    expect(response.headers.get("Content-Type")).toBe("image/jpeg");
+    expect(response.headers.get("ETag")).toBe('"refetched-etag"');
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(response.headers.get("Vary")).toBe("Accept");
+  });
+
+  it("returns 404 when refetch fallback cannot reload the source image", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    let fetchCount = 0;
+    const handlers = {
+      fetchAsset: async () => {
+        fetchCount += 1;
+        if (fetchCount === 1) {
+          return new Response("original", {
+            status: 200,
+            headers: { "Content-Type": "image/png" },
+          });
+        }
+        return new Response("", { status: 404 });
+      },
+      transformImage: async (body: ReadableStream) => {
+        await new Response(body).arrayBuffer();
+        throw new Error("transform failed after consuming stream");
+      },
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(fetchCount).toBe(2);
+    expect(response.status).toBe(404);
+  });
+
+  it("returns 400 when refetch fallback reloads an unsafe content type", async () => {
+    const { handleImageOptimization } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const request = new Request("http://localhost/_vinext/image?url=%2Fimg.jpg&w=800");
+    let fetchCount = 0;
+    const handlers = {
+      fetchAsset: async () => {
+        fetchCount += 1;
+        return new Response(fetchCount === 1 ? "original" : "<html>bad</html>", {
+          status: 200,
+          headers: {
+            "Content-Type": fetchCount === 1 ? "image/png" : "text/html",
+          },
+        });
+      },
+      transformImage: async (body: ReadableStream) => {
+        await new Response(body).arrayBuffer();
+        throw new Error("transform failed after consuming stream");
+      },
+    };
+    const response = await handleImageOptimization(request, handlers);
+    expect(fetchCount).toBe(2);
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("The requested resource is not an allowed image type");
   });
 
   it("returns 400 for backslash open redirect (/\\evil.com)", async () => {
@@ -9831,5 +10112,42 @@ describe("cache scope guards for dynamic APIs", () => {
     expect(callCount).toBe(1); // Cached, not called again
 
     setCacheHandler(new MemoryCacheHandler());
+  });
+});
+
+describe("shim alias map .js variants", () => {
+  it("every top-level next/* alias has a corresponding .js variant", async () => {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((p) => p.name === "vinext:config");
+    if (!configPlugin?.config) throw new Error("vinext:config plugin not found");
+
+    const hookFn = (
+      typeof configPlugin.config === "function" ? configPlugin.config : configPlugin.config.handler
+    ) as (config: { root: string }, env: { mode: string; command: string }) => Promise<any>;
+
+    const result = await hookFn(
+      { root: PAGES_FIXTURE_DIR },
+      { mode: "development", command: "serve" },
+    );
+
+    const aliases = result?.resolve?.alias as Record<string, string> | undefined;
+    expect(aliases).toBeDefined();
+
+    // Collect top-level next/<name> keys (exclude next/dist/*, next/font/*, next/compat/*, next/legacy/*)
+    const topLevel = Object.keys(aliases!).filter((key) => {
+      if (!key.startsWith("next/")) return false;
+      if (key.endsWith(".js")) return false;
+      const segment = key.slice("next/".length);
+      if (segment.startsWith("dist/")) return false;
+      if (segment.startsWith("font/")) return false;
+      if (segment.startsWith("compat/")) return false;
+      if (segment.startsWith("legacy/")) return false;
+      return true;
+    });
+
+    expect(topLevel.length).toBeGreaterThan(0);
+
+    const missing = topLevel.filter((key) => !(key + ".js" in aliases!));
+    expect(missing, `Missing .js aliases for: ${missing.join(", ")}`).toEqual([]);
   });
 });

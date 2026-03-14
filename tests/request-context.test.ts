@@ -4,6 +4,10 @@ import {
   getRequestExecutionContext,
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 
 function makeCtx(): ExecutionContextLike & { calls: Promise<unknown>[] } {
   const calls: Promise<unknown>[] = [];
@@ -106,6 +110,23 @@ describe("runWithExecutionContext", () => {
 
       // Outer scope is restored after inner exits
       expect(getRequestExecutionContext()).toBe(outerCtx);
+    });
+  });
+
+  it("restores the outer ctx when nested inside a unified request scope", () => {
+    const outerCtx = makeCtx();
+    const innerCtx = makeCtx();
+
+    runWithExecutionContext(outerCtx, () => {
+      runWithRequestContext(createRequestContext(), () => {
+        expect(getRequestExecutionContext()).toBe(outerCtx);
+
+        runWithExecutionContext(innerCtx, () => {
+          expect(getRequestExecutionContext()).toBe(innerCtx);
+        });
+
+        expect(getRequestExecutionContext()).toBe(outerCtx);
+      });
     });
   });
 });

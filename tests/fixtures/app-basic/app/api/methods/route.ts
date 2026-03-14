@@ -64,13 +64,3 @@ export async function HEAD() {
     },
   });
 }
-
-export async function OPTIONS() {
-  return new Response(null, {
-    status: 204,
-    headers: {
-      allow: "GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS",
-      special: "vinext is great",
-    },
-  });
-}

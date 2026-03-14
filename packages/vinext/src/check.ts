@@ -217,8 +217,9 @@ export function scanImports(root: string): CheckItem[] {
         const normalized = mod === "next" ? "next" : mod;
         if (!importUsage.has(normalized)) importUsage.set(normalized, []);
         const relFile = path.relative(root, file);
-        if (!importUsage.get(normalized)!.includes(relFile)) {
-          importUsage.get(normalized)!.push(relFile);
+        const usedInFiles = importUsage.get(normalized) ?? [];
+        if (!usedInFiles.includes(relFile)) {
+          usedInFiles.push(relFile);
         }
       }
     }
@@ -226,7 +227,10 @@ export function scanImports(root: string): CheckItem[] {
 
   const items: CheckItem[] = [];
   for (const [mod, usedFiles] of importUsage) {
-    const support = IMPORT_SUPPORT[mod];
+    const support =
+      IMPORT_SUPPORT[
+        mod.startsWith("next/") && mod.endsWith(".js") ? mod.replace(/\.js$/, "") : mod
+      ];
     if (support) {
       items.push({
         name: mod,
@@ -400,15 +404,15 @@ export function checkConventions(root: string): CheckItem[] {
     fs.existsSync(path.join(root, "middleware.ts")) ||
     fs.existsSync(path.join(root, "middleware.js"));
 
-  if (hasPages) {
-    const isSrc = pagesDir!.includes(path.join("src", "pages"));
+  if (pagesDir !== null) {
+    const isSrc = pagesDir.includes(path.join("src", "pages"));
     items.push({
       name: isSrc ? "Pages Router (src/pages/)" : "Pages Router (pages/)",
       status: "supported",
     });
 
     // Count pages
-    const pageFiles = findSourceFiles(pagesDir!);
+    const pageFiles = findSourceFiles(pagesDir);
     const pages = pageFiles.filter(
       (f) =>
         !f.includes("/api/") &&
@@ -431,14 +435,14 @@ export function checkConventions(root: string): CheckItem[] {
     }
   }
 
-  if (hasApp) {
-    const isSrc = appDirPath!.includes(path.join("src", "app"));
+  if (appDirPath !== null) {
+    const isSrc = appDirPath.includes(path.join("src", "app"));
     items.push({
       name: isSrc ? "App Router (src/app/)" : "App Router (app/)",
       status: "supported",
     });
 
-    const appFiles = findSourceFiles(appDirPath!);
+    const appFiles = findSourceFiles(appDirPath);
     const pages = appFiles.filter(
       (f) =>
         f.endsWith("page.tsx") ||
@@ -580,6 +584,9 @@ export function runCheck(root: string): CheckResult {
  */
 export function formatReport(result: CheckResult, opts?: { calledFromInit?: boolean }): string {
   const lines: string[] = [];
+  const hasAppRouter = result.conventions.some(
+    (item) => item.name === "App Router (app/)" || item.name === "App Router (src/app/)",
+  );
   const statusIcon = (s: Status) =>
     s === "supported"
       ? "\x1b[32m✓\x1b[0m"
@@ -691,7 +698,7 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     lines.push("  Or manually:");
     lines.push(`    1. Add \x1b[36m"type": "module"\x1b[0m to package.json`);
     lines.push(
-      `    2. Install: \x1b[36m${detectPackageManager(process.cwd())} vinext vite @vitejs/plugin-rsc\x1b[0m`,
+      `    2. Install: \x1b[36m${detectPackageManager(process.cwd())} vinext vite @vitejs/plugin-react${hasAppRouter ? " @vitejs/plugin-rsc react-server-dom-webpack" : ""}\x1b[0m`,
     );
     lines.push(`    3. Create vite.config.ts (see docs)`);
     lines.push(`    4. Run: \x1b[36mnpx vite dev\x1b[0m`);

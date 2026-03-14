@@ -8,18 +8,19 @@
     "start": "node dist/server/entry.js"
   },
   "dependencies": {
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "swr": "^2.0.0",
-    "vite": "^7.3.1",
+    "@vitejs/plugin-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "swr": "catalog:",
+    "vite": "catalog:",
     "vinext": "workspace:*"
   },
   "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.25.0",
-    "@types/node": "^25.2.3",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "typescript": "^5.7.0",
-    "wrangler": "^4.65.0"
+    "@cloudflare/vite-plugin": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "typescript": "catalog:",
+    "wrangler": "catalog:"
   }
 }

@@ -3,14 +3,14 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "next-view-transitions": "^0.3.5",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "next-view-transitions": "catalog:",
     "vinext": "workspace:*",
-    "@vitejs/plugin-rsc": "^0.5.19",
-    "react-server-dom-webpack": "^19.2.4"
+    "@vitejs/plugin-rsc": "catalog:",
+    "react-server-dom-webpack": "catalog:"
   },
   "devDependencies": {
-    "vite": "^7.3.1"
+    "vite": "catalog:"
   }
 }

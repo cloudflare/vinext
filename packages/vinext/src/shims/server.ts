@@ -292,29 +292,79 @@ interface CookieEntry {
 
 export class RequestCookies {
   private _headers: Headers;
+  private _parsed: Map<string, string>;
 
   constructor(headers: Headers) {
     this._headers = headers;
-  }
-
-  private _parse(): Map<string, string> {
-    return parseCookieHeader(this._headers.get("cookie") ?? "");
+    this._parsed = parseCookieHeader(headers.get("cookie") ?? "");
   }
 
   get(name: string): CookieEntry | undefined {
-    const value = this._parse().get(name);
+    const value = this._parsed.get(name);
     return value !== undefined ? { name, value } : undefined;
   }
 
   getAll(nameOrOptions?: string | CookieEntry): CookieEntry[] {
     const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions?.name;
-    return [...this._parse().entries()]
+    return [...this._parsed.entries()]
       .filter(([cookieName]) => name === undefined || cookieName === name)
       .map(([cookieName, value]) => ({ name: cookieName, value }));
   }
 
   has(name: string): boolean {
-    return this._parse().has(name);
+    return this._parsed.has(name);
+  }
+
+  set(nameOrOptions: string | CookieEntry, value?: string): this {
+    let cookieName: string;
+    let cookieValue: string;
+    if (typeof nameOrOptions === "string") {
+      cookieName = nameOrOptions;
+      cookieValue = value ?? "";
+    } else {
+      cookieName = nameOrOptions.name;
+      cookieValue = nameOrOptions.value;
+    }
+    this._parsed.set(cookieName, cookieValue);
+    this._syncHeader();
+    return this;
+  }
+
+  delete(names: string | string[]): boolean | boolean[] {
+    if (Array.isArray(names)) {
+      const results = names.map((name) => this._parsed.delete(name));
+      this._syncHeader();
+      return results;
+    }
+    const result = this._parsed.delete(names);
+    this._syncHeader();
+    return result;
+  }
+
+  clear(): this {
+    this._parsed.clear();
+    this._syncHeader();
+    return this;
+  }
+
+  get size(): number {
+    return this._parsed.size;
+  }
+
+  toString(): string {
+    return this._serialize();
+  }
+
+  private _serialize(): string {
+    return [...this._parsed.entries()].map(([n, v]) => `${n}=${encodeURIComponent(v)}`).join("; ");
+  }
+
+  private _syncHeader(): void {
+    if (this._parsed.size === 0) {
+      this._headers.delete("cookie");
+    } else {
+      this._headers.set("cookie", this._serialize());
+    }
   }
 
   [Symbol.iterator](): IterableIterator<[string, CookieEntry]> {

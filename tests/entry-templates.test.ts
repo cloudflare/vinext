@@ -283,6 +283,70 @@ describe("Pages Router entry templates", () => {
     expect(stabilize(code)).toContain("trieMatch");
   });
 
+  it("server entry eagerly starts ISR regeneration before waitUntil registration", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+    const renderFnCall = code.indexOf("const promise = renderFn()");
+    const waitUntilCall = code.indexOf("ctx.waitUntil(promise)");
+
+    expect(renderFnCall).toBeGreaterThan(-1);
+    expect(waitUntilCall).toBeGreaterThan(renderFnCall);
+  });
+
+  it("server entry seeds the main Pages Router unified context with executionContext", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+    const renderPageIndex = code.indexOf("async function _renderPage(request, url, manifest) {");
+    const unifiedCtxIndex = code.indexOf("const __uCtx = _createUnifiedCtx({", renderPageIndex);
+
+    expect(renderPageIndex).toBeGreaterThan(-1);
+    expect(unifiedCtxIndex).toBeGreaterThan(renderPageIndex);
+
+    const renderPageSection = code.slice(unifiedCtxIndex, unifiedCtxIndex + 200);
+    expect(renderPageSection).toContain("executionContext: _getRequestExecutionContext(),");
+  });
+
+  it("server entry wraps ISR regeneration in unified context for fetch patch", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    // Find the triggerBackgroundRegeneration call for stale cache handling
+    const staleRegenIndex = code.indexOf(
+      "triggerBackgroundRegeneration(cacheKey, async function()",
+    );
+    expect(staleRegenIndex).toBeGreaterThan(-1);
+
+    // Extract the callback body (roughly next 500 chars after the call)
+    const callbackSection = code.slice(staleRegenIndex, staleRegenIndex + 800);
+
+    // The callback should use _runWithUnifiedCtx to provide context for patched fetch
+    expect(callbackSection).toContain("_runWithUnifiedCtx");
+
+    // Prod regeneration should explicitly read the outer ExecutionContext ALS
+    // instead of relying on createRequestContext() inheritance defaults.
+    expect(callbackSection).toContain("executionContext: _getRequestExecutionContext()");
+
+    // It should also call ensureFetchPatch() to enable cache tagging during regen
+    expect(callbackSection).toContain("ensureFetchPatch");
+  });
+
+  it("server entry isolates the ISR cache-fill rerender in fresh render sub-scopes", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain("async function renderIsrPassToStringAsync(element)");
+    expect(code).toContain("runWithServerInsertedHTMLState(() =>");
+    expect(code).toContain("runWithHeadState(() =>");
+    expect(code).toContain("_runWithCacheState(() =>");
+    expect(code).toContain(
+      "runWithPrivateCache(() => runWithFetchCache(async () => renderToStringAsync(element)))",
+    );
+    expect(code).toContain("var isrHtml = await renderIsrPassToStringAsync(isrElement);");
+  });
+
+  it("server entry registers i18n state without wrapping the unified request scope", async () => {
+    const code = await getVirtualModuleCode("virtual:vinext-server-entry");
+
+    expect(code).toContain('import "vinext/i18n-state";');
+    expect(code).not.toContain("return runWithI18nState(() =>");
+  });
+
   it("server entry calls reportRequestError for SSR and API errors", async () => {
     const code = await getVirtualModuleCode("virtual:vinext-server-entry");
     // The generated prod entry must import reportRequestError
