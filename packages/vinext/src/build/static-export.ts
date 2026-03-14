@@ -761,7 +761,7 @@ async function expandDynamicAppRoute(
           for (const childParams of childResults) {
             paramSets.push({ ...parentParams, ...childParams });
           }
-        } else if (childResults != null) {
+        } else {
           throw new Error(
             `generateStaticParams() for ${route.pattern} must return an array, got ${typeof childResults}`,
           );
