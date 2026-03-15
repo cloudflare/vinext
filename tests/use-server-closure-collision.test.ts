@@ -12,11 +12,11 @@
  * and parses correctly.
  */
 
-import { describe, it, expect } from "vitest";
-import { parseAst } from "vite";
+import { describe, it, expect } from "vite-plus/test";
+import { parseAst } from "vite-plus";
 import { transformHoistInlineDirective } from "@vitejs/plugin-rsc/transforms";
 import vinext from "../packages/vinext/src/index.js";
-import type { Plugin } from "vite";
+import type { Plugin } from "vite-plus";
 
 // ---------------------------------------------------------------------------
 // Helpers
