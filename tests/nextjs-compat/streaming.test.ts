@@ -19,8 +19,8 @@
  * - fixtures/app-basic/app/nextjs-compat/streaming-test/nested/
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml } from "../helpers.js";
 
 describe("Next.js compat: streaming", () => {

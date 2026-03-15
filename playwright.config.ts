@@ -10,7 +10,7 @@ const projectServers = {
     testDir: "./tests/e2e/pages-router",
     use: { baseURL: "http://localhost:4173" },
     server: {
-      command: "npx tsc -p ../../../packages/vinext/tsconfig.json && npx vite --port 4173",
+      command: "npx tsc -p ../../../packages/vinext/tsconfig.json && npx vp dev --port 4173",
       cwd: "./tests/fixtures/pages-basic",
       port: 4173,
       reuseExistingServer: !process.env.CI,
@@ -22,7 +22,7 @@ const projectServers = {
     testMatch: ["**/app-router/**/*.spec.ts", "**/og-image.spec.ts"],
     use: { baseURL: "http://localhost:4174" },
     server: {
-      command: "npx vite --port 4174",
+      command: "npx vp dev --port 4174",
       cwd: "./tests/fixtures/app-basic",
       port: 4174,
       reuseExistingServer: !process.env.CI,
@@ -37,7 +37,7 @@ const projectServers = {
     ],
     use: { baseURL: "http://localhost:4177" },
     server: {
-      command: "npx vite build && npx wrangler dev --port 4177",
+      command: "npx vp build && npx wrangler dev --port 4177",
       cwd: "./examples/pages-router-cloudflare",
       port: 4177,
       reuseExistingServer: !process.env.CI,
@@ -67,7 +67,7 @@ const projectServers = {
     use: { baseURL: "http://localhost:4176" },
     server: {
       // Build app-router-cloudflare with Vite, then serve with wrangler dev (miniflare)
-      command: "npx vite build && npx wrangler dev --config dist/server/wrangler.json --port 4176",
+      command: "npx vp build && npx wrangler dev --config dist/server/wrangler.json --port 4176",
       cwd: "./examples/app-router-cloudflare",
       port: 4176,
       reuseExistingServer: !process.env.CI,
@@ -85,7 +85,7 @@ const projectServers = {
     server: {
       // Run vite dev (not wrangler) against the cloudflare example so that
       // configureServer() is exercised with @cloudflare/vite-plugin loaded.
-      command: "npx vite --port 4178",
+      command: "npx vp dev --port 4178",
       cwd: "./examples/app-router-cloudflare",
       port: 4178,
       reuseExistingServer: !process.env.CI,
@@ -100,7 +100,7 @@ const projectServers = {
     ],
     use: { baseURL: "http://localhost:4179" },
     server: {
-      command: "npx vite --port 4179",
+      command: "npx vp dev --port 4179",
       cwd: "./examples/pages-router-cloudflare",
       port: 4179,
       reuseExistingServer: !process.env.CI,

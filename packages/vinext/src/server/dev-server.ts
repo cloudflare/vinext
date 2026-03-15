@@ -250,6 +250,19 @@ export function createSSRHandler(
   trailingSlash = false,
 ) {
   const matcher = fileMatcher ?? createValidFileMatcher();
+
+  // Register ALS-backed accessors in the SSR module graph so head and
+  // router state are per-request isolated under concurrent load.
+  // This is a one-time side-effect; ssrLoadModule caches internally.
+  const _alsRegistration = Promise.all([
+    server.ssrLoadModule("vinext/head-state"),
+    server.ssrLoadModule("vinext/router-state"),
+  ]);
+  // Suppress unhandled-rejection if the server closes before the first
+  // request (common in tests). Errors still propagate when the first
+  // request handler awaits _alsRegistration.
+  _alsRegistration.catch(() => {});
+
   return async (
     req: IncomingMessage,
     res: ServerResponse,
@@ -321,6 +334,8 @@ export function createSSRHandler(
     return runWithRequestContext(requestContext, async () => {
       ensureFetchPatch();
       try {
+        await _alsRegistration;
+
         // Set SSR context for the router shim so useRouter() returns
         // the correct URL and params during server-side rendering.
         const routerShim = await server.ssrLoadModule("next/router");
@@ -968,7 +983,7 @@ hydrate();
         }
       } catch (e) {
         // Let Vite fix the stack trace for better dev experience
-        server.ssrFixStacktrace(e as Error);
+        server.ssrFixStacktrace?.(e as Error);
         console.error(e);
         // Report error via instrumentation hook if registered
         reportRequestError(

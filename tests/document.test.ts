@@ -5,7 +5,7 @@
  * replaces with real content via string substitution. The tests verify the
  * contracts the dev-server depends on — not that React can render a div.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Document, { Html, Head, Main, NextScript } from "../packages/vinext/src/shims/document.js";

@@ -4,7 +4,7 @@
  * Automates the steps needed to run a Next.js app under vinext:
  *
  *   1. Run `vinext check` to show compatibility report
- *   2. Install dependencies (vite, @vitejs/plugin-rsc for App Router)
+ *   2. Install dependencies (vite, @vitejs/plugin-react, and App Router deps)
  *   3. Add "type": "module" to package.json
  *   4. Rename CJS config files to .cjs
  *   5. Add vinext scripts to package.json
@@ -117,7 +117,7 @@ export function addScripts(root: string, port: number): string[] {
 // ─── Dependency Installation ─────────────────────────────────────────────────
 
 export function getInitDeps(isAppRouter: boolean): string[] {
-  const deps = ["vinext", "vite"];
+  const deps = ["vinext", "vite", "@vitejs/plugin-react"];
   if (isAppRouter) {
     deps.push("@vitejs/plugin-rsc");
     deps.push("react-server-dom-webpack");

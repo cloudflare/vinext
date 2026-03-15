@@ -5,7 +5,7 @@
  * (GET forms) and function actions (server actions), plus direct
  * submit interception behavior for client-side GET forms.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Form from "../packages/vinext/src/shims/form.js";

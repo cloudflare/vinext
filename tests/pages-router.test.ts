@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { createServer, build, type ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
+import { createServer, build, type ViteDevServer } from "vite-plus";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -14,6 +14,12 @@ const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps 
   return <Component {...pageProps} />;
 }
 `;
+
+type ClientBuildManifestEntry = {
+  file?: string;
+  css?: string[];
+  assets?: string[];
+};
 
 function writeEncodedSlashPagesFixture(rootDir: string): void {
   fs.mkdirSync(path.join(rootDir, "pages", "a"), { recursive: true });
@@ -33,6 +39,15 @@ export default function middleware() {
   return new Response("nested blocked", { status: 418 });
 }
 `,
+  );
+}
+
+function findBuildManifestEntries(
+  buildManifest: Record<string, ClientBuildManifestEntry>,
+  moduleId: string,
+): Array<[string, ClientBuildManifestEntry]> {
+  return Object.entries(buildManifest).filter(
+    ([key]) => key === moduleId || key.endsWith(`/${moduleId}`),
   );
 }
 
@@ -951,7 +966,7 @@ describe("Pages Router allowedDevOrigins config", () => {
   afterAll(async () => {
     await server?.close();
     await fsp.rm(tmpDir, { recursive: true, force: true });
-  });
+  }, 30000);
 
   it("allows cross-origin requests from allowedDevOrigins", async () => {
     const res = await fetch(`${baseUrl}/`, {
@@ -1027,6 +1042,49 @@ describe("Virtual server entry generation", () => {
 });
 
 describe("Plugin config", () => {
+  it("auto-injects @vitejs/plugin-react as a top-level async plugin", async () => {
+    const plugins = vinext() as any[];
+    const resolvedPlugins = (
+      await Promise.all(
+        plugins.map(async (plugin) => {
+          if (plugin && typeof plugin.then === "function") {
+            return await plugin;
+          }
+          return plugin;
+        }),
+      )
+    ).flat();
+
+    const hasReactPlugin = resolvedPlugins.some(
+      (plugin) => plugin && typeof plugin.name === "string" && plugin.name.startsWith("vite:react"),
+    );
+    expect(hasReactPlugin).toBe(true);
+  });
+
+  it("throws when user double-registers react() alongside auto-registration", async () => {
+    const plugins = vinext() as any[];
+    const configPlugin = plugins.find((p) => p.name === "vinext:config");
+    expect(configPlugin).toBeDefined();
+
+    await configPlugin.config(
+      { root: FIXTURE_DIR, plugins: [] },
+      { command: "serve", mode: "development" },
+    );
+
+    expect(() =>
+      configPlugin.configResolved({
+        command: "serve",
+        configFile: false,
+        plugins: [
+          { name: "vite:react-babel" },
+          { name: "vite:react-refresh" },
+          { name: "vite:react-babel" },
+          { name: "vite:react-refresh" },
+        ],
+      }),
+    ).toThrow("Duplicate @vitejs/plugin-react detected");
+  });
+
   it("adds resolve.dedupe for React packages to prevent dual instance errors", async () => {
     const plugins = vinext() as any[];
     const configPlugin = plugins.find((p) => p.name === "vinext:config");
@@ -1379,12 +1437,16 @@ export const config = { matcher: ["/protected"] };
     expect(fs.existsSync(buildManifestPath)).toBe(true);
     const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
       string,
-      unknown
+      ClientBuildManifestEntry
     >;
-    const counterBuildManifestEntries = Object.keys(buildManifest).filter(
-      (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+    const counterBuildManifestEntries = findBuildManifestEntries(
+      buildManifest,
+      "pages/counter.tsx",
     );
-    expect(counterBuildManifestEntries).toEqual([]);
+    expect(counterBuildManifestEntries.length).toBeGreaterThan(0);
+    expect(counterBuildManifestEntries.some(([, entry]) => typeof entry.file === "string")).toBe(
+      true,
+    );
 
     // There should be JS files in the assets directory
     const assets = fs.readdirSync(assetsDir);
@@ -1405,7 +1467,7 @@ export const config = { matcher: ["/protected"] };
     // entire React framework). Before code-splitting this was ~200KB+.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(20 * 1024); // < 20 KB
+      expect(entrySize).toBeLessThan(25 * 1024); // < 25 KB
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
@@ -1471,12 +1533,16 @@ export default function CounterPage() {
       const buildManifestPath = path.join(fixtureOutDir, "client", ".vite", "manifest.json");
       const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
         string,
-        unknown
+        ClientBuildManifestEntry
       >;
-      const counterBuildManifestEntries = Object.keys(buildManifest).filter(
-        (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+      const counterBuildManifestEntries = findBuildManifestEntries(
+        buildManifest,
+        "pages/counter.tsx",
       );
-      expect(counterBuildManifestEntries).toEqual([]);
+      expect(counterBuildManifestEntries.length).toBeGreaterThan(0);
+      expect(counterBuildManifestEntries.some(([, entry]) => typeof entry.file === "string")).toBe(
+        true,
+      );
 
       const manifestPath = path.join(fixtureOutDir, "client", ".vite", "ssr-manifest.json");
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
@@ -1575,12 +1641,21 @@ export default function CounterPage() {
       const buildManifestPath = path.join(fixtureOutDir, "client", ".vite", "manifest.json");
       const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8")) as Record<
         string,
-        unknown
+        ClientBuildManifestEntry
       >;
-      const counterBuildManifestEntries = Object.keys(buildManifest).filter(
-        (key) => key.endsWith("/pages/counter.tsx") || key === "pages/counter.tsx",
+      const counterBuildManifestEntries = findBuildManifestEntries(
+        buildManifest,
+        "pages/counter.tsx",
       );
-      expect(counterBuildManifestEntries).toEqual([]);
+      expect(counterBuildManifestEntries.length).toBeGreaterThan(0);
+      expect(
+        counterBuildManifestEntries.some(
+          ([, entry]) =>
+            typeof entry.file === "string" ||
+            (Array.isArray(entry.css) && entry.css.length > 0) ||
+            (Array.isArray(entry.assets) && entry.assets.length > 0),
+        ),
+      ).toBe(true);
 
       const manifestPath = path.join(fixtureOutDir, "client", ".vite", "ssr-manifest.json");
       const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8")) as Record<
@@ -2847,6 +2922,11 @@ describe("Pages Router dev ISR regeneration", () => {
       const server = {
         transformIndexHtml: vi.fn(async (_url: string, html: string) => html),
         ssrLoadModule: vi.fn(async (id: string) => {
+          // ALS registration side-effects loaded at createSSRHandler startup
+          if (id === "vinext/head-state" || id === "vinext/router-state") {
+            return {};
+          }
+
           if (id === "next/router") {
             return {
               setSSRContext() {

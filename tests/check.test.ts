@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -865,8 +865,23 @@ describe("formatReport", () => {
     expect(report).toContain("vinext init");
     expect(report).toContain("Or manually");
     expect(report).toContain('"type": "module"');
+    expect(report).toContain("@vitejs/plugin-react");
+    expect(report).toContain("@vitejs/plugin-rsc");
+    expect(report).toContain("react-server-dom-webpack");
     expect(report).toContain("vite.config.ts");
     expect(report).toContain("npx vite dev");
+  });
+
+  it("does not list App Router-only packages in manual install steps for Pages Router projects", () => {
+    writeFile("pages/index.tsx", `export default function Home() { return <div />; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    const result = runCheck(tmpDir);
+    const report = formatReport(result);
+
+    expect(report).toContain("@vitejs/plugin-react");
+    expect(report).not.toContain("@vitejs/plugin-rsc");
+    expect(report).not.toContain("react-server-dom-webpack");
   });
 });
 

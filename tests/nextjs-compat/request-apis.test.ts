@@ -13,8 +13,8 @@
  * - mutable cookies() in route handlers, including sync access
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ViteDevServer } from "vite";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer } from "../helpers.js";
 
 describe("Next.js compat: request-apis", () => {

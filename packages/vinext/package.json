@@ -52,28 +52,30 @@
   },
   "scripts": {
     "build": "tsc",
-    "prepack": "cp ../../README.md README.md && pnpm run build",
+    "prepack": "cp ../../README.md README.md && vp run build",
     "dev": "tsc --watch"
   },
   "dependencies": {
-    "@unpic/react": "^1.0.2",
-    "@vercel/og": "^0.8.6",
-    "@vitejs/plugin-react": "^5.1.4",
-    "magic-string": "^0.30.21",
-    "rsc-html-stream": "^0.0.7",
-    "vite-plugin-commonjs": "^0.10.4",
-    "vite-tsconfig-paths": "^6.1.1"
+    "@unpic/react": "catalog:",
+    "@vercel/og": "catalog:",
+    "magic-string": "catalog:",
+    "rsc-html-stream": "catalog:",
+    "vite-plugin-commonjs": "catalog:",
+    "vite-tsconfig-paths": "catalog:"
   },
   "devDependencies": {
-    "@types/node": "^25.2.3",
-    "@types/react": "^19.2.14",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-rsc": "^0.5.19",
-    "react-server-dom-webpack": "^19.2.4",
-    "vite": "^7.3.1"
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "@vitejs/plugin-rsc": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
   },
   "peerDependencies": {
     "@mdx-js/rollup": "^3.0.0",
+    "@vitejs/plugin-react": "^5.1.4 || ^6.0.0",
     "@vitejs/plugin-rsc": "^0.5.19",
     "react": ">=19.2.0",
     "react-dom": ">=19.2.0",

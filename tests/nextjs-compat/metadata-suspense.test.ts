@@ -6,7 +6,7 @@
  * Tests that metadata renders correctly in <head> when the root layout
  * wraps children in <Suspense>.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import {
   startFixtureServer,
   APP_FIXTURE_DIR,

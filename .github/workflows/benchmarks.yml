@@ -20,10 +20,10 @@ jobs:
         with:
           fetch-depth: 0 # Need full history for commit info
 
-      - uses: ./.github/actions/setup-node-pnpm
+      - uses: voidzero-dev/setup-vp@v1
 
       - name: Build vinext plugin
-        run: pnpm run build
+        run: vp run build
 
       - name: Install hyperfine
         run: |
@@ -35,12 +35,9 @@ jobs:
       - name: Generate benchmark app
         run: node benchmarks/generate-app.mjs
 
-      # Install benchmark-specific deps (outside pnpm workspace)
-      - name: Install benchmark dependencies
-        run: |
-          npm install --prefix benchmarks/nextjs
-          npm install --prefix benchmarks/vinext
-          npm install --prefix benchmarks/vinext-rolldown
+      - name: Install Next.js benchmark dependencies
+        working-directory: benchmarks/nextjs
+        run: npm install
 
       # Run the benchmarks
       - name: Run benchmarks

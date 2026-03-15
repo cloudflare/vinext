@@ -584,6 +584,9 @@ export function runCheck(root: string): CheckResult {
  */
 export function formatReport(result: CheckResult, opts?: { calledFromInit?: boolean }): string {
   const lines: string[] = [];
+  const hasAppRouter = result.conventions.some(
+    (item) => item.name === "App Router (app/)" || item.name === "App Router (src/app/)",
+  );
   const statusIcon = (s: Status) =>
     s === "supported"
       ? "\x1b[32m✓\x1b[0m"
@@ -695,7 +698,7 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     lines.push("  Or manually:");
     lines.push(`    1. Add \x1b[36m"type": "module"\x1b[0m to package.json`);
     lines.push(
-      `    2. Install: \x1b[36m${detectPackageManager(process.cwd())} vinext vite @vitejs/plugin-rsc\x1b[0m`,
+      `    2. Install: \x1b[36m${detectPackageManager(process.cwd())} vinext vite @vitejs/plugin-react${hasAppRouter ? " @vitejs/plugin-rsc react-server-dom-webpack" : ""}\x1b[0m`,
     );
     lines.push(`    3. Create vite.config.ts (see docs)`);
     lines.push(`    4. Run: \x1b[36mnpx vite dev\x1b[0m`);

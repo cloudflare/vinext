@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -406,16 +406,17 @@ describe("detectNextIntlConfig", () => {
     };
   }
 
-  /** Create a tmpdir with a fake next-intl package so createRequire can resolve it */
+  /** Create a tmpdir with a fake next-intl package so require.resolve("next-intl") works */
   function setupWithNextIntl(i18nFile?: string) {
     tmpDir = makeTempDir();
-    // Create a resolvable next-intl/package.json
+    // Create a resolvable next-intl package with an entry file.
     const nextIntlDir = path.join(tmpDir, "node_modules", "next-intl");
     fs.mkdirSync(nextIntlDir, { recursive: true });
     fs.writeFileSync(
       path.join(nextIntlDir, "package.json"),
-      JSON.stringify({ name: "next-intl", version: "4.0.0" }),
+      JSON.stringify({ name: "next-intl", version: "4.0.0", main: "index.js" }),
     );
+    fs.writeFileSync(path.join(nextIntlDir, "index.js"), "module.exports = {};\n");
     // Create root package.json so createRequire works
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test-project" }));
 
@@ -530,8 +531,9 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     fs.mkdirSync(nextIntlDir, { recursive: true });
     fs.writeFileSync(
       path.join(nextIntlDir, "package.json"),
-      JSON.stringify({ name: "next-intl", version: "4.0.0" }),
+      JSON.stringify({ name: "next-intl", version: "4.0.0", main: "index.js" }),
     );
+    fs.writeFileSync(path.join(nextIntlDir, "index.js"), "module.exports = {};\n");
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test-project" }));
     fs.mkdirSync(path.join(tmpDir, "i18n"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, "i18n", "request.ts"), "export default {};\n");
@@ -547,8 +549,9 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     fs.mkdirSync(nextIntlDir, { recursive: true });
     fs.writeFileSync(
       path.join(nextIntlDir, "package.json"),
-      JSON.stringify({ name: "next-intl", version: "4.0.0" }),
+      JSON.stringify({ name: "next-intl", version: "4.0.0", main: "index.js" }),
     );
+    fs.writeFileSync(path.join(nextIntlDir, "index.js"), "module.exports = {};\n");
     fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ name: "test-project" }));
     fs.mkdirSync(path.join(tmpDir, "i18n"), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, "i18n", "request.ts"), "export default {};\n");

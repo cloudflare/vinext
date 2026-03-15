@@ -658,10 +658,9 @@ function discoverInheritedParallelSlots(
           layoutIndex: lvlLayoutIdx,
           // defaultPath, loadingPath, errorPath, interceptingRoutes remain
         };
-        // Only inherit if we haven't seen this slot at a closer level
-        if (!slotMap.has(slot.name)) {
-          slotMap.set(slot.name, inheritedSlot);
-        }
+        // Iteration goes root-to-leaf, so later (closer) ancestors overwrite
+        // earlier (farther) ones — the closest ancestor's slot wins.
+        slotMap.set(slot.name, inheritedSlot);
       }
     }
   }

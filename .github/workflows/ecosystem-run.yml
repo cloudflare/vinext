@@ -25,12 +25,12 @@ jobs:
       - name: Checkout vinext
         uses: actions/checkout@v4
 
-      - uses: ./.github/actions/setup-node-pnpm
+      - uses: voidzero-dev/setup-vp@v1
         with:
           node-version: ${{ inputs.node_version }}
 
       - name: Build vinext plugin
-        run: pnpm run build
+        run: vp run build
 
       - name: Read vinext versions
         id: versions
@@ -93,7 +93,12 @@ jobs:
           VINEXT_PKG: ${{ github.workspace }}/packages/vinext
           VITE_VERSION: ${{ steps.versions.outputs.vite }}
           RSC_VERSION: ${{ steps.versions.outputs.rsc }}
-        run: npm install --legacy-peer-deps "$VINEXT_PKG" "vite@$VITE_VERSION" "@vitejs/plugin-rsc@$RSC_VERSION"
+        run: |
+          # The vinext workspace aliases "vite" to @voidzero-dev/vite-plus-core via pnpm,
+          # but ecosystem repos are plain npm consumers without our workspace overrides.
+          # Install the public "vite" package here so this workflow validates the external
+          # consumer experience instead of depending on monorepo-only aliasing.
+          npm install --legacy-peer-deps "$VINEXT_PKG" "vite@$VITE_VERSION" "@vitejs/plugin-rsc@$RSC_VERSION"
 
       - name: Build with vinext
         working-directory: target-repo

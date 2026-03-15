@@ -10,7 +10,7 @@
  * - Independent cache entries per URL
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 
 // We need to mock fetch at the module level BEFORE fetch-cache.ts captures
 // `originalFetch`. Use vi.stubGlobal to intercept at import time.

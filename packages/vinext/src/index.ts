@@ -56,7 +56,7 @@ import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import tsconfigPaths from "vite-tsconfig-paths";
-import react, { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
+import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -65,6 +65,34 @@ import fs from "node:fs";
 import commonjs from "vite-plugin-commonjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+type VitePluginReactModule = typeof import("@vitejs/plugin-react");
+
+function resolveOptionalDependency(projectRoot: string, specifier: string): string | null {
+  try {
+    const projectRequire = createRequire(path.join(projectRoot, "package.json"));
+    return projectRequire.resolve(specifier);
+  } catch {}
+
+  try {
+    const selfRequire = createRequire(import.meta.url);
+    return selfRequire.resolve(specifier);
+  } catch {}
+
+  return null;
+}
+
+function resolveShimModulePath(shimsDir: string, moduleName: string): string {
+  // Source checkouts only ship TypeScript shims, while built packages only ship
+  // JavaScript. Check .ts first to avoid an extra stat in development.
+  const candidates = [".ts", ".js"];
+  for (const ext of candidates) {
+    const candidate = path.join(shimsDir, `${moduleName}${ext}`);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return path.join(shimsDir, `${moduleName}.js`);
+}
 
 /**
  * Fetch Google Fonts CSS, download .woff2 files, cache locally, and return
@@ -620,20 +648,71 @@ type BundleBackfillChunk = {
   };
 };
 
+function tryRealpathSync(candidate: string): string | null {
+  try {
+    return fs.realpathSync.native(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function isWindowsAbsolutePath(candidate: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(candidate) || candidate.startsWith("\\\\");
+}
+
+function relativeWithinRoot(root: string, moduleId: string): string | null {
+  const useWindowsPath = isWindowsAbsolutePath(root) || isWindowsAbsolutePath(moduleId);
+  const relativeId = (
+    useWindowsPath ? path.win32.relative(root, moduleId) : path.relative(root, moduleId)
+  ).replace(/\\/g, "/");
+  // path.relative(root, root) returns "", which is not a usable manifest key and should be
+  // treated the same as "outside root" for this helper.
+  if (!relativeId || relativeId === ".." || relativeId.startsWith("../")) return null;
+  return relativeId;
+}
+
 function normalizeManifestModuleId(moduleId: string, root: string): string {
   const normalizedId = moduleId.replace(/\\/g, "/");
-  const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/.test(moduleId) || moduleId.startsWith("\\\\");
-  if (isWindowsAbsolute) {
-    const relativeId = path.win32.relative(root, moduleId).replace(/\\/g, "/");
-    if (!relativeId || relativeId.startsWith("../")) return normalizedId;
-    return relativeId;
+  if (normalizedId.startsWith("\0")) return normalizedId;
+  if (normalizedId.startsWith("node_modules/") || normalizedId.includes("/node_modules/")) {
+    return normalizedId;
   }
 
-  if (!path.isAbsolute(moduleId)) return normalizedId;
+  if (!isWindowsAbsolutePath(moduleId) && !path.isAbsolute(moduleId)) {
+    if (!normalizedId.startsWith(".") && !normalizedId.includes("../")) {
+      // Preserve bare specifiers like "pages/counter.tsx". These are already
+      // stable manifest keys and resolving them against root would rewrite them
+      // into filesystem paths that no longer match the bundle/module graph.
+      return normalizedId;
+    }
+  }
 
-  const relativeId = path.relative(root, moduleId).replace(/\\/g, "/");
-  if (!relativeId || relativeId.startsWith("../")) return normalizedId;
-  return relativeId;
+  const rootCandidates = new Set<string>([root]);
+  const realRoot = tryRealpathSync(root);
+  if (realRoot) rootCandidates.add(realRoot);
+
+  const moduleCandidates = new Set<string>();
+  if (isWindowsAbsolutePath(moduleId) || path.isAbsolute(moduleId)) {
+    moduleCandidates.add(moduleId);
+  } else {
+    moduleCandidates.add(path.resolve(root, moduleId));
+  }
+
+  for (const candidate of moduleCandidates) {
+    const realCandidate = tryRealpathSync(candidate);
+    // Set iteration stays live as entries are appended, so this also checks the
+    // realpath variant without needing a second pass or an intermediate array.
+    if (realCandidate) moduleCandidates.add(realCandidate);
+  }
+
+  for (const rootCandidate of rootCandidates) {
+    for (const moduleCandidate of moduleCandidates) {
+      const relativeId = relativeWithinRoot(rootCandidate, moduleCandidate);
+      if (relativeId) return relativeId;
+    }
+  }
+
+  return normalizedId;
 }
 
 function augmentSsrManifestFromBundle(
@@ -642,12 +721,15 @@ function augmentSsrManifestFromBundle(
   root: string,
   base = "/",
 ): Record<string, string[]> {
-  const nextManifest = Object.fromEntries(
-    Object.entries(ssrManifest).map(([key, files]) => [
-      key,
-      new Set(files.map((file) => normalizeManifestFile(file))),
-    ]),
-  ) as Record<string, Set<string>>;
+  const nextManifest = {} as Record<string, Set<string>>;
+
+  for (const [key, files] of Object.entries(ssrManifest)) {
+    const normalizedKey = normalizeManifestModuleId(key, root);
+    if (!nextManifest[normalizedKey]) nextManifest[normalizedKey] = new Set<string>();
+    for (const file of files) {
+      nextManifest[normalizedKey].add(normalizeManifestFile(file));
+    }
+  }
 
   for (const item of Object.values(bundle)) {
     if (item.type !== "chunk") continue;
@@ -699,9 +781,9 @@ export interface VinextOptions {
   rsc?: boolean;
   /**
    * Options passed to @vitejs/plugin-react (React Fast Refresh + JSX transform).
-   * Enabled by default. Set to `false` to disable (e.g. if you already have
-   * @vitejs/plugin-react in your vite.config.ts), or pass an options object
-   * to customize the Babel transform.
+   * Enabled by default. Set to `false` to disable (e.g. if you configure
+   * @vitejs/plugin-react manually in your vite.config.ts), or pass an options
+   * object to customize the Babel transform.
    * @default true
    */
   react?: VitePluginReactOptions | boolean;
@@ -780,16 +862,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   //
   // Pre-resolve both the main plugin and the /transforms subpath eagerly
   // so all import() calls in this module use consistent resolution.
-  const earlyRequire = createRequire(path.join(earlyBaseDir, "package.json"));
+  let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
   let resolvedRscTransformsPath: string | null = null;
-  try {
-    resolvedRscPath = earlyRequire.resolve("@vitejs/plugin-rsc");
-    resolvedRscTransformsPath = earlyRequire.resolve("@vitejs/plugin-rsc/transforms");
-  } catch {
-    // @vitejs/plugin-rsc not installed — that's fine for Pages Router
-    // projects. If App Router is detected, the error is thrown below.
-  }
+  // Prefer the user's project graph so vinext shares the app's Vite/plugin
+  // instances. In source/workspace development, test fixtures may not declare
+  // peer deps explicitly, so fall back to vinext's own install location.
+  resolvedReactPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-react");
+  resolvedRscPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-rsc");
+  resolvedRscTransformsPath = resolveOptionalDependency(
+    earlyBaseDir,
+    "@vitejs/plugin-rsc/transforms",
+  );
 
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
@@ -805,16 +889,40 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       );
     }
     const rscImport = import(pathToFileURL(resolvedRscPath).href);
-    rscPluginPromise = rscImport.then((mod) => {
-      const rsc = mod.default;
-      return rsc({
-        entries: {
-          rsc: VIRTUAL_RSC_ENTRY,
-          ssr: VIRTUAL_APP_SSR_ENTRY,
-          client: VIRTUAL_APP_BROWSER_ENTRY,
-        },
+    rscPluginPromise = rscImport
+      .then((mod) => {
+        const rsc = mod.default;
+        return rsc({
+          entries: {
+            rsc: VIRTUAL_RSC_ENTRY,
+            ssr: VIRTUAL_APP_SSR_ENTRY,
+            client: VIRTUAL_APP_BROWSER_ENTRY,
+          },
+        });
+      })
+      .catch((cause) => {
+        throw new Error("vinext: Failed to load @vitejs/plugin-rsc.", { cause });
       });
-    });
+  }
+
+  const reactOptions = options.react && options.react !== true ? options.react : undefined;
+
+  let reactPluginPromise: Promise<PluginOption[]> | null = null;
+  if (options.react !== false) {
+    if (!resolvedReactPath) {
+      throw new Error(
+        "vinext: @vitejs/plugin-react is not installed.\n" +
+          "Run: " +
+          detectPackageManager(process.cwd()) +
+          " @vitejs/plugin-react",
+      );
+    }
+    const reactImport = import(pathToFileURL(resolvedReactPath).href);
+    reactPluginPromise = reactImport
+      .then((mod) => (mod as VitePluginReactModule).default(reactOptions))
+      .catch((cause) => {
+        throw new Error("vinext: Failed to load @vitejs/plugin-react.", { cause });
+      });
   }
 
   const imageImportDimCache = new Map<string, { width: number; height: number }>();
@@ -823,16 +931,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // files are detected and @mdx-js/rollup is installed.
   let mdxDelegate: Plugin | null = null;
 
-  const reactPlugin =
-    options.react === false ? false : react(options.react === true ? undefined : options.react);
-
   const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
     ...(viteMajorVersion >= 8 ? [] : [tsconfigPaths()]),
     // React Fast Refresh + JSX transform for client components.
-    reactPlugin,
+    reactPluginPromise,
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     commonjs(),
@@ -1890,6 +1995,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       },
 
       configResolved(config) {
+        // Detect double React plugin registration. When vinext auto-injects
+        // @vitejs/plugin-react AND the user also registers it manually, the
+        // React transform / refresh pipeline runs twice.
+        if (reactPluginPromise) {
+          // Assumes @vitejs/plugin-react top-level plugin names continue to use
+          // the vite:react* prefix across supported versions.
+          const reactRootPlugins = config.plugins.filter(
+            (p: any) => p && typeof p.name === "string" && p.name.startsWith("vite:react"),
+          );
+          const counts = new Map<string, number>();
+          for (const plugin of reactRootPlugins) {
+            counts.set(plugin.name, (counts.get(plugin.name) ?? 0) + 1);
+          }
+          const hasDuplicateReactPlugin = [...counts.values()].some((count) => count > 1);
+          if (hasDuplicateReactPlugin) {
+            throw new Error(
+              "[vinext] Duplicate @vitejs/plugin-react detected.\n" +
+                "         vinext auto-registers @vitejs/plugin-react by default.\n" +
+                "         Your config also registers it manually, which duplicates React transforms.\n\n" +
+                "         Fix: remove the explicit react() call from your plugins array.\n" +
+                "         Or: pass react: false to vinext() if you want to configure react() yourself.",
+            );
+          }
+        }
+
         // Detect double RSC plugin registration. When vinext auto-injects
         // @vitejs/plugin-rsc AND the user also registers it manually, the
         // RSC transform pipeline runs twice — doubling build time.
@@ -3254,7 +3384,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // leaf components with no {children} prop and can be cached directly.
             const isLayoutOrTemplate = /\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id);
 
-            const runtimeModuleUrl = pathToFileURL(path.join(shimsDir, "cache-runtime.js")).href;
+            const runtimeModuleUrl = pathToFileURL(
+              resolveShimModulePath(shimsDir, "cache-runtime"),
+            ).href;
             const result = transformWrapExport(code, ast as any, {
               runtime: (value: any, name: any) =>
                 `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
@@ -3303,7 +3435,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // (e.g., async function getData() { "use cache"; ... })
           const hasInlineCache = code.includes("use cache") && !cacheDirective;
           if (hasInlineCache) {
-            const runtimeModuleUrl2 = pathToFileURL(path.join(shimsDir, "cache-runtime.js")).href;
+            const runtimeModuleUrl2 = pathToFileURL(
+              resolveShimModulePath(shimsDir, "cache-runtime"),
+            ).href;
 
             try {
               const result = transformHoistInlineDirective(code, ast as any, {

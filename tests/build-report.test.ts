@@ -5,7 +5,7 @@
  * logic for both Pages Router and App Router routes, using real fixture files
  * where integration testing is needed.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import path from "node:path";
 import {
   hasNamedExport,
