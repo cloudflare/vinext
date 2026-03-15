@@ -1455,6 +1455,11 @@ async function __readFormDataWithLimit(request, maxBytes) {
 // Used by the prerender phase to enumerate dynamic route URLs without
 // loading route modules via the dev server.
 export const generateStaticParamsMap = {
+// TODO: layout-level generateStaticParams — this map only includes routes that
+// have a pagePath (leaf pages). Layout segments can also export generateStaticParams
+// to provide parent params for nested dynamic routes, but they don't have a pagePath
+// so they are excluded here. Supporting layout-level generateStaticParams requires
+// scanning layout.tsx files separately and including them in this map.
 ${routes
   .filter((r) => r.isDynamic && r.pagePath)
   .map(
@@ -1561,10 +1566,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // ── Prerender: static-params endpoint ────────────────────────────────
   // Internal endpoint used by prerenderApp() during build to fetch
   // generateStaticParams results via wrangler unstable_dev.
-  // Always handled (no env-var gate) because CF Workers vars arrive as "env"
-  // bindings, not process.env, so a process.env check would always be false.
-  // The /__vinext/ prefix ensures no user route ever conflicts with this path.
+  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
+  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_dev injects
+  // VINEXT_PRERENDER as a var which Miniflare exposes via process.env in bundled
+  // workers. The /__vinext/ prefix ensures no user route ever conflicts.
   if (pathname === "/__vinext/prerender/static-params") {
+    if (process.env.VINEXT_PRERENDER !== "1") {
+      return new Response("Not Found", { status: 404 });
+    }
     const pattern = url.searchParams.get("pattern");
     if (!pattern) return new Response("missing pattern", { status: 400 });
     const fn = generateStaticParamsMap[pattern];
@@ -1586,6 +1596,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // Internal endpoint used by prerenderPages() during a CF Workers hybrid
   // build to call getStaticPaths() for dynamic Pages Router routes via
   // wrangler unstable_dev. Returns JSON-serialised getStaticPaths result.
+  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
+  // See static-params endpoint above for process.env vs CF vars notes.
   //
   // pageRoutes lives in the SSR environment (virtual:vinext-server-entry).
   // We load it lazily via import.meta.viteRsc.loadModule — the same pattern
@@ -1593,6 +1605,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // plugin transforms this call into a bundled cross-environment import, so it
   // works correctly in the CF Workers production bundle running in Miniflare.
   if (pathname === "/__vinext/prerender/pages-static-paths") {
+    if (process.env.VINEXT_PRERENDER !== "1") {
+      return new Response("Not Found", { status: 404 });
+    }
     const __gspPattern = url.searchParams.get("pattern");
     if (!__gspPattern) return new Response("missing pattern", { status: 400 });
     try {
@@ -2059,11 +2074,21 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // When a request doesn't match any App Router route, delegate to the
     // Pages Router handler (available in the SSR environment). This covers
     // both production request serving and prerender fetches from wrangler.
-    const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    if (typeof __pagesEntry.renderPage === "function") {
-      setHeadersContext(null);
-      setNavigationContext(null);
-      return await __pagesEntry.renderPage(request, decodeURIComponent(url.pathname) + (url.search || ""), {});
+    // RSC requests (.rsc suffix or Accept: text/x-component) cannot be
+    // handled by the Pages Router, so skip the delegation for those.
+    if (!isRscRequest) {
+      const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+      if (typeof __pagesEntry.renderPage === "function") {
+        const __pagesRes = await __pagesEntry.renderPage(request, decodeURIComponent(url.pathname) + (url.search || ""), {});
+        // Only return the Pages Router response if it matched a route
+        // (non-404). A 404 means the path isn't a Pages route either,
+        // so fall through to the App Router not-found page below.
+        if (__pagesRes.status !== 404) {
+          setHeadersContext(null);
+          setNavigationContext(null);
+          return __pagesRes;
+        }
+      }
     }
     `
         : ""

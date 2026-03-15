@@ -236,6 +236,12 @@ export function buildUrlFromParams(
     } else if (part.startsWith(":")) {
       const paramName = part.slice(1);
       const value = params[paramName];
+      if (value === undefined || value === null) {
+        throw new Error(
+          `[vinext] buildUrlFromParams: required param "${paramName}" is missing for pattern "${pattern}". ` +
+            `Check that generateStaticParams (or getStaticPaths) returns an object with a "${paramName}" key.`,
+        );
+      }
       result.push(encodeURIComponent(String(value)));
     } else {
       result.push(part);
@@ -295,6 +301,12 @@ async function resolveParentParams(
 
     const prefixPattern = "/" + patternParts.slice(0, i + 1).join("/");
     const parentRoute = allRoutes.find((r) => r.pattern === prefixPattern);
+    // TODO: layout-level generateStaticParams — a layout segment can define
+    // generateStaticParams without a corresponding page file, so parentRoute
+    // may be undefined here even though the layout exports generateStaticParams.
+    // resolveParentParams currently only looks up routes that have a pagePath
+    // (i.e. leaf pages), missing layout-level providers. Fix requires scanning
+    // layout files in addition to page files during route collection.
     if (parentRoute?.pagePath) {
       const fn = staticParamsMap[prefixPattern];
       if (typeof fn === "function") {
@@ -567,7 +579,20 @@ export async function prerenderPages({
 
       const { type, revalidate: classifiedRevalidate } = classifyPagesRoute(route.filePath);
 
-      if (type === "ssr") {
+      // For Node builds (not CF Workers), the bundle module is available at
+      // runtime — use its actual exports to determine page type more accurately
+      // than static file analysis. CF builds don't have direct module access, so
+      // they fall back to classifyPagesRoute() for type detection.
+      const runtimeType: "ssr" | "ssg" | "static" | undefined = !wranglerDev
+        ? typeof route.module.getServerSideProps === "function"
+          ? "ssr"
+          : typeof route.module.getStaticProps === "function"
+            ? "ssg"
+            : undefined
+        : undefined;
+      const effectiveType = runtimeType ?? type;
+
+      if (effectiveType === "ssr") {
         if (mode === "export") {
           results.push({
             route: route.pattern,
