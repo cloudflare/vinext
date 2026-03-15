@@ -405,7 +405,9 @@ async function buildApp() {
           (p) =>
             !p.name.startsWith("vinext:") &&
             !p.name.startsWith("vite:react") &&
-            p.name !== "vite-tsconfig-paths",
+            !p.name.startsWith("rsc:") &&
+            p.name !== "vite-tsconfig-paths" &&
+            p.name !== "vite-rsc-load-module-dev-proxy",
         )
         .concat(vinext({ disableAppRouter: true }) as any);
       await vite.build({
