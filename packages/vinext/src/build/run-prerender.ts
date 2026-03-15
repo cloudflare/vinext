@@ -21,7 +21,13 @@
 import path from "node:path";
 import fs from "node:fs";
 import type { PrerenderResult, PrerenderRouteResult } from "./prerender.js";
-import { prerenderApp, prerenderPages, writePrerenderIndex, loadWrangler } from "./prerender.js";
+import {
+  prerenderApp,
+  prerenderPages,
+  writePrerenderIndex,
+  loadWrangler,
+  findWranglerConfig,
+} from "./prerender.js";
 import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
@@ -168,12 +174,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // is required by wrangler 4+. Fall back to the project root wrangler.jsonc
   // as a convenience for non-standard setups.
   const serverDir = path.dirname(rscBundlePath);
-  const wranglerConfigPath = [
-    path.join(serverDir, "wrangler.json"),
-    path.join(serverDir, "wrangler.jsonc"),
-    path.join(root, "wrangler.json"),
-    path.join(root, "wrangler.jsonc"),
-  ].find((p) => fs.existsSync(p));
+  const wranglerConfigPath = findWranglerConfig(serverDir, root);
 
   // For CF Workers hybrid builds (app/ + pages/), start wrangler once and
   // share the instance across both prerender phases. This avoids spinning up
@@ -214,6 +215,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         config,
         rscBundlePath,
         root,
+        // Pass build-type detection results so prerenderApp doesn't repeat them.
+        isWorkersBuild,
+        wranglerConfigPath,
         // For hybrid CF builds pass the shared wrangler instance via internal field.
         // prerenderApp will use it instead of starting its own.
         ...(sharedWranglerDev ? { _wranglerDev: sharedWranglerDev } : {}),
