@@ -197,7 +197,9 @@ export class MemoryCacheHandler implements CacheHandler {
     const entry = this.store.get(key);
     if (!entry) return null;
 
-    // Check tag-based invalidation first — if tag was invalidated, treat as hard miss
+    // Check tag-based invalidation first — if tag was invalidated, treat as hard miss.
+    // Note: the stale entry is deleted here as a side effect of the read, not on write.
+    // This keeps memory bounded without a separate eviction pass.
     for (const tag of entry.tags) {
       const revalidatedAt = this.tagRevalidatedAt.get(tag);
       if (revalidatedAt && revalidatedAt >= entry.lastModified) {
@@ -673,6 +675,11 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   options?: UnstableCacheOptions,
 ): T {
   const baseKey = keyParts ? keyParts.join(":") : fnv1a64(fn.toString());
+  // Warning: fn.toString() as a cache key is minification-sensitive. In
+  // production builds where the function body is mangled, two logically
+  // different functions may hash to the same key, or the same function may
+  // hash differently across builds. Always pass explicit keyParts in
+  // production to get a stable, collision-free cache key.
   const tags = options?.tags ?? [];
   const revalidateSeconds = options?.revalidate;
 

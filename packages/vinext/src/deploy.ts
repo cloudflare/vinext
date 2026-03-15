@@ -19,7 +19,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { execFileSync, type ExecSyncOptions } from "node:child_process";
 import { parseArgs as nodeParseArgs } from "node:util";
-import { createBuilder, build } from "vite";
+import { pathToFileURL } from "node:url";
 import {
   ensureESModule as _ensureESModule,
   renameCJSConfigs as _renameCJSConfigs,
@@ -258,6 +258,10 @@ export function detectProject(root: string): ProjectInfo {
 }
 
 function detectISR(root: string, isAppRouter: boolean): boolean {
+  // ISR detection is only implemented for App Router (scans for `export const revalidate`).
+  // Pages Router ISR (getStaticProps + revalidate) is not detected here — wrangler.jsonc
+  // will not include the KV namespace binding for Pages Router projects even if they use ISR.
+  // This is a known gap; KV must be configured manually for Pages Router ISR.
   if (!isAppRouter) return false;
   try {
     // Check root-level app/ first, then fall back to src/app/
@@ -1091,6 +1095,22 @@ function writeGeneratedFiles(files: GeneratedFile[]): void {
 async function runBuild(info: ProjectInfo): Promise<void> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
+  // Resolve Vite from the project root so that symlinked vinext installs
+  // (bun link / npm link) use the project's Vite, not the monorepo copy.
+  // This mirrors the loadVite() pattern in cli.ts.
+  let vitePath: string;
+  try {
+    const req = createRequire(path.join(info.root, "package.json"));
+    vitePath = req.resolve("vite");
+  } catch {
+    vitePath = "vite";
+  }
+  const viteUrl = vitePath === "vite" ? vitePath : pathToFileURL(vitePath).href;
+  const { createBuilder, build } = (await import(/* @vite-ignore */ viteUrl)) as {
+    createBuilder: typeof import("vite").createBuilder;
+    build: typeof import("vite").build;
+  };
+
   // Use Vite's JS API for the build. The user's vite.config.ts (or our
   // generated one) has the cloudflare() plugin which handles the Worker
   // output format. We just need to trigger the build.
@@ -1207,10 +1227,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (missingDeps.length > 0) {
     console.log();
     installDeps(root, missingDeps);
-    // Re-detect after install
-    info.hasCloudflarePlugin = true;
-    info.hasWrangler = true;
-    if (info.isAppRouter) info.hasRscPlugin = true;
+    // Re-detect so all fields reflect the freshly installed packages.
+    // Preserve any CLI name override applied above.
+    const nameOverride = options.name ? info.projectName : undefined;
+    Object.assign(info, detectProject(root));
+    if (nameOverride) info.projectName = nameOverride;
   }
 
   // Step 3: Ensure ESM + rename CJS configs
