@@ -24,7 +24,7 @@ import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { classifyPagesRoute, classifyAppRoute } from "./report.js";
 import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-matcher.js";
-import { NoOpCacheHandler, setCacheHandler } from "../shims/cache.js";
+import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "../shims/cache.js";
 import { runWithHeadersContext, headersContextFromRequest } from "../shims/headers.js";
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
@@ -289,6 +289,29 @@ async function resolveParentParams(
   return currentParams;
 }
 
+// ─── Bundle loading ───────────────────────────────────────────────────────────
+
+/**
+ * Load a pre-built production bundle via a cache-busted dynamic import.
+ *
+ * Appends the bundle's mtime as a query parameter so that if the bundle is
+ * rebuilt (e.g. by a previous test in the same process), Node's ESM cache
+ * does not return the stale module.  Same mtime = same content = cache hit
+ * (no-op).  New mtime = fresh import.
+ *
+ * Throws a user-friendly error if the bundle does not exist.
+ */
+async function loadBundle(bundlePath: string): Promise<Record<string, unknown>> {
+  if (!fs.existsSync(bundlePath)) {
+    throw new Error(
+      `[vinext] Bundle not found at ${bundlePath}.\nRun \`vinext build\` before prerendering.`,
+    );
+  }
+  const { pathToFileURL } = await import("node:url");
+  const mtime = fs.statSync(bundlePath).mtimeMs;
+  return (await import(`${pathToFileURL(bundlePath).href}?t=${mtime}`)) as Record<string, unknown>;
+}
+
 // ─── Pages Router Prerender ───────────────────────────────────────────────────
 
 /**
@@ -326,222 +349,216 @@ export async function prerenderPages({
     results.push({ route: apiRoute.pattern, status: "skipped", reason: "api" });
   }
 
-  // Load the production bundle — required for prerendering.
-  if (!fs.existsSync(pagesBundlePath)) {
-    throw new Error(
-      `[vinext] Pages Router bundle not found at ${pagesBundlePath}.\nRun \`vinext build\` before prerendering.`,
-    );
-  }
-  const { pathToFileURL } = await import("node:url");
-  // Append mtime as a cache-buster so that if the bundle is rebuilt (e.g. by a
-  // previous test in the same process), Node's ESM cache doesn't return the stale
-  // module. Same mtime = same content = cached (no-op). New mtime = fresh import.
-  const pagesMtime = fs.statSync(pagesBundlePath).mtimeMs;
-  const bundleExports = (await import(
-    `${pathToFileURL(pagesBundlePath).href}?t=${pagesMtime}`
-  )) as Record<string, unknown>;
-
-  if (typeof bundleExports.renderPage !== "function" || !Array.isArray(bundleExports.pageRoutes)) {
-    throw new Error(
-      `[vinext] Pages Router bundle at ${pagesBundlePath} is missing required exports (renderPage, pageRoutes).\nRun \`vinext build\` to regenerate the bundle.`,
-    );
-  }
-
   // Use a no-op cache handler for the duration of prerender so the production
   // ISR pipeline doesn't waste time writing to MemoryCacheHandler only to
-  // discard it at process exit.
+  // discard it at process exit. Restore the previous handler when done so that
+  // sequential calls (e.g. in tests with a custom handler) are unaffected.
+  const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
+  try {
+    const bundleExports = await loadBundle(pagesBundlePath);
 
-  const renderPage = bundleExports.renderPage as (
-    request: Request,
-    url: string,
-    manifest: Record<string, string[]>,
-  ) => Promise<Response>;
-  const bundlePageRoutes = bundleExports.pageRoutes as Array<{
-    pattern: string;
-    isDynamic: boolean;
-    params: Record<string, string>;
-    module: {
-      getStaticPaths?: (opts: { locales: string[]; defaultLocale: string }) => Promise<{
-        paths: Array<{ params: Record<string, string | string[]> }>;
-        fallback: unknown;
-      }>;
-      getStaticProps?: unknown;
-      getServerSideProps?: unknown;
-    };
-    filePath: string;
-  }>;
-
-  // ── Gather pages to render ──────────────────────────────────────────────
-  type PageToRender = {
-    route: (typeof bundlePageRoutes)[0];
-    urlPath: string;
-    params: Record<string, string | string[]>;
-    revalidate: number | false;
-  };
-  const pagesToRender: PageToRender[] = [];
-
-  for (const route of bundlePageRoutes) {
-    // Skip internal pages (_app, _document, _error, etc.)
-    const routeName = path.basename(route.filePath, path.extname(route.filePath));
-    if (routeName.startsWith("_")) continue;
-
-    // Use the file-based route info to classify
-    const fsRoute = routes.find(
-      (r) => r.filePath === route.filePath || r.pattern === route.pattern,
-    );
-    if (!fsRoute) continue;
-
-    const { type, revalidate: classifiedRevalidate } = classifyPagesRoute(route.filePath);
-
-    if (type === "ssr") {
-      if (mode === "export") {
-        results.push({
-          route: route.pattern,
-          status: "error",
-          error: `Page uses getServerSideProps which is not supported with output: 'export'. Use getStaticProps instead.`,
-        });
-      } else {
-        results.push({ route: route.pattern, status: "skipped", reason: "ssr" });
-      }
-      continue;
+    if (
+      typeof bundleExports.renderPage !== "function" ||
+      !Array.isArray(bundleExports.pageRoutes)
+    ) {
+      throw new Error(
+        `[vinext] Pages Router bundle at ${pagesBundlePath} is missing required exports (renderPage, pageRoutes).\nRun \`vinext build\` to regenerate the bundle.`,
+      );
     }
 
-    const revalidate: number | false =
-      mode === "export"
-        ? false
-        : typeof classifiedRevalidate === "number"
-          ? classifiedRevalidate
-          : false;
+    const renderPage = bundleExports.renderPage as (
+      request: Request,
+      url: string,
+      manifest: Record<string, string[]>,
+    ) => Promise<Response>;
+    const bundlePageRoutes = bundleExports.pageRoutes as Array<{
+      pattern: string;
+      isDynamic: boolean;
+      params: Record<string, string>;
+      module: {
+        getStaticPaths?: (opts: { locales: string[]; defaultLocale: string }) => Promise<{
+          paths: Array<{ params: Record<string, string | string[]> }>;
+          fallback: unknown;
+        }>;
+        getStaticProps?: unknown;
+        getServerSideProps?: unknown;
+      };
+      filePath: string;
+    }>;
 
-    if (route.isDynamic) {
-      if (typeof route.module.getStaticPaths !== "function") {
+    // ── Gather pages to render ──────────────────────────────────────────────
+    type PageToRender = {
+      route: (typeof bundlePageRoutes)[0];
+      urlPath: string;
+      params: Record<string, string | string[]>;
+      revalidate: number | false;
+    };
+    const pagesToRender: PageToRender[] = [];
+
+    for (const route of bundlePageRoutes) {
+      // Skip internal pages (_app, _document, _error, etc.)
+      const routeName = path.basename(route.filePath, path.extname(route.filePath));
+      if (routeName.startsWith("_")) continue;
+
+      // Use the file-based route info to classify
+      const fsRoute = routes.find(
+        (r) => r.filePath === route.filePath || r.pattern === route.pattern,
+      );
+      if (!fsRoute) continue;
+
+      const { type, revalidate: classifiedRevalidate } = classifyPagesRoute(route.filePath);
+
+      if (type === "ssr") {
         if (mode === "export") {
           results.push({
             route: route.pattern,
             status: "error",
-            error: `Dynamic route requires getStaticPaths with output: 'export'`,
+            error: `Page uses getServerSideProps which is not supported with output: 'export'. Use getStaticProps instead.`,
           });
         } else {
-          results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+          results.push({ route: route.pattern, status: "skipped", reason: "ssr" });
         }
         continue;
       }
 
-      const pathsResult = await route.module.getStaticPaths({ locales: [], defaultLocale: "" });
-      const fallback = pathsResult?.fallback ?? false;
+      const revalidate: number | false =
+        mode === "export"
+          ? false
+          : typeof classifiedRevalidate === "number"
+            ? classifiedRevalidate
+            : false;
 
-      if (mode === "export" && fallback !== false) {
-        results.push({
-          route: route.pattern,
-          status: "error",
-          error: `getStaticPaths must return fallback: false with output: 'export' (got: ${JSON.stringify(fallback)})`,
-        });
-        continue;
-      }
-
-      const paths: Array<{ params: Record<string, string | string[]> }> = pathsResult?.paths ?? [];
-      for (const { params } of paths) {
-        const urlPath = buildUrlFromParams(route.pattern, params);
-        pagesToRender.push({ route, urlPath, params, revalidate });
-      }
-    } else {
-      pagesToRender.push({ route, urlPath: route.pattern, params: {}, revalidate });
-    }
-  }
-
-  // ── Render each page via production renderPage() ──────────────────────
-  let completed = 0;
-  const pageResults = await runWithConcurrency(
-    pagesToRender,
-    concurrency,
-    async ({ route, urlPath, revalidate }) => {
-      let result: PrerenderRouteResult;
-      try {
-        const response = await renderPage(new Request(`http://localhost${urlPath}`), urlPath, {});
-        const outputFiles: string[] = [];
-        const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
-        const htmlFullPath = path.join(outDir, htmlOutputPath);
-
-        if (response.status >= 300 && response.status < 400) {
-          // getStaticProps returned a redirect — emit a meta-refresh HTML page
-          // so the static export can represent the redirect without a server.
-          const dest = response.headers.get("location") ?? "/";
-          const escapedDest = dest
-            .replace(/&/g, "&amp;")
-            .replace(/"/g, "&quot;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;");
-          const html = `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${escapedDest}" /></head><body></body></html>`;
-          fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
-          fs.writeFileSync(htmlFullPath, html, "utf-8");
-          outputFiles.push(htmlOutputPath);
-        } else {
-          if (!response.ok) {
-            throw new Error(`renderPage returned ${response.status} for ${urlPath}`);
+      if (route.isDynamic) {
+        if (typeof route.module.getStaticPaths !== "function") {
+          if (mode === "export") {
+            results.push({
+              route: route.pattern,
+              status: "error",
+              error: `Dynamic route requires getStaticPaths with output: 'export'`,
+            });
+          } else {
+            results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
           }
-          const html = await response.text();
-          fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
-          fs.writeFileSync(htmlFullPath, html, "utf-8");
-          outputFiles.push(htmlOutputPath);
+          continue;
         }
 
-        result = {
-          route: route.pattern,
-          status: "rendered",
-          outputFiles,
-          revalidate,
-          ...(urlPath !== route.pattern ? { path: urlPath } : {}),
-        };
-      } catch (e) {
-        result = { route: route.pattern, status: "error", error: (e as Error).message };
-      }
-      onProgress?.({
-        completed: ++completed,
-        total: pagesToRender.length,
-        route: urlPath,
-        status: result.status,
-      });
-      return result;
-    },
-  );
-  results.push(...pageResults);
+        const pathsResult = await route.module.getStaticPaths({ locales: [], defaultLocale: "" });
+        const fallback = pathsResult?.fallback ?? false;
 
-  // ── Render 404 page via production bundle ─────────────────────────────
-  const has404 =
-    findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher) ||
-    findFileWithExtensions(path.join(pagesDir, "_error"), fileMatcher);
-  if (has404) {
-    try {
-      const notFoundRes = await renderPage(
-        new Request("http://localhost/__vinext_nonexistent_for_404__"),
-        "/__vinext_nonexistent_for_404__",
-        {},
-      );
-      const contentType = notFoundRes.headers.get("content-type") ?? "";
-      if (contentType.includes("text/html")) {
-        const html404 = await notFoundRes.text();
-        const fullPath = path.join(outDir, "404.html");
-        fs.writeFileSync(fullPath, html404, "utf-8");
-        results.push({
-          route: "/404",
-          status: "rendered",
-          outputFiles: ["404.html"],
-          revalidate: false,
-        });
+        if (mode === "export" && fallback !== false) {
+          results.push({
+            route: route.pattern,
+            status: "error",
+            error: `getStaticPaths must return fallback: false with output: 'export' (got: ${JSON.stringify(fallback)})`,
+          });
+          continue;
+        }
+
+        const paths: Array<{ params: Record<string, string | string[]> }> =
+          pathsResult?.paths ?? [];
+        for (const { params } of paths) {
+          const urlPath = buildUrlFromParams(route.pattern, params);
+          pagesToRender.push({ route, urlPath, params, revalidate });
+        }
+      } else {
+        pagesToRender.push({ route, urlPath: route.pattern, params: {}, revalidate });
       }
-    } catch {
-      // No custom 404
     }
+
+    // ── Render each page via production renderPage() ──────────────────────
+    let completed = 0;
+    const pageResults = await runWithConcurrency(
+      pagesToRender,
+      concurrency,
+      async ({ route, urlPath, revalidate }) => {
+        let result: PrerenderRouteResult;
+        try {
+          const response = await renderPage(new Request(`http://localhost${urlPath}`), urlPath, {});
+          const outputFiles: string[] = [];
+          const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
+          const htmlFullPath = path.join(outDir, htmlOutputPath);
+
+          if (response.status >= 300 && response.status < 400) {
+            // getStaticProps returned a redirect — emit a meta-refresh HTML page
+            // so the static export can represent the redirect without a server.
+            const dest = response.headers.get("location") ?? "/";
+            const escapedDest = dest
+              .replace(/&/g, "&amp;")
+              .replace(/"/g, "&quot;")
+              .replace(/</g, "&lt;")
+              .replace(/>/g, "&gt;");
+            const html = `<!DOCTYPE html><html><head><meta http-equiv="refresh" content="0;url=${escapedDest}" /></head><body></body></html>`;
+            fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
+            fs.writeFileSync(htmlFullPath, html, "utf-8");
+            outputFiles.push(htmlOutputPath);
+          } else {
+            if (!response.ok) {
+              throw new Error(`renderPage returned ${response.status} for ${urlPath}`);
+            }
+            const html = await response.text();
+            fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
+            fs.writeFileSync(htmlFullPath, html, "utf-8");
+            outputFiles.push(htmlOutputPath);
+          }
+
+          result = {
+            route: route.pattern,
+            status: "rendered",
+            outputFiles,
+            revalidate,
+            ...(urlPath !== route.pattern ? { path: urlPath } : {}),
+          };
+        } catch (e) {
+          result = { route: route.pattern, status: "error", error: (e as Error).message };
+        }
+        onProgress?.({
+          completed: ++completed,
+          total: pagesToRender.length,
+          route: urlPath,
+          status: result.status,
+        });
+        return result;
+      },
+    );
+    results.push(...pageResults);
+
+    // ── Render 404 page via production bundle ─────────────────────────────
+    const has404 =
+      findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher) ||
+      findFileWithExtensions(path.join(pagesDir, "_error"), fileMatcher);
+    if (has404) {
+      try {
+        const notFoundRes = await renderPage(
+          new Request("http://localhost/__vinext_nonexistent_for_404__"),
+          "/__vinext_nonexistent_for_404__",
+          {},
+        );
+        const contentType = notFoundRes.headers.get("content-type") ?? "";
+        if (contentType.includes("text/html")) {
+          const html404 = await notFoundRes.text();
+          const fullPath = path.join(outDir, "404.html");
+          fs.writeFileSync(fullPath, html404, "utf-8");
+          results.push({
+            route: "/404",
+            status: "rendered",
+            outputFiles: ["404.html"],
+            revalidate: false,
+          });
+        }
+      } catch {
+        // No custom 404
+      }
+    }
+
+    // ── Write vinext-prerender.json ───────────────────────────────────────────
+    if (!skipManifest) writePrerenderIndex(results, manifestDir);
+
+    return { routes: results };
+  } finally {
+    setCacheHandler(previousHandler);
   }
-
-  // ── Write vinext-prerender.json ───────────────────────────────────────────
-  if (!skipManifest) writePrerenderIndex(results, manifestDir);
-
-  return { routes: results };
 }
-
-// ─── App Router Prerender ─────────────────────────────────────────────────────
 
 /**
  * Run the prerender phase for App Router.
@@ -574,220 +591,194 @@ export async function prerenderApp({
 
   fs.mkdirSync(outDir, { recursive: true });
 
-  // ── Load RSC handler from production bundle ──────────────────────────────
-  if (!fs.existsSync(rscBundlePath)) {
-    throw new Error(
-      `[vinext] App Router bundle not found at ${rscBundlePath}.\nRun \`vinext build\` before prerendering.`,
-    );
-  }
-
   // Use a no-op cache handler for the duration of prerender so the production
   // ISR pipeline doesn't waste time writing to MemoryCacheHandler only to
-  // discard it at process exit.
+  // discard it at process exit. Restore the previous handler when done so that
+  // sequential calls (e.g. in tests with a custom handler) are unaffected.
+  const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
-  const { pathToFileURL } = await import("node:url");
-  // Append mtime as a cache-buster so that if the bundle is rebuilt (e.g. by a
-  // previous test in the same process), Node's ESM cache doesn't return the stale
-  // module. Same mtime = same content = cached (no-op). New mtime = fresh import.
-  const rscMtime = fs.statSync(rscBundlePath).mtimeMs;
-  const rscEntry = await import(`${pathToFileURL(rscBundlePath).href}?t=${rscMtime}`);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const rscHandler = rscEntry.default as (request: Request, ctx?: unknown) => Promise<Response>;
-  // Map from route pattern → generateStaticParams exported from the bundle
-  let staticParamsMap: Record<
-    string,
-    | ((opts: {
-        params: Record<string, string | string[]>;
-      }) => Promise<Record<string, string | string[]>[]>)
-    | null
-    | undefined
-  > = {};
-  if (rscEntry.generateStaticParamsMap) {
-    staticParamsMap = rscEntry.generateStaticParamsMap as typeof staticParamsMap;
-  }
-
-  // ── Collect URLs to render ────────────────────────────────────────────────
-  type UrlToRender = {
-    urlPath: string;
-    /** The file-system route pattern this URL was expanded from (e.g. `/blog/:slug`). */
-    routePattern: string;
-    revalidate: number | false;
-    isSpeculative: boolean; // 'unknown' route — mark skipped if render fails
-  };
-  const urlsToRender: UrlToRender[] = [];
-
-  for (const route of routes) {
-    // API-only route handler (no page component)
-    if (route.routePath && !route.pagePath) {
-      results.push({ route: route.pattern, status: "skipped", reason: "api" });
-      continue;
+  try {
+    // ── Load RSC handler from production bundle ──────────────────────────────
+    const rscEntry = await loadBundle(rscBundlePath);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rscHandler = rscEntry.default as (request: Request, ctx?: unknown) => Promise<Response>;
+    // Map from route pattern → generateStaticParams exported from the bundle
+    let staticParamsMap: Record<
+      string,
+      | ((opts: {
+          params: Record<string, string | string[]>;
+        }) => Promise<Record<string, string | string[]>[]>)
+      | null
+      | undefined
+    > = {};
+    if (rscEntry.generateStaticParamsMap) {
+      staticParamsMap = rscEntry.generateStaticParamsMap as typeof staticParamsMap;
     }
 
-    if (!route.pagePath) continue;
+    // ── Collect URLs to render ────────────────────────────────────────────────
+    type UrlToRender = {
+      urlPath: string;
+      /** The file-system route pattern this URL was expanded from (e.g. `/blog/:slug`). */
+      routePattern: string;
+      revalidate: number | false;
+      isSpeculative: boolean; // 'unknown' route — mark skipped if render fails
+    };
+    const urlsToRender: UrlToRender[] = [];
 
-    // Use static analysis classification, but note its limitations for dynamic URLs:
-    // classifyAppRoute() returns 'ssr' for dynamic URLs with no explicit config,
-    // meaning "unknown — could have generateStaticParams". We must check
-    // generateStaticParams first before applying the ssr skip/error logic.
-    const { type, revalidate: classifiedRevalidate } = classifyAppRoute(
-      route.pagePath,
-      route.routePath,
-      route.isDynamic,
-    );
-    if (type === "api") {
-      results.push({ route: route.pattern, status: "skipped", reason: "api" });
-      continue;
-    }
-
-    // 'ssr' from explicit config (force-dynamic, revalidate=0) — truly dynamic,
-    // no point checking generateStaticParams.
-    // BUT: if isDynamic=true and there's no explicit dynamic/revalidate config,
-    // classifyAppRoute also returns 'ssr'. In that case we must still check
-    // generateStaticParams before giving up.
-    const isExplicitlyDynamic = type === "ssr" && !route.isDynamic;
-
-    if (isExplicitlyDynamic) {
-      if (mode === "export") {
-        results.push({
-          route: route.pattern,
-          status: "error",
-          error: `Route uses dynamic rendering (force-dynamic or revalidate=0) which is not supported with output: 'export'`,
-        });
-      } else {
-        results.push({ route: route.pattern, status: "skipped", reason: "dynamic" });
+    for (const route of routes) {
+      // API-only route handler (no page component)
+      if (route.routePath && !route.pagePath) {
+        results.push({ route: route.pattern, status: "skipped", reason: "api" });
+        continue;
       }
-      continue;
-    }
 
-    const revalidate: number | false =
-      mode === "export"
-        ? false
-        : typeof classifiedRevalidate === "number"
-          ? classifiedRevalidate
-          : false;
+      if (!route.pagePath) continue;
 
-    if (route.isDynamic) {
-      // Dynamic URL — needs generateStaticParams
-      // (also handles isImplicitlyDynamic case: dynamic URL with no explicit config)
-      try {
-        // Get generateStaticParams from the static params map (production bundle)
-        const generateStaticParamsFn = staticParamsMap[route.pattern];
+      // Use static analysis classification, but note its limitations for dynamic URLs:
+      // classifyAppRoute() returns 'ssr' for dynamic URLs with no explicit config,
+      // meaning "unknown — could have generateStaticParams". We must check
+      // generateStaticParams first before applying the ssr skip/error logic.
+      const { type, revalidate: classifiedRevalidate } = classifyAppRoute(
+        route.pagePath,
+        route.routePath,
+        route.isDynamic,
+      );
+      if (type === "api") {
+        results.push({ route: route.pattern, status: "skipped", reason: "api" });
+        continue;
+      }
 
-        if (typeof generateStaticParamsFn !== "function") {
-          if (mode === "export") {
-            results.push({
-              route: route.pattern,
-              status: "error",
-              error: `Dynamic route requires generateStaticParams() with output: 'export'`,
-            });
-          } else {
-            results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
-          }
-          continue;
+      // 'ssr' from explicit config (force-dynamic, revalidate=0) — truly dynamic,
+      // no point checking generateStaticParams.
+      // BUT: if isDynamic=true and there's no explicit dynamic/revalidate config,
+      // classifyAppRoute also returns 'ssr'. In that case we must still check
+      // generateStaticParams before giving up.
+      const isConfiguredDynamic = type === "ssr" && !route.isDynamic;
+
+      if (isConfiguredDynamic) {
+        if (mode === "export") {
+          results.push({
+            route: route.pattern,
+            status: "error",
+            error: `Route uses dynamic rendering (force-dynamic or revalidate=0) which is not supported with output: 'export'`,
+          });
+        } else {
+          results.push({ route: route.pattern, status: "skipped", reason: "dynamic" });
         }
+        continue;
+      }
 
-        const parentParamSets = await resolveParentParams(route, routes, staticParamsMap);
-        let paramSets: Record<string, string | string[]>[];
+      const revalidate: number | false =
+        mode === "export"
+          ? false
+          : typeof classifiedRevalidate === "number"
+            ? classifiedRevalidate
+            : false;
 
-        if (parentParamSets.length > 0) {
-          paramSets = [];
-          for (const parentParams of parentParamSets) {
-            const childResults = await generateStaticParamsFn({ params: parentParams });
-            if (Array.isArray(childResults)) {
-              for (const childParams of childResults) {
-                paramSets.push({ ...parentParams, ...childParams });
+      if (route.isDynamic) {
+        // Dynamic URL — needs generateStaticParams
+        // (also handles isImplicitlyDynamic case: dynamic URL with no explicit config)
+        try {
+          // Get generateStaticParams from the static params map (production bundle)
+          const generateStaticParamsFn = staticParamsMap[route.pattern];
+
+          if (typeof generateStaticParamsFn !== "function") {
+            if (mode === "export") {
+              results.push({
+                route: route.pattern,
+                status: "error",
+                error: `Dynamic route requires generateStaticParams() with output: 'export'`,
+              });
+            } else {
+              results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+            }
+            continue;
+          }
+
+          const parentParamSets = await resolveParentParams(route, routes, staticParamsMap);
+          let paramSets: Record<string, string | string[]>[];
+
+          if (parentParamSets.length > 0) {
+            paramSets = [];
+            for (const parentParams of parentParamSets) {
+              const childResults = await generateStaticParamsFn({ params: parentParams });
+              if (Array.isArray(childResults)) {
+                for (const childParams of childResults) {
+                  paramSets.push({ ...parentParams, ...childParams });
+                }
               }
             }
+          } else {
+            paramSets = await generateStaticParamsFn({ params: {} });
           }
-        } else {
-          paramSets = await generateStaticParamsFn({ params: {} });
-        }
 
-        if (!Array.isArray(paramSets) || paramSets.length === 0) {
-          // Empty params — skip with warning
-          results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
-          continue;
-        }
+          if (!Array.isArray(paramSets) || paramSets.length === 0) {
+            // Empty params — skip with warning
+            results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+            continue;
+          }
 
-        for (const params of paramSets) {
-          const urlPath = buildUrlFromParams(route.pattern, params);
-          urlsToRender.push({
-            urlPath,
-            routePattern: route.pattern,
-            revalidate,
-            isSpeculative: false,
+          for (const params of paramSets) {
+            const urlPath = buildUrlFromParams(route.pattern, params);
+            urlsToRender.push({
+              urlPath,
+              routePattern: route.pattern,
+              revalidate,
+              isSpeculative: false,
+            });
+          }
+        } catch (e) {
+          results.push({
+            route: route.pattern,
+            status: "error",
+            error: `Failed to call generateStaticParams(): ${(e as Error).message}`,
           });
         }
-      } catch (e) {
-        results.push({
-          route: route.pattern,
-          status: "error",
-          error: `Failed to call generateStaticParams(): ${(e as Error).message}`,
+      } else if (type === "unknown") {
+        // No explicit config, non-dynamic URL — attempt speculative static render
+        urlsToRender.push({
+          urlPath: route.pattern,
+          routePattern: route.pattern,
+          revalidate: false,
+          isSpeculative: true,
+        });
+      } else {
+        // Static or ISR
+        urlsToRender.push({
+          urlPath: route.pattern,
+          routePattern: route.pattern,
+          revalidate,
+          isSpeculative: false,
         });
       }
-    } else if (type === "unknown") {
-      // No explicit config, non-dynamic URL — attempt speculative static render
-      urlsToRender.push({
-        urlPath: route.pattern,
-        routePattern: route.pattern,
-        revalidate: false,
-        isSpeculative: true,
-      });
-    } else {
-      // Static or ISR
-      urlsToRender.push({
-        urlPath: route.pattern,
-        routePattern: route.pattern,
-        revalidate,
-        isSpeculative: false,
-      });
     }
-  }
 
-  // ── Render each URL via direct RSC handler invocation ─────────────────────
-  let completedApp = 0;
-  const appResults = await runWithConcurrency(
-    urlsToRender,
-    concurrency,
-    async ({ urlPath, routePattern, revalidate, isSpeculative }) => {
-      let result: PrerenderRouteResult;
-      try {
-        // Invoke RSC handler directly with a synthetic Request.
-        // Each request is wrapped in its own ALS context via runWithHeadersContext
-        // so per-request state (dynamicUsageDetected, headersContext, etc.) is
-        // isolated and never bleeds into other renders or into _fallbackState.
-        const htmlRequest = new Request(`http://localhost${urlPath}`);
-        const htmlRes = await runWithHeadersContext(headersContextFromRequest(htmlRequest), () =>
-          rscHandler(htmlRequest),
-        );
-        if (!htmlRes.ok) {
-          if (isSpeculative) {
-            result = { route: routePattern, status: "skipped", reason: "dynamic" };
-          } else {
-            result = {
-              route: routePattern,
-              status: "error",
-              error: `RSC handler returned ${htmlRes.status}`,
-            };
-          }
-          onProgress?.({
-            completed: ++completedApp,
-            total: urlsToRender.length,
-            route: urlPath,
-            status: result.status,
-          });
-          return result;
-        }
-
-        // Detect dynamic usage for speculative routes via Cache-Control header.
-        // When headers(), cookies(), connection(), or noStore() are called during
-        // render, the server sets Cache-Control: no-store. We treat this as a
-        // signal that the route is dynamic and should be skipped.
-        if (isSpeculative) {
-          const cacheControl = htmlRes.headers.get("cache-control") ?? "";
-          if (cacheControl.includes("no-store")) {
-            await htmlRes.body?.cancel();
-            result = { route: routePattern, status: "skipped", reason: "dynamic" };
+    // ── Render each URL via direct RSC handler invocation ─────────────────────
+    let completedApp = 0;
+    const appResults = await runWithConcurrency(
+      urlsToRender,
+      concurrency,
+      async ({ urlPath, routePattern, revalidate, isSpeculative }) => {
+        let result: PrerenderRouteResult;
+        try {
+          // Invoke RSC handler directly with a synthetic Request.
+          // Each request is wrapped in its own ALS context via runWithHeadersContext
+          // so per-request state (dynamicUsageDetected, headersContext, etc.) is
+          // isolated and never bleeds into other renders or into _fallbackState.
+          const htmlRequest = new Request(`http://localhost${urlPath}`);
+          const htmlRes = await runWithHeadersContext(headersContextFromRequest(htmlRequest), () =>
+            rscHandler(htmlRequest),
+          );
+          if (!htmlRes.ok) {
+            if (isSpeculative) {
+              result = { route: routePattern, status: "skipped", reason: "dynamic" };
+            } else {
+              result = {
+                route: routePattern,
+                status: "error",
+                error: `RSC handler returned ${htmlRes.status}`,
+              };
+            }
             onProgress?.({
               completed: ++completedApp,
               total: urlsToRender.length,
@@ -796,94 +787,115 @@ export async function prerenderApp({
             });
             return result;
           }
+
+          // Detect dynamic usage for speculative routes via Cache-Control header.
+          // When headers(), cookies(), connection(), or noStore() are called during
+          // render, the server sets Cache-Control: no-store. We treat this as a
+          // signal that the route is dynamic and should be skipped.
+          if (isSpeculative) {
+            const cacheControl = htmlRes.headers.get("cache-control") ?? "";
+            if (cacheControl.includes("no-store")) {
+              await htmlRes.body?.cancel();
+              result = { route: routePattern, status: "skipped", reason: "dynamic" };
+              onProgress?.({
+                completed: ++completedApp,
+                total: urlsToRender.length,
+                route: urlPath,
+                status: result.status,
+              });
+              return result;
+            }
+          }
+
+          const html = await htmlRes.text();
+
+          // Fetch RSC payload via a second invocation with RSC headers
+          const rscRequest = new Request(`http://localhost${urlPath}`, {
+            headers: { Accept: "text/x-component", RSC: "1" },
+          });
+          const rscRes = await runWithHeadersContext(headersContextFromRequest(rscRequest), () =>
+            rscHandler(rscRequest),
+          );
+          const rscData = rscRes.ok ? await rscRes.text() : null;
+
+          const outputFiles: string[] = [];
+
+          // Write HTML
+          const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
+          const htmlFullPath = path.join(outDir, htmlOutputPath);
+          fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
+          fs.writeFileSync(htmlFullPath, html, "utf-8");
+          outputFiles.push(htmlOutputPath);
+
+          // Write RSC payload (.rsc file)
+          if (rscData !== null) {
+            const rscOutputPath = getRscOutputPath(urlPath);
+            const rscFullPath = path.join(outDir, rscOutputPath);
+            fs.mkdirSync(path.dirname(rscFullPath), { recursive: true });
+            fs.writeFileSync(rscFullPath, rscData, "utf-8");
+            outputFiles.push(rscOutputPath);
+          }
+
+          result = {
+            route: routePattern,
+            status: "rendered",
+            outputFiles,
+            revalidate,
+            ...(urlPath !== routePattern ? { path: urlPath } : {}),
+          };
+        } catch (e) {
+          if (isSpeculative) {
+            result = { route: routePattern, status: "skipped", reason: "dynamic" };
+          } else {
+            const err = e as Error & { digest?: string };
+            const msg = err.digest ? `${err.message} (digest: ${err.digest})` : err.message;
+            result = { route: routePattern, status: "error", error: msg };
+          }
         }
-
-        const html = await htmlRes.text();
-
-        // Fetch RSC payload via a second invocation with RSC headers
-        const rscRequest = new Request(`http://localhost${urlPath}`, {
-          headers: { Accept: "text/x-component", RSC: "1" },
+        onProgress?.({
+          completed: ++completedApp,
+          total: urlsToRender.length,
+          route: urlPath,
+          status: result.status,
         });
-        const rscRes = await runWithHeadersContext(headersContextFromRequest(rscRequest), () =>
-          rscHandler(rscRequest),
-        );
-        const rscData = rscRes.ok ? await rscRes.text() : null;
-
-        const outputFiles: string[] = [];
-
-        // Write HTML
-        const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
-        const htmlFullPath = path.join(outDir, htmlOutputPath);
-        fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
-        fs.writeFileSync(htmlFullPath, html, "utf-8");
-        outputFiles.push(htmlOutputPath);
-
-        // Write RSC payload (.rsc file)
-        if (rscData !== null) {
-          const rscOutputPath = getRscOutputPath(urlPath);
-          const rscFullPath = path.join(outDir, rscOutputPath);
-          fs.mkdirSync(path.dirname(rscFullPath), { recursive: true });
-          fs.writeFileSync(rscFullPath, rscData, "utf-8");
-          outputFiles.push(rscOutputPath);
-        }
-
-        result = {
-          route: routePattern,
-          status: "rendered",
-          outputFiles,
-          revalidate,
-          ...(urlPath !== routePattern ? { path: urlPath } : {}),
-        };
-      } catch (e) {
-        if (isSpeculative) {
-          result = { route: routePattern, status: "skipped", reason: "dynamic" };
-        } else {
-          const err = e as Error & { digest?: string };
-          const msg = err.digest ? `${err.message} (digest: ${err.digest})` : err.message;
-          result = { route: routePattern, status: "error", error: msg };
-        }
-      }
-      onProgress?.({
-        completed: ++completedApp,
-        total: urlsToRender.length,
-        route: urlPath,
-        status: result.status,
-      });
-      return result;
-    },
-  );
-  results.push(...appResults);
-
-  // ── Render 404 page ───────────────────────────────────────────────────────
-  // Fetch a known-nonexistent URL to get the App Router's not-found response.
-  // The RSC handler returns 404 with full HTML for the not-found.tsx page (or
-  // the default Next.js 404). Write it to 404.html for static deployment.
-  try {
-    const notFoundRequest = new Request("http://localhost/__vinext_nonexistent_for_404__");
-    const notFoundRes = await runWithHeadersContext(
-      headersContextFromRequest(notFoundRequest),
-      () => rscHandler(notFoundRequest),
+        return result;
+      },
     );
-    if (notFoundRes.status === 404) {
-      const html404 = await notFoundRes.text();
-      const fullPath = path.join(outDir, "404.html");
-      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-      fs.writeFileSync(fullPath, html404, "utf-8");
-      results.push({
-        route: "/404",
-        status: "rendered",
-        outputFiles: ["404.html"],
-        revalidate: false,
-      });
+    results.push(...appResults);
+
+    // ── Render 404 page ───────────────────────────────────────────────────────
+    // Fetch a known-nonexistent URL to get the App Router's not-found response.
+    // The RSC handler returns 404 with full HTML for the not-found.tsx page (or
+    // the default Next.js 404). Write it to 404.html for static deployment.
+    try {
+      const notFoundRequest = new Request("http://localhost/__vinext_nonexistent_for_404__");
+      const notFoundRes = await runWithHeadersContext(
+        headersContextFromRequest(notFoundRequest),
+        () => rscHandler(notFoundRequest),
+      );
+      if (notFoundRes.status === 404) {
+        const html404 = await notFoundRes.text();
+        const fullPath = path.join(outDir, "404.html");
+        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+        fs.writeFileSync(fullPath, html404, "utf-8");
+        results.push({
+          route: "/404",
+          status: "rendered",
+          outputFiles: ["404.html"],
+          revalidate: false,
+        });
+      }
+    } catch {
+      // No custom 404 — skip silently
     }
-  } catch {
-    // No custom 404 — skip silently
+
+    // ── Write vinext-prerender.json ───────────────────────────────────────────
+    if (!skipManifest) writePrerenderIndex(results, manifestDir);
+
+    return { routes: results };
+  } finally {
+    setCacheHandler(previousHandler);
   }
-
-  // ── Write vinext-prerender.json ───────────────────────────────────────────
-  if (!skipManifest) writePrerenderIndex(results, manifestDir);
-
-  return { routes: results };
 }
 
 /**
@@ -891,7 +903,7 @@ export async function prerenderApp({
  * "/blog/hello-world" → "blog/hello-world.rsc"
  * "/"                 → "index.rsc"
  */
-function getRscOutputPath(urlPath: string): string {
+export function getRscOutputPath(urlPath: string): string {
   if (urlPath === "/") return "index.rsc";
   return urlPath.replace(/^\//, "") + ".rsc";
 }

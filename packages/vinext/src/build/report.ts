@@ -316,7 +316,7 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
 
   rows.forEach((row, i) => {
     const isLast = i === rows.length - 1;
-    const corner = i === 0 ? "┌" : isLast ? "└" : "├";
+    const corner = rows.length === 1 ? "─" : i === 0 ? "┌" : isLast ? "└" : "├";
     const sym = SYMBOLS[row.type];
     const suffix =
       row.type === "isr" && row.revalidate !== undefined ? `  (${row.revalidate}s)` : "";
@@ -357,7 +357,7 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
 
 // ─── Directory detection ──────────────────────────────────────────────────────
 
-function findDir(root: string, ...candidates: string[]): string | null {
+export function findDir(root: string, ...candidates: string[]): string | null {
   for (const candidate of candidates) {
     const full = path.join(root, candidate);
     if (fs.existsSync(full) && fs.statSync(full).isDirectory()) return full;

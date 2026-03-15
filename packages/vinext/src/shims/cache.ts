@@ -180,6 +180,19 @@ interface MemoryEntry {
   revalidateAt: number | null;
 }
 
+/**
+ * Shape of the optional `ctx` argument passed to `CacheHandler.set()`.
+ * Covers both the older `{ revalidate: number }` shape and the newer
+ * `{ cacheControl: { revalidate: number } }` shape (Next.js 16).
+ */
+interface SetCtx {
+  tags?: string[];
+  fetchCache?: boolean;
+  revalidate?: number;
+  cacheControl?: { revalidate?: number };
+  [key: string]: unknown;
+}
+
 export class MemoryCacheHandler implements CacheHandler {
   private store = new Map<string, MemoryEntry>();
   private tagRevalidatedAt = new Map<string, number>();
@@ -218,19 +231,20 @@ export class MemoryCacheHandler implements CacheHandler {
     data: IncrementalCacheValue | null,
     ctx?: Record<string, unknown>,
   ): Promise<void> {
+    const typedCtx = ctx as SetCtx | undefined;
     const tags: string[] = [];
     if (data && "tags" in data && Array.isArray(data.tags)) {
       tags.push(...data.tags);
     }
-    if (ctx && "tags" in ctx && Array.isArray(ctx.tags)) {
-      tags.push(...(ctx.tags as string[]));
+    if (typedCtx && Array.isArray(typedCtx.tags)) {
+      tags.push(...typedCtx.tags);
     }
 
     // Resolve effective revalidate — data overrides ctx.
     // revalidate: 0 means "don't cache", so skip storage entirely.
     let effectiveRevalidate: number | undefined;
-    if (ctx) {
-      const revalidate = (ctx as any).cacheControl?.revalidate ?? (ctx as any).revalidate;
+    if (typedCtx) {
+      const revalidate = typedCtx.cacheControl?.revalidate ?? typedCtx.revalidate;
       if (typeof revalidate === "number") {
         effectiveRevalidate = revalidate;
       }
@@ -324,11 +338,8 @@ export function getCacheHandler(): CacheHandler {
  *
  * Works with both `fetch(..., { next: { tags: ['myTag'] } })` and
  * `unstable_cache(fn, keys, { tags: ['myTag'] })`.
- */
-/**
- * Revalidate cached data associated with a specific cache tag.
  *
- * Next.js 16 updated signature: requires a cacheLife profile as second argument
+ * Next.js 16 updated signature: accepts a cacheLife profile as second argument
  * for stale-while-revalidate (SWR) behavior. The single-argument form is
  * deprecated but still supported for backward compatibility.
  *
@@ -633,18 +644,22 @@ export function cacheTag(...tags: string[]): void {
 const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
 const _unstableCacheAls = (_g[_UNSTABLE_CACHE_ALS_KEY] ??=
   new AsyncLocalStorage<boolean>()) as AsyncLocalStorage<boolean>;
-const UNSTABLE_CACHE_UNDEFINED_SENTINEL = "__vinext_unstable_cache_undefined__";
+
+/**
+ * Wrapper used to serialize `unstable_cache` results so that `undefined` can
+ * round-trip through JSON without confusion.  Using a structural wrapper
+ * avoids any sentinel-string collision risk.
+ */
+type CacheResultWrapper = { v: unknown } | { undef: true };
 
 function serializeUnstableCacheResult(value: unknown): string {
-  return value === undefined ? UNSTABLE_CACHE_UNDEFINED_SENTINEL : JSON.stringify(value);
+  const wrapper: CacheResultWrapper = value === undefined ? { undef: true } : { v: value };
+  return JSON.stringify(wrapper);
 }
 
 function deserializeUnstableCacheResult(body: string): unknown {
-  if (body === UNSTABLE_CACHE_UNDEFINED_SENTINEL) {
-    return undefined;
-  }
-
-  return JSON.parse(body);
+  const wrapper = JSON.parse(body) as CacheResultWrapper;
+  return "undef" in wrapper ? undefined : wrapper.v;
 }
 
 /**

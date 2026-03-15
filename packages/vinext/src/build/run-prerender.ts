@@ -17,6 +17,7 @@ import { prerenderApp, prerenderPages, writePrerenderIndex } from "./prerender.j
 import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
+import { findDir } from "./report.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -97,15 +98,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   const { root } = options;
 
   // Detect directories
-  const appDir =
-    (fs.existsSync(path.join(root, "app")) && path.join(root, "app")) ||
-    (fs.existsSync(path.join(root, "src", "app")) && path.join(root, "src", "app")) ||
-    null;
-
-  const pagesDir =
-    (fs.existsSync(path.join(root, "pages")) && path.join(root, "pages")) ||
-    (fs.existsSync(path.join(root, "src", "pages")) && path.join(root, "src", "pages")) ||
-    null;
+  const appDir = findDir(root, "app", "src/app");
+  const pagesDir = findDir(root, "pages", "src/pages");
 
   if (!appDir && !pagesDir) return null;
 
@@ -165,7 +159,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   if (pagesDir) {
     const [pageRoutes, apiRoutes] = await Promise.all([pagesRouter(pagesDir), apiRouter(pagesDir)]);
 
-    const appCompletedAtStart = completedUrls;
     let pagesTotal = 0;
     const result = await prerenderPages({
       mode,
@@ -176,12 +169,12 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       skipManifest: true,
       config,
       pagesBundlePath: options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js"),
-      onProgress: ({ completed, total, route }) => {
+      onProgress: ({ total, route }) => {
         if (pagesTotal === 0) {
           pagesTotal = total;
           totalUrls += total;
         }
-        completedUrls = appCompletedAtStart + completed;
+        completedUrls += 1;
         progress.update(completedUrls, totalUrls, route);
       },
     });
