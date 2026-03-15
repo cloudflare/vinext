@@ -9,8 +9,8 @@
 
 import http, { type IncomingHttpHeaders } from "node:http";
 import fs from "node:fs/promises";
-import { execFileSync } from "node:child_process";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import { createServer, build, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
@@ -255,40 +255,44 @@ export async function buildAppFixture(fixtureDir: string): Promise<string> {
 
 /**
  * Build the `tests/fixtures/cf-app-basic` fixture as a Cloudflare Workers
- * bundle by spawning `vp build` as a subprocess, and also builds the Pages
- * Router SSR bundle (via `buildPagesFixture`) for hybrid prerender testing.
+ * bundle in-process using `createBuilder` + `@cloudflare/vite-plugin`.
  *
- * We cannot use `createBuilder` for the CF build because `@cloudflare/vite-plugin`
- * uses WASM internally and Vite's `builtin:vite-wasm-fallback` plugin (active in
- * the test runner process) intercepts `.wasm` imports and throws. Running the
- * build as a subprocess sidesteps this entirely.
+ * The CF plugin is loaded via a path-based import resolved from the fixture's
+ * own node_modules (it is not installed at the workspace root).
  *
- * The Pages Router bundle is a plain Node SSR bundle that can be built in-process
- * using `buildPagesFixture` (no CF/WASM involvement).
+ * Both the App Router and Pages Router are served by the same Workers bundle —
+ * there is no separate plain-Node SSR bundle for Pages Router. All prerendering
+ * for both routers goes through `wrangler unstable_dev`.
  *
- * Returns `{ root, rscBundlePath, wranglerConfigPath, pagesBundlePath }`.
+ * Returns `{ root, rscBundlePath, wranglerConfigPath }`.
  */
 export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
   root: string;
   rscBundlePath: string;
   wranglerConfigPath: string;
-  pagesBundlePath: string;
 }> {
-  const vpBin = path.resolve(fixtureDir, "node_modules/.bin/vp");
-  execFileSync(vpBin, ["build"], {
-    cwd: fixtureDir,
-    stdio: "pipe",
-    env: { ...process.env, NODE_ENV: "production" },
-  });
+  const cfPluginPath = path.join(fixtureDir, "node_modules/@cloudflare/vite-plugin/dist/index.mjs");
+  const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as unknown as {
+    cloudflare: (opts?: {
+      viteEnvironment?: { name: string; childEnvironments?: string[] };
+    }) => import("vite").Plugin;
+  };
 
-  // Build the Pages Router SSR bundle separately (plain Node, no WASM).
-  // This uses disableAppRouter: true so only the Pages Router pipeline runs.
-  const pagesBundlePath = await buildPagesFixture(fixtureDir);
+  const { createBuilder } = await import("vite");
+  const builder = await createBuilder({
+    root: fixtureDir,
+    configFile: false,
+    plugins: [
+      vinext({ appDir: fixtureDir }),
+      cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
+    ],
+    logLevel: "silent",
+  });
+  await builder.buildApp();
 
   return {
     root: fixtureDir,
     rscBundlePath: path.join(fixtureDir, "dist", "server", "index.js"),
     wranglerConfigPath: path.join(fixtureDir, "dist", "server", "wrangler.json"),
-    pagesBundlePath,
   };
 }

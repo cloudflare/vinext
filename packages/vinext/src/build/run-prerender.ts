@@ -100,6 +100,11 @@ export interface RunPrerenderOptions {
  * Hybrid projects (both `app/` and `pages/` present) run both prerender
  * phases. The merged results are written to a single `dist/server/vinext-prerender.json`.
  *
+ * For Cloudflare Workers builds (detected by the presence of `wrangler.json`
+ * alongside the RSC bundle), a single `wrangler unstable_dev` instance is
+ * started, shared across both App Router and Pages Router prerender phases,
+ * and stopped in a `finally` block after both phases complete.
+ *
  * If a required production bundle does not exist, an error is thrown directing
  * the user to run `vinext build` first.
  */
@@ -148,60 +153,121 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       ? path.join(root, "dist", "client")
       : path.join(root, "dist", "server", "prerendered-routes");
 
-  // ── App Router phase ────────────────────────────────────────────────────────
-  if (appDir) {
-    const routes = await appRouter(appDir);
+  // ── Detect Cloudflare Workers build ────────────────────────────────────────
+  // A wrangler.json (or wrangler.jsonc) alongside dist/server/index.js signals
+  // a CF Workers bundle that cannot be imported directly in Node.
+  const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
+  const serverDir = path.dirname(rscBundlePath);
+  const wranglerConfigPath = [
+    path.join(serverDir, "wrangler.json"),
+    path.join(serverDir, "wrangler.jsonc"),
+  ].find((p) => fs.existsSync(p));
+  const isWorkersBuild = !!wranglerConfigPath;
 
-    // We don't know the exact render-queue size until prerenderApp starts, so
-    // use the progress callback's `total` to update our combined total on the
-    // first tick from each phase.
-    let appTotal = 0;
-    const result = await prerenderApp({
-      mode,
-      routes,
-      outDir,
-      skipManifest: true,
-      config,
-      rscBundlePath: options.rscBundlePath ?? path.join(root, "dist", "server", "index.js"),
-      root,
-      onProgress: ({ total, route }) => {
-        if (appTotal === 0) {
-          appTotal = total;
-          totalUrls += total;
-        }
-        completedUrls += 1;
-        progress.update(completedUrls, totalUrls, route);
-      },
-    });
+  // For CF Workers hybrid builds (app/ + pages/), start wrangler once and
+  // share the instance across both prerender phases. This avoids spinning up
+  // two miniflare instances (expensive) and ensures both phases render against
+  // the same built worker bundle.
+  //
+  // The wrangler instance is imported lazily (it's an optional peer dep —
+  // only installed for CF projects). We resolve it from the project root.
+  type WranglerDev = import("wrangler").Unstable_DevWorker;
+  let sharedWranglerDev: WranglerDev | null = null;
 
-    allRoutes.push(...result.routes);
-  }
+  try {
+    if (isWorkersBuild && appDir && pagesDir) {
+      // Hybrid CF build: both phases share one wrangler instance.
+      const projectRoot = root;
+      const wranglerEntry = path.resolve(projectRoot, "node_modules/wrangler/wrangler-dist/cli.js");
+      if (!fs.existsSync(wranglerEntry)) {
+        throw new Error(
+          `Prerendering a Cloudflare Workers build requires 'wrangler' to be installed in your project.\n` +
+            `Run: npm install --save-dev wrangler`,
+        );
+      }
+      const wrangler = (await import(wranglerEntry as string)) as typeof import("wrangler");
+      sharedWranglerDev = await wrangler.unstable_dev(rscBundlePath, {
+        config: wranglerConfigPath,
+        local: true,
+        vars: { VINEXT_PRERENDER: "1" },
+        experimental: { disableExperimentalWarning: true, testMode: true },
+        logLevel: "error",
+      });
+    }
 
-  // ── Pages Router phase ──────────────────────────────────────────────────────
-  if (pagesDir) {
-    const [pageRoutes, apiRoutes] = await Promise.all([pagesRouter(pagesDir), apiRouter(pagesDir)]);
+    // ── App Router phase ──────────────────────────────────────────────────────
+    if (appDir) {
+      const routes = await appRouter(appDir);
 
-    let pagesTotal = 0;
-    const result = await prerenderPages({
-      mode,
-      routes: pageRoutes,
-      apiRoutes,
-      pagesDir,
-      outDir,
-      skipManifest: true,
-      config,
-      pagesBundlePath: options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js"),
-      onProgress: ({ total, route }) => {
-        if (pagesTotal === 0) {
-          pagesTotal = total;
-          totalUrls += total;
-        }
-        completedUrls += 1;
-        progress.update(completedUrls, totalUrls, route);
-      },
-    });
+      // We don't know the exact render-queue size until prerenderApp starts, so
+      // use the progress callback's `total` to update our combined total on the
+      // first tick from each phase.
+      let appTotal = 0;
+      const result = await prerenderApp({
+        mode,
+        routes,
+        outDir,
+        skipManifest: true,
+        config,
+        rscBundlePath,
+        root,
+        // For hybrid CF builds pass the shared wrangler instance via internal field.
+        // prerenderApp will use it instead of starting its own.
+        ...(sharedWranglerDev ? { _wranglerDev: sharedWranglerDev } : {}),
+        onProgress: ({ total, route }) => {
+          if (appTotal === 0) {
+            appTotal = total;
+            totalUrls += total;
+          }
+          completedUrls += 1;
+          progress.update(completedUrls, totalUrls, route);
+        },
+      } as Parameters<typeof prerenderApp>[0]);
 
-    allRoutes.push(...result.routes);
+      allRoutes.push(...result.routes);
+    }
+
+    // ── Pages Router phase ────────────────────────────────────────────────────
+    if (pagesDir) {
+      const [pageRoutes, apiRoutes] = await Promise.all([
+        pagesRouter(pagesDir),
+        apiRouter(pagesDir),
+      ]);
+
+      let pagesTotal = 0;
+      const result = await prerenderPages({
+        mode,
+        routes: pageRoutes,
+        apiRoutes,
+        pagesDir,
+        outDir,
+        skipManifest: true,
+        config,
+        // For CF builds, use the shared wrangler instance instead of a plain Node bundle.
+        // For plain Node builds, fall back to the pages bundle path.
+        ...(sharedWranglerDev
+          ? { _wranglerDev: sharedWranglerDev }
+          : {
+              pagesBundlePath:
+                options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js"),
+            }),
+        onProgress: ({ total, route }) => {
+          if (pagesTotal === 0) {
+            pagesTotal = total;
+            totalUrls += total;
+          }
+          completedUrls += 1;
+          progress.update(completedUrls, totalUrls, route);
+        },
+      } as Parameters<typeof prerenderPages>[0]);
+
+      allRoutes.push(...result.routes);
+    }
+  } finally {
+    // Stop the shared wrangler instance if we started one.
+    if (sharedWranglerDev) {
+      await sharedWranglerDev.stop();
+    }
   }
 
   if (allRoutes.length === 0) {
@@ -209,7 +275,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     return null;
   }
 
-  // ── Write single merged manifest ────────────────────────────────────────────
+  // ── Write single merged manifest ──────────────────────────────────────────
   let rendered = 0;
   let skipped = 0;
   let errors = 0;

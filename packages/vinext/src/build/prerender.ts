@@ -119,12 +119,10 @@ export interface PrerenderPagesOptions extends PrerenderOptions {
    * Absolute path to the pre-built Pages Router server bundle
    * (e.g. `dist/server/entry.js`).
    *
-   * `renderPage` and `pageRoutes` are imported directly from this production
-   * bundle, which uses production React (no jsxDEV) and is required for
-   * prerendering. If the file does not exist, an error is thrown directing the
-   * user to run `vinext build` first.
+   * Required for plain Node builds. For Cloudflare Workers hybrid builds,
+   * omit this — `runPrerender` passes an internal wrangler instance instead.
    */
-  pagesBundlePath: string;
+  pagesBundlePath?: string;
 }
 
 export interface PrerenderAppOptions extends PrerenderOptions {
@@ -135,7 +133,8 @@ export interface PrerenderAppOptions extends PrerenderOptions {
    *
    * For plain Node builds, this module is `import()`-ed directly.
    * For Cloudflare Workers builds, if a `wrangler.json` exists alongside it,
-   * `wrangler unstable_dev` is used instead to avoid running Workers-only code in Node.
+   * `wrangler unstable_dev` is used instead to avoid running Workers-only code
+   * in Node.
    */
   rscBundlePath: string;
   /**
@@ -144,6 +143,19 @@ export interface PrerenderAppOptions extends PrerenderOptions {
    */
   root?: string;
 }
+
+// ─── Internal option extensions ───────────────────────────────────────────────
+// These types are NOT exported. They extend the public option interfaces with
+// an internal `_wranglerDev` field used by `runPrerender` to share a single
+// wrangler instance across both prerender phases in a CF hybrid build.
+
+type PrerenderPagesOptionsInternal = PrerenderPagesOptions & {
+  _wranglerDev?: Unstable_DevWorker;
+};
+
+type PrerenderAppOptionsInternal = PrerenderAppOptions & {
+  _wranglerDev?: Unstable_DevWorker;
+};
 
 // ─── Concurrency helpers ──────────────────────────────────────────────────────
 
@@ -328,6 +340,13 @@ async function loadBundle(bundlePath: string): Promise<Record<string, unknown>> 
  * `renderPage()`. If the bundle does not exist, an error is thrown directing
  * the user to run `vinext build` first.
  *
+ * For Cloudflare Workers builds pass `wranglerDev` instead of `pagesBundlePath`.
+ * The worker handles both App Router and Pages Router; page routes are fetched
+ * via HTTP through the already-running miniflare instance. Route classification
+ * still uses static file analysis (classifyPagesRoute); getStaticPaths is
+ * fetched via a dedicated `/__vinext/prerender/pages-static-paths?pattern=…`
+ * endpoint on the worker.
+ *
  * Returns structured results for every route (rendered, skipped, or error).
  * Writes HTML files to `outDir`. If `manifestDir` is set, writes
  * `vinext-prerender.json` there; otherwise writes it to `outDir`.
@@ -340,14 +359,21 @@ export async function prerenderPages({
   config,
   mode,
   ...options
-}: PrerenderPagesOptions): Promise<PrerenderResult> {
+}: PrerenderPagesOptionsInternal): Promise<PrerenderResult> {
   const pagesBundlePath = options.pagesBundlePath;
+  const wranglerDev = options._wranglerDev;
   const manifestDir = options.manifestDir ?? outDir;
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
   const onProgress = options.onProgress;
   const skipManifest = options.skipManifest ?? false;
   const fileMatcher = createValidFileMatcher(config.pageExtensions);
   const results: PrerenderRouteResult[] = [];
+
+  if (!pagesBundlePath && !wranglerDev) {
+    throw new Error(
+      "[vinext] prerenderPages: either pagesBundlePath or wranglerDev must be provided.",
+    );
+  }
 
   fs.mkdirSync(outDir, { recursive: true });
 
@@ -356,31 +382,16 @@ export async function prerenderPages({
     results.push({ route: apiRoute.pattern, status: "skipped", reason: "api" });
   }
 
-  // Use a no-op cache handler for the duration of prerender so the production
-  // ISR pipeline doesn't waste time writing to MemoryCacheHandler only to
-  // discard it at process exit. Restore the previous handler when done so that
-  // sequential calls (e.g. in tests with a custom handler) are unaffected.
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
   process.env.VINEXT_PRERENDER = "1";
   try {
-    const bundleExports = await loadBundle(pagesBundlePath);
+    // ── Determine renderPage and bundlePageRoutes ─────────────────────────
+    // For wrangler-based (CF) builds: renderPage fetches via the worker;
+    // getStaticPaths is fetched from a dedicated prerender endpoint.
+    // For plain Node builds: everything comes from the imported bundle.
 
-    if (
-      typeof bundleExports.renderPage !== "function" ||
-      !Array.isArray(bundleExports.pageRoutes)
-    ) {
-      throw new Error(
-        `[vinext] Pages Router bundle at ${pagesBundlePath} is missing required exports (renderPage, pageRoutes).\nRun \`vinext build\` to regenerate the bundle.`,
-      );
-    }
-
-    const renderPage = bundleExports.renderPage as (
-      request: Request,
-      url: string,
-      manifest: Record<string, string[]>,
-    ) => Promise<Response>;
-    const bundlePageRoutes = bundleExports.pageRoutes as Array<{
+    type BundleRoute = {
       pattern: string;
       isDynamic: boolean;
       params: Record<string, string>;
@@ -393,11 +404,68 @@ export async function prerenderPages({
         getServerSideProps?: unknown;
       };
       filePath: string;
-    }>;
+    };
+
+    let renderPage: (urlPath: string) => Promise<Response>;
+    let bundlePageRoutes: BundleRoute[];
+
+    if (wranglerDev) {
+      // CF Workers build: render by fetching through the running worker.
+      // dev.fetch() only accepts URL strings (not Request objects).
+      renderPage = (urlPath: string) =>
+        wranglerDev.fetch(`http://localhost${urlPath}`) as unknown as Promise<Response>;
+
+      // Build the bundlePageRoutes list from static file analysis + route info.
+      // getStaticPaths is fetched from the worker via a prerender endpoint.
+      bundlePageRoutes = routes.map((r) => ({
+        pattern: r.pattern,
+        isDynamic: r.isDynamic ?? false,
+        params: {},
+        filePath: r.filePath,
+        module: {
+          getStaticPaths: r.isDynamic
+            ? async ({ locales, defaultLocale }: { locales: string[]; defaultLocale: string }) => {
+                const search = new URLSearchParams({ pattern: r.pattern });
+                if (locales.length > 0) search.set("locales", JSON.stringify(locales));
+                if (defaultLocale) search.set("defaultLocale", defaultLocale);
+                const res = (await wranglerDev.fetch(
+                  `http://localhost/__vinext/prerender/pages-static-paths?${search}`,
+                )) as unknown as Response;
+                const text = await res.text();
+                if (!res.ok || text === "null") return { paths: [], fallback: false };
+                return JSON.parse(text) as {
+                  paths: Array<{ params: Record<string, string | string[]> }>;
+                  fallback: unknown;
+                };
+              }
+            : undefined,
+        },
+      }));
+    } else {
+      const bundleExports = await loadBundle(pagesBundlePath!);
+
+      if (
+        typeof bundleExports.renderPage !== "function" ||
+        !Array.isArray(bundleExports.pageRoutes)
+      ) {
+        throw new Error(
+          `[vinext] Pages Router bundle at ${pagesBundlePath} is missing required exports (renderPage, pageRoutes).\nRun \`vinext build\` to regenerate the bundle.`,
+        );
+      }
+
+      const _renderPage = bundleExports.renderPage as (
+        request: Request,
+        url: string,
+        manifest: Record<string, string[]>,
+      ) => Promise<Response>;
+      renderPage = (urlPath: string) =>
+        _renderPage(new Request(`http://localhost${urlPath}`), urlPath, {});
+      bundlePageRoutes = bundleExports.pageRoutes as BundleRoute[];
+    }
 
     // ── Gather pages to render ──────────────────────────────────────────────
     type PageToRender = {
-      route: (typeof bundlePageRoutes)[0];
+      route: BundleRoute;
       urlPath: string;
       params: Record<string, string | string[]>;
       revalidate: number | false;
@@ -409,11 +477,14 @@ export async function prerenderPages({
       const routeName = path.basename(route.filePath, path.extname(route.filePath));
       if (routeName.startsWith("_")) continue;
 
-      // Use the file-based route info to classify
-      const fsRoute = routes.find(
-        (r) => r.filePath === route.filePath || r.pattern === route.pattern,
-      );
-      if (!fsRoute) continue;
+      // For plain Node builds, cross-reference with file-system route scan.
+      // For CF builds, bundlePageRoutes is already built from file-system routes.
+      if (!wranglerDev) {
+        const fsRoute = routes.find(
+          (r) => r.filePath === route.filePath || r.pattern === route.pattern,
+        );
+        if (!fsRoute) continue;
+      }
 
       const { type, revalidate: classifiedRevalidate } = classifyPagesRoute(route.filePath);
 
@@ -474,7 +545,7 @@ export async function prerenderPages({
       }
     }
 
-    // ── Render each page via production renderPage() ──────────────────────
+    // ── Render each page ──────────────────────────────────────────────────
     let completed = 0;
     const pageResults = await runWithConcurrency(
       pagesToRender,
@@ -482,7 +553,7 @@ export async function prerenderPages({
       async ({ route, urlPath, revalidate }) => {
         let result: PrerenderRouteResult;
         try {
-          const response = await renderPage(new Request(`http://localhost${urlPath}`), urlPath, {});
+          const response = await renderPage(urlPath);
           const outputFiles: string[] = [];
           const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
           const htmlFullPath = path.join(outDir, htmlOutputPath);
@@ -531,17 +602,13 @@ export async function prerenderPages({
     );
     results.push(...pageResults);
 
-    // ── Render 404 page via production bundle ─────────────────────────────
+    // ── Render 404 page ───────────────────────────────────────────────────
     const has404 =
       findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher) ||
       findFileWithExtensions(path.join(pagesDir, "_error"), fileMatcher);
     if (has404) {
       try {
-        const notFoundRes = await renderPage(
-          new Request(`http://localhost${NOT_FOUND_SENTINEL_PATH}`),
-          NOT_FOUND_SENTINEL_PATH,
-          {},
-        );
+        const notFoundRes = await renderPage(NOT_FOUND_SENTINEL_PATH);
         const contentType = notFoundRes.headers.get("content-type") ?? "";
         if (contentType.includes("text/html")) {
           const html404 = await notFoundRes.text();
@@ -592,7 +659,7 @@ export async function prerenderApp({
   mode,
   rscBundlePath,
   ...options
-}: PrerenderAppOptions): Promise<PrerenderResult> {
+}: PrerenderAppOptionsInternal): Promise<PrerenderResult> {
   const manifestDir = options.manifestDir ?? outDir;
   const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
   const onProgress = options.onProgress;
@@ -628,28 +695,41 @@ export async function prerenderApp({
     | null
     | undefined
   > = {};
-  let wranglerDev: Unstable_DevWorker | null = null;
+  // ownedWranglerDev: a dev instance we started ourselves and must stop in finally.
+  // When the caller passes options.wranglerDev we use that and do NOT stop it.
+  let ownedWranglerDev: Unstable_DevWorker | null = null;
 
   try {
     if (isWorkersBuild) {
-      // wrangler is an optional peer dep — only required for Cloudflare Workers builds.
-      // Resolve it from the project root so we load the copy installed there.
-      const projectRoot = options.root ?? path.dirname(path.dirname(serverDir));
-      const wranglerEntry = path.resolve(projectRoot, "node_modules/wrangler/wrangler-dist/cli.js");
-      if (!fs.existsSync(wranglerEntry)) {
-        throw new Error(
-          `Prerendering a Cloudflare Workers build requires 'wrangler' to be installed in your project.\n` +
-            `Run: npm install --save-dev wrangler`,
-        );
-      }
-      const wrangler = (await import(wranglerEntry as string)) as typeof import("wrangler");
-      wranglerDev = await wrangler.unstable_dev(rscBundlePath, {
-        config: wranglerConfigPath,
-        local: true,
-        vars: { VINEXT_PRERENDER: "1" },
-        experimental: { disableExperimentalWarning: true, testMode: true },
-        logLevel: "error",
-      });
+      // Use caller-provided wranglerDev if available; otherwise start our own.
+      const devWorker: Unstable_DevWorker = options._wranglerDev
+        ? options._wranglerDev
+        : await (async () => {
+            // wrangler is an optional peer dep — only required for Cloudflare Workers builds.
+            // Resolve it from the project root so we load the copy installed there.
+            const projectRoot = options.root ?? path.dirname(path.dirname(serverDir));
+            const wranglerEntry = path.resolve(
+              projectRoot,
+              "node_modules/wrangler/wrangler-dist/cli.js",
+            );
+            if (!fs.existsSync(wranglerEntry)) {
+              throw new Error(
+                `Prerendering a Cloudflare Workers build requires 'wrangler' to be installed in your project.\n` +
+                  `Run: npm install --save-dev wrangler`,
+              );
+            }
+            const wrangler = (await import(wranglerEntry as string)) as typeof import("wrangler");
+            const dev = await wrangler.unstable_dev(rscBundlePath, {
+              config: wranglerConfigPath,
+              local: true,
+              vars: { VINEXT_PRERENDER: "1" },
+              experimental: { disableExperimentalWarning: true, testMode: true },
+              logLevel: "error",
+            });
+            ownedWranglerDev = dev;
+            return dev;
+          })();
+
       // dev.fetch() does NOT accept a Request object — only (url: string, init?: RequestInit).
       // Extract the URL string and headers from the Request before calling.
       // wrangler's fetch returns undici's Response; cast via unknown to global Response.
@@ -658,7 +738,7 @@ export async function prerenderApp({
         req.headers.forEach((value, key) => {
           headersObj[key] = value;
         });
-        return wranglerDev!.fetch(req.url, {
+        return devWorker.fetch(req.url, {
           method: req.method,
           headers: headersObj,
         }) as unknown as Promise<Response>;
@@ -673,7 +753,7 @@ export async function prerenderApp({
               search.set("parentParams", JSON.stringify(params));
             }
             // dev.fetch() requires a URL string, not a Request object
-            const res = (await wranglerDev!.fetch(
+            const res = (await devWorker.fetch(
               `http://localhost/__vinext/prerender/static-params?${search}`,
             )) as unknown as Response;
             const text = await res.text();
@@ -971,8 +1051,9 @@ export async function prerenderApp({
   } finally {
     setCacheHandler(previousHandler);
     delete process.env.VINEXT_PRERENDER;
-    if (wranglerDev) {
-      await wranglerDev.stop().catch(() => {});
+    const devToStop = ownedWranglerDev as Unstable_DevWorker | null;
+    if (devToStop) {
+      await devToStop.stop().catch(() => {});
     }
   }
 }

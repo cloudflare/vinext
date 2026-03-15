@@ -87,6 +87,15 @@ export interface AppRouterConfig {
   bodySizeLimit?: number;
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
+  /**
+   * When true, the project has a `pages/` directory alongside the App Router.
+   * The generated RSC entry exposes `/__vinext/prerender/pages-static-paths`
+   * so `prerenderPages` can call `getStaticPaths` via `wrangler unstable_dev`
+   * in CF Workers builds. `pageRoutes` is loaded from the SSR environment via
+   * `import("./ssr/index.js")`, which re-exports it from
+   * `virtual:vinext-server-entry` when this flag is set.
+   */
+  hasPagesDir?: boolean;
 }
 
 /**
@@ -115,6 +124,7 @@ export function generateRscEntry(
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
   const i18nConfig = config?.i18n ?? null;
+  const hasPagesDir = config?.hasPagesDir ?? false;
   // Build import map for all page and layout files
   const imports: string[] = [];
   const importMap: Map<string, string> = new Map();
@@ -324,6 +334,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+${hasPagesDir ? `// Note: pageRoutes loaded lazily via SSR env in /__vinext/prerender/pages-static-paths handler` : ""}
 ${routeHandlerHelperCode}
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
@@ -1568,6 +1579,44 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
   }
 
+  ${
+    hasPagesDir
+      ? `
+  // ── Prerender: pages-static-paths endpoint ───────────────────────────
+  // Internal endpoint used by prerenderPages() during a CF Workers hybrid
+  // build to call getStaticPaths() for dynamic Pages Router routes via
+  // wrangler unstable_dev. Returns JSON-serialised getStaticPaths result.
+  //
+  // pageRoutes lives in the SSR environment (virtual:vinext-server-entry).
+  // We load it lazily via import.meta.viteRsc.loadModule — the same pattern
+  // used by handleSsr() elsewhere in this template. At build time, Vite's RSC
+  // plugin transforms this call into a bundled cross-environment import, so it
+  // works correctly in the CF Workers production bundle running in Miniflare.
+  if (pathname === "/__vinext/prerender/pages-static-paths") {
+    const __gspPattern = url.searchParams.get("pattern");
+    if (!__gspPattern) return new Response("missing pattern", { status: 400 });
+    try {
+      const __gspSsrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+      const __pagesRoutes = __gspSsrEntry.pageRoutes;
+      const __gspRoute = Array.isArray(__pagesRoutes)
+        ? __pagesRoutes.find((r) => r.pattern === __gspPattern)
+        : undefined;
+      if (!__gspRoute || typeof __gspRoute.module?.getStaticPaths !== "function") {
+        return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+      }
+      const __localesParam = url.searchParams.get("locales");
+      const __locales = __localesParam ? JSON.parse(__localesParam) : [];
+      const __defaultLocale = url.searchParams.get("defaultLocale") ?? "";
+      const __gspResult = await __gspRoute.module.getStaticPaths({ locales: __locales, defaultLocale: __defaultLocale });
+      return new Response(JSON.stringify(__gspResult), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
+  `
+      : ""
+  }
+
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
   if (__tsRedirect) return __tsRedirect;
@@ -2003,6 +2052,22 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    ${
+      hasPagesDir
+        ? `
+    // ── Pages Router fallback ────────────────────────────────────────────
+    // When a request doesn't match any App Router route, delegate to the
+    // Pages Router handler (available in the SSR environment). This covers
+    // both production request serving and prerender fetches from wrangler.
+    const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+    if (typeof __pagesEntry.renderPage === "function") {
+      setHeadersContext(null);
+      setNavigationContext(null);
+      return await __pagesEntry.renderPage(request, decodeURIComponent(url.pathname) + (url.search || ""), {});
+    }
+    `
+        : ""
+    }
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;

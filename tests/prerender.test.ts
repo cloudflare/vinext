@@ -610,67 +610,28 @@ describe("runPrerender — output: 'export' wiring", () => {
 // loads dist/server/entry.js directly as usual.
 
 describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
-  let appOutDir: string;
-  let pagesOutDir: string;
-  let appResults: PrerenderRouteResult[];
-  let pagesResults: PrerenderRouteResult[];
+  let outDir: string;
+  let allResults: PrerenderRouteResult[];
 
   beforeAll(async () => {
-    const { root, rscBundlePath, pagesBundlePath } = await buildCloudflareAppFixture(CF_FIXTURE);
-    appOutDir = tmpDir("vinext-prerender-cf-app-");
-    pagesOutDir = tmpDir("vinext-prerender-cf-pages-");
+    const { root, rscBundlePath } = await buildCloudflareAppFixture(CF_FIXTURE);
+    outDir = path.join(root, "dist", "server", "prerendered-routes");
 
-    const { prerenderApp, prerenderPages } =
-      await import("../packages/vinext/src/build/prerender.js");
-    const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
-    const { pagesRouter, apiRouter } =
-      await import("../packages/vinext/src/routing/pages-router.js");
-    const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+    const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
 
-    const config = await resolveNextConfig({});
-
-    const appDir = path.resolve(CF_FIXTURE, "app");
-    const pagesDir = path.resolve(CF_FIXTURE, "pages");
-
-    const [appRoutes, pageRoutes, apiRoutes] = await Promise.all([
-      appRouter(appDir),
-      pagesRouter(pagesDir),
-      apiRouter(pagesDir),
-    ]);
-
-    const [appResult, pagesResult] = await Promise.all([
-      prerenderApp({
-        mode: "default",
-        rscBundlePath,
-        root,
-        routes: appRoutes,
-        outDir: appOutDir,
-        config,
-      }),
-      prerenderPages({
-        mode: "default",
-        pagesBundlePath,
-        routes: pageRoutes,
-        apiRoutes,
-        pagesDir,
-        outDir: pagesOutDir,
-        config,
-      }),
-    ]);
-    appResults = appResult.routes;
-    pagesResults = pagesResult.routes;
+    const result = await runPrerender({ root, rscBundlePath });
+    allResults = result?.routes ?? [];
   }, 180_000);
 
   afterAll(() => {
-    fs.rmSync(appOutDir, { recursive: true, force: true });
-    fs.rmSync(pagesOutDir, { recursive: true, force: true });
+    fs.rmSync(path.join(CF_FIXTURE, "dist"), { recursive: true, force: true });
   });
 
   // ── App Router ──────────────────────────────────────────────────────────────
 
   describe("prerenderApp — app router via wrangler unstable_dev", () => {
     it("renders / speculatively", () => {
-      const r = findRoute(appResults, "/");
+      const r = findRoute(allResults, "/");
       expect(r).toMatchObject({ route: "/", status: "rendered", revalidate: false });
       if (r?.status === "rendered") {
         expect(r.outputFiles).toContain("index.html");
@@ -679,7 +640,7 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
     });
 
     it("renders /about speculatively", () => {
-      const r = findRoute(appResults, "/about");
+      const r = findRoute(allResults, "/about");
       expect(r).toMatchObject({ route: "/about", status: "rendered", revalidate: false });
       if (r?.status === "rendered") {
         expect(r.outputFiles).toContain("about.html");
@@ -688,7 +649,7 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
 
     it("renders /blog/[slug] expanded from generateStaticParams", () => {
       for (const slug of ["hello-world", "getting-started"]) {
-        const r = findRoute(appResults, `/blog/${slug}`);
+        const r = findRoute(allResults, `/blog/${slug}`);
         expect(r).toMatchObject({
           route: "/blog/:slug",
           path: `/blog/${slug}`,
@@ -703,26 +664,26 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
     });
 
     it("skips API routes", () => {
-      const apiSkipped = appResults.filter(
+      const apiSkipped = allResults.filter(
         (r) => r.status === "skipped" && "reason" in r && r.reason === "api",
       );
       expect(apiSkipped.length).toBeGreaterThan(0);
     });
 
     it("writes HTML and RSC files to outDir", () => {
-      expect(fs.existsSync(path.join(appOutDir, "index.html"))).toBe(true);
-      expect(fs.existsSync(path.join(appOutDir, "index.rsc"))).toBe(true);
-      expect(fs.existsSync(path.join(appOutDir, "about.html"))).toBe(true);
-      expect(fs.existsSync(path.join(appOutDir, "blog/hello-world.html"))).toBe(true);
-      expect(fs.existsSync(path.join(appOutDir, "blog/hello-world.rsc"))).toBe(true);
+      expect(fs.existsSync(path.join(outDir, "index.html"))).toBe(true);
+      expect(fs.existsSync(path.join(outDir, "index.rsc"))).toBe(true);
+      expect(fs.existsSync(path.join(outDir, "about.html"))).toBe(true);
+      expect(fs.existsSync(path.join(outDir, "blog/hello-world.html"))).toBe(true);
+      expect(fs.existsSync(path.join(outDir, "blog/hello-world.rsc"))).toBe(true);
     });
   });
 
   // ── Pages Router ────────────────────────────────────────────────────────────
 
-  describe("prerenderPages — pages router via direct import", () => {
+  describe("prerenderPages — pages router via wrangler unstable_dev", () => {
     it("renders static index page", () => {
-      const r = findRoute(pagesResults, "/");
+      const r = findRoute(allResults, "/");
       expect(r).toMatchObject({ route: "/", status: "rendered", revalidate: false });
       if (r?.status === "rendered") {
         expect(r.outputFiles).toContain("index.html");
@@ -730,7 +691,7 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
     });
 
     it("renders static about page", () => {
-      const r = findRoute(pagesResults, "/about");
+      const r = findRoute(allResults, "/about");
       expect(r).toMatchObject({ route: "/about", status: "rendered", revalidate: false });
       if (r?.status === "rendered") {
         expect(r.outputFiles).toContain("about.html");
@@ -739,7 +700,7 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
 
     it("renders /posts/[id] expanded from getStaticPaths", () => {
       for (const id of ["first", "second"]) {
-        const r = findRoute(pagesResults, `/posts/${id}`);
+        const r = findRoute(allResults, `/posts/${id}`);
         expect(r).toMatchObject({
           route: "/posts/:id",
           path: `/posts/${id}`,
@@ -753,17 +714,15 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
     });
 
     it("skips API routes", () => {
-      const apiSkipped = pagesResults.filter(
+      const apiSkipped = allResults.filter(
         (r) => r.status === "skipped" && "reason" in r && r.reason === "api",
       );
       expect(apiSkipped.length).toBeGreaterThan(0);
     });
 
     it("writes HTML files to outDir", () => {
-      expect(fs.existsSync(path.join(pagesOutDir, "index.html"))).toBe(true);
-      expect(fs.existsSync(path.join(pagesOutDir, "about.html"))).toBe(true);
-      expect(fs.existsSync(path.join(pagesOutDir, "posts/first.html"))).toBe(true);
-      expect(fs.existsSync(path.join(pagesOutDir, "posts/second.html"))).toBe(true);
+      expect(fs.existsSync(path.join(outDir, "posts/first.html"))).toBe(true);
+      expect(fs.existsSync(path.join(outDir, "posts/second.html"))).toBe(true);
     });
   });
 });
