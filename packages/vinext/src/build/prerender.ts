@@ -755,113 +755,108 @@ export async function prerenderApp({
     }
 
     // ── Render each URL via direct RSC handler invocation ─────────────────────
-    let completedApp = 0;
-    const appResults = await runWithConcurrency(
-      urlsToRender,
-      concurrency,
-      async ({ urlPath, routePattern, revalidate, isSpeculative }) => {
-        let result: PrerenderRouteResult;
-        try {
-          // Invoke RSC handler directly with a synthetic Request.
-          // Each request is wrapped in its own ALS context via runWithHeadersContext
-          // so per-request state (dynamicUsageDetected, headersContext, etc.) is
-          // isolated and never bleeds into other renders or into _fallbackState.
-          const htmlRequest = new Request(`http://localhost${urlPath}`);
-          const htmlRes = await runWithHeadersContext(headersContextFromRequest(htmlRequest), () =>
-            rscHandler(htmlRequest),
-          );
-          if (!htmlRes.ok) {
-            if (isSpeculative) {
-              result = { route: routePattern, status: "skipped", reason: "dynamic" };
-            } else {
-              result = {
-                route: routePattern,
-                status: "error",
-                error: `RSC handler returned ${htmlRes.status}`,
-              };
-            }
-            onProgress?.({
-              completed: ++completedApp,
-              total: urlsToRender.length,
-              route: urlPath,
-              status: result.status,
-            });
-            return result;
-          }
 
-          // Detect dynamic usage for speculative routes via Cache-Control header.
-          // When headers(), cookies(), connection(), or noStore() are called during
-          // render, the server sets Cache-Control: no-store. We treat this as a
-          // signal that the route is dynamic and should be skipped.
+    /**
+     * Render a single URL and return its result.
+     * `onProgress` is intentionally not called here; the outer loop calls it
+     * exactly once per URL after this function returns, keeping the callback
+     * at a single, predictable call site.
+     */
+    async function renderUrl({
+      urlPath,
+      routePattern,
+      revalidate,
+      isSpeculative,
+    }: UrlToRender): Promise<PrerenderRouteResult> {
+      try {
+        // Invoke RSC handler directly with a synthetic Request.
+        // Each request is wrapped in its own ALS context via runWithHeadersContext
+        // so per-request state (dynamicUsageDetected, headersContext, etc.) is
+        // isolated and never bleeds into other renders or into _fallbackState.
+        const htmlRequest = new Request(`http://localhost${urlPath}`);
+        const htmlRes = await runWithHeadersContext(headersContextFromRequest(htmlRequest), () =>
+          rscHandler(htmlRequest),
+        );
+        if (!htmlRes.ok) {
           if (isSpeculative) {
-            const cacheControl = htmlRes.headers.get("cache-control") ?? "";
-            if (cacheControl.includes("no-store")) {
-              await htmlRes.body?.cancel();
-              result = { route: routePattern, status: "skipped", reason: "dynamic" };
-              onProgress?.({
-                completed: ++completedApp,
-                total: urlsToRender.length,
-                route: urlPath,
-                status: result.status,
-              });
-              return result;
-            }
+            return { route: routePattern, status: "skipped", reason: "dynamic" };
           }
-
-          const html = await htmlRes.text();
-
-          // Fetch RSC payload via a second invocation with RSC headers
-          const rscRequest = new Request(`http://localhost${urlPath}`, {
-            headers: { Accept: "text/x-component", RSC: "1" },
-          });
-          const rscRes = await runWithHeadersContext(headersContextFromRequest(rscRequest), () =>
-            rscHandler(rscRequest),
-          );
-          const rscData = rscRes.ok ? await rscRes.text() : null;
-
-          const outputFiles: string[] = [];
-
-          // Write HTML
-          const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
-          const htmlFullPath = path.join(outDir, htmlOutputPath);
-          fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
-          fs.writeFileSync(htmlFullPath, html, "utf-8");
-          outputFiles.push(htmlOutputPath);
-
-          // Write RSC payload (.rsc file)
-          if (rscData !== null) {
-            const rscOutputPath = getRscOutputPath(urlPath);
-            const rscFullPath = path.join(outDir, rscOutputPath);
-            fs.mkdirSync(path.dirname(rscFullPath), { recursive: true });
-            fs.writeFileSync(rscFullPath, rscData, "utf-8");
-            outputFiles.push(rscOutputPath);
-          }
-
-          result = {
+          return {
             route: routePattern,
-            status: "rendered",
-            outputFiles,
-            revalidate,
-            ...(urlPath !== routePattern ? { path: urlPath } : {}),
+            status: "error",
+            error: `RSC handler returned ${htmlRes.status}`,
           };
-        } catch (e) {
-          if (isSpeculative) {
-            result = { route: routePattern, status: "skipped", reason: "dynamic" };
-          } else {
-            const err = e as Error & { digest?: string };
-            const msg = err.digest ? `${err.message} (digest: ${err.digest})` : err.message;
-            result = { route: routePattern, status: "error", error: msg };
+        }
+
+        // Detect dynamic usage for speculative routes via Cache-Control header.
+        // When headers(), cookies(), connection(), or noStore() are called during
+        // render, the server sets Cache-Control: no-store. We treat this as a
+        // signal that the route is dynamic and should be skipped.
+        if (isSpeculative) {
+          const cacheControl = htmlRes.headers.get("cache-control") ?? "";
+          if (cacheControl.includes("no-store")) {
+            await htmlRes.body?.cancel();
+            return { route: routePattern, status: "skipped", reason: "dynamic" };
           }
         }
-        onProgress?.({
-          completed: ++completedApp,
-          total: urlsToRender.length,
-          route: urlPath,
-          status: result.status,
+
+        const html = await htmlRes.text();
+
+        // Fetch RSC payload via a second invocation with RSC headers
+        const rscRequest = new Request(`http://localhost${urlPath}`, {
+          headers: { Accept: "text/x-component", RSC: "1" },
         });
-        return result;
-      },
-    );
+        const rscRes = await runWithHeadersContext(headersContextFromRequest(rscRequest), () =>
+          rscHandler(rscRequest),
+        );
+        const rscData = rscRes.ok ? await rscRes.text() : null;
+
+        const outputFiles: string[] = [];
+
+        // Write HTML
+        const htmlOutputPath = getOutputPath(urlPath, config.trailingSlash);
+        const htmlFullPath = path.join(outDir, htmlOutputPath);
+        fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
+        fs.writeFileSync(htmlFullPath, html, "utf-8");
+        outputFiles.push(htmlOutputPath);
+
+        // Write RSC payload (.rsc file)
+        if (rscData !== null) {
+          const rscOutputPath = getRscOutputPath(urlPath);
+          const rscFullPath = path.join(outDir, rscOutputPath);
+          fs.mkdirSync(path.dirname(rscFullPath), { recursive: true });
+          fs.writeFileSync(rscFullPath, rscData, "utf-8");
+          outputFiles.push(rscOutputPath);
+        }
+
+        return {
+          route: routePattern,
+          status: "rendered",
+          outputFiles,
+          revalidate,
+          ...(urlPath !== routePattern ? { path: urlPath } : {}),
+        };
+      } catch (e) {
+        if (isSpeculative) {
+          return { route: routePattern, status: "skipped", reason: "dynamic" };
+        }
+        const err = e as Error & { digest?: string };
+        const msg = err.digest ? `${err.message} (digest: ${err.digest})` : err.message;
+        return { route: routePattern, status: "error", error: msg };
+      }
+    }
+
+    let completedApp = 0;
+    const appResults = await runWithConcurrency(urlsToRender, concurrency, async (urlToRender) => {
+      const result = await renderUrl(urlToRender);
+      onProgress?.({
+        completed: ++completedApp,
+        total: urlsToRender.length,
+        route: urlToRender.urlPath,
+        status: result.status,
+      });
+      return result;
+    });
     results.push(...appResults);
 
     // ── Render 404 page ───────────────────────────────────────────────────────

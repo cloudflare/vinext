@@ -64,6 +64,10 @@ function toStaticExportResult(routes: PrerenderRouteResult[]): StaticExportResul
 
   for (const r of routes) {
     if (r.status === "rendered") {
+      // `pageCount` counts rendered route entries (one per concrete URL).
+      // `files` counts only .html output files — RSC-only entries (no .html)
+      // would cause pageCount > files.length, but in practice every rendered
+      // entry emits exactly one .html file, so they stay in sync.
       result.pageCount++;
       // Only add .html files (not .json or .rsc) to the legacy files list
       result.files.push(...r.outputFiles.filter((f) => f.endsWith(".html")));
