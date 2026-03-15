@@ -631,7 +631,7 @@ function printHelp(cmd?: string) {
 
   Options:
     --verbose            Show full Vite/Rollup build output (suppressed by default)
-    --prerender-all      Pre-render every discovered route into dist after building
+    --prerender-all      Pre-render discovered routes after building
     -h, --help           Show this help
 `);
     return;
@@ -673,7 +673,8 @@ function printHelp(cmd?: string) {
     --name <name>            Custom Worker name (default: from package.json)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Generate config files without building or deploying
-    --prerender-all          Pre-render every discovered route into dist after building
+    --prerender-all          Pre-render discovered routes after building (future
+                             releases will auto-populate the remote cache)
     -h, --help               Show this help
 
   Experimental:
