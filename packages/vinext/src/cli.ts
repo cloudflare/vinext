@@ -631,7 +631,8 @@ function printHelp(cmd?: string) {
 
   Options:
     --verbose            Show full Vite/Rollup build output (suppressed by default)
-    --prerender-all      Pre-render discovered routes after building
+    --prerender-all      Pre-render discovered routes after building (future releases
+                         will serve these files in vinext start)
     -h, --help           Show this help
 `);
     return;
