@@ -136,6 +136,20 @@ export interface CacheHandler {
 
   revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
 
+  /**
+   * Collect all known tags whose path matches a given prefix.
+   *
+   * Used by `revalidatePath(path, "layout")` to find all path-based tags
+   * (`_N_T_/...`) that are children of the given path segment prefix.
+   * The match must be path-segment-aware: `/dashboard` matches
+   * `/dashboard` and `/dashboard/settings` but NOT `/dashboard-admin`.
+   *
+   * Returns deduplicated tags including both raw paths and `_N_T_` prefixed tags.
+   * Optional — when not implemented, `revalidatePath` with `type: "layout"`
+   * falls back to invalidating only the exact path.
+   */
+  collectTagsByPathPrefix?(pathPrefix: string): Promise<string[]>;
+
   resetRequestCache?(): void;
 }
 
@@ -274,6 +288,18 @@ export class MemoryCacheHandler implements CacheHandler {
     }
   }
 
+  async collectTagsByPathPrefix(pathPrefix: string): Promise<string[]> {
+    const collected = new Set<string>();
+    for (const entry of this.store.values()) {
+      for (const tag of entry.tags) {
+        if (_isPathChildOf(tag, pathPrefix) || _isPathChildOf(tag, `_N_T_${pathPrefix}`)) {
+          collected.add(tag);
+        }
+      }
+    }
+    return [...collected];
+  }
+
   resetRequestCache(): void {
     // No-op for the simple memory cache. In a production adapter,
     // this would clear per-request caches (e.g., dedup fetch calls).
@@ -367,13 +393,44 @@ export async function revalidateTag(
  *
  * Under the hood, Next.js converts paths to internal tags.
  * We use a `_N_T_/path` prefix convention for path-based tags.
+ *
+ * When `type` is `"layout"`, all pages beneath the given path are
+ * also invalidated (e.g., `/dashboard` invalidates `/dashboard/settings`,
+ * `/dashboard/profile`, etc.). When `type` is `"page"` or omitted,
+ * only the exact path is invalidated.
  */
-export async function revalidatePath(path: string, _type?: "page" | "layout"): Promise<void> {
-  // Next.js internally converts paths to tags with the _N_T_ prefix.
-  // Only pass the prefixed form to avoid accidentally invalidating any
+export async function revalidatePath(path: string, type?: "page" | "layout"): Promise<void> {
+  const handler = _getActiveHandler();
+
+  if (type === "layout" && handler.collectTagsByPathPrefix) {
+    // Collect all path-based tags that are children of `path`
+    const matchingTags = await handler.collectTagsByPathPrefix(path);
+    if (matchingTags.length > 0) {
+      await handler.revalidateTag(matchingTags);
+      return;
+    }
+  }
+
+  // Default: invalidate only the exact path (type === "page" or unspecified).
+  // Only pass the _N_T_ prefixed form to avoid accidentally invalidating any
   // cache entry whose tag happens to equal the raw path string.
   const pathTag = `_N_T_${path}`;
-  await _getActiveHandler().revalidateTag([pathTag]);
+  await handler.revalidateTag([pathTag]);
+}
+
+/**
+ * Check whether `tag` is the given `prefix` itself or a path-segment
+ * child of it. Segment-aware: `/dashboard` matches `/dashboard` and
+ * `/dashboard/settings` but NOT `/dashboard-admin`.
+ *
+ * Special case: prefix `/` matches every path (root layout).
+ */
+function _isPathChildOf(tag: string, prefix: string): boolean {
+  if (tag === prefix) return true;
+  // Root "/" is a prefix of every path
+  if (prefix === "/" || prefix === "_N_T_/") return tag.startsWith(prefix);
+  // Ensure segment boundary: tag must continue with "/"
+  return tag.startsWith(prefix + "/");
 }
 
 /**

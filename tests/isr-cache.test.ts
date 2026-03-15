@@ -8,7 +8,7 @@
  * These complement the integration-level ISR tests in features.test.ts
  * by testing the ISR cache layer in isolation.
  */
-import { describe, it, expect, vi } from "vite-plus/test";
+import { describe, it, expect, vi, beforeEach } from "vite-plus/test";
 import {
   isrCacheKey,
   buildPagesCacheValue,
@@ -24,6 +24,12 @@ import {
   isInsideUnifiedScope,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import {
+  MemoryCacheHandler,
+  setCacheHandler,
+  revalidatePath,
+  type CachedFetchValue,
+} from "../packages/vinext/src/shims/cache.js";
 
 // ─── isrCacheKey ────────────────────────────────────────────────────────
 
@@ -313,5 +319,121 @@ describe("triggerBackgroundRegeneration", () => {
     triggerBackgroundRegeneration("regen-no-ctx", renderFn);
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(renderFn).toHaveBeenCalledOnce();
+  });
+});
+
+// ─── revalidatePath with type parameter ──────────────────────────────────
+
+describe("revalidatePath type parameter", () => {
+  let handler: MemoryCacheHandler;
+
+  /** Helper: store a FETCH cache entry with path-based tags. */
+  async function seedEntry(path: string, body: string): Promise<void> {
+    const pathTag = `_N_T_${path}`;
+    const value: CachedFetchValue = {
+      kind: "FETCH",
+      data: { headers: {}, body, url: path },
+      tags: [path, pathTag],
+      revalidate: false,
+    };
+    await handler.set(`entry:${path}`, value, { tags: [path, pathTag] });
+  }
+
+  beforeEach(() => {
+    handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+  });
+
+  it("invalidates the layout path AND all child paths when type is 'layout'", async () => {
+    await seedEntry("/dashboard", "dashboard-root");
+    await seedEntry("/dashboard/settings", "settings");
+    await seedEntry("/dashboard/profile", "profile");
+    await seedEntry("/about", "about-page");
+
+    // All four entries should be present before revalidation
+    expect(await handler.get("entry:/dashboard")).not.toBeNull();
+    expect(await handler.get("entry:/dashboard/settings")).not.toBeNull();
+    expect(await handler.get("entry:/dashboard/profile")).not.toBeNull();
+    expect(await handler.get("entry:/about")).not.toBeNull();
+
+    await revalidatePath("/dashboard", "layout");
+
+    // All three dashboard entries should be invalidated
+    expect(await handler.get("entry:/dashboard")).toBeNull();
+    expect(await handler.get("entry:/dashboard/settings")).toBeNull();
+    expect(await handler.get("entry:/dashboard/profile")).toBeNull();
+
+    // /about should NOT be invalidated
+    expect(await handler.get("entry:/about")).not.toBeNull();
+  });
+
+  it("invalidates only the exact path when type is 'page'", async () => {
+    await seedEntry("/about", "about-page");
+    await seedEntry("/about/team", "about-team");
+
+    await revalidatePath("/about", "page");
+
+    // Only /about should be invalidated
+    expect(await handler.get("entry:/about")).toBeNull();
+    // /about/team should remain
+    expect(await handler.get("entry:/about/team")).not.toBeNull();
+  });
+
+  it("behaves like 'page' when no type is specified (backward compat)", async () => {
+    await seedEntry("/about", "about-page");
+    await seedEntry("/about/team", "about-team");
+
+    await revalidatePath("/about");
+
+    // Only /about should be invalidated
+    expect(await handler.get("entry:/about")).toBeNull();
+    // /about/team should remain
+    expect(await handler.get("entry:/about/team")).not.toBeNull();
+  });
+
+  it("handles deeply nested children under a layout prefix", async () => {
+    await seedEntry("/app", "app-root");
+    await seedEntry("/app/blog", "blog");
+    await seedEntry("/app/blog/2024", "blog-2024");
+    await seedEntry("/app/blog/2024/01/post", "blog-post");
+
+    await revalidatePath("/app", "layout");
+
+    // All entries under /app should be invalidated
+    expect(await handler.get("entry:/app")).toBeNull();
+    expect(await handler.get("entry:/app/blog")).toBeNull();
+    expect(await handler.get("entry:/app/blog/2024")).toBeNull();
+    expect(await handler.get("entry:/app/blog/2024/01/post")).toBeNull();
+  });
+
+  it("does not invalidate paths that merely share a string prefix", async () => {
+    // /dashboard-admin starts with "/dashboard" as a string, but it's NOT
+    // a child route of /dashboard — it's a sibling. The prefix match must
+    // be path-segment-aware (match "/dashboard/" or exact "/dashboard").
+    await seedEntry("/dashboard", "dashboard");
+    await seedEntry("/dashboard-admin", "dashboard-admin");
+    await seedEntry("/dashboard/settings", "settings");
+
+    await revalidatePath("/dashboard", "layout");
+
+    expect(await handler.get("entry:/dashboard")).toBeNull();
+    expect(await handler.get("entry:/dashboard/settings")).toBeNull();
+    // /dashboard-admin should NOT be invalidated — different route
+    expect(await handler.get("entry:/dashboard-admin")).not.toBeNull();
+  });
+
+  it("handles root path '/' with layout type — invalidates everything", async () => {
+    await seedEntry("/", "home");
+    await seedEntry("/about", "about");
+    await seedEntry("/dashboard", "dashboard");
+    await seedEntry("/dashboard/settings", "settings");
+
+    await revalidatePath("/", "layout");
+
+    // Root layout covers all routes
+    expect(await handler.get("entry:/")).toBeNull();
+    expect(await handler.get("entry:/about")).toBeNull();
+    expect(await handler.get("entry:/dashboard")).toBeNull();
+    expect(await handler.get("entry:/dashboard/settings")).toBeNull();
   });
 });
