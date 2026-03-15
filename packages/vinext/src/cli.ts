@@ -13,7 +13,12 @@
  * needed for most Next.js apps.
  */
 
-import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
+import vinext, {
+  clientOutputConfig,
+  clientTreeshakeConfig,
+  getClientOutputConfig,
+  getClientTreeshakeConfig,
+} from "./index.js";
 import { printBuildReport } from "./build/report.js";
 import path from "node:path";
 import fs from "node:fs";
@@ -350,6 +355,7 @@ async function buildApp() {
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
   const isApp = hasAppDir();
+  const viteMajorVersion = parseInt(getViteVersion().split(".")[0], 10);
   // In verbose mode, skip the custom logger so raw Vite/Rollup output is shown.
   const logger = parsed.verbose
     ? vite.createLogger("info", { allowClearScreen: false })
@@ -387,8 +393,8 @@ async function buildApp() {
             ssrManifest: true,
             rollupOptions: {
               input: "virtual:vinext-client-entry",
-              output: clientOutputConfig,
-              treeshake: clientTreeshakeConfig,
+              output: getClientOutputConfig(viteMajorVersion),
+              treeshake: getClientTreeshakeConfig(viteMajorVersion),
             },
           },
         },
