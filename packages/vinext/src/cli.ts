@@ -14,8 +14,6 @@
  */
 
 import vinext, {
-  clientOutputConfig,
-  clientTreeshakeConfig,
   getClientOutputConfig,
   getClientTreeshakeConfig,
 } from "./index.js";
