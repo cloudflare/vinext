@@ -84,7 +84,7 @@ export interface PrerenderOptions {
    * Directory where `vinext-prerender.json` is written.
    * Defaults to `outDir` when omitted.
    * Set this when the manifest should land in a different location than the
-   * generated HTML/RSC files (e.g. `dist/server/` while HTML goes to `dist/client/`).
+   * generated HTML/RSC files (e.g. `dist/server/` while HTML goes to `dist/server/prerendered-routes/`).
    */
   manifestDir?: string;
   /** Resolved next.config.js. */

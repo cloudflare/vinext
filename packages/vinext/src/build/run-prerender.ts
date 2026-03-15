@@ -5,6 +5,14 @@
  * `runPrerender` handles route scanning, dynamic imports, progress reporting,
  * and result summarisation.
  *
+ * Output files (HTML/RSC payloads) are written to
+ * `dist/server/prerendered-routes/` for non-export builds, co-located with
+ * server artifacts and away from the static assets directory. On Cloudflare
+ * Workers, `not_found_handling: "none"` means every request hits the worker
+ * first, so files in `dist/client/` are never auto-served for page requests.
+ * For `output: 'export'` builds the caller controls `outDir` via
+ * `static-export.ts`, which passes `dist/client/` directly.
+ *
  * Hybrid projects (both `app/` and `pages/` directories) are handled by
  * running both prerender phases and merging results into a single
  * `dist/server/vinext-prerender.json` manifest.
@@ -84,9 +92,10 @@ export interface RunPrerenderOptions {
  * Run the prerender phase using pre-built production bundles.
  *
  * Scans routes, loads the RSC/Pages handler from the production bundle,
- * renders every static/ISR route, writes output files to dist, and prints a
- * progress bar + summary to stderr/stdout. Returns the full PrerenderResult
- * so callers can pass it to printBuildReport.
+ * renders every static/ISR route, writes output files to
+ * `dist/server/prerendered-routes/` (non-export) or `dist/client/` (export),
+ * and prints a progress bar + summary to stderr/stdout. Returns the full
+ * PrerenderResult so callers can pass it to printBuildReport.
  *
  * Hybrid projects (both `app/` and `pages/` present) run both prerender
  * phases. The merged results are written to a single `dist/server/vinext-prerender.json`.
@@ -124,7 +133,20 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   let completedUrls = 0;
   const progress = new PrerenderProgress();
 
-  const outDir = path.join(root, "dist", "client");
+  // Non-export builds write to dist/server/prerendered-routes/ so they are
+  // co-located with server artifacts. On Cloudflare Workers the assets binding
+  // uses not_found_handling: "none", so every request hits the worker first;
+  // files in dist/client/ are never auto-served for page requests and would be
+  // inert. Keeping prerendered output out of dist/client/ also prevents ISR
+  // routes from being served as stale static files forever (bypassing
+  // revalidation) when KV pre-population is added in the future.
+  //
+  // output: 'export' builds use dist/client/ (handled by static-export.ts which
+  // passes its own outDir — this path is only reached for non-export builds).
+  const outDir =
+    mode === "export"
+      ? path.join(root, "dist", "client")
+      : path.join(root, "dist", "server", "prerendered-routes");
 
   // ── App Router phase ────────────────────────────────────────────────────────
   if (appDir) {
