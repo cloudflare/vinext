@@ -61,7 +61,6 @@ describe("prerenderPages — default mode (pages-basic)", () => {
       config,
     });
     results = prerenderResult.routes;
-    console.log(JSON.stringify(results, null, 2));
   }, 60_000);
 
   afterAll(() => {
@@ -285,7 +284,6 @@ describe("prerenderApp — default mode (app-basic)", () => {
       config,
     });
     results = prerenderResult.routes;
-    console.log(JSON.stringify(results, null, 2));
   }, 120_000);
 
   afterAll(() => {
