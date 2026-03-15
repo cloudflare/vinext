@@ -75,7 +75,7 @@ export function hasNamedExport(code: string, name: string): boolean {
  */
 export function extractExportConstString(code: string, name: string): string | null {
   const re = new RegExp(
-    `(?:^|\\n)\\s*export\\s+const\\s+${name}\\s*(?::[^=]+)?\\s*=\\s*['"]([^'"]+)['"]`,
+    `^\\s*export\\s+const\\s+${name}\\s*(?::[^=]+)?\\s*=\\s*['"]([^'"]+)['"]`,
     "m",
   );
   const m = re.exec(code);
@@ -90,7 +90,7 @@ export function extractExportConstString(code: string, name: string): string | n
  */
 export function extractExportConstNumber(code: string, name: string): number | null {
   const re = new RegExp(
-    `(?:^|\\n)\\s*export\\s+const\\s+${name}\\s*(?::[^=]+)?\\s*=\\s*(-?\\d+(?:\\.\\d+)?|Infinity)`,
+    `^\\s*export\\s+const\\s+${name}\\s*(?::[^=]+)?\\s*=\\s*(-?\\d+(?:\\.\\d+)?|Infinity)`,
     "m",
   );
   const m = re.exec(code);
@@ -360,7 +360,11 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
 export function findDir(root: string, ...candidates: string[]): string | null {
   for (const candidate of candidates) {
     const full = path.join(root, candidate);
-    if (fs.existsSync(full) && fs.statSync(full).isDirectory()) return full;
+    try {
+      if (fs.statSync(full).isDirectory()) return full;
+    } catch {
+      // not found or not a directory — try next candidate
+    }
   }
   return null;
 }

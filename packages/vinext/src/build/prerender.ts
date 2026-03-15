@@ -19,6 +19,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import { pathToFileURL } from "node:url";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
@@ -141,7 +142,10 @@ export interface PrerenderAppOptions extends PrerenderOptions {
 
 // ─── Concurrency helpers ──────────────────────────────────────────────────────
 
-const DEFAULT_CONCURRENCY = Math.min(os.availableParallelism?.() ?? 4, 8);
+/** Sentinel path used to trigger 404 rendering without a real route match. */
+const NOT_FOUND_SENTINEL_PATH = "/__vinext_nonexistent_for_404__";
+
+const DEFAULT_CONCURRENCY = Math.min(os.availableParallelism(), 8);
 
 /**
  * Run an array of async tasks with bounded concurrency.
@@ -152,7 +156,7 @@ async function runWithConcurrency<T, R>(
   concurrency: number,
   fn: (item: T, index: number) => Promise<R>,
 ): Promise<R[]> {
-  const results: R[] = Array.from({ length: items.length }) as R[];
+  const results = Array.from<R>({ length: items.length });
   let nextIndex = 0;
 
   async function worker() {
@@ -305,7 +309,6 @@ async function loadBundle(bundlePath: string): Promise<Record<string, unknown>> 
       `[vinext] Bundle not found at ${bundlePath}.\nRun \`vinext build\` before prerendering.`,
     );
   }
-  const { pathToFileURL } = await import("node:url");
   const mtime = fs.statSync(bundlePath).mtimeMs;
   return (await import(`${pathToFileURL(bundlePath).href}?t=${mtime}`)) as Record<string, unknown>;
 }
@@ -528,8 +531,8 @@ export async function prerenderPages({
     if (has404) {
       try {
         const notFoundRes = await renderPage(
-          new Request("http://localhost/__vinext_nonexistent_for_404__"),
-          "/__vinext_nonexistent_for_404__",
+          new Request(`http://localhost${NOT_FOUND_SENTINEL_PATH}`),
+          NOT_FOUND_SENTINEL_PATH,
           {},
         );
         const contentType = notFoundRes.headers.get("content-type") ?? "";
@@ -866,7 +869,7 @@ export async function prerenderApp({
     // The RSC handler returns 404 with full HTML for the not-found.tsx page (or
     // the default Next.js 404). Write it to 404.html for static deployment.
     try {
-      const notFoundRequest = new Request("http://localhost/__vinext_nonexistent_for_404__");
+      const notFoundRequest = new Request(`http://localhost${NOT_FOUND_SENTINEL_PATH}`);
       const notFoundRes = await runWithHeadersContext(
         headersContextFromRequest(notFoundRequest),
         () => rscHandler(notFoundRequest),

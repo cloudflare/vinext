@@ -162,10 +162,6 @@ export class NoOpCacheHandler implements CacheHandler {
   async revalidateTag(_tags: string | string[], _durations?: { expire?: number }): Promise<void> {
     // intentionally empty
   }
-
-  resetRequestCache(): void {
-    // intentionally empty
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -232,13 +228,14 @@ export class MemoryCacheHandler implements CacheHandler {
     ctx?: Record<string, unknown>,
   ): Promise<void> {
     const typedCtx = ctx as SetCtx | undefined;
-    const tags: string[] = [];
+    const tagSet = new Set<string>();
     if (data && "tags" in data && Array.isArray(data.tags)) {
-      tags.push(...data.tags);
+      for (const t of data.tags) tagSet.add(t);
     }
     if (typedCtx && Array.isArray(typedCtx.tags)) {
-      tags.push(...typedCtx.tags);
+      for (const t of typedCtx.tags) tagSet.add(t);
     }
+    const tags = [...tagSet];
 
     // Resolve effective revalidate — data overrides ctx.
     // revalidate: 0 means "don't cache", so skip storage entirely.
@@ -370,45 +367,33 @@ export async function revalidateTag(
  * We use a `_N_T_/path` prefix convention for path-based tags.
  */
 export async function revalidatePath(path: string, _type?: "page" | "layout"): Promise<void> {
-  // Next.js internally converts paths to tags with a prefix
+  // Next.js internally converts paths to tags with the _N_T_ prefix.
+  // Only pass the prefixed form to avoid accidentally invalidating any
+  // cache entry whose tag happens to equal the raw path string.
   const pathTag = `_N_T_${path}`;
-  await _getActiveHandler().revalidateTag([path, pathTag]);
+  await _getActiveHandler().revalidateTag([pathTag]);
 }
 
 /**
- * Expire and immediately refresh cached data for a tag (Next.js 16).
+ * No-op shim for API compatibility.
  *
- * Server Actions-only API that provides read-your-writes semantics:
- * the cache entry is expired and fresh data is read within the same request,
- * so the user immediately sees their changes.
+ * In Next.js, calling `refresh()` inside a Server Action triggers a
+ * client-side router refresh so the user immediately sees updated data.
+ * vinext does not yet implement the Server Actions refresh protocol,
+ * so this function has no effect.
+ */
+export function refresh(): void {}
+
+/**
+ * Expire a cache tag immediately (Next.js 16).
  *
- * Use this for interactive features (forms, user settings) where users
- * expect to see their updates instantly.
- *
- * @param tag - Cache tag to expire and refresh
+ * Server Actions-only API that expires a tag so the next request
+ * fetches fresh data. Unlike `revalidateTag`, which uses stale-while-revalidate,
+ * `updateTag` invalidates synchronously within the same request context.
  */
 export async function updateTag(tag: string): Promise<void> {
   // Expire the tag immediately (same as revalidateTag without SWR)
   await _getActiveHandler().revalidateTag(tag);
-}
-
-/**
- * Refresh uncached data on the page (Next.js 16).
- *
- * Server Actions-only API that signals the client to re-fetch dynamic
- * (uncached) data without touching the cache. Complementary to the
- * client-side router.refresh().
- *
- * Use this when you need to refresh data like notification counts,
- * live metrics, or status indicators after performing a server action.
- */
-export function refresh(): void {
-  // In our implementation, this is a signal that the client should
-  // refresh dynamic data. The actual refresh happens on the client side
-  // via the RSC protocol — the server action response triggers a
-  // client-side navigation refresh.
-  // For now, this is a no-op on the server; the Server Action response
-  // mechanism already handles re-rendering the affected RSC tree.
 }
 
 /**
@@ -691,7 +676,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
   const tags = options?.tags ?? [];
   const revalidateSeconds = options?.revalidate;
 
-  const cachedFn = async (...args: any[]): Promise<any> => {
+  const cachedFn = async (...args: Parameters<T>): Promise<Awaited<ReturnType<T>>> => {
     const argsKey = JSON.stringify(args);
     const cacheKey = `unstable_cache:${baseKey}:${argsKey}`;
 
@@ -703,7 +688,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     });
     if (existing?.value && existing.value.kind === "FETCH" && existing.cacheState !== "stale") {
       try {
-        return deserializeUnstableCacheResult(existing.value.data.body);
+        return deserializeUnstableCacheResult(existing.value.data.body) as Awaited<ReturnType<T>>;
       } catch {
         // Corrupted entry, fall through to re-fetch
       }

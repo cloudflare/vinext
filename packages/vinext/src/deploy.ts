@@ -78,6 +78,17 @@ const deployArgOptions = {
 
 export function parseDeployArgs(args: string[]) {
   const { values } = nodeParseArgs({ args, options: deployArgOptions, strict: true });
+
+  function parseIntArg(name: string, raw: string | undefined): number | undefined {
+    if (!raw) return undefined;
+    const n = parseInt(raw, 10);
+    if (isNaN(n)) {
+      console.error(`  --${name} must be a number (got: ${raw})`);
+      process.exit(1);
+    }
+    return n;
+  }
+
   return {
     help: values.help,
     preview: values.preview,
@@ -87,9 +98,9 @@ export function parseDeployArgs(args: string[]) {
     dryRun: values["dry-run"],
     prerenderAll: values["prerender-all"],
     experimentalTPR: values["experimental-tpr"],
-    tprCoverage: values["tpr-coverage"] ? parseInt(values["tpr-coverage"], 10) : undefined,
-    tprLimit: values["tpr-limit"] ? parseInt(values["tpr-limit"], 10) : undefined,
-    tprWindow: values["tpr-window"] ? parseInt(values["tpr-window"], 10) : undefined,
+    tprCoverage: parseIntArg("tpr-coverage", values["tpr-coverage"]),
+    tprLimit: parseIntArg("tpr-limit", values["tpr-limit"]),
+    tprWindow: parseIntArg("tpr-window", values["tpr-window"]),
   };
 }
 
@@ -185,54 +196,44 @@ export function detectProject(root: string): ProjectInfo {
   const hasRscPlugin = _findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
   const hasWrangler = _findInNodeModules(root, ".bin/wrangler") !== null;
 
-  // Derive project name from package.json or directory name
-  let projectName = path.basename(root);
+  // Parse package.json once for all fields that need it
   const pkgPath = path.join(root, "package.json");
+  let pkg: Record<string, unknown> | null = null;
   if (fs.existsSync(pkgPath)) {
     try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      if (pkg.name) {
-        // Sanitize: Workers names must be lowercase alphanumeric + hyphens
-        projectName = pkg.name
-          .replace(/^@[^/]+\//, "") // strip npm scope
-          .toLowerCase() // lowercase BEFORE stripping invalid chars
-          .replace(/[^a-z0-9-]/g, "-")
-          .replace(/-+/g, "-")
-          .replace(/^-|-$/g, "");
-      }
+      pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as Record<string, unknown>;
     } catch {
       // ignore parse errors
     }
+  }
+
+  // Derive project name from package.json or directory name
+  let projectName = path.basename(root);
+  if (pkg?.name && typeof pkg.name === "string") {
+    // Sanitize: Workers names must be lowercase alphanumeric + hyphens
+    projectName = pkg.name
+      .replace(/^@[^/]+\//, "") // strip npm scope
+      .toLowerCase() // lowercase BEFORE stripping invalid chars
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "");
   }
 
   // Detect ISR usage (rough heuristic: search for `revalidate` exports)
   const hasISR = detectISR(root, isAppRouter);
 
   // Detect "type": "module" in package.json
-  let hasTypeModule = false;
-  if (fs.existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      hasTypeModule = pkg.type === "module";
-    } catch {
-      // ignore
-    }
-  }
+  const hasTypeModule = pkg?.type === "module";
 
   // Detect MDX usage
   const hasMDX = detectMDX(root, isAppRouter, hasPages);
 
   // Detect CodeHike dependency
-  let hasCodeHike = false;
-  if (fs.existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
-      const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
-      hasCodeHike = "codehike" in allDeps;
-    } catch {
-      // ignore
-    }
-  }
+  const allDeps = {
+    ...(pkg?.dependencies as Record<string, unknown> | undefined),
+    ...(pkg?.devDependencies as Record<string, unknown> | undefined),
+  };
+  const hasCodeHike = "codehike" in allDeps;
 
   // Detect native Node modules that need stubbing for Workers
   const nativeModulesToStub = detectNativeModules(root);

@@ -460,9 +460,8 @@ async function buildApp() {
   let prerenderResult;
   const shouldPrerender =
     parsed.prerenderAll ||
-    (await loadNextConfig(process.cwd()).then((raw) =>
-      resolveNextConfig(raw, process.cwd()).then((cfg) => cfg.output === "export"),
-    ));
+    (await resolveNextConfig(await loadNextConfig(process.cwd()), process.cwd())).output ===
+      "export";
 
   if (shouldPrerender) {
     const label = parsed.prerenderAll
@@ -800,7 +799,6 @@ if (command === "--version" || command === "-v") {
 
 if (command === "--help" || command === "-h" || !command) {
   printHelp();
-  if (!command) process.exit(0);
   process.exit(0);
 }
 

@@ -181,16 +181,27 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     allRoutes.push(...result.routes);
   }
 
-  if (allRoutes.length === 0) return null;
+  if (allRoutes.length === 0) {
+    progress.finish(0, 0, 0);
+    return null;
+  }
 
   // ── Write single merged manifest ────────────────────────────────────────────
-  fs.mkdirSync(manifestDir, { recursive: true });
-  writePrerenderIndex(allRoutes, manifestDir);
+  let rendered = 0;
+  let skipped = 0;
+  let errors = 0;
+  for (const r of allRoutes) {
+    if (r.status === "rendered") rendered++;
+    else if (r.status === "skipped") skipped++;
+    else errors++;
+  }
 
-  const rendered = allRoutes.filter((r) => r.status === "rendered").length;
-  const skipped = allRoutes.filter((r) => r.status === "skipped").length;
-  const errors = allRoutes.filter((r) => r.status === "error").length;
-  progress.finish(rendered, skipped, errors);
+  try {
+    fs.mkdirSync(manifestDir, { recursive: true });
+    writePrerenderIndex(allRoutes, manifestDir);
+  } finally {
+    progress.finish(rendered, skipped, errors);
+  }
 
   // In export mode, any error route means the build should fail — the app
   // contains dynamic functionality that cannot be statically exported.
