@@ -505,10 +505,12 @@ async function buildApp() {
     const label = parsed.prerenderAll
       ? "Pre-rendering all routes..."
       : "Pre-rendering all routes (output: 'export')...";
+    process.stdout.write("\x1b[0m");
     console.log(`  ${label}`);
     prerenderResult = await runPrerender({ root: process.cwd() });
   }
 
+  process.stdout.write("\x1b[0m");
   await printBuildReport({ root: process.cwd(), prerenderResult: prerenderResult ?? undefined });
 
   console.log("\n  Build complete. Run `vinext start` to start the production server.\n");
