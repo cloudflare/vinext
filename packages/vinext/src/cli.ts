@@ -389,16 +389,24 @@ async function buildApp() {
     // SSR bundle so the prerender phase can render Pages Router routes.
     // The App Router multi-env build (buildApp) doesn't include the Pages Router
     // SSR entry, so we run it as a separate step here.
-    // We use configFile: false with vinext({ disableAppRouter: true }) to avoid
-    // loading the user's vite.config (which has vinext() without disableAppRouter)
-    // and to prevent the multi-env environments config from overriding our SSR
-    // input and entryFileNames.
+    // We use configFile: false to prevent the multi-env `environments` block in
+    // the user's vite.config from overriding our SSR input/entryFileNames, but
+    // we inherit the user's non-vinext plugins (e.g. cloudflare()) from the
+    // already-resolved builder config so plugins like the missing-Cloudflare
+    // guard see a consistent environment.
     if (hasPagesDir()) {
       console.log("  Building Pages Router server (hybrid)...");
+      // Inherit resolved plugins from the App Router build, replacing the
+      // vinext:* family with vinext({ disableAppRouter: true }) so the secondary
+      // build skips App Router codegen while retaining cloudflare() and any
+      // other user-supplied plugins.
+      const inheritedPlugins = (builder.config.plugins as { name: string }[])
+        .filter((p) => !p.name.startsWith("vinext:"))
+        .concat(vinext({ disableAppRouter: true }) as any);
       await vite.build({
         root: process.cwd(),
         configFile: false,
-        plugins: [vinext({ disableAppRouter: true })],
+        plugins: inheritedPlugins,
         resolve: {
           dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
         },
