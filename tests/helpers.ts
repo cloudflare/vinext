@@ -10,7 +10,7 @@
 import http, { type IncomingHttpHeaders } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
-import { createServer, type ViteDevServer } from "vite";
+import { createServer, build, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
 
@@ -135,7 +135,12 @@ export interface NodeHttpResponse {
 
 export async function createIsolatedFixture(fixtureDir: string, prefix: string): Promise<string> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  await fs.cp(fixtureDir, tmpDir, { recursive: true });
+  // Skip node_modules during copy — we'll replace it with a symlink to the
+  // workspace node_modules so fixtures don't need their own install.
+  await fs.cp(fixtureDir, tmpDir, {
+    recursive: true,
+    filter: (src) => !src.includes(`${path.sep}node_modules`),
+  });
 
   const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
   await fs.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
@@ -176,4 +181,62 @@ export async function requestNodeServerWithHost(
     req.on("error", reject);
     req.end();
   });
+}
+
+/**
+ * Build a Pages Router fixture's SSR server bundle into a fresh tmpdir.
+ *
+ * Returns the path to the built bundle (`entry.js`).
+ */
+export async function buildPagesFixture(fixtureDir: string): Promise<string> {
+  const serverOutDir = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-build-")),
+    "server",
+  );
+
+  // Use disableAppRouter: true so the RSC/App Router pipeline is not activated.
+  // This is required when the fixture has both app/ and pages/ directories
+  // (hybrid); we only want the Pages Router SSR bundle here.
+  await build({
+    root: fixtureDir,
+    configFile: false,
+    plugins: [vinext({ disableAppRouter: true })],
+    logLevel: "silent",
+    build: {
+      outDir: serverOutDir,
+      emptyOutDir: true,
+      ssr: "virtual:vinext-server-entry",
+      rollupOptions: {
+        output: { entryFileNames: "entry.js" },
+      },
+    },
+  });
+
+  return path.join(serverOutDir, "entry.js");
+}
+
+/**
+ * Build an App Router fixture's RSC/SSR/client bundles into a fresh isolated
+ * output directory. The fixture source stays in place — only the output lands
+ * in a per-call tmpdir so sequential test suites never clobber each other.
+ *
+ * Returns the path to the built RSC bundle (`<tmp>/server/index.js`).
+ */
+export async function buildAppFixture(fixtureDir: string): Promise<string> {
+  const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-app-build-"));
+
+  const rscOutDir = path.join(outDir, "server");
+  const ssrOutDir = path.join(outDir, "server", "ssr");
+  const clientOutDir = path.join(outDir, "client");
+
+  const { createBuilder } = await import("vite");
+  const builder = await createBuilder({
+    root: fixtureDir,
+    configFile: false,
+    plugins: [vinext({ appDir: fixtureDir, rscOutDir, ssrOutDir, clientOutDir })],
+    logLevel: "silent",
+  });
+  await builder.buildApp();
+
+  return path.join(outDir, "server", "index.js");
 }

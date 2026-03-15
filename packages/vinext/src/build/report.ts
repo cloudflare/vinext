@@ -23,6 +23,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
+import type { PrerenderResult } from "./prerender.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,12 @@ export interface RouteRow {
   type: RouteType;
   /** Only set for `isr` routes. */
   revalidate?: number;
+  /**
+   * True when the route was classified as `static` by speculative prerender
+   * (i.e. was `unknown` from static analysis but rendered successfully).
+   * Used by `formatBuildReport` to add a note in the legend.
+   */
+  prerendered?: boolean;
 }
 
 // ─── Regex-based export detection ────────────────────────────────────────────
@@ -221,13 +228,27 @@ export function classifyAppRoute(
 /**
  * Builds a sorted list of RouteRow objects from the discovered routes.
  * Routes are sorted alphabetically by path, matching filesystem order.
+ *
+ * When `prerenderResult` is provided, routes that were classified as `unknown`
+ * by static analysis but were successfully rendered speculatively are upgraded
+ * to `static` (confirmed by execution). The `prerendered` flag is set on those
+ * rows so the formatter can add a legend note.
  */
 export function buildReportRows(options: {
   pageRoutes?: Route[];
   apiRoutes?: Route[];
   appRoutes?: AppRoute[];
+  prerenderResult?: PrerenderResult;
 }): RouteRow[] {
   const rows: RouteRow[] = [];
+
+  // Build a set of routes that were confirmed rendered by speculative prerender.
+  const renderedRoutes = new Set<string>();
+  if (options.prerenderResult) {
+    for (const r of options.prerenderResult.routes) {
+      if (r.status === "rendered") renderedRoutes.add(r.route);
+    }
+  }
 
   for (const route of options.pageRoutes ?? []) {
     const { type, revalidate } = classifyPagesRoute(route.filePath);
@@ -240,7 +261,12 @@ export function buildReportRows(options: {
 
   for (const route of options.appRoutes ?? []) {
     const { type, revalidate } = classifyAppRoute(route.pagePath, route.routePath, route.isDynamic);
-    rows.push({ pattern: route.pattern, type, revalidate });
+    if (type === "unknown" && renderedRoutes.has(route.pattern)) {
+      // Speculative prerender confirmed this route is static.
+      rows.push({ pattern: route.pattern, type: "static", prerendered: true });
+    } else {
+      rows.push({ pattern: route.pattern, type, revalidate });
+    }
   }
 
   // Sort purely by path — mirrors filesystem order, matching Next.js output style
@@ -316,6 +342,16 @@ export function formatBuildReport(rows: RouteRow[], routerLabel = "app"): string
     lines.push("    Automatic classification will be improved in a future release.");
   }
 
+  // Speculative-render note — shown when any routes were confirmed static by prerender
+  const hasPrerendered = rows.some((r) => r.prerendered);
+  if (hasPrerendered) {
+    lines.push("");
+    lines.push(
+      "  ○ Routes marked static were confirmed by speculative prerender (attempted render",
+    );
+    lines.push("    succeeded without dynamic API usage).");
+  }
+
   return lines.join("\n");
 }
 
@@ -340,6 +376,7 @@ function findDir(root: string, ...candidates: string[]): string | null {
 export async function printBuildReport(options: {
   root: string;
   pageExtensions?: string[];
+  prerenderResult?: PrerenderResult;
 }): Promise<void> {
   const { root } = options;
 
@@ -352,7 +389,7 @@ export async function printBuildReport(options: {
     // Dynamic import to avoid loading routing code unless needed
     const { appRouter } = await import("../routing/app-router.js");
     const routes = await appRouter(appDir, options.pageExtensions);
-    const rows = buildReportRows({ appRoutes: routes });
+    const rows = buildReportRows({ appRoutes: routes, prerenderResult: options.prerenderResult });
     if (rows.length > 0) {
       console.log("\n" + formatBuildReport(rows, "app"));
     }
@@ -364,7 +401,11 @@ export async function printBuildReport(options: {
       pagesRouter(pagesDir, options.pageExtensions),
       apiRouter(pagesDir, options.pageExtensions),
     ]);
-    const rows = buildReportRows({ pageRoutes, apiRoutes });
+    const rows = buildReportRows({
+      pageRoutes,
+      apiRoutes,
+      prerenderResult: options.prerenderResult,
+    });
     if (rows.length > 0) {
       console.log("\n" + formatBuildReport(rows, "pages"));
     }

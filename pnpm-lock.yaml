@@ -961,6 +961,27 @@ importers:
         specifier: 'catalog:'
         version: 7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.31.1)
 
+  tests/fixtures/static-export:
+    dependencies:
+      '@vitejs/plugin-rsc':
+        specifier: 'catalog:'
+        version: 0.5.20(react-dom@19.2.4(react@19.2.4))(react-server-dom-webpack@19.2.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)(vite@7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.31.1))
+      react:
+        specifier: 'catalog:'
+        version: 19.2.4
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.4(react@19.2.4)
+      react-server-dom-webpack:
+        specifier: 'catalog:'
+        version: 19.2.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      vinext:
+        specifier: workspace:*
+        version: link:../../../packages/vinext
+      vite:
+        specifier: 'catalog:'
+        version: 7.3.1(@types/node@25.2.3)(jiti@2.6.1)(lightningcss@1.31.1)
+
 packages:
 
   '@alloc/quick-lru@5.2.0':

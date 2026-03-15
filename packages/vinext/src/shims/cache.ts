@@ -140,6 +140,35 @@ export interface CacheHandler {
 }
 
 // ---------------------------------------------------------------------------
+// No-op cache handler — used during prerender to skip wasteful isrSet writes.
+// All prerender requests are cold-start renders whose results are written to
+// static files on disk, not to a cache. Using a no-op handler avoids the
+// overhead of MemoryCacheHandler.set() calls that are discarded at process exit.
+// ---------------------------------------------------------------------------
+
+export class NoOpCacheHandler implements CacheHandler {
+  async get(_key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    return null;
+  }
+
+  async set(
+    _key: string,
+    _data: IncrementalCacheValue | null,
+    _ctx?: Record<string, unknown>,
+  ): Promise<void> {
+    // intentionally empty
+  }
+
+  async revalidateTag(_tags: string | string[], _durations?: { expire?: number }): Promise<void> {
+    // intentionally empty
+  }
+
+  resetRequestCache(): void {
+    // intentionally empty
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Default in-memory adapter — works everywhere, suitable for dev and
 // single-process production. Not shared across workers/instances.
 // ---------------------------------------------------------------------------

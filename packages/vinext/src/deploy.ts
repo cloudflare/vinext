@@ -28,7 +28,9 @@ import {
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
 import { runTPR } from "./cloudflare/tpr.js";
+import { runPrerenderWithDevServer } from "./build/run-prerender.js";
 import { loadDotenv } from "./config/dotenv.js";
+import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -45,6 +47,8 @@ export interface DeployOptions {
   skipBuild?: boolean;
   /** Dry run — generate config files but don't build or deploy */
   dryRun?: boolean;
+  /** Pre-render all discovered routes into the dist output after building */
+  prerenderAll?: boolean;
   /** Enable experimental TPR (Traffic-aware Pre-Rendering) */
   experimentalTPR?: boolean;
   /** TPR: traffic coverage percentage target (0–100, default: 90) */
@@ -65,6 +69,7 @@ const deployArgOptions = {
   name: { type: "string" },
   "skip-build": { type: "boolean", default: false },
   "dry-run": { type: "boolean", default: false },
+  "prerender-all": { type: "boolean", default: false },
   "experimental-tpr": { type: "boolean", default: false },
   "tpr-coverage": { type: "string" },
   "tpr-limit": { type: "string" },
@@ -80,6 +85,7 @@ export function parseDeployArgs(args: string[]) {
     name: values.name?.trim() || undefined,
     skipBuild: values["skip-build"],
     dryRun: values["dry-run"],
+    prerenderAll: values["prerender-all"],
     experimentalTPR: values["experimental-tpr"],
     tprCoverage: values["tpr-coverage"] ? parseInt(values["tpr-coverage"], 10) : undefined,
     tprLimit: values["tpr-limit"] ? parseInt(values["tpr-limit"], 10) : undefined,
@@ -1244,7 +1250,25 @@ export async function deploy(options: DeployOptions): Promise<void> {
     console.log("\n  Skipping build (--skip-build)");
   }
 
-  // Step 6: TPR — pre-render hot pages into KV cache (experimental, opt-in)
+  // Step 6a: prerender — render every discovered route into dist.
+  // Triggered by --prerender-all, or automatically when next.config.js
+  // sets `output: 'export'` (every route must be statically exportable).
+  {
+    const rawNextConfig = await loadNextConfig(info.root);
+    const nextConfig = await resolveNextConfig(rawNextConfig, info.root);
+    const isStaticExport = nextConfig.output === "export";
+
+    if (options.prerenderAll || isStaticExport) {
+      const label =
+        isStaticExport && !options.prerenderAll
+          ? "Pre-rendering all routes (output: 'export')..."
+          : "Pre-rendering all routes...";
+      console.log(`\n  ${label}`);
+      await runPrerenderWithDevServer({ root: info.root, hasViteConfig: info.hasViteConfig });
+    }
+  }
+
+  // Step 6b: TPR — pre-render hot pages into KV cache (experimental, opt-in)
   if (options.experimentalTPR) {
     console.log();
     const tprResult = await runTPR({

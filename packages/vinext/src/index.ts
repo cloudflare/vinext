@@ -43,7 +43,6 @@ import {
   type RequestContext,
 } from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
-import { staticExportPages } from "./build/static-export.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
 import { detectPackageManager } from "./utils/project.js";
 import {
@@ -692,6 +691,32 @@ export interface VinextOptions {
    */
   appDir?: string;
   /**
+   * Force-disable App Router detection even when an app/ directory exists.
+   * Only the Pages Router pipeline will be active.
+   * Intended for testing and tools that need to build only the Pages Router
+   * bundle from a hybrid (app + pages) project.
+   * @default false
+   */
+  disableAppRouter?: boolean;
+  /**
+   * Override the output directory for the RSC server bundle.
+   * Absolute paths are used as-is; relative paths are resolved from the
+   * Vite root. Defaults to "dist/server".
+   * Intended for tests that need to build multiple fixtures in parallel
+   * without clobbering each other's output.
+   */
+  rscOutDir?: string;
+  /**
+   * Override the output directory for the SSR bundle.
+   * Defaults to "dist/server/ssr".
+   */
+  ssrOutDir?: string;
+  /**
+   * Override the output directory for the client bundle.
+   * Defaults to Vite's default (dist/client or dist).
+   */
+  clientOutDir?: string;
+  /**
    * Auto-register @vitejs/plugin-rsc when an app/ directory is detected.
    * Set to `false` to disable auto-registration (e.g. if you configure
    * @vitejs/plugin-rsc manually with custom options).
@@ -766,8 +791,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const autoRsc = options.rsc !== false;
   const earlyBaseDir = options.appDir ?? process.cwd();
   const earlyAppDirExists =
-    fs.existsSync(path.join(earlyBaseDir, "app")) ||
-    fs.existsSync(path.join(earlyBaseDir, "src", "app"));
+    !options.disableAppRouter &&
+    (fs.existsSync(path.join(earlyBaseDir, "app")) ||
+      fs.existsSync(path.join(earlyBaseDir, "src", "app")));
 
   // IMPORTANT: Resolve @vitejs/plugin-rsc subpath imports from the user's
   // project root, not from vinext's own package location. When vinext is
@@ -929,7 +955,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         pagesDir = path.join(baseDir, "pages");
         appDir = path.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
-        hasAppDir = fs.existsSync(appDir);
+        hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
         middlewarePath = findMiddlewareFile(root);
         instrumentationPath = findInstrumentationFile(root);
 
@@ -1370,7 +1396,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 entries: appEntries,
               },
               build: {
-                outDir: "dist/server",
+                outDir: options.rscOutDir ?? "dist/server",
                 rollupOptions: {
                   input: { index: VIRTUAL_RSC_ENTRY },
                 },
@@ -1395,7 +1421,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 entries: appEntries,
               },
               build: {
-                outDir: "dist/server/ssr",
+                outDir: options.ssrOutDir ?? "dist/server/ssr",
                 rollupOptions: {
                   input: { index: VIRTUAL_APP_SSR_ENTRY },
                 },

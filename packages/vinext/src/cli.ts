@@ -15,6 +15,7 @@
 
 import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
 import { printBuildReport } from "./build/report.js";
+import { runPrerenderWithDevServer } from "./build/run-prerender.js";
 import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -25,7 +26,7 @@ import { deploy as runDeploy, parseDeployArgs } from "./deploy.js";
 import { runCheck, formatReport } from "./check.js";
 import { init as runInit, getReactUpgradeDeps } from "./init.js";
 import { loadDotenv } from "./config/dotenv.js";
-
+import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 // ─── Resolve Vite from the project root ────────────────────────────────────────
 //
 // When vinext is installed via `bun link` or `npm link`, Node follows the
@@ -95,6 +96,7 @@ interface ParsedArgs {
   verbose?: boolean;
   turbopack?: boolean; // accepted for compat, always ignored
   experimental?: boolean; // accepted for compat, always ignored
+  prerenderAll?: boolean;
 }
 
 function parseArgs(args: string[]): ParsedArgs {
@@ -109,6 +111,8 @@ function parseArgs(args: string[]): ParsedArgs {
       result.turbopack = true; // no-op, accepted for script compat
     } else if (arg === "--experimental-https") {
       result.experimental = true; // no-op
+    } else if (arg === "--prerender-all") {
+      result.prerenderAll = true;
     } else if (arg === "--port" || arg === "-p") {
       result.port = parseInt(args[++i], 10);
     } else if (arg.startsWith("--port=")) {
@@ -415,7 +419,30 @@ async function buildApp() {
     );
   }
 
-  await printBuildReport({ root: process.cwd() });
+  let prerenderResult;
+  if (parsed.prerenderAll) {
+    console.log("  Pre-rendering all routes...");
+    prerenderResult = await runPrerenderWithDevServer({
+      root: process.cwd(),
+      hasViteConfig: hasViteConfig(),
+    });
+  } else {
+    // Auto-prerender when next.config.js sets `output: 'export'`.
+    // In this mode, every route must be statically exportable, so we run the
+    // full prerender phase unconditionally (no --prerender-all flag required).
+    const rawConfig = await loadNextConfig(process.cwd());
+    const nextConfig = await resolveNextConfig(rawConfig, process.cwd());
+    if (nextConfig.output === "export") {
+      console.log("  Pre-rendering all routes (output: 'export')...");
+      prerenderResult = await runPrerenderWithDevServer({
+        root: process.cwd(),
+        hasViteConfig: hasViteConfig(),
+      });
+    }
+  }
+
+  await printBuildReport({ root: process.cwd(), prerenderResult: prerenderResult ?? undefined });
+
   console.log("\n  Build complete. Run `vinext start` to start the production server.\n");
 }
 
@@ -506,6 +533,7 @@ async function deployCommand() {
     skipBuild: parsed.skipBuild,
     dryRun: parsed.dryRun,
     name: parsed.name,
+    prerenderAll: parsed.prerenderAll,
     experimentalTPR: parsed.experimentalTPR,
     tprCoverage: parsed.tprCoverage,
     tprLimit: parsed.tprLimit,
@@ -572,8 +600,9 @@ function printHelp(cmd?: string) {
   runs the appropriate multi-environment build via Vite.
 
   Options:
-    --verbose         Show full Vite/Rollup build output (suppressed by default)
-    -h, --help        Show this help
+    --verbose            Show full Vite/Rollup build output (suppressed by default)
+    --prerender-all      Pre-render every discovered route into dist after building
+    -h, --help           Show this help
 `);
     return;
   }
@@ -614,6 +643,7 @@ function printHelp(cmd?: string) {
     --name <name>            Custom Worker name (default: from package.json)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Generate config files without building or deploying
+    --prerender-all          Pre-render every discovered route into dist after building
     -h, --help               Show this help
 
   Experimental:

@@ -1435,9 +1435,22 @@ async function __readFormDataWithLimit(request, maxBytes) {
     combined.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  var contentType = request.headers.get("content-type") || "";
-  return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
+   var contentType = request.headers.get("content-type") || "";
+   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
+
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+${routes
+  .filter((r) => r.isDynamic && r.pagePath)
+  .map(
+    (r) =>
+      `  ${JSON.stringify(r.pattern)}: ${getImportVar(r.pagePath!)}?.generateStaticParams ?? null,`,
+  )
+  .join("\n")}
+};
 
 export default async function handler(request, ctx) {
   ${
