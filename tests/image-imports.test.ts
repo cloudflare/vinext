@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
-import type { Plugin } from "vite";
+import type { Plugin } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
 const IMAGES_DIR = path.resolve(import.meta.dirname, "./fixtures/images");

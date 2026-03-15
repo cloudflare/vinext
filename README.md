@@ -677,7 +677,7 @@ pnpm install
 pnpm run build
 ```
 
-This compiles the vinext package to `packages/vinext/dist/`. For active development, use `pnpm --filter vinext run dev` to run `tsc --watch`.
+This builds the vinext package to `packages/vinext/dist/` via `vp pack`. For active development, use `pnpm --filter vinext run dev` to run `vp pack --watch`.
 
 To use it against an external Next.js app, link the built package:
 

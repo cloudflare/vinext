@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import { buildRouteTrie, trieMatch } from "../packages/vinext/src/routing/route-trie.js";
 
 interface TestRoute {

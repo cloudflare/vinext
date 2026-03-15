@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
@@ -1229,6 +1229,42 @@ describe("matchAppRoute - URL matching", () => {
     expect(result).not.toBeNull();
     expect(result!.route.pattern).toBe("/auth/:auth-method");
     expect(result!.params["auth-method"]).toBe("google");
+  });
+
+  // --- Inherited parallel slot priority ---
+
+  it("closest ancestor parallel slot wins over farthest when same name exists at multiple levels", async () => {
+    await withTempDir("vinext-app-parallel-slot-priority-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+
+      // Root-level @sidebar
+      await mkdir(path.join(appDir, "@sidebar"), { recursive: true });
+      await writeFile(path.join(appDir, "@sidebar", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "page.tsx"), EMPTY_PAGE);
+
+      // Dashboard-level @sidebar (closer ancestor to /dashboard/settings)
+      await mkdir(path.join(appDir, "dashboard", "@sidebar"), { recursive: true });
+      await writeFile(path.join(appDir, "dashboard", "@sidebar", "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "dashboard", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "dashboard", "page.tsx"), EMPTY_PAGE);
+
+      // The leaf route
+      await mkdir(path.join(appDir, "dashboard", "settings"), { recursive: true });
+      await writeFile(path.join(appDir, "dashboard", "settings", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const settingsRoute = routes.find((r) => r.pattern === "/dashboard/settings");
+      expect(settingsRoute).toBeDefined();
+
+      const sidebarSlot = settingsRoute!.parallelSlots.find((s) => s.name === "sidebar");
+      expect(sidebarSlot).toBeDefined();
+
+      // The dashboard-level @sidebar (closest ancestor) should win
+      expect(sidebarSlot!.defaultPath).not.toBeNull();
+      expect(sidebarSlot!.defaultPath).toContain(path.join("dashboard", "@sidebar"));
+    });
   });
 });
 

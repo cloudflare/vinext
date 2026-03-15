@@ -6,7 +6,7 @@
  * Tests RSC prefetch endpoint behavior. Most prefetch tests are browser-only;
  * these test the server-side RSC response behavior.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import {
   startFixtureServer,
   APP_FIXTURE_DIR,

@@ -24,7 +24,7 @@
  *   - fixFlightHints(): rewrites as="stylesheet" → as="style" in RSC hints
  *   - fixPreloadAs(): rewrites as="stylesheet" → as="style" in HTML preloads
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

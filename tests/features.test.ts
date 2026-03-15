@@ -1,5 +1,14 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from "vitest";
-import { createServer, type ViteDevServer } from "vite";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+  vi,
+} from "vite-plus/test";
+import { createServer, type ViteDevServer } from "vite-plus";
 import path from "node:path";
 import vinext from "../packages/vinext/src/index.js";
 import {

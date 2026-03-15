@@ -133,13 +133,17 @@ export interface NodeHttpResponse {
   body: string;
 }
 
-export async function createIsolatedFixture(fixtureDir: string, prefix: string): Promise<string> {
+export async function createIsolatedFixture(
+  fixtureDir: string,
+  prefix: string,
+  filter?: (src: string) => boolean,
+): Promise<string> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
   // Skip node_modules during copy — we'll replace it with a symlink to the
   // workspace node_modules so fixtures don't need their own install.
   await fs.cp(fixtureDir, tmpDir, {
     recursive: true,
-    filter: (src) => !src.includes(`${path.sep}node_modules`),
+    filter: (src) => !src.includes(`${path.sep}node_modules`) && (filter == null || filter(src)),
   });
 
   const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
@@ -237,6 +241,13 @@ export async function buildAppFixture(fixtureDir: string): Promise<string> {
     logLevel: "silent",
   });
   await builder.buildApp();
+
+  // The SSR bundle externalizes React packages (react, react-dom) so that
+  // Node loads them natively. When the bundle lives in a temp dir, Node can't
+  // find react-dom via normal node_modules traversal. Symlink the project's
+  // node_modules into the temp dir so the external imports resolve correctly.
+  const projectNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+  await fs.symlink(projectNodeModules, path.join(outDir, "node_modules"));
 
   return path.join(outDir, "server", "index.js");
 }

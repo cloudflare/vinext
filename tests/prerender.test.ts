@@ -8,7 +8,7 @@
  * Both `prerenderPages()` and `prerenderApp()` are tested against the
  * `pages-basic` and `app-basic` fixtures respectively.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";

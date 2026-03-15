@@ -12,6 +12,7 @@
     "react-server-dom-webpack": "catalog:"
   },
   "devDependencies": {
-    "vite": "catalog:"
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

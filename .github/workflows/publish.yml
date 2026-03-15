@@ -36,17 +36,17 @@ jobs:
         with:
           fetch-depth: 0 # full history for changelog generation
 
-      - uses: ./.github/actions/setup-node-pnpm
-        with:
-          registry-url: https://registry.npmjs.org
+      - uses: voidzero-dev/setup-vp@v1
 
       - name: Build
-        run: pnpm run build
+        run: vp run build
 
       - name: Bump version
         id: version
         working-directory: packages/vinext
         run: |
+          # vp wraps package-manager subcommands, but versioning still needs the real npm CLI
+          # because we are mutating package.json in place before the publish step.
           LATEST=$(npm view vinext version 2>/dev/null || echo "0.0.0")
           IFS='.' read -r MAJOR MINOR PATCH <<< "$LATEST"
 
@@ -73,7 +73,9 @@ jobs:
 
       - name: Publish (OIDC trusted publishing)
         working-directory: packages/vinext
-        run: pnpm publish --access public --provenance
+        env:
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org
+        run: vp pm publish --access public --provenance
 
       - name: Tag release
         run: |

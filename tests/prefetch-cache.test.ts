@@ -9,7 +9,7 @@
  * at load time, so we must set globalThis.window BEFORE importing it via
  * vi.resetModules() + dynamic import().
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
 let storePrefetchResponse: Navigation["storePrefetchResponse"];

@@ -20,34 +20,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
-      - run: pnpm run lint
+      - uses: voidzero-dev/setup-vp@v1
+      - run: vp run lint
 
   format:
     name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
-      - run: pnpm run fmt:check
+      - uses: voidzero-dev/setup-vp@v1
+      - run: vp run fmt:check
 
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
-      - run: pnpm run typecheck
+      - uses: voidzero-dev/setup-vp@v1
+      - run: vp run typecheck
 
   test:
     name: Vitest
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
+      - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin (needed by ecosystem fixtures)
-        run: pnpm run build
-      - run: pnpm test
+        run: vp run build
+      - run: vp run test
 
   create-next-app:
     name: create-next-app (${{ matrix.os }})
@@ -58,31 +58,31 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
+      - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin
-        run: pnpm run build
+        run: vp run build
 
       - name: Pack vinext for local install
-        run: pnpm pack --pack-destination "${{ runner.temp }}"
+        run: vp pm pack --pack-destination "${{ runner.temp }}"
         working-directory: packages/vinext
 
       - name: Scaffold a fresh create-next-app project
-        run: npx create-next-app@latest "${{ runner.temp }}/cna-test" --yes
+        run: vp dlx create-next-app@latest "${{ runner.temp }}/cna-test" --yes
 
       - name: Install vinext from local tarball
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash
-        run: npm install "${{ runner.temp }}"/vinext-*.tgz
+        run: vp add "${{ runner.temp }}"/vinext-*.tgz
 
       - name: Run vinext init
         working-directory: ${{ runner.temp }}/cna-test
-        run: npx vinext init --skip-check
+        run: vp exec vinext init --skip-check
 
       - name: Start dev server and verify HTTP 200
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash
         run: |
-          npx vite dev --port 3099 &
+          vp exec vite dev --port 3099 &
           SERVER_PID=$!
 
           for i in $(seq 1 30); do
@@ -115,9 +115,9 @@ jobs:
           - cloudflare-pages-router-dev
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-node-pnpm
+      - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin
-        run: pnpm run build
+        run: vp run build
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4
@@ -125,9 +125,9 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('**/package.json') }}
 
-      - run: pnpm exec playwright install chromium
+      - run: vp exec playwright install chromium
 
-      - run: pnpm exec playwright test
+      - run: vp run test:e2e
         env:
           CI: true
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}

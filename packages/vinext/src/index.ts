@@ -66,6 +66,33 @@ import commonjs from "vite-plugin-commonjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 type VitePluginReactModule = typeof import("@vitejs/plugin-react");
 
+function resolveOptionalDependency(projectRoot: string, specifier: string): string | null {
+  try {
+    const projectRequire = createRequire(path.join(projectRoot, "package.json"));
+    return projectRequire.resolve(specifier);
+  } catch {}
+
+  try {
+    const selfRequire = createRequire(import.meta.url);
+    return selfRequire.resolve(specifier);
+  } catch {}
+
+  return null;
+}
+
+function resolveShimModulePath(shimsDir: string, moduleName: string): string {
+  // Source checkouts only ship TypeScript shims, while built packages only ship
+  // JavaScript. Check .ts first to avoid an extra stat in development.
+  const candidates = [".ts", ".js"];
+  for (const ext of candidates) {
+    const candidate = path.join(shimsDir, `${moduleName}${ext}`);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return path.join(shimsDir, `${moduleName}.js`);
+}
+
 /**
  * Fetch Google Fonts CSS, download .woff2 files, cache locally, and return
  * @font-face CSS with local file references.
@@ -620,20 +647,71 @@ type BundleBackfillChunk = {
   };
 };
 
+function tryRealpathSync(candidate: string): string | null {
+  try {
+    return fs.realpathSync.native(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function isWindowsAbsolutePath(candidate: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(candidate) || candidate.startsWith("\\\\");
+}
+
+function relativeWithinRoot(root: string, moduleId: string): string | null {
+  const useWindowsPath = isWindowsAbsolutePath(root) || isWindowsAbsolutePath(moduleId);
+  const relativeId = (
+    useWindowsPath ? path.win32.relative(root, moduleId) : path.relative(root, moduleId)
+  ).replace(/\\/g, "/");
+  // path.relative(root, root) returns "", which is not a usable manifest key and should be
+  // treated the same as "outside root" for this helper.
+  if (!relativeId || relativeId === ".." || relativeId.startsWith("../")) return null;
+  return relativeId;
+}
+
 function normalizeManifestModuleId(moduleId: string, root: string): string {
   const normalizedId = moduleId.replace(/\\/g, "/");
-  const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/.test(moduleId) || moduleId.startsWith("\\\\");
-  if (isWindowsAbsolute) {
-    const relativeId = path.win32.relative(root, moduleId).replace(/\\/g, "/");
-    if (!relativeId || relativeId.startsWith("../")) return normalizedId;
-    return relativeId;
+  if (normalizedId.startsWith("\0")) return normalizedId;
+  if (normalizedId.startsWith("node_modules/") || normalizedId.includes("/node_modules/")) {
+    return normalizedId;
   }
 
-  if (!path.isAbsolute(moduleId)) return normalizedId;
+  if (!isWindowsAbsolutePath(moduleId) && !path.isAbsolute(moduleId)) {
+    if (!normalizedId.startsWith(".") && !normalizedId.includes("../")) {
+      // Preserve bare specifiers like "pages/counter.tsx". These are already
+      // stable manifest keys and resolving them against root would rewrite them
+      // into filesystem paths that no longer match the bundle/module graph.
+      return normalizedId;
+    }
+  }
 
-  const relativeId = path.relative(root, moduleId).replace(/\\/g, "/");
-  if (!relativeId || relativeId.startsWith("../")) return normalizedId;
-  return relativeId;
+  const rootCandidates = new Set<string>([root]);
+  const realRoot = tryRealpathSync(root);
+  if (realRoot) rootCandidates.add(realRoot);
+
+  const moduleCandidates = new Set<string>();
+  if (isWindowsAbsolutePath(moduleId) || path.isAbsolute(moduleId)) {
+    moduleCandidates.add(moduleId);
+  } else {
+    moduleCandidates.add(path.resolve(root, moduleId));
+  }
+
+  for (const candidate of moduleCandidates) {
+    const realCandidate = tryRealpathSync(candidate);
+    // Set iteration stays live as entries are appended, so this also checks the
+    // realpath variant without needing a second pass or an intermediate array.
+    if (realCandidate) moduleCandidates.add(realCandidate);
+  }
+
+  for (const rootCandidate of rootCandidates) {
+    for (const moduleCandidate of moduleCandidates) {
+      const relativeId = relativeWithinRoot(rootCandidate, moduleCandidate);
+      if (relativeId) return relativeId;
+    }
+  }
+
+  return normalizedId;
 }
 
 function augmentSsrManifestFromBundle(
@@ -642,12 +720,15 @@ function augmentSsrManifestFromBundle(
   root: string,
   base = "/",
 ): Record<string, string[]> {
-  const nextManifest = Object.fromEntries(
-    Object.entries(ssrManifest).map(([key, files]) => [
-      key,
-      new Set(files.map((file) => normalizeManifestFile(file))),
-    ]),
-  ) as Record<string, Set<string>>;
+  const nextManifest = {} as Record<string, Set<string>>;
+
+  for (const [key, files] of Object.entries(ssrManifest)) {
+    const normalizedKey = normalizeManifestModuleId(key, root);
+    if (!nextManifest[normalizedKey]) nextManifest[normalizedKey] = new Set<string>();
+    for (const file of files) {
+      nextManifest[normalizedKey].add(normalizeManifestFile(file));
+    }
+  }
 
   for (const item of Object.values(bundle)) {
     if (item.type !== "chunk") continue;
@@ -807,23 +888,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   //
   // Pre-resolve both the main plugin and the /transforms subpath eagerly
   // so all import() calls in this module use consistent resolution.
-  const earlyRequire = createRequire(path.join(earlyBaseDir, "package.json"));
   let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
   let resolvedRscTransformsPath: string | null = null;
-  try {
-    resolvedReactPath = earlyRequire.resolve("@vitejs/plugin-react");
-  } catch {
-    // vinext auto-injects the React plugin by default, so this will usually
-    // surface as an error below. Only react: false skips that follow-up throw.
-  }
-  try {
-    resolvedRscPath = earlyRequire.resolve("@vitejs/plugin-rsc");
-    resolvedRscTransformsPath = earlyRequire.resolve("@vitejs/plugin-rsc/transforms");
-  } catch {
-    // @vitejs/plugin-rsc not installed — that's fine for Pages Router
-    // projects. If App Router is detected, the error is thrown below.
-  }
+  // Prefer the user's project graph so vinext shares the app's Vite/plugin
+  // instances. In source/workspace development, test fixtures may not declare
+  // peer deps explicitly, so fall back to vinext's own install location.
+  resolvedReactPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-react");
+  resolvedRscPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-rsc");
+  resolvedRscTransformsPath = resolveOptionalDependency(
+    earlyBaseDir,
+    "@vitejs/plugin-rsc/transforms",
+  );
 
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
@@ -2890,7 +2966,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // leaf components with no {children} prop and can be cached directly.
             const isLayoutOrTemplate = /\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id);
 
-            const runtimeModuleUrl = pathToFileURL(path.join(shimsDir, "cache-runtime.js")).href;
+            const runtimeModuleUrl = pathToFileURL(
+              resolveShimModulePath(shimsDir, "cache-runtime"),
+            ).href;
             const result = transformWrapExport(code, ast as any, {
               runtime: (value: any, name: any) =>
                 `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
@@ -2939,7 +3017,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // (e.g., async function getData() { "use cache"; ... })
           const hasInlineCache = code.includes("use cache") && !cacheDirective;
           if (hasInlineCache) {
-            const runtimeModuleUrl2 = pathToFileURL(path.join(shimsDir, "cache-runtime.js")).href;
+            const runtimeModuleUrl2 = pathToFileURL(
+              resolveShimModulePath(shimsDir, "cache-runtime"),
+            ).href;
 
             try {
               const result = transformHoistInlineDirective(code, ast as any, {

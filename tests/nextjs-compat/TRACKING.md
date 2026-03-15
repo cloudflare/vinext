@@ -298,7 +298,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 
 **Config**: `tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts`
 **Run**: `node node_modules/@playwright/test/cli.js test -c tests/e2e/app-router/nextjs-compat/playwright.nextjs-compat.config.ts`
-**Prereq**: Build vinext (`npx tsc -p packages/vinext/tsconfig.json`) and start dev server (`npx vite --port 4174` from `fixtures/app-basic`)
+**Prereq**: Build vinext (`vp run vinext#build`) and start dev server (`npx vite --port 4174` from `fixtures/app-basic`)
 
 ### Chunk 4: dynamic (Playwright)
 

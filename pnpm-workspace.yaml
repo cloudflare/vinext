@@ -45,8 +45,6 @@ catalog:
   next-view-transitions: ^0.3.5
   nitro: npm:nitro-nightly@latest
   nuqs: ^2.8.8
-  oxfmt: ^0.36.0
-  oxlint: ^1.47.0
   playwright: ^1.52.0
   postcss: 8.5.3
   react: ^19.2.4
@@ -60,9 +58,20 @@ catalog:
   typescript: ^5.7.0
   use-count-up: 3.0.1
   validator: ^13.15.26
-  vite: ^7.3.1
+  vite: npm:@voidzero-dev/vite-plus-core@0.1.11
   vite-plugin-commonjs: ^0.10.4
   vite-tsconfig-paths: ^6.1.1
-  vitest: ^4.1.0
+  vitest: npm:@voidzero-dev/vite-plus-test@0.1.11
   wrangler: ^4.65.0
   zod: 3.24.3
+  vite-plus: 0.1.11
+overrides:
+  vite: "catalog:"
+  vitest: "catalog:"
+peerDependencyRules:
+  allowAny:
+    - vite
+    - vitest
+  allowedVersions:
+    vite: "*"
+    vitest: "*"

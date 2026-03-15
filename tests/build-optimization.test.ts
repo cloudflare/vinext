@@ -5,7 +5,10 @@
  * Tests the treeshake config, manualChunks function, and experimentalMinChunkSize
  * to ensure large barrel-exporting libraries (e.g. mermaid) produce smaller bundles.
  */
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, it, expect, beforeEach, afterEach } from "vite-plus/test";
 import {
   clientManualChunks,
   clientTreeshakeConfig,
@@ -873,6 +876,70 @@ describe("augmentSsrManifestFromBundle", () => {
     const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, "/app");
 
     expect(augmented["pages/about.tsx"]).toEqual(["assets/about.js", "assets/about.css"]);
+  });
+
+  it("normalizes existing absolute manifest keys before merging bundle metadata", () => {
+    const bundle = {
+      "assets/counter.js": {
+        type: "chunk" as const,
+        fileName: "assets/counter.js",
+        imports: [],
+        modules: {
+          "/app/pages/counter.tsx": {},
+        },
+        viteMetadata: {
+          importedCss: new Set(["assets/counter.css"]),
+        },
+      },
+    };
+
+    const ssrManifest = {
+      "/app/pages/counter.tsx": ["/assets/counter.js"],
+    };
+
+    const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, "/app");
+
+    expect(augmented["pages/counter.tsx"]).toEqual(["assets/counter.js", "assets/counter.css"]);
+    expect(augmented["/app/pages/counter.tsx"]).toBeUndefined();
+  });
+
+  it("normalizes manifest keys across symlinked project roots", async () => {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-manifest-root-"));
+    const realRoot = path.join(tmpDir, "real");
+    const aliasRoot = path.join(tmpDir, "alias");
+    const realModulePath = path.join(realRoot, "pages", "counter.tsx");
+
+    await fsp.mkdir(path.join(realRoot, "pages"), { recursive: true });
+    await fsp.writeFile(realModulePath, "export default function Counter() { return null; }\n");
+    await fsp.symlink(realRoot, aliasRoot, "junction");
+
+    const escapedAliasKey = path.relative(aliasRoot, realModulePath).replace(/\\/g, "/");
+    const bundle = {
+      "assets/counter.js": {
+        type: "chunk" as const,
+        fileName: "assets/counter.js",
+        imports: [],
+        modules: {
+          [realModulePath]: {},
+        },
+        viteMetadata: {
+          importedCss: new Set(["assets/counter.css"]),
+        },
+      },
+    };
+
+    const ssrManifest = {
+      [escapedAliasKey]: ["/assets/counter.js"],
+    };
+
+    try {
+      const augmented = _augmentSsrManifestFromBundle(ssrManifest, bundle, aliasRoot);
+
+      expect(augmented["pages/counter.tsx"]).toEqual(["assets/counter.js", "assets/counter.css"]);
+      expect(augmented[escapedAliasKey]).toBeUndefined();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

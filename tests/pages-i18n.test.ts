@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 
 describe("Pages i18n domain helpers", () => {
   let addLocalePrefix: typeof import("../packages/vinext/src/utils/domain-locale.js").addLocalePrefix;

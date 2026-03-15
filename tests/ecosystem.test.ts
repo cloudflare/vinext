@@ -9,12 +9,14 @@
  *
  * Run with: npx vitest run tests/ecosystem.test.ts
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
 const FIXTURES_DIR = path.resolve(__dirname, "fixtures", "ecosystem");
+const STARTUP_TIMEOUT_MS = process.env.CI ? 90_000 : 30_000;
+const READY_POLL_INTERVAL_MS = 250;
 
 /**
  * Start a Vite dev server as a child process and wait for it to be ready.
@@ -30,40 +32,64 @@ async function startFixture(
   const root = path.join(FIXTURES_DIR, name);
   const baseUrl = `http://localhost:${port}`;
 
-  const proc = spawn("npx", ["vite", "--port", String(port), "--strictPort"], {
+  const proc = spawn("npx", ["vp", "dev", "--port", String(port), "--strictPort"], {
     cwd: root,
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env },
     detached: process.platform !== "win32",
   });
 
-  // Wait for the server to be ready
-  await new Promise<void>((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new Error(`Fixture "${name}" did not start within 30s`));
-    }, 30000);
+  let output = "";
+  const appendOutput = (data: Buffer | string) => {
+    output += data.toString();
+  };
 
-    let output = "";
-    const onData = (data: Buffer) => {
-      output += data.toString();
-      if (output.includes("ready in") || output.includes("Local:")) {
-        clearTimeout(timeoutId);
+  proc.stdout?.on("data", appendOutput);
+  proc.stderr?.on("data", appendOutput);
+
+  await new Promise<void>((resolve, reject) => {
+    const deadline = Date.now() + STARTUP_TIMEOUT_MS;
+
+    const onError = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+
+    const onExit = (code: number | null) => {
+      cleanup();
+      reject(new Error(`Fixture "${name}" exited with code ${code}: ${output}`));
+    };
+
+    const cleanup = () => {
+      proc.off("error", onError);
+      proc.off("exit", onExit);
+    };
+
+    const checkReady = async () => {
+      if (Date.now() >= deadline) {
+        cleanup();
+        reject(
+          new Error(`Fixture "${name}" did not start within ${STARTUP_TIMEOUT_MS}ms: ${output}`),
+        );
+        return;
+      }
+
+      try {
+        const res = await fetch(`${baseUrl}/`, {
+          redirect: "manual",
+          signal: AbortSignal.timeout(2_000),
+        });
+        await res.body?.cancel();
+        cleanup();
         resolve();
+      } catch {
+        setTimeout(checkReady, READY_POLL_INTERVAL_MS);
       }
     };
 
-    proc.stdout?.on("data", onData);
-    proc.stderr?.on("data", onData);
-    proc.on("error", (err) => {
-      clearTimeout(timeoutId);
-      reject(err);
-    });
-    proc.on("exit", (code) => {
-      if (code !== null && code !== 0) {
-        clearTimeout(timeoutId);
-        reject(new Error(`Fixture "${name}" exited with code ${code}: ${output}`));
-      }
-    });
+    proc.on("error", onError);
+    proc.on("exit", onExit);
+    void checkReady();
   });
 
   // Give the server a moment to be fully ready for requests
@@ -119,7 +145,7 @@ describe("next-themes", () => {
     const fixture = await startFixture("next-themes", 4400);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, 30000);
+  }, STARTUP_TIMEOUT_MS);
 
   afterAll(() => killProcess(proc));
 
@@ -157,7 +183,7 @@ describe("next-view-transitions", () => {
     const fixture = await startFixture("next-view-transitions", 4401);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, 30000);
+  }, STARTUP_TIMEOUT_MS);
 
   afterAll(() => killProcess(proc));
 
@@ -198,7 +224,7 @@ describe("nuqs", () => {
     const fixture = await startFixture("nuqs", 4402);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, 30000);
+  }, STARTUP_TIMEOUT_MS);
 
   afterAll(() => killProcess(proc));
 
@@ -240,7 +266,8 @@ describe("nuqs", () => {
 
     const optimizedAdapter = readFileSync(path.join(depsDir, optimizedAdapterFile!), "utf8");
 
-    expect(optimizedAdapter).toMatch(/shims\/navigation\.js/);
+    expect(optimizedAdapter).toContain("__VINEXT_RSC_NAVIGATE__");
+    expect(optimizedAdapter).toContain("vinext.navigation.readonlySearchParams");
     expect(optimizedAdapter).not.toContain("node_modules/.pnpm/next@");
   });
 });
@@ -254,7 +281,7 @@ describe("next-intl", () => {
     const fixture = await startFixture("next-intl", 4403);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, 30000);
+  }, STARTUP_TIMEOUT_MS);
 
   afterAll(() => killProcess(proc));
 
@@ -308,7 +335,7 @@ describe("better-auth", () => {
     proc = fixture.process;
     baseUrl = fixture.baseUrl;
     fetchPage = fixture.fetchPage;
-  }, 30000);
+  }, STARTUP_TIMEOUT_MS);
 
   afterAll(() => killProcess(proc));
 
@@ -411,7 +438,7 @@ describe("shadcn", () => {
     const fixture = await startFixture("shadcn", 4405);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, 30000);
+  }, STARTUP_TIMEOUT_MS);
 
   afterAll(() => killProcess(proc));
 
@@ -466,7 +493,7 @@ describe("validator", () => {
     const fixture = await startFixture("validator", 4405);
     proc = fixture.process;
     fetchPage = fixture.fetchPage;
-  }, 30000);
+  }, STARTUP_TIMEOUT_MS);
 
   afterAll(() => killProcess(proc));
 
