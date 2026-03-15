@@ -21,7 +21,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import type { PrerenderResult, PrerenderRouteResult } from "./prerender.js";
-import { prerenderApp, prerenderPages, writePrerenderIndex } from "./prerender.js";
+import { prerenderApp, prerenderPages, writePrerenderIndex, loadWrangler } from "./prerender.js";
 import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
@@ -188,15 +188,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   try {
     if (isWorkersBuild && appDir && pagesDir) {
       // Hybrid CF build: both phases share one wrangler instance.
-      const projectRoot = root;
-      const wranglerEntry = path.resolve(projectRoot, "node_modules/wrangler/wrangler-dist/cli.js");
-      if (!fs.existsSync(wranglerEntry)) {
-        throw new Error(
-          `Prerendering a Cloudflare Workers build requires 'wrangler' to be installed in your project.\n` +
-            `Run: npm install --save-dev wrangler`,
-        );
-      }
-      const wrangler = (await import(wranglerEntry as string)) as typeof import("wrangler");
+      const wrangler = await loadWrangler(root);
       sharedWranglerDev = await wrangler.unstable_dev(rscBundlePath, {
         config: wranglerConfigPath,
         local: true,

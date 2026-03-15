@@ -184,7 +184,8 @@ async function runWithConcurrency<T, R>(
     }
   }
 
-  const workers = Array.from({ length: Math.min(concurrency, items.length || 1) }, worker);
+  if (items.length === 0) return results;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, worker);
   await Promise.all(workers);
   return results;
 }
@@ -309,6 +310,36 @@ async function resolveParentParams(
   return currentParams;
 }
 
+// ─── Wrangler loader ─────────────────────────────────────────────────────────
+
+/**
+ * Resolve and import the `wrangler` package from the project's own
+ * `node_modules`. wrangler is an optional peer dependency — only installed in
+ * Cloudflare Workers projects.
+ *
+ * Tries two well-known internal entry points in order:
+ *   1. `wrangler-dist/cli.js`  — wrangler 3.x / 4.x bundled CLI entry
+ *   2. `index.js`              — fallback for alternative wrangler versions
+ *
+ * Throws a user-friendly error if wrangler is not installed.
+ */
+export async function loadWrangler(projectRoot: string): Promise<typeof import("wrangler")> {
+  const candidates = [
+    path.resolve(projectRoot, "node_modules/wrangler/wrangler-dist/cli.js"),
+    path.resolve(projectRoot, "node_modules/wrangler/index.js"),
+  ];
+
+  const wranglerEntry = candidates.find((p) => fs.existsSync(p));
+  if (!wranglerEntry) {
+    throw new Error(
+      `Prerendering a Cloudflare Workers build requires 'wrangler' to be installed in your project.\n` +
+        `Run: npm install --save-dev wrangler`,
+    );
+  }
+
+  return (await import(wranglerEntry as string)) as typeof import("wrangler");
+}
+
 // ─── Bundle loading ───────────────────────────────────────────────────────────
 
 /**
@@ -385,6 +416,15 @@ export async function prerenderPages({
 
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
+  // VINEXT_PRERENDER tells the Node-side bundle to skip instrumentation.register()
+  // during prerender. For Cloudflare Workers builds the flag is injected into the
+  // worker via wrangler vars instead, so this only affects Node builds.
+  //
+  // process.env mutation is intentional: the RSC bundle (imported via loadBundle)
+  // runs in the same Node process and reads this flag at call time. The set/delete
+  // is wrapped in try/finally so it is always restored, making rerenderPages() safe
+  // to call sequentially (the normal case). Parallel calls within one process are
+  // not a supported use case.
   process.env.VINEXT_PRERENDER = "1";
   try {
     // ── Determine renderPage and bundlePageRoutes ─────────────────────────
@@ -671,6 +711,15 @@ export async function prerenderApp({
 
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
+  // VINEXT_PRERENDER tells the Node-side bundle to skip instrumentation.register()
+  // during prerender. For Cloudflare Workers builds the flag is injected into the
+  // worker via wrangler vars instead, so this only affects Node builds.
+  //
+  // process.env mutation is intentional: the RSC bundle (imported via loadBundle)
+  // runs in the same Node process and reads this flag at call time. The set/delete
+  // is wrapped in try/finally so it is always restored, making prerenderApp() safe
+  // to call sequentially (the normal case). Parallel calls within one process are
+  // not a supported use case.
   process.env.VINEXT_PRERENDER = "1";
 
   // Detect Cloudflare Workers build by checking whether @cloudflare/vite-plugin
@@ -720,18 +769,9 @@ export async function prerenderApp({
         : await (async () => {
             // wrangler is an optional peer dep — only required for Cloudflare Workers builds.
             // Resolve it from the project root so we load the copy installed there.
-            const projectRoot = options.root ?? path.dirname(path.dirname(serverDir));
-            const wranglerEntry = path.resolve(
-              projectRoot,
-              "node_modules/wrangler/wrangler-dist/cli.js",
+            const wrangler = await loadWrangler(
+              options.root ?? path.dirname(path.dirname(serverDir)),
             );
-            if (!fs.existsSync(wranglerEntry)) {
-              throw new Error(
-                `Prerendering a Cloudflare Workers build requires 'wrangler' to be installed in your project.\n` +
-                  `Run: npm install --save-dev wrangler`,
-              );
-            }
-            const wrangler = (await import(wranglerEntry as string)) as typeof import("wrangler");
             const dev = await wrangler.unstable_dev(rscBundlePath, {
               config: wranglerConfigPath,
               local: true,
@@ -757,7 +797,17 @@ export async function prerenderApp({
         }) as unknown as Promise<Response>;
       };
 
-      // staticParamsMap: resolved lazily via the HTTP endpoint
+      // staticParamsMap: resolved lazily via the HTTP endpoint.
+      //
+      // The `get` trap always returns a function — we can't know ahead of time
+      // which routes export generateStaticParams. When a route has no
+      // generateStaticParams the endpoint returns "null"; the function returns
+      // null and the caller treats that as "no-static-params" (same path as
+      // `typeof fn !== "function"` for the Node case).
+      //
+      // The `has` trap intentionally returns false so `pattern in staticParamsMap`
+      // checks correctly fall through to the null-return path above rather than
+      // being short-circuited at the property-existence level.
       staticParamsMap = new Proxy({} as typeof staticParamsMap, {
         get(_target, pattern: string) {
           return async ({ params }: { params: Record<string, string | string[]> }) => {
@@ -775,7 +825,7 @@ export async function prerenderApp({
           };
         },
         has(_target, _pattern) {
-          return true;
+          return false;
         },
       });
     } else {
@@ -851,9 +901,12 @@ export async function prerenderApp({
         // Dynamic URL — needs generateStaticParams
         // (also handles isImplicitlyDynamic case: dynamic URL with no explicit config)
         try {
-          // Get generateStaticParams from the static params map (production bundle)
+          // Get generateStaticParams from the static params map (production bundle).
+          // For CF Workers builds the map is a Proxy that always returns a function;
+          // the function itself returns null when the route has no generateStaticParams.
           const generateStaticParamsFn = staticParamsMap[route.pattern];
 
+          // Check: no function at all (Node build where map is populated from bundle exports)
           if (typeof generateStaticParamsFn !== "function") {
             if (mode === "export") {
               results.push({
@@ -868,20 +921,42 @@ export async function prerenderApp({
           }
 
           const parentParamSets = await resolveParentParams(route, routes, staticParamsMap);
-          let paramSets: Record<string, string | string[]>[];
+          let paramSets: Record<string, string | string[]>[] | null;
 
           if (parentParamSets.length > 0) {
             paramSets = [];
             for (const parentParams of parentParamSets) {
               const childResults = await generateStaticParamsFn({ params: parentParams });
+              // null means route has no generateStaticParams (CF Workers Proxy case)
+              if (childResults === null) {
+                paramSets = null;
+                break;
+              }
               if (Array.isArray(childResults)) {
                 for (const childParams of childResults) {
-                  paramSets.push({ ...parentParams, ...childParams });
+                  (paramSets as Record<string, string | string[]>[]).push({
+                    ...parentParams,
+                    ...childParams,
+                  });
                 }
               }
             }
           } else {
             paramSets = await generateStaticParamsFn({ params: {} });
+          }
+
+          // null: route has no generateStaticParams (CF Workers Proxy returned null)
+          if (paramSets === null) {
+            if (mode === "export") {
+              results.push({
+                route: route.pattern,
+                status: "error",
+                error: `Dynamic route requires generateStaticParams() with output: 'export'`,
+              });
+            } else {
+              results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
+            }
+            continue;
           }
 
           if (!Array.isArray(paramSets) || paramSets.length === 0) {
