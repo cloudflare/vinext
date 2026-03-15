@@ -137,18 +137,17 @@ export interface CacheHandler {
   revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
 
   /**
-   * Collect all known tags whose path matches a given prefix.
+   * Invalidate all cache entries whose path tags fall under a given prefix.
    *
-   * Used by `revalidatePath(path, "layout")` to find all path-based tags
-   * (`_N_T_/...`) that are children of the given path segment prefix.
-   * The match must be path-segment-aware: `/dashboard` matches
-   * `/dashboard` and `/dashboard/settings` but NOT `/dashboard-admin`.
+   * Used by `revalidatePath(path, "layout")` to invalidate all pages
+   * beneath a layout boundary. The match must be path-segment-aware:
+   * `/dashboard` invalidates `/dashboard` and `/dashboard/settings`
+   * but NOT `/dashboard-admin`.
    *
-   * Returns deduplicated tags including both raw paths and `_N_T_` prefixed tags.
    * Optional — when not implemented, `revalidatePath` with `type: "layout"`
    * falls back to invalidating only the exact path.
    */
-  collectTagsByPathPrefix?(pathPrefix: string): Promise<string[]>;
+  revalidateByPathPrefix?(pathPrefix: string): Promise<void>;
 
   resetRequestCache?(): void;
 }
@@ -288,16 +287,21 @@ export class MemoryCacheHandler implements CacheHandler {
     }
   }
 
-  async collectTagsByPathPrefix(pathPrefix: string): Promise<string[]> {
-    const collected = new Set<string>();
+  async revalidateByPathPrefix(pathPrefix: string): Promise<void> {
+    const now = Date.now();
     for (const entry of this.store.values()) {
       for (const tag of entry.tags) {
-        if (_isPathChildOf(tag, pathPrefix) || _isPathChildOf(tag, `_N_T_${pathPrefix}`)) {
-          collected.add(tag);
+        // Strip the internal _N_T_ prefix to get the raw path for matching
+        const rawPath = tag.startsWith("_N_T_") ? tag.slice(5) : tag;
+        if (_isPathChildOf(rawPath, pathPrefix)) {
+          // Invalidate all tags on this entry, not just the matching one
+          for (const t of entry.tags) {
+            this.tagRevalidatedAt.set(t, now);
+          }
+          break; // Entry is invalidated, move to next
         }
       }
     }
-    return [...collected];
   }
 
   resetRequestCache(): void {
@@ -404,18 +408,13 @@ export async function revalidatePath(path: string, type?: "page" | "layout"): Pr
   const handler = _getActiveHandler();
 
   if (type === "layout") {
-    if (handler.collectTagsByPathPrefix) {
-      // Collect all path-based tags that are children of `normalizedPath`
-      const matchingTags = await handler.collectTagsByPathPrefix(normalizedPath);
-      if (matchingTags.length > 0) {
-        await handler.revalidateTag(matchingTags);
-        return;
-      }
-    } else {
-      console.warn(
-        "[vinext] revalidatePath with type 'layout' is not fully supported by the active cache handler. Falling back to exact-path invalidation.",
-      );
+    if (handler.revalidateByPathPrefix) {
+      await handler.revalidateByPathPrefix(normalizedPath);
+      return;
     }
+    console.warn(
+      "[vinext] revalidatePath with type 'layout' is not fully supported by the active cache handler. Falling back to exact-path invalidation.",
+    );
   }
 
   // Default: invalidate only the exact path (type === "page" or unspecified).
