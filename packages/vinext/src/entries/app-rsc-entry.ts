@@ -2386,8 +2386,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           });
           const __revalResult = await _runWithUnifiedCtx(__revalUCtx, async () => {
             _ensureFetchPatch();
-            setNavigationContext({ pathname: cleanPathname, searchParams: url.searchParams, params });
-            const __revalElement = await buildPageElement(route, params, undefined, url.searchParams);
+            setNavigationContext({ pathname: cleanPathname, searchParams: new URLSearchParams(), params });
+            const __revalElement = await buildPageElement(route, params, undefined, new URLSearchParams());
             const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
             const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
             // Tee RSC stream: one for SSR, one to capture rscData
