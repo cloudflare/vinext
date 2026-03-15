@@ -196,12 +196,12 @@ export function buildUrlFromParams(
       if (Array.isArray(value)) {
         result.push(...value);
       } else if (value) {
-        result.push(String(value));
+        result.push(encodeURIComponent(String(value)));
       }
     } else if (part.startsWith(":")) {
       const paramName = part.slice(1);
       const value = params[paramName];
-      result.push(String(value));
+      result.push(encodeURIComponent(String(value)));
     } else {
       result.push(part);
     }
