@@ -137,7 +137,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     const result = await prerenderApp({
       mode,
       routes,
-      appDir,
       outDir,
       skipManifest: true,
       config,

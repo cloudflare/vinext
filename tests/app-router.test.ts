@@ -1930,7 +1930,6 @@ describe("App Router Static export", () => {
 
     const result = await staticExportApp({
       routes,
-      appDir,
       rscBundlePath,
       outDir: exportDir,
       config,
@@ -1999,7 +1998,6 @@ describe("App Router Static export", () => {
     try {
       const result = await staticExportApp({
         routes: fakeRoutes,
-        appDir: path.resolve(APP_FIXTURE_DIR, "app"),
         rscBundlePath,
         outDir: tempDir,
         config,
@@ -2045,7 +2043,6 @@ describe("App Router Static export", () => {
     try {
       const result = await staticExportApp({
         routes: fakeRoutes,
-        appDir: path.resolve(APP_FIXTURE_DIR, "app"),
         rscBundlePath,
         outDir: tempDir,
         config,

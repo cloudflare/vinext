@@ -128,8 +128,6 @@ export interface PrerenderPagesOptions extends PrerenderOptions {
 export interface PrerenderAppOptions extends PrerenderOptions {
   /** Discovered app routes. */
   routes: AppRoute[];
-  /** App directory path. */
-  appDir: string;
   /**
    * Absolute path to the pre-built RSC handler bundle (e.g. `dist/server/index.js`).
    *

@@ -281,7 +281,6 @@ describe("prerenderApp — default mode (app-basic)", () => {
       mode: "default",
       rscBundlePath,
       routes,
-      appDir,
       outDir,
       config,
     });

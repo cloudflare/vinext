@@ -102,8 +102,6 @@ export async function staticExportPages(options: StaticExportOptions): Promise<S
 export interface AppStaticExportOptions {
   /** Discovered app routes */
   routes: AppRoute[];
-  /** App directory path (for loading modules to call generateStaticParams) */
-  appDir: string;
   /**
    * Absolute path to the pre-built RSC handler bundle
    * (e.g. `dist/server/index.js`).
@@ -127,7 +125,6 @@ export async function staticExportApp(
     mode: "export",
     rscBundlePath: options.rscBundlePath,
     routes: options.routes,
-    appDir: options.appDir,
     outDir: options.outDir,
     config: options.config,
   });

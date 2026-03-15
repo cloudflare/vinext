@@ -199,7 +199,6 @@ describe("Static export — App Router (served via HTTP)", () => {
     await staticExportApp({
       rscBundlePath,
       routes,
-      appDir,
       outDir: exportDir,
       config,
     });
