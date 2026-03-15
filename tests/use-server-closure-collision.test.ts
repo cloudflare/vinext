@@ -930,4 +930,37 @@ export const action = buildAction("cfg");
     // No duplicate `const cookies` or `const __local_cookies` from the rename
     expect(countMatches(pluginOutput, /\bconst __local_cookies\b/g)).toBe(1);
   });
+
+  // Fix 6: collectAllDeclaredNames previously did not handle ClassDeclaration,
+  // so a `class cookies {}` inside a 'use server' body would not be added to
+  // localDecls, causing the collision with an outer `cookies` binding to be missed.
+  it("fix (class decl in body): detects collision when local binding is a class declaration inside 'use server' body", async () => {
+    const source = `
+function buildAction(config) {
+  const cookies = "session";
+  async function submitAction(formData) {
+    "use server";
+    class cookies {
+      static get() { return formData.get("v"); }
+    }
+    return cookies.get();
+  }
+  return submitAction;
+}
+export const action = buildAction("cfg");
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // The inner class `cookies` shadows the outer `cookies` — must be renamed
+    expect(pluginOutput).toContain("__local_cookies");
+    expect(pluginOutput).not.toMatch(/\bclass cookies\b/);
+  });
 });

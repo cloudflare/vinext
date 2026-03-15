@@ -1239,10 +1239,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           }
         }
 
-        // Collect ALL declared names (var/let/const) in a subtree, crossing blocks
-        // but not nested function bodies.  Used by renamingWalk's re-declaration
-        // check where any shadowing declaration — regardless of kind — must stop
-        // the rename from descending further.
+        // Collect ALL declared names (var/let/const/class/function) in a subtree,
+        // crossing blocks but not nested function bodies or class bodies.
+        // Used by renamingWalk's re-declaration check where any shadowing
+        // declaration — regardless of kind — must stop the rename from descending
+        // further, and by the server-function local-decl scan to detect all
+        // possible collision sites (including class declarations in the body).
         function collectAllDeclaredNames(node: any, names: Set<string>) {
           if (!node || typeof node !== "object") return;
           if (node.type === "VariableDeclaration") {
@@ -1252,6 +1254,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (node.type === "FunctionDeclaration") {
             if (node.id?.name) names.add(node.id.name);
             return; // don't recurse into its body
+          }
+          // ClassDeclaration name is a binding in the enclosing scope — record it.
+          if (node.type === "ClassDeclaration") {
+            if (node.id?.name) names.add(node.id.name);
+            return; // don't recurse into the class body (separate scope)
           }
           if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
             return; // different scope — stop
