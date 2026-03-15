@@ -1640,7 +1640,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           config.command === "build" &&
           !hasCloudflarePlugin &&
           !hasNitroPlugin &&
-          hasWranglerConfig(root)
+          hasWranglerConfig(root) &&
+          !options.disableAppRouter
         ) {
           throw new Error(
             formatMissingCloudflarePluginError({
