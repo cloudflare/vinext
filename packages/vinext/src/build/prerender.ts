@@ -194,7 +194,7 @@ export function buildUrlFromParams(
       const paramName = part.slice(1, -1);
       const value = params[paramName];
       if (Array.isArray(value)) {
-        result.push(...value);
+        result.push(...value.map((s) => encodeURIComponent(s)));
       } else if (value) {
         result.push(encodeURIComponent(String(value)));
       }
