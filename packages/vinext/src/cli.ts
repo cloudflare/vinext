@@ -401,7 +401,12 @@ async function buildApp() {
       // build skips App Router codegen while retaining cloudflare() and any
       // other user-supplied plugins.
       const inheritedPlugins = (builder.config.plugins as { name: string }[])
-        .filter((p) => !p.name.startsWith("vinext:"))
+        .filter(
+          (p) =>
+            !p.name.startsWith("vinext:") &&
+            !p.name.startsWith("vite:react") &&
+            p.name !== "vite-tsconfig-paths",
+        )
         .concat(vinext({ disableAppRouter: true }) as any);
       await vite.build({
         root: process.cwd(),
