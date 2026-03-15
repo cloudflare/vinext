@@ -1679,6 +1679,13 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   
   // Wrap the entire request in a single unified ALS scope for per-request
@@ -2507,8 +2514,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           });
           const __revalResult = await _runWithUnifiedCtx(__revalUCtx, async () => {
             _ensureFetchPatch();
-            setNavigationContext({ pathname: cleanPathname, searchParams: new URLSearchParams(), params });
-            const __revalElement = await buildPageElement(route, params, undefined, new URLSearchParams());
+            setNavigationContext({ pathname: cleanPathname, searchParams: url.searchParams, params });
+            const __revalElement = await buildPageElement(route, params, undefined, url.searchParams);
             const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
             const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
             // Tee RSC stream: one for SSR, one to capture rscData
@@ -4568,6 +4575,13 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   
   // Wrap the entire request in a single unified ALS scope for per-request
@@ -5399,8 +5413,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           });
           const __revalResult = await _runWithUnifiedCtx(__revalUCtx, async () => {
             _ensureFetchPatch();
-            setNavigationContext({ pathname: cleanPathname, searchParams: new URLSearchParams(), params });
-            const __revalElement = await buildPageElement(route, params, undefined, new URLSearchParams());
+            setNavigationContext({ pathname: cleanPathname, searchParams: url.searchParams, params });
+            const __revalElement = await buildPageElement(route, params, undefined, url.searchParams);
             const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
             const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
             // Tee RSC stream: one for SSR, one to capture rscData
@@ -7490,6 +7504,13 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   
   // Wrap the entire request in a single unified ALS scope for per-request
@@ -8318,8 +8339,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           });
           const __revalResult = await _runWithUnifiedCtx(__revalUCtx, async () => {
             _ensureFetchPatch();
-            setNavigationContext({ pathname: cleanPathname, searchParams: new URLSearchParams(), params });
-            const __revalElement = await buildPageElement(route, params, undefined, new URLSearchParams());
+            setNavigationContext({ pathname: cleanPathname, searchParams: url.searchParams, params });
+            const __revalElement = await buildPageElement(route, params, undefined, url.searchParams);
             const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
             const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
             // Tee RSC stream: one for SSR, one to capture rscData
@@ -10416,6 +10437,13 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   // Ensure instrumentation.register() has run before handling the first request.
   // This is a no-op after the first call (guarded by __instrumentationInitialized).
@@ -11247,8 +11275,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           });
           const __revalResult = await _runWithUnifiedCtx(__revalUCtx, async () => {
             _ensureFetchPatch();
-            setNavigationContext({ pathname: cleanPathname, searchParams: new URLSearchParams(), params });
-            const __revalElement = await buildPageElement(route, params, undefined, new URLSearchParams());
+            setNavigationContext({ pathname: cleanPathname, searchParams: url.searchParams, params });
+            const __revalElement = await buildPageElement(route, params, undefined, url.searchParams);
             const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
             const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
             // Tee RSC stream: one for SSR, one to capture rscData
@@ -13315,6 +13343,13 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   
   // Wrap the entire request in a single unified ALS scope for per-request
@@ -14143,8 +14178,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           });
           const __revalResult = await _runWithUnifiedCtx(__revalUCtx, async () => {
             _ensureFetchPatch();
-            setNavigationContext({ pathname: cleanPathname, searchParams: new URLSearchParams(), params });
-            const __revalElement = await buildPageElement(route, params, undefined, new URLSearchParams());
+            setNavigationContext({ pathname: cleanPathname, searchParams: url.searchParams, params });
+            const __revalElement = await buildPageElement(route, params, undefined, url.searchParams);
             const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
             const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
             // Tee RSC stream: one for SSR, one to capture rscData
@@ -16433,6 +16468,13 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+  "/blog/:slug": mod_3?.generateStaticParams ?? null,
+};
+
 export default async function handler(request, ctx) {
   
   // Wrap the entire request in a single unified ALS scope for per-request
@@ -17349,8 +17391,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           });
           const __revalResult = await _runWithUnifiedCtx(__revalUCtx, async () => {
             _ensureFetchPatch();
-            setNavigationContext({ pathname: cleanPathname, searchParams: new URLSearchParams(), params });
-            const __revalElement = await buildPageElement(route, params, undefined, new URLSearchParams());
+            setNavigationContext({ pathname: cleanPathname, searchParams: url.searchParams, params });
+            const __revalElement = await buildPageElement(route, params, undefined, url.searchParams);
             const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
             const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
             // Tee RSC stream: one for SSR, one to capture rscData
@@ -18625,7 +18667,7 @@ import { safeJsonStringify } from "vinext/html";
 import { decode as decodeQueryString } from "node:querystring";
 import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
-import { parseCookies } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
+import { parseCookies, sanitizeDestination as sanitizeDestinationLocal } from "<ROOT>/packages/vinext/src/config/config-matchers.js";
 import { runWithExecutionContext as _runWithExecutionContext, getRequestExecutionContext as _getRequestExecutionContext } from "<ROOT>/packages/vinext/src/shims/request-context.js";
 import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from "<ROOT>/packages/vinext/src/routing/route-trie.js";
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
@@ -18790,7 +18832,7 @@ import * as api_9 from "<ROOT>/tests/fixtures/pages-basic/pages/api/users/[id].t
 import { default as AppComponent } from "<ROOT>/tests/fixtures/pages-basic/pages/_app.tsx";
 import { default as DocumentComponent } from "<ROOT>/tests/fixtures/pages-basic/pages/_document.tsx";
 
-const pageRoutes = [
+export const pageRoutes = [
   { pattern: "/", patternParts: [], isDynamic: false, params: [], module: page_0, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/index.tsx" },
   { pattern: "/404", patternParts: ["404"], isDynamic: false, params: [], module: page_1, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/404.tsx" },
   { pattern: "/about", patternParts: ["about"], isDynamic: false, params: [], module: page_2, filePath: "<ROOT>/tests/fixtures/pages-basic/pages/about.tsx" },
