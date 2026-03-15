@@ -1319,6 +1319,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   ) {
                     return;
                   }
+                  // Dynamic route pages that don't export generateStaticParams
+                  // produce IMPORT_IS_UNDEFINED warnings because the virtual RSC
+                  // entry unconditionally references mod?.generateStaticParams for
+                  // every dynamic route. The ?. guards the access safely at runtime;
+                  // suppress the build-time noise.
+                  if (
+                    warning.code === "IMPORT_IS_UNDEFINED" &&
+                    warning.message?.includes("generateStaticParams")
+                  ) {
+                    return;
+                  }
                   if (userOnwarn) {
                     userOnwarn(warning, defaultHandler);
                   } else {
