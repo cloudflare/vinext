@@ -144,6 +144,11 @@ export interface CacheHandler {
    * `/dashboard` invalidates `/dashboard` and `/dashboard/settings`
    * but NOT `/dashboard-admin`.
    *
+   * When this method is present, it **fully replaces** the default
+   * `revalidateTag` call path for `revalidatePath(..., "layout")`.
+   * Implementors are responsible for handling all path-based tags stored
+   * in their backend — vinext will not fall back to `revalidateTag`.
+   *
    * Optional — when not implemented, `revalidatePath` with `type: "layout"`
    * falls back to invalidating only the exact path.
    */
@@ -293,7 +298,8 @@ export class MemoryCacheHandler implements CacheHandler {
       for (const tag of entry.tags) {
         // Strip the internal _N_T_ prefix to get the raw path for matching
         const rawPath = tag.startsWith("_N_T_") ? tag.slice(5) : tag;
-        if (_isPathChildOf(rawPath, pathPrefix)) {
+        // Only match path-like tags (starting with /), skip custom tags
+        if (rawPath.startsWith("/") && _isPathChildOf(rawPath, pathPrefix)) {
           // Invalidate all tags on this entry, not just the matching one
           for (const t of entry.tags) {
             this.tagRevalidatedAt.set(t, now);
@@ -433,8 +439,9 @@ export async function revalidatePath(path: string, type?: "page" | "layout"): Pr
  */
 function _isPathChildOf(tag: string, prefix: string): boolean {
   if (tag === prefix) return true;
-  // Root "/" is a prefix of every path
-  if (prefix === "/" || prefix === "_N_T_/") return tag.startsWith(prefix);
+  // Root "/" is a prefix of every path. This works because custom (non-path)
+  // tags never start with "/" — only path-based tags do.
+  if (prefix === "/") return tag.startsWith("/");
   // Ensure segment boundary: tag must continue with "/"
   return tag.startsWith(prefix + "/");
 }

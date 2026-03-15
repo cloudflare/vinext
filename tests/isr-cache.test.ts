@@ -436,4 +436,30 @@ describe("revalidatePath type parameter", () => {
     expect(await handler.get("entry:/dashboard")).toBeNull();
     expect(await handler.get("entry:/dashboard/settings")).toBeNull();
   });
+
+  it("trailing slash on layout path is normalized — same as without trailing slash", async () => {
+    await seedEntry("/dashboard", "dashboard-root");
+    await seedEntry("/dashboard/settings", "settings");
+    await seedEntry("/about", "about-page");
+
+    // revalidatePath("/dashboard/", "layout") must behave like ("/dashboard", "layout")
+    await revalidatePath("/dashboard/", "layout");
+
+    expect(await handler.get("entry:/dashboard")).toBeNull();
+    expect(await handler.get("entry:/dashboard/settings")).toBeNull();
+    // /about should NOT be invalidated
+    expect(await handler.get("entry:/about")).not.toBeNull();
+  });
+
+  it("trailing slash on page path is normalized — same as without trailing slash", async () => {
+    await seedEntry("/about", "about-page");
+    await seedEntry("/about/team", "about-team");
+
+    // revalidatePath("/about/", "page") must be equivalent to ("/about", "page")
+    await revalidatePath("/about/", "page");
+
+    expect(await handler.get("entry:/about")).toBeNull();
+    // /about/team should remain — only the exact path was invalidated
+    expect(await handler.get("entry:/about/team")).not.toBeNull();
+  });
 });
