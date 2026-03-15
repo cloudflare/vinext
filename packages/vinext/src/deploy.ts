@@ -28,7 +28,7 @@ import {
 } from "./utils/project.js";
 import { getReactUpgradeDeps } from "./init.js";
 import { runTPR } from "./cloudflare/tpr.js";
-import { runPrerenderWithDevServer } from "./build/run-prerender.js";
+import { runPrerender } from "./build/run-prerender.js";
 import { loadDotenv } from "./config/dotenv.js";
 import { loadNextConfig, resolveNextConfig } from "./config/next-config.js";
 
@@ -1264,7 +1264,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
           ? "Pre-rendering all routes (output: 'export')..."
           : "Pre-rendering all routes...";
       console.log(`\n  ${label}`);
-      await runPrerenderWithDevServer({ root: info.root, hasViteConfig: info.hasViteConfig });
+      await runPrerender({ root: info.root });
     }
   }
 

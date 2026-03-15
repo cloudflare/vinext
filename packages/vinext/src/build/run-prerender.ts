@@ -2,13 +2,8 @@
  * Shared prerender runner used by both `vinext build` (cli.ts) and
  * `vinext deploy --prerender-all` (deploy.ts).
  *
- * `runPrerenderWithDevServer` is the high-level entry point that was previously
- * used to create a temporary Vite dev server. It now simply calls `runPrerender`
- * directly since prerendering always uses production bundles. The name is kept
- * for backwards compatibility with existing callers in cli.ts and deploy.ts.
- *
- * `runPrerender` is the lower-level runner. It handles route scanning, dynamic
- * imports, progress reporting, and result summarisation.
+ * `runPrerender` handles route scanning, dynamic imports, progress reporting,
+ * and result summarisation.
  *
  * Hybrid projects (both `app/` and `pages/` directories) are handled by
  * running both prerender phases and merging results into a single
@@ -42,7 +37,7 @@ export class PrerenderProgress {
     // Truncate long route names to keep the line under ~80 chars
     const maxRoute = 40;
     const routeLabel = route.length > maxRoute ? "…" + route.slice(-(maxRoute - 1)) : route;
-    const line = `Prerendering routes... ${bar} ${String(completed).padStart(String(total).length)}/${total}  ${routeLabel}`;
+    const line = `Prerendering routes... ${bar} ${String(completed).padStart(String(total).length)}/${total} ${routeLabel}`;
     // Pad to overwrite previous line, then carriage-return (no newline)
     const padded = line.padEnd(this.lastLineLen);
     this.lastLineLen = line.length;
@@ -57,28 +52,6 @@ export class PrerenderProgress {
     const errorPart = errors > 0 ? `, ${errors} error${errors !== 1 ? "s" : ""}` : "";
     console.log(`  Prerendered ${rendered} routes (${skipped} skipped${errorPart}).`);
   }
-}
-
-// ─── Compatibility shim ───────────────────────────────────────────────────────
-
-export interface RunPrerenderWithDevServerOptions {
-  /** Project root directory. */
-  root: string;
-  /**
-   * No longer used — kept for API compatibility with cli.ts and deploy.ts.
-   * @deprecated
-   */
-  hasViteConfig: boolean;
-}
-
-/**
- * Thin shim kept for backwards compatibility with cli.ts and deploy.ts callers.
- * Delegates directly to `runPrerender`.
- */
-export async function runPrerenderWithDevServer(
-  options: RunPrerenderWithDevServerOptions,
-): Promise<PrerenderResult | null> {
-  return runPrerender({ root: options.root });
 }
 
 // ─── Shared runner ────────────────────────────────────────────────────────────
@@ -175,13 +148,12 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       skipManifest: true,
       config,
       rscBundlePath: options.rscBundlePath ?? path.join(root, "dist", "server", "index.js"),
-      onProgress: ({ completed, total, route, status }) => {
-        void status;
+      onProgress: ({ total, route }) => {
         if (appTotal === 0) {
           appTotal = total;
           totalUrls += total;
         }
-        completedUrls = completedUrls - (completed - 1) + completed;
+        completedUrls += 1;
         progress.update(completedUrls, totalUrls, route);
       },
     });
@@ -204,8 +176,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       skipManifest: true,
       config,
       pagesBundlePath: options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js"),
-      onProgress: ({ completed, total, route, status }) => {
-        void status;
+      onProgress: ({ completed, total, route }) => {
         if (pagesTotal === 0) {
           pagesTotal = total;
           totalUrls += total;

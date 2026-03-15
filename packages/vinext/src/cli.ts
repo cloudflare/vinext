@@ -15,7 +15,7 @@
 
 import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
 import { printBuildReport } from "./build/report.js";
-import { runPrerenderWithDevServer } from "./build/run-prerender.js";
+import { runPrerender } from "./build/run-prerender.js";
 import path from "node:path";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -458,25 +458,18 @@ async function buildApp() {
   }
 
   let prerenderResult;
-  if (parsed.prerenderAll) {
-    console.log("  Pre-rendering all routes...");
-    prerenderResult = await runPrerenderWithDevServer({
-      root: process.cwd(),
-      hasViteConfig: hasViteConfig(),
-    });
-  } else {
-    // Auto-prerender when next.config.js sets `output: 'export'`.
-    // In this mode, every route must be statically exportable, so we run the
-    // full prerender phase unconditionally (no --prerender-all flag required).
-    const rawConfig = await loadNextConfig(process.cwd());
-    const nextConfig = await resolveNextConfig(rawConfig, process.cwd());
-    if (nextConfig.output === "export") {
-      console.log("  Pre-rendering all routes (output: 'export')...");
-      prerenderResult = await runPrerenderWithDevServer({
-        root: process.cwd(),
-        hasViteConfig: hasViteConfig(),
-      });
-    }
+  const shouldPrerender =
+    parsed.prerenderAll ||
+    (await loadNextConfig(process.cwd()).then((raw) =>
+      resolveNextConfig(raw, process.cwd()).then((cfg) => cfg.output === "export"),
+    ));
+
+  if (shouldPrerender) {
+    const label = parsed.prerenderAll
+      ? "Pre-rendering all routes..."
+      : "Pre-rendering all routes (output: 'export')...";
+    console.log(`  ${label}`);
+    prerenderResult = await runPrerender({ root: process.cwd() });
   }
 
   await printBuildReport({ root: process.cwd(), prerenderResult: prerenderResult ?? undefined });
