@@ -5,18 +5,11 @@
  * directly, then pipe the result through plugin-rsc's
  * transformHoistInlineDirective — the same two-step pipeline that runs in dev.
  *
- * With the plugin commented out (current state), transform() returns null and
- * the raw source reaches transformHoistInlineDirective unchanged.  periscopic
- * then mis-classifies the inner `const cookies` as a closure variable, plugin-rsc
- * injects `const [cookies] = decryptActionBoundArgs(...)` at the top of the
- * hoisted function, and the output contains two `const cookies` declarations in
- * the same block — a SyntaxError when Vite's module runner evaluates it.
- *
- * With the plugin active, it renames `const cookies` (and its usages) inside
- * the 'use server' body to `__local_cookies` before plugin-rsc sees the file.
- * periscopic no longer sees `cookies` referenced in the action, so it is not
- * injected as a bindVar.  The output has no duplicate declaration and parses
- * correctly.
+ * The plugin renames shadowing `const`/`let`/`var` declarations inside
+ * 'use server' function bodies to `__local_<name>` before plugin-rsc sees
+ * the file.  periscopic no longer sees the name referenced in the action, so
+ * it is not injected as a bindVar.  The output has no duplicate declaration
+ * and parses correctly.
  */
 
 import { describe, it, expect } from "vitest";
@@ -40,7 +33,7 @@ function getCollisionPlugin(): Plugin | undefined {
 
 /**
  * Run the two-step pipeline that Vite uses in dev:
- *   1. vinext:fix-use-server-closure-collision (enforce: pre)  — may be a no-op if commented out
+ *   1. vinext:fix-use-server-closure-collision (enforce: pre)
  *   2. transformHoistInlineDirective from @vitejs/plugin-rsc
  *
  * Returns the final output string.
@@ -103,10 +96,7 @@ export default function Page() { return null; }`.trimStart();
 // ---------------------------------------------------------------------------
 
 describe("vinext:fix-use-server-closure-collision", () => {
-  it("plugin is present in the vinext() plugin array (will be active once uncommented)", () => {
-    // This test documents intent: the plugin should exist.
-    // It currently returns undefined because the plugin is commented out.
-    // Once uncommented this assertion flips to toBeDefined().
+  it("plugin is present in the vinext() plugin array", () => {
     const plugin = getCollisionPlugin();
     expect(plugin).toBeDefined();
   });
@@ -145,11 +135,6 @@ describe("vinext:fix-use-server-closure-collision", () => {
   });
 
   it("fix: with the plugin active, the output has no duplicate const declaration", async () => {
-    // This test will FAIL until the plugin is uncommented in index.ts.
-    // Once active the plugin renames the inner `cookies` to `__local_cookies`,
-    // periscopic no longer sees `cookies` as referenced inside the action,
-    // and the injected bindVar line is absent — eliminating the collision.
-
     const output = await runPipeline(COLLISION_SOURCE);
 
     // After the fix there must be at most one `const cookies` in the output
@@ -722,5 +707,227 @@ export const action = outer("cfg");
 
     // innerAction's `const config` must be renamed
     expect(pluginOutput).toContain("__local_config");
+  });
+
+  // -------------------------------------------------------------------------
+  // Tests for fixes added in round 4
+  // -------------------------------------------------------------------------
+
+  // Fix 1: for...of / for...in loop variables were missed by the local-decl scan.
+  // The old scan only iterated direct bodyStmts for VariableDeclaration nodes,
+  // missing `for (const cookies of arr)` whose VariableDeclaration sits inside
+  // ForOfStatement.left rather than as a direct body statement.
+  it("fix (for...of loop variable): detects collision when local binding is a for...of loop variable", async () => {
+    const source = `
+function buildAction(config) {
+  const cookies = "session";
+  async function submitAction(formData) {
+    "use server";
+    const values = formData.getAll("v");
+    for (const cookies of values) {
+      doSomething(cookies);
+    }
+  }
+  return submitAction;
+}
+export const action = buildAction("cfg");
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // The for...of loop var `cookies` shadows the outer `cookies` — must be renamed
+    expect(pluginOutput).toContain("__local_cookies");
+    expect(pluginOutput).not.toContain("for (const cookies of");
+  });
+
+  it("fix (for...in loop variable): detects collision when local binding is a for...in loop variable", async () => {
+    const source = `
+function buildAction(config) {
+  const cookies = "session";
+  async function submitAction(obj) {
+    "use server";
+    for (const cookies in obj) {
+      doSomething(cookies);
+    }
+  }
+  return submitAction;
+}
+export const action = buildAction("cfg");
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // The for...in loop var `cookies` shadows the outer `cookies` — must be renamed
+    expect(pluginOutput).toContain("__local_cookies");
+    expect(pluginOutput).not.toContain("for (const cookies in");
+  });
+
+  // Fix 2: ClassDeclaration and ImportDeclaration names were not collected as
+  // ancestor names, so a `const cookies` inside a 'use server' action would not
+  // be seen as colliding with a module-level `class cookies {}` or
+  // `import { cookies } from ...`.
+  it("fix (class declaration): detects collision when outer binding is a class declaration", async () => {
+    const source = `
+class cookies { static get() { return "session"; } }
+export async function action(formData) {
+  "use server";
+  const cookies = formData.get("v");
+  return cookies;
+}
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // The class declaration `cookies` is a module-scope binding — collision must be detected
+    expect(pluginOutput).toContain("__local_cookies");
+    expect(pluginOutput).not.toMatch(/^\s*const cookies = formData/m);
+  });
+
+  it("fix (import declaration): detects collision when outer binding is an import specifier", async () => {
+    const source = `
+import { cookies } from "./auth";
+export async function action(formData) {
+  "use server";
+  const cookies = formData.get("v");
+  return cookies;
+}
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    // The import binding `cookies` is a module-scope name — collision must be detected
+    expect(pluginOutput).toContain("__local_cookies");
+    expect(pluginOutput).not.toMatch(/^\s*const cookies = formData/m);
+  });
+
+  it("fix (import default): detects collision when outer binding is a default import", async () => {
+    const source = `
+import cookies from "./auth";
+export async function action(formData) {
+  "use server";
+  const cookies = formData.get("v");
+  return cookies;
+}
+`.trimStart();
+
+    const pluginOutput = await (async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return source;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result == null) return source;
+      return typeof result === "string" ? result : result.code;
+    })();
+
+    expect(pluginOutput).toContain("__local_cookies");
+  });
+
+  // Fix 3 & 4: LabeledStatement.label, BreakStatement.label, and
+  // ContinueStatement.label are Identifier nodes but NOT variable references.
+  // renamingWalk previously had no guard for these and would corrupt loop labels.
+  it("fix (labeled statement): does not rename a loop label that matches the collision name", async () => {
+    const source = `
+function buildAction(config) {
+  const cookies = "session";
+  async function submitAction(matrix) {
+    "use server";
+    const cookies = [];
+    cookies: for (const row of matrix) {
+      for (const cell of row) {
+        if (cell === null) break cookies;
+        cookies.push(cell);
+      }
+    }
+    return cookies;
+  }
+  return submitAction;
+}
+export const action = buildAction("cfg");
+`.trimStart();
+
+    let pluginOutput: string = source;
+    await expect(async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result != null) {
+        pluginOutput = typeof result === "string" ? result : result.code;
+      }
+    }).not.toThrow();
+
+    // The local `const cookies` is renamed, its array-push usages are renamed
+    expect(pluginOutput).toContain("__local_cookies");
+
+    // The label name and break target must NOT be renamed — they are not variable references
+    expect(pluginOutput).toContain("cookies: for");
+    expect(pluginOutput).toContain("break cookies");
+    expect(pluginOutput).not.toContain("__local_cookies: for");
+    expect(pluginOutput).not.toContain("break __local_cookies");
+  });
+
+  // Fix 5: if the server function body already contains `const __local_cookies`,
+  // the naive rename target collides again. The plugin must choose a free name
+  // (`__local_0_cookies`, etc.) in that case.
+  it("fix (__local_ prefix uniqueness): uses a suffixed name when __local_<name> is already declared", async () => {
+    const source = `
+function buildAction(config) {
+  const cookies = "session";
+  async function submitAction(formData) {
+    "use server";
+    const __local_cookies = "already-here";
+    const cookies = formData.get("value");
+    return cookies + __local_cookies;
+  }
+  return submitAction;
+}
+export const action = buildAction("cfg");
+`.trimStart();
+
+    let pluginOutput: string = source;
+    await expect(async () => {
+      const plugin = getCollisionPlugin();
+      if (!plugin?.transform) return;
+      const transform = unwrapHook(plugin.transform);
+      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+      if (result != null) {
+        pluginOutput = typeof result === "string" ? result : result.code;
+      }
+    }).not.toThrow();
+
+    // `__local_cookies` is already taken, so the plugin must use `__local_0_cookies`
+    expect(pluginOutput).toContain("__local_0_cookies");
+    // The original __local_cookies declaration must be untouched
+    expect(pluginOutput).toContain('const __local_cookies = "already-here"');
+    // No duplicate `const cookies` or `const __local_cookies` from the rename
+    expect(countMatches(pluginOutput, /\bconst __local_cookies\b/g)).toBe(1);
   });
 });

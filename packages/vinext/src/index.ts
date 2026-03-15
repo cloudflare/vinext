@@ -943,19 +943,29 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
             // Collect names visible at function scope from this node:
             //   - FunctionDeclaration names (hoisted to enclosing scope)
+            //   - ClassDeclaration names (block-scoped like let, but treated as
+            //     function-scoped for our purposes since periscopic sees them)
             //   - var declarations (hoisted to function scope, found anywhere)
             // We do NOT collect let/const from nested blocks here — those are
             // block-scoped and not visible to sibling/outer function declarations.
             collectFunctionScopedNames(node, namesForChildren);
-            // Also collect let/const/var declared as immediate children of this
-            // node (e.g. top-level Program statements, or the direct body of a
-            // BlockStatement) — those ARE in scope for everything in the same block.
+            // Also collect let/const/var/class/import declared as immediate children
+            // of this node (e.g. top-level Program statements, or the direct body of
+            // a BlockStatement) — those ARE in scope for everything in the same block.
             const immediateStmts: any[] =
               node.type === "Program" ? node.body : node.type === "BlockStatement" ? node.body : [];
             for (const stmt of immediateStmts) {
               if (stmt?.type === "VariableDeclaration") {
                 for (const decl of stmt.declarations)
                   collectPatternNames(decl.id, namesForChildren);
+              } else if (stmt?.type === "ClassDeclaration" && stmt.id?.name) {
+                namesForChildren.add(stmt.id.name);
+              } else if (stmt?.type === "ImportDeclaration") {
+                for (const spec of stmt.specifiers ?? []) {
+                  // ImportDefaultSpecifier, ImportNamespaceSpecifier, ImportSpecifier
+                  // all have `local.name` as the binding name in this module.
+                  if (spec.local?.name) namesForChildren.add(spec.local.name);
+                }
               }
             }
 
@@ -981,33 +991,44 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const isServerFn = hasUseServerDirective(bodyStmts);
 
           if (isServerFn) {
-            // Collect variables declared at the top level of this function body.
+            // Collect ALL variables declared anywhere in this function body.
+            // This includes direct bodyStmts, but also for...of/for...in loop
+            // variables, declarations inside if/try/while blocks, etc.
             // periscopic puts these in the BlockStatement scope (not the function
             // scope), so they get mis-classified as closure vars from the outer scope.
+            // We use collectAllDeclaredNames (recursive, crosses blocks, stops at
+            // nested function bodies) to catch every possible declaration site.
             const localDecls = new Set<string>();
-            for (const stmt of bodyStmts) {
-              if (stmt.type === "VariableDeclaration") {
-                for (const decl of stmt.declarations) {
-                  collectPatternNames(decl.id, localDecls);
+            collectAllDeclaredNames(node.body, localDecls);
+
+            // Find collisions: local decls that shadow a name from ancestor scopes.
+            // collisionRenames maps original name → chosen rename target, taking
+            // into account that `__local_${name}` may itself already be declared
+            // (e.g. the user wrote `const __local_cookies = ...`).  In that case
+            // we try `__local_0_${name}`, `__local_1_${name}`, … until we find a
+            // free name.  This prevents a secondary collision.
+            const collisionRenames = new Map<string, string>();
+            for (const name of localDecls) {
+              if (namesForBody.has(name)) {
+                let to = `__local_${name}`;
+                let suffix = 0;
+                while (localDecls.has(to) || namesForBody.has(to)) {
+                  to = `__local_${suffix}_${name}`;
+                  suffix++;
                 }
+                collisionRenames.set(name, to);
               }
             }
 
-            // Find collisions: local decls that shadow a name from ancestor scopes
-            const collisions = new Set<string>();
-            for (const name of localDecls) {
-              if (namesForBody.has(name)) collisions.add(name);
-            }
-
-            if (collisions.size > 0) {
-              for (const name of collisions) {
-                renamingWalk(node.body, name, `__local_${name}`);
+            if (collisionRenames.size > 0) {
+              for (const [name, to] of collisionRenames) {
+                renamingWalk(node.body, name, to);
               }
               changed = true;
             }
 
             // Build the ancestor set for children of this server function.
-            // Colliding names have been renamed in this body: `cookies` →
+            // Colliding names have been renamed in this body, e.g. `cookies` →
             // `__local_cookies`.  The original name no longer exists as a binding
             // in this scope, so we must remove it from the set and add the renamed
             // version instead.  Leaving the original name in would cause nested
@@ -1015,9 +1036,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // their own independent `const cookies` as a collision.
             const namesForChildren = new Set(namesForBody);
             for (const name of localDecls) {
-              if (collisions.has(name)) {
+              if (collisionRenames.has(name)) {
                 namesForChildren.delete(name);
-                namesForChildren.add(`__local_${name}`);
+                namesForChildren.add(collisionRenames.get(name)!);
               } else {
                 namesForChildren.add(name);
               }
@@ -1107,6 +1128,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               return;
             }
 
+            // LabeledStatement label: `cookies: for (...)` — not a variable reference
+            if (parent?.type === "LabeledStatement" && parent.label === node) {
+              return;
+            }
+
+            // break/continue label: `break cookies` / `continue cookies` — not a variable reference
+            if (
+              (parent?.type === "BreakStatement" || parent?.type === "ContinueStatement") &&
+              parent.label === node
+            ) {
+              return;
+            }
+
             const rangeKey = `${node.start}:${node.end}`;
             if (!renamedRanges.has(rangeKey)) {
               renamedRanges.add(rangeKey);
@@ -1174,6 +1208,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // FunctionDeclaration: its name is a binding in the enclosing scope.
           // Record it, then stop — don't recurse into the body (different scope).
           if (node.type === "FunctionDeclaration") {
+            if (node.id?.name) names.add(node.id.name);
+            return;
+          }
+          // ClassDeclaration: like FunctionDeclaration, its name is a binding in
+          // the enclosing scope.  Don't recurse into the body.
+          if (node.type === "ClassDeclaration") {
             if (node.id?.name) names.add(node.id.name);
             return;
           }
