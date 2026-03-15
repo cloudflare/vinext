@@ -367,6 +367,7 @@ import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getS
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
 
+
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
 
@@ -1766,6 +1767,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   
 
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_dev.
+  // Always handled (no env-var gate) because CF Workers vars arrive as "env"
+  // bindings, not process.env, so a process.env check would always be false.
+  // The /__vinext/ prefix ensures no user route ever conflicts with this path.
+  if (pathname === "/__vinext/prerender/static-params") {
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const params = parentParams ? JSON.parse(parentParams) : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
+
+  
+
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
   if (__tsRedirect) return __tsRedirect;
@@ -2109,6 +2133,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
@@ -3262,6 +3287,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
 
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
@@ -4665,6 +4691,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   pathname = stripBasePath(pathname, __basePath);
   
 
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_dev.
+  // Always handled (no env-var gate) because CF Workers vars arrive as "env"
+  // bindings, not process.env, so a process.env check would always be false.
+  // The /__vinext/ prefix ensures no user route ever conflicts with this path.
+  if (pathname === "/__vinext/prerender/static-params") {
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const params = parentParams ? JSON.parse(parentParams) : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
+
+  
+
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
   if (__tsRedirect) return __tsRedirect;
@@ -5008,6 +5057,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
@@ -6161,6 +6211,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
 
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
@@ -7591,6 +7642,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   
 
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_dev.
+  // Always handled (no env-var gate) because CF Workers vars arrive as "env"
+  // bindings, not process.env, so a process.env check would always be false.
+  // The /__vinext/ prefix ensures no user route ever conflicts with this path.
+  if (pathname === "/__vinext/prerender/static-params") {
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const params = parentParams ? JSON.parse(parentParams) : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
+
+  
+
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
   if (__tsRedirect) return __tsRedirect;
@@ -7934,6 +8008,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
@@ -9096,6 +9171,7 @@ import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getS
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
 
+
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
 
@@ -9426,6 +9502,7 @@ import * as mod_10 from "/tmp/test/app/dashboard/not-found.tsx";
 let __instrumentationInitialized = false;
 let __instrumentationInitPromise = null;
 async function __ensureInstrumentation() {
+  if (process.env.VINEXT_PRERENDER === "1") return;
   if (__instrumentationInitialized) return;
   if (__instrumentationInitPromise) return __instrumentationInitPromise;
   __instrumentationInitPromise = (async () => {
@@ -10527,6 +10604,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   
 
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_dev.
+  // Always handled (no env-var gate) because CF Workers vars arrive as "env"
+  // bindings, not process.env, so a process.env check would always be false.
+  // The /__vinext/ prefix ensures no user route ever conflicts with this path.
+  if (pathname === "/__vinext/prerender/static-params") {
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const params = parentParams ? JSON.parse(parentParams) : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
+
+  
+
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
   if (__tsRedirect) return __tsRedirect;
@@ -10870,6 +10970,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
@@ -12023,6 +12124,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
 
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
@@ -13430,6 +13532,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   
 
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_dev.
+  // Always handled (no env-var gate) because CF Workers vars arrive as "env"
+  // bindings, not process.env, so a process.env check would always be false.
+  // The /__vinext/ prefix ensures no user route ever conflicts with this path.
+  if (pathname === "/__vinext/prerender/static-params") {
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const params = parentParams ? JSON.parse(parentParams) : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
+
+  
+
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
   if (__tsRedirect) return __tsRedirect;
@@ -13773,6 +13898,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
@@ -14926,6 +15052,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+
 
 // Duplicated from the build-time constant above via JSON.stringify.
 const ROUTE_HANDLER_HTTP_METHODS = ["GET","HEAD","POST","PUT","DELETE","PATCH","OPTIONS"];
@@ -16555,6 +16682,29 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   
 
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_dev.
+  // Always handled (no env-var gate) because CF Workers vars arrive as "env"
+  // bindings, not process.env, so a process.env check would always be false.
+  // The /__vinext/ prefix ensures no user route ever conflicts with this path.
+  if (pathname === "/__vinext/prerender/static-params") {
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const params = parentParams ? JSON.parse(parentParams) : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
+
+  
+
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
   if (__tsRedirect) return __tsRedirect;
@@ -16986,6 +17136,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;
