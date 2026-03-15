@@ -803,6 +803,7 @@ export async function prerenderApp({
         const html = await htmlRes.text();
 
         // Fetch RSC payload via a second invocation with RSC headers
+        // TODO: Extract RSC payload from the first response instead of invoking the handler twice.
         const rscRequest = new Request(`http://localhost${urlPath}`, {
           headers: { Accept: "text/x-component", RSC: "1" },
         });
