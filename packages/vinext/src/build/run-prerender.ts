@@ -26,6 +26,7 @@ import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
 import { findDir } from "./report.js";
+import { findInNodeModules } from "../utils/project.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -154,15 +155,25 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       : path.join(root, "dist", "server", "prerendered-routes");
 
   // ── Detect Cloudflare Workers build ────────────────────────────────────────
-  // A wrangler.json (or wrangler.jsonc) alongside dist/server/index.js signals
-  // a CF Workers bundle that cannot be imported directly in Node.
+  // A CF Workers build is detected by checking whether @cloudflare/vite-plugin
+  // is installed in the project's node_modules — the same signal used by the
+  // build command in deploy.ts. This is more reliable than looking for
+  // wrangler.json because that file lives in the project root, not next to the
+  // built bundle.
   const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
+  const isWorkersBuild = findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
+  // Locate the generated wrangler.json for the unstable_dev config option.
+  // The @cloudflare/vite-plugin generates dist/server/wrangler.json during
+  // the build — it includes assets.directory pointing to dist/client, which
+  // is required by wrangler 4+. Fall back to the project root wrangler.jsonc
+  // as a convenience for non-standard setups.
   const serverDir = path.dirname(rscBundlePath);
   const wranglerConfigPath = [
     path.join(serverDir, "wrangler.json"),
     path.join(serverDir, "wrangler.jsonc"),
+    path.join(root, "wrangler.json"),
+    path.join(root, "wrangler.jsonc"),
   ].find((p) => fs.existsSync(p));
-  const isWorkersBuild = !!wranglerConfigPath;
 
   // For CF Workers hybrid builds (app/ + pages/), start wrangler once and
   // share the instance across both prerender phases. This avoids spinning up

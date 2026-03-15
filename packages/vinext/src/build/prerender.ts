@@ -28,6 +28,7 @@ import { classifyPagesRoute, classifyAppRoute } from "./report.js";
 import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-matcher.js";
 import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "../shims/cache.js";
 import { runWithHeadersContext, headersContextFromRequest } from "../shims/headers.js";
+import { findInNodeModules } from "../utils/project.js";
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -672,13 +673,25 @@ export async function prerenderApp({
   setCacheHandler(new NoOpCacheHandler());
   process.env.VINEXT_PRERENDER = "1";
 
-  // Detect Cloudflare Workers build: a wrangler.json sits alongside index.js
+  // Detect Cloudflare Workers build by checking whether @cloudflare/vite-plugin
+  // is installed in the project's node_modules — the same signal used by the
+  // build command in deploy.ts. This is more reliable than looking for
+  // wrangler.json because that file lives in the project root, not next to the
+  // built bundle.
   const serverDir = path.dirname(rscBundlePath);
+  const projectRoot = options.root ?? path.dirname(path.dirname(serverDir));
+  const isWorkersBuild = findInNodeModules(projectRoot, "@cloudflare/vite-plugin") !== null;
+  // Locate the generated wrangler.json for the unstable_dev config option.
+  // The @cloudflare/vite-plugin generates dist/server/wrangler.json during
+  // the build — it includes assets.directory pointing to dist/client, which
+  // is required by wrangler 4+. Fall back to the project root wrangler.jsonc
+  // as a convenience for non-standard setups.
   const wranglerConfigPath = [
     path.join(serverDir, "wrangler.json"),
     path.join(serverDir, "wrangler.jsonc"),
+    path.join(projectRoot, "wrangler.json"),
+    path.join(projectRoot, "wrangler.jsonc"),
   ].find((p) => fs.existsSync(p));
-  const isWorkersBuild = !!wranglerConfigPath;
 
   // For Workers builds we spin up wrangler unstable_dev and proxy all requests
   // through it. For plain Node builds we import the bundle directly.
