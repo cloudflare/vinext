@@ -356,6 +356,7 @@ export async function prerenderPages({
   // sequential calls (e.g. in tests with a custom handler) are unaffected.
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
+  process.env.VINEXT_PRERENDER = "1";
   try {
     const bundleExports = await loadBundle(pagesBundlePath);
 
@@ -558,10 +559,12 @@ export async function prerenderPages({
     return { routes: results };
   } finally {
     setCacheHandler(previousHandler);
+    delete process.env.VINEXT_PRERENDER;
   }
 }
 
 /**
+ * Determine the RSC output file path
  * Run the prerender phase for App Router.
  *
  * Loads the RSC handler from the pre-built production bundle and invokes it
@@ -598,6 +601,7 @@ export async function prerenderApp({
   // sequential calls (e.g. in tests with a custom handler) are unaffected.
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
+  process.env.VINEXT_PRERENDER = "1";
   try {
     // ── Load RSC handler from production bundle ──────────────────────────────
     const rscEntry = await loadBundle(rscBundlePath);
@@ -892,6 +896,7 @@ export async function prerenderApp({
     return { routes: results };
   } finally {
     setCacheHandler(previousHandler);
+    delete process.env.VINEXT_PRERENDER;
   }
 }
 

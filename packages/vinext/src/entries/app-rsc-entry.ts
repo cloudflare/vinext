@@ -630,6 +630,7 @@ ${
 let __instrumentationInitialized = false;
 let __instrumentationInitPromise = null;
 async function __ensureInstrumentation() {
+  if (process.env.VINEXT_PRERENDER === "1") return;
   if (__instrumentationInitialized) return;
   if (__instrumentationInitPromise) return __instrumentationInitPromise;
   __instrumentationInitPromise = (async () => {
