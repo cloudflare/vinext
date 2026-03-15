@@ -1547,6 +1547,27 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       : ""
   }
 
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_dev.
+  // Always handled (no env-var gate) because CF Workers vars arrive as "env"
+  // bindings, not process.env, so a process.env check would always be false.
+  // The /__vinext/ prefix ensures no user route ever conflicts with this path.
+  if (pathname === "/__vinext/prerender/static-params") {
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const params = parentParams ? JSON.parse(parentParams) : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
+
   // Trailing slash normalization (redirect to canonical form)
   const __tsRedirect = normalizeTrailingSlash(pathname, __basePath, __trailingSlash, url.search);
   if (__tsRedirect) return __tsRedirect;

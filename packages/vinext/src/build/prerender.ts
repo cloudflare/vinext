@@ -20,6 +20,7 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
+import type { Unstable_DevWorker } from "wrangler";
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
@@ -132,12 +133,16 @@ export interface PrerenderAppOptions extends PrerenderOptions {
   /**
    * Absolute path to the pre-built RSC handler bundle (e.g. `dist/server/index.js`).
    *
-   * The RSC handler is loaded directly from this production bundle via `import()`.
-   * This uses production React (no jsxDEV) and generates RSC payloads compatible
-   * with the production client. If the file does not exist, an error is thrown
-   * directing the user to run `vinext build` first.
+   * For plain Node builds, this module is `import()`-ed directly.
+   * For Cloudflare Workers builds, if a `wrangler.json` exists alongside it,
+   * `wrangler unstable_dev` is used instead to avoid running Workers-only code in Node.
    */
   rscBundlePath: string;
+  /**
+   * Project root directory. Used to locate `wrangler.json` when `rscBundlePath`
+   * is a Cloudflare Workers bundle. Passed through from `runPrerender`.
+   */
+  root?: string;
 }
 
 // ─── Concurrency helpers ──────────────────────────────────────────────────────
@@ -309,6 +314,7 @@ async function loadBundle(bundlePath: string): Promise<Record<string, unknown>> 
       `[vinext] Bundle not found at ${bundlePath}.\nRun \`vinext build\` before prerendering.`,
     );
   }
+
   const mtime = fs.statSync(bundlePath).mtimeMs;
   return (await import(`${pathToFileURL(bundlePath).href}?t=${mtime}`)) as Record<string, unknown>;
 }
@@ -595,29 +601,97 @@ export async function prerenderApp({
 
   fs.mkdirSync(outDir, { recursive: true });
 
-  // Use a no-op cache handler for the duration of prerender so the production
-  // ISR pipeline doesn't waste time writing to MemoryCacheHandler only to
-  // discard it at process exit. Restore the previous handler when done so that
-  // sequential calls (e.g. in tests with a custom handler) are unaffected.
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
   process.env.VINEXT_PRERENDER = "1";
+
+  // Detect Cloudflare Workers build: a wrangler.json sits alongside index.js
+  const serverDir = path.dirname(rscBundlePath);
+  const wranglerConfigPath = [
+    path.join(serverDir, "wrangler.json"),
+    path.join(serverDir, "wrangler.jsonc"),
+  ].find((p) => fs.existsSync(p));
+  const isWorkersBuild = !!wranglerConfigPath;
+
+  // For Workers builds we spin up wrangler unstable_dev and proxy all requests
+  // through it. For plain Node builds we import the bundle directly.
+  //
+  // rscHandler accepts a Request object. For Workers builds, dev.fetch() only
+  // accepts a URL string (not a Request object), so the wrapper extracts req.url
+  // and forwards headers via RequestInit.
+  let rscHandler: (request: Request) => Promise<Response>;
+  let staticParamsMap: Record<
+    string,
+    | ((opts: {
+        params: Record<string, string | string[]>;
+      }) => Promise<Record<string, string | string[]>[]>)
+    | null
+    | undefined
+  > = {};
+  let wranglerDev: Unstable_DevWorker | null = null;
+
   try {
-    // ── Load RSC handler from production bundle ──────────────────────────────
-    const rscEntry = await loadBundle(rscBundlePath);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const rscHandler = rscEntry.default as (request: Request, ctx?: unknown) => Promise<Response>;
-    // Map from route pattern → generateStaticParams exported from the bundle
-    let staticParamsMap: Record<
-      string,
-      | ((opts: {
-          params: Record<string, string | string[]>;
-        }) => Promise<Record<string, string | string[]>[]>)
-      | null
-      | undefined
-    > = {};
-    if (rscEntry.generateStaticParamsMap) {
-      staticParamsMap = rscEntry.generateStaticParamsMap as typeof staticParamsMap;
+    if (isWorkersBuild) {
+      // wrangler is an optional peer dep — only required for Cloudflare Workers builds.
+      // Resolve it from the project root so we load the copy installed there.
+      const projectRoot = options.root ?? path.dirname(path.dirname(serverDir));
+      const wranglerEntry = path.resolve(projectRoot, "node_modules/wrangler/wrangler-dist/cli.js");
+      if (!fs.existsSync(wranglerEntry)) {
+        throw new Error(
+          `Prerendering a Cloudflare Workers build requires 'wrangler' to be installed in your project.\n` +
+            `Run: npm install --save-dev wrangler`,
+        );
+      }
+      const wrangler = (await import(wranglerEntry as string)) as typeof import("wrangler");
+      wranglerDev = await wrangler.unstable_dev(rscBundlePath, {
+        config: wranglerConfigPath,
+        local: true,
+        vars: { VINEXT_PRERENDER: "1" },
+        experimental: { disableExperimentalWarning: true, testMode: true },
+        logLevel: "error",
+      });
+      // dev.fetch() does NOT accept a Request object — only (url: string, init?: RequestInit).
+      // Extract the URL string and headers from the Request before calling.
+      // wrangler's fetch returns undici's Response; cast via unknown to global Response.
+      rscHandler = (req: Request) => {
+        const headersObj: Record<string, string> = {};
+        req.headers.forEach((value, key) => {
+          headersObj[key] = value;
+        });
+        return wranglerDev!.fetch(req.url, {
+          method: req.method,
+          headers: headersObj,
+        }) as unknown as Promise<Response>;
+      };
+
+      // staticParamsMap: resolved lazily via the HTTP endpoint
+      staticParamsMap = new Proxy({} as typeof staticParamsMap, {
+        get(_target, pattern: string) {
+          return async ({ params }: { params: Record<string, string | string[]> }) => {
+            const search = new URLSearchParams({ pattern });
+            if (Object.keys(params).length > 0) {
+              search.set("parentParams", JSON.stringify(params));
+            }
+            // dev.fetch() requires a URL string, not a Request object
+            const res = (await wranglerDev!.fetch(
+              `http://localhost/__vinext/prerender/static-params?${search}`,
+            )) as unknown as Response;
+            const text = await res.text();
+            if (text === "null") return null;
+            return JSON.parse(text) as Record<string, string | string[]>[];
+          };
+        },
+        has(_target, _pattern) {
+          return true;
+        },
+      });
+    } else {
+      const rscEntry = await loadBundle(rscBundlePath);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      rscHandler = rscEntry.default as (request: Request, ctx?: unknown) => Promise<Response>;
+      if (rscEntry.generateStaticParamsMap) {
+        staticParamsMap = rscEntry.generateStaticParamsMap as typeof staticParamsMap;
+      }
     }
 
     // ── Collect URLs to render ────────────────────────────────────────────────
@@ -897,6 +971,9 @@ export async function prerenderApp({
   } finally {
     setCacheHandler(previousHandler);
     delete process.env.VINEXT_PRERENDER;
+    if (wranglerDev) {
+      await wranglerDev.stop().catch(() => {});
+    }
   }
 }
 

@@ -9,6 +9,7 @@
 
 import http, { type IncomingHttpHeaders } from "node:http";
 import fs from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import { createServer, build, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
@@ -250,4 +251,44 @@ export async function buildAppFixture(fixtureDir: string): Promise<string> {
   await fs.symlink(projectNodeModules, path.join(outDir, "node_modules"));
 
   return path.join(outDir, "server", "index.js");
+}
+
+/**
+ * Build the `tests/fixtures/cf-app-basic` fixture as a Cloudflare Workers
+ * bundle by spawning `vp build` as a subprocess, and also builds the Pages
+ * Router SSR bundle (via `buildPagesFixture`) for hybrid prerender testing.
+ *
+ * We cannot use `createBuilder` for the CF build because `@cloudflare/vite-plugin`
+ * uses WASM internally and Vite's `builtin:vite-wasm-fallback` plugin (active in
+ * the test runner process) intercepts `.wasm` imports and throws. Running the
+ * build as a subprocess sidesteps this entirely.
+ *
+ * The Pages Router bundle is a plain Node SSR bundle that can be built in-process
+ * using `buildPagesFixture` (no CF/WASM involvement).
+ *
+ * Returns `{ root, rscBundlePath, wranglerConfigPath, pagesBundlePath }`.
+ */
+export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
+  root: string;
+  rscBundlePath: string;
+  wranglerConfigPath: string;
+  pagesBundlePath: string;
+}> {
+  const vpBin = path.resolve(fixtureDir, "node_modules/.bin/vp");
+  execFileSync(vpBin, ["build"], {
+    cwd: fixtureDir,
+    stdio: "pipe",
+    env: { ...process.env, NODE_ENV: "production" },
+  });
+
+  // Build the Pages Router SSR bundle separately (plain Node, no WASM).
+  // This uses disableAppRouter: true so only the Pages Router pipeline runs.
+  const pagesBundlePath = await buildPagesFixture(fixtureDir);
+
+  return {
+    root: fixtureDir,
+    rscBundlePath: path.join(fixtureDir, "dist", "server", "index.js"),
+    wranglerConfigPath: path.join(fixtureDir, "dist", "server", "wrangler.json"),
+    pagesBundlePath,
+  };
 }

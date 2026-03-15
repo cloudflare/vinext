@@ -163,6 +163,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       skipManifest: true,
       config,
       rscBundlePath: options.rscBundlePath ?? path.join(root, "dist", "server", "index.js"),
+      root,
       onProgress: ({ total, route }) => {
         if (appTotal === 0) {
           appTotal = total;

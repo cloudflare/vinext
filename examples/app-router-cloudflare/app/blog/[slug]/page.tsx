@@ -1,3 +1,7 @@
+export async function generateStaticParams() {
+  return [{ slug: "hello-world" }, { slug: "getting-started" }];
+}
+
 export default async function BlogPost({
   params,
 }: {

@@ -12,6 +12,9 @@ catalogs:
     '@cloudflare/vite-plugin':
       specifier: ^1.25.0
       version: 1.25.1
+    '@cloudflare/workers-types':
+      specifier: ^4.0.0
+      version: 4.20260313.1
     '@heroicons/react':
       specifier: 2.2.0
       version: 2.2.0
@@ -178,7 +181,7 @@ catalogs:
       specifier: npm:@voidzero-dev/vite-plus-test@0.1.11
       version: 0.1.11
     wrangler:
-      specifier: ^4.65.0
+      specifier: ^4.66.0
       version: 4.66.0
     zod:
       specifier: 3.24.3
@@ -307,7 +310,7 @@ importers:
     dependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0)
+        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0(@cloudflare/workers-types@4.20260313.1))
       '@vitejs/plugin-react':
         specifier: 'catalog:'
         version: 5.1.4(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
@@ -331,8 +334,11 @@ importers:
         version: '@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       wrangler:
         specifier: 'catalog:'
-        version: 4.66.0
+        version: 4.66.0(@cloudflare/workers-types@4.20260313.1)
     devDependencies:
+      '@cloudflare/workers-types':
+        specifier: 'catalog:'
+        version: 4.20260313.1
       vite-plus:
         specifier: 'catalog:'
         version: 0.1.11(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
@@ -406,7 +412,7 @@ importers:
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0)
+        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0(@cloudflare/workers-types@4.20260313.1))
       '@tailwindcss/forms':
         specifier: 'catalog:'
         version: 0.5.10(tailwindcss@4.1.4)
@@ -448,7 +454,7 @@ importers:
         version: 0.1.11(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
       wrangler:
         specifier: 'catalog:'
-        version: 4.66.0
+        version: 4.66.0(@cloudflare/workers-types@4.20260313.1)
 
   examples/benchmarks:
     dependencies:
@@ -457,7 +463,7 @@ importers:
         version: 1.6.0(@phosphor-icons/react@2.1.10(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(zod@4.3.6)
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0)
+        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0(@cloudflare/workers-types@4.20260313.1))
       '@phosphor-icons/react':
         specifier: 'catalog:'
         version: 2.1.10(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -490,7 +496,7 @@ importers:
         version: '@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       wrangler:
         specifier: 'catalog:'
-        version: 4.66.0
+        version: 4.66.0(@cloudflare/workers-types@4.20260313.1)
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
@@ -500,7 +506,7 @@ importers:
     dependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0)
+        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0(@cloudflare/workers-types@4.20260313.1))
       '@vitejs/plugin-react':
         specifier: 'catalog:'
         version: 5.1.4(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
@@ -530,7 +536,7 @@ importers:
         version: '@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       wrangler:
         specifier: 'catalog:'
-        version: 4.66.0
+        version: 4.66.0(@cloudflare/workers-types@4.20260313.1)
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
@@ -556,7 +562,7 @@ importers:
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0)
+        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0(@cloudflare/workers-types@4.20260313.1))
       '@mdx-js/rollup':
         specifier: 'catalog:'
         version: 3.1.1
@@ -583,13 +589,13 @@ importers:
         version: 0.1.11(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
       wrangler:
         specifier: 'catalog:'
-        version: 4.66.0
+        version: 4.66.0(@cloudflare/workers-types@4.20260313.1)
 
   examples/pages-router-cloudflare:
     dependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0)
+        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0(@cloudflare/workers-types@4.20260313.1))
       '@vitejs/plugin-react':
         specifier: 'catalog:'
         version: 5.1.4(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
@@ -607,7 +613,7 @@ importers:
         version: '@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
       wrangler:
         specifier: 'catalog:'
-        version: 4.66.0
+        version: 4.66.0(@cloudflare/workers-types@4.20260313.1)
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
@@ -636,7 +642,7 @@ importers:
     devDependencies:
       '@cloudflare/vite-plugin':
         specifier: 'catalog:'
-        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0)
+        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0(@cloudflare/workers-types@4.20260313.1))
       '@types/node':
         specifier: 'catalog:'
         version: 25.2.3
@@ -654,7 +660,7 @@ importers:
         version: 0.1.11(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
       wrangler:
         specifier: 'catalog:'
-        version: 4.66.0
+        version: 4.66.0(@cloudflare/workers-types@4.20260313.1)
 
   examples/tpr-demo:
     dependencies:
@@ -741,6 +747,9 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 0.1.11(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.66.0(@cloudflare/workers-types@4.20260313.1)
 
   tests/fixtures/app-basic:
     dependencies:
@@ -796,6 +805,40 @@ importers:
       vite:
         specifier: 'catalog:'
         version: '@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+    devDependencies:
+      vite-plus:
+        specifier: 'catalog:'
+        version: 0.1.11(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
+
+  tests/fixtures/cf-app-basic:
+    dependencies:
+      '@cloudflare/vite-plugin':
+        specifier: 'catalog:'
+        version: 1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0(@cloudflare/workers-types@4.20260313.1))
+      '@vitejs/plugin-react':
+        specifier: 'catalog:'
+        version: 5.1.4(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))
+      '@vitejs/plugin-rsc':
+        specifier: 'catalog:'
+        version: 0.5.20(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(react-dom@19.2.4(react@19.2.4))(react-server-dom-webpack@19.2.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
+      react:
+        specifier: 'catalog:'
+        version: 19.2.4
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.2.4(react@19.2.4)
+      react-server-dom-webpack:
+        specifier: 'catalog:'
+        version: 19.2.4(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      vinext:
+        specifier: workspace:*
+        version: link:../../../packages/vinext
+      vite:
+        specifier: 'catalog:'
+        version: '@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
+      wrangler:
+        specifier: 'catalog:'
+        version: 4.66.0(@cloudflare/workers-types@4.20260313.1)
     devDependencies:
       vite-plus:
         specifier: 'catalog:'
@@ -1244,6 +1287,9 @@ packages:
     engines: {node: '>=16'}
     cpu: [x64]
     os: [win32]
+
+  '@cloudflare/workers-types@4.20260313.1':
+    resolution: {integrity: sha512-jMEeX3RKfOSVqqXRKr/ulgglcTloeMzSH3FdzIfqJHtvc12/ELKd5Ldsg8ZHahKX/4eRxYdw3kbzb8jLXbq/jQ==}
 
   '@code-hike/lighter@1.0.1':
     resolution: {integrity: sha512-mccvcsk5UTScRrE02oBz1/qzckyhD8YE3VQlQv++2bSVVZgNuCUX8MpokSCi5OmfRAAxbj6kmNiqq1Um8eXPrw==}
@@ -4980,13 +5026,13 @@ snapshots:
     optionalDependencies:
       workerd: 1.20260217.0
 
-  '@cloudflare/vite-plugin@1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0)':
+  '@cloudflare/vite-plugin@1.25.1(@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(workerd@1.20260217.0)(wrangler@4.66.0(@cloudflare/workers-types@4.20260313.1))':
     dependencies:
       '@cloudflare/unenv-preset': 2.13.0(unenv@2.0.0-rc.24)(workerd@1.20260217.0)
       miniflare: 4.20260217.0
       unenv: 2.0.0-rc.24
       vite: '@voidzero-dev/vite-plus-core@0.1.11(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)'
-      wrangler: 4.66.0
+      wrangler: 4.66.0(@cloudflare/workers-types@4.20260313.1)
       ws: 8.18.0
     transitivePeerDependencies:
       - bufferutil
@@ -5007,6 +5053,8 @@ snapshots:
 
   '@cloudflare/workerd-windows-64@1.20260217.0':
     optional: true
+
+  '@cloudflare/workers-types@4.20260313.1': {}
 
   '@code-hike/lighter@1.0.1':
     dependencies:
@@ -8159,7 +8207,7 @@ snapshots:
       '@cloudflare/workerd-linux-arm64': 1.20260217.0
       '@cloudflare/workerd-windows-64': 1.20260217.0
 
-  wrangler@4.66.0:
+  wrangler@4.66.0(@cloudflare/workers-types@4.20260313.1):
     dependencies:
       '@cloudflare/kv-asset-handler': 0.4.2
       '@cloudflare/unenv-preset': 2.13.0(unenv@2.0.0-rc.24)(workerd@1.20260217.0)
@@ -8170,6 +8218,7 @@ snapshots:
       unenv: 2.0.0-rc.24
       workerd: 1.20260217.0
     optionalDependencies:
+      '@cloudflare/workers-types': 4.20260313.1
       fsevents: 2.3.3
     transitivePeerDependencies:
       - bufferutil
