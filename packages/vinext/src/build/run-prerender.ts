@@ -172,7 +172,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // built bundle.
   const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
   const isWorkersBuild = findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
-  // Locate the generated wrangler.json for the unstable_dev config option.
+  // Locate the generated wrangler.json for the unstable_startWorker config option.
   // The @cloudflare/vite-plugin generates dist/server/wrangler.json during
   // the build — it includes assets.directory pointing to dist/client, which
   // is required by wrangler 4+. Fall back to the project root wrangler.jsonc
@@ -187,19 +187,17 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   //
   // The wrangler instance is imported lazily (it's an optional peer dep —
   // only installed for CF projects). We resolve it from the project root.
-  type WranglerDev = import("wrangler").Unstable_DevWorker;
-  let sharedWranglerDev: WranglerDev | null = null;
+  type WranglerWorker = Awaited<ReturnType<(typeof import("wrangler"))["unstable_startWorker"]>>;
+  let sharedWranglerDev: WranglerWorker | null = null;
 
   try {
     if (isWorkersBuild && appDir && pagesDir) {
       // Hybrid CF build: both phases share one wrangler instance.
       const wrangler = await loadWrangler(root);
-      sharedWranglerDev = await wrangler.unstable_dev(rscBundlePath, {
+      sharedWranglerDev = await wrangler.unstable_startWorker({
+        entrypoint: rscBundlePath,
         config: wranglerConfigPath,
-        local: true,
-        vars: { VINEXT_PRERENDER: "1" },
-        experimental: { disableExperimentalWarning: true, testMode: true },
-        logLevel: "error",
+        bindings: { VINEXT_PRERENDER: { type: "plain_text", value: "1" } },
       });
     }
 
@@ -275,9 +273,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       allRoutes.push(...result.routes);
     }
   } finally {
-    // Stop the shared wrangler instance if we started one.
+    // Dispose the shared wrangler instance if we started one.
     if (sharedWranglerDev) {
-      await sharedWranglerDev.stop();
+      await sharedWranglerDev.dispose();
     }
   }
 

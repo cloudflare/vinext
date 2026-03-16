@@ -20,7 +20,8 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
-import type { Unstable_DevWorker } from "wrangler";
+import type { unstable_startWorker as StartWorker } from "wrangler";
+type WranglerWorker = Awaited<ReturnType<typeof StartWorker>>;
 import type { Route } from "../routing/pages-router.js";
 import type { AppRoute } from "../routing/app-router.js";
 import type { ResolvedNextConfig } from "../config/next-config.js";
@@ -167,11 +168,11 @@ export interface PrerenderAppOptions extends PrerenderOptions {
 // wrangler instance across both prerender phases in a CF hybrid build.
 
 type PrerenderPagesOptionsInternal = PrerenderPagesOptions & {
-  _wranglerDev?: Unstable_DevWorker;
+  _wranglerDev?: WranglerWorker;
 };
 
 type PrerenderAppOptionsInternal = PrerenderAppOptions & {
-  _wranglerDev?: Unstable_DevWorker;
+  _wranglerDev?: WranglerWorker;
 };
 
 // ─── Concurrency helpers ──────────────────────────────────────────────────────
@@ -502,7 +503,7 @@ export async function prerenderPages({
 
     if (wranglerDev) {
       // CF Workers build: render by fetching through the running worker.
-      // dev.fetch() only accepts URL strings (not Request objects).
+      // worker.fetch() only accepts URL strings (not Request objects).
       renderPage = (urlPath: string) =>
         wranglerDev.fetch(`http://localhost${urlPath}`) as unknown as Promise<Response>;
 
@@ -798,7 +799,7 @@ export async function prerenderApp({
   const projectRoot = options.root ?? path.dirname(path.dirname(serverDir));
   const isWorkersBuild =
     options.isWorkersBuild ?? findInNodeModules(projectRoot, "@cloudflare/vite-plugin") !== null;
-  // Locate the generated wrangler.json for the unstable_dev config option.
+  // Locate the generated wrangler.json for the unstable_startWorker config option.
   // The @cloudflare/vite-plugin generates dist/server/wrangler.json during
   // the build — it includes assets.directory pointing to dist/client, which
   // is required by wrangler 4+. Fall back to the project root wrangler.jsonc
@@ -806,10 +807,10 @@ export async function prerenderApp({
   const wranglerConfigPath =
     options.wranglerConfigPath ?? findWranglerConfig(serverDir, projectRoot);
 
-  // For Workers builds we spin up wrangler unstable_dev and proxy all requests
+  // For Workers builds we spin up wrangler unstable_startWorker and proxy all requests
   // through it. For plain Node builds we import the bundle directly.
   //
-  // rscHandler accepts a Request object. For Workers builds, dev.fetch() only
+  // rscHandler accepts a Request object. For Workers builds, worker.fetch() only
   // accepts a URL string (not a Request object), so the wrapper extracts req.url
   // and forwards headers via RequestInit.
   let rscHandler: (request: Request) => Promise<Response>;
@@ -821,14 +822,14 @@ export async function prerenderApp({
     | null
     | undefined
   > = {};
-  // ownedWranglerDev: a dev instance we started ourselves and must stop in finally.
-  // When the caller passes options.wranglerDev we use that and do NOT stop it.
-  let ownedWranglerDev: Unstable_DevWorker | null = null;
+  // ownedWranglerDev: a worker instance we started ourselves and must dispose in finally.
+  // When the caller passes options.wranglerDev we use that and do NOT dispose it.
+  let ownedWranglerDev: WranglerWorker | null = null;
 
   try {
     if (isWorkersBuild) {
       // Use caller-provided wranglerDev if available; otherwise start our own.
-      const devWorker: Unstable_DevWorker = options._wranglerDev
+      const devWorker: WranglerWorker = options._wranglerDev
         ? options._wranglerDev
         : await (async () => {
             // wrangler is an optional peer dep — only required for Cloudflare Workers builds.
@@ -836,18 +837,16 @@ export async function prerenderApp({
             const wrangler = await loadWrangler(
               options.root ?? path.dirname(path.dirname(serverDir)),
             );
-            const dev = await wrangler.unstable_dev(rscBundlePath, {
+            const worker = await wrangler.unstable_startWorker({
+              entrypoint: rscBundlePath,
               config: wranglerConfigPath,
-              local: true,
-              vars: { VINEXT_PRERENDER: "1" },
-              experimental: { disableExperimentalWarning: true, testMode: true },
-              logLevel: "error",
+              bindings: { VINEXT_PRERENDER: { type: "plain_text", value: "1" } },
             });
-            ownedWranglerDev = dev;
-            return dev;
+            ownedWranglerDev = worker;
+            return worker;
           })();
 
-      // dev.fetch() does NOT accept a Request object — only (url: string, init?: RequestInit).
+      // worker.fetch() does NOT accept a Request object — only (url: string, init?: RequestInit).
       // Extract the URL string and headers from the Request before calling.
       // wrangler's fetch returns undici's Response; cast via unknown to global Response.
       rscHandler = (req: Request) => {
@@ -892,7 +891,7 @@ export async function prerenderApp({
               if (Object.keys(params).length > 0) {
                 search.set("parentParams", JSON.stringify(params));
               }
-              // dev.fetch() requires a URL string, not a Request object
+              // worker.fetch() requires a URL string, not a Request object
               const res = (await devWorker.fetch(
                 `http://localhost/__vinext/prerender/static-params?${search}`,
               )) as unknown as Response;
@@ -1224,9 +1223,9 @@ export async function prerenderApp({
   } finally {
     setCacheHandler(previousHandler);
     delete process.env.VINEXT_PRERENDER;
-    const devToStop = ownedWranglerDev as Unstable_DevWorker | null;
+    const devToStop = ownedWranglerDev as WranglerWorker | null;
     if (devToStop) {
-      await devToStop.stop().catch(() => {});
+      await devToStop.dispose().catch(() => {});
     }
   }
 }

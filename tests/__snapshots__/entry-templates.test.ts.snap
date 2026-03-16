@@ -1774,12 +1774,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Prerender: static-params endpoint ────────────────────────────────
   // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_dev.
+  // generateStaticParams results via wrangler unstable_startWorker.
   // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
   // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_dev injects
-  // VINEXT_PRERENDER as a var which Miniflare exposes via process.env in bundled
-  // workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
   if (pathname === "/__vinext/prerender/static-params") {
     if (process.env.VINEXT_PRERENDER !== "1") {
       return new Response("Not Found", { status: 404 });
@@ -4712,12 +4712,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Prerender: static-params endpoint ────────────────────────────────
   // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_dev.
+  // generateStaticParams results via wrangler unstable_startWorker.
   // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
   // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_dev injects
-  // VINEXT_PRERENDER as a var which Miniflare exposes via process.env in bundled
-  // workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
   if (pathname === "/__vinext/prerender/static-params") {
     if (process.env.VINEXT_PRERENDER !== "1") {
       return new Response("Not Found", { status: 404 });
@@ -7677,12 +7677,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Prerender: static-params endpoint ────────────────────────────────
   // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_dev.
+  // generateStaticParams results via wrangler unstable_startWorker.
   // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
   // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_dev injects
-  // VINEXT_PRERENDER as a var which Miniflare exposes via process.env in bundled
-  // workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
   if (pathname === "/__vinext/prerender/static-params") {
     if (process.env.VINEXT_PRERENDER !== "1") {
       return new Response("Not Found", { status: 404 });
@@ -10653,12 +10653,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Prerender: static-params endpoint ────────────────────────────────
   // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_dev.
+  // generateStaticParams results via wrangler unstable_startWorker.
   // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
   // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_dev injects
-  // VINEXT_PRERENDER as a var which Miniflare exposes via process.env in bundled
-  // workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
   if (pathname === "/__vinext/prerender/static-params") {
     if (process.env.VINEXT_PRERENDER !== "1") {
       return new Response("Not Found", { status: 404 });
@@ -13595,12 +13595,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Prerender: static-params endpoint ────────────────────────────────
   // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_dev.
+  // generateStaticParams results via wrangler unstable_startWorker.
   // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
   // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_dev injects
-  // VINEXT_PRERENDER as a var which Miniflare exposes via process.env in bundled
-  // workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
   if (pathname === "/__vinext/prerender/static-params") {
     if (process.env.VINEXT_PRERENDER !== "1") {
       return new Response("Not Found", { status: 404 });
@@ -16759,12 +16759,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Prerender: static-params endpoint ────────────────────────────────
   // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_dev.
+  // generateStaticParams results via wrangler unstable_startWorker.
   // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
   // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_dev injects
-  // VINEXT_PRERENDER as a var which Miniflare exposes via process.env in bundled
-  // workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
   if (pathname === "/__vinext/prerender/static-params") {
     if (process.env.VINEXT_PRERENDER !== "1") {
       return new Response("Not Found", { status: 404 });

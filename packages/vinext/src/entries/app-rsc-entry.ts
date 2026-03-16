@@ -90,7 +90,7 @@ export interface AppRouterConfig {
   /**
    * When true, the project has a `pages/` directory alongside the App Router.
    * The generated RSC entry exposes `/__vinext/prerender/pages-static-paths`
-   * so `prerenderPages` can call `getStaticPaths` via `wrangler unstable_dev`
+   * so `prerenderPages` can call `getStaticPaths` via `wrangler unstable_startWorker`
    * in CF Workers builds. `pageRoutes` is loaded from the SSR environment via
    * `import("./ssr/index.js")`, which re-exports it from
    * `virtual:vinext-server-entry` when this flag is set.
@@ -1565,12 +1565,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // ── Prerender: static-params endpoint ────────────────────────────────
   // Internal endpoint used by prerenderApp() during build to fetch
-  // generateStaticParams results via wrangler unstable_dev.
+  // generateStaticParams results via wrangler unstable_startWorker.
   // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
   // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
-  // prerender orchestrator. For CF Workers builds, wrangler unstable_dev injects
-  // VINEXT_PRERENDER as a var which Miniflare exposes via process.env in bundled
-  // workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
   if (pathname === "/__vinext/prerender/static-params") {
     if (process.env.VINEXT_PRERENDER !== "1") {
       return new Response("Not Found", { status: 404 });
@@ -1599,7 +1599,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // ── Prerender: pages-static-paths endpoint ───────────────────────────
   // Internal endpoint used by prerenderPages() during a CF Workers hybrid
   // build to call getStaticPaths() for dynamic Pages Router routes via
-  // wrangler unstable_dev. Returns JSON-serialised getStaticPaths result.
+  // wrangler unstable_startWorker. Returns JSON-serialised getStaticPaths result.
   // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
   // See static-params endpoint above for process.env vs CF vars notes.
   //

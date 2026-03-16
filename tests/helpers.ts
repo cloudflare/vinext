@@ -265,7 +265,7 @@ export async function buildAppFixture(fixtureDir: string): Promise<string> {
  *
  * Both the App Router and Pages Router are served by the same Workers bundle —
  * there is no separate plain-Node SSR bundle for Pages Router. All prerendering
- * for both routers goes through `wrangler unstable_dev`.
+ * for both routers goes through `wrangler unstable_startWorker`.
  *
  * Returns `{ root, rscBundlePath, wranglerConfigPath }`.
  */
