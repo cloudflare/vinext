@@ -623,10 +623,6 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
     allResults = result?.routes ?? [];
   }, 180_000);
 
-  afterAll(() => {
-    fs.rmSync(path.join(CF_FIXTURE, "dist"), { recursive: true, force: true });
-  });
-
   // ── App Router ──────────────────────────────────────────────────────────────
 
   describe("prerenderApp — app router via wrangler unstable_dev", () => {

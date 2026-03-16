@@ -138,17 +138,20 @@ export async function createIsolatedFixture(
   fixtureDir: string,
   prefix: string,
   filter?: (src: string) => boolean,
+  nodeModulesDir?: string,
 ): Promise<string> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  // Skip node_modules during copy — we'll replace it with a symlink to the
-  // workspace node_modules so fixtures don't need their own install.
+  // Skip node_modules during copy — we'll replace it with a symlink to either
+  // the fixture's own node_modules (when it has one) or the workspace root
+  // node_modules so fixtures don't need their own install.
   await fs.cp(fixtureDir, tmpDir, {
     recursive: true,
     filter: (src) => !src.includes(`${path.sep}node_modules`) && (filter == null || filter(src)),
   });
 
-  const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
-  await fs.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+  const resolvedNodeModules =
+    nodeModulesDir ?? path.resolve(import.meta.dirname, "../node_modules");
+  await fs.symlink(resolvedNodeModules, path.join(tmpDir, "node_modules"), "junction");
 
   return tmpDir;
 }
@@ -271,7 +274,13 @@ export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
   rscBundlePath: string;
   wranglerConfigPath: string;
 }> {
-  const cfPluginPath = path.join(fixtureDir, "node_modules/@cloudflare/vite-plugin/dist/index.mjs");
+  const tmpDir = await createIsolatedFixture(
+    fixtureDir,
+    "vinext-cf-build-",
+    undefined,
+    path.join(fixtureDir, "node_modules"),
+  );
+  const cfPluginPath = path.join(tmpDir, "node_modules/@cloudflare/vite-plugin/dist/index.mjs");
   const { cloudflare } = (await import(pathToFileURL(cfPluginPath).href)) as unknown as {
     cloudflare: (opts?: {
       viteEnvironment?: { name: string; childEnvironments?: string[] };
@@ -280,10 +289,10 @@ export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
 
   const { createBuilder } = await import("vite");
   const builder = await createBuilder({
-    root: fixtureDir,
+    root: tmpDir,
     configFile: false,
     plugins: [
-      vinext({ appDir: fixtureDir }),
+      vinext({ appDir: tmpDir }),
       cloudflare({ viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] } }),
     ],
     logLevel: "silent",
@@ -291,8 +300,8 @@ export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
   await builder.buildApp();
 
   return {
-    root: fixtureDir,
-    rscBundlePath: path.join(fixtureDir, "dist", "server", "index.js"),
-    wranglerConfigPath: path.join(fixtureDir, "dist", "server", "wrangler.json"),
+    root: tmpDir,
+    rscBundlePath: path.join(tmpDir, "dist", "server", "index.js"),
+    wranglerConfigPath: path.join(tmpDir, "dist", "server", "wrangler.json"),
   };
 }
