@@ -108,9 +108,9 @@ export interface RunPrerenderOptions {
  * phases. The merged results are written to a single `dist/server/vinext-prerender.json`.
  *
  * For Cloudflare Workers builds (detected by the presence of `wrangler.json`
- * alongside the RSC bundle), a single `wrangler unstable_dev` instance is
+ * alongside the RSC bundle), a single `wrangler unstable_startWorker` instance is
  * started, shared across both App Router and Pages Router prerender phases,
- * and stopped in a `finally` block after both phases complete.
+ * and disposed in a `finally` block after both phases complete.
  *
  * If a required production bundle does not exist, an error is thrown directing
  * the user to run `vinext build` first.

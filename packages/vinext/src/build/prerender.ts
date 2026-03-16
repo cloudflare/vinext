@@ -135,7 +135,7 @@ export interface PrerenderAppOptions extends PrerenderOptions {
    *
    * For plain Node builds, this module is `import()`-ed directly.
    * For Cloudflare Workers builds, if a `wrangler.json` exists alongside it,
-   * `wrangler unstable_dev` is used instead to avoid running Workers-only code
+   * `wrangler unstable_startWorker` is used instead to avoid running Workers-only code
    * in Node.
    */
   rscBundlePath: string;
