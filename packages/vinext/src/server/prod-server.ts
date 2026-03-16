@@ -777,6 +777,13 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (typeof runMiddleware === "function") {
         const result = await runMiddleware(webRequest);
 
+        // Settle waitUntil promises immediately — in Node.js there's no ctx.waitUntil().
+        // Must run BEFORE the !result.continue check so promises survive redirect/response paths
+        // (e.g. Clerk auth redirecting unauthenticated users).
+        if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
+          Promise.allSettled(result.waitUntilPromises).catch(() => {});
+        }
+
         if (!result.continue) {
           if (result.redirectUrl) {
             res.writeHead(result.redirectStatus ?? 307, {
@@ -831,12 +838,6 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
         // (e.g. NextResponse.rewrite(url, { status: 403 }))
         middlewareRewriteStatus = result.rewriteStatus;
 
-        // Await any background promises registered via event.waitUntil() during middleware.
-        // In prod-server (Node.js) there's no Workers ctx.waitUntil(), so we settle them
-        // here to avoid silently dropping work (e.g. Clerk session sync).
-        if (result.waitUntilPromises && result.waitUntilPromises.length > 0) {
-          Promise.allSettled(result.waitUntilPromises).catch(() => {});
-        }
       }
 
       // Unpack x-middleware-request-* headers into the actual request so that
