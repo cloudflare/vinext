@@ -3359,10 +3359,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               node.expression.value.startsWith("use cache"),
           );
 
-          // Check for function-level "use cache" directives by walking function bodies
+          // Check for function-level "use cache" directives by walking function bodies.
+          // Accepts any function-like node: FunctionDeclaration/Expression, ArrowFunctionExpression,
+          // or MethodDefinition. MethodDefinition stores its FunctionExpression in `.value`, not
+          // `.body`, so we unwrap it here rather than at each call site to keep the callee safe.
           function nodeHasInlineCacheDirective(node: any): boolean {
             if (!node || typeof node !== "object") return false;
-            const body: any[] = node.body ?? [];
+            // MethodDefinition wraps its FunctionExpression in .value; unwrap to reach .body.
+            const fn = node.type === "MethodDefinition" ? node.value : node;
+            const body = fn?.body;
             if (Array.isArray(body)) {
               for (const stmt of body) {
                 if (
@@ -3385,7 +3390,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   node.type === "FunctionExpression" ||
                   node.type === "ArrowFunctionExpression" ||
                   node.type === "MethodDefinition") &&
-                nodeHasInlineCacheDirective(node.body ?? node.value) // MethodDefinition stores the function in .value
+                nodeHasInlineCacheDirective(node)
               ) {
                 return true;
               }

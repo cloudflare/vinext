@@ -632,6 +632,10 @@ export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
   // whereas Next.js queues them to run strictly after the response is sent via onClose.
   // This is a known simplification — function tasks here are not guaranteed to run
   // after the response completes, only after the current synchronous execution.
+  //
+  // `.catch()` is attached synchronously in the same tick as `promise` is created, so
+  // there is no window where a pre-rejected `task` promise could trigger an
+  // `unhandledrejection` event before the handler is in place.
   const guarded = promise.catch((err) => {
     console.error("[vinext] after() task failed:", err);
   });

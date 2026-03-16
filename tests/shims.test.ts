@@ -1168,6 +1168,11 @@ describe("next/server shim", () => {
     const { AsyncLocalStorage } = await import("node:async_hooks");
     const key = Symbol.for("vinext.unstableCache.als");
     const g = globalThis as unknown as Record<symbol, unknown>;
+    // Lazily register an ALS on globalThis if cache.ts hasn't been imported yet.
+    // This test is intentionally isolated from the real cache.ts registration path —
+    // it only validates that server.ts reads from the same Symbol key to detect the
+    // unstable_cache scope. If cache.ts was already imported, the existing instance is
+    // reused; if not, this standalone ALS is sufficient for the guard to work.
     if (!g[key]) g[key] = new AsyncLocalStorage();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (g[key] as any).run(true, () => {
