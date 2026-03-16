@@ -424,7 +424,6 @@ declare module "next/cache" {
       ctx?: Record<string, unknown>,
     ): Promise<void>;
     revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
-    revalidateByPathPrefix?(pathPrefix: string): Promise<void>;
     resetRequestCache?(): void;
   }
 
@@ -474,7 +473,6 @@ declare module "next/cache" {
       ctx?: Record<string, unknown>,
     ): Promise<void>;
     revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void>;
-    revalidateByPathPrefix(pathPrefix: string): Promise<void>;
     resetRequestCache(): void;
   }
 

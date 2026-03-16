@@ -327,16 +327,40 @@ describe("triggerBackgroundRegeneration", () => {
 describe("revalidatePath type parameter", () => {
   let handler: MemoryCacheHandler;
 
-  /** Helper: store a FETCH cache entry with path-based tags. */
+  /**
+   * Generate layout hierarchy tags for a pathname — mirrors the production
+   * `__pageCacheTags` in app-rsc-entry.ts and Next.js's `getDerivedTags`.
+   *
+   * For `/dashboard/settings` this produces:
+   *   `_N_T_/layout`, `_N_T_/dashboard/layout`, `_N_T_/dashboard/settings/layout`
+   *
+   * Every page carries its ancestor layout tags, so
+   * `revalidatePath("/dashboard", "layout")` can invalidate all descendants
+   * with a single O(1) tag lookup.
+   */
+  function deriveLayoutTags(pathname: string): string[] {
+    const tags = ["_N_T_/layout"];
+    const segments = pathname.split("/");
+    let built = "";
+    for (let i = 1; i < segments.length; i++) {
+      if (segments[i]) {
+        built += "/" + segments[i];
+        tags.push(`_N_T_${built}/layout`);
+      }
+    }
+    return tags;
+  }
+
+  /** Helper: store a FETCH cache entry with path + layout hierarchy tags. */
   async function seedEntry(path: string, body: string): Promise<void> {
-    const pathTag = `_N_T_${path}`;
+    const tags = [path, `_N_T_${path}`, ...deriveLayoutTags(path)];
     const value: CachedFetchValue = {
       kind: "FETCH",
       data: { headers: {}, body, url: path },
-      tags: [path, pathTag],
+      tags,
       revalidate: false,
     };
-    await handler.set(`entry:${path}`, value, { tags: [path, pathTag] });
+    await handler.set(`entry:${path}`, value, { tags });
   }
 
   beforeEach(() => {
