@@ -3367,9 +3367,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             if (!node || typeof node !== "object") return false;
             // MethodDefinition wraps its FunctionExpression in .value; unwrap to reach .body.
             const fn = node.type === "MethodDefinition" ? node.value : node;
-            const body = fn?.body;
-            if (Array.isArray(body)) {
-              for (const stmt of body) {
+            // fn.body is a BlockStatement node ({type:"BlockStatement", body:Statement[]}), not
+            // a raw array. Unwrap it. Arrow functions with expression bodies have a non-array
+            // .body — the BlockStatement check handles that case (body.body would be undefined).
+            const stmts = fn?.body?.type === "BlockStatement" ? fn.body.body : null;
+            if (Array.isArray(stmts)) {
+              for (const stmt of stmts) {
                 if (
                   stmt?.type === "ExpressionStatement" &&
                   stmt.expression?.type === "Literal" &&
