@@ -256,16 +256,16 @@ export class NextURL {
     if (i18n) {
       this._locales = [...i18n.locales];
       this._defaultLocale = i18n.defaultLocale;
-      this._analyzeLocale(i18n.locales);
+      this._analyzeLocale(this._locales);
     }
   }
 
   /** Strip basePath prefix from the internal pathname. */
   private _stripBasePath(): void {
-    if (this._basePath && this._url.pathname.startsWith(this._basePath + "/")) {
-      this._url.pathname = this._url.pathname.slice(this._basePath.length) || "/";
-    } else if (this._basePath && this._url.pathname === this._basePath) {
-      this._url.pathname = "/";
+    if (!this._basePath) return;
+    const { pathname } = this._url;
+    if (pathname === this._basePath || pathname.startsWith(this._basePath + "/")) {
+      this._url.pathname = pathname.slice(this._basePath.length) || "/";
     }
   }
 
@@ -273,7 +273,7 @@ export class NextURL {
   private _analyzeLocale(locales: string[]): void {
     const segments = this._url.pathname.split("/");
     const candidate = segments[1]?.toLowerCase();
-    const match = candidate ? locales.find((l) => l.toLowerCase() === candidate) : undefined;
+    const match = locales.find((l) => l.toLowerCase() === candidate);
     if (match) {
       this._locale = match;
       this._url.pathname = "/" + segments.slice(2).join("/");
@@ -287,24 +287,24 @@ export class NextURL {
    * Mirrors Next.js's internal formatPathname().
    */
   private _formatPathname(): string {
-    let pathname = this._url.pathname;
-    // Add locale prefix (skip for defaultLocale — Next.js doesn't prefix it)
+    // Build prefix: basePath + locale (skip defaultLocale — Next.js omits it)
+    let prefix = this._basePath;
     if (this._locale && this._locale !== this._defaultLocale) {
-      pathname = "/" + this._locale + (pathname === "/" ? "" : pathname);
+      prefix += "/" + this._locale;
     }
-    // Add basePath prefix
-    if (this._basePath) {
-      pathname = this._basePath + pathname;
-    }
-    return pathname;
+    if (!prefix) return this._url.pathname;
+    const inner = this._url.pathname;
+    return inner === "/" ? prefix : prefix + inner;
   }
 
   get href(): string {
     const formatted = this._formatPathname();
     if (formatted === this._url.pathname) return this._url.href;
-    const u = new URL(this._url.href);
-    u.pathname = formatted;
-    return u.href;
+    // Replace pathname in href via string slicing — avoids URL allocation.
+    // URL.href is always <origin+auth><pathname><search><hash>.
+    const { href, pathname, search, hash } = this._url;
+    const baseEnd = href.length - pathname.length - search.length - hash.length;
+    return href.slice(0, baseEnd) + formatted + search + hash;
   }
   set href(value: string) {
     this._url.href = value;
@@ -391,8 +391,8 @@ export class NextURL {
     this._basePath = value === "" ? "" : value.startsWith("/") ? value : "/" + value;
   }
 
-  get locale(): string | undefined {
-    return this._locale;
+  get locale(): string {
+    return this._locale ?? "";
   }
   set locale(value: string | undefined) {
     if (value && this._locales && !this._locales.includes(value)) {
