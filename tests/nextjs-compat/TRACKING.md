@@ -64,7 +64,7 @@ Ported from: https://github.com/vercel/next.js/tree/canary/test/e2e/app-dir
 | ---------------- | ----- | ---- | ---- | --- | ---- | ------ |
 | 1. app-rendering | 8     | 6    | 2    | 0   | 0    | Done   |
 | 2. not-found     | 17    | 12   | 0    | 5   | 0    | Done   |
-| 3. global-error  | 11    | 3    | 3    | 5   | 0    | Done   |
+| 3. global-error  | 11    | 6    | 0    | 5   | 0    | Done   |
 | 4. dynamic       | 17    | 8    | 0    | 9   | 0    | Done   |
 
 ---
@@ -355,7 +355,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | ------------------------ | -------- | ------- | ----- | -------- | ----- | ------------- |
 | 1. app-rendering         | 8        | 6       | 2     | 0        | 0     | Done          |
 | 2. not-found             | 17       | 12      | 0     | 5        | 0     | Done          |
-| 3. global-error          | 11       | 3       | 3     | 5        | 0     | Done          |
+| 3. global-error          | 11       | 6       | 0     | 5        | 0     | Done          |
 | 4. dynamic               | 17       | 8       | 0     | 9        | 0     | Done          |
 | 5. app-routes            | 37       | 23      | 0     | 14       | 0     | Done          |
 | 6. metadata              | 45       | 30      | 0     | 15       | 0     | Done          |
@@ -371,7 +371,7 @@ Three Playwright spec files cover client-side behaviors that cannot be tested vi
 | 21. prefetch             | 4        | 4       | 0     | 0        | 0     | Done          |
 | 22. metadata-suspense    | 3        | 2       | 1     | 0        | 0     | Done          |
 | P5. shim/core unit tests | 230      | 230     | 0     | 0        | 0     | Done          |
-| **Total**                | **555+** | **362** | **6** | **188+** | **0** |               |
+| **Total**                | **555+** | **365** | **3** | **188+** | **0** |               |
 
 ### Playwright Browser Tests
 

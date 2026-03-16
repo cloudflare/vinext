@@ -209,6 +209,22 @@ describe("Next.js compat: global-error (production preview)", () => {
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
+  it("server component throw without local error.tsx renders global-error with 200", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-rsc");
+    expect(res.status).toBe(200);
+    expect(html).toContain("global-error");
+    expect(html).toContain("The specific message is omitted in production builds");
+    expect(html).not.toContain("server page error");
+  });
+
+  it("client component SSR throw without local error.tsx renders global-error with 200", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-ssr");
+    expect(res.status).toBe(200);
+    expect(html).toContain("global-error");
+    expect(html).toContain("The specific message is omitted in production builds");
+    expect(html).not.toContain("client page error");
+  });
+
   it("server component throw with local error.tsx renders that boundary with 200", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-server-test");
     expect(res.status).toBe(200);
