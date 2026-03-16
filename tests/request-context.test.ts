@@ -29,7 +29,7 @@ describe("getRequestExecutionContext", () => {
 describe("runWithExecutionContext", () => {
   it("makes the context available inside the scope", () => {
     const ctx = makeCtx();
-    runWithExecutionContext(ctx, () => {
+    void runWithExecutionContext(ctx, () => {
       expect(getRequestExecutionContext()).toBe(ctx);
     });
   });
@@ -89,7 +89,7 @@ describe("runWithExecutionContext", () => {
     const ctx = makeCtx();
     const p = Promise.resolve("done");
 
-    runWithExecutionContext(ctx, () => {
+    void runWithExecutionContext(ctx, () => {
       const c = getRequestExecutionContext();
       c?.waitUntil(p);
     });
@@ -101,10 +101,10 @@ describe("runWithExecutionContext", () => {
     const outerCtx = makeCtx();
     const innerCtx = makeCtx();
 
-    runWithExecutionContext(outerCtx, () => {
+    void runWithExecutionContext(outerCtx, () => {
       expect(getRequestExecutionContext()).toBe(outerCtx);
 
-      runWithExecutionContext(innerCtx, () => {
+      void runWithExecutionContext(innerCtx, () => {
         expect(getRequestExecutionContext()).toBe(innerCtx);
       });
 
@@ -117,11 +117,11 @@ describe("runWithExecutionContext", () => {
     const outerCtx = makeCtx();
     const innerCtx = makeCtx();
 
-    runWithExecutionContext(outerCtx, () => {
-      runWithRequestContext(createRequestContext(), () => {
+    void runWithExecutionContext(outerCtx, () => {
+      void runWithRequestContext(createRequestContext(), () => {
         expect(getRequestExecutionContext()).toBe(outerCtx);
 
-        runWithExecutionContext(innerCtx, () => {
+        void runWithExecutionContext(innerCtx, () => {
           expect(getRequestExecutionContext()).toBe(innerCtx);
         });
 

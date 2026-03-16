@@ -252,13 +252,13 @@ declare module "next/constants" {
     MIDDLEWARE = "MIDDLEWARE",
   }
 
-  export const PHASE_PRODUCTION_BUILD: string;
-  export const PHASE_DEVELOPMENT_SERVER: string;
-  export const PHASE_PRODUCTION_SERVER: string;
-  export const PHASE_EXPORT: string;
-  export const PHASE_INFO: string;
-  export const PHASE_TEST: string;
-  export const PHASE_ANALYZE: string;
+  export const PHASE_PRODUCTION_BUILD: "phase-production-build";
+  export const PHASE_DEVELOPMENT_SERVER: "phase-development-server";
+  export const PHASE_PRODUCTION_SERVER: "phase-production-server";
+  export const PHASE_EXPORT: "phase-export";
+  export const PHASE_INFO: "phase-info";
+  export const PHASE_TEST: "phase-test";
+  export const PHASE_ANALYZE: "phase-analyze";
 
   export type PHASE_TYPE =
     | typeof PHASE_INFO

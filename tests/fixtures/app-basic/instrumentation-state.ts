@@ -74,17 +74,15 @@ export function resetInstrumentationState(): void {
  * Middleware invocation counter.
  *
  * Incremented each time the middleware function runs. In a hybrid app/pages
- * fixture, if middleware is double-executed (once via ssrLoadModule in the
- * Vite connect handler and again inline in the RSC entry), this counter will
- * be 2 for a single request instead of 1.
+ * fixture the connect handler forwards middleware results to the RSC entry
+ * via x-vinext-mw-ctx so middleware only runs once per request.
  *
- * Stored on globalThis for the same reason as instrumentation state: the
- * middleware.ts file is loaded in the SSR environment (via ssrLoadModule in
- * the Vite connect handler) AND imported directly into the RSC entry (RSC
- * environment). Those are separate module graphs with separate instances of
- * this module. globalThis is shared across all environments in the same
- * Node.js process, so both copies write to — and the API route reads from —
- * the same counter.
+ * Stored on globalThis because the middleware.ts file is loaded in the SSR
+ * environment (via ssrLoadModule in the Vite connect handler) AND imported
+ * directly into the RSC entry (RSC environment). Those are separate module
+ * graphs with separate instances of this module. globalThis is shared across
+ * all environments in the same Node.js process, so both copies write to —
+ * and the API route reads from — the same counter.
  */
 const MW_COUNT_KEY = "__vinext_mw_count__";
 const MW_PATHS_KEY = "__vinext_mw_paths__";

@@ -60,6 +60,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   draftModeCookieHeader: null,
   phase: "render",
 } satisfies VinextHeadersShimState) as VinextHeadersShimState;
+const EXPIRED_COOKIE_DATE = new Date(0).toUTCString();
 
 function _getState(): VinextHeadersShimState {
   if (isInsideUnifiedScope()) {
@@ -769,10 +770,9 @@ class RequestCookies {
 
     // Build Set-Cookie header string
     const parts = [`${cookieName}=${encodeURIComponent(cookieValue)}`];
-    if (opts?.path) {
-      validateCookieAttributeValue(opts.path, "Path");
-      parts.push(`Path=${opts.path}`);
-    }
+    const path = opts?.path ?? "/";
+    validateCookieAttributeValue(path, "Path");
+    parts.push(`Path=${path}`);
     if (opts?.domain) {
       validateCookieAttributeValue(opts.domain, "Domain");
       parts.push(`Domain=${opts.domain}`);
@@ -788,12 +788,24 @@ class RequestCookies {
   }
 
   /**
-   * Delete a cookie by setting it with Max-Age=0.
+   * Delete a cookie by emitting an expired Set-Cookie header.
    */
-  delete(name: string): this {
+  delete(nameOrOptions: string | { name: string; path?: string; domain?: string }): this {
+    const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions.name;
+    const path = typeof nameOrOptions === "string" ? "/" : (nameOrOptions.path ?? "/");
+    const domain = typeof nameOrOptions === "string" ? undefined : nameOrOptions.domain;
+
     validateCookieName(name);
+    validateCookieAttributeValue(path, "Path");
+    if (domain) {
+      validateCookieAttributeValue(domain, "Domain");
+    }
+
     this._cookies.delete(name);
-    _getState().pendingSetCookies.push(`${name}=; Path=/; Max-Age=0`);
+    const parts = [`${name}=`, `Path=${path}`];
+    if (domain) parts.push(`Domain=${domain}`);
+    parts.push(`Expires=${EXPIRED_COOKIE_DATE}`);
+    _getState().pendingSetCookies.push(parts.join("; "));
     return this;
   }
 

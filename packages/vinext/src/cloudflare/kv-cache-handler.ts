@@ -94,6 +94,9 @@ const TAG_PREFIX = "__tag:";
 /** Key prefix for cache entries. */
 const ENTRY_PREFIX = "cache:";
 
+/** Prefix used by revalidatePath for path-based tags. */
+const PATH_TAG_PREFIX = "_N_T_";
+
 /** Max tag length to prevent KV key abuse. */
 const MAX_TAG_LENGTH = 256;
 
@@ -113,6 +116,18 @@ function validateTag(tag: string): string | null {
   // eslint-disable-next-line no-control-regex -- intentional: reject control chars in tags
   if (/[\x00-\x1f\\:]/.test(tag)) return null;
   return tag;
+}
+
+/**
+ * Segment-aware path prefix check. Returns true if `path` is equal to
+ * `prefix` or is a child route (next char after prefix is `/`).
+ * Prevents `/dashboard` from matching `/dashboard-admin`.
+ */
+function isPathChildOf(path: string, prefix: string): boolean {
+  // Root prefix matches all paths starting with /
+  if (prefix === "/") return path.startsWith("/");
+  if (path === prefix) return true;
+  return path.startsWith(prefix + "/");
 }
 
 export class KVCacheHandler implements CacheHandler {
@@ -313,8 +328,16 @@ export class KVCacheHandler implements CacheHandler {
     // 30 days of zero traffic, or when explicitly deleted via tag invalidation.
     const expirationTtl: number | undefined = revalidateAt !== null ? this.ttlSeconds : undefined;
 
+    // Store tags in KV metadata so revalidateByPathPrefix can discover them
+    // via kv.list() without fetching entry values. Cloudflare KV limits
+    // metadata to 1024 bytes — if tags exceed the budget, omit metadata
+    // and fall back gracefully (prefix invalidation skips entries without it).
+    const metadataJson = JSON.stringify({ tags });
+    const metadata = metadataJson.length <= 1024 ? { tags } : undefined;
+
     return this._put(this.prefix + ENTRY_PREFIX + key, JSON.stringify(entry), {
       expirationTtl,
+      metadata,
     });
   }
 
@@ -335,6 +358,51 @@ export class KVCacheHandler implements CacheHandler {
     // without waiting for the TTL to expire
     for (const tag of validTags) {
       this._tagCache.set(tag, { timestamp: now, fetchedAt: now });
+    }
+  }
+
+  /**
+   * Invalidate all cache entries whose path tags fall under `pathPrefix`.
+   *
+   * Uses KV list metadata to discover tags without fetching entry values —
+   * entries written by `set()` store their tags in KV metadata, so
+   * `kv.list()` returns them inline with each key. This makes prefix
+   * invalidation O(list_pages) instead of O(entries × get).
+   *
+   * Entries written before metadata was added (no metadata.tags) are
+   * gracefully skipped — they'll be picked up on next `set()` which
+   * writes metadata.
+   *
+   * When present, this method fully replaces the `revalidateTag` call
+   * path in `revalidatePath()` — implementors own all path-based tag
+   * handling.
+   */
+  async revalidateByPathPrefix(pathPrefix: string): Promise<void> {
+    const tagsToInvalidate = new Set<string>();
+    let cursor: string | undefined;
+    const listPrefix = this.prefix + ENTRY_PREFIX;
+
+    do {
+      const page = await this.kv.list({ prefix: listPrefix, cursor });
+
+      for (const key of page.keys) {
+        const tags = key.metadata?.tags;
+        if (!Array.isArray(tags)) continue;
+
+        for (const tag of tags) {
+          if (typeof tag !== "string") continue;
+          const rawPath = tag.startsWith(PATH_TAG_PREFIX) ? tag.slice(PATH_TAG_PREFIX.length) : tag;
+          if (rawPath.startsWith("/") && isPathChildOf(rawPath, pathPrefix)) {
+            tagsToInvalidate.add(tag);
+          }
+        }
+      }
+
+      cursor = page.list_complete ? undefined : page.cursor;
+    } while (cursor);
+
+    if (tagsToInvalidate.size > 0) {
+      await this.revalidateTag([...tagsToInvalidate]);
     }
   }
 
@@ -378,7 +446,11 @@ export class KVCacheHandler implements CacheHandler {
    * Also registers with ctx.waitUntil() so the Workers runtime keeps the
    * isolate alive even if the caller does not await the returned promise.
    */
-  private _put(kvKey: string, value: string, options?: { expirationTtl?: number }): Promise<void> {
+  private _put(
+    kvKey: string,
+    value: string,
+    options?: { expirationTtl?: number; metadata?: Record<string, unknown> },
+  ): Promise<void> {
     const promise = this.kv.put(kvKey, value, options);
     const ctx = getRequestExecutionContext() ?? this.ctx;
     if (ctx) {

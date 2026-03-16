@@ -257,7 +257,7 @@ describe("Next.js compat: app-routes", () => {
   });
 
   // ── cookies().delete() ───────────────────────────────────────
-  it("cookies().delete() produces Set-Cookie with Max-Age=0", async () => {
+  it("cookies().delete() produces an expired Set-Cookie header", async () => {
     const res = await fetch(`${baseUrl}/api/set-cookie`, {
       method: "POST",
     });
@@ -265,7 +265,7 @@ describe("Next.js compat: app-routes", () => {
     const setCookies = res.headers.getSetCookie();
     const sessionCookie = setCookies.find((c: string) => c.startsWith("session="));
     expect(sessionCookie).toBeDefined();
-    expect(sessionCookie).toContain("Max-Age=0");
+    expect(sessionCookie).toContain("Expires=");
   });
 
   // ── Dynamic params ───────────────────────────────────────────

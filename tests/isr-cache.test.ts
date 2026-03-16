@@ -295,13 +295,13 @@ describe("triggerBackgroundRegeneration", () => {
     });
 
     expect(isInsideUnifiedScope()).toBe(false);
-    const pendingRegen = regenPromise;
-    if (!pendingRegen) {
+    if (!regenPromise) {
       throw new Error("expected triggerBackgroundRegeneration to register waitUntil");
     }
+    const pendingRegen = regenPromise;
 
     releaseRender();
-    await pendingRegen;
+    await Promise.resolve(pendingRegen);
 
     expect(sawUnifiedScope).toBe(true);
     expect(collectedTags).toEqual(["outer-tag"]);

@@ -11,6 +11,45 @@
 
 import { encodeMiddlewareRequestHeaders } from "../server/middleware-request-headers.js";
 import { parseCookieHeader } from "./internal/parse-cookie-header.js";
+import { getRequestExecutionContext } from "./request-context.js";
+
+// ---------------------------------------------------------------------------
+// Inlined cache-scope guard for after()
+//
+// We cannot statically import throwIfInsideCacheScope from headers.ts here
+// because headers.ts contains the "use cache" directive string in its error
+// message, which causes Vite's use-cache transform to include it in the module
+// graph. If headers.ts is pulled in via static import from server.ts, the
+// transform fires on it in Pages Router fixtures that lack @vitejs/plugin-rsc.
+//
+// The connection() function in this file avoids the same problem by using
+// `await import("./headers.js")` (dynamic import, async function). after()
+// must remain synchronous, so we inline the check using the same Symbol.for
+// keys that cache-runtime.ts and cache.ts register their ALS instances with.
+// ---------------------------------------------------------------------------
+
+const _USE_CACHE_ALS_KEY = Symbol.for("vinext.cacheRuntime.contextAls");
+const _UNSTABLE_CACHE_ALS_KEY = Symbol.for("vinext.unstableCache.als");
+const _g = globalThis as unknown as Record<PropertyKey, unknown>;
+
+function _throwIfInsideCacheScope(apiName: string): void {
+  const cacheAls = _g[_USE_CACHE_ALS_KEY] as { getStore(): unknown } | undefined;
+  if (cacheAls?.getStore() != null) {
+    throw new Error(
+      `\`${apiName}\` cannot be called inside "use cache". ` +
+        `If you need this data inside a cached function, call \`${apiName}\` ` +
+        "outside and pass the required data as an argument.",
+    );
+  }
+  const unstableAls = _g[_UNSTABLE_CACHE_ALS_KEY] as { getStore(): unknown } | undefined;
+  if (unstableAls?.getStore() === true) {
+    throw new Error(
+      `\`${apiName}\` cannot be called inside a function cached with \`unstable_cache()\`. ` +
+        `If you need this data inside a cached function, call \`${apiName}\` ` +
+        "outside and pass the required data as an argument.",
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // NextRequest
@@ -442,6 +481,10 @@ export class ResponseCookies {
     return undefined;
   }
 
+  has(name: string): boolean {
+    return this.get(name) !== undefined;
+  }
+
   getAll(): CookieEntry[] {
     const entries: CookieEntry[] = [];
     for (const header of this._headers.getSetCookie()) {
@@ -572,14 +615,41 @@ export interface UserAgent {
 
 /**
  * after() — schedule work after the response is sent.
- * In a real server, this would use the platform's waitUntil.
- * Here we simply run it as a microtask (best-effort).
+ *
+ * Uses the platform's `waitUntil` (via the per-request ExecutionContext) when
+ * available so the task survives past the response on Cloudflare Workers.
+ * Falls back to a fire-and-forget microtask on runtimes without an execution
+ * context (e.g. Node.js dev server).
+ *
+ * Throws when called inside a cached scope — request-specific
+ * side-effects must not leak into cached results.
  */
 export function after<T>(task: Promise<T> | (() => T | Promise<T>)): void {
+  _throwIfInsideCacheScope("after()");
+
   const promise = typeof task === "function" ? Promise.resolve().then(task) : task;
-  promise.catch((err) => {
+  // NOTE: vinext runs function tasks concurrently with response streaming (next microtask),
+  // whereas Next.js queues them to run strictly after the response is sent via onClose.
+  // This is a known simplification — function tasks here are not guaranteed to run
+  // after the response completes, only after the current synchronous execution.
+  //
+  // `.catch()` is attached synchronously in the same tick as `promise` is created, so
+  // there is no window where a pre-rejected `task` promise could trigger an
+  // `unhandledrejection` event before the handler is in place.
+  const guarded = promise.catch((err) => {
     console.error("[vinext] after() task failed:", err);
   });
+
+  // TODO: Next.js throws when after() is called outside a request context or when
+  // waitUntil is unavailable, preventing silent task loss. vinext falls back to
+  // fire-and-forget here, which is correct for the Node.js dev server (where
+  // getRequestExecutionContext() always returns null). On Workers, a misconfigured
+  // entry that omits runWithExecutionContext would silently drop tasks — consider
+  // a one-time console.warn on the fallback path, gated to production only (e.g.
+  // `process.env.NODE_ENV === 'production'` or `typeof caches !== 'undefined'` for
+  // a Workers runtime check) with a module-level `let _warned = false` guard so it
+  // fires at most once and doesn't spam the dev-server console.
+  getRequestExecutionContext()?.waitUntil(guarded);
 }
 
 /**

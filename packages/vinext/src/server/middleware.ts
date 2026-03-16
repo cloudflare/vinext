@@ -458,7 +458,7 @@ export async function runMiddleware(
 
   // Drain waitUntil promises (fire-and-forget: we don't block the response
   // on these — matches platform semantics where waitUntil runs after response).
-  fetchEvent.drainWaitUntil();
+  void fetchEvent.drainWaitUntil();
 
   // No response = continue
   if (!response) {

@@ -16823,6 +16823,47 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // every response path without module-level state that races on Workers.
 
   
+  // In hybrid app+pages dev mode the connect handler already ran middleware
+  // and forwarded the results via x-vinext-mw-ctx. Reconstruct _mwCtx from
+  // the forwarded data instead of re-running the middleware function.
+  // Guarded by NODE_ENV because this header only exists in dev (the connect
+  // handler sets it). In production there is no connect handler, so an
+  // attacker-supplied header must not be trusted.
+  let __mwCtxApplied = false;
+  if (process.env.NODE_ENV !== "production") {
+    const __mwCtxHeader = request.headers.get("x-vinext-mw-ctx");
+    if (__mwCtxHeader) {
+      try {
+        const __mwCtxData = JSON.parse(__mwCtxHeader);
+        if (__mwCtxData.h && __mwCtxData.h.length > 0) {
+          // Note: h may include x-middleware-request-* internal headers so
+          // applyMiddlewareRequestHeaders() can unpack them below.
+          // processMiddlewareHeaders() strips them before any response.
+          _mwCtx.headers = new Headers();
+          for (const [key, value] of __mwCtxData.h) {
+            _mwCtx.headers.append(key, value);
+          }
+        }
+        if (__mwCtxData.s != null) {
+          _mwCtx.status = __mwCtxData.s;
+        }
+        // Apply forwarded middleware rewrite so routing uses the rewritten path.
+        // The RSC plugin constructs its Request from the original HTTP request,
+        // not from req.url, so the connect handler's req.url rewrite is invisible.
+        if (__mwCtxData.r) {
+          const __rewriteParsed = new URL(__mwCtxData.r, request.url);
+          cleanPathname = __rewriteParsed.pathname;
+          url.search = __rewriteParsed.search;
+        }
+        // Flag set after full context application — if any step fails (e.g. malformed
+        // rewrite URL), we fall back to re-running middleware as a safety net.
+        __mwCtxApplied = true;
+      } catch (e) {
+        console.error("[vinext] Failed to parse forwarded middleware context:", e);
+      }
+    }
+  }
+  if (!__mwCtxApplied) {
    // Run proxy/middleware if present and path matches.
    // Validate exports match the file type (proxy.ts vs middleware.ts), matching Next.js behavior.
    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
@@ -16900,6 +16941,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       return new Response("Internal Server Error", { status: 500 });
     }
   }
+  } // end of if (!__mwCtxApplied)
 
   // Unpack x-middleware-request-* headers into the request context so that
   // headers() returns the middleware-modified headers instead of the original
@@ -18349,6 +18391,9 @@ import { setNavigationContext, ServerInsertedHTMLContext } from "next/navigation
 import { runWithNavigationContext as _runWithNavCtx } from "vinext/navigation-state";
 import { safeJsonStringify } from "vinext/html";
 import { createElement as _ssrCE } from "react";
+import * as _clientRefs from "virtual:vite-rsc/client-references";
+
+let _clientRefsPreloaded = false;
 
 /**
  * Collect all chunks from a ReadableStream into an array of text strings.
@@ -18487,6 +18532,29 @@ function createRscEmbedTransform(embedStream) {
  *   and the data needs to be passed to SSR since they're separate module instances.
  */
 export async function handleSsr(rscStream, navContext, fontData) {
+  // Eagerly preload all client reference modules before SSR rendering.
+  // On the first request after server start, client component modules are
+  // loaded lazily via async import(). Without this preload, React's
+  // renderToReadableStream rejects because the shell can't resolve client
+  // components synchronously (there is no Suspense boundary wrapping the
+  // root). The memoized require cache ensures this is only async on the
+  // very first call; subsequent requests resolve from cache immediately.
+  // See: https://github.com/cloudflare/vinext/issues/256
+  // _clientRefs.default is the default export from the virtual:vite-rsc/client-references
+  // namespace import — a map of client component IDs to their async import functions.
+  if (!_clientRefsPreloaded && _clientRefs.default && globalThis.__vite_rsc_client_require__) {
+    await Promise.all(
+      Object.keys(_clientRefs.default).map((id) =>
+        globalThis.__vite_rsc_client_require__(id).catch((err) => {
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[vinext] failed to preload client ref:", id, err);
+          }
+        })
+      )
+    );
+    _clientRefsPreloaded = true;
+  }
+
   // Wrap in a navigation ALS scope for per-request isolation in the SSR
   // environment. The SSR environment has separate module instances from RSC,
   // so it needs its own ALS scope.

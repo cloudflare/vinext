@@ -244,7 +244,7 @@ export async function handleApiRoute(
 
     server.ssrFixStacktrace(e as Error);
     console.error(e);
-    reportRequestError(
+    void reportRequestError(
       e instanceof Error ? e : new Error(String(e)),
       {
         path: url,

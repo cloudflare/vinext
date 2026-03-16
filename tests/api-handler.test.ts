@@ -21,6 +21,11 @@ import { reportRequestError } from "../packages/vinext/src/server/instrumentatio
 import type { Route } from "../packages/vinext/src/routing/pages-router.js";
 import type { ViteDevServer } from "vite-plus";
 
+type MockServer = ViteDevServer & {
+  ssrLoadModule: ReturnType<typeof vi.fn>;
+  ssrFixStacktrace: ReturnType<typeof vi.fn>;
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
@@ -129,11 +134,11 @@ function route(pattern: string, filePath = "/fake/api/handler.ts"): Route {
 /**
  * Build a minimal mock ViteDevServer with configurable ssrLoadModule behavior.
  */
-function mockServer(moduleExport: Record<string, unknown>): ViteDevServer {
+function mockServer(moduleExport: Record<string, unknown>): MockServer {
   return {
     ssrLoadModule: vi.fn().mockResolvedValue(moduleExport),
     ssrFixStacktrace: vi.fn(),
-  } as unknown as ViteDevServer;
+  } as unknown as MockServer;
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -206,7 +211,7 @@ describe("handleApiRoute", () => {
       expect(res._statusCode).toBe(400);
       expect(res.statusMessage).toBe("Invalid JSON");
       expect(res._body).toBe("Invalid JSON");
-      expect(server.ssrFixStacktrace).not.toHaveBeenCalled();
+      expect(server.ssrFixStacktrace.mock.calls).toHaveLength(0);
       expect(errorSpy).not.toHaveBeenCalled();
       expect(reportRequestError).not.toHaveBeenCalled();
       errorSpy.mockRestore();
@@ -743,9 +748,9 @@ describe("handleApiRoute", () => {
         route("/api/users"),
       ]);
 
-      expect(capturedQuery.toString).toBe("a");
-      expect(capturedQuery.constructor).toBe("b");
-      expect(capturedQuery.__proto__).toBe("c");
+      expect(capturedQuery["toString"]).toBe("a");
+      expect(capturedQuery["constructor"]).toBe("b");
+      expect(capturedQuery["__proto__"]).toBe("c");
       expect(Object.getPrototypeOf(capturedQuery)).toBe(Object.prototype);
     });
 
@@ -817,7 +822,7 @@ describe("handleApiRoute", () => {
 
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
-      expect(server.ssrFixStacktrace).toHaveBeenCalledWith(error);
+      expect(server.ssrFixStacktrace.mock.calls).toContainEqual([error]);
     });
   });
 });
