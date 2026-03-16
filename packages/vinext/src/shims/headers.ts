@@ -60,6 +60,7 @@ const _fallbackState = (_g[_FALLBACK_KEY] ??= {
   draftModeCookieHeader: null,
   phase: "render",
 } satisfies VinextHeadersShimState) as VinextHeadersShimState;
+const EXPIRED_COOKIE_DATE = new Date(0).toUTCString();
 
 function _getState(): VinextHeadersShimState {
   if (isInsideUnifiedScope()) {
@@ -787,7 +788,7 @@ class RequestCookies {
   }
 
   /**
-   * Delete a cookie by setting it with Max-Age=0.
+   * Delete a cookie by emitting an expired Set-Cookie header.
    */
   delete(nameOrOptions: string | { name: string; path?: string; domain?: string }): this {
     const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions.name;
@@ -803,7 +804,7 @@ class RequestCookies {
     this._cookies.delete(name);
     const parts = [`${name}=`, `Path=${path}`];
     if (domain) parts.push(`Domain=${domain}`);
-    parts.push(`Expires=${new Date(0).toUTCString()}`);
+    parts.push(`Expires=${EXPIRED_COOKIE_DATE}`);
     _getState().pendingSetCookies.push(parts.join("; "));
     return this;
   }
