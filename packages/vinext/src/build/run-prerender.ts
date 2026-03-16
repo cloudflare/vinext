@@ -198,6 +198,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         entrypoint: rscBundlePath,
         config: wranglerConfigPath,
         bindings: { VINEXT_PRERENDER: { type: "plain_text", value: "1" } },
+        dev: { logLevel: "none" },
       });
     }
 

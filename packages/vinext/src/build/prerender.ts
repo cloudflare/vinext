@@ -841,6 +841,7 @@ export async function prerenderApp({
               entrypoint: rscBundlePath,
               config: wranglerConfigPath,
               bindings: { VINEXT_PRERENDER: { type: "plain_text", value: "1" } },
+              dev: { logLevel: "none" },
             });
             ownedWranglerDev = worker;
             return worker;
