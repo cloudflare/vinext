@@ -349,7 +349,7 @@ describe("revalidatePath type parameter", () => {
       }
     }
     // Leaf page tag — targets just this page component
-    tags.push(`_N_T_${pathname}/page`);
+    tags.push(pathname === "/" ? "_N_T_/page" : `_N_T_${pathname}/page`);
     return tags;
   }
 
@@ -405,7 +405,7 @@ describe("revalidatePath type parameter", () => {
     expect(await handler.get("entry:/about/team")).not.toBeNull();
   });
 
-  it("behaves like 'page' when no type is specified (backward compat)", async () => {
+  it("invalidates the exact path when no type is specified", async () => {
     await seedEntry("/about", "about-page");
     await seedEntry("/about/team", "about-team");
 
@@ -461,6 +461,18 @@ describe("revalidatePath type parameter", () => {
     expect(await handler.get("entry:/about")).toBeNull();
     expect(await handler.get("entry:/dashboard")).toBeNull();
     expect(await handler.get("entry:/dashboard/settings")).toBeNull();
+  });
+
+  it("handles root path '/' with page type — invalidates only the root page", async () => {
+    await seedEntry("/", "home");
+    await seedEntry("/about", "about");
+
+    await revalidatePath("/", "page");
+
+    // Root page should be invalidated
+    expect(await handler.get("entry:/")).toBeNull();
+    // Other pages should remain — "page" type targets only the exact route
+    expect(await handler.get("entry:/about")).not.toBeNull();
   });
 
   it("trailing slash on layout path is normalized — same as without trailing slash", async () => {

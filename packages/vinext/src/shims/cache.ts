@@ -375,6 +375,11 @@ export async function revalidateTag(
  * - `type: "page"` invalidates only the page component at the exact route
  *   via `_N_T_<path>/page` — distinct from omitting type, which invalidates
  *   the broader path tags.
+ *
+ * Note: the `type` parameter is App Router only. Pages Router does not
+ * generate implicit layout/page hierarchy tags (`__pageCacheTags` exists
+ * only in `app-rsc-entry.ts`), so passing `type` has no effect on Pages
+ * Router ISR entries — only the no-type path tag invalidation applies.
  */
 export async function revalidatePath(path: string, type?: "page" | "layout"): Promise<void> {
   const normalizedPath = path.endsWith("/") && path !== "/" ? path.slice(0, -1) : path;

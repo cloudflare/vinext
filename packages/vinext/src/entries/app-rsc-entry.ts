@@ -395,7 +395,7 @@ function __pageCacheTags(pathname, extraTags) {
   }
   // Leaf page tag — targets just this page component via revalidatePath(path, "page").
   // Matches Next.js getDerivedTags which generates _N_T_<path>/page for leaf segments.
-  tags.push("_N_T_" + pathname + "/page");
+  tags.push(pathname === "/" ? "_N_T_/page" : "_N_T_" + pathname + "/page");
   if (Array.isArray(extraTags)) {
     for (const tag of extraTags) {
       if (!tags.includes(tag)) tags.push(tag);
