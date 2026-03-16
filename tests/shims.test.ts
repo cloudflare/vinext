@@ -3459,6 +3459,17 @@ describe("ResponseCookies API", () => {
     expect(all).toContainEqual({ name: "c", value: "3" });
   });
 
+  it("has() checks whether a response cookie exists", async () => {
+    const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
+    const headers = new Headers();
+    const cookies = new ResponseCookies(headers);
+
+    cookies.set("session", "abc");
+
+    expect(cookies.has("session")).toBe(true);
+    expect(cookies.has("missing")).toBe(false);
+  });
+
   it("delete() sets Max-Age=0", async () => {
     const { ResponseCookies } = await import("../packages/vinext/src/shims/server.js");
     const headers = new Headers();

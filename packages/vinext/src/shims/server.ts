@@ -442,6 +442,10 @@ export class ResponseCookies {
     return undefined;
   }
 
+  has(name: string): boolean {
+    return this.get(name) !== undefined;
+  }
+
   getAll(): CookieEntry[] {
     const entries: CookieEntry[] = [];
     for (const header of this._headers.getSetCookie()) {
