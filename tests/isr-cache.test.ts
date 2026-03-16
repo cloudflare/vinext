@@ -328,17 +328,17 @@ describe("revalidatePath type parameter", () => {
   let handler: MemoryCacheHandler;
 
   /**
-   * Generate layout hierarchy tags for a pathname — mirrors the production
-   * `__pageCacheTags` in app-rsc-entry.ts and Next.js's `getDerivedTags`.
+   * Generate layout hierarchy tags and leaf page tag for a pathname — mirrors
+   * the production `__pageCacheTags` in app-rsc-entry.ts and Next.js's
+   * `getDerivedTags`.
    *
    * For `/dashboard/settings` this produces:
-   *   `_N_T_/layout`, `_N_T_/dashboard/layout`, `_N_T_/dashboard/settings/layout`
+   *   `_N_T_/layout`, `_N_T_/dashboard/layout`, `_N_T_/dashboard/settings/layout`,
+   *   `_N_T_/dashboard/settings/page`
    *
-   * Every page carries its ancestor layout tags, so
-   * `revalidatePath("/dashboard", "layout")` can invalidate all descendants
-   * with a single O(1) tag lookup.
+   * IMPORTANT: keep in sync with `__pageCacheTags` in app-rsc-entry.ts.
    */
-  function deriveLayoutTags(pathname: string): string[] {
+  function deriveImplicitTags(pathname: string): string[] {
     const tags = ["_N_T_/layout"];
     const segments = pathname.split("/");
     let built = "";
@@ -348,12 +348,14 @@ describe("revalidatePath type parameter", () => {
         tags.push(`_N_T_${built}/layout`);
       }
     }
+    // Leaf page tag — targets just this page component
+    tags.push(`_N_T_${pathname}/page`);
     return tags;
   }
 
-  /** Helper: store a FETCH cache entry with path + layout hierarchy tags. */
+  /** Helper: store a FETCH cache entry with path + implicit hierarchy tags. */
   async function seedEntry(path: string, body: string): Promise<void> {
-    const tags = [path, `_N_T_${path}`, ...deriveLayoutTags(path)];
+    const tags = [path, `_N_T_${path}`, ...deriveImplicitTags(path)];
     const value: CachedFetchValue = {
       kind: "FETCH",
       data: { headers: {}, body, url: path },
@@ -473,6 +475,33 @@ describe("revalidatePath type parameter", () => {
     expect(await handler.get("entry:/dashboard/settings")).toBeNull();
     // /about should NOT be invalidated
     expect(await handler.get("entry:/about")).not.toBeNull();
+  });
+
+  it("type 'page' invalidates via /page tag, not the bare path tag", async () => {
+    // Seed two synthetic entries to prove the tag paths are distinct:
+    // Entry A: only the /page leaf tag — only revalidatePath(path, "page") should hit it
+    // Entry B: only the bare _N_T_ path tag — only revalidatePath(path) should hit it
+    const pageOnlyValue: CachedFetchValue = {
+      kind: "FETCH",
+      data: { headers: {}, body: "page-only", url: "/about" },
+      tags: ["_N_T_/about/page"],
+      revalidate: false,
+    };
+    const barePathValue: CachedFetchValue = {
+      kind: "FETCH",
+      data: { headers: {}, body: "bare-path", url: "/about" },
+      tags: ["/about", "_N_T_/about"],
+      revalidate: false,
+    };
+    await handler.set("entry:page-only", pageOnlyValue, { tags: ["_N_T_/about/page"] });
+    await handler.set("entry:bare-path", barePathValue, { tags: ["/about", "_N_T_/about"] });
+
+    await revalidatePath("/about", "page");
+
+    // "page" type targets the /page leaf tag only
+    expect(await handler.get("entry:page-only")).toBeNull();
+    // The bare path entry should NOT be touched
+    expect(await handler.get("entry:bare-path")).not.toBeNull();
   });
 
   it("trailing slash on page path is normalized — same as without trailing slash", async () => {
