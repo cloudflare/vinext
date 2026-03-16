@@ -5,6 +5,7 @@ import zlib from "node:zlib";
 import { createBuilder, createServer, type ViteDevServer } from "vite-plus";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
+import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, fetchHtml, RSC_ENTRIES, startFixtureServer } from "./helpers.js";
 
@@ -3147,13 +3148,33 @@ describe("SSR entry CSS preload fix", () => {
     expect(code).toContain('as="style"');
   });
 
-  it("generateSsrEntry includes fixFlightHints in RSC embed transform", async () => {
-    const { generateSsrEntry } = await import("../packages/vinext/src/entries/app-ssr-entry.js");
-    const code = generateSsrEntry();
-    // The RSC embed stream should fix HL hint "stylesheet" → "style" before
-    // chunks are embedded as __VINEXT_RSC_CHUNKS__ for client-side processing
-    expect(code).toContain("fixFlightHints");
-    expect(code).toContain('"style"');
+  it("generateRscEntry wraps renderToReadableStream with HL hint fix", () => {
+    // The RSC entry should shadow renderToReadableStream with a wrapper that
+    // rewrites Flight HL hint "stylesheet" → "style" at the stream source,
+    // so all consumers (SSR embed, client-side nav, server actions) get clean data.
+    const route: AppRoute = {
+      pattern: "/",
+      pagePath: "/tmp/test/app/page.tsx",
+      routePath: null,
+      layouts: ["/tmp/test/app/layout.tsx"],
+      templates: [],
+      parallelSlots: [],
+      loadingPath: null,
+      errorPath: null,
+      layoutErrorPaths: [null],
+      notFoundPath: null,
+      notFoundPaths: [null],
+      forbiddenPath: null,
+      unauthorizedPath: null,
+      routeSegments: [],
+      layoutTreePositions: [0],
+      isDynamic: false,
+      params: [],
+      patternParts: ["/"],
+    };
+    const code = generateRscEntry("/tmp/test/app", [route]);
+    expect(code).toContain("_renderToReadableStream");
+    expect(code).toContain('"style"$2');
   });
 
   it('fixPreloadAs regex correctly replaces as="stylesheet" with as="style"', () => {
@@ -3198,10 +3219,9 @@ describe("SSR entry CSS preload fix", () => {
   });
 
   it('fixFlightHints regex correctly replaces "stylesheet" with "style" in RSC Flight HL hints', () => {
-    // Replicate the fixFlightHints regex from the generated SSR entry.
-    // This runs on the raw Flight protocol text embedded in __VINEXT_RSC_CHUNKS__
-    // so that client-side React creates valid <link rel="preload" as="style"> instead
-    // of invalid <link rel="preload" as="stylesheet">.
+    // Replicate the HL hint rewrite regex from the renderToReadableStream wrapper
+    // in app-rsc-entry.ts. This rewrites the Flight stream at the source so all
+    // consumers (SSR embed, client-side nav, server actions) get clean data.
     function fixFlightHints(text: string): string {
       return text.replace(/(\d+:HL\[.*?),"stylesheet"(\]|,)/g, '$1,"style"$2');
     }

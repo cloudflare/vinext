@@ -70,20 +70,13 @@ function createRscEmbedTransform(embedStream) {
   let pendingChunks = [];
   let reading = false;
 
-  // Fix invalid preload "as" values in RSC Flight hint lines before
-  // they reach the client. React Flight emits HL hints with
-  // as="stylesheet" for CSS, but the HTML spec requires as="style"
-  // for <link rel="preload">. The fixPreloadAs() below only fixes the
-  // server-rendered HTML stream; this fixes the raw Flight data that
-  // gets embedded as __VINEXT_RSC_CHUNKS__ and processed client-side.
-  function fixFlightHints(text) {
-    // Flight hint format: <id>:HL["url","stylesheet"] or with options
-    return text.replace(/(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g, '$1,"style"$2');
-  }
-
   // Start reading RSC chunks in the background, accumulating them as text strings.
   // The RSC flight protocol is text-based, so decoding to strings and embedding
   // as JSON strings is ~3x more compact than the byte-array format.
+  //
+  // Note: Flight HL hint "stylesheet" → "style" rewriting is handled upstream
+  // in the renderToReadableStream wrapper (app-rsc-entry.ts), so the stream
+  // arriving here is already clean.
   async function pumpReader() {
     if (reading) return;
     reading = true;
@@ -95,7 +88,7 @@ function createRscEmbedTransform(embedStream) {
           break;
         }
         const text = _decoder.decode(result.value, { stream: true });
-        pendingChunks.push(fixFlightHints(text));
+        pendingChunks.push(text);
       }
     } catch (err) {
       if (process.env.NODE_ENV !== "production") {
@@ -344,9 +337,8 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // Fix invalid preload "as" values in server-rendered HTML.
     // React Fizz emits <link rel="preload" as="stylesheet"> for CSS,
     // but the HTML spec requires as="style" for <link rel="preload">.
-    // Note: fixFlightHints() in createRscEmbedTransform handles the
-    // complementary case — fixing the raw Flight stream data before
-    // it's embedded as __VINEXT_RSC_CHUNKS__ for client-side processing.
+    // Note: Flight HL hints are fixed upstream in the renderToReadableStream
+    // wrapper (app-rsc-entry.ts); this only handles the Fizz HTML stream.
     // See: https://html.spec.whatwg.org/multipage/links.html#link-type-preload
     function fixPreloadAs(html) {
       // Match <link ...rel="preload"... as="stylesheet"...> in any attribute order

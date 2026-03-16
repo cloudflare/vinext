@@ -336,12 +336,42 @@ main();
 exports[`App Router entry templates > generateRscEntry snapshot (minimal routes) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -3225,12 +3255,42 @@ if (import.meta.hot) {
 exports[`App Router entry templates > generateRscEntry snapshot (with config) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -6117,12 +6177,42 @@ if (import.meta.hot) {
 exports[`App Router entry templates > generateRscEntry snapshot (with global error) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -9044,12 +9134,42 @@ if (import.meta.hot) {
 exports[`App Router entry templates > generateRscEntry snapshot (with instrumentation) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -11965,12 +12085,42 @@ if (import.meta.hot) {
 exports[`App Router entry templates > generateRscEntry snapshot (with metadata routes) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -14861,12 +15011,42 @@ if (import.meta.hot) {
 exports[`App Router entry templates > generateRscEntry snapshot (with middleware) 1`] = `
 "
 import {
-  renderToReadableStream,
+  renderToReadableStream as _renderToReadableStream,
   decodeReply,
   loadServerAction,
   createTemporaryReferenceSet,
 } from "@vitejs/plugin-rsc/rsc";
 import { AsyncLocalStorage } from "node:async_hooks";
+
+// React Flight emits HL hints with "stylesheet" for CSS, but the HTML spec
+// requires "style" for <link rel="preload">. Fix at the source so every
+// consumer (SSR embed, client-side navigation, server actions) gets clean data.
+//
+// Flight lines are newline-delimited, so we buffer partial lines across chunks
+// to guarantee the regex never sees a split hint.
+function renderToReadableStream(model, options) {
+  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const stream = _renderToReadableStream(model, options);
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  let carry = "";
+  return stream.pipeThrough(new TransformStream({
+    transform(chunk, controller) {
+      const text = carry + decoder.decode(chunk, { stream: true });
+      const lastNl = text.lastIndexOf("\\n");
+      if (lastNl === -1) {
+        carry = text;
+        return;
+      }
+      carry = text.slice(lastNl + 1);
+      controller.enqueue(encoder.encode(text.slice(0, lastNl + 1).replace(_hlFixRe, '$1,"style"$2')));
+    },
+    flush(controller) {
+      const text = carry + decoder.decode();
+      if (text) controller.enqueue(encoder.encode(text.replace(_hlFixRe, '$1,"style"$2')));
+    }
+  }));
+}
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
@@ -18172,20 +18352,13 @@ function createRscEmbedTransform(embedStream) {
   let pendingChunks = [];
   let reading = false;
 
-  // Fix invalid preload "as" values in RSC Flight hint lines before
-  // they reach the client. React Flight emits HL hints with
-  // as="stylesheet" for CSS, but the HTML spec requires as="style"
-  // for <link rel="preload">. The fixPreloadAs() below only fixes the
-  // server-rendered HTML stream; this fixes the raw Flight data that
-  // gets embedded as __VINEXT_RSC_CHUNKS__ and processed client-side.
-  function fixFlightHints(text) {
-    // Flight hint format: <id>:HL["url","stylesheet"] or with options
-    return text.replace(/(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g, '$1,"style"$2');
-  }
-
   // Start reading RSC chunks in the background, accumulating them as text strings.
   // The RSC flight protocol is text-based, so decoding to strings and embedding
   // as JSON strings is ~3x more compact than the byte-array format.
+  //
+  // Note: Flight HL hint "stylesheet" → "style" rewriting is handled upstream
+  // in the renderToReadableStream wrapper (app-rsc-entry.ts), so the stream
+  // arriving here is already clean.
   async function pumpReader() {
     if (reading) return;
     reading = true;
@@ -18197,7 +18370,7 @@ function createRscEmbedTransform(embedStream) {
           break;
         }
         const text = _decoder.decode(result.value, { stream: true });
-        pendingChunks.push(fixFlightHints(text));
+        pendingChunks.push(text);
       }
     } catch (err) {
       if (process.env.NODE_ENV !== "production") {
@@ -18446,9 +18619,8 @@ export async function handleSsr(rscStream, navContext, fontData) {
     // Fix invalid preload "as" values in server-rendered HTML.
     // React Fizz emits <link rel="preload" as="stylesheet"> for CSS,
     // but the HTML spec requires as="style" for <link rel="preload">.
-    // Note: fixFlightHints() in createRscEmbedTransform handles the
-    // complementary case — fixing the raw Flight stream data before
-    // it's embedded as __VINEXT_RSC_CHUNKS__ for client-side processing.
+    // Note: Flight HL hints are fixed upstream in the renderToReadableStream
+    // wrapper (app-rsc-entry.ts); this only handles the Fizz HTML stream.
     // See: https://html.spec.whatwg.org/multipage/links.html#link-type-preload
     function fixPreloadAs(html) {
       // Match <link ...rel="preload"... as="stylesheet"...> in any attribute order
