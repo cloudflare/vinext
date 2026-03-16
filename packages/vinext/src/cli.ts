@@ -514,6 +514,7 @@ async function buildApp() {
   await printBuildReport({ root: process.cwd(), prerenderResult: prerenderResult ?? undefined });
 
   console.log("\n  Build complete. Run `vinext start` to start the production server.\n");
+  process.exit(0);
 }
 
 async function start() {
