@@ -2911,53 +2911,56 @@ describe("Pages Router dev ISR regeneration", () => {
       };
 
       const routeFile = path.join(FIXTURE_DIR, "pages", "isr-test.tsx");
+      const loadModule = async (id: string) => {
+        // ALS registration side-effects loaded at createSSRHandler startup
+        if (id === "vinext/head-state" || id === "vinext/router-state") {
+          return {};
+        }
+
+        if (id === "next/router") {
+          return {
+            setSSRContext() {
+              getRequestContext().currentRequestTags.push("outer-tag");
+              parentRequestTags = [...getRequestContext().currentRequestTags];
+            },
+            wrapWithRouterContext(element: unknown) {
+              return element;
+            },
+          };
+        }
+
+        if (id === routeFile) {
+          return {
+            default() {
+              return null;
+            },
+            async getStaticProps() {
+              regenSawUnifiedScope = isInsideUnifiedScope();
+              regenTags = [...getRequestContext().currentRequestTags];
+              regenExecutionContext = getRequestExecutionContext();
+              regenUnifiedExecutionContext = getRequestContext().executionContext;
+              return {
+                props: {
+                  timestamp: Date.now(),
+                  message: "fresh",
+                },
+                revalidate: 1,
+              };
+            },
+          };
+        }
+
+        throw new Error(`Unexpected module load: ${id}`);
+      };
       const server = {
         transformIndexHtml: vi.fn(async (_url: string, html: string) => html),
-        ssrLoadModule: vi.fn(async (id: string) => {
-          // ALS registration side-effects loaded at createSSRHandler startup
-          if (id === "vinext/head-state" || id === "vinext/router-state") {
-            return {};
-          }
-
-          if (id === "next/router") {
-            return {
-              setSSRContext() {
-                getRequestContext().currentRequestTags.push("outer-tag");
-                parentRequestTags = [...getRequestContext().currentRequestTags];
-              },
-              wrapWithRouterContext(element: unknown) {
-                return element;
-              },
-            };
-          }
-
-          if (id === routeFile) {
-            return {
-              default() {
-                return null;
-              },
-              async getStaticProps() {
-                regenSawUnifiedScope = isInsideUnifiedScope();
-                regenTags = [...getRequestContext().currentRequestTags];
-                regenExecutionContext = getRequestExecutionContext();
-                regenUnifiedExecutionContext = getRequestContext().executionContext;
-                return {
-                  props: {
-                    timestamp: Date.now(),
-                    message: "fresh",
-                  },
-                  revalidate: 1,
-                };
-              },
-            };
-          }
-
-          throw new Error(`Unexpected module load: ${id}`);
-        }),
+        ssrLoadModule: vi.fn(loadModule),
       } as unknown as ViteDevServer;
+      const runner = { import: loadModule };
 
       const handler = createSSRHandler(
         server,
+        runner,
         [
           {
             pattern: "/isr-test",

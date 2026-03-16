@@ -7,11 +7,10 @@
  * The req/res objects are Node.js IncomingMessage/ServerResponse with
  * Next.js extensions: req.query, req.body, res.json(), res.status(), etc.
  */
-import type { ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { decode as decodeQueryString } from "node:querystring";
 import { type Route, matchRoute } from "../routing/pages-router.js";
-import { reportRequestError } from "./instrumentation.js";
+import { reportRequestError, type ModuleImporter } from "./instrumentation.js";
 import { addQueryParam } from "../utils/query.js";
 
 /**
@@ -192,7 +191,7 @@ function enhanceApiObjects(
  * Returns true if the request was handled, false if no API route matched.
  */
 export async function handleApiRoute(
-  server: ViteDevServer,
+  runner: ModuleImporter,
   req: IncomingMessage,
   res: ServerResponse,
   url: string,
@@ -204,8 +203,9 @@ export async function handleApiRoute(
   const { route, params } = match;
 
   try {
-    // Load the API route module through Vite
-    const apiModule = await server.ssrLoadModule(route.filePath);
+    // Load the API route module through the ModuleRunner
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const apiModule = (await runner.import(route.filePath)) as Record<string, any>;
     const handler = apiModule.default;
 
     if (typeof handler !== "function") {
@@ -242,7 +242,8 @@ export async function handleApiRoute(
       return true;
     }
 
-    server.ssrFixStacktrace(e as Error);
+    // Stack traces are automatically rewritten by the ModuleRunner,
+    // so server.ssrFixStacktrace() does not need to be called here.
     console.error(e);
     void reportRequestError(
       e instanceof Error ? e : new Error(String(e)),

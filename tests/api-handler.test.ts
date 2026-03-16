@@ -17,14 +17,11 @@ vi.mock("../packages/vinext/src/server/instrumentation.js", () => ({
   reportRequestError: vi.fn(() => Promise.resolve()),
 }));
 import { handleApiRoute } from "../packages/vinext/src/server/api-handler.js";
-import { reportRequestError } from "../packages/vinext/src/server/instrumentation.js";
+import {
+  reportRequestError,
+  type ModuleImporter,
+} from "../packages/vinext/src/server/instrumentation.js";
 import type { Route } from "../packages/vinext/src/routing/pages-router.js";
-import type { ViteDevServer } from "vite-plus";
-
-type MockServer = ViteDevServer & {
-  ssrLoadModule: ReturnType<typeof vi.fn>;
-  ssrFixStacktrace: ReturnType<typeof vi.fn>;
-};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -132,13 +129,12 @@ function route(pattern: string, filePath = "/fake/api/handler.ts"): Route {
 }
 
 /**
- * Build a minimal mock ViteDevServer with configurable ssrLoadModule behavior.
+ * Build a minimal mock ModuleImporter with configurable import behavior.
  */
-function mockServer(moduleExport: Record<string, unknown>): MockServer {
+function mockServer(moduleExport: Record<string, unknown>): ModuleImporter {
   return {
-    ssrLoadModule: vi.fn().mockResolvedValue(moduleExport),
-    ssrFixStacktrace: vi.fn(),
-  } as unknown as MockServer;
+    import: vi.fn().mockResolvedValue(moduleExport),
+  };
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────
@@ -211,7 +207,6 @@ describe("handleApiRoute", () => {
       expect(res._statusCode).toBe(400);
       expect(res.statusMessage).toBe("Invalid JSON");
       expect(res._body).toBe("Invalid JSON");
-      expect(server.ssrFixStacktrace.mock.calls).toHaveLength(0);
       expect(errorSpy).not.toHaveBeenCalled();
       expect(reportRequestError).not.toHaveBeenCalled();
       errorSpy.mockRestore();
@@ -811,7 +806,7 @@ describe("handleApiRoute", () => {
       expect(res._body).toBe("Internal Server Error");
     });
 
-    it("calls ssrFixStacktrace on handler errors", async () => {
+    it("still returns 500 on handler errors (no ssrFixStacktrace needed with Module Runner)", async () => {
       const error = new Error("test error");
       const handler = vi.fn(() => {
         throw error;
@@ -822,7 +817,7 @@ describe("handleApiRoute", () => {
 
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
-      expect(server.ssrFixStacktrace.mock.calls).toContainEqual([error]);
+      expect(res._statusCode).toBe(500);
     });
   });
 });
