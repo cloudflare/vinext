@@ -328,15 +328,7 @@ describe("revalidatePath type parameter", () => {
   let handler: MemoryCacheHandler;
 
   /**
-   * Generate layout hierarchy tags and leaf page tag for a pathname — mirrors
-   * the production `__pageCacheTags` in app-rsc-entry.ts and Next.js's
-   * `getDerivedTags`.
-   *
-   * For `/dashboard/settings` this produces:
-   *   `_N_T_/layout`, `_N_T_/dashboard/layout`, `_N_T_/dashboard/settings/layout`,
-   *   `_N_T_/dashboard/settings/page`
-   *
-   * IMPORTANT: keep in sync with `__pageCacheTags` in app-rsc-entry.ts.
+   * Mirrors `__pageCacheTags` in app-rsc-entry.ts — keep in sync.
    */
   function deriveImplicitTags(pathname: string): string[] {
     const tags = ["_N_T_/layout"];
@@ -348,8 +340,8 @@ describe("revalidatePath type parameter", () => {
         tags.push(`_N_T_${built}/layout`);
       }
     }
-    // Leaf page tag — targets just this page component
-    tags.push(pathname === "/" ? "_N_T_/page" : `_N_T_${pathname}/page`);
+    const tagBase = pathname === "/" ? "_N_T_" : `_N_T_${pathname}`;
+    tags.push(tagBase + "/page");
     return tags;
   }
 

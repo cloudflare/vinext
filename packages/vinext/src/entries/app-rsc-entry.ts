@@ -381,9 +381,7 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 }
 function __pageCacheTags(pathname, extraTags) {
   const tags = [pathname, "_N_T_" + pathname];
-  // Layout hierarchy tags — every ancestor segment gets a layout tag so that
-  // revalidatePath(ancestorPath, "layout") cascades to all descendant pages.
-  // Matches Next.js getDerivedTags / getImplicitTags approach (O(1) invalidation).
+  // Layout hierarchy tags — matches Next.js getDerivedTags.
   tags.push("_N_T_/layout");
   const segments = pathname.split("/");
   let built = "";
@@ -393,9 +391,9 @@ function __pageCacheTags(pathname, extraTags) {
       tags.push("_N_T_" + built + "/layout");
     }
   }
-  // Leaf page tag — targets just this page component via revalidatePath(path, "page").
-  // Matches Next.js getDerivedTags which generates _N_T_<path>/page for leaf segments.
-  tags.push(pathname === "/" ? "_N_T_/page" : "_N_T_" + pathname + "/page");
+  // Leaf page tag — revalidatePath(path, "page") targets this.
+  const tagBase = pathname === "/" ? "_N_T_" : "_N_T_" + pathname;
+  tags.push(tagBase + "/page");
   if (Array.isArray(extraTags)) {
     for (const tag of extraTags) {
       if (!tags.includes(tag)) tags.push(tag);
