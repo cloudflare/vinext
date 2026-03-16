@@ -1337,6 +1337,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // also preserve entries from earlier plugins.
         viteConfig.optimizeDeps = {
           exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
+          ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
         };
 
         // If app/ directory exists, configure RSC environments

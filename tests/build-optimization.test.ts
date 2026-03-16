@@ -126,9 +126,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       // Incoming excludes from other plugins must survive the merge
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
-      expect(new Set(result.optimizeDeps.exclude).size).toBe(
-        result.optimizeDeps.exclude.length,
-      );
+      expect(new Set(result.optimizeDeps.exclude).size).toBe(result.optimizeDeps.exclude.length);
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -190,10 +188,9 @@ describe("optimizeDeps.exclude for vinext", () => {
         expect(envExclude, `${envName} should contain @vercel/og`).toContain("@vercel/og");
         // Verify no duplicates exist (Set-based dedup works correctly even
         // when incoming config overlaps with vinext's own entries)
-        expect(
-          new Set(envExclude).size,
-          `${envName} should have no duplicate excludes`,
-        ).toBe(envExclude.length);
+        expect(new Set(envExclude).size, `${envName} should have no duplicate excludes`).toBe(
+          envExclude.length,
+        );
       }
 
       // Client environment should merge incoming includes
