@@ -131,7 +131,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   const loadedConfig = await resolveNextConfig(await loadNextConfig(root), root);
   const config = options.nextConfigOverride
     ? { ...loadedConfig, ...options.nextConfigOverride }
-    : loadedConfig;
+    : // Note: shallow merge — nested keys like `images` or `i18n` in
+      // nextConfigOverride replace the entire nested object from loadedConfig.
+      // This is intentional for test usage (top-level overrides only); a deep
+      // merge would be needed to support partial nested overrides in the future.
+      loadedConfig;
   // Activate export mode when next.config.js sets `output: 'export'`.
   // In export mode, SSR routes and any dynamic routes without static params are
   // build errors rather than silently skipped.

@@ -1581,7 +1581,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
     try {
       const parentParams = url.searchParams.get("parentParams");
-      const params = parentParams ? JSON.parse(parentParams) : {};
+      const raw = parentParams ? JSON.parse(parentParams) : {};
+      // Ensure params is a plain object — reject primitives, arrays, and null
+      // so user-authored generateStaticParams always receives { params: {} }
+      // rather than { params: 5 } or similar if input is malformed.
+      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
       const result = await fn({ params });
       return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
     } catch (e) {
