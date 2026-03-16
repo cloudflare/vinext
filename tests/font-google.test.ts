@@ -1,10 +1,10 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach } from "vite-plus/test";
 import path from "node:path";
 import fs from "node:fs";
 import vinext, {
   _parseStaticObjectLiteral as parseStaticObjectLiteral,
 } from "../packages/vinext/src/index.js";
-import type { Plugin } from "vite";
+import type { Plugin } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
 

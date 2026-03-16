@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import { isDangerousScheme } from "../packages/vinext/src/shims/url-safety.js";
 
 describe("isDangerousScheme", () => {

@@ -12,7 +12,7 @@
  * extraction, query stripping, trailing slash, catch-all, @slot filtering) are
  * tested in routing.test.ts — not duplicated here.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs/promises";

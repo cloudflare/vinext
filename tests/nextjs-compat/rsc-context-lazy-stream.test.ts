@@ -68,8 +68,8 @@
  *   [id]/page.tsx — dynamic-segment variant for __VINEXT_RSC_PARAMS__ testing
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer } from "../helpers.js";
 
 // ── Shared server ─────────────────────────────────────────────────────────────

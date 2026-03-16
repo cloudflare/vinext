@@ -3,9 +3,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
-    "preview": "vite preview"
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview"
   },
   "dependencies": {
     "@vitejs/plugin-react": "catalog:",
@@ -17,5 +17,8 @@
     "react-server-dom-webpack": "catalog:",
     "@cloudflare/vite-plugin": "catalog:",
     "wrangler": "catalog:"
+  },
+  "devDependencies": {
+    "vite-plus": "catalog:"
   }
 }

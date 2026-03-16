@@ -285,12 +285,12 @@ async function main() {
     exec("rm -rf .next", { cwd: nextjsDir });
 
     console.log("  Warmup: vinext (Rollup) build...");
-    exec("./node_modules/.bin/vite build", { cwd: vinextDir, timeout: 120000 });
+    exec("./node_modules/.bin/vp build", { cwd: vinextDir, timeout: 120000 });
     exec("rm -rf dist", { cwd: vinextDir });
 
     if (hasRolldown) {
       console.log("  Warmup: vinext (Rolldown) build...");
-      exec("./node_modules/.bin/vite build", { cwd: vinextRolldownDir, timeout: 120000 });
+      exec("./node_modules/.bin/vp build", { cwd: vinextRolldownDir, timeout: 120000 });
       exec("rm -rf dist", { cwd: vinextRolldownDir });
     }
 
@@ -312,11 +312,11 @@ async function main() {
       // warmed filesystem caches, CPU thermal state, or residual process state.
       const cmds = [
         `--command-name nextjs 'rm -rf ${nextjsDir}/.next && ./node_modules/.bin/next build --turbopack'`,
-        `--command-name vinext 'rm -rf ${vinextDir}/dist && ./node_modules/.bin/vite build --root ${vinextDir}'`,
+        `--command-name vinext 'cd ${vinextDir} && rm -rf dist && ./node_modules/.bin/vp build'`,
       ];
       if (hasRolldown) {
         cmds.push(
-          `--command-name rolldown 'rm -rf ${vinextRolldownDir}/dist && ./node_modules/.bin/vite build --root ${vinextRolldownDir}'`,
+          `--command-name rolldown 'cd ${vinextRolldownDir} && rm -rf dist && ./node_modules/.bin/vp build'`,
         );
       }
 
@@ -358,7 +358,7 @@ async function main() {
           run: () => {
             exec("rm -rf dist", { cwd: vinextDir });
             const start = performance.now();
-            exec("./node_modules/.bin/vite build", { cwd: vinextDir, timeout: 120000 });
+            exec("./node_modules/.bin/vp build", { cwd: vinextDir, timeout: 120000 });
             buildTimes.vinext.push(performance.now() - start);
           },
         },
@@ -369,7 +369,7 @@ async function main() {
                 run: () => {
                   exec("rm -rf dist", { cwd: vinextRolldownDir });
                   const start = performance.now();
-                  exec("./node_modules/.bin/vite build", {
+                  exec("./node_modules/.bin/vp build", {
                     cwd: vinextRolldownDir,
                     timeout: 120000,
                   });
@@ -432,7 +432,7 @@ async function main() {
     exec("./node_modules/.bin/next build --turbopack", { cwd: nextjsDir, timeout: 120000 });
 
     exec("rm -rf dist", { cwd: vinextDir });
-    exec("./node_modules/.bin/vite build", { cwd: vinextDir, timeout: 120000 });
+    exec("./node_modules/.bin/vp build", { cwd: vinextDir, timeout: 120000 });
 
     // Next.js: client bundles are in .next/static
     const njsSize = bundleSize(join(nextjsDir, ".next", "static"));
@@ -451,7 +451,7 @@ async function main() {
     // vinext (Rolldown): client bundles are in dist/client
     if (hasRolldown) {
       exec("rm -rf dist", { cwd: vinextRolldownDir });
-      exec("./node_modules/.bin/vite build", { cwd: vinextRolldownDir, timeout: 120000 });
+      exec("./node_modules/.bin/vp build", { cwd: vinextRolldownDir, timeout: 120000 });
       const rdSize = bundleSize(join(vinextRolldownDir, "dist", "client"));
       results.vinextRolldown.bundleSize = rdSize;
       console.log(
@@ -488,8 +488,8 @@ async function main() {
         run: async () => {
           exec("rm -rf node_modules/.vite", { cwd: vinextDir });
           return startAndMeasure(
-            "./node_modules/.bin/vite",
-            ["--port", "4101"],
+            "./node_modules/.bin/vp",
+            ["dev", "--port", "4101"],
             vinextDir,
             "http://localhost:4101",
           );
@@ -503,8 +503,8 @@ async function main() {
               run: async () => {
                 exec("rm -rf node_modules/.vite", { cwd: vinextRolldownDir });
                 return startAndMeasure(
-                  "./node_modules/.bin/vite",
-                  ["--port", "4102"],
+                  "./node_modules/.bin/vp",
+                  ["dev", "--port", "4102"],
                   vinextRolldownDir,
                   "http://localhost:4102",
                 );

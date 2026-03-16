@@ -10,8 +10,8 @@
  *   Vite's pluginContainer.load() on the virtual module IDs.
  */
 import path from "node:path";
-import { describe, it, expect, afterAll } from "vitest";
-import { createServer, type ViteDevServer } from "vite";
+import { describe, it, expect, afterAll } from "vite-plus/test";
+import { createServer, type ViteDevServer } from "vite-plus";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import type { AppRouterConfig } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import { generateSsrEntry } from "../packages/vinext/src/entries/app-ssr-entry.js";

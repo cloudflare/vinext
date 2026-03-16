@@ -8,8 +8,8 @@
  * 3. Make HTTP requests to verify correct responses
  * 4. Check Content-Type, status codes, and asset references
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { type ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import { type ViteDevServer } from "vite-plus";
 import { createServer, type Server } from "node:http";
 import fs from "node:fs";
 import path from "node:path";

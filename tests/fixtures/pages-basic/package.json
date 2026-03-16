@@ -8,6 +8,7 @@
     "vinext": "workspace:*"
   },
   "devDependencies": {
-    "vite": "catalog:"
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
   }
 }

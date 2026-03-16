@@ -24,8 +24,8 @@
  * - fixtures/app-basic/app/api/* (pre-existing, referenced for some tests)
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer } from "../helpers.js";
 
 describe("Next.js compat: app-routes", () => {

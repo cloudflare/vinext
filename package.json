@@ -2,15 +2,16 @@
   "name": "vinext-monorepo",
   "private": true,
   "scripts": {
-    "build": "pnpm --filter vinext run build",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "build": "vp run vinext#build",
+    "test": "vp test run",
+    "test:watch": "vp test",
     "generate:google-fonts": "node scripts/generate-google-fonts.js",
     "typecheck": "tsgo --noEmit",
-    "fmt": "oxfmt",
-    "fmt:check": "oxfmt --check",
-    "lint": "oxlint --deny-warnings",
-    "test:e2e": "playwright test"
+    "fmt": "vp fmt",
+    "fmt:check": "vp fmt --check",
+    "lint": "vp lint --deny-warnings",
+    "test:e2e": "playwright test",
+    "prepare": "vp config"
   },
   "dependencies": {
     "@mdx-js/react": "catalog:",
@@ -26,13 +27,12 @@
     "@vitejs/plugin-rsc": "catalog:",
     "image-size": "catalog:",
     "next": "catalog:",
-    "oxfmt": "catalog:",
-    "oxlint": "catalog:",
     "playwright": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
+    "vite-plus": "catalog:",
     "vitest": "catalog:"
   },
   "packageManager": "pnpm@10.30.0",

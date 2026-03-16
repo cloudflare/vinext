@@ -10,7 +10,7 @@
  * all behavior is tested indirectly through handleApiRoute with a mocked
  * ViteDevServer.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { PassThrough } from "node:stream";
 import http from "node:http";
 vi.mock("../packages/vinext/src/server/instrumentation.js", () => ({
@@ -19,7 +19,7 @@ vi.mock("../packages/vinext/src/server/instrumentation.js", () => ({
 import { handleApiRoute } from "../packages/vinext/src/server/api-handler.js";
 import { reportRequestError } from "../packages/vinext/src/server/instrumentation.js";
 import type { Route } from "../packages/vinext/src/routing/pages-router.js";
-import type { ViteDevServer } from "vite";
+import type { ViteDevServer } from "vite-plus";
 
 beforeEach(() => {
   vi.clearAllMocks();

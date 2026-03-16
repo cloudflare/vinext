@@ -8,7 +8,7 @@
  * Tests SSR output, srcSet generation, getImageProps(), fill mode,
  * priority, custom loader, and static image data handling.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Image, { getImageProps, type StaticImageData } from "../packages/vinext/src/shims/image.js";

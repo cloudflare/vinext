@@ -9,8 +9,8 @@
  * - test/unit/headers.test.ts
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ViteDevServer } from "vite";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "../helpers.js";
 
 // ---------------------------------------------------------------------------

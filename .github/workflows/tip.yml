@@ -43,10 +43,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
         with:
-          node-version: 24
+          cache: "false"
+          run-install: false
 
       - name: Send failure notification
         if: env.EMAIL_API_TOKEN != ''
