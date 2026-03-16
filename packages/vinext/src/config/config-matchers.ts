@@ -810,8 +810,8 @@ export function matchRedirect(
         if (!conditionParams) continue;
         // Locale was omitted (the `?` made it optional) — param value is "".
         let dest = substituteDestinationParams(redirect.destination, {
-          ...conditionParams,
           [entry.paramName]: "",
+          ...conditionParams,
         });
         dest = sanitizeDestination(dest);
         localeMatch = { destination: dest, permanent: redirect.permanent };
@@ -840,8 +840,8 @@ export function matchRedirect(
               : _emptyParams();
           if (!conditionParams) continue;
           let dest = substituteDestinationParams(redirect.destination, {
-            ...conditionParams,
             [entry.paramName]: localePart,
+            ...conditionParams,
           });
           dest = sanitizeDestination(dest);
           localeMatch = { destination: dest, permanent: redirect.permanent };

@@ -4544,6 +4544,34 @@ describe("matchRedirect locale-static index", () => {
     expect(withHeader!.destination).toBe("/en/gated-dest");
   });
 
+  it("lets has captures override locale params in locale-static redirects", async () => {
+    const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
+    const redirects = [
+      {
+        source: `/:locale(en|fr)?/docs`,
+        destination: `/target/:locale`,
+        permanent: false as const,
+        has: [{ type: "header" as const, key: "x-locale", value: "(?<locale>forced)" }],
+      },
+    ];
+
+    const withLocalePrefix = matchRedirect("/en/docs", redirects, {
+      headers: new Headers({ "x-locale": "forced" }),
+      cookies: {},
+      query: new URLSearchParams(),
+      host: "localhost",
+    });
+    expect(withLocalePrefix).toEqual({ destination: "/target/forced", permanent: false });
+
+    const withoutLocalePrefix = matchRedirect("/docs", redirects, {
+      headers: new Headers({ "x-locale": "forced" }),
+      cookies: {},
+      query: new URLSearchParams(),
+      host: "localhost",
+    });
+    expect(withoutLocalePrefix).toEqual({ destination: "/target/forced", permanent: false });
+  });
+
   it("falls back to linear matching for rules that are not locale-static", async () => {
     const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
     // A mix: some locale-static rules and one catch-all that matches /other.
