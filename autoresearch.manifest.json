@@ -349,9 +349,9 @@
   },
   {
     "dir": "not-found-default",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 2,
-    "notes": ""
+    "notes": "Ported 3 HTTP tests via dedicated fixture: default 404 for unmatched routes uses root layout, /_not-found returns 404, and grouped dynamic route falls back to default 404 within group layout. Exposed/fixed missing default 404 layout wrapping when no explicit not-found.tsx exists."
   },
   {
     "dir": "not-found-with-layout-and-group-not-found",

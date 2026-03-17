@@ -344,6 +344,7 @@ import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
 import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
 import { NextRequest, NextFetchEvent } from "next/server";
+import DefaultHttpErrorComponent from "next/error";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -770,6 +771,11 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     BoundaryComponent = boundaryModule?.default ?? null;
   }
   const layouts = opts?.layouts ?? route?.layouts ?? rootLayouts;
+  if (!BoundaryComponent && statusCode === 404) {
+    BoundaryComponent = function DefaultNotFoundBoundary() {
+      return createElement(DefaultHttpErrorComponent, { statusCode: 404 });
+    };
+  }
   if (!BoundaryComponent) return null;
 
   // Resolve metadata and viewport from parent layouts so that not-found/error

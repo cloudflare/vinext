@@ -150,6 +150,15 @@ _This section is updated as experiments accumulate._
 - Most are build-tool-specific (file patching + server restart) or Playwright-only
 - Key skip reasons: Redbox assertions, next.cliOutput checks, client-side error boundary interactions
 
+### Iteration 24: not-found-default (+3 tests) — **BUG FOUND + FIXED**
+
+- Ported HTTP-testable subset with a dedicated fixture:
+  - unmatched route renders default 404 inside root layout
+  - `/_not-found` returns 404
+  - grouped dynamic route falls back to default 404 inside group layout
+- **Bug**: when no explicit `not-found.tsx` existed, vinext returned a bare default 404 instead of wrapping the default 404 UI in root/ancestor layouts like Next.js does.
+- **Fix**: `renderHTTPAccessFallbackPage()` now falls back to `next/error` for 404s, preserving the normal layout wrapping path.
+
 ### Patterns Observed
 
 - Many Next.js tests use `next.browser()` (Playwright) — not HTTP-testable with our pattern
