@@ -424,7 +424,7 @@ export async function prerenderPages({
     };
 
     const renderPage = (urlPath: string) =>
-      fetch(`${baseUrl}${urlPath}`, { headers: secretHeaders });
+      fetch(`${baseUrl}${urlPath}`, { headers: secretHeaders, redirect: "manual" });
 
     // Build the bundlePageRoutes list from static file analysis + route info.
     // getStaticPaths is fetched from the prod server via a prerender endpoint.
