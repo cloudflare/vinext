@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Route } from "../routing/pages-router.js";
 import { matchRoute, patternToNextFormat } from "../routing/pages-router.js";
 import type { ModuleImporter } from "./instrumentation.js";
+import { importModule, reportRequestError } from "./instrumentation.js";
 import type { NextI18nConfig } from "../config/next-config.js";
 import {
   isrGet,
@@ -23,7 +24,6 @@ import { createRequestContext, runWithRequestContext } from "../shims/unified-re
 import "../shims/router-state.js";
 import { runWithHeadState } from "../shims/head-state.js";
 import { runWithServerInsertedHTMLState } from "../shims/navigation-state.js";
-import { reportRequestError } from "./instrumentation.js";
 import { safeJsonStringify } from "./html.js";
 import { parseQueryString as parseQuery } from "../utils/query.js";
 import path from "node:path";
@@ -340,7 +340,7 @@ export function createSSRHandler(
 
         // Set SSR context for the router shim so useRouter() returns
         // the correct URL and params during server-side rendering.
-        const routerShim = (await runner.import("next/router")) as Record<string, any>;
+        const routerShim = await importModule(runner, "next/router");
         if (typeof routerShim.setSSRContext === "function") {
           routerShim.setSSRContext({
             pathname: patternToNextFormat(route.pattern),
@@ -361,7 +361,7 @@ export function createSSRHandler(
           // Register ALS-backed i18n accessors in the SSR module graph so
           // next/link and other SSR imports read from the unified store.
           await runner.import("vinext/i18n-state");
-          const i18nCtx = (await runner.import("vinext/i18n-context")) as Record<string, any>;
+          const i18nCtx = await importModule(runner, "vinext/i18n-context");
           if (typeof i18nCtx.setI18nContext === "function") {
             i18nCtx.setI18nContext({
               locale: locale ?? currentDefaultLocale,
@@ -375,8 +375,7 @@ export function createSSRHandler(
 
         // Load the page module through Vite's SSR pipeline
         // This gives us HMR and transform support for free
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const pageModule = (await runner.import(route.filePath)) as Record<string, any>;
+        const pageModule = await importModule(runner, route.filePath);
         // Mark end of compile phase: everything from here is rendering.
         _compileEnd = now();
 
@@ -525,13 +524,11 @@ export function createSSRHandler(
         let earlyFontLinkHeader = "";
         try {
           const earlyPreloads: Array<{ href: string; type: string }> = [];
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const fontGoogleEarly = (await runner.import("next/font/google")) as Record<string, any>;
+          const fontGoogleEarly = await importModule(runner, "next/font/google");
           if (typeof fontGoogleEarly.getSSRFontPreloads === "function") {
             earlyPreloads.push(...fontGoogleEarly.getSSRFontPreloads());
           }
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const fontLocalEarly = (await runner.import("next/font/local")) as Record<string, any>;
+          const fontLocalEarly = await importModule(runner, "next/font/local");
           if (typeof fontLocalEarly.getSSRFontPreloads === "function") {
             earlyPreloads.push(...fontLocalEarly.getSSRFontPreloads());
           }
@@ -614,11 +611,7 @@ export function createSSRHandler(
                     }
                     if (i18nConfig) {
                       await runner.import("vinext/i18n-state");
-                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                      const i18nCtx = (await runner.import("vinext/i18n-context")) as Record<
-                        string,
-                        any
-                      >;
+                      const i18nCtx = await importModule(runner, "vinext/i18n-context");
                       if (typeof i18nCtx.setI18nContext === "function") {
                         i18nCtx.setI18nContext({
                           locale: locale ?? currentDefaultLocale,
@@ -760,7 +753,7 @@ export function createSSRHandler(
         const appPath = path.join(pagesDir, "_app");
         if (findFileWithExtensions(appPath, matcher)) {
           try {
-            const appModule = (await runner.import(appPath)) as Record<string, any>;
+            const appModule = await importModule(runner, appPath);
             AppComponent = appModule.default ?? null;
           } catch {
             // _app exists but failed to load
@@ -791,15 +784,13 @@ export function createSSRHandler(
         }
 
         // Reset SSR head collector before rendering so <Head> tags are captured
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const headShim = (await runner.import("next/head")) as Record<string, any>;
+        const headShim = await importModule(runner, "next/head");
         if (typeof headShim.resetSSRHead === "function") {
           headShim.resetSSRHead();
         }
 
         // Flush any pending dynamic() preloads so components are ready
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const dynamicShim = (await runner.import("next/dynamic")) as Record<string, any>;
+        const dynamicShim = await importModule(runner, "next/dynamic");
         if (typeof dynamicShim.flushPreloads === "function") {
           await dynamicShim.flushPreloads();
         }
@@ -813,8 +804,7 @@ export function createSSRHandler(
         const allFontStyles: string[] = [];
         const allFontPreloads: Array<{ href: string; type: string }> = [];
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const fontGoogle = (await runner.import("next/font/google")) as Record<string, any>;
+          const fontGoogle = await importModule(runner, "next/font/google");
           if (typeof fontGoogle.getSSRFontLinks === "function") {
             const fontUrls = fontGoogle.getSSRFontLinks();
             for (const fontUrl of fontUrls) {
@@ -833,8 +823,7 @@ export function createSSRHandler(
           // next/font/google not used — skip
         }
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const fontLocal = (await runner.import("next/font/local")) as Record<string, any>;
+          const fontLocal = await importModule(runner, "next/font/local");
           if (typeof fontLocal.getSSRFontStyles === "function") {
             allFontStyles.push(...fontLocal.getSSRFontStyles());
           }
@@ -998,8 +987,8 @@ hydrate();
           setRevalidateDuration(cacheKey, isrRevalidateSeconds);
         }
       } catch (e) {
-        // Stack traces are automatically rewritten by the ModuleRunner,
-        // so server.ssrFixStacktrace() does not need to be called here.
+        // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
+        // when using ModuleRunner — no stack trace fixup is needed here.
         console.error(e);
         // Report error via instrumentation hook if registered
         reportRequestError(
@@ -1068,8 +1057,7 @@ async function renderErrorPage(
       const candidatePath = path.join(pagesDir, candidate);
       if (!findFileWithExtensions(candidatePath, matcher)) continue;
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const errorModule = (await runner.import(candidatePath)) as Record<string, any>;
+      const errorModule = await importModule(runner, candidatePath);
       const ErrorComponent = errorModule.default;
       if (!ErrorComponent) continue;
 
@@ -1078,8 +1066,7 @@ async function renderErrorPage(
       const appPathErr = path.join(pagesDir, "_app");
       if (findFileWithExtensions(appPathErr, matcher)) {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const appModule = (await runner.import(appPathErr)) as Record<string, any>;
+          const appModule = await importModule(runner, appPathErr);
           AppComponent = appModule.default ?? null;
         } catch {
           // _app exists but failed to load
@@ -1094,8 +1081,7 @@ async function renderErrorPage(
       let wrapFn = wrapWithRouterContext;
       if (!wrapFn) {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const errRouterShim = (await runner.import("next/router")) as Record<string, any>;
+          const errRouterShim = await importModule(runner, "next/router");
           wrapFn = errRouterShim.wrapWithRouterContext;
         } catch {
           // router shim not available — continue without it
@@ -1124,8 +1110,7 @@ async function renderErrorPage(
       const docPathErr = path.join(pagesDir, "_document");
       if (findFileWithExtensions(docPathErr, matcher)) {
         try {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const docModule = (await runner.import(docPathErr)) as Record<string, any>;
+          const docModule = await importModule(runner, docPathErr);
           DocumentComponent = docModule.default ?? null;
         } catch {
           // _document exists but failed to load

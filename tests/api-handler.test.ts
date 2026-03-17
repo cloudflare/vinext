@@ -15,6 +15,9 @@ import { PassThrough } from "node:stream";
 import http from "node:http";
 vi.mock("../packages/vinext/src/server/instrumentation.js", () => ({
   reportRequestError: vi.fn(() => Promise.resolve()),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  importModule: (runner: { import(id: string): Promise<unknown> }, id: string) =>
+    runner.import(id) as Promise<Record<string, any>>,
 }));
 import { handleApiRoute } from "../packages/vinext/src/server/api-handler.js";
 import {

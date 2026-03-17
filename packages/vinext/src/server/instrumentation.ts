@@ -48,6 +48,21 @@ export interface ModuleImporter {
   import(id: string): Promise<unknown>;
 }
 
+/**
+ * Import a module via the runner and cast the result to `Record<string, any>`.
+ *
+ * Centralises the `as Record<string, any>` cast so callers don't need
+ * per-call eslint-disable comments.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function importModule(
+  runner: ModuleImporter,
+  id: string,
+): Promise<Record<string, any>> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (await runner.import(id)) as Record<string, any>;
+}
+
 /** Possible instrumentation file names. */
 const INSTRUMENTATION_FILES = [
   "instrumentation.ts",

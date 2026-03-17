@@ -78,8 +78,8 @@ each shim module (e.g. `head-state.ts`, `router-state.ts`) follows this pattern:
 
 in dev, vite has separate module graphs for different environments (node vs ssr).
 the state module must be loaded in each environment that uses it. the dev server
-calls `server.ssrLoadModule("vinext/head-state")` to make sure registration
-happens in the ssr module graph.
+calls `runner.import("vinext/head-state")` (via the `ModuleImporter` interface)
+to make sure registration happens in the ssr module graph.
 
 in prod, bundling collapses everything into one module graph, so registration
 happens naturally through static imports.
@@ -92,7 +92,7 @@ happens naturally through static imports.
 4. in your shim, use `isInsideUnifiedScope()` to read from the unified store,
    falling back to standalone als when outside
 5. if the state is accessed by react components during ssr in dev, load the
-   state module via `server.ssrLoadModule()` in `dev-server.ts` (node-side-only
-   state does not need this)
+   state module via `runner.import()` (using the `ModuleImporter` interface)
+   in `dev-server.ts` (node-side-only state does not need this)
 6. if the state is per-call rather than per-request (like cache scopes), keep
    it in its own als - don't add it to the unified context

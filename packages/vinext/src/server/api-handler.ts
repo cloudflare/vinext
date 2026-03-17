@@ -10,7 +10,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { decode as decodeQueryString } from "node:querystring";
 import { type Route, matchRoute } from "../routing/pages-router.js";
-import { reportRequestError, type ModuleImporter } from "./instrumentation.js";
+import { reportRequestError, importModule, type ModuleImporter } from "./instrumentation.js";
 import { addQueryParam } from "../utils/query.js";
 
 /**
@@ -204,8 +204,7 @@ export async function handleApiRoute(
 
   try {
     // Load the API route module through the ModuleRunner
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const apiModule = (await runner.import(route.filePath)) as Record<string, any>;
+    const apiModule = await importModule(runner, route.filePath);
     const handler = apiModule.default;
 
     if (typeof handler !== "function") {
@@ -242,8 +241,8 @@ export async function handleApiRoute(
       return true;
     }
 
-    // Stack traces are automatically rewritten by the ModuleRunner,
-    // so server.ssrFixStacktrace() does not need to be called here.
+    // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
+    // when using ModuleRunner — no stack trace fixup is needed here.
     console.error(e);
     void reportRequestError(
       e instanceof Error ? e : new Error(String(e)),

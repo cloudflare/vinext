@@ -2954,7 +2954,6 @@ describe("Pages Router dev ISR regeneration", () => {
       };
       const server = {
         transformIndexHtml: vi.fn(async (_url: string, html: string) => html),
-        ssrLoadModule: vi.fn(loadModule),
       } as unknown as ViteDevServer;
       const runner = { import: loadModule };
 
