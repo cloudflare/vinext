@@ -392,8 +392,7 @@ function __pageCacheTags(pathname, extraTags) {
     }
   }
   // Leaf page tag — revalidatePath(path, "page") targets this.
-  const tagBase = pathname === "/" ? "_N_T_" : "_N_T_" + pathname;
-  tags.push(tagBase + "/page");
+  tags.push("_N_T_" + built + "/page");
   if (Array.isArray(extraTags)) {
     for (const tag of extraTags) {
       if (!tags.includes(tag)) tags.push(tag);

@@ -378,18 +378,10 @@ export async function revalidateTag(
  * layout/page hierarchy tags, so only no-type invalidation applies there.
  */
 export async function revalidatePath(path: string, type?: "page" | "layout"): Promise<void> {
-  const normalizedPath = path.endsWith("/") && path !== "/" ? path.slice(0, -1) : path;
-  const handler = _getActiveHandler();
-
-  if (type) {
-    const tagBase = normalizedPath === "/" ? "_N_T_" : `_N_T_${normalizedPath}`;
-    await handler.revalidateTag(tagBase + "/" + type);
-    return;
-  }
-
-  // Only pass the _N_T_ prefixed form to avoid accidentally invalidating any
-  // cache entry whose tag happens to equal the raw path string.
-  await handler.revalidateTag([`_N_T_${normalizedPath}`]);
+  // Strip trailing slash so root "/" becomes "" — avoids double-slash in _N_T_//layout
+  const stem = path.endsWith("/") ? path.slice(0, -1) : path;
+  const tag = type ? `_N_T_${stem}/${type}` : `_N_T_${stem || "/"}`;
+  await _getActiveHandler().revalidateTag(tag);
 }
 
 /**
