@@ -774,9 +774,19 @@ export async function prerenderApp({
               headers: secretHeaders,
             });
             const text = await res.text();
+            if (!res.ok) {
+              console.warn(
+                `[vinext] Warning: /__vinext/prerender/static-params returned ${res.status} for ${pattern}. ` +
+                  `Static params will be skipped. This may indicate a stale or missing prerender secret.`,
+              );
+              return null;
+            }
             if (text === "null") return null;
             return JSON.parse(text) as Record<string, string | string[]>[];
           })();
+          // Only cache on success — a rejected or error promise must not poison
+          // subsequent lookups for the same route/params combo.
+          void request.catch(() => staticParamsCache.delete(cacheKey));
           staticParamsCache.set(cacheKey, request);
           return request;
         };
