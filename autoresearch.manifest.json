@@ -613,9 +613,9 @@
   },
   {
     "dir": "_allow-underscored-root-directory",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 3,
-    "notes": ""
+    "notes": "Ported 3 tests using dedicated fixture: private underscore folders are not routable, root route can re-export from private folder, URL-encoded %5F folder decodes to underscore URL and remains routable."
   },
   {
     "dir": "action-in-pages-router",

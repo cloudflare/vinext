@@ -19,6 +19,10 @@ import * as cheerio from "cheerio";
 // ── Fixture paths ─────────────────────────────────────────────
 export const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
 export const APP_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/app-basic");
+export const APP_UNDERSCORED_ROOT_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/app-underscored-root",
+);
 export const PAGES_I18N_DOMAINS_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/pages-i18n-domains",
