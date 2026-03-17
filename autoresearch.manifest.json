@@ -733,9 +733,9 @@
   },
   {
     "dir": "app-simple-routes",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 3,
-    "notes": ""
+    "notes": "Ported 2 tests: route handlers with dot in path. FOUND BUG: route handlers received plain Request instead of NextRequest (.nextUrl was undefined). Fixed in app-rsc-entry.ts. Iteration 6."
   },
   {
     "dir": "autoscroll-with-css-modules",

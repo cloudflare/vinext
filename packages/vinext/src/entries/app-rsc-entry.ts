@@ -2336,7 +2336,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (typeof handlerFn === "function") {
       const previousHeadersPhase = setHeadersAccessPhase("route-handler");
       try {
-        const response = await handlerFn(request, { params });
+        // Wrap in NextRequest so route handlers get .nextUrl, .cookies, .geo, .ip, etc.
+        // Next.js passes NextRequest to route handlers, not plain Request.
+        const routeRequest = request instanceof NextRequest ? request : new NextRequest(request);
+        const response = await handlerFn(routeRequest, { params });
         const dynamicUsedInHandler = consumeDynamicUsage();
         const handlerSetCacheControl = response.headers.has("cache-control");
 
