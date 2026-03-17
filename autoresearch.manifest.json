@@ -1405,9 +1405,9 @@
   },
   {
     "dir": "use-cache-route-handler-only",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 3,
-    "notes": ""
+    "notes": "Ported 2 tests using dedicated route-handler-only fixture: function-level \"use cache\" memoizes route handler results, and revalidatePath(\"/node\") invalidates the cached response."
   },
   {
     "dir": "use-cache-search-params",
