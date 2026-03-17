@@ -27,6 +27,7 @@ import { classifyPagesRoute, classifyAppRoute } from "./report.js";
 import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-matcher.js";
 import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "../shims/cache.js";
 import { runWithHeadersContext, headersContextFromRequest } from "../shims/headers.js";
+import { startProdServer } from "../server/prod-server.js";
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -368,11 +369,6 @@ export async function prerenderPages({
   // When the caller passes options._prodServer we use that and do NOT close it.
   let ownedProdServerHandle: { server: HttpServer; port: number } | null = null;
   try {
-    // ── Set up prod server ────────────────────────────────────────────────
-    const { startProdServer } = (await import(
-      /* @vite-ignore */ "../server/prod-server.js"
-    )) as typeof import("../server/prod-server.js");
-
     // Read the prerender secret written at build time by vinext:server-manifest.
     // When _prerenderSecret is provided by the caller (hybrid builds where
     // pagesBundlePath is absent), use it directly. Otherwise derive serverDir
@@ -696,9 +692,6 @@ export async function prerenderApp({
     // This works for both plain Node and Cloudflare Workers builds — the CF
     // Workers bundle outputs dist/server/index.js which is a standard Node
     // server entry. No wrangler/miniflare needed.
-    const { startProdServer } = (await import(
-      /* @vite-ignore */ "../server/prod-server.js"
-    )) as typeof import("../server/prod-server.js");
 
     // Read the prerender secret written at build time by vinext:server-manifest.
     const serverManifestPath = path.join(serverDir, "vinext-server.json");
