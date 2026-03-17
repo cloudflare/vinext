@@ -139,9 +139,9 @@
   },
   {
     "dir": "proxy-missing-export",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Already fixed in PR #203. Test requires file writes + server restarts. Covered by app-router.test.ts proxy export validation test."
   },
   {
     "dir": "taint",
@@ -151,9 +151,9 @@
   },
   {
     "dir": "unauthorized",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 1,
-    "notes": ""
+    "notes": "Ported 5 tests: scoped boundary, root escalation, 401 status. Iteration 4."
   },
   {
     "dir": "app-catch-all-optional",
