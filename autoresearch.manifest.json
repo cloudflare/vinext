@@ -73,69 +73,69 @@
   },
   {
     "dir": "instant-validation",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Next.js instant validation infra. Uses Redbox, dev-only validation utils. Build-tool specific."
   },
   {
     "dir": "instant-validation-build",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Build-time instant validation. Uses next.build() with special args. Build-tool specific."
   },
   {
     "dir": "instant-validation-causes",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Dev-only instant validation cause logging. Build-tool specific."
   },
   {
     "dir": "instant-validation-client",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Client component validation with next.start()/stop(). Build-tool specific."
   },
   {
     "dir": "instant-validation-static-shells",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Static shell validation. PPR/build-tool specific."
   },
   {
     "dir": "loader-file-named-export-custom-loader-error",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Custom image loader file export validation + Redbox. Build config specific."
   },
   {
     "dir": "metadata-invalid-image-file",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Invalid metadata image file validation + build/start cycle. Build-tool specific."
   },
   {
     "dir": "missing-suspense-with-csr-bailout",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "CSR bailout Suspense validation. File rename + restart cycle. Build-tool specific."
   },
   {
     "dir": "parallel-routes-revalidation",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Full Playwright: form submissions, button clicks, in-memory data store. Not HTTP-testable."
   },
   {
     "dir": "ppr-errors",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "PPR build errors. Skipped even in Next.js (TODO comment). Build-only."
   },
   {
     "dir": "ppr-missing-root-params",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "PPR missing root params validation. Build start/stop cycle."
   },
   {
     "dir": "proxy-missing-export",
@@ -145,9 +145,9 @@
   },
   {
     "dir": "taint",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "React taint API: passes process.env to client component, checks error via browser. Playwright-only."
   },
   {
     "dir": "unauthorized",
@@ -157,9 +157,9 @@
   },
   {
     "dir": "app-catch-all-optional",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 2,
-    "notes": ""
+    "notes": "Ported 3 tests: optional catch-all with/without rest params. Iteration 5."
   },
   {
     "dir": "app-middleware",
@@ -217,9 +217,9 @@
   },
   {
     "dir": "external-redirect",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 2,
-    "notes": ""
+    "notes": "Full Playwright with route interception. Server Action external redirect."
   },
   {
     "dir": "front-redirect-issue",
@@ -565,9 +565,9 @@
   },
   {
     "dir": "rewrite-headers",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 2,
-    "notes": ""
+    "notes": "Tests x-nextjs-rewritten-path/query headers. Next.js-specific internal headers."
   },
   {
     "dir": "rewrite-with-search-params",
