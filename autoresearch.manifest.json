@@ -7,69 +7,69 @@
   },
   {
     "dir": "app-invalid-revalidate",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Build-time validation test: patches files, restarts server, checks CLI output. Not feasible with fetchHtml pattern."
   },
   {
     "dir": "app-validation",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Tests next-router-state-tree header validation - Next.js-specific RSC protocol header. Vinext does not use this header."
   },
   {
     "dir": "cache-components-errors",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Tests \"use cache\" + prerender debug errors. Uses next.build(), next.browser(), Redbox assertions. Build-tool specific."
   },
   {
     "dir": "cache-components-route-handler-errors",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Same category as cache-components-errors. Build-time cache component validation."
   },
   {
     "dir": "catch-error",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Full Playwright: button clicks, error boundary reset/retry, client component state. Not feasible with HTTP tests."
   },
   {
     "dir": "dedupe-rsc-error-log",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Tests error log deduplication by checking next.cliOutput. Not HTTP-testable."
   },
   {
     "dir": "default-error-page-ui",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Full Playwright: client-side error triggers, CSS computed styles, button clicks, Redbox."
   },
   {
     "dir": "error-boundary-navigation",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Full Playwright: click navigation between error/not-found pages."
   },
   {
     "dir": "error-on-next-codemod-comment",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Next.js SWC codemod comment detection + Redbox. Build-tool specific."
   },
   {
     "dir": "errors",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 1,
-    "notes": ""
+    "notes": "Full Playwright: button clicks, pageerror listeners, error boundary interactions."
   },
   {
     "dir": "forbidden",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 1,
-    "notes": ""
+    "notes": "Ported 5 tests: scoped boundary, root escalation, 403 status, valid params rendering. Iteration 3."
   },
   {
     "dir": "instant-validation",
