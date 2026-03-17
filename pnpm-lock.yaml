@@ -747,9 +747,6 @@ importers:
       vite-plus:
         specifier: 'catalog:'
         version: 0.1.12(@types/node@25.2.3)(@voidzero-dev/vite-plus-core@0.1.12(@types/node@25.2.3)(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3))(esbuild@0.27.3)(jiti@2.6.1)(typescript@5.9.3)
-      wrangler:
-        specifier: 'catalog:'
-        version: 4.66.0(@cloudflare/workers-types@4.20260313.1)
 
   tests/fixtures/app-basic:
     dependencies:

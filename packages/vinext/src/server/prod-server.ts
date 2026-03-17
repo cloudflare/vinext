@@ -49,6 +49,7 @@ import { computeLazyChunks } from "../index.js";
 import { manifestFileWithBase } from "../utils/manifest-paths.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import type { ExecutionContextLike } from "../shims/request-context.js";
+import { readPrerenderSecret } from "../build/server-manifest.js";
 
 /** Convert a Node.js IncomingMessage into a ReadableStream for Web Request body. */
 function readNodeStream(req: IncomingMessage): ReadableStream<Uint8Array> {
@@ -629,16 +630,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
-  let prerenderSecret: string | undefined;
-  const serverManifestPath = path.join(path.dirname(rscEntryPath), "vinext-server.json");
-  if (fs.existsSync(serverManifestPath)) {
-    try {
-      const manifest = JSON.parse(fs.readFileSync(serverManifestPath, "utf-8"));
-      prerenderSecret = manifest.prerenderSecret;
-    } catch {
-      /* ignore parse errors */
-    }
-  }
+  const prerenderSecret = readPrerenderSecret(path.dirname(rscEntryPath));
 
   // Import the RSC handler (use file:// URL for reliable dynamic import).
   // Cache-bust with mtime so that if this function is called multiple times
@@ -800,16 +792,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
 
   // Load prerender secret written at build time by vinext:server-manifest plugin.
   // Used to authenticate internal /__vinext/prerender/* HTTP endpoints.
-  let prerenderSecret: string | undefined;
-  const serverManifestPath = path.join(path.dirname(serverEntryPath), "vinext-server.json");
-  if (fs.existsSync(serverManifestPath)) {
-    try {
-      const manifest = JSON.parse(fs.readFileSync(serverManifestPath, "utf-8"));
-      prerenderSecret = manifest.prerenderSecret;
-    } catch {
-      /* ignore parse errors */
-    }
-  }
+  const prerenderSecret = readPrerenderSecret(path.dirname(serverEntryPath));
 
   // Extract config values (embedded at build time in the server entry)
   const basePath: string = vinextConfig?.basePath ?? "";

@@ -22,11 +22,17 @@ import path from "node:path";
 import fs from "node:fs";
 import type { Server as HttpServer } from "node:http";
 import type { PrerenderResult, PrerenderRouteResult } from "./prerender.js";
-import { prerenderApp, prerenderPages, writePrerenderIndex } from "./prerender.js";
+import {
+  prerenderApp,
+  prerenderPages,
+  writePrerenderIndex,
+  readPrerenderSecret,
+} from "./prerender.js";
 import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
 import { findDir } from "./report.js";
+import { startProdServer } from "../server/prod-server.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -172,9 +178,6 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       // Hybrid build: start a single shared prod server.
       // The App Router bundle (dist/server/index.js) handles both App Router and
       // Pages Router routes in a hybrid build, so we only need one server.
-      const { startProdServer } = (await import(
-        /* @vite-ignore */ "../server/prod-server.js"
-      )) as typeof import("../server/prod-server.js");
       sharedProdServer = await startProdServer({
         port: 0,
         host: "127.0.0.1",
@@ -184,15 +187,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
       // Read the prerender secret from vinext-server.json so it can be passed
       // to both prerender phases (pages phase won't have a pagesBundlePath).
-      const serverManifestPath = path.join(serverDir, "vinext-server.json");
-      if (fs.existsSync(serverManifestPath)) {
-        try {
-          const manifest = JSON.parse(fs.readFileSync(serverManifestPath, "utf-8"));
-          sharedPrerenderSecret = manifest.prerenderSecret;
-        } catch {
-          /* ignore */
-        }
-      }
+      sharedPrerenderSecret = readPrerenderSecret(serverDir);
     }
 
     // ── App Router phase ──────────────────────────────────────────────────────

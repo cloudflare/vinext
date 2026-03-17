@@ -28,6 +28,8 @@ import { createValidFileMatcher, type ValidFileMatcher } from "../routing/file-m
 import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "../shims/cache.js";
 import { runWithHeadersContext, headersContextFromRequest } from "../shims/headers.js";
 import { startProdServer } from "../server/prod-server.js";
+import { readPrerenderSecret } from "./server-manifest.js";
+export { readPrerenderSecret } from "./server-manifest.js";
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -375,16 +377,14 @@ export async function prerenderPages({
     // from pagesBundlePath and read the manifest from disk.
     let prerenderSecret: string | undefined = options._prerenderSecret;
     if (!prerenderSecret && pagesBundlePath) {
-      const serverDir = path.dirname(pagesBundlePath);
-      const serverManifestPath = path.join(serverDir, "vinext-server.json");
-      if (fs.existsSync(serverManifestPath)) {
-        try {
-          const manifest = JSON.parse(fs.readFileSync(serverManifestPath, "utf-8"));
-          prerenderSecret = manifest.prerenderSecret;
-        } catch {
-          /* ignore */
-        }
-      }
+      prerenderSecret = readPrerenderSecret(path.dirname(pagesBundlePath));
+    }
+    if (!prerenderSecret) {
+      console.warn(
+        "[vinext] Warning: prerender secret not found. " +
+          "/__vinext/prerender/* endpoints will return 403 and dynamic routes will produce no paths. " +
+          "Run `vinext build` to regenerate the secret.",
+      );
     }
 
     // Use caller-provided prod server if available; otherwise start our own.
@@ -694,15 +694,13 @@ export async function prerenderApp({
     // server entry. No wrangler/miniflare needed.
 
     // Read the prerender secret written at build time by vinext:server-manifest.
-    const serverManifestPath = path.join(serverDir, "vinext-server.json");
-    let prerenderSecret: string | undefined;
-    if (fs.existsSync(serverManifestPath)) {
-      try {
-        const manifest = JSON.parse(fs.readFileSync(serverManifestPath, "utf-8"));
-        prerenderSecret = manifest.prerenderSecret;
-      } catch {
-        /* ignore */
-      }
+    const prerenderSecret = readPrerenderSecret(serverDir);
+    if (!prerenderSecret) {
+      console.warn(
+        "[vinext] Warning: prerender secret not found. " +
+          "/__vinext/prerender/* endpoints will return 403 and generateStaticParams will not be called. " +
+          "Run `vinext build` to regenerate the secret.",
+      );
     }
 
     // Use caller-provided prod server if available; otherwise start our own.
@@ -726,7 +724,8 @@ export async function prerenderApp({
 
     rscHandler = (req: Request) => {
       // Forward the request to the local prod server.
-      const url = `${baseUrl}${new URL(req.url).pathname}${new URL(req.url).search}`;
+      const parsed = new URL(req.url);
+      const url = `${baseUrl}${parsed.pathname}${parsed.search}`;
       return fetch(url, {
         method: req.method,
         headers: { ...secretHeaders, ...Object.fromEntries(req.headers.entries()) },

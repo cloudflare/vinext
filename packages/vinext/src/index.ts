@@ -3848,29 +3848,37 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // the internal /__vinext/prerender/* endpoints, which are only reachable during
     // the prerender phase of `vinext build`. A new secret is generated on every
     // build so it rotates with every deployment.
-    {
-      name: "vinext:server-manifest",
-      apply: "build",
-      enforce: "post",
-      writeBundle: {
-        sequential: true,
-        order: "post",
-        handler(options) {
-          const envName = this.environment?.name;
-          // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
-          // (ssr env). Skip client and other environments.
-          if (envName !== "rsc" && envName !== "ssr") return;
+    //
+    // The secret is generated once at plugin creation time so that both the rsc
+    // and ssr environments write the exact same value (they share the same
+    // closure). Without this, each env would call randomBytes() independently
+    // and the second write would silently overwrite the first with a different
+    // secret, causing prerender auth to fail for whichever env's server reads
+    // the file last.
+    (() => {
+      const prerenderSecret = randomBytes(32).toString("hex");
+      return {
+        name: "vinext:server-manifest",
+        apply: "build" as const,
+        enforce: "post" as const,
+        writeBundle: {
+          sequential: true,
+          order: "post" as const,
+          handler(options: { dir?: string }) {
+            const envName = this.environment?.name;
+            // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
+            // (ssr env). Skip client and other environments.
+            if (envName !== "rsc" && envName !== "ssr") return;
 
-          const outDir = options.dir;
-          if (!outDir) return;
+            const outDir = options.dir;
+            if (!outDir) return;
 
-          const manifest = {
-            prerenderSecret: randomBytes(32).toString("hex"),
-          };
-          fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
+            const manifest = { prerenderSecret };
+            fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
+          },
         },
-      },
-    },
+      };
+    })(),
     // Vite can emit empty SSR manifest entries for modules that Rollup inlines
     // into another chunk. Pages Router looks up assets by page module path at
     // runtime, so rebuild those mappings from the emitted client bundle.
