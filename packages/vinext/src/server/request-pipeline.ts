@@ -137,10 +137,11 @@ export function validateCsrfOrigin(
   // X-Forwarded-Host here, since it can be freely set by the client
   // and would allow the check to be bypassed if it matched a spoofed
   // Origin. The prod server's resolveHost() handles trusted proxy
-  // scenarios separately.
-  const hostHeader = (request.headers.get("host") || "").split(",")[0].trim().toLowerCase();
-
-  if (!hostHeader) return null;
+  // scenarios separately. If Host is missing, fall back to request.url
+  // so handcrafted requests don't fail open.
+  const hostHeader =
+    (request.headers.get("host") || "").split(",")[0].trim().toLowerCase() ||
+    new URL(request.url).host.toLowerCase();
 
   // Same origin — allow
   if (originHost === hostHeader) return null;

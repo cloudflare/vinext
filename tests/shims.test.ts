@@ -5511,6 +5511,50 @@ describe("proxyExternalRequest", () => {
     }
   });
 
+  it("strips hop-by-hop request headers before proxying external rewrites", async () => {
+    const { proxyExternalRequest } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+
+    const request = new Request("http://localhost:3000/proxy", {
+      method: "DELETE",
+      headers: {
+        connection: "keep-alive, x-custom-hop",
+        "keep-alive": "timeout=5",
+        te: "trailers",
+        trailers: "x-trailer",
+        "transfer-encoding": "chunked",
+        upgrade: "websocket",
+        "x-custom-hop": "secret",
+        "proxy-authorization": "Basic cHJveHk=",
+        "x-custom-header": "keep-me",
+      },
+    });
+
+    const originalFetch = globalThis.fetch;
+    let capturedHeaders: Headers | undefined;
+    globalThis.fetch = async (_url: any, init: any) => {
+      capturedHeaders = init.headers;
+      return new Response("ok", { status: 200 });
+    };
+
+    try {
+      await proxyExternalRequest(request, "https://api.example.com/data");
+      expect(capturedHeaders).toBeDefined();
+      expect(capturedHeaders!.get("connection")).toBeNull();
+      expect(capturedHeaders!.get("keep-alive")).toBeNull();
+      expect(capturedHeaders!.get("te")).toBeNull();
+      expect(capturedHeaders!.get("trailers")).toBeNull();
+      expect(capturedHeaders!.get("transfer-encoding")).toBeNull();
+      expect(capturedHeaders!.get("upgrade")).toBeNull();
+      expect(capturedHeaders!.get("x-custom-hop")).toBeNull();
+      // Request credentials that are not connection-scoped should still forward.
+      expect(capturedHeaders!.get("proxy-authorization")).toBe("Basic cHJveHk=");
+      expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("forwards redirect responses without following them", async () => {
     const { proxyExternalRequest } =
       await import("../packages/vinext/src/config/config-matchers.js");

@@ -1429,7 +1429,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {
@@ -4364,7 +4373,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {
@@ -7332,7 +7350,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {
@@ -10305,7 +10332,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {
@@ -13250,7 +13286,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {
@@ -16414,7 +16459,16 @@ function __validateDevRequestOrigin(request) {
   }
 
   const origin = request.headers.get("origin");
-  if (!origin || origin === "null") return null;
+  if (!origin) return null;
+
+  // Origin "null" is sent by opaque/sandboxed contexts. Block unless explicitly allowed.
+  if (origin === "null") {
+    if (!__allowedDevOrigins.includes("null")) {
+      console.warn("[vinext] Blocked request with Origin: null. Add \\"null\\" to allowedDevOrigins to allow sandboxed contexts.");
+      return new Response("Forbidden", { status: 403, headers: { "Content-Type": "text/plain" } });
+    }
+    return null;
+  }
 
   let originHostname;
   try {

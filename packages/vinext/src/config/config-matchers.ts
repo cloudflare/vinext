@@ -178,6 +178,31 @@ const HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 
+/** Request hop-by-hop headers to strip before proxying with fetch(). */
+const REQUEST_HOP_BY_HOP_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "te",
+  "trailers",
+  "transfer-encoding",
+  "upgrade",
+]);
+
+function stripHopByHopRequestHeaders(headers: Headers): void {
+  const connectionTokens = (headers.get("connection") || "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+
+  for (const header of REQUEST_HOP_BY_HOP_HEADERS) {
+    headers.delete(header);
+  }
+
+  for (const token of connectionTokens) {
+    headers.delete(token);
+  }
+}
+
 /**
  * Detect regex patterns vulnerable to catastrophic backtracking (ReDoS).
  *
@@ -1010,12 +1035,12 @@ export async function proxyExternalRequest(
   // Set Host to the external target (required for correct routing)
   headers.set("host", targetUrl.host);
   // Remove headers that should not be forwarded to external services.
-  // transfer-encoding is stripped because fetch() handles framing independently —
-  // forwarding the client's TE header could cause request boundary disagreement
-  // between the proxy and backend (defense-in-depth against request smuggling,
+  // fetch() handles framing independently, so hop-by-hop transport headers
+  // from the client must not be forwarded upstream. In particular,
+  // transfer-encoding could cause request boundary disagreement between the
+  // proxy and backend (defense-in-depth against request smuggling,
   // ref: CVE GHSA-ggv3-7p47-pfv8).
-  headers.delete("connection");
-  headers.delete("transfer-encoding");
+  stripHopByHopRequestHeaders(headers);
   const keysToDelete: string[] = [];
   for (const key of headers.keys()) {
     if (key.startsWith("x-middleware-")) {

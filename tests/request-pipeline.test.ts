@@ -208,14 +208,20 @@ describe("validateCsrfOrigin", () => {
     expect(res!.status).toBe(403);
   });
 
-  it("allows requests with no Host header", () => {
-    // Can't construct a Request without host easily, but we can test the
-    // empty-host fallback by providing an origin but no host
+  it("falls back to request.url host when Host header is missing", () => {
     const req = new Request("http://localhost:3000/api/action", {
       headers: { origin: "http://localhost:3000" },
     });
-    // When host is missing, the function returns null (allows)
     expect(validateCsrfOrigin(req)).toBeNull();
+  });
+
+  it("still blocks cross-origin requests when Host header is missing", () => {
+    const req = new Request("http://localhost:3000/api/action", {
+      headers: { origin: "http://evil.com" },
+    });
+    const res = validateCsrfOrigin(req);
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(403);
   });
 });
 
