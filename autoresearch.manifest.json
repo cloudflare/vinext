@@ -973,9 +973,9 @@
   },
   {
     "dir": "layout-params",
-    "status": "skip",
+    "status": "covered",
     "priority": 3,
-    "notes": "Needs separate fixture app with custom root layout hierarchy. Complex fixture setup for params-at-each-layout-level testing."
+    "notes": "Ported 6 tests. FOUND AND FIXED BUG: all layouts received full params instead of scoped per-segment params. Fixed __scopeParamsForLayout in app-rsc-entry.ts. Also added cheerio + fetchDom helper."
   },
   {
     "dir": "mdx-font-preload",

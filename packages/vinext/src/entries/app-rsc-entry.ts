@@ -509,6 +509,34 @@ function makeThenableParams(obj) {
   return Object.assign(Promise.resolve(plain), plain);
 }
 
+// Compute the subset of params that a layout at a given tree position should receive.
+// In Next.js, each layout only sees params from its own segment and ancestor segments —
+// NOT from child segments deeper in the tree. For example, with
+// /base/[param1]/[param2]/page.tsx, the layout at [param1]/ gets {param1} but not {param2}.
+function __scopeParamsForLayout(routeSegments, treePosition, fullParams) {
+  var scoped = {};
+  // Scan segments from root up to (but not including) this layout's position
+  for (var i = 0; i < treePosition; i++) {
+    var seg = routeSegments[i];
+    if (!seg) continue;
+    // Optional catch-all: [[...param]]
+    if (seg.indexOf("[[...") === 0 && seg.charAt(seg.length - 1) === "]" && seg.charAt(seg.length - 2) === "]") {
+      var pn = seg.slice(5, -2);
+      // Only include if the value is a non-empty array (Next.js omits empty optional catch-all)
+      if (pn in fullParams && Array.isArray(fullParams[pn]) && fullParams[pn].length > 0) scoped[pn] = fullParams[pn];
+    // Catch-all: [...param]
+    } else if (seg.indexOf("[...") === 0 && seg.charAt(seg.length - 1) === "]") {
+      var pn2 = seg.slice(4, -1);
+      if (pn2 in fullParams) scoped[pn2] = fullParams[pn2];
+    // Dynamic: [param]
+    } else if (seg.charAt(0) === "[" && seg.charAt(seg.length - 1) === "]" && seg.indexOf(".") === -1) {
+      var pn3 = seg.slice(1, -1);
+      if (pn3 in fullParams) scoped[pn3] = fullParams[pn3];
+    }
+  }
+  return scoped;
+}
+
 // Resolve route tree segments to actual values using matched params.
 // Dynamic segments like [id] are replaced with param values, catch-all
 // segments like [...slug] are joined with "/", and route groups are kept as-is.
@@ -791,12 +819,13 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     const _treePositions = route?.layoutTreePositions;
     const _routeSegs = route?.routeSegments || [];
     const _fallbackParams = opts?.matchedParams ?? route?.params ?? {};
-    const _asyncFallbackParams = makeThenableParams(_fallbackParams);
     for (let i = layouts.length - 1; i >= 0; i--) {
       const LayoutComponent = layouts[i]?.default;
       if (LayoutComponent) {
-        element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParams });
         const _tp = _treePositions ? _treePositions[i] : 0;
+        const _scopedParams = __scopeParamsForLayout(_routeSegs, _tp, _fallbackParams);
+        const _asyncScopedParams = makeThenableParams(_scopedParams);
+        element = createElement(LayoutComponent, { children: element, params: _asyncScopedParams });
         const _cs = __resolveChildSegments(_routeSegs, _tp, _fallbackParams);
         element = createElement(LayoutSegmentProvider, { childSegments: _cs }, element);
       }
@@ -835,11 +864,15 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   // For HTML (full page load) responses, wrap with layouts only (no client-side
   // wrappers needed since SSR generates the complete HTML document).
   const _fallbackParamsHtml = opts?.matchedParams ?? route?.params ?? {};
-  const _asyncFallbackParamsHtml = makeThenableParams(_fallbackParamsHtml);
+  const _treePositionsHtml = route?.layoutTreePositions;
+  const _routeSegsHtml = route?.routeSegments || [];
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
     if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParamsHtml });
+      const _tpHtml = _treePositionsHtml ? _treePositionsHtml[i] : 0;
+      const _scopedParamsHtml = __scopeParamsForLayout(_routeSegsHtml, _tpHtml, _fallbackParamsHtml);
+      const _asyncScopedParamsHtml = makeThenableParams(_scopedParamsHtml);
+      element = createElement(LayoutComponent, { children: element, params: _asyncScopedParamsHtml });
     }
   }
   const _pathname = new URL(request.url).pathname;
@@ -930,12 +963,13 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
       const _errTreePositions = route?.layoutTreePositions;
       const _errRouteSegs = route?.routeSegments || [];
       const _errParams = matchedParams ?? route?.params ?? {};
-      const _asyncErrParams = makeThenableParams(_errParams);
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParams });
           const _etp = _errTreePositions ? _errTreePositions[i] : 0;
+          const _errScopedParams = __scopeParamsForLayout(_errRouteSegs, _etp, _errParams);
+          const _asyncErrScopedParams = makeThenableParams(_errScopedParams);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParams });
           const _ecs = __resolveChildSegments(_errRouteSegs, _etp, _errParams);
           element = createElement(LayoutSegmentProvider, { childSegments: _ecs }, element);
         }
@@ -956,11 +990,15 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     } else {
       // For HTML (full page load) responses, wrap with layouts only.
       const _errParamsHtml = matchedParams ?? route?.params ?? {};
-      const _asyncErrParamsHtml = makeThenableParams(_errParamsHtml);
+      const _errTreePositionsHtml = route?.layoutTreePositions;
+      const _errRouteSegsHtml = route?.routeSegments || [];
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParamsHtml });
+          const _etpHtml = _errTreePositionsHtml ? _errTreePositionsHtml[i] : 0;
+          const _errScopedParamsHtml = __scopeParamsForLayout(_errRouteSegsHtml, _etpHtml, _errParamsHtml);
+          const _asyncErrScopedParamsHtml = makeThenableParams(_errScopedParamsHtml);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParamsHtml });
         }
       }
     }
@@ -1288,7 +1326,11 @@ async function buildPageElement(route, params, opts, searchParams) {
         }
       }
 
-      const layoutProps = { children: element, params: makeThenableParams(params) };
+      // Scope params for this layout — each layout only sees params from its
+      // own segment and ancestor segments, not child dynamic segments.
+      const _bpeTp = route.layoutTreePositions ? route.layoutTreePositions[i] : 0;
+      const _bpeScopedParams = __scopeParamsForLayout(route.routeSegments || [], _bpeTp, params);
+      const layoutProps = { children: element, params: makeThenableParams(_bpeScopedParams) };
 
       // Add parallel slot elements to the layout that defines them.
       // Each slot has a layoutIndex indicating which layout it belongs to.

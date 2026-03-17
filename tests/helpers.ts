@@ -14,6 +14,7 @@ import { pathToFileURL } from "node:url";
 import { createServer, build, type ViteDevServer } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import path from "node:path";
+import * as cheerio from "cheerio";
 
 // ── Fixture paths ─────────────────────────────────────────────
 export const PAGES_FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/pages-basic");
@@ -126,6 +127,25 @@ export async function fetchJson(
   const res = await fetch(`${baseUrl}${urlPath}`, init);
   const data = await res.json();
   return { res, data };
+}
+
+/**
+ * Fetch a page and return a Cheerio instance for DOM querying,
+ * along with the raw Response and HTML string.
+ *
+ * Usage:
+ *   const { $, html, res } = await fetchDom(baseUrl, "/some-page");
+ *   expect($("#my-id").text()).toBe("hello");
+ */
+export async function fetchDom(
+  baseUrl: string,
+  urlPath: string,
+  init?: RequestInit,
+): Promise<{ res: Response; html: string; $: cheerio.CheerioAPI }> {
+  const res = await fetch(`${baseUrl}${urlPath}`, init);
+  const html = await res.text();
+  const $ = cheerio.load(html);
+  return { res, html, $ };
 }
 
 export interface NodeHttpResponse {
