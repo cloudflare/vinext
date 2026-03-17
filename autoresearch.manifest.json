@@ -1291,9 +1291,9 @@
   },
   {
     "dir": "searchparams-static-bailout",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 3,
-    "notes": ""
+    "notes": "Ported 5 tests: searchParams in server/client components, passthrough, no-use pages."
   },
   {
     "dir": "segment-cache",
@@ -1777,9 +1777,9 @@
   },
   {
     "dir": "node-extensions",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 4,
-    "notes": ""
+    "notes": "Complex: needs middleware, Pages Router, unstable_cache, use cache for Math.random tests."
   },
   {
     "dir": "node-worker-threads",
@@ -2065,9 +2065,9 @@
   },
   {
     "dir": "x-forwarded-headers",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 4,
-    "notes": ""
+    "notes": "Needs custom middleware to read/set x-forwarded headers."
   },
   {
     "dir": "app-css",
