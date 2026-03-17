@@ -30,7 +30,7 @@ export interface HeadersContext {
   readonlyHeaders?: Headers;
 }
 
-export type HeadersAccessPhase = "render" | "action" | "route-handler";
+export type HeadersAccessPhase = "render" | "action" | "route-handler" | "middleware";
 
 export type VinextHeadersShimState = {
   headersContext: HeadersContext | null;

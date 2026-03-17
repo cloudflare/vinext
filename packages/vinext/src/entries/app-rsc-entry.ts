@@ -342,7 +342,7 @@ function renderToReadableStream(model, options) {
 }
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase, runWithHeadersContext } from "next/headers";
 import { NextRequest, NextFetchEvent } from "next/server";
 import DefaultHttpErrorComponent from "next/error";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
@@ -1833,7 +1833,26 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const mwRequest = new Request(mwUrl, request);
       const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
       const mwFetchEvent = new NextFetchEvent({ page: cleanPathname });
-      const mwResponse = await middlewareFn(nextRequest, mwFetchEvent);
+      let _mwDraftCookie = null;
+      let mwResponse = await runWithHeadersContext(headersContextFromRequest(nextRequest), async () => {
+        const _prevHeadersPhase = setHeadersAccessPhase("middleware");
+        try {
+          const _middlewareResponse = await middlewareFn(nextRequest, mwFetchEvent);
+          _mwDraftCookie = getDraftModeCookieHeader();
+          return _middlewareResponse;
+        } finally {
+          setHeadersAccessPhase(_prevHeadersPhase);
+        }
+      });
+      if (_mwDraftCookie && mwResponse) {
+        const _mwHeaders = new Headers(mwResponse.headers);
+        _mwHeaders.append("set-cookie", _mwDraftCookie);
+        mwResponse = new Response(mwResponse.body, {
+          status: mwResponse.status,
+          statusText: mwResponse.statusText,
+          headers: _mwHeaders,
+        });
+      }
       const _mwWaitUntil = mwFetchEvent.drainWaitUntil();
       const _mwExecCtx = _getRequestExecutionContext();
       if (_mwExecCtx && typeof _mwExecCtx.waitUntil === "function") { _mwExecCtx.waitUntil(_mwWaitUntil); }

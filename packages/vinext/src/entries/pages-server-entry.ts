@@ -145,7 +145,8 @@ if (typeof _instrumentation.onRequestError === "function") {
   // Generate middleware code if middleware.ts exists
   const middlewareImportCode = middlewarePath
     ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};
-import { NextRequest, NextFetchEvent } from "next/server";`
+import { NextRequest, NextFetchEvent } from "next/server";
+import { getDraftModeCookieHeader, headersContextFromRequest, runWithHeadersContext, setHeadersAccessPhase } from "next/headers";`
     : "";
 
   // The matcher config is read from the middleware module at import time.
@@ -199,10 +200,30 @@ async function _runMiddleware(request) {
   var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
   var fetchEvent = new NextFetchEvent({ page: normalizedPathname });
   var response;
-  try { response = await middlewareFn(nextRequest, fetchEvent); }
+  var draftCookie = null;
+  try {
+    response = await runWithHeadersContext(headersContextFromRequest(nextRequest), async function() {
+      var previousPhase = setHeadersAccessPhase("middleware");
+      try {
+        var middlewareResponse = await middlewareFn(nextRequest, fetchEvent);
+        draftCookie = getDraftModeCookieHeader();
+        return middlewareResponse;
+      }
+      finally { setHeadersAccessPhase(previousPhase); }
+    });
+  }
   catch (e) {
     console.error("[vinext] Middleware error:", e);
     return { continue: false, response: new Response("Internal Server Error", { status: 500 }) };
+  }
+  if (draftCookie && response) {
+    var responseHeadersWithDraft = new Headers(response.headers);
+    responseHeadersWithDraft.append("set-cookie", draftCookie);
+    response = new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeadersWithDraft,
+    });
   }
   var _mwCtx = _getRequestExecutionContext();
   if (_mwCtx && typeof _mwCtx.waitUntil === "function") { _mwCtx.waitUntil(fetchEvent.drainWaitUntil()); } else { fetchEvent.drainWaitUntil(); }

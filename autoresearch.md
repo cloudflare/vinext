@@ -159,6 +159,19 @@ _This section is updated as experiments accumulate._
 - **Bug**: when no explicit `not-found.tsx` existed, vinext returned a bare default 404 instead of wrapping the default 404 UI in root/ancestor layouts like Next.js does.
 - **Fix**: `renderHTTPAccessFallbackPage()` now falls back to `next/error` for 404s, preserving the normal layout wrapping path.
 
+### Iteration 25: app-middleware (+11 tests) — **BUG FOUND + FIXED**
+
+- Ported an HTTP-testable subset with a dedicated hybrid fixture:
+  - middleware request-header mutation for `next/headers` pages + Pages API routes
+  - draft mode cookie from middleware
+  - `Link` response header preservation
+  - `unstable_cache` inside middleware
+  - plain `Location` response header is not treated as a rewrite
+- **Bug**: middleware ran without a `next/headers` request context, so `headers()` inside middleware threw even though Next.js allows it.
+- **Bug**: middleware `draftMode().enable()` lost its Set-Cookie header because the code read `getDraftModeCookieHeader()` after the ALS scope had already unwound.
+- **Fix**: all middleware execution paths now run inside `runWithHeadersContext(..., phase="middleware")`, and draft-mode cookies are captured before the context exits.
+- Snapshot expectations in `tests/entry-templates.test.ts` were updated because both generated middleware runtimes changed.
+
 ### Patterns Observed
 
 - Many Next.js tests use `next.browser()` (Playwright) — not HTTP-testable with our pattern

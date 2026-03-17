@@ -6,6 +6,7 @@
 2. **Layout params scoping completely broken** — Every layout received ALL route params instead of scoped per-segment params. Root layout got `{param1, param2}` when it should get `{}`. Fixed `__scopeParamsForLayout` across 4 rendering loops + `buildPageElement`. (Iteration 12)
 3. **force-static pages leaked real `searchParams`** — `headers()` and `cookies()` were emptied, but `pageProps.searchParams` still received live query values. Fixed `buildPageElement()` to pass empty searchParams to force-static pages and metadata resolution. (Iteration 18)
 4. **Default 404 pages were not wrapped in layouts** — when no explicit `not-found.tsx` existed, vinext returned a bare 404 instead of Next.js's default 404 UI wrapped in the root/ancestor layouts. Fixed `renderHTTPAccessFallbackPage()` to fall back to `next/error` for 404s and preserve layout wrapping. (Iteration 24)
+5. **Middleware had no `next/headers` request context** — calling `headers()` inside middleware crashed even though Next.js allows it. Fixed all middleware execution paths (dev connect runner, App Router generated runtime, Pages/prod generated runtime) to run under `runWithHeadersContext(..., phase="middleware")`. Also fixed draft-mode cookies from middleware by reading `getDraftModeCookieHeader()` before the ALS scope unwinds. (Iteration 25)
 
 ## Behavioral Differences Found
 

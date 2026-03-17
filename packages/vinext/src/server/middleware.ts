@@ -29,6 +29,12 @@ import {
 } from "../config/config-matchers.js";
 import type { HasCondition, NextI18nConfig } from "../config/next-config.js";
 import { NextRequest, NextFetchEvent } from "../shims/server.js";
+import {
+  getDraftModeCookieHeader,
+  headersContextFromRequest,
+  runWithHeadersContext,
+  setHeadersAccessPhase,
+} from "../shims/headers.js";
 import { normalizePath } from "./normalize-path.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
@@ -438,10 +444,21 @@ export async function runMiddleware(
   const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
   const fetchEvent = new NextFetchEvent({ page: normalizedPathname });
 
-  // Execute the middleware
+  // Execute the middleware with a next/headers context so middleware can use
+  // headers() / draftMode() like Next.js allows.
   let response: Response | undefined;
+  let draftCookie: string | null = null;
   try {
-    response = await middlewareFn(nextRequest, fetchEvent);
+    response = await runWithHeadersContext(headersContextFromRequest(nextRequest), async () => {
+      const previousPhase = setHeadersAccessPhase("middleware");
+      try {
+        const middlewareResponse = await middlewareFn(nextRequest, fetchEvent);
+        draftCookie = getDraftModeCookieHeader();
+        return middlewareResponse;
+      } finally {
+        setHeadersAccessPhase(previousPhase);
+      }
+    });
   } catch (e: any) {
     console.error("[vinext] Middleware error:", e);
     const message =
@@ -454,6 +471,16 @@ export async function runMiddleware(
         status: 500,
       }),
     };
+  }
+
+  if (draftCookie && response) {
+    const responseHeaders = new Headers(response.headers);
+    responseHeaders.append("set-cookie", draftCookie);
+    response = new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeaders,
+    });
   }
 
   // Drain waitUntil promises (fire-and-forget: we don't block the response

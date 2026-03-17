@@ -374,8 +374,9 @@ function renderToReadableStream(model, options) {
 }
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase, runWithHeadersContext } from "next/headers";
 import { NextRequest, NextFetchEvent } from "next/server";
+import DefaultHttpErrorComponent from "next/error";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -556,6 +557,34 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
 function makeThenableParams(obj) {
   const plain = { ...obj };
   return Object.assign(Promise.resolve(plain), plain);
+}
+
+// Compute the subset of params that a layout at a given tree position should receive.
+// In Next.js, each layout only sees params from its own segment and ancestor segments —
+// NOT from child segments deeper in the tree. For example, with
+// /base/[param1]/[param2]/page.tsx, the layout at [param1]/ gets {param1} but not {param2}.
+function __scopeParamsForLayout(routeSegments, treePosition, fullParams) {
+  var scoped = {};
+  // Scan segments from root up to (but not including) this layout's position
+  for (var i = 0; i < treePosition; i++) {
+    var seg = routeSegments[i];
+    if (!seg) continue;
+    // Optional catch-all: [[...param]]
+    if (seg.indexOf("[[...") === 0 && seg.charAt(seg.length - 1) === "]" && seg.charAt(seg.length - 2) === "]") {
+      var pn = seg.slice(5, -2);
+      // Only include if the value is a non-empty array (Next.js omits empty optional catch-all)
+      if (pn in fullParams && Array.isArray(fullParams[pn]) && fullParams[pn].length > 0) scoped[pn] = fullParams[pn];
+    // Catch-all: [...param]
+    } else if (seg.indexOf("[...") === 0 && seg.charAt(seg.length - 1) === "]") {
+      var pn2 = seg.slice(4, -1);
+      if (pn2 in fullParams) scoped[pn2] = fullParams[pn2];
+    // Dynamic: [param]
+    } else if (seg.charAt(0) === "[" && seg.charAt(seg.length - 1) === "]" && seg.indexOf(".") === -1) {
+      var pn3 = seg.slice(1, -1);
+      if (pn3 in fullParams) scoped[pn3] = fullParams[pn3];
+    }
+  }
+  return scoped;
 }
 
 // Resolve route tree segments to actual values using matched params.
@@ -854,6 +883,11 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     BoundaryComponent = boundaryModule?.default ?? null;
   }
   const layouts = opts?.layouts ?? route?.layouts ?? rootLayouts;
+  if (!BoundaryComponent && statusCode === 404) {
+    BoundaryComponent = function DefaultNotFoundBoundary() {
+      return createElement(DefaultHttpErrorComponent, { statusCode: 404 });
+    };
+  }
   if (!BoundaryComponent) return null;
 
   // Resolve metadata and viewport from parent layouts so that not-found/error
@@ -903,12 +937,13 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     const _treePositions = route?.layoutTreePositions;
     const _routeSegs = route?.routeSegments || [];
     const _fallbackParams = opts?.matchedParams ?? route?.params ?? {};
-    const _asyncFallbackParams = makeThenableParams(_fallbackParams);
     for (let i = layouts.length - 1; i >= 0; i--) {
       const LayoutComponent = layouts[i]?.default;
       if (LayoutComponent) {
-        element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParams });
         const _tp = _treePositions ? _treePositions[i] : 0;
+        const _scopedParams = __scopeParamsForLayout(_routeSegs, _tp, _fallbackParams);
+        const _asyncScopedParams = makeThenableParams(_scopedParams);
+        element = createElement(LayoutComponent, { children: element, params: _asyncScopedParams });
         const _cs = __resolveChildSegments(_routeSegs, _tp, _fallbackParams);
         element = createElement(LayoutSegmentProvider, { childSegments: _cs }, element);
       }
@@ -935,11 +970,15 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   // For HTML (full page load) responses, wrap with layouts only (no client-side
   // wrappers needed since SSR generates the complete HTML document).
   const _fallbackParamsHtml = opts?.matchedParams ?? route?.params ?? {};
-  const _asyncFallbackParamsHtml = makeThenableParams(_fallbackParamsHtml);
+  const _treePositionsHtml = route?.layoutTreePositions;
+  const _routeSegsHtml = route?.routeSegments || [];
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
     if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParamsHtml });
+      const _tpHtml = _treePositionsHtml ? _treePositionsHtml[i] : 0;
+      const _scopedParamsHtml = __scopeParamsForLayout(_routeSegsHtml, _tpHtml, _fallbackParamsHtml);
+      const _asyncScopedParamsHtml = makeThenableParams(_scopedParamsHtml);
+      element = createElement(LayoutComponent, { children: element, params: _asyncScopedParamsHtml });
     }
   }
   const _pathname = new URL(request.url).pathname;
@@ -1021,12 +1060,13 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
       const _errTreePositions = route?.layoutTreePositions;
       const _errRouteSegs = route?.routeSegments || [];
       const _errParams = matchedParams ?? route?.params ?? {};
-      const _asyncErrParams = makeThenableParams(_errParams);
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParams });
           const _etp = _errTreePositions ? _errTreePositions[i] : 0;
+          const _errScopedParams = __scopeParamsForLayout(_errRouteSegs, _etp, _errParams);
+          const _asyncErrScopedParams = makeThenableParams(_errScopedParams);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParams });
           const _ecs = __resolveChildSegments(_errRouteSegs, _etp, _errParams);
           element = createElement(LayoutSegmentProvider, { childSegments: _ecs }, element);
         }
@@ -1035,11 +1075,15 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     } else {
       // For HTML (full page load) responses, wrap with layouts only.
       const _errParamsHtml = matchedParams ?? route?.params ?? {};
-      const _asyncErrParamsHtml = makeThenableParams(_errParamsHtml);
+      const _errTreePositionsHtml = route?.layoutTreePositions;
+      const _errRouteSegsHtml = route?.routeSegments || [];
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParamsHtml });
+          const _etpHtml = _errTreePositionsHtml ? _errTreePositionsHtml[i] : 0;
+          const _errScopedParamsHtml = __scopeParamsForLayout(_errRouteSegsHtml, _etpHtml, _errParamsHtml);
+          const _asyncErrScopedParamsHtml = makeThenableParams(_errScopedParamsHtml);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParamsHtml });
         }
       }
     }
@@ -1233,10 +1277,17 @@ async function buildPageElement(route, params, opts, searchParams) {
     });
   }
 
+  // force-static pages receive empty searchParams rather than real request data.
+  // This mirrors Next.js, which strips dynamic request state from force-static
+  // render paths instead of exposing live values.
+  const isForceStatic = route.page?.dynamic === "force-static";
+  const effectiveSpObj = isForceStatic ? {} : spObj;
+  const effectiveHasSearchParams = isForceStatic ? false : hasSearchParams;
+
   const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
     Promise.all(layoutMetaPromises),
     Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
-    route.page ? resolveModuleMetadata(route.page, params, spObj, pageParentPromise) : Promise.resolve(null),
+    route.page ? resolveModuleMetadata(route.page, params, effectiveSpObj, pageParentPromise) : Promise.resolve(null),
     route.page ? resolveModuleViewport(route.page, params) : Promise.resolve(null),
   ]);
 
@@ -1255,7 +1306,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // Always provide searchParams prop when the URL object is available, even
     // when the query string is empty -- pages that do "await searchParams" need
     // it to be a thenable rather than undefined.
-    pageProps.searchParams = makeThenableParams(spObj);
+    pageProps.searchParams = makeThenableParams(effectiveSpObj);
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug
@@ -1264,7 +1315,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // read searchParams. Checking for non-empty query params is a safe
     // approximation: pages with query params in the URL are almost always
     // dynamic, and this avoids false positives from React internals.
-    if (hasSearchParams) markDynamicUsage();
+    if (effectiveHasSearchParams) markDynamicUsage();
   }
   let element = createElement(PageComponent, pageProps);
 
@@ -1367,7 +1418,11 @@ async function buildPageElement(route, params, opts, searchParams) {
         }
       }
 
-      const layoutProps = { children: element, params: makeThenableParams(params) };
+      // Scope params for this layout — each layout only sees params from its
+      // own segment and ancestor segments, not child dynamic segments.
+      const _bpeTp = route.layoutTreePositions ? route.layoutTreePositions[i] : 0;
+      const _bpeScopedParams = __scopeParamsForLayout(route.routeSegments || [], _bpeTp, params);
+      const layoutProps = { children: element, params: makeThenableParams(_bpeScopedParams) };
 
       // Add parallel slot elements to the layout that defines them.
       // Each slot has a layoutIndex indicating which layout it belongs to.
@@ -2354,7 +2409,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (typeof handlerFn === "function") {
       const previousHeadersPhase = setHeadersAccessPhase("route-handler");
       try {
-        const response = await handlerFn(request, { params });
+        // Wrap in NextRequest so route handlers get .nextUrl, .cookies, .geo, .ip, etc.
+        // Next.js passes NextRequest to route handlers, not plain Request.
+        const routeRequest = request instanceof NextRequest ? request : new NextRequest(request);
+        const response = await handlerFn(routeRequest, { params });
         const dynamicUsedInHandler = consumeDynamicUsage();
         const handlerSetCacheControl = response.headers.has("cache-control");
 
@@ -3360,8 +3418,9 @@ function renderToReadableStream(model, options) {
 }
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase, runWithHeadersContext } from "next/headers";
 import { NextRequest, NextFetchEvent } from "next/server";
+import DefaultHttpErrorComponent from "next/error";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -3542,6 +3601,34 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
 function makeThenableParams(obj) {
   const plain = { ...obj };
   return Object.assign(Promise.resolve(plain), plain);
+}
+
+// Compute the subset of params that a layout at a given tree position should receive.
+// In Next.js, each layout only sees params from its own segment and ancestor segments —
+// NOT from child segments deeper in the tree. For example, with
+// /base/[param1]/[param2]/page.tsx, the layout at [param1]/ gets {param1} but not {param2}.
+function __scopeParamsForLayout(routeSegments, treePosition, fullParams) {
+  var scoped = {};
+  // Scan segments from root up to (but not including) this layout's position
+  for (var i = 0; i < treePosition; i++) {
+    var seg = routeSegments[i];
+    if (!seg) continue;
+    // Optional catch-all: [[...param]]
+    if (seg.indexOf("[[...") === 0 && seg.charAt(seg.length - 1) === "]" && seg.charAt(seg.length - 2) === "]") {
+      var pn = seg.slice(5, -2);
+      // Only include if the value is a non-empty array (Next.js omits empty optional catch-all)
+      if (pn in fullParams && Array.isArray(fullParams[pn]) && fullParams[pn].length > 0) scoped[pn] = fullParams[pn];
+    // Catch-all: [...param]
+    } else if (seg.indexOf("[...") === 0 && seg.charAt(seg.length - 1) === "]") {
+      var pn2 = seg.slice(4, -1);
+      if (pn2 in fullParams) scoped[pn2] = fullParams[pn2];
+    // Dynamic: [param]
+    } else if (seg.charAt(0) === "[" && seg.charAt(seg.length - 1) === "]" && seg.indexOf(".") === -1) {
+      var pn3 = seg.slice(1, -1);
+      if (pn3 in fullParams) scoped[pn3] = fullParams[pn3];
+    }
+  }
+  return scoped;
 }
 
 // Resolve route tree segments to actual values using matched params.
@@ -3840,6 +3927,11 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     BoundaryComponent = boundaryModule?.default ?? null;
   }
   const layouts = opts?.layouts ?? route?.layouts ?? rootLayouts;
+  if (!BoundaryComponent && statusCode === 404) {
+    BoundaryComponent = function DefaultNotFoundBoundary() {
+      return createElement(DefaultHttpErrorComponent, { statusCode: 404 });
+    };
+  }
   if (!BoundaryComponent) return null;
 
   // Resolve metadata and viewport from parent layouts so that not-found/error
@@ -3889,12 +3981,13 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     const _treePositions = route?.layoutTreePositions;
     const _routeSegs = route?.routeSegments || [];
     const _fallbackParams = opts?.matchedParams ?? route?.params ?? {};
-    const _asyncFallbackParams = makeThenableParams(_fallbackParams);
     for (let i = layouts.length - 1; i >= 0; i--) {
       const LayoutComponent = layouts[i]?.default;
       if (LayoutComponent) {
-        element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParams });
         const _tp = _treePositions ? _treePositions[i] : 0;
+        const _scopedParams = __scopeParamsForLayout(_routeSegs, _tp, _fallbackParams);
+        const _asyncScopedParams = makeThenableParams(_scopedParams);
+        element = createElement(LayoutComponent, { children: element, params: _asyncScopedParams });
         const _cs = __resolveChildSegments(_routeSegs, _tp, _fallbackParams);
         element = createElement(LayoutSegmentProvider, { childSegments: _cs }, element);
       }
@@ -3921,11 +4014,15 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   // For HTML (full page load) responses, wrap with layouts only (no client-side
   // wrappers needed since SSR generates the complete HTML document).
   const _fallbackParamsHtml = opts?.matchedParams ?? route?.params ?? {};
-  const _asyncFallbackParamsHtml = makeThenableParams(_fallbackParamsHtml);
+  const _treePositionsHtml = route?.layoutTreePositions;
+  const _routeSegsHtml = route?.routeSegments || [];
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
     if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParamsHtml });
+      const _tpHtml = _treePositionsHtml ? _treePositionsHtml[i] : 0;
+      const _scopedParamsHtml = __scopeParamsForLayout(_routeSegsHtml, _tpHtml, _fallbackParamsHtml);
+      const _asyncScopedParamsHtml = makeThenableParams(_scopedParamsHtml);
+      element = createElement(LayoutComponent, { children: element, params: _asyncScopedParamsHtml });
     }
   }
   const _pathname = new URL(request.url).pathname;
@@ -4007,12 +4104,13 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
       const _errTreePositions = route?.layoutTreePositions;
       const _errRouteSegs = route?.routeSegments || [];
       const _errParams = matchedParams ?? route?.params ?? {};
-      const _asyncErrParams = makeThenableParams(_errParams);
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParams });
           const _etp = _errTreePositions ? _errTreePositions[i] : 0;
+          const _errScopedParams = __scopeParamsForLayout(_errRouteSegs, _etp, _errParams);
+          const _asyncErrScopedParams = makeThenableParams(_errScopedParams);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParams });
           const _ecs = __resolveChildSegments(_errRouteSegs, _etp, _errParams);
           element = createElement(LayoutSegmentProvider, { childSegments: _ecs }, element);
         }
@@ -4021,11 +4119,15 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     } else {
       // For HTML (full page load) responses, wrap with layouts only.
       const _errParamsHtml = matchedParams ?? route?.params ?? {};
-      const _asyncErrParamsHtml = makeThenableParams(_errParamsHtml);
+      const _errTreePositionsHtml = route?.layoutTreePositions;
+      const _errRouteSegsHtml = route?.routeSegments || [];
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParamsHtml });
+          const _etpHtml = _errTreePositionsHtml ? _errTreePositionsHtml[i] : 0;
+          const _errScopedParamsHtml = __scopeParamsForLayout(_errRouteSegsHtml, _etpHtml, _errParamsHtml);
+          const _asyncErrScopedParamsHtml = makeThenableParams(_errScopedParamsHtml);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParamsHtml });
         }
       }
     }
@@ -4219,10 +4321,17 @@ async function buildPageElement(route, params, opts, searchParams) {
     });
   }
 
+  // force-static pages receive empty searchParams rather than real request data.
+  // This mirrors Next.js, which strips dynamic request state from force-static
+  // render paths instead of exposing live values.
+  const isForceStatic = route.page?.dynamic === "force-static";
+  const effectiveSpObj = isForceStatic ? {} : spObj;
+  const effectiveHasSearchParams = isForceStatic ? false : hasSearchParams;
+
   const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
     Promise.all(layoutMetaPromises),
     Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
-    route.page ? resolveModuleMetadata(route.page, params, spObj, pageParentPromise) : Promise.resolve(null),
+    route.page ? resolveModuleMetadata(route.page, params, effectiveSpObj, pageParentPromise) : Promise.resolve(null),
     route.page ? resolveModuleViewport(route.page, params) : Promise.resolve(null),
   ]);
 
@@ -4241,7 +4350,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // Always provide searchParams prop when the URL object is available, even
     // when the query string is empty -- pages that do "await searchParams" need
     // it to be a thenable rather than undefined.
-    pageProps.searchParams = makeThenableParams(spObj);
+    pageProps.searchParams = makeThenableParams(effectiveSpObj);
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug
@@ -4250,7 +4359,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // read searchParams. Checking for non-empty query params is a safe
     // approximation: pages with query params in the URL are almost always
     // dynamic, and this avoids false positives from React internals.
-    if (hasSearchParams) markDynamicUsage();
+    if (effectiveHasSearchParams) markDynamicUsage();
   }
   let element = createElement(PageComponent, pageProps);
 
@@ -4353,7 +4462,11 @@ async function buildPageElement(route, params, opts, searchParams) {
         }
       }
 
-      const layoutProps = { children: element, params: makeThenableParams(params) };
+      // Scope params for this layout — each layout only sees params from its
+      // own segment and ancestor segments, not child dynamic segments.
+      const _bpeTp = route.layoutTreePositions ? route.layoutTreePositions[i] : 0;
+      const _bpeScopedParams = __scopeParamsForLayout(route.routeSegments || [], _bpeTp, params);
+      const layoutProps = { children: element, params: makeThenableParams(_bpeScopedParams) };
 
       // Add parallel slot elements to the layout that defines them.
       // Each slot has a layoutIndex indicating which layout it belongs to.
@@ -5343,7 +5456,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (typeof handlerFn === "function") {
       const previousHeadersPhase = setHeadersAccessPhase("route-handler");
       try {
-        const response = await handlerFn(request, { params });
+        // Wrap in NextRequest so route handlers get .nextUrl, .cookies, .geo, .ip, etc.
+        // Next.js passes NextRequest to route handlers, not plain Request.
+        const routeRequest = request instanceof NextRequest ? request : new NextRequest(request);
+        const response = await handlerFn(routeRequest, { params });
         const dynamicUsedInHandler = consumeDynamicUsage();
         const handlerSetCacheControl = response.headers.has("cache-control");
 
@@ -6349,8 +6465,9 @@ function renderToReadableStream(model, options) {
 }
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase, runWithHeadersContext } from "next/headers";
 import { NextRequest, NextFetchEvent } from "next/server";
+import DefaultHttpErrorComponent from "next/error";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -6531,6 +6648,34 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
 function makeThenableParams(obj) {
   const plain = { ...obj };
   return Object.assign(Promise.resolve(plain), plain);
+}
+
+// Compute the subset of params that a layout at a given tree position should receive.
+// In Next.js, each layout only sees params from its own segment and ancestor segments —
+// NOT from child segments deeper in the tree. For example, with
+// /base/[param1]/[param2]/page.tsx, the layout at [param1]/ gets {param1} but not {param2}.
+function __scopeParamsForLayout(routeSegments, treePosition, fullParams) {
+  var scoped = {};
+  // Scan segments from root up to (but not including) this layout's position
+  for (var i = 0; i < treePosition; i++) {
+    var seg = routeSegments[i];
+    if (!seg) continue;
+    // Optional catch-all: [[...param]]
+    if (seg.indexOf("[[...") === 0 && seg.charAt(seg.length - 1) === "]" && seg.charAt(seg.length - 2) === "]") {
+      var pn = seg.slice(5, -2);
+      // Only include if the value is a non-empty array (Next.js omits empty optional catch-all)
+      if (pn in fullParams && Array.isArray(fullParams[pn]) && fullParams[pn].length > 0) scoped[pn] = fullParams[pn];
+    // Catch-all: [...param]
+    } else if (seg.indexOf("[...") === 0 && seg.charAt(seg.length - 1) === "]") {
+      var pn2 = seg.slice(4, -1);
+      if (pn2 in fullParams) scoped[pn2] = fullParams[pn2];
+    // Dynamic: [param]
+    } else if (seg.charAt(0) === "[" && seg.charAt(seg.length - 1) === "]" && seg.indexOf(".") === -1) {
+      var pn3 = seg.slice(1, -1);
+      if (pn3 in fullParams) scoped[pn3] = fullParams[pn3];
+    }
+  }
+  return scoped;
 }
 
 // Resolve route tree segments to actual values using matched params.
@@ -6830,6 +6975,11 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     BoundaryComponent = boundaryModule?.default ?? null;
   }
   const layouts = opts?.layouts ?? route?.layouts ?? rootLayouts;
+  if (!BoundaryComponent && statusCode === 404) {
+    BoundaryComponent = function DefaultNotFoundBoundary() {
+      return createElement(DefaultHttpErrorComponent, { statusCode: 404 });
+    };
+  }
   if (!BoundaryComponent) return null;
 
   // Resolve metadata and viewport from parent layouts so that not-found/error
@@ -6879,12 +7029,13 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     const _treePositions = route?.layoutTreePositions;
     const _routeSegs = route?.routeSegments || [];
     const _fallbackParams = opts?.matchedParams ?? route?.params ?? {};
-    const _asyncFallbackParams = makeThenableParams(_fallbackParams);
     for (let i = layouts.length - 1; i >= 0; i--) {
       const LayoutComponent = layouts[i]?.default;
       if (LayoutComponent) {
-        element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParams });
         const _tp = _treePositions ? _treePositions[i] : 0;
+        const _scopedParams = __scopeParamsForLayout(_routeSegs, _tp, _fallbackParams);
+        const _asyncScopedParams = makeThenableParams(_scopedParams);
+        element = createElement(LayoutComponent, { children: element, params: _asyncScopedParams });
         const _cs = __resolveChildSegments(_routeSegs, _tp, _fallbackParams);
         element = createElement(LayoutSegmentProvider, { childSegments: _cs }, element);
       }
@@ -6919,11 +7070,15 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   // For HTML (full page load) responses, wrap with layouts only (no client-side
   // wrappers needed since SSR generates the complete HTML document).
   const _fallbackParamsHtml = opts?.matchedParams ?? route?.params ?? {};
-  const _asyncFallbackParamsHtml = makeThenableParams(_fallbackParamsHtml);
+  const _treePositionsHtml = route?.layoutTreePositions;
+  const _routeSegsHtml = route?.routeSegments || [];
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
     if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParamsHtml });
+      const _tpHtml = _treePositionsHtml ? _treePositionsHtml[i] : 0;
+      const _scopedParamsHtml = __scopeParamsForLayout(_routeSegsHtml, _tpHtml, _fallbackParamsHtml);
+      const _asyncScopedParamsHtml = makeThenableParams(_scopedParamsHtml);
+      element = createElement(LayoutComponent, { children: element, params: _asyncScopedParamsHtml });
     }
   }
   const _pathname = new URL(request.url).pathname;
@@ -7010,12 +7165,13 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
       const _errTreePositions = route?.layoutTreePositions;
       const _errRouteSegs = route?.routeSegments || [];
       const _errParams = matchedParams ?? route?.params ?? {};
-      const _asyncErrParams = makeThenableParams(_errParams);
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParams });
           const _etp = _errTreePositions ? _errTreePositions[i] : 0;
+          const _errScopedParams = __scopeParamsForLayout(_errRouteSegs, _etp, _errParams);
+          const _asyncErrScopedParams = makeThenableParams(_errScopedParams);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParams });
           const _ecs = __resolveChildSegments(_errRouteSegs, _etp, _errParams);
           element = createElement(LayoutSegmentProvider, { childSegments: _ecs }, element);
         }
@@ -7032,11 +7188,15 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     } else {
       // For HTML (full page load) responses, wrap with layouts only.
       const _errParamsHtml = matchedParams ?? route?.params ?? {};
-      const _asyncErrParamsHtml = makeThenableParams(_errParamsHtml);
+      const _errTreePositionsHtml = route?.layoutTreePositions;
+      const _errRouteSegsHtml = route?.routeSegments || [];
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParamsHtml });
+          const _etpHtml = _errTreePositionsHtml ? _errTreePositionsHtml[i] : 0;
+          const _errScopedParamsHtml = __scopeParamsForLayout(_errRouteSegsHtml, _etpHtml, _errParamsHtml);
+          const _asyncErrScopedParamsHtml = makeThenableParams(_errScopedParamsHtml);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParamsHtml });
         }
       }
     }
@@ -7230,10 +7390,17 @@ async function buildPageElement(route, params, opts, searchParams) {
     });
   }
 
+  // force-static pages receive empty searchParams rather than real request data.
+  // This mirrors Next.js, which strips dynamic request state from force-static
+  // render paths instead of exposing live values.
+  const isForceStatic = route.page?.dynamic === "force-static";
+  const effectiveSpObj = isForceStatic ? {} : spObj;
+  const effectiveHasSearchParams = isForceStatic ? false : hasSearchParams;
+
   const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
     Promise.all(layoutMetaPromises),
     Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
-    route.page ? resolveModuleMetadata(route.page, params, spObj, pageParentPromise) : Promise.resolve(null),
+    route.page ? resolveModuleMetadata(route.page, params, effectiveSpObj, pageParentPromise) : Promise.resolve(null),
     route.page ? resolveModuleViewport(route.page, params) : Promise.resolve(null),
   ]);
 
@@ -7252,7 +7419,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // Always provide searchParams prop when the URL object is available, even
     // when the query string is empty -- pages that do "await searchParams" need
     // it to be a thenable rather than undefined.
-    pageProps.searchParams = makeThenableParams(spObj);
+    pageProps.searchParams = makeThenableParams(effectiveSpObj);
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug
@@ -7261,7 +7428,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // read searchParams. Checking for non-empty query params is a safe
     // approximation: pages with query params in the URL are almost always
     // dynamic, and this avoids false positives from React internals.
-    if (hasSearchParams) markDynamicUsage();
+    if (effectiveHasSearchParams) markDynamicUsage();
   }
   let element = createElement(PageComponent, pageProps);
 
@@ -7364,7 +7531,11 @@ async function buildPageElement(route, params, opts, searchParams) {
         }
       }
 
-      const layoutProps = { children: element, params: makeThenableParams(params) };
+      // Scope params for this layout — each layout only sees params from its
+      // own segment and ancestor segments, not child dynamic segments.
+      const _bpeTp = route.layoutTreePositions ? route.layoutTreePositions[i] : 0;
+      const _bpeScopedParams = __scopeParamsForLayout(route.routeSegments || [], _bpeTp, params);
+      const layoutProps = { children: element, params: makeThenableParams(_bpeScopedParams) };
 
       // Add parallel slot elements to the layout that defines them.
       // Each slot has a layoutIndex indicating which layout it belongs to.
@@ -8359,7 +8530,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (typeof handlerFn === "function") {
       const previousHeadersPhase = setHeadersAccessPhase("route-handler");
       try {
-        const response = await handlerFn(request, { params });
+        // Wrap in NextRequest so route handlers get .nextUrl, .cookies, .geo, .ip, etc.
+        // Next.js passes NextRequest to route handlers, not plain Request.
+        const routeRequest = request instanceof NextRequest ? request : new NextRequest(request);
+        const response = await handlerFn(routeRequest, { params });
         const dynamicUsedInHandler = consumeDynamicUsage();
         const handlerSetCacheControl = response.headers.has("cache-control");
 
@@ -9373,8 +9547,9 @@ function renderToReadableStream(model, options) {
 }
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase, runWithHeadersContext } from "next/headers";
 import { NextRequest, NextFetchEvent } from "next/server";
+import DefaultHttpErrorComponent from "next/error";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -9555,6 +9730,34 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
 function makeThenableParams(obj) {
   const plain = { ...obj };
   return Object.assign(Promise.resolve(plain), plain);
+}
+
+// Compute the subset of params that a layout at a given tree position should receive.
+// In Next.js, each layout only sees params from its own segment and ancestor segments —
+// NOT from child segments deeper in the tree. For example, with
+// /base/[param1]/[param2]/page.tsx, the layout at [param1]/ gets {param1} but not {param2}.
+function __scopeParamsForLayout(routeSegments, treePosition, fullParams) {
+  var scoped = {};
+  // Scan segments from root up to (but not including) this layout's position
+  for (var i = 0; i < treePosition; i++) {
+    var seg = routeSegments[i];
+    if (!seg) continue;
+    // Optional catch-all: [[...param]]
+    if (seg.indexOf("[[...") === 0 && seg.charAt(seg.length - 1) === "]" && seg.charAt(seg.length - 2) === "]") {
+      var pn = seg.slice(5, -2);
+      // Only include if the value is a non-empty array (Next.js omits empty optional catch-all)
+      if (pn in fullParams && Array.isArray(fullParams[pn]) && fullParams[pn].length > 0) scoped[pn] = fullParams[pn];
+    // Catch-all: [...param]
+    } else if (seg.indexOf("[...") === 0 && seg.charAt(seg.length - 1) === "]") {
+      var pn2 = seg.slice(4, -1);
+      if (pn2 in fullParams) scoped[pn2] = fullParams[pn2];
+    // Dynamic: [param]
+    } else if (seg.charAt(0) === "[" && seg.charAt(seg.length - 1) === "]" && seg.indexOf(".") === -1) {
+      var pn3 = seg.slice(1, -1);
+      if (pn3 in fullParams) scoped[pn3] = fullParams[pn3];
+    }
+  }
+  return scoped;
 }
 
 // Resolve route tree segments to actual values using matched params.
@@ -9883,6 +10086,11 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     BoundaryComponent = boundaryModule?.default ?? null;
   }
   const layouts = opts?.layouts ?? route?.layouts ?? rootLayouts;
+  if (!BoundaryComponent && statusCode === 404) {
+    BoundaryComponent = function DefaultNotFoundBoundary() {
+      return createElement(DefaultHttpErrorComponent, { statusCode: 404 });
+    };
+  }
   if (!BoundaryComponent) return null;
 
   // Resolve metadata and viewport from parent layouts so that not-found/error
@@ -9932,12 +10140,13 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     const _treePositions = route?.layoutTreePositions;
     const _routeSegs = route?.routeSegments || [];
     const _fallbackParams = opts?.matchedParams ?? route?.params ?? {};
-    const _asyncFallbackParams = makeThenableParams(_fallbackParams);
     for (let i = layouts.length - 1; i >= 0; i--) {
       const LayoutComponent = layouts[i]?.default;
       if (LayoutComponent) {
-        element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParams });
         const _tp = _treePositions ? _treePositions[i] : 0;
+        const _scopedParams = __scopeParamsForLayout(_routeSegs, _tp, _fallbackParams);
+        const _asyncScopedParams = makeThenableParams(_scopedParams);
+        element = createElement(LayoutComponent, { children: element, params: _asyncScopedParams });
         const _cs = __resolveChildSegments(_routeSegs, _tp, _fallbackParams);
         element = createElement(LayoutSegmentProvider, { childSegments: _cs }, element);
       }
@@ -9964,11 +10173,15 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   // For HTML (full page load) responses, wrap with layouts only (no client-side
   // wrappers needed since SSR generates the complete HTML document).
   const _fallbackParamsHtml = opts?.matchedParams ?? route?.params ?? {};
-  const _asyncFallbackParamsHtml = makeThenableParams(_fallbackParamsHtml);
+  const _treePositionsHtml = route?.layoutTreePositions;
+  const _routeSegsHtml = route?.routeSegments || [];
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
     if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParamsHtml });
+      const _tpHtml = _treePositionsHtml ? _treePositionsHtml[i] : 0;
+      const _scopedParamsHtml = __scopeParamsForLayout(_routeSegsHtml, _tpHtml, _fallbackParamsHtml);
+      const _asyncScopedParamsHtml = makeThenableParams(_scopedParamsHtml);
+      element = createElement(LayoutComponent, { children: element, params: _asyncScopedParamsHtml });
     }
   }
   const _pathname = new URL(request.url).pathname;
@@ -10050,12 +10263,13 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
       const _errTreePositions = route?.layoutTreePositions;
       const _errRouteSegs = route?.routeSegments || [];
       const _errParams = matchedParams ?? route?.params ?? {};
-      const _asyncErrParams = makeThenableParams(_errParams);
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParams });
           const _etp = _errTreePositions ? _errTreePositions[i] : 0;
+          const _errScopedParams = __scopeParamsForLayout(_errRouteSegs, _etp, _errParams);
+          const _asyncErrScopedParams = makeThenableParams(_errScopedParams);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParams });
           const _ecs = __resolveChildSegments(_errRouteSegs, _etp, _errParams);
           element = createElement(LayoutSegmentProvider, { childSegments: _ecs }, element);
         }
@@ -10064,11 +10278,15 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     } else {
       // For HTML (full page load) responses, wrap with layouts only.
       const _errParamsHtml = matchedParams ?? route?.params ?? {};
-      const _asyncErrParamsHtml = makeThenableParams(_errParamsHtml);
+      const _errTreePositionsHtml = route?.layoutTreePositions;
+      const _errRouteSegsHtml = route?.routeSegments || [];
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParamsHtml });
+          const _etpHtml = _errTreePositionsHtml ? _errTreePositionsHtml[i] : 0;
+          const _errScopedParamsHtml = __scopeParamsForLayout(_errRouteSegsHtml, _etpHtml, _errParamsHtml);
+          const _asyncErrScopedParamsHtml = makeThenableParams(_errScopedParamsHtml);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParamsHtml });
         }
       }
     }
@@ -10262,10 +10480,17 @@ async function buildPageElement(route, params, opts, searchParams) {
     });
   }
 
+  // force-static pages receive empty searchParams rather than real request data.
+  // This mirrors Next.js, which strips dynamic request state from force-static
+  // render paths instead of exposing live values.
+  const isForceStatic = route.page?.dynamic === "force-static";
+  const effectiveSpObj = isForceStatic ? {} : spObj;
+  const effectiveHasSearchParams = isForceStatic ? false : hasSearchParams;
+
   const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
     Promise.all(layoutMetaPromises),
     Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
-    route.page ? resolveModuleMetadata(route.page, params, spObj, pageParentPromise) : Promise.resolve(null),
+    route.page ? resolveModuleMetadata(route.page, params, effectiveSpObj, pageParentPromise) : Promise.resolve(null),
     route.page ? resolveModuleViewport(route.page, params) : Promise.resolve(null),
   ]);
 
@@ -10284,7 +10509,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // Always provide searchParams prop when the URL object is available, even
     // when the query string is empty -- pages that do "await searchParams" need
     // it to be a thenable rather than undefined.
-    pageProps.searchParams = makeThenableParams(spObj);
+    pageProps.searchParams = makeThenableParams(effectiveSpObj);
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug
@@ -10293,7 +10518,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // read searchParams. Checking for non-empty query params is a safe
     // approximation: pages with query params in the URL are almost always
     // dynamic, and this avoids false positives from React internals.
-    if (hasSearchParams) markDynamicUsage();
+    if (effectiveHasSearchParams) markDynamicUsage();
   }
   let element = createElement(PageComponent, pageProps);
 
@@ -10396,7 +10621,11 @@ async function buildPageElement(route, params, opts, searchParams) {
         }
       }
 
-      const layoutProps = { children: element, params: makeThenableParams(params) };
+      // Scope params for this layout — each layout only sees params from its
+      // own segment and ancestor segments, not child dynamic segments.
+      const _bpeTp = route.layoutTreePositions ? route.layoutTreePositions[i] : 0;
+      const _bpeScopedParams = __scopeParamsForLayout(route.routeSegments || [], _bpeTp, params);
+      const layoutProps = { children: element, params: makeThenableParams(_bpeScopedParams) };
 
       // Add parallel slot elements to the layout that defines them.
       // Each slot has a layoutIndex indicating which layout it belongs to.
@@ -11386,7 +11615,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (typeof handlerFn === "function") {
       const previousHeadersPhase = setHeadersAccessPhase("route-handler");
       try {
-        const response = await handlerFn(request, { params });
+        // Wrap in NextRequest so route handlers get .nextUrl, .cookies, .geo, .ip, etc.
+        // Next.js passes NextRequest to route handlers, not plain Request.
+        const routeRequest = request instanceof NextRequest ? request : new NextRequest(request);
+        const response = await handlerFn(routeRequest, { params });
         const dynamicUsedInHandler = consumeDynamicUsage();
         const handlerSetCacheControl = response.headers.has("cache-control");
 
@@ -12392,8 +12624,9 @@ function renderToReadableStream(model, options) {
 }
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase, runWithHeadersContext } from "next/headers";
 import { NextRequest, NextFetchEvent } from "next/server";
+import DefaultHttpErrorComponent from "next/error";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -12574,6 +12807,34 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
 function makeThenableParams(obj) {
   const plain = { ...obj };
   return Object.assign(Promise.resolve(plain), plain);
+}
+
+// Compute the subset of params that a layout at a given tree position should receive.
+// In Next.js, each layout only sees params from its own segment and ancestor segments —
+// NOT from child segments deeper in the tree. For example, with
+// /base/[param1]/[param2]/page.tsx, the layout at [param1]/ gets {param1} but not {param2}.
+function __scopeParamsForLayout(routeSegments, treePosition, fullParams) {
+  var scoped = {};
+  // Scan segments from root up to (but not including) this layout's position
+  for (var i = 0; i < treePosition; i++) {
+    var seg = routeSegments[i];
+    if (!seg) continue;
+    // Optional catch-all: [[...param]]
+    if (seg.indexOf("[[...") === 0 && seg.charAt(seg.length - 1) === "]" && seg.charAt(seg.length - 2) === "]") {
+      var pn = seg.slice(5, -2);
+      // Only include if the value is a non-empty array (Next.js omits empty optional catch-all)
+      if (pn in fullParams && Array.isArray(fullParams[pn]) && fullParams[pn].length > 0) scoped[pn] = fullParams[pn];
+    // Catch-all: [...param]
+    } else if (seg.indexOf("[...") === 0 && seg.charAt(seg.length - 1) === "]") {
+      var pn2 = seg.slice(4, -1);
+      if (pn2 in fullParams) scoped[pn2] = fullParams[pn2];
+    // Dynamic: [param]
+    } else if (seg.charAt(0) === "[" && seg.charAt(seg.length - 1) === "]" && seg.indexOf(".") === -1) {
+      var pn3 = seg.slice(1, -1);
+      if (pn3 in fullParams) scoped[pn3] = fullParams[pn3];
+    }
+  }
+  return scoped;
 }
 
 // Resolve route tree segments to actual values using matched params.
@@ -12879,6 +13140,11 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     BoundaryComponent = boundaryModule?.default ?? null;
   }
   const layouts = opts?.layouts ?? route?.layouts ?? rootLayouts;
+  if (!BoundaryComponent && statusCode === 404) {
+    BoundaryComponent = function DefaultNotFoundBoundary() {
+      return createElement(DefaultHttpErrorComponent, { statusCode: 404 });
+    };
+  }
   if (!BoundaryComponent) return null;
 
   // Resolve metadata and viewport from parent layouts so that not-found/error
@@ -12928,12 +13194,13 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     const _treePositions = route?.layoutTreePositions;
     const _routeSegs = route?.routeSegments || [];
     const _fallbackParams = opts?.matchedParams ?? route?.params ?? {};
-    const _asyncFallbackParams = makeThenableParams(_fallbackParams);
     for (let i = layouts.length - 1; i >= 0; i--) {
       const LayoutComponent = layouts[i]?.default;
       if (LayoutComponent) {
-        element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParams });
         const _tp = _treePositions ? _treePositions[i] : 0;
+        const _scopedParams = __scopeParamsForLayout(_routeSegs, _tp, _fallbackParams);
+        const _asyncScopedParams = makeThenableParams(_scopedParams);
+        element = createElement(LayoutComponent, { children: element, params: _asyncScopedParams });
         const _cs = __resolveChildSegments(_routeSegs, _tp, _fallbackParams);
         element = createElement(LayoutSegmentProvider, { childSegments: _cs }, element);
       }
@@ -12960,11 +13227,15 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   // For HTML (full page load) responses, wrap with layouts only (no client-side
   // wrappers needed since SSR generates the complete HTML document).
   const _fallbackParamsHtml = opts?.matchedParams ?? route?.params ?? {};
-  const _asyncFallbackParamsHtml = makeThenableParams(_fallbackParamsHtml);
+  const _treePositionsHtml = route?.layoutTreePositions;
+  const _routeSegsHtml = route?.routeSegments || [];
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
     if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParamsHtml });
+      const _tpHtml = _treePositionsHtml ? _treePositionsHtml[i] : 0;
+      const _scopedParamsHtml = __scopeParamsForLayout(_routeSegsHtml, _tpHtml, _fallbackParamsHtml);
+      const _asyncScopedParamsHtml = makeThenableParams(_scopedParamsHtml);
+      element = createElement(LayoutComponent, { children: element, params: _asyncScopedParamsHtml });
     }
   }
   const _pathname = new URL(request.url).pathname;
@@ -13046,12 +13317,13 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
       const _errTreePositions = route?.layoutTreePositions;
       const _errRouteSegs = route?.routeSegments || [];
       const _errParams = matchedParams ?? route?.params ?? {};
-      const _asyncErrParams = makeThenableParams(_errParams);
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParams });
           const _etp = _errTreePositions ? _errTreePositions[i] : 0;
+          const _errScopedParams = __scopeParamsForLayout(_errRouteSegs, _etp, _errParams);
+          const _asyncErrScopedParams = makeThenableParams(_errScopedParams);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParams });
           const _ecs = __resolveChildSegments(_errRouteSegs, _etp, _errParams);
           element = createElement(LayoutSegmentProvider, { childSegments: _ecs }, element);
         }
@@ -13060,11 +13332,15 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     } else {
       // For HTML (full page load) responses, wrap with layouts only.
       const _errParamsHtml = matchedParams ?? route?.params ?? {};
-      const _asyncErrParamsHtml = makeThenableParams(_errParamsHtml);
+      const _errTreePositionsHtml = route?.layoutTreePositions;
+      const _errRouteSegsHtml = route?.routeSegments || [];
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParamsHtml });
+          const _etpHtml = _errTreePositionsHtml ? _errTreePositionsHtml[i] : 0;
+          const _errScopedParamsHtml = __scopeParamsForLayout(_errRouteSegsHtml, _etpHtml, _errParamsHtml);
+          const _asyncErrScopedParamsHtml = makeThenableParams(_errScopedParamsHtml);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParamsHtml });
         }
       }
     }
@@ -13258,10 +13534,17 @@ async function buildPageElement(route, params, opts, searchParams) {
     });
   }
 
+  // force-static pages receive empty searchParams rather than real request data.
+  // This mirrors Next.js, which strips dynamic request state from force-static
+  // render paths instead of exposing live values.
+  const isForceStatic = route.page?.dynamic === "force-static";
+  const effectiveSpObj = isForceStatic ? {} : spObj;
+  const effectiveHasSearchParams = isForceStatic ? false : hasSearchParams;
+
   const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
     Promise.all(layoutMetaPromises),
     Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
-    route.page ? resolveModuleMetadata(route.page, params, spObj, pageParentPromise) : Promise.resolve(null),
+    route.page ? resolveModuleMetadata(route.page, params, effectiveSpObj, pageParentPromise) : Promise.resolve(null),
     route.page ? resolveModuleViewport(route.page, params) : Promise.resolve(null),
   ]);
 
@@ -13280,7 +13563,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // Always provide searchParams prop when the URL object is available, even
     // when the query string is empty -- pages that do "await searchParams" need
     // it to be a thenable rather than undefined.
-    pageProps.searchParams = makeThenableParams(spObj);
+    pageProps.searchParams = makeThenableParams(effectiveSpObj);
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug
@@ -13289,7 +13572,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // read searchParams. Checking for non-empty query params is a safe
     // approximation: pages with query params in the URL are almost always
     // dynamic, and this avoids false positives from React internals.
-    if (hasSearchParams) markDynamicUsage();
+    if (effectiveHasSearchParams) markDynamicUsage();
   }
   let element = createElement(PageComponent, pageProps);
 
@@ -13392,7 +13675,11 @@ async function buildPageElement(route, params, opts, searchParams) {
         }
       }
 
-      const layoutProps = { children: element, params: makeThenableParams(params) };
+      // Scope params for this layout — each layout only sees params from its
+      // own segment and ancestor segments, not child dynamic segments.
+      const _bpeTp = route.layoutTreePositions ? route.layoutTreePositions[i] : 0;
+      const _bpeScopedParams = __scopeParamsForLayout(route.routeSegments || [], _bpeTp, params);
+      const layoutProps = { children: element, params: makeThenableParams(_bpeScopedParams) };
 
       // Add parallel slot elements to the layout that defines them.
       // Each slot has a layoutIndex indicating which layout it belongs to.
@@ -14379,7 +14666,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (typeof handlerFn === "function") {
       const previousHeadersPhase = setHeadersAccessPhase("route-handler");
       try {
-        const response = await handlerFn(request, { params });
+        // Wrap in NextRequest so route handlers get .nextUrl, .cookies, .geo, .ip, etc.
+        // Next.js passes NextRequest to route handlers, not plain Request.
+        const routeRequest = request instanceof NextRequest ? request : new NextRequest(request);
+        const response = await handlerFn(routeRequest, { params });
         const dynamicUsedInHandler = consumeDynamicUsage();
         const handlerSetCacheControl = response.headers.has("cache-control");
 
@@ -15385,8 +15675,9 @@ function renderToReadableStream(model, options) {
 }
 import { createElement, Suspense, Fragment } from "react";
 import { setNavigationContext as _setNavigationContextOrig, getNavigationContext as _getNavigationContext } from "next/navigation";
-import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase } from "next/headers";
+import { setHeadersContext, headersContextFromRequest, getDraftModeCookieHeader, getAndClearPendingCookies, consumeDynamicUsage, markDynamicUsage, applyMiddlewareRequestHeaders, getHeadersContext, setHeadersAccessPhase, runWithHeadersContext } from "next/headers";
 import { NextRequest, NextFetchEvent } from "next/server";
+import DefaultHttpErrorComponent from "next/error";
 import { ErrorBoundary, NotFoundBoundary } from "vinext/error-boundary";
 import { LayoutSegmentProvider } from "vinext/layout-segment-context";
 import { MetadataHead, mergeMetadata, resolveModuleMetadata, ViewportHead, mergeViewport, resolveModuleViewport } from "vinext/metadata";
@@ -15567,6 +15858,34 @@ const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
 function makeThenableParams(obj) {
   const plain = { ...obj };
   return Object.assign(Promise.resolve(plain), plain);
+}
+
+// Compute the subset of params that a layout at a given tree position should receive.
+// In Next.js, each layout only sees params from its own segment and ancestor segments —
+// NOT from child segments deeper in the tree. For example, with
+// /base/[param1]/[param2]/page.tsx, the layout at [param1]/ gets {param1} but not {param2}.
+function __scopeParamsForLayout(routeSegments, treePosition, fullParams) {
+  var scoped = {};
+  // Scan segments from root up to (but not including) this layout's position
+  for (var i = 0; i < treePosition; i++) {
+    var seg = routeSegments[i];
+    if (!seg) continue;
+    // Optional catch-all: [[...param]]
+    if (seg.indexOf("[[...") === 0 && seg.charAt(seg.length - 1) === "]" && seg.charAt(seg.length - 2) === "]") {
+      var pn = seg.slice(5, -2);
+      // Only include if the value is a non-empty array (Next.js omits empty optional catch-all)
+      if (pn in fullParams && Array.isArray(fullParams[pn]) && fullParams[pn].length > 0) scoped[pn] = fullParams[pn];
+    // Catch-all: [...param]
+    } else if (seg.indexOf("[...") === 0 && seg.charAt(seg.length - 1) === "]") {
+      var pn2 = seg.slice(4, -1);
+      if (pn2 in fullParams) scoped[pn2] = fullParams[pn2];
+    // Dynamic: [param]
+    } else if (seg.charAt(0) === "[" && seg.charAt(seg.length - 1) === "]" && seg.indexOf(".") === -1) {
+      var pn3 = seg.slice(1, -1);
+      if (pn3 in fullParams) scoped[pn3] = fullParams[pn3];
+    }
+  }
+  return scoped;
 }
 
 // Resolve route tree segments to actual values using matched params.
@@ -15865,6 +16184,11 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     BoundaryComponent = boundaryModule?.default ?? null;
   }
   const layouts = opts?.layouts ?? route?.layouts ?? rootLayouts;
+  if (!BoundaryComponent && statusCode === 404) {
+    BoundaryComponent = function DefaultNotFoundBoundary() {
+      return createElement(DefaultHttpErrorComponent, { statusCode: 404 });
+    };
+  }
   if (!BoundaryComponent) return null;
 
   // Resolve metadata and viewport from parent layouts so that not-found/error
@@ -15914,12 +16238,13 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     const _treePositions = route?.layoutTreePositions;
     const _routeSegs = route?.routeSegments || [];
     const _fallbackParams = opts?.matchedParams ?? route?.params ?? {};
-    const _asyncFallbackParams = makeThenableParams(_fallbackParams);
     for (let i = layouts.length - 1; i >= 0; i--) {
       const LayoutComponent = layouts[i]?.default;
       if (LayoutComponent) {
-        element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParams });
         const _tp = _treePositions ? _treePositions[i] : 0;
+        const _scopedParams = __scopeParamsForLayout(_routeSegs, _tp, _fallbackParams);
+        const _asyncScopedParams = makeThenableParams(_scopedParams);
+        element = createElement(LayoutComponent, { children: element, params: _asyncScopedParams });
         const _cs = __resolveChildSegments(_routeSegs, _tp, _fallbackParams);
         element = createElement(LayoutSegmentProvider, { childSegments: _cs }, element);
       }
@@ -15946,11 +16271,15 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   // For HTML (full page load) responses, wrap with layouts only (no client-side
   // wrappers needed since SSR generates the complete HTML document).
   const _fallbackParamsHtml = opts?.matchedParams ?? route?.params ?? {};
-  const _asyncFallbackParamsHtml = makeThenableParams(_fallbackParamsHtml);
+  const _treePositionsHtml = route?.layoutTreePositions;
+  const _routeSegsHtml = route?.routeSegments || [];
   for (let i = layouts.length - 1; i >= 0; i--) {
     const LayoutComponent = layouts[i]?.default;
     if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParamsHtml });
+      const _tpHtml = _treePositionsHtml ? _treePositionsHtml[i] : 0;
+      const _scopedParamsHtml = __scopeParamsForLayout(_routeSegsHtml, _tpHtml, _fallbackParamsHtml);
+      const _asyncScopedParamsHtml = makeThenableParams(_scopedParamsHtml);
+      element = createElement(LayoutComponent, { children: element, params: _asyncScopedParamsHtml });
     }
   }
   const _pathname = new URL(request.url).pathname;
@@ -16032,12 +16361,13 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
       const _errTreePositions = route?.layoutTreePositions;
       const _errRouteSegs = route?.routeSegments || [];
       const _errParams = matchedParams ?? route?.params ?? {};
-      const _asyncErrParams = makeThenableParams(_errParams);
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParams });
           const _etp = _errTreePositions ? _errTreePositions[i] : 0;
+          const _errScopedParams = __scopeParamsForLayout(_errRouteSegs, _etp, _errParams);
+          const _asyncErrScopedParams = makeThenableParams(_errScopedParams);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParams });
           const _ecs = __resolveChildSegments(_errRouteSegs, _etp, _errParams);
           element = createElement(LayoutSegmentProvider, { childSegments: _ecs }, element);
         }
@@ -16046,11 +16376,15 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
     } else {
       // For HTML (full page load) responses, wrap with layouts only.
       const _errParamsHtml = matchedParams ?? route?.params ?? {};
-      const _asyncErrParamsHtml = makeThenableParams(_errParamsHtml);
+      const _errTreePositionsHtml = route?.layoutTreePositions;
+      const _errRouteSegsHtml = route?.routeSegments || [];
       for (let i = layouts.length - 1; i >= 0; i--) {
         const LayoutComponent = layouts[i]?.default;
         if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParamsHtml });
+          const _etpHtml = _errTreePositionsHtml ? _errTreePositionsHtml[i] : 0;
+          const _errScopedParamsHtml = __scopeParamsForLayout(_errRouteSegsHtml, _etpHtml, _errParamsHtml);
+          const _asyncErrScopedParamsHtml = makeThenableParams(_errScopedParamsHtml);
+          element = createElement(LayoutComponent, { children: element, params: _asyncErrScopedParamsHtml });
         }
       }
     }
@@ -16244,10 +16578,17 @@ async function buildPageElement(route, params, opts, searchParams) {
     });
   }
 
+  // force-static pages receive empty searchParams rather than real request data.
+  // This mirrors Next.js, which strips dynamic request state from force-static
+  // render paths instead of exposing live values.
+  const isForceStatic = route.page?.dynamic === "force-static";
+  const effectiveSpObj = isForceStatic ? {} : spObj;
+  const effectiveHasSearchParams = isForceStatic ? false : hasSearchParams;
+
   const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
     Promise.all(layoutMetaPromises),
     Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
-    route.page ? resolveModuleMetadata(route.page, params, spObj, pageParentPromise) : Promise.resolve(null),
+    route.page ? resolveModuleMetadata(route.page, params, effectiveSpObj, pageParentPromise) : Promise.resolve(null),
     route.page ? resolveModuleViewport(route.page, params) : Promise.resolve(null),
   ]);
 
@@ -16266,7 +16607,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // Always provide searchParams prop when the URL object is available, even
     // when the query string is empty -- pages that do "await searchParams" need
     // it to be a thenable rather than undefined.
-    pageProps.searchParams = makeThenableParams(spObj);
+    pageProps.searchParams = makeThenableParams(effectiveSpObj);
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug
@@ -16275,7 +16616,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // read searchParams. Checking for non-empty query params is a safe
     // approximation: pages with query params in the URL are almost always
     // dynamic, and this avoids false positives from React internals.
-    if (hasSearchParams) markDynamicUsage();
+    if (effectiveHasSearchParams) markDynamicUsage();
   }
   let element = createElement(PageComponent, pageProps);
 
@@ -16378,7 +16719,11 @@ async function buildPageElement(route, params, opts, searchParams) {
         }
       }
 
-      const layoutProps = { children: element, params: makeThenableParams(params) };
+      // Scope params for this layout — each layout only sees params from its
+      // own segment and ancestor segments, not child dynamic segments.
+      const _bpeTp = route.layoutTreePositions ? route.layoutTreePositions[i] : 0;
+      const _bpeScopedParams = __scopeParamsForLayout(route.routeSegments || [], _bpeTp, params);
+      const layoutProps = { children: element, params: makeThenableParams(_bpeScopedParams) };
 
       // Add parallel slot elements to the layout that defines them.
       // Each slot has a layoutIndex indicating which layout it belongs to.
@@ -17193,7 +17538,26 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const mwRequest = new Request(mwUrl, request);
       const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
       const mwFetchEvent = new NextFetchEvent({ page: cleanPathname });
-      const mwResponse = await middlewareFn(nextRequest, mwFetchEvent);
+      let _mwDraftCookie = null;
+      let mwResponse = await runWithHeadersContext(headersContextFromRequest(nextRequest), async () => {
+        const _prevHeadersPhase = setHeadersAccessPhase("middleware");
+        try {
+          const _middlewareResponse = await middlewareFn(nextRequest, mwFetchEvent);
+          _mwDraftCookie = getDraftModeCookieHeader();
+          return _middlewareResponse;
+        } finally {
+          setHeadersAccessPhase(_prevHeadersPhase);
+        }
+      });
+      if (_mwDraftCookie && mwResponse) {
+        const _mwHeaders = new Headers(mwResponse.headers);
+        _mwHeaders.append("set-cookie", _mwDraftCookie);
+        mwResponse = new Response(mwResponse.body, {
+          status: mwResponse.status,
+          statusText: mwResponse.statusText,
+          headers: _mwHeaders,
+        });
+      }
       const _mwWaitUntil = mwFetchEvent.drainWaitUntil();
       const _mwExecCtx = _getRequestExecutionContext();
       if (_mwExecCtx && typeof _mwExecCtx.waitUntil === "function") { _mwExecCtx.waitUntil(_mwWaitUntil); }
@@ -17724,7 +18088,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (typeof handlerFn === "function") {
       const previousHeadersPhase = setHeadersAccessPhase("route-handler");
       try {
-        const response = await handlerFn(request, { params });
+        // Wrap in NextRequest so route handlers get .nextUrl, .cookies, .geo, .ip, etc.
+        // Next.js passes NextRequest to route handlers, not plain Request.
+        const routeRequest = request instanceof NextRequest ? request : new NextRequest(request);
+        const response = await handlerFn(routeRequest, { params });
         const dynamicUsedInHandler = consumeDynamicUsage();
         const handlerSetCacheControl = response.headers.has("cache-control");
 
@@ -19276,6 +19643,7 @@ import { resolvePagesI18nRequest } from "<ROOT>/packages/vinext/src/server/pages
 import * as _instrumentation from "<ROOT>/tests/fixtures/pages-basic/instrumentation.ts";
 import * as middlewareModule from "<ROOT>/tests/fixtures/pages-basic/middleware.ts";
 import { NextRequest, NextFetchEvent } from "next/server";
+import { getDraftModeCookieHeader, headersContextFromRequest, runWithHeadersContext, setHeadersAccessPhase } from "next/headers";
 
 // Run instrumentation register() once at module evaluation time — before any
 // requests are handled. Matches Next.js semantics: register() is called once
@@ -20677,10 +21045,30 @@ async function _runMiddleware(request) {
   var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
   var fetchEvent = new NextFetchEvent({ page: normalizedPathname });
   var response;
-  try { response = await middlewareFn(nextRequest, fetchEvent); }
+  var draftCookie = null;
+  try {
+    response = await runWithHeadersContext(headersContextFromRequest(nextRequest), async function() {
+      var previousPhase = setHeadersAccessPhase("middleware");
+      try {
+        var middlewareResponse = await middlewareFn(nextRequest, fetchEvent);
+        draftCookie = getDraftModeCookieHeader();
+        return middlewareResponse;
+      }
+      finally { setHeadersAccessPhase(previousPhase); }
+    });
+  }
   catch (e) {
     console.error("[vinext] Middleware error:", e);
     return { continue: false, response: new Response("Internal Server Error", { status: 500 }) };
+  }
+  if (draftCookie && response) {
+    var responseHeadersWithDraft = new Headers(response.headers);
+    responseHeadersWithDraft.append("set-cookie", draftCookie);
+    response = new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: responseHeadersWithDraft,
+    });
   }
   var _mwCtx = _getRequestExecutionContext();
   if (_mwCtx && typeof _mwCtx.waitUntil === "function") { _mwCtx.waitUntil(fetchEvent.drainWaitUntil()); } else { fetchEvent.drainWaitUntil(); }

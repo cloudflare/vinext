@@ -163,9 +163,9 @@
   },
   {
     "dir": "app-middleware",
-    "status": "unaudited",
+    "status": "partial",
     "priority": 2,
-    "notes": ""
+    "notes": "Ported 11-test HTTP subset with dedicated hybrid app+pages fixture: middleware request-header mutation for pages API and next/headers page, draft mode cookie via middleware, Link header preservation, unstable_cache in middleware, and Location header not treated as rewrite. Browser-only cookie/navigation cases and the edge-function variant remain unported."
   },
   {
     "dir": "app-middleware-proxy",
