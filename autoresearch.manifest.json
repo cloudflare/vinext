@@ -985,9 +985,9 @@
   },
   {
     "dir": "metadata-dynamic-routes",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 3,
-    "notes": ""
+    "notes": "Ported 10 tests: robots.txt, sitemap.xml (alternates/images/videos), manifest.webmanifest, icon.tsx. All use existing app-basic fixtures."
   },
   {
     "dir": "metadata-edge",
