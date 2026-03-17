@@ -727,9 +727,9 @@
   },
   {
     "dir": "app-routes-trailing-slash",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 3,
-    "notes": ""
+    "notes": "Ported 2 tests via dedicated fixture: trailingSlash=true redirects /runtime/<rt> to /runtime/<rt>/ and both url.pathname + req.nextUrl.pathname preserve the slash in route handlers."
   },
   {
     "dir": "app-simple-routes",
