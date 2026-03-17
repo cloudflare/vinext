@@ -1463,7 +1463,7 @@ describe("App Router Production build", () => {
 
 describe("App Router Production server (startProdServer)", () => {
   const outDir = path.resolve(APP_FIXTURE_DIR, "dist");
-  let server: import("node:http").Server;
+  let server: import("node:http").Server | undefined;
   let baseUrl: string;
 
   function extractRequestId(html: string): string | undefined {
@@ -1486,8 +1486,8 @@ describe("App Router Production server (startProdServer)", () => {
 
     // Start the production server on a random available port
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    server = await startProdServer({ port: 0, outDir, noCompression: false });
-    const addr = server.address();
+    ({ server } = await startProdServer({ port: 0, outDir, noCompression: false }));
+    const addr = server!.address();
     const port = typeof addr === "object" && addr ? addr.port : 4210;
     baseUrl = `http://localhost:${port}`;
   }, 60000);
@@ -1825,7 +1825,7 @@ export default {
     );
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    const server = await startProdServer({ port: 0, outDir, noCompression: true });
+    const { server } = await startProdServer({ port: 0, outDir, noCompression: true });
     const addr = server.address();
     const port = typeof addr === "object" && addr ? addr.port : 0;
 

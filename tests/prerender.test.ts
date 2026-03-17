@@ -597,17 +597,14 @@ describe("runPrerender — output: 'export' wiring", () => {
 // ─── App Router — Cloudflare Workers build ────────────────────────────────────
 //
 // Verifies that prerenderApp() works correctly when the production bundle is a
-// Cloudflare Workers bundle (dist/server/index.js is the worker entry, not a
-// Node-runnable RSC handler). The fix uses wrangler unstable_startWorker to spin up a
-// local miniflare instance and routes all render + static-params requests
-// through it instead of importing the bundle directly in Node.
+// Cloudflare Workers build (dist/server/index.js). Prerendering goes through a
+// locally-spawned prod server over HTTP — same path as plain Node builds.
 
 // ─── Cloudflare Workers hybrid build (app/ + pages/) ─────────────────────────
 //
 // Verifies that both prerenderApp() and prerenderPages() work correctly when
-// the build is a Cloudflare Workers bundle. prerenderApp() must use wrangler
-// unstable_startWorker (the worker bundle cannot be imported in Node); prerenderPages()
-// loads dist/server/entry.js directly as usual.
+// the build is a Cloudflare Workers bundle. Both phases render via HTTP through
+// a shared local prod server started by runPrerender().
 
 describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
   let outDir: string;
@@ -625,7 +622,7 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
 
   // ── App Router ──────────────────────────────────────────────────────────────
 
-  describe("prerenderApp — app router via wrangler unstable_startWorker", () => {
+  describe("prerenderApp — app router via prod server HTTP", () => {
     it("renders / speculatively", () => {
       const r = findRoute(allResults, "/");
       expect(r).toMatchObject({ route: "/", status: "rendered", revalidate: false });
@@ -677,7 +674,7 @@ describe("Cloudflare Workers hybrid build (cf-app-basic)", () => {
 
   // ── Pages Router ────────────────────────────────────────────────────────────
 
-  describe("prerenderPages — pages router via wrangler unstable_startWorker", () => {
+  describe("prerenderPages — pages router via prod server HTTP", () => {
     it("renders static index page", () => {
       const r = findRoute(allResults, "/");
       expect(r).toMatchObject({ route: "/", status: "rendered", revalidate: false });

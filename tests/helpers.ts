@@ -265,14 +265,14 @@ export async function buildAppFixture(fixtureDir: string): Promise<string> {
  *
  * Both the App Router and Pages Router are served by the same Workers bundle —
  * there is no separate plain-Node SSR bundle for Pages Router. All prerendering
- * for both routers goes through `wrangler unstable_startWorker`.
+ * for both routers goes through a locally-spawned prod server over HTTP, the
+ * same path used for plain Node builds.
  *
- * Returns `{ root, rscBundlePath, wranglerConfigPath }`.
+ * Returns `{ root, rscBundlePath }`.
  */
 export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
   root: string;
   rscBundlePath: string;
-  wranglerConfigPath: string;
 }> {
   const tmpDir = await createIsolatedFixture(
     fixtureDir,
@@ -302,6 +302,5 @@ export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
   return {
     root: tmpDir,
     rscBundlePath: path.join(tmpDir, "dist", "server", "index.js"),
-    wranglerConfigPath: path.join(tmpDir, "dist", "server", "wrangler.json"),
   };
 }

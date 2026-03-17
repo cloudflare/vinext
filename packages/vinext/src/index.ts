@@ -61,6 +61,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -3839,6 +3840,34 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           };
 
           fs.writeFileSync(path.join(outDir, "image-config.json"), JSON.stringify(imageConfig));
+        },
+      },
+    },
+    // Write vinext-server.json to dist/server/ with a per-build prerender secret.
+    // The prerender secret is used by prod-server.ts to authenticate requests to
+    // the internal /__vinext/prerender/* endpoints, which are only reachable during
+    // the prerender phase of `vinext build`. A new secret is generated on every
+    // build so it rotates with every deployment.
+    {
+      name: "vinext:server-manifest",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(options) {
+          const envName = this.environment?.name;
+          // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
+          // (ssr env). Skip client and other environments.
+          if (envName !== "rsc" && envName !== "ssr") return;
+
+          const outDir = options.dir;
+          if (!outDir) return;
+
+          const manifest = {
+            prerenderSecret: randomBytes(32).toString("hex"),
+          };
+          fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
         },
       },
     },

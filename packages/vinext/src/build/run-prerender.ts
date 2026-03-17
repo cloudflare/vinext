@@ -20,19 +20,13 @@
 
 import path from "node:path";
 import fs from "node:fs";
+import type { Server as HttpServer } from "node:http";
 import type { PrerenderResult, PrerenderRouteResult } from "./prerender.js";
-import {
-  prerenderApp,
-  prerenderPages,
-  writePrerenderIndex,
-  loadWrangler,
-  findWranglerConfig,
-} from "./prerender.js";
+import { prerenderApp, prerenderPages, writePrerenderIndex } from "./prerender.js";
 import { loadNextConfig, resolveNextConfig } from "../config/next-config.js";
 import { pagesRouter, apiRouter } from "../routing/pages-router.js";
 import { appRouter } from "../routing/app-router.js";
 import { findDir } from "./report.js";
-import { findInNodeModules } from "../utils/project.js";
 
 // ─── Progress UI ──────────────────────────────────────────────────────────────
 
@@ -98,19 +92,19 @@ export interface RunPrerenderOptions {
 /**
  * Run the prerender phase using pre-built production bundles.
  *
- * Scans routes, loads the RSC/Pages handler from the production bundle,
- * renders every static/ISR route, writes output files to
- * `dist/server/prerendered-routes/` (non-export) or `dist/client/` (export),
- * and prints a progress bar + summary to stderr/stdout. Returns the full
- * PrerenderResult so callers can pass it to printBuildReport.
+ * Scans routes, starts a local production server, renders every static/ISR
+ * route via HTTP, writes output files to `dist/server/prerendered-routes/`
+ * (non-export) or `dist/client/` (export), and prints a progress bar + summary
+ * to stderr/stdout. Returns the full PrerenderResult so callers can pass it to
+ * printBuildReport.
+ *
+ * Works for both plain Node and Cloudflare Workers builds — the CF Workers
+ * bundle outputs `dist/server/index.js` which is a standard Node server entry,
+ * so no wrangler/miniflare is needed.
  *
  * Hybrid projects (both `app/` and `pages/` present) run both prerender
- * phases. The merged results are written to a single `dist/server/vinext-prerender.json`.
- *
- * For Cloudflare Workers builds (detected by the presence of `wrangler.json`
- * alongside the RSC bundle), a single `wrangler unstable_startWorker` instance is
- * started, shared across both App Router and Pages Router prerender phases,
- * and disposed in a `finally` block after both phases complete.
+ * phases sharing a single prod server instance. The merged results are written
+ * to a single `dist/server/vinext-prerender.json`.
  *
  * If a required production bundle does not exist, an error is thrown directing
  * the user to run `vinext build` first.
@@ -164,42 +158,41 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
       ? path.join(root, "dist", "client")
       : path.join(root, "dist", "server", "prerendered-routes");
 
-  // ── Detect Cloudflare Workers build ────────────────────────────────────────
-  // A CF Workers build is detected by checking whether @cloudflare/vite-plugin
-  // is installed in the project's node_modules — the same signal used by the
-  // build command in deploy.ts. This is more reliable than looking for
-  // wrangler.json because that file lives in the project root, not next to the
-  // built bundle.
   const rscBundlePath = options.rscBundlePath ?? path.join(root, "dist", "server", "index.js");
-  const isWorkersBuild = findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
-  // Locate the generated wrangler.json for the unstable_startWorker config option.
-  // The @cloudflare/vite-plugin generates dist/server/wrangler.json during
-  // the build — it includes assets.directory pointing to dist/client, which
-  // is required by wrangler 4+. Fall back to the project root wrangler.jsonc
-  // as a convenience for non-standard setups.
   const serverDir = path.dirname(rscBundlePath);
-  const wranglerConfigPath = findWranglerConfig(serverDir, root);
 
-  // For CF Workers hybrid builds (app/ + pages/), start wrangler once and
-  // share the instance across both prerender phases. This avoids spinning up
-  // two miniflare instances (expensive) and ensures both phases render against
-  // the same built worker bundle.
-  //
-  // The wrangler instance is imported lazily (it's an optional peer dep —
-  // only installed for CF projects). We resolve it from the project root.
-  type WranglerWorker = Awaited<ReturnType<(typeof import("wrangler"))["unstable_startWorker"]>>;
-  let sharedWranglerDev: WranglerWorker | null = null;
+  // For hybrid builds (both app/ and pages/ present), start a single shared
+  // prod server and pass it to both phases. This avoids spinning up two servers
+  // and ensures both phases render against the same built bundle.
+  let sharedProdServer: { server: HttpServer; port: number } | null = null;
+  let sharedPrerenderSecret: string | undefined;
 
   try {
-    if (isWorkersBuild && appDir && pagesDir) {
-      // Hybrid CF build: both phases share one wrangler instance.
-      const wrangler = await loadWrangler(root);
-      sharedWranglerDev = await wrangler.unstable_startWorker({
-        entrypoint: rscBundlePath,
-        config: wranglerConfigPath,
-        bindings: { VINEXT_PRERENDER: { type: "plain_text", value: "1" } },
-        dev: { logLevel: "none" },
+    if (appDir && pagesDir) {
+      // Hybrid build: start a single shared prod server.
+      // The App Router bundle (dist/server/index.js) handles both App Router and
+      // Pages Router routes in a hybrid build, so we only need one server.
+      const { startProdServer } = (await import(
+        /* @vite-ignore */ "../server/prod-server.js"
+      )) as typeof import("../server/prod-server.js");
+      sharedProdServer = await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir: path.dirname(serverDir),
+        noCompression: true,
       });
+
+      // Read the prerender secret from vinext-server.json so it can be passed
+      // to both prerender phases (pages phase won't have a pagesBundlePath).
+      const serverManifestPath = path.join(serverDir, "vinext-server.json");
+      if (fs.existsSync(serverManifestPath)) {
+        try {
+          const manifest = JSON.parse(fs.readFileSync(serverManifestPath, "utf-8"));
+          sharedPrerenderSecret = manifest.prerenderSecret;
+        } catch {
+          /* ignore */
+        }
+      }
     }
 
     // ── App Router phase ──────────────────────────────────────────────────────
@@ -217,13 +210,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         skipManifest: true,
         config,
         rscBundlePath,
-        root,
-        // Pass build-type detection results so prerenderApp doesn't repeat them.
-        isWorkersBuild,
-        wranglerConfigPath,
-        // For hybrid CF builds pass the shared wrangler instance via internal field.
+        // For hybrid builds pass the shared prod server via internal field.
         // prerenderApp will use it instead of starting its own.
-        ...(sharedWranglerDev ? { _wranglerDev: sharedWranglerDev } : {}),
+        ...(sharedProdServer ? { _prodServer: sharedProdServer } : {}),
         onProgress: ({ total, route }) => {
           if (appTotal === 0) {
             appTotal = total;
@@ -232,7 +221,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
           completedUrls += 1;
           progress.update(completedUrls, totalUrls, route);
         },
-      } as Parameters<typeof prerenderApp>[0]);
+      });
 
       allRoutes.push(...result.routes);
     }
@@ -253,10 +242,10 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         outDir,
         skipManifest: true,
         config,
-        // For CF builds, use the shared wrangler instance instead of a plain Node bundle.
-        // For plain Node builds, fall back to the pages bundle path.
-        ...(sharedWranglerDev
-          ? { _wranglerDev: sharedWranglerDev }
+        // For hybrid builds pass the shared prod server; for single-router builds
+        // fall back to the pages bundle path so prerenderPages starts its own.
+        ...(sharedProdServer
+          ? { _prodServer: sharedProdServer, _prerenderSecret: sharedPrerenderSecret }
           : {
               pagesBundlePath:
                 options.pagesBundlePath ?? path.join(root, "dist", "server", "entry.js"),
@@ -269,14 +258,14 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
           completedUrls += 1;
           progress.update(completedUrls, totalUrls, route);
         },
-      } as Parameters<typeof prerenderPages>[0]);
+      });
 
       allRoutes.push(...result.routes);
     }
   } finally {
-    // Dispose the shared wrangler instance if we started one.
-    if (sharedWranglerDev) {
-      await sharedWranglerDev.dispose();
+    // Close the shared prod server if we started one.
+    if (sharedProdServer) {
+      await new Promise<void>((resolve) => sharedProdServer!.server.close(() => resolve()));
     }
   }
 
