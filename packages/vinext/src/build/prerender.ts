@@ -444,7 +444,14 @@ export async function prerenderPages({
                 { headers: secretHeaders },
               );
               const text = await res.text();
-              if (!res.ok || text === "null") return { paths: [], fallback: false };
+              if (!res.ok) {
+                console.warn(
+                  `[vinext] Warning: /__vinext/prerender/pages-static-paths returned ${res.status} for ${r.pattern}. ` +
+                    `Dynamic paths will be skipped. This may indicate a stale or missing prerender secret.`,
+                );
+                return { paths: [], fallback: false };
+              }
+              if (text === "null") return { paths: [], fallback: false };
               return JSON.parse(text) as {
                 paths: Array<{ params: Record<string, string | string[]> }>;
                 fallback: unknown;
