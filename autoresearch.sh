@@ -11,7 +11,10 @@ for f in tests/nextjs-compat/*.test.ts; do
 done
 
 # ── Run nextjs-compat tests and extract metrics ──
-OUTPUT=$(pnpm test tests/nextjs-compat/ 2>&1) || true
+set +e
+OUTPUT=$(pnpm test tests/nextjs-compat/ 2>&1)
+TEST_EXIT_CODE=$?
+set -e
 
 # Strip ANSI escape codes for reliable grep
 CLEAN=$(echo "$OUTPUT" | sed 's/\x1b\[[0-9;]*m//g')
@@ -35,14 +38,15 @@ print(f'{audited},{relevant}')
 DIRS_AUDITED=$(echo "$AUDITED" | cut -d, -f1)
 DIRS_COVERED=$(echo "$AUDITED" | cut -d, -f2)
 
-# Check if tests actually passed (vitest exit code is embedded in output)
-if echo "$CLEAN" | grep -q 'Test Files.*passed'; then
+# Check if tests actually passed.
+# Vitest exits non-zero when ANY test file fails, even if many others passed.
+if [ "$TEST_EXIT_CODE" -eq 0 ]; then
   echo "METRIC passing_compat_tests=$PASS_COUNT"
   echo "METRIC test_files=$FILE_COUNT"
   echo "METRIC dirs_covered=$DIRS_COVERED"
   echo "METRIC skipped_tests=$SKIP_COUNT"
 else
-  echo "ERROR: Tests failed to run"
+  echo "ERROR: Tests failed"
   echo "$OUTPUT" | tail -30
   exit 1
 fi

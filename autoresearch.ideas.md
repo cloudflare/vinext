@@ -28,5 +28,9 @@
 These were skipped as "needs custom fixture" but we should create fixtures for them:
 
 - **`not-found-default`** — Needs custom root layout. Has HTTP test for 404 status on `/_not-found`.
-- **`app-basepath`** — Needs basePath config. Has 4 HTTP tests.
 - **`trailingslash`** — Needs trailingSlash config. Has 5 HTTP tests.
+
+## Bugs / follow-ups uncovered but not fixed yet
+
+- **`app-basepath`: root `/base` 404s in dev** — Vite serves `basePath + "/"`, so `/base` gets a Vite 404 (`did you mean /base/?`) before vinext routing runs. Next.js serves `/base` correctly. Likely needs a pre-Vite normalization from exact `basePath` → `basePath + "/"` in dev.
+- **Static metadata file routes are served but not injected into `<head>`** — `/manifest.webmanifest` and `/metadata/opengraph-image` work, but pages don't get `<link rel="manifest">` / `<meta property="og:image">` automatically from file conventions. This likely blocks `app-basepath` metadata tests and is broader than basePath itself.
