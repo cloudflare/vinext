@@ -530,6 +530,8 @@ function __scopeParamsForLayout(routeSegments, treePosition, fullParams) {
       var pn2 = seg.slice(4, -1);
       if (pn2 in fullParams) scoped[pn2] = fullParams[pn2];
     // Dynamic: [param]
+    // The dot guard is defensive — routing currently only produces [w-]+ dynamic
+    // segments, but it prevents accidental matches on any future segment formats.
     } else if (seg.charAt(0) === "[" && seg.charAt(seg.length - 1) === "]" && seg.indexOf(".") === -1) {
       var pn3 = seg.slice(1, -1);
       if (pn3 in fullParams) scoped[pn3] = fullParams[pn3];
@@ -560,6 +562,8 @@ function __resolveChildSegments(routeSegments, treePosition, params) {
       var v2 = params[pn2];
       result.push(Array.isArray(v2) ? v2.join("/") : (v2 || seg));
     // Dynamic: [param]
+    // The dot guard is defensive — routing currently only produces [w-]+ dynamic
+    // segments, but it prevents accidental matches on any future segment formats.
     } else if (seg.charAt(0) === "[" && seg.charAt(seg.length - 1) === "]" && seg.indexOf(".") === -1) {
       var pn3 = seg.slice(1, -1);
       result.push(params[pn3] || seg);
@@ -1833,6 +1837,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const mwRequest = new Request(mwUrl, request);
       const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
       const mwFetchEvent = new NextFetchEvent({ page: cleanPathname });
+      // SYNC: middleware-headers-context — this pattern is duplicated in
+      // server/middleware.ts and entries/pages-server-entry.ts.
+      // Changes here must be mirrored in both sibling files.
       let _mwDraftCookie = null;
       let mwResponse = await runWithHeadersContext(headersContextFromRequest(nextRequest), async () => {
         const _prevHeadersPhase = setHeadersAccessPhase("middleware");

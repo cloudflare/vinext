@@ -23,6 +23,10 @@ export const APP_UNDERSCORED_ROOT_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/app-underscored-root",
 );
+export const APP_OPTIONAL_CATCHALL_ROOT_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/app-optional-catchall-root",
+);
 export const PAGES_I18N_DOMAINS_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/pages-i18n-domains",

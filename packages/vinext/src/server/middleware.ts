@@ -444,6 +444,10 @@ export async function runMiddleware(
   const nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
   const fetchEvent = new NextFetchEvent({ page: normalizedPathname });
 
+  // SYNC: middleware-headers-context — this pattern is duplicated in
+  // entries/pages-server-entry.ts and entries/app-rsc-entry.ts (code-generated).
+  // Changes here must be mirrored in both entry templates.
+  //
   // Execute the middleware with a next/headers context so middleware can use
   // headers() / draftMode() like Next.js allows.
   let response: Response | undefined;

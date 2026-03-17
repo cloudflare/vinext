@@ -199,6 +199,9 @@ async function _runMiddleware(request) {
   }
   var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
   var fetchEvent = new NextFetchEvent({ page: normalizedPathname });
+  // SYNC: middleware-headers-context — this pattern is duplicated in
+  // server/middleware.ts and entries/app-rsc-entry.ts.
+  // Changes here must be mirrored in both sibling files.
   var response;
   var draftCookie = null;
   try {

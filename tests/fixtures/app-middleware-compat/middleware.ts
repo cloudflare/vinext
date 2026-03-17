@@ -38,6 +38,28 @@ export async function middleware(request: import("next/server").NextRequest) {
     }
   }
 
+  // Draft mode edge case: enable draft mode and return void (no response).
+  // Tests whether the draft cookie is propagated when middleware doesn't
+  // explicitly return a NextResponse.
+  if (
+    request.nextUrl.pathname === "/draft-mode-void" &&
+    request.nextUrl.searchParams.get("draft")
+  ) {
+    (await draftMode()).enable();
+    // Intentionally return void — no NextResponse.next() or any response.
+    return;
+  }
+
+  // Draft mode with explicit NextResponse.next(): enable draft mode and
+  // return NextResponse.next() so the cookie is carried on the response.
+  if (
+    request.nextUrl.pathname === "/draft-mode-next" &&
+    request.nextUrl.searchParams.get("draft")
+  ) {
+    (await draftMode()).enable();
+    return NextResponse.next();
+  }
+
   if (request.nextUrl.pathname === "/preloads") {
     return NextResponse.next({
       headers: {
@@ -76,5 +98,7 @@ export const config = {
     "/preloads",
     "/unstable-cache",
     "/test-location-header",
+    "/draft-mode-void",
+    "/draft-mode-next",
   ],
 };

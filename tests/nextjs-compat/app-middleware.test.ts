@@ -131,6 +131,30 @@ describe("Next.js compat: app-middleware", () => {
     });
   });
 
+  describe("draftMode edge cases", () => {
+    // Tests that draftMode().enable() + explicit NextResponse.next() propagates the bypass cookie.
+    it("propagates draft mode cookie when middleware returns NextResponse.next()", async () => {
+      const res = await fetch(`${baseUrl}/draft-mode-next?draft=true`);
+      const setCookies = res.headers.getSetCookie();
+      expect(setCookies.some((cookie) => cookie.includes("__prerender_bypass"))).toBe(true);
+    });
+
+    // Tests what happens when draftMode().enable() is called but middleware returns void.
+    // In Next.js, middleware returning void is treated as "continue" — the draft cookie
+    // may be lost because there is no response object to attach it to. This documents
+    // the expected behavior (parity with Next.js).
+    it("draft mode cookie behavior when middleware returns void", async () => {
+      const res = await fetch(`${baseUrl}/draft-mode-void?draft=true`);
+      // Middleware returned void, so there is no middleware response to attach
+      // the draft cookie to. The cookie is NOT propagated — this matches Next.js
+      // behavior where cookie propagation requires a response object.
+      const setCookies = res.headers.getSetCookie();
+      const hasBypassCookie = setCookies.some((cookie) => cookie.includes("__prerender_bypass"));
+      // Document: void return does NOT propagate draft cookies
+      expect(hasBypassCookie).toBe(false);
+    });
+  });
+
   it("retains a link response header from middleware", async () => {
     const res = await fetch(`${baseUrl}/preloads`);
     expect(res.headers.get("link")).toContain(
