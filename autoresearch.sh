@@ -13,12 +13,16 @@ done
 # ── Run nextjs-compat tests and extract metrics ──
 OUTPUT=$(pnpm test tests/nextjs-compat/ 2>&1) || true
 
+# Strip ANSI escape codes for reliable grep
+CLEAN=$(echo "$OUTPUT" | sed 's/\x1b\[[0-9;]*m//g')
+
 # Extract passing test count from vitest output
-# Format: "Tests  233 passed | 2 skipped (235)"
-PASS_COUNT=$(echo "$OUTPUT" | grep -o '[0-9]* passed' | head -1 | grep -o '[0-9]*' || echo "0")
-SKIP_COUNT=$(echo "$OUTPUT" | grep -o '[0-9]* skipped' | head -1 | grep -o '[0-9]*' || echo "0")
+# "Test Files" line: " Test Files  21 passed (21)"
+# "Tests" line:      "      Tests  233 passed | 2 skipped (235)"
+FILE_COUNT=$(echo "$CLEAN" | grep 'Test Files' | grep -o '[0-9]* passed' | grep -o '[0-9]*' || echo "0")
+PASS_COUNT=$(echo "$CLEAN" | grep '^ *Tests ' | grep -o '[0-9]* passed' | grep -o '[0-9]*' || echo "0")
+SKIP_COUNT=$(echo "$CLEAN" | grep '^ *Tests ' | grep -o '[0-9]* skipped' | grep -o '[0-9]*' || echo "0")
 TOTAL_COUNT=$((PASS_COUNT + SKIP_COUNT))
-FILE_COUNT=$(echo "$OUTPUT" | grep 'Test Files' | grep -o '[0-9]* passed' | grep -o '[0-9]*' || echo "0")
 
 # Count audited directories from manifest
 AUDITED=$(python3 -c "
@@ -32,7 +36,7 @@ DIRS_AUDITED=$(echo "$AUDITED" | cut -d, -f1)
 DIRS_COVERED=$(echo "$AUDITED" | cut -d, -f2)
 
 # Check if tests actually passed (vitest exit code is embedded in output)
-if echo "$OUTPUT" | grep -q 'Test Files.*passed'; then
+if echo "$CLEAN" | grep -q 'Test Files.*passed'; then
   echo "METRIC passing_compat_tests=$PASS_COUNT"
   echo "METRIC test_files=$FILE_COUNT"
   echo "METRIC dirs_covered=$DIRS_COVERED"
