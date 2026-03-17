@@ -805,9 +805,9 @@
   },
   {
     "dir": "conflicting-search-and-route-params",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 3,
-    "notes": ""
+    "notes": "Ported 2 tests: route param vs search param with same name on page + API route."
   },
   {
     "dir": "create-root-layout",
@@ -883,9 +883,9 @@
   },
   {
     "dir": "duplicate-layout-components",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 3,
-    "notes": ""
+    "notes": "Playwright only \u2014 tests duplicate component rendering in browser."
   },
   {
     "dir": "dynamic-css",
@@ -991,9 +991,9 @@
   },
   {
     "dir": "metadata-edge",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 3,
-    "notes": ""
+    "notes": "Mostly build-specific bundle tests. One OG image size test needs image-size package."
   },
   {
     "dir": "metadata-font",
@@ -1015,9 +1015,9 @@
   },
   {
     "dir": "metadata-json-manifest",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 3,
-    "notes": ""
+    "notes": "Tests static manifest.json file serving, not dynamic manifest.ts convention."
   },
   {
     "dir": "metadata-navigation",
@@ -2029,9 +2029,9 @@
   },
   {
     "dir": "use-params",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 4,
-    "notes": ""
+    "notes": "Ported 3 tests: useParams() for single, nested, and catch-all dynamic params during SSR."
   },
   {
     "dir": "use-server-inserted-html",
