@@ -122,3 +122,37 @@ _This section is updated as experiments accumulate._
 
 - 233 passing tests, 2 skipped, 21 test files
 - Covers: app-rendering, not-found, global-error, dynamic, app-routes, metadata, navigation, rsc-basic, hooks, app-css, set-cookies, draft-mode, streaming, app-static (14 Next.js test dirs)
+
+### Iteration 1: app-fetch-deduping-errors (+3 tests)
+
+- Ported: page renders despite fetch error in generateMetadata and page component
+- No bugs found
+
+### Iteration 2-3: forbidden + unauthorized (+10 tests)
+
+- Ported: scoped boundary, root escalation, 403/401 status codes
+- Vinext already supports forbidden() and unauthorized() correctly
+
+### Iteration 4: app-catch-all-optional (+3 tests)
+
+- Ported: optional catch-all routing with/without rest params
+- No bugs found
+
+### Iteration 5: app-simple-routes (+2 tests) — **BUG FOUND + FIXED**
+
+- **Bug**: Route handlers received plain `Request` instead of `NextRequest`. `req.nextUrl` was undefined, causing 500 errors.
+- **Fix**: Wrapped `request` in `NextRequest` before passing to route handlers in `app-rsc-entry.ts` (same pattern already used for middleware).
+- This is exactly the kind of bug issue #204 was designed to catch.
+
+### P1 Triage Summary (26 dirs)
+
+- All P1 (error/validation) directories audited
+- Most are build-tool-specific (file patching + server restart) or Playwright-only
+- Key skip reasons: Redbox assertions, next.cliOutput checks, client-side error boundary interactions
+
+### Patterns Observed
+
+- Many Next.js tests use `next.browser()` (Playwright) — not HTTP-testable with our pattern
+- Tests using `next.render$` or `next.fetch` are portable
+- Build-time validation tests (file patch + restart + CLI check) are a separate category we can't replicate
+- Route handler tests are very productive — they often expose API surface gaps

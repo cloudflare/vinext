@@ -181,15 +181,15 @@
   },
   {
     "dir": "catchall-specificity",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 2,
-    "notes": ""
+    "notes": "Full Playwright: catch-all vs specific segment client-side navigation."
   },
   {
     "dir": "css-client-side-nav-parallel-routes",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 2,
-    "notes": ""
+    "notes": "Full Playwright: CSS during client-side navigation with parallel routes."
   },
   {
     "dir": "draft-mode-middleware",
@@ -223,9 +223,9 @@
   },
   {
     "dir": "front-redirect-issue",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 2,
-    "notes": ""
+    "notes": "Regression test for specific Next.js GitHub issue. Playwright-only."
   },
   {
     "dir": "global-not-found",
@@ -589,9 +589,9 @@
   },
   {
     "dir": "rsc-redirect",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 2,
-    "notes": ""
+    "notes": "Ported 3 tests: redirect() from server component. Found behavioral difference: vinext uses HTTP 307 for RSC requests, Next.js encodes redirect in RSC stream (200). Iteration 6."
   },
   {
     "dir": "server-actions-redirect-middleware-rewrite",
@@ -1225,9 +1225,9 @@
   },
   {
     "dir": "root-layout",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 3,
-    "notes": ""
+    "notes": "Full Playwright: MPA navigation between root layouts, Redbox for missing tags."
   },
   {
     "dir": "root-layout-render-once",
