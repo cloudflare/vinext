@@ -1,0 +1,2276 @@
+[
+  {
+    "dir": "app-fetch-deduping-errors",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "app-invalid-revalidate",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "app-validation",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "cache-components-errors",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "cache-components-route-handler-errors",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "catch-error",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "dedupe-rsc-error-log",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "default-error-page-ui",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "error-boundary-navigation",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "error-on-next-codemod-comment",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "errors",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "forbidden",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "instant-validation",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "instant-validation-build",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "instant-validation-causes",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "instant-validation-client",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "instant-validation-static-shells",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "loader-file-named-export-custom-loader-error",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-invalid-image-file",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "missing-suspense-with-csr-bailout",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-revalidation",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "ppr-errors",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "ppr-missing-root-params",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "proxy-missing-export",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "taint",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "unauthorized",
+    "status": "unaudited",
+    "priority": 1,
+    "notes": ""
+  },
+  {
+    "dir": "app-catch-all-optional",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "app-middleware",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "app-middleware-proxy",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "catchall-parallel-routes-group",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "catchall-specificity",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "css-client-side-nav-parallel-routes",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "draft-mode-middleware",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "dynamic-interception-route-revalidate",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "edge-route-catchall",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "edge-route-rewrite",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "external-redirect",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "front-redirect-issue",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "global-not-found",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "initial-css-not-found",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "interception-dynamic-segment",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "interception-dynamic-segment-middleware",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "interception-dynamic-single-segment",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "interception-middleware-rewrite",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "interception-route-prefetch-cache",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "interception-routes-multiple-catchall",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "interception-routes-output-export",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "interception-routes-root-catchall",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "interception-segments-two-levels-above",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-icons-parallel-routes",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-streaming-parallel-routes",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "middleware-matching",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "middleware-rewrite-catchall-priority-with-parallel-route",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "middleware-rewrite-dynamic",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "middleware-rsc-external-rewrite",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "middleware-sitemap",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "navigation-redirect-import",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "no-duplicate-headers-middleware",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "not-found-default",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "not-found-with-layout-and-group-not-found",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "not-found-with-nested-layouts",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "not-found-with-pages-i18n",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-route-navigations",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-route-not-found",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-route-not-found-params",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-and-interception",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-and-interception-basepath",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-and-interception-catchall",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-and-interception-from-root",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-and-interception-nested-dynamic-routes",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-breadcrumbs",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-catchall",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-catchall-children-slot",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-catchall-default",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-catchall-dynamic-segment",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-catchall-groups",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-catchall-slotted-non-catchalls",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-catchall-specificity",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-css",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-generate-static-params",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-group-depth",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-layouts",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-leaf-segments",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-not-found",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-root-param-dynamic-child",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-root-slot",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "parallel-routes-use-selected-layout-segment",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "ppr-middleware-rewrite-force-dynamic-ssg-dynamic-params",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "prefetching-not-found",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "proxy-nfc-traced",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "proxy-runtime",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "proxy-runtime-nodejs",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "proxy-with-middleware",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "revalidate-path-with-rewrites",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "rewrite-headers",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "rewrite-with-search-params",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "rewrites-redirects",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "root-layout-redirect",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "rsc-redirect",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "server-actions-redirect-middleware-rewrite",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "server-actions-relative-redirect",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "sub-shell-generation-middleware",
+    "status": "unaudited",
+    "priority": 2,
+    "notes": ""
+  },
+  {
+    "dir": "_allow-underscored-root-directory",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "action-in-pages-router",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "actions",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "actions-allowed-origins",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "actions-navigation",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "actions-revalidate-remount",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "actions-streaming",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "actions-unrecognized",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "actions-unused-args",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-client-cache",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-css-pageextensions",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-custom-cache-handler",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-edge-root-layout",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-inline-css",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-prefetch",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-prefetch-false",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-prefetch-false-loading",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-prefetch-static",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-routes-client-component",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-routes-trailing-slash",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app-simple-routes",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "autoscroll-with-css-modules",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "back-forward-cache",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "cache-components",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "cache-components-allow-otel-spans",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "cache-components-bot-ua",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "cache-components-console",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "cache-components-create-component-tree",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "cache-components-dynamic-imports",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "cache-components-request-apis",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "cache-components-segment-configs",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "concurrent-navigations",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "conflicting-search-and-route-params",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "create-root-layout",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "css-chunking",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "css-media-query",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "css-modules-data-urls",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "css-modules-pure-no-check",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "css-modules-rsc-postcss",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "css-modules-scoping",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "css-order",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "css-server-chunks",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "cssnano-colormin",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "custom-cache-control",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "disable-logging-route",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "duplicate-layout-components",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "dynamic-css",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "dynamic-data",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "dynamic-href",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "dynamic-import",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "dynamic-import-tree-shaking",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "dynamic-in-generate-params",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "dynamic-requests",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "ecmascript-features",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "experimental-lightningcss-features",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "fallback-prefetch",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "headers-static-bailout",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "initial-css-order",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "instant-navigation-testing-api",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "javascript-urls",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "layout-params",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "mdx-font-preload",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-dynamic-routes",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-edge",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-font",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-icons",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-image-files",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-json-manifest",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-navigation",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-non-standard-custom-routes",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-route-like-pages",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-static-file",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-static-generation",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-streaming",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-streaming-static-generation",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-suspense",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-svg-icon",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-thrown",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "metadata-warnings",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "navigation-focus",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "navigation-layout-suspense",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "navigation-with-queued-actions",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "next-after-app-static",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "next-dynamic-csp-nonce",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "next-dynamic-css",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "next-font",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "next-image",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "next-image-legacy-src-with-query-without-local-patterns",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "next-image-src-with-query-without-local-patterns",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "next-script",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "no-server-actions",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "ppr-metadata-blocking",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "ppr-metadata-streaming",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "ppr-navigations",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "ppr-unstable-cache",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "prefetch-searchparam",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "prefetch-true-instant",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "prerender-encoding",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "reexport-client-component-metadata",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "resume-data-cache",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "revalidate-dynamic",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "revalidatetag-rsc",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "root-layout",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "root-layout-render-once",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "root-suspense-dynamic",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "route-page-manifest-bug",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "router-autoscroll",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "router-disable-smooth-scroll",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "router-stuck-dynamic-static-segment",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "rsc-query-routing",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "rsc-webpack-loader",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "script-before-interactive",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "scss",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "searchparams-static-bailout",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "segment-cache",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "server-action-logging",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "static-generation-status",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "static-rsc-cache-components",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "static-shell-debugging",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "static-siblings",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "tailwind-css",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "typed-routes",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "typed-routes-validator",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "underscore-ignore-app-paths",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-close-over-function",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-custom-handler",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-dev",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-hanging-inputs",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-metadata-route-handler",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-output-export",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-private",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-route-handler-only",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-search-params",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-segment-configs",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-swr",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-unknown-cache-kind",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-with-server-function-props",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-cache-without-experimental-flag",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "use-selected-layout-segment-s",
+    "status": "unaudited",
+    "priority": 3,
+    "notes": ""
+  },
+  {
+    "dir": "app",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-a11y",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-alias",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-basepath",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-basepath-custom-server",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-compilation",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-config-crossorigin",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-edge",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-esm-js",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-external",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-fetch-deduping",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-root-params-getters",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "asset-prefix",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "asset-prefix-absolute",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "asset-prefix-with-basepath",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "async-component-preload",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "back-button-download-bug",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "binary",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "chunk-loading",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "client-module-with-package-type",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "client-reference-chunking",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "conflicting-page-segments",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "crypto-globally-available",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "edge-runtime-node-compatibility",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "emotion-js",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "esm-client-module-without-exports",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "externalize-node-binary",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "fallback-shells",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "fetch-abort-on-refresh",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "gesture-transitions",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "graceful-shutdown-next-after",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "hello-world",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "i18n-hybrid",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "import",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "instrumentation-order",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "interoperability-with-pages",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "logging",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "mdx",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "mdx-no-mdx-components",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "mjs-as-extension",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "modularizeimports",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "monaco-editor",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "next-after-app",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "next-after-app-api-usage",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "next-after-app-deploy",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "next-after-pages",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "next-condition",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "next-config",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "next-config-ts",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "next-config-ts-native-mts",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "next-config-ts-native-ts",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "next-dist-client-esm-import",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "no-double-tailwind-execution",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "no-duplicate-headers-next-config",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "node-extensions",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "node-worker-threads",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "optimistic-routing",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "otel-parent-span-propagation",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "pages-to-app-routing",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "params-hooks-compat",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "partial-fallback-root-blocking",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "partial-fallback-shell-upgrade",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "phase-changes",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "ppr",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "ppr-full",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "ppr-history-replace-state",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "ppr-partial-hydration",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "ppr-root-param-fallback",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "preferred-region",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "random-in-sass",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "react-max-headers-length",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "refresh",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "remove-console",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "require-context",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "resolve-extensions",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "resource-url-encoding",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "resuming-head-runtime-search-param",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "search-params-react-key",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "searchparams-reuse-loading",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "self-importing-package",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "self-importing-package-monorepo",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "server-components-externals",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "server-source-maps",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "shallow-routing",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "similar-pages-paths",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "sitemap-group",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "sub-shell-generation",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "syntax-highlighter-crash",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "temporary-references",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "third-parties",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "trailingslash",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "transition-indicator",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "typeof-window",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "undefined-default-export",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "unstable-rethrow",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "upward-distdir",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "use-params",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "use-server-inserted-html",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "view-transitions",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "with-babel",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "with-exported-function-config",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "worker",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "x-forwarded-headers",
+    "status": "unaudited",
+    "priority": 4,
+    "notes": ""
+  },
+  {
+    "dir": "app-css",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "app-rendering",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "app-routes",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "app-static",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "bun-externals",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "detachable-panels",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "dev-overlay",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "draft-mode",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "dynamic",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "global-error",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "hooks",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "log-file",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "metadata",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "multiple-lockfiles",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "navigation",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "non-root-project-monorepo",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "not-found",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "nx-handling",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "pnpm-workspace-root",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "rsc-basic",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "set-cookies",
+    "status": "covered",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "test-template",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "trace-build-file",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "turbopack-loader-content-type",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "turbopack-reports",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "webpack-loader-binary",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "webpack-loader-conditions",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "webpack-loader-errors",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "webpack-loader-fs",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "webpack-loader-module-type",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "webpack-loader-resolve",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "webpack-loader-resource-query",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "webpack-loader-set-environment-variable",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  },
+  {
+    "dir": "webpack-loader-ts-transform",
+    "status": "skip",
+    "priority": 99,
+    "notes": ""
+  }
+]
