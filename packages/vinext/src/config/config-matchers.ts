@@ -178,7 +178,12 @@ const HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 
-/** Request hop-by-hop headers to strip before proxying with fetch(). */
+/**
+ * Request hop-by-hop headers to strip before proxying with fetch().
+ * Intentionally narrower than HOP_BY_HOP_HEADERS: external rewrite proxying
+ * still forwards proxy auth credentials, while response sanitization strips
+ * them before returning data to the client.
+ */
 const REQUEST_HOP_BY_HOP_HEADERS = new Set([
   "connection",
   "keep-alive",

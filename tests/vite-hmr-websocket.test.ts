@@ -1,5 +1,5 @@
 import net from "node:net";
-import { describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import { APP_FIXTURE_DIR, startFixtureServer } from "./helpers";
 
 function readUpgradeResponse(
@@ -58,55 +58,47 @@ async function extractViteWsToken(baseUrl: string): Promise<string> {
 }
 
 describe("Vite HMR websocket token checks", () => {
-  it("rejects websocket upgrade with Origin header when token is missing", async () => {
-    const { server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true });
+  let server: Awaited<ReturnType<typeof startFixtureServer>>["server"];
+  let host: string;
+  let port: number;
+  let token: string;
 
-    try {
-      const url = new URL(baseUrl);
-      const response = await readUpgradeResponse(
-        url.hostname,
-        Number(url.port),
-        "/",
-        "http://evil.example",
-      );
-      expect(response.startsWith("HTTP/1.1 400")).toBe(true);
-    } finally {
-      await server.close();
-    }
+  beforeAll(async () => {
+    const started = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true });
+    server = started.server;
+
+    const url = new URL(started.baseUrl);
+    host = url.hostname;
+    port = Number(url.port);
+    token = await extractViteWsToken(started.baseUrl);
+  });
+
+  afterAll(async () => {
+    await server.close();
+  });
+
+  it("rejects websocket upgrade with Origin header when token is missing", async () => {
+    const response = await readUpgradeResponse(host, port, "/", "http://evil.example");
+    expect(response.startsWith("HTTP/1.1 400")).toBe(true);
   });
 
   it("rejects websocket upgrade with Origin header when token is invalid", async () => {
-    const { server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true });
-
-    try {
-      const url = new URL(baseUrl);
-      const response = await readUpgradeResponse(
-        url.hostname,
-        Number(url.port),
-        "/?token=not-the-real-token",
-        "http://evil.example",
-      );
-      expect(response.startsWith("HTTP/1.1 400")).toBe(true);
-    } finally {
-      await server.close();
-    }
+    const response = await readUpgradeResponse(
+      host,
+      port,
+      "/?token=not-the-real-token",
+      "http://evil.example",
+    );
+    expect(response.startsWith("HTTP/1.1 400")).toBe(true);
   });
 
   it("accepts websocket upgrade with a valid token", async () => {
-    const { server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, { appRouter: true });
-
-    try {
-      const token = await extractViteWsToken(baseUrl);
-      const url = new URL(baseUrl);
-      const response = await readUpgradeResponse(
-        url.hostname,
-        Number(url.port),
-        `/?token=${encodeURIComponent(token)}`,
-        "http://localhost:3000",
-      );
-      expect(response.startsWith("HTTP/1.1 101")).toBe(true);
-    } finally {
-      await server.close();
-    }
+    const response = await readUpgradeResponse(
+      host,
+      port,
+      `/?token=${encodeURIComponent(token)}`,
+      "http://localhost:3000",
+    );
+    expect(response.startsWith("HTTP/1.1 101")).toBe(true);
   });
 });
