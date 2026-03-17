@@ -577,9 +577,9 @@
   },
   {
     "dir": "rewrites-redirects",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 2,
-    "notes": ""
+    "notes": "Ported 2 pure-HTTP redirect tests via dedicated fixture: preserves exotic URL schemes with and without // after protocol in next.config redirects."
   },
   {
     "dir": "root-layout-redirect",
