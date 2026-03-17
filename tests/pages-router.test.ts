@@ -7,7 +7,7 @@ import os from "node:os";
 import { Readable } from "node:stream";
 import { pathToFileURL } from "node:url";
 import vinext from "../packages/vinext/src/index.js";
-import { PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
+import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps }) {
@@ -1558,7 +1558,7 @@ export default function CounterPage() {
       );
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      const prodServer = await startProdServer({
+      const { server: prodServer } = await startProdServer({
         port: 0,
         host: "127.0.0.1",
         outDir: fixtureOutDir,
@@ -1679,7 +1679,7 @@ export default function CounterPage() {
       expect(cssContent).toMatch(/data:image\/svg\+xml|\.svg/);
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      const prodServer = await startProdServer({
+      const { server: prodServer } = await startProdServer({
         port: 0,
         host: "127.0.0.1",
         outDir: fixtureOutDir,
@@ -1972,7 +1972,7 @@ export default function CounterPage() {
 
 describe("Production server middleware (Pages Router)", () => {
   const outDir = path.resolve(FIXTURE_DIR, "dist");
-  let prodServer: import("node:http").Server;
+  let prodServer: import("node:http").Server | undefined;
   let prodUrl: string;
 
   beforeAll(async () => {
@@ -2007,18 +2007,18 @@ describe("Production server middleware (Pages Router)", () => {
     }
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    prodServer = await startProdServer({
+    ({ server: prodServer } = await startProdServer({
       port: 0,
       host: "127.0.0.1",
       outDir,
-    });
-    const addr = prodServer.address() as { port: number };
+    }));
+    const addr = prodServer!.address() as { port: number };
     prodUrl = `http://127.0.0.1:${addr.port}`;
   });
 
   afterAll(async () => {
     if (prodServer) {
-      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      await new Promise<void>((resolve) => prodServer!.close(() => resolve()));
     }
   });
 
@@ -2059,12 +2059,12 @@ describe("Production server middleware (Pages Router)", () => {
       });
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      prodServer = await startProdServer({
+      ({ server: prodServer } = await startProdServer({
         port: 0,
         host: "127.0.0.1",
         outDir: path.join(tmpDir, "dist"),
-      });
-      const addr = prodServer.address() as { port: number };
+      }));
+      const addr = prodServer!.address() as { port: number };
       const tempProdUrl = `http://127.0.0.1:${addr.port}`;
 
       const encodedRes = await fetch(`${tempProdUrl}/a%2Fb`);
@@ -2354,7 +2354,7 @@ describe("Production server middleware (Pages Router)", () => {
 
 describe("Production server next.config.js features (Pages Router)", () => {
   const outDir = path.resolve(FIXTURE_DIR, "dist");
-  let prodServer: import("node:http").Server;
+  let prodServer: import("node:http").Server | undefined;
   let prodUrl: string;
 
   beforeAll(async () => {
@@ -2389,18 +2389,18 @@ describe("Production server next.config.js features (Pages Router)", () => {
     }
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    prodServer = await startProdServer({
+    ({ server: prodServer } = await startProdServer({
       port: 0,
       host: "127.0.0.1",
       outDir,
-    });
-    const addr = prodServer.address() as { port: number };
+    }));
+    const addr = prodServer!.address() as { port: number };
     prodUrl = `http://127.0.0.1:${addr.port}`;
   });
 
   afterAll(async () => {
     if (prodServer) {
-      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      await new Promise<void>((resolve) => prodServer!.close(() => resolve()));
     }
   });
 
@@ -2562,22 +2562,14 @@ describe("Production server next.config.js features (Pages Router)", () => {
 });
 
 describe("Static export (Pages Router)", () => {
-  let server: ViteDevServer;
+  let pagesBundlePath: string;
   const exportDir = path.resolve(FIXTURE_DIR, "out");
 
   beforeAll(async () => {
-    server = await createServer({
-      root: FIXTURE_DIR,
-      configFile: false,
-      plugins: [vinext()],
-      server: { port: 0 },
-      logLevel: "silent",
-    });
-    // Don't need to listen — just need the SSR module loader
-  });
+    pagesBundlePath = await buildPagesFixture(FIXTURE_DIR);
+  }, 60_000);
 
-  afterAll(async () => {
-    await server.close();
+  afterAll(() => {
     fs.rmSync(exportDir, { recursive: true, force: true });
   });
 
@@ -2593,7 +2585,7 @@ describe("Static export (Pages Router)", () => {
     const config = await resolveNextConfig({ output: "export" });
 
     const result = await staticExportPages({
-      server,
+      pagesBundlePath,
       routes,
       apiRoutes,
       pagesDir,
@@ -2656,7 +2648,7 @@ describe("Static export (Pages Router)", () => {
     const tempDir = path.resolve(FIXTURE_DIR, "out-temp");
     try {
       const result = await staticExportPages({
-        server,
+        pagesBundlePath,
         routes,
         apiRoutes,
         pagesDir,
@@ -2697,7 +2689,7 @@ describe("Static export (Pages Router)", () => {
     const trailingDir = path.resolve(FIXTURE_DIR, "out-trailing");
     try {
       const result = await staticExportPages({
-        server,
+        pagesBundlePath,
         routes,
         apiRoutes,
         pagesDir,
@@ -2771,7 +2763,7 @@ export function middleware(request) {
       });
 
       const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      const prodServer = await startProdServer({
+      const { server: prodServer } = await startProdServer({
         port: 0,
         host: "127.0.0.1",
         outDir,
@@ -3013,8 +3005,9 @@ describe("Pages Router dev ISR regeneration", () => {
       if (!regenPromise) {
         throw new Error("expected stale ISR request to start background regeneration");
       }
+      const pendingRegen = regenPromise;
 
-      await regenPromise;
+      await Promise.resolve(pendingRegen);
 
       expect(regenSawUnifiedScope).toBe(true);
       expect(regenTags).toEqual([]);

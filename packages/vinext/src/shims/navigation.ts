@@ -616,7 +616,7 @@ const _appRouter = {
     if (isServer) return;
     // Re-fetch the current page's RSC stream
     if (typeof window.__VINEXT_RSC_NAVIGATE__ === "function") {
-      window.__VINEXT_RSC_NAVIGATE__(window.location.href);
+      void window.__VINEXT_RSC_NAVIGATE__(window.location.href);
     }
   },
   prefetch(href: string): void {

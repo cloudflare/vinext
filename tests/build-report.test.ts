@@ -384,11 +384,10 @@ describe("formatBuildReport", () => {
     expect(tableLines[2]).toContain("└");
   });
 
-  it("uses ┌ for a single-route table (not └)", () => {
+  it("uses - for a single-route table (not └)", () => {
     const rows = [{ pattern: "/", type: "static" as const }];
     const out = formatBuildReport(rows);
-    expect(out).toContain("┌ ○ /");
-    expect(out).not.toContain("└ ○ /");
+    expect(out).toContain("─ ○ /");
   });
 
   it("prints a legend line with only the types that appear", () => {

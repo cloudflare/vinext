@@ -43,7 +43,6 @@ import {
   type RequestContext,
 } from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
-import { staticExportPages } from "./build/static-export.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
 import { detectPackageManager } from "./utils/project.js";
 import {
@@ -62,6 +61,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -272,9 +272,27 @@ function getViteMajorVersion(): number {
   try {
     const require = createRequire(path.join(process.cwd(), "package.json"));
     const vitePkg = require("vite/package.json");
-    return parseInt(vitePkg.version, 10);
-  } catch {
-    return 7; // default to Vite 7
+
+    const viteMajor = parseInt(vitePkg?.version, 10);
+    if (vitePkg?.name === "vite" && Number.isFinite(viteMajor)) {
+      return viteMajor;
+    }
+
+    const bundledViteMajor = parseInt(vitePkg?.bundledVersions?.vite, 10);
+    if (Number.isFinite(bundledViteMajor)) {
+      return bundledViteMajor;
+    }
+
+    // npm aliases like `vite: npm:@voidzero-dev/vite-plus-core@...` expose the
+    // aliased package.json, whose own version is not Vite's version.
+    console.warn(
+      `[vinext] Could not determine Vite major version from ${vitePkg?.name ?? "vite/package.json"}; assuming Vite 7`,
+    );
+    return 7;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[vinext] Failed to resolve vite/package.json (${message}); assuming Vite 7`);
+    return 7;
   }
 }
 
@@ -773,6 +791,32 @@ export interface VinextOptions {
    */
   appDir?: string;
   /**
+   * Force-disable App Router detection even when an app/ directory exists.
+   * Only the Pages Router pipeline will be active.
+   * Intended for testing and tools that need to build only the Pages Router
+   * bundle from a hybrid (app + pages) project.
+   * @default false
+   */
+  disableAppRouter?: boolean;
+  /**
+   * Override the output directory for the RSC server bundle.
+   * Absolute paths are used as-is; relative paths are resolved from the
+   * Vite root. Defaults to "dist/server".
+   * Intended for tests that need to build multiple fixtures in parallel
+   * without clobbering each other's output.
+   */
+  rscOutDir?: string;
+  /**
+   * Override the output directory for the SSR bundle.
+   * Defaults to "dist/server/ssr".
+   */
+  ssrOutDir?: string;
+  /**
+   * Override the output directory for the client bundle.
+   * Defaults to Vite's default (dist/client or dist).
+   */
+  clientOutDir?: string;
+  /**
    * Auto-register @vitejs/plugin-rsc when an app/ directory is detected.
    * Set to `false` to disable auto-registration (e.g. if you configure
    * @vitejs/plugin-rsc manually with custom options).
@@ -847,8 +891,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const autoRsc = options.rsc !== false;
   const earlyBaseDir = options.appDir ?? process.cwd();
   const earlyAppDirExists =
-    fs.existsSync(path.join(earlyBaseDir, "app")) ||
-    fs.existsSync(path.join(earlyBaseDir, "src", "app"));
+    !options.disableAppRouter &&
+    (fs.existsSync(path.join(earlyBaseDir, "app")) ||
+      fs.existsSync(path.join(earlyBaseDir, "src", "app")));
 
   // IMPORTANT: Resolve @vitejs/plugin-rsc subpath imports from the user's
   // project root, not from vinext's own package location. When vinext is
@@ -1449,7 +1494,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         pagesDir = path.join(baseDir, "pages");
         appDir = path.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
-        hasAppDir = fs.existsSync(appDir);
+        hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
         middlewarePath = findMiddlewareFile(root);
         instrumentationPath = findInstrumentationFile(root);
 
@@ -1737,6 +1782,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   ) {
                     return;
                   }
+                  // Dynamic route pages that don't export generateStaticParams
+                  // produce IMPORT_IS_UNDEFINED warnings because the virtual RSC
+                  // entry unconditionally references mod?.generateStaticParams for
+                  // every dynamic route. The ?. guards the access safely at runtime;
+                  // suppress the build-time noise.
+                  if (
+                    warning.code === "IMPORT_IS_UNDEFINED" &&
+                    warning.message?.includes("generateStaticParams")
+                  ) {
+                    return;
+                  }
                   if (userOnwarn) {
                     userOnwarn(warning, defaultHandler);
                   } else {
@@ -1901,7 +1957,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 entries: appEntries,
               },
               build: {
-                outDir: "dist/server",
+                outDir: options.rscOutDir ?? "dist/server",
                 rollupOptions: {
                   input: { index: VIRTUAL_RSC_ENTRY },
                 },
@@ -1926,7 +1982,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 entries: appEntries,
               },
               build: {
-                outDir: "dist/server/ssr",
+                outDir: options.ssrOutDir ?? "dist/server/ssr",
                 rollupOptions: {
                   input: { index: VIRTUAL_APP_SSR_ENTRY },
                 },
@@ -2063,7 +2119,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           config.command === "build" &&
           !hasCloudflarePlugin &&
           !hasNitroPlugin &&
-          hasWranglerConfig(root)
+          hasWranglerConfig(root) &&
+          !options.disableAppRouter
         ) {
           throw new Error(
             formatMissingCloudflarePluginError({
@@ -2158,12 +2215,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               allowedDevOrigins: nextConfig?.allowedDevOrigins,
               bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
               i18n: nextConfig?.i18n,
+              hasPagesDir,
             },
             instrumentationPath,
           );
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
-          return generateSsrEntry();
+          return generateSsrEntry(hasPagesDir);
         }
         if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
           return generateBrowserEntry();
@@ -3803,6 +3861,42 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         },
       },
     },
+    // Write vinext-server.json to dist/server/ with a per-build prerender secret.
+    // The prerender secret is used by prod-server.ts to authenticate requests to
+    // the internal /__vinext/prerender/* endpoints, which are only reachable during
+    // the prerender phase of `vinext build`. A new secret is generated on every
+    // build so it rotates with every deployment.
+    //
+    // The secret is generated once at plugin creation time so that both the rsc
+    // and ssr environments write the exact same value (they share the same
+    // closure). Without this, each env would call randomBytes() independently
+    // and the second write would silently overwrite the first with a different
+    // secret, causing prerender auth to fail for whichever env's server reads
+    // the file last.
+    (() => {
+      const prerenderSecret = randomBytes(32).toString("hex");
+      return {
+        name: "vinext:server-manifest",
+        apply: "build" as const,
+        enforce: "post" as const,
+        writeBundle: {
+          sequential: true,
+          order: "post" as const,
+          handler(options: { dir?: string }) {
+            const envName = this.environment?.name;
+            // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
+            // (ssr env). Skip client and other environments.
+            if (envName !== "rsc" && envName !== "ssr") return;
+
+            const outDir = options.dir;
+            if (!outDir) return;
+
+            const manifest = { prerenderSecret };
+            fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
+          },
+        },
+      };
+    })(),
     // Vite can emit empty SSR manifest entries for modules that Rollup inlines
     // into another chunk. Pages Router looks up assets by page module path at
     // runtime, so rebuild those mappings from the emitted client bundle.

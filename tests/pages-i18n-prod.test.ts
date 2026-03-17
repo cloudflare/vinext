@@ -48,7 +48,7 @@ async function startProdFixture(
   });
 
   const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-  const server = await startProdServer({
+  const { server } = await startProdServer({
     port: 0,
     host: "127.0.0.1",
     outDir,

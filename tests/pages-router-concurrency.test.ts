@@ -84,7 +84,7 @@ describe("Pages Router dev concurrency isolation", () => {
 });
 
 describe("Pages Router prod concurrency isolation", () => {
-  let prodServer: http.Server;
+  let prodServer: http.Server | undefined;
   let prodPort: number;
   let tmpDir: string;
 
@@ -123,13 +123,13 @@ describe("Pages Router prod concurrency isolation", () => {
     });
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    prodServer = await startProdServer({
+    ({ server: prodServer } = await startProdServer({
       port: 0,
       host: "127.0.0.1",
       outDir,
-    });
+    }));
 
-    const addr = prodServer.address();
+    const addr = prodServer!.address();
     if (!addr || typeof addr === "string") {
       throw new Error("Failed to start production server");
     }
@@ -138,7 +138,7 @@ describe("Pages Router prod concurrency isolation", () => {
 
   afterAll(async () => {
     if (prodServer) {
-      await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+      await new Promise<void>((resolve) => prodServer!.close(() => resolve()));
     }
     if (tmpDir) {
       const fsp = await import("node:fs/promises");

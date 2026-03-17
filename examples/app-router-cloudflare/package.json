@@ -19,6 +19,7 @@
     "wrangler": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
     "vite-plus": "catalog:"
   }
 }

@@ -656,8 +656,8 @@ examples/                 # Deployed demo apps (see Live Examples above)
 ```bash
 pnpm test             # Vitest unit + integration tests
 pnpm run test:e2e     # Playwright E2E tests (5 projects)
-pnpm run typecheck    # TypeScript checking (tsgo)
-pnpm run lint         # Linting (oxlint)
+pnpm run check        # Format, lint, and type checks
+pnpm run lint         # Lint only (type-aware oxlint)
 pnpm run fmt          # Formatting (oxfmt)
 pnpm run fmt:check    # Check formatting without writing
 ```
@@ -704,7 +704,7 @@ This project is experimental and under active development. Issues and PRs are we
 
 ### CI
 
-When you open a PR, CI (lint, typecheck, Vitest, Playwright E2E) runs automatically. First-time contributors need one manual approval from a maintainer, then subsequent PRs run without intervention.
+When you open a PR, CI (check, Vitest, Playwright E2E) runs automatically. First-time contributors need one manual approval from a maintainer, then subsequent PRs run without intervention.
 
 Deploy previews (building and deploying examples to Cloudflare Workers) only run for branches pushed to the main repo. If you're a Cloudflare employee, push your branch to the main repo instead of forking, and previews deploy automatically. For fork PRs, a maintainer can comment `/deploy-preview` to trigger the deploy and post preview URLs.
 

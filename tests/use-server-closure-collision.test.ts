@@ -244,15 +244,17 @@ export const action = outer("cfg");
 
     // Must not throw
     let pluginOutput: string = source;
-    await expect(async () => {
-      const plugin = getCollisionPlugin();
-      if (!plugin?.transform) return;
-      const transform = unwrapHook(plugin.transform);
-      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
-      if (result != null) {
-        pluginOutput = typeof result === "string" ? result : result.code;
-      }
-    }).not.toThrow();
+    await expect(
+      (async () => {
+        const plugin = getCollisionPlugin();
+        if (!plugin?.transform) return;
+        const transform = unwrapHook(plugin.transform);
+        const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+        if (result != null) {
+          pluginOutput = typeof result === "string" ? result : result.code;
+        }
+      })(),
+    ).resolves.toBeUndefined();
 
     // Both actions must have their inner `cookies` renamed
     expect(pluginOutput).toContain("__local_cookies");
@@ -348,15 +350,17 @@ export const action = buildAction("cfg");
 `.trimStart();
 
     let pluginOutput: string = source;
-    await expect(async () => {
-      const plugin = getCollisionPlugin();
-      if (!plugin?.transform) return;
-      const transform = unwrapHook(plugin.transform);
-      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
-      if (result != null) {
-        pluginOutput = typeof result === "string" ? result : result.code;
-      }
-    }).not.toThrow();
+    await expect(
+      (async () => {
+        const plugin = getCollisionPlugin();
+        if (!plugin?.transform) return;
+        const transform = unwrapHook(plugin.transform);
+        const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+        if (result != null) {
+          pluginOutput = typeof result === "string" ? result : result.code;
+        }
+      })(),
+    ).resolves.toBeUndefined();
 
     // Key stays `cookies`, value becomes `__local_cookies`
     expect(pluginOutput).toContain("cookies: __local_cookies");
@@ -874,15 +878,17 @@ export const action = buildAction("cfg");
 `.trimStart();
 
     let pluginOutput: string = source;
-    await expect(async () => {
-      const plugin = getCollisionPlugin();
-      if (!plugin?.transform) return;
-      const transform = unwrapHook(plugin.transform);
-      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
-      if (result != null) {
-        pluginOutput = typeof result === "string" ? result : result.code;
-      }
-    }).not.toThrow();
+    await expect(
+      (async () => {
+        const plugin = getCollisionPlugin();
+        if (!plugin?.transform) return;
+        const transform = unwrapHook(plugin.transform);
+        const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+        if (result != null) {
+          pluginOutput = typeof result === "string" ? result : result.code;
+        }
+      })(),
+    ).resolves.toBeUndefined();
 
     // The local `const cookies` is renamed, its array-push usages are renamed
     expect(pluginOutput).toContain("__local_cookies");
@@ -913,15 +919,17 @@ export const action = buildAction("cfg");
 `.trimStart();
 
     let pluginOutput: string = source;
-    await expect(async () => {
-      const plugin = getCollisionPlugin();
-      if (!plugin?.transform) return;
-      const transform = unwrapHook(plugin.transform);
-      const result = await transform.call(plugin, source, "/app/actions/page.tsx");
-      if (result != null) {
-        pluginOutput = typeof result === "string" ? result : result.code;
-      }
-    }).not.toThrow();
+    await expect(
+      (async () => {
+        const plugin = getCollisionPlugin();
+        if (!plugin?.transform) return;
+        const transform = unwrapHook(plugin.transform);
+        const result = await transform.call(plugin, source, "/app/actions/page.tsx");
+        if (result != null) {
+          pluginOutput = typeof result === "string" ? result : result.code;
+        }
+      })(),
+    ).resolves.toBeUndefined();
 
     // `__local_cookies` is already taken, so the plugin must use `__local_0_cookies`
     expect(pluginOutput).toContain("__local_0_cookies");

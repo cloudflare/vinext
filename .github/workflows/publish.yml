@@ -75,7 +75,7 @@ jobs:
         working-directory: packages/vinext
         env:
           NPM_CONFIG_REGISTRY: https://registry.npmjs.org
-        run: vp pm publish --access public --provenance
+        run: vp pm publish --access public -- --provenance
 
       - name: Tag release
         run: |

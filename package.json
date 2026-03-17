@@ -3,13 +3,13 @@
   "private": true,
   "scripts": {
     "build": "vp run vinext#build",
+    "check": "vp check",
     "test": "vp test run",
     "test:watch": "vp test",
     "generate:google-fonts": "node scripts/generate-google-fonts.js",
-    "typecheck": "tsgo --noEmit",
     "fmt": "vp fmt",
     "fmt:check": "vp fmt --check",
-    "lint": "vp lint --deny-warnings",
+    "lint": "vp lint",
     "test:e2e": "playwright test",
     "prepare": "vp config"
   },

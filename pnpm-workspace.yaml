@@ -5,9 +5,11 @@ packages:
   - tests/fixtures/ecosystem/*
   - benchmarks/vinext
   - benchmarks/vinext-rolldown
+
 catalog:
   "@cloudflare/kumo": ^1.6.0
   "@cloudflare/vite-plugin": ^1.25.0
+  "@cloudflare/workers-types": ^4.0.0
   "@heroicons/react": 2.2.0
   "@mdx-js/react": ^3.1.1
   "@mdx-js/rollup": ^3.1.1
@@ -58,16 +60,17 @@ catalog:
   typescript: ^5.7.0
   use-count-up: 3.0.1
   validator: ^13.15.26
-  vite: npm:@voidzero-dev/vite-plus-core@0.1.11
+  vite: npm:@voidzero-dev/vite-plus-core@0.1.12
   vite-plugin-commonjs: ^0.10.4
   vite-tsconfig-paths: ^6.1.1
-  vitest: npm:@voidzero-dev/vite-plus-test@0.1.11
-  wrangler: ^4.65.0
+  vitest: npm:@voidzero-dev/vite-plus-test@0.1.12
+  wrangler: ^4.66.0
   zod: 3.24.3
-  vite-plus: 0.1.11
+  vite-plus: 0.1.12
 overrides:
   vite: "catalog:"
   vitest: "catalog:"
+
 peerDependencyRules:
   allowAny:
     - vite

@@ -21,8 +21,8 @@ pnpm test                                        # Vitest — full suite (~2 min
 pnpm test tests/routing.test.ts                  # Run a single test file (~seconds)
 pnpm test tests/shims.test.ts tests/link.test.ts # Run specific files
 pnpm run test:e2e                                # Playwright E2E tests (all projects, use PLAYWRIGHT_PROJECT=<name> to target one)
-pnpm run typecheck                               # TypeScript via tsgo (fast)
-pnpm run lint                                    # oxlint
+pnpm run check                                   # Format, lint, and type checks
+pnpm run lint                                    # Lint only (type-aware oxlint)
 pnpm run fmt                                     # oxfmt (format)
 pnpm run fmt:check                               # oxfmt (check only, no writes)
 pnpm run build                                   # Build the vinext package (via vp pack)
@@ -274,7 +274,7 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
 
 - **NEVER push directly to main.** Always create a feature branch and open a PR, even for small fixes. This ensures CI runs before changes are merged and provides a review checkpoint.
 
-- **Branch protection is enabled on main.** Required checks: Format, Lint, Typecheck, Vitest, Playwright E2E. Pushing directly to main bypasses these protections and can introduce regressions.
+- **Branch protection is enabled on main.** Required checks: Check, Vitest, Playwright E2E. Pushing directly to main bypasses these protections and can introduce regressions.
 
 - **NEVER use `gh pr merge --admin`.** The `--admin` flag bypasses branch protection checks entirely. If merge is blocked, investigate why — don't force it through. A blocked merge usually means a required check failed or is still running.
 
@@ -283,7 +283,7 @@ If a Node built-in does the job, use it. Only reach for a dependency when the bu
   2. Make changes and commit
   3. Push branch: `git push -u origin fix/descriptive-name`
   4. Open PR via `gh pr create`
-  5. Wait for CI to pass — all required checks (Format, Lint, Typecheck, Vitest, Playwright E2E) must be green
+  5. Wait for CI to pass — all required checks (Check, Vitest, Playwright E2E) must be green
   6. Merge via `gh pr merge --squash --delete-branch`
   7. If merge is blocked, check which status check failed and fix it — do not bypass with `--admin`
 
@@ -293,7 +293,7 @@ CI is split into safe checks (no secrets) and deploy previews (requires secrets)
 
 **Safe CI (`ci.yml`)** runs for all PRs after first-time contributor approval:
 
-- Format, Lint, Typecheck, Vitest, Playwright E2E
+- Check, Vitest, Playwright E2E
 - Uses zero secrets and read-only permissions
 - First-time contributors need one manual approval, then subsequent PRs run automatically
 
@@ -455,12 +455,12 @@ These commands map to their corresponding tools. For example, `vp dev --port 300
 ## Common Pitfalls
 
 - **Using the package manager directly:** Do not use pnpm, npm, or Yarn directly. Vite+ can handle all package manager operations.
-- **Always use Vite commands to run tools:** Don't attempt to run `vp vitest` or `vp oxlint`. They do not exist. Use `vp test` and `vp lint` instead.
+- **Always use Vite commands to run tools:** Don't attempt to run `vp vitest` or `vp oxlint`. They do not exist. Use `vp test`, `vp lint`, and `vp check` instead.
 - **Running scripts:** Vite+ commands take precedence over `package.json` scripts. If there is a `test` script defined in `scripts` that conflicts with the built-in `vp test` command, run it using `vp run test`.
 - **Do not install Vitest, Oxlint, Oxfmt, or tsdown directly:** Vite+ wraps these tools. They must not be installed directly. You cannot upgrade these tools by installing their latest versions. Always use Vite+ commands.
 - **Use Vite+ wrappers for one-off binaries:** Use `vp dlx` instead of package-manager-specific `dlx`/`npx` commands.
 - **Import JavaScript modules from `vite-plus`:** Instead of importing from `vite` or `vitest`, all modules should be imported from the project's `vite-plus` dependency. For example, `import { defineConfig } from 'vite-plus';` or `import { expect, test, vi } from 'vite-plus/test';`. You must not install `vitest` to import test utilities.
-- **Type-Aware Linting:** There is no need to install `oxlint-tsgolint`, `vp lint --type-aware` works out of the box.
+- **Static checks:** Prefer `vp check` as the default validation command. It runs formatting, linting, and type checks together, and `vp lint --type-aware` works when you need lint-only feedback.
 
 ## Review Checklist for Agents
 

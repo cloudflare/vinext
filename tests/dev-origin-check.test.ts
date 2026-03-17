@@ -15,8 +15,12 @@ describe("dev origin check", () => {
       expect(isAllowedDevOrigin(undefined, "localhost:5173")).toBe(true);
     });
 
-    it("allows requests with Origin 'null' (sandboxed iframe, privacy)", () => {
-      expect(isAllowedDevOrigin("null", "localhost:5173")).toBe(true);
+    it("blocks requests with Origin 'null' by default (CSRF via sandboxed context)", () => {
+      expect(isAllowedDevOrigin("null", "localhost:5173")).toBe(false);
+    });
+
+    it("allows Origin 'null' when explicitly in allowedDevOrigins", () => {
+      expect(isAllowedDevOrigin("null", "localhost:5173", ["null"])).toBe(true);
     });
 
     it("allows localhost origins (any port)", () => {

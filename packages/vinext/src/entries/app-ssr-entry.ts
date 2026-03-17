@@ -3,8 +3,13 @@
  *
  * This runs in the `ssr` Vite environment. It receives an RSC stream,
  * deserializes it to a React tree, and renders to HTML.
+ *
+ * When `hasPagesDir` is true (hybrid App + Pages Router project), the SSR
+ * entry also re-exports `pageRoutes` from `virtual:vinext-server-entry` so
+ * that the Cloudflare Workers RSC bundle can access Pages Router route
+ * metadata (including `getStaticPaths`) via `import("./ssr/index.js")`.
  */
-export function generateSsrEntry(): string {
+export function generateSsrEntry(hasPagesDir = false): string {
   return `
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
@@ -462,5 +467,15 @@ export default {
     return new Response(String(result), { status: 200 });
   },
 };
-`;
+${
+  hasPagesDir
+    ? `
+// Re-export pageRoutes and renderPage from the Pages Router server entry so
+// that the Cloudflare Workers RSC bundle can access Pages Router route metadata
+// (including getStaticPaths) via import("./ssr/index.js").pageRoutes, and can
+// delegate unmatched App Router requests to renderPage for hybrid builds.
+export { pageRoutes, renderPage } from "virtual:vinext-server-entry";
+`
+    : ""
+}`;
 }

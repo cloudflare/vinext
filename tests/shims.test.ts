@@ -313,16 +313,16 @@ describe("next/headers shim", () => {
     });
 
     const syncHeaders = headers();
-    expect(() => syncHeaders.set).toThrow(/Headers cannot be modified/);
-    expect(() => syncHeaders.append).toThrow(/Headers cannot be modified/);
-    expect(() => syncHeaders.delete).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(syncHeaders, "set")).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(syncHeaders, "append")).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(syncHeaders, "delete")).toThrow(/Headers cannot be modified/);
     expect(() => syncHeaders.set("foo", "mutated")).toThrow(/Headers cannot be modified/);
     expect(() => syncHeaders.append("foo", "mutated")).toThrow(/Headers cannot be modified/);
     expect(() => syncHeaders.delete("foo")).toThrow(/Headers cannot be modified/);
     expect(syncHeaders.get("foo")).toBe("original");
 
     const awaitedHeaders = await headers();
-    expect(() => awaitedHeaders.set).toThrow(/Headers cannot be modified/);
+    expect(() => Reflect.get(awaitedHeaders, "set")).toThrow(/Headers cannot be modified/);
     expect(() => awaitedHeaders.set("foo", "mutated")).toThrow(/Headers cannot be modified/);
     expect(awaitedHeaders.get("foo")).toBe("original");
     expect((await headers()).get("foo")).toBe("original");
@@ -377,10 +377,10 @@ describe("next/headers shim", () => {
     });
 
     const syncCookies = cookies();
-    expect(() => syncCookies.set).toThrow(
+    expect(() => Reflect.get(syncCookies, "set")).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
-    expect(() => syncCookies.delete).toThrow(
+    expect(() => Reflect.get(syncCookies, "delete")).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
     expect(() => syncCookies.set("session", "mutated")).toThrow(
@@ -392,7 +392,7 @@ describe("next/headers shim", () => {
     expect(syncCookies.get("session")).toEqual({ name: "session", value: "abc123" });
 
     const awaitedCookies = await cookies();
-    expect(() => awaitedCookies.set).toThrow(
+    expect(() => Reflect.get(awaitedCookies, "set")).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
     expect(() => awaitedCookies.set("session", "mutated")).toThrow(
@@ -892,7 +892,7 @@ describe("next/headers phase-aware cookies", () => {
     const previousPhase = setHeadersAccessPhase("route-handler");
     try {
       const cookieStore = cookies();
-      cookieStore.set("token", "sync-token", { httpOnly: true });
+      void cookieStore.set("token", "sync-token", { httpOnly: true });
 
       expect(cookieStore.get("token")).toEqual({ name: "token", value: "sync-token" });
       expect(getAndClearPendingCookies()).toEqual([expect.stringContaining("token=sync-token")]);
@@ -5506,6 +5506,50 @@ describe("proxyExternalRequest", () => {
       // Non-sensitive headers must be preserved
       expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
       expect(capturedHeaders!.get("user-agent")).toBe("vinext-test");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("strips hop-by-hop request headers before proxying external rewrites", async () => {
+    const { proxyExternalRequest } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+
+    const request = new Request("http://localhost:3000/proxy", {
+      method: "DELETE",
+      headers: {
+        connection: "keep-alive, x-custom-hop",
+        "keep-alive": "timeout=5",
+        te: "trailers",
+        trailers: "x-trailer",
+        "transfer-encoding": "chunked",
+        upgrade: "websocket",
+        "x-custom-hop": "secret",
+        "proxy-authorization": "Basic cHJveHk=",
+        "x-custom-header": "keep-me",
+      },
+    });
+
+    const originalFetch = globalThis.fetch;
+    let capturedHeaders: Headers | undefined;
+    globalThis.fetch = async (_url: any, init: any) => {
+      capturedHeaders = init.headers;
+      return new Response("ok", { status: 200 });
+    };
+
+    try {
+      await proxyExternalRequest(request, "https://api.example.com/data");
+      expect(capturedHeaders).toBeDefined();
+      expect(capturedHeaders!.get("connection")).toBeNull();
+      expect(capturedHeaders!.get("keep-alive")).toBeNull();
+      expect(capturedHeaders!.get("te")).toBeNull();
+      expect(capturedHeaders!.get("trailers")).toBeNull();
+      expect(capturedHeaders!.get("transfer-encoding")).toBeNull();
+      expect(capturedHeaders!.get("upgrade")).toBeNull();
+      expect(capturedHeaders!.get("x-custom-hop")).toBeNull();
+      // Request credentials that are not connection-scoped should still forward.
+      expect(capturedHeaders!.get("proxy-authorization")).toBe("Basic cHJveHk=");
+      expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -1,0 +1,19 @@
+{
+  "name": "vinext-cf-app-basic",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@cloudflare/vite-plugin": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "@vitejs/plugin-rsc": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-server-dom-webpack": "catalog:",
+    "vinext": "workspace:*",
+    "vite": "catalog:",
+    "wrangler": "catalog:"
+  },
+  "devDependencies": {
+    "vite-plus": "catalog:"
+  }
+}

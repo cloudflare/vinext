@@ -87,6 +87,15 @@ export interface AppRouterConfig {
   bodySizeLimit?: number;
   /** Internationalization routing config for middleware matcher locale handling. */
   i18n?: NextI18nConfig | null;
+  /**
+   * When true, the project has a `pages/` directory alongside the App Router.
+   * The generated RSC entry exposes `/__vinext/prerender/pages-static-paths`
+   * so `prerenderPages` can call `getStaticPaths` via `wrangler unstable_startWorker`
+   * in CF Workers builds. `pageRoutes` is loaded from the SSR environment via
+   * `import("./ssr/index.js")`, which re-exports it from
+   * `virtual:vinext-server-entry` when this flag is set.
+   */
+  hasPagesDir?: boolean;
 }
 
 /**
@@ -115,6 +124,7 @@ export function generateRscEntry(
   const allowedOrigins = config?.allowedOrigins ?? [];
   const bodySizeLimit = config?.bodySizeLimit ?? 1 * 1024 * 1024;
   const i18nConfig = config?.i18n ?? null;
+  const hasPagesDir = config?.hasPagesDir ?? false;
   // Build import map for all page and layout files
   const imports: string[] = [];
   const importMap: Map<string, string> = new Map();
@@ -354,6 +364,7 @@ import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontSty
 import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
+${hasPagesDir ? `// Note: pageRoutes loaded lazily via SSR env in /__vinext/prerender/pages-static-paths handler` : ""}
 ${routeHandlerHelperCode}
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
@@ -400,6 +411,18 @@ async function __isrSet(key, data, revalidateSeconds, tags) {
 }
 function __pageCacheTags(pathname, extraTags) {
   const tags = [pathname, "_N_T_" + pathname];
+  // Layout hierarchy tags — matches Next.js getDerivedTags.
+  tags.push("_N_T_/layout");
+  const segments = pathname.split("/");
+  let built = "";
+  for (let i = 1; i < segments.length; i++) {
+    if (segments[i]) {
+      built += "/" + segments[i];
+      tags.push("_N_T_" + built + "/layout");
+    }
+  }
+  // Leaf page tag — revalidatePath(path, "page") targets this.
+  tags.push("_N_T_" + built + "/page");
   if (Array.isArray(extraTags)) {
     for (const tag of extraTags) {
       if (!tags.includes(tag)) tags.push(tag);
@@ -660,6 +683,7 @@ ${
 let __instrumentationInitialized = false;
 let __instrumentationInitPromise = null;
 async function __ensureInstrumentation() {
+  if (process.env.VINEXT_PRERENDER === "1") return;
   if (__instrumentationInitialized) return;
   if (__instrumentationInitPromise) return __instrumentationInitPromise;
   __instrumentationInitPromise = (async () => {
@@ -1469,6 +1493,24 @@ async function __readFormDataWithLimit(request, maxBytes) {
   return new Response(combined, { headers: { "Content-Type": contentType } }).formData();
 }
 
+// Map from route pattern to generateStaticParams function.
+// Used by the prerender phase to enumerate dynamic route URLs without
+// loading route modules via the dev server.
+export const generateStaticParamsMap = {
+// TODO: layout-level generateStaticParams — this map only includes routes that
+// have a pagePath (leaf pages). Layout segments can also export generateStaticParams
+// to provide parent params for nested dynamic routes, but they don't have a pagePath
+// so they are excluded here. Supporting layout-level generateStaticParams requires
+// scanning layout.tsx files separately and including them in this map.
+${routes
+  .filter((r) => r.isDynamic && r.pagePath)
+  .map(
+    (r) =>
+      `  ${JSON.stringify(r.pattern)}: ${getImportVar(r.pagePath!)}?.generateStaticParams ?? null,`,
+  )
+  .join("\n")}
+};
+
 export default async function handler(request, ctx) {
   ${
     instrumentationPath
@@ -1559,6 +1601,79 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       ? `
   // Strip basePath prefix
   pathname = stripBasePath(pathname, __basePath);
+  `
+      : ""
+  }
+
+  // ── Prerender: static-params endpoint ────────────────────────────────
+  // Internal endpoint used by prerenderApp() during build to fetch
+  // generateStaticParams results via wrangler unstable_startWorker.
+  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
+  // For Node builds, process.env.VINEXT_PRERENDER is set directly by the
+  // prerender orchestrator. For CF Workers builds, wrangler unstable_startWorker
+  // injects VINEXT_PRERENDER as a binding which Miniflare exposes via process.env
+  // in bundled workers. The /__vinext/ prefix ensures no user route ever conflicts.
+  if (pathname === "/__vinext/prerender/static-params") {
+    if (process.env.VINEXT_PRERENDER !== "1") {
+      return new Response("Not Found", { status: 404 });
+    }
+    const pattern = url.searchParams.get("pattern");
+    if (!pattern) return new Response("missing pattern", { status: 400 });
+    const fn = generateStaticParamsMap[pattern];
+    if (typeof fn !== "function") return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+    try {
+      const parentParams = url.searchParams.get("parentParams");
+      const raw = parentParams ? JSON.parse(parentParams) : {};
+      // Ensure params is a plain object — reject primitives, arrays, and null
+      // so user-authored generateStaticParams always receives { params: {} }
+      // rather than { params: 5 } or similar if input is malformed.
+      const params = (typeof raw === "object" && raw !== null && !Array.isArray(raw)) ? raw : {};
+      const result = await fn({ params });
+      return new Response(JSON.stringify(result), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
+
+  ${
+    hasPagesDir
+      ? `
+  // ── Prerender: pages-static-paths endpoint ───────────────────────────
+  // Internal endpoint used by prerenderPages() during a CF Workers hybrid
+  // build to call getStaticPaths() for dynamic Pages Router routes via
+  // wrangler unstable_startWorker. Returns JSON-serialised getStaticPaths result.
+  // Gated on VINEXT_PRERENDER=1 to prevent exposure in normal deployments.
+  // See static-params endpoint above for process.env vs CF vars notes.
+  //
+  // pageRoutes lives in the SSR environment (virtual:vinext-server-entry).
+  // We load it lazily via import.meta.viteRsc.loadModule — the same pattern
+  // used by handleSsr() elsewhere in this template. At build time, Vite's RSC
+  // plugin transforms this call into a bundled cross-environment import, so it
+  // works correctly in the CF Workers production bundle running in Miniflare.
+  if (pathname === "/__vinext/prerender/pages-static-paths") {
+    if (process.env.VINEXT_PRERENDER !== "1") {
+      return new Response("Not Found", { status: 404 });
+    }
+    const __gspPattern = url.searchParams.get("pattern");
+    if (!__gspPattern) return new Response("missing pattern", { status: 400 });
+    try {
+      const __gspSsrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+      const __pagesRoutes = __gspSsrEntry.pageRoutes;
+      const __gspRoute = Array.isArray(__pagesRoutes)
+        ? __pagesRoutes.find((r) => r.pattern === __gspPattern)
+        : undefined;
+      if (!__gspRoute || typeof __gspRoute.module?.getStaticPaths !== "function") {
+        return new Response("null", { status: 200, headers: { "content-type": "application/json" } });
+      }
+      const __localesParam = url.searchParams.get("locales");
+      const __locales = __localesParam ? JSON.parse(__localesParam) : [];
+      const __defaultLocale = url.searchParams.get("defaultLocale") ?? "";
+      const __gspResult = await __gspRoute.module.getStaticPaths({ locales: __locales, defaultLocale: __defaultLocale });
+      return new Response(JSON.stringify(__gspResult), { status: 200, headers: { "content-type": "application/json" } });
+    } catch (e) {
+      return new Response(JSON.stringify({ error: String(e) }), { status: 500, headers: { "content-type": "application/json" } });
+    }
+  }
   `
       : ""
   }
@@ -2040,6 +2155,32 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   }
 
   if (!match) {
+    ${
+      hasPagesDir
+        ? `
+    // ── Pages Router fallback ────────────────────────────────────────────
+    // When a request doesn't match any App Router route, delegate to the
+    // Pages Router handler (available in the SSR environment). This covers
+    // both production request serving and prerender fetches from wrangler.
+    // RSC requests (.rsc suffix or Accept: text/x-component) cannot be
+    // handled by the Pages Router, so skip the delegation for those.
+    if (!isRscRequest) {
+      const __pagesEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+      if (typeof __pagesEntry.renderPage === "function") {
+        const __pagesRes = await __pagesEntry.renderPage(request, decodeURIComponent(url.pathname) + (url.search || ""), {});
+        // Only return the Pages Router response if it matched a route
+        // (non-404). A 404 means the path isn't a Pages route either,
+        // so fall through to the App Router not-found page below.
+        if (__pagesRes.status !== 404) {
+          setHeadersContext(null);
+          setNavigationContext(null);
+          return __pagesRes;
+        }
+      }
+    }
+    `
+        : ""
+    }
     // Render custom not-found page if available, otherwise plain 404
     const notFoundResponse = await renderNotFoundPage(null, isRscRequest, request);
     if (notFoundResponse) return notFoundResponse;

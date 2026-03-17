@@ -912,7 +912,7 @@ describe("KVCacheHandler", () => {
 
       // The set() promise should NOT be resolved yet because the kv.put hasn't resolved.
       let setSettled = false;
-      setPromise.then(() => {
+      void setPromise.then(() => {
         setSettled = true;
       });
 

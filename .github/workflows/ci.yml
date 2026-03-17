@@ -15,29 +15,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint
+  check:
+    name: Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: voidzero-dev/setup-vp@v1
-      - run: vp run lint
-
-  format:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: voidzero-dev/setup-vp@v1
-      - run: vp run fmt:check
-
-  typecheck:
-    name: Typecheck
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: voidzero-dev/setup-vp@v1
-      - run: vp run typecheck
+      - name: Build plugin (needed for benchmark workspace type resolution)
+        run: vp run build
+      - run: vp run check
 
   test:
     name: Vitest
