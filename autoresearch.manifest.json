@@ -1,9 +1,9 @@
 [
   {
     "dir": "app-fetch-deduping-errors",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 1,
-    "notes": ""
+    "notes": "Ported 3 tests: page renders despite fetch error, different params, metadata generation. Iteration 1."
   },
   {
     "dir": "app-invalid-revalidate",

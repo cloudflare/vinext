@@ -1,2 +1,3 @@
 {"type":"config","name":"Next.js compat test audit (issue #204)","metricName":"passing_compat_tests","metricUnit":"","bestDirection":"higher"}
 {"run":1,"commit":"5fdfb94","metric":21,"metrics":{"test_files":21,"dirs_covered":13,"skipped_tests":2},"status":"crash","description":"Baseline attempt — metric extraction bug: grep grabbed test file count (21) instead of test case count (233). Fixing autoresearch.sh.","timestamp":1773769998861,"segment":0}
+{"run":2,"commit":"5b5b084","metric":233,"metrics":{"test_files":21,"dirs_covered":13,"skipped_tests":2},"status":"keep","description":"Baseline: 233 passing compat tests, 21 files, 13 dirs covered. Fixed autoresearch.sh ANSI stripping.","timestamp":1773770284151,"segment":0}
