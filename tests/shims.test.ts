@@ -4231,6 +4231,32 @@ describe("NextURL basePath and locale properties", () => {
     expect(url.href).toBe("http://localhost/app");
   });
 
+  it("locale setter resets to defaultLocale when set to undefined with i18n", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, i18nConfig);
+    expect(url.locale).toBe("fr");
+    url.locale = undefined;
+    expect(url.locale).toBe("en"); // falls back to defaultLocale
+    expect(url.href).toBe("http://localhost/about"); // default locale omitted from prefix
+  });
+
+  it("locale setter resets to defaultLocale when set to empty string with i18n", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/de/contact", undefined, i18nConfig);
+    url.locale = "";
+    expect(url.locale).toBe("en");
+  });
+
+  it("searchParams mutations are reflected in href with basePath and locale", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("http://localhost/fr/about", undefined, {
+      basePath: "/app",
+      ...i18nConfig,
+    });
+    url.searchParams.set("q", "2");
+    expect(url.href).toBe("http://localhost/app/fr/about?q=2");
+  });
+
   // --- clone() ---
 
   it("clone() preserves locale, basePath, and config through constructor", async () => {
@@ -4267,6 +4293,7 @@ describe("NextURL basePath and locale properties", () => {
     expect(req.nextUrl.locale).toBe("fr");
     expect(req.nextUrl.defaultLocale).toBe("en");
     expect(req.nextUrl.pathname).toBe("/dashboard");
+    expect(req.nextUrl.href).toBe("http://localhost/app/fr/dashboard");
   });
 
   it("NextRequest passes config when input is a Request object", async () => {
@@ -4281,6 +4308,7 @@ describe("NextURL basePath and locale properties", () => {
     expect(req.nextUrl.basePath).toBe("/app");
     expect(req.nextUrl.locale).toBe("fr");
     expect(req.nextUrl.pathname).toBe("/dashboard");
+    expect(req.nextUrl.href).toBe("http://localhost/app/fr/dashboard");
   });
 });
 

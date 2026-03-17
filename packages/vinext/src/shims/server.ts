@@ -395,10 +395,16 @@ export class NextURL {
     return this._locale ?? "";
   }
   set locale(value: string | undefined) {
-    if (value && this._locales && !this._locales.includes(value)) {
-      throw new TypeError(
-        `The locale "${value}" is not in the configured locales: ${this._locales.join(", ")}`,
-      );
+    if (this._locales) {
+      if (!value) {
+        this._locale = this._defaultLocale;
+        return;
+      }
+      if (!this._locales.includes(value)) {
+        throw new TypeError(
+          `The locale "${value}" is not in the configured locales: ${this._locales.join(", ")}`,
+        );
+      }
     }
     this._locale = value;
   }
