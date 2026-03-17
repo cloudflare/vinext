@@ -160,8 +160,16 @@ describe("validateCsrfOrigin", () => {
     expect(validateCsrfOrigin(makeRequest({ host: "localhost:3000" }))).toBeNull();
   });
 
-  it("allows requests with Origin: null", () => {
-    expect(validateCsrfOrigin(makeRequest({ host: "localhost:3000", origin: "null" }))).toBeNull();
+  it("blocks requests with Origin: null (CSRF via sandboxed context)", () => {
+    const res = validateCsrfOrigin(makeRequest({ host: "localhost:3000", origin: "null" }));
+    expect(res).not.toBeNull();
+    expect(res!.status).toBe(403);
+  });
+
+  it("allows Origin: null when explicitly in allowedOrigins", () => {
+    expect(
+      validateCsrfOrigin(makeRequest({ host: "localhost:3000", origin: "null" }), ["null"]),
+    ).toBeNull();
   });
 
   it("allows same-origin requests", () => {

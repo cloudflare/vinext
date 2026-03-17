@@ -1189,7 +1189,7 @@ describe("App Router integration", () => {
     expect(res.status).not.toBe(403);
   });
 
-  it("allows server action POST with Origin 'null' (privacy-sensitive context)", async () => {
+  it("blocks server action POST with Origin 'null' (CSRF via sandboxed context)", async () => {
     const res = await fetch(`${baseUrl}/actions.rsc`, {
       method: "POST",
       headers: {
@@ -1199,9 +1199,9 @@ describe("App Router integration", () => {
       },
       body: "[]",
     });
-    // Origin "null" is sent by browsers in privacy-sensitive contexts,
-    // should be treated as missing and allowed through.
-    expect(res.status).not.toBe(403);
+    // Origin "null" is sent by browsers in opaque/sandboxed contexts.
+    // Must be blocked unless explicitly allowlisted (CVE: GHSA-mq59-m269-xvcx).
+    expect(res.status).toBe(403);
   });
 
   it("rejects server action POST when X-Forwarded-Host matches spoofed Origin", async () => {
@@ -1311,11 +1311,12 @@ describe("App Router dev server origin check", () => {
     expect(res.status).toBe(200);
   });
 
-  it("allows requests with Origin 'null' (privacy-sensitive context)", async () => {
+  it("blocks requests with Origin 'null' (CSRF via sandboxed context)", async () => {
     const res = await fetch(`${baseUrl}/`, {
       headers: { Origin: "null" },
     });
-    expect(res.status).toBe(200);
+    // Origin "null" must be blocked unless explicitly allowlisted (CVE: GHSA-jcc7-9wpm-mj36).
+    expect(res.status).toBe(403);
   });
 
   it("blocks cross-origin requests", async () => {

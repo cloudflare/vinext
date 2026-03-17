@@ -1009,8 +1009,13 @@ export async function proxyExternalRequest(
   const headers = new Headers(request.headers);
   // Set Host to the external target (required for correct routing)
   headers.set("host", targetUrl.host);
-  // Remove headers that should not be forwarded to external services
+  // Remove headers that should not be forwarded to external services.
+  // transfer-encoding is stripped because fetch() handles framing independently —
+  // forwarding the client's TE header could cause request boundary disagreement
+  // between the proxy and backend (defense-in-depth against request smuggling,
+  // ref: CVE GHSA-ggv3-7p47-pfv8).
   headers.delete("connection");
+  headers.delete("transfer-encoding");
   const keysToDelete: string[] = [];
   for (const key of headers.keys()) {
     if (key.startsWith("x-middleware-")) {
