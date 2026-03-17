@@ -1192,10 +1192,17 @@ async function buildPageElement(route, params, opts, searchParams) {
     });
   }
 
+  // force-static pages receive empty searchParams rather than real request data.
+  // This mirrors Next.js, which strips dynamic request state from force-static
+  // render paths instead of exposing live values.
+  const isForceStatic = route.page?.dynamic === "force-static";
+  const effectiveSpObj = isForceStatic ? {} : spObj;
+  const effectiveHasSearchParams = isForceStatic ? false : hasSearchParams;
+
   const [layoutMetaResults, layoutVpResults, pageMeta, pageVp] = await Promise.all([
     Promise.all(layoutMetaPromises),
     Promise.all(layoutMods.map((mod) => resolveModuleViewport(mod, params).catch((err) => { console.error("[vinext] Layout generateViewport() failed:", err); return null; }))),
-    route.page ? resolveModuleMetadata(route.page, params, spObj, pageParentPromise) : Promise.resolve(null),
+    route.page ? resolveModuleMetadata(route.page, params, effectiveSpObj, pageParentPromise) : Promise.resolve(null),
     route.page ? resolveModuleViewport(route.page, params) : Promise.resolve(null),
   ]);
 
@@ -1214,7 +1221,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // Always provide searchParams prop when the URL object is available, even
     // when the query string is empty -- pages that do "await searchParams" need
     // it to be a thenable rather than undefined.
-    pageProps.searchParams = makeThenableParams(spObj);
+    pageProps.searchParams = makeThenableParams(effectiveSpObj);
     // If the URL has query parameters, mark the page as dynamic.
     // In Next.js, only accessing the searchParams prop signals dynamic usage,
     // but a Proxy-based approach doesn't work here because React's RSC debug
@@ -1223,7 +1230,7 @@ async function buildPageElement(route, params, opts, searchParams) {
     // read searchParams. Checking for non-empty query params is a safe
     // approximation: pages with query params in the URL are almost always
     // dynamic, and this avoids false positives from React internals.
-    if (hasSearchParams) markDynamicUsage();
+    if (effectiveHasSearchParams) markDynamicUsage();
   }
   let element = createElement(PageComponent, pageProps);
 

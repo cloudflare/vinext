@@ -895,9 +895,9 @@
   },
   {
     "dir": "dynamic-data",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 3,
-    "notes": ""
+    "notes": "Ported 4 dev-mode HTTP tests: top-level headers/cookies/searchParams, force-dynamic, force-static, and client-page searchParams. FOUND AND FIXED BUG: force-static pages leaked real searchParams instead of empty object."
   },
   {
     "dir": "dynamic-href",

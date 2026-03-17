@@ -4,6 +4,7 @@
 
 1. **Route handlers received plain Request instead of NextRequest** — `req.nextUrl` was undefined, causing 500 errors. Fixed by wrapping in `NextRequest` in app-rsc-entry.ts. (Iteration 5)
 2. **Layout params scoping completely broken** — Every layout received ALL route params instead of scoped per-segment params. Root layout got `{param1, param2}` when it should get `{}`. Fixed `__scopeParamsForLayout` across 4 rendering loops + `buildPageElement`. (Iteration 12)
+3. **force-static pages leaked real `searchParams`** — `headers()` and `cookies()` were emptied, but `pageProps.searchParams` still received live query values. Fixed `buildPageElement()` to pass empty searchParams to force-static pages and metadata resolution. (Iteration 18)
 
 ## Behavioral Differences Found
 
@@ -16,13 +17,11 @@
 
 ## Promising Directories to Port Next
 
-- **`_allow-underscored-root-directory`** — Tests underscore convention. Could create a small dedicated fixture with `_handlers/` at app root.
-- **`node-extensions`** — 50 HTTP-only tests! Tests `.mjs`, `.cjs`, `.js` extension handling in routes. Likely needs dedicated fixture.
+- **Redirect/rewrite tests**: `rewrites-redirects` has 2 pure-HTTP tests for exotic URL-scheme redirects.
+- **Dynamic request API tests**: `dynamic-requests` may expose more request-scoped rendering bugs like the force-static searchParams issue.
 - **Route handler tests**: Very productive for finding API surface gaps. Check more `app-routes-*` dirs.
 - **Middleware tests**: `app-middleware`, `app-middleware-proxy` — could find middleware + route handler interaction bugs.
 - **Actions tests**: `actions`, `actions-navigation` — server actions are core and likely have edge cases.
-- **Dynamic data tests**: `dynamic-data`, `dynamic-requests` — test request-time API access patterns.
-- **Redirect/rewrite tests**: `rewrites-redirects` has 2 HTTP-level tests among its 8.
 
 ## Directories Re-evaluate (Previously Skipped)
 
