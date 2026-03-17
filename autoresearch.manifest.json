@@ -931,9 +931,9 @@
   },
   {
     "dir": "ecmascript-features",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 3,
-    "notes": ""
+    "notes": "Template test for ESM features. No vinext-specific behavior."
   },
   {
     "dir": "experimental-lightningcss-features",
@@ -973,9 +973,9 @@
   },
   {
     "dir": "layout-params",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 3,
-    "notes": ""
+    "notes": "Needs separate fixture app with custom root layout hierarchy. Complex fixture setup for params-at-each-layout-level testing."
   },
   {
     "dir": "mdx-font-preload",
@@ -1309,9 +1309,9 @@
   },
   {
     "dir": "static-generation-status",
-    "status": "unaudited",
+    "status": "covered",
     "priority": 3,
-    "notes": ""
+    "notes": "Ported 5 tests: notFound()\u2192404, redirect()\u2192307, client redirect SSR\u2192307, permanentRedirect()\u2192308, non-existent\u2192404. Iteration 7."
   },
   {
     "dir": "static-rsc-cache-components",
@@ -1585,9 +1585,9 @@
   },
   {
     "dir": "crypto-globally-available",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 4,
-    "notes": ""
+    "notes": "One HTTP test for crypto in route handler. Low value for vinext compat."
   },
   {
     "dir": "edge-runtime-node-compatibility",
@@ -1639,9 +1639,9 @@
   },
   {
     "dir": "hello-world",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 4,
-    "notes": ""
+    "notes": "Template test with no vinext-specific behavior to validate."
   },
   {
     "dir": "i18n-hybrid",
@@ -2011,9 +2011,9 @@
   },
   {
     "dir": "undefined-default-export",
-    "status": "unaudited",
+    "status": "skip",
     "priority": 4,
-    "notes": ""
+    "notes": "Playwright + Redbox + build validation for missing default exports."
   },
   {
     "dir": "unstable-rethrow",
