@@ -64,6 +64,3 @@ export function getURL(): string {
   }
   return "http://localhost/";
 }
-
-export const SP = typeof performance !== "undefined";
-export const ST = SP && typeof performance.mark === "function";

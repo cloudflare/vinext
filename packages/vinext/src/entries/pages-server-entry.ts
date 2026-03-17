@@ -536,53 +536,6 @@ function collectAssetTags(manifest, moduleIds) {
   return tags.join("\\n  ");
 }
 
-// i18n helpers
-function extractLocale(url) {
-  if (!i18nConfig) return { locale: undefined, url, hadPrefix: false };
-  const pathname = url.split("?")[0];
-  const parts = pathname.split("/").filter(Boolean);
-  const query = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-  if (parts.length > 0 && i18nConfig.locales.includes(parts[0])) {
-    const locale = parts[0];
-    const rest = "/" + parts.slice(1).join("/");
-    return { locale, url: (rest || "/") + query, hadPrefix: true };
-  }
-  return { locale: i18nConfig.defaultLocale, url, hadPrefix: false };
-}
-
-function detectLocaleFromHeaders(headers) {
-  if (!i18nConfig) return null;
-  const acceptLang = headers.get("accept-language");
-  if (!acceptLang) return null;
-  const langs = acceptLang.split(",").map(function(part) {
-    const pieces = part.trim().split(";");
-    const q = pieces[1] ? parseFloat(pieces[1].replace("q=", "")) : 1;
-    return { lang: pieces[0].trim().toLowerCase(), q: q };
-  }).sort(function(a, b) { return b.q - a.q; });
-  for (let k = 0; k < langs.length; k++) {
-    const lang = langs[k].lang;
-    for (let j = 0; j < i18nConfig.locales.length; j++) {
-      if (i18nConfig.locales[j].toLowerCase() === lang) return i18nConfig.locales[j];
-    }
-    const prefix = lang.split("-")[0];
-    for (let j = 0; j < i18nConfig.locales.length; j++) {
-      const loc = i18nConfig.locales[j].toLowerCase();
-      if (loc === prefix || loc.startsWith(prefix + "-")) return i18nConfig.locales[j];
-    }
-  }
-  return null;
-}
-
-function parseCookieLocaleFromHeader(cookieHeader) {
-  if (!i18nConfig || !cookieHeader) return null;
-  const match = cookieHeader.match(/(?:^|;\\s*)NEXT_LOCALE=([^;]*)/);
-  if (!match) return null;
-  var value;
-  try { value = decodeURIComponent(match[1].trim()); } catch (e) { return null; }
-  if (i18nConfig.locales.indexOf(value) !== -1) return value;
-  return null;
-}
-
 // Lightweight req/res facade for getServerSideProps and API routes.
 // Next.js pages expect ctx.req/ctx.res with Node-like shapes.
 function createReqRes(request, url, query, body) {

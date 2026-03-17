@@ -21,26 +21,6 @@ import * as _clientRefs from "virtual:vite-rsc/client-references";
 
 let _clientRefsPreloaded = false;
 
-/**
- * Collect all chunks from a ReadableStream into an array of text strings.
- * Used to capture the RSC payload for embedding in HTML.
- * The RSC flight protocol is text-based (line-delimited key:value pairs),
- * so we decode to text strings instead of byte arrays — this is dramatically
- * more compact when JSON-serialized into inline <script> tags.
- */
-async function collectStreamChunks(stream) {
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  const chunks = [];
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    // Decode Uint8Array to text string for compact JSON serialization
-    chunks.push(decoder.decode(value, { stream: true }));
-  }
-  return chunks;
-}
-
 // React 19 dev-mode workaround (see VinextFlightRoot in handleSsr):
 //
 // In dev, Flight error decoding in react-server-dom-webpack/client.edge
