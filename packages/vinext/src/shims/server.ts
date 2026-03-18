@@ -406,7 +406,7 @@ export class NextURL {
         );
       }
     }
-    this._locale = value;
+    this._locale = this._locales ? value : this._locale;
   }
 
   get defaultLocale(): string | undefined {
