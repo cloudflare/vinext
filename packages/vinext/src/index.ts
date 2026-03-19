@@ -1638,6 +1638,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "internal",
             "router-context",
           ),
+          "next/dist/shared/lib/router-context": path.join(shimsDir, "internal", "router-context"),
           "next/dist/shared/lib/utils": path.join(shimsDir, "internal", "utils"),
           "next/dist/server/api-utils": path.join(shimsDir, "internal", "api-utils"),
           "next/dist/server/web/spec-extension/cookies": path.join(shimsDir, "internal", "cookies"),
