@@ -122,6 +122,42 @@ describe("scanImports", () => {
     expect(items[0].detail).toContain("not recognized");
   });
 
+  it("recognizes next/compat/router as supported", () => {
+    writeFile("components/shared-nav.tsx", `import { useRouter } from "next/compat/router";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/compat/router");
+    expect(items[0].status).toBe("supported");
+  });
+
+  it("recognizes next/form as supported", () => {
+    writeFile("app/page.tsx", `import Form from "next/form";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/form");
+    expect(items[0].status).toBe("supported");
+  });
+
+  it("recognizes next/web-vitals as supported", () => {
+    writeFile("pages/_app.tsx", `import { reportWebVitals } from "next/web-vitals";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/web-vitals");
+    expect(items[0].status).toBe("supported");
+  });
+
+  it("recognizes next/constants as supported", () => {
+    writeFile("lib/phases.ts", `import { PHASE_DEVELOPMENT_SERVER } from "next/constants";`);
+
+    const items = scanImports(tmpDir);
+    expect(items).toHaveLength(1);
+    expect(items[0].name).toBe("next/constants");
+    expect(items[0].status).toBe("supported");
+  });
+
   it("recognizes `import { Metadata } from 'next'` as supported", () => {
     writeFile(
       "app/layout.tsx",

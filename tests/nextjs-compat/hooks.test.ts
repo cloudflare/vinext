@@ -8,6 +8,7 @@
  * - useSearchParams reads query string values and handles missing params
  * - usePathname returns the correct path
  * - useRouter page renders correctly with pathname
+ * - next/compat/router returns null in App Router context (for shared components)
  *
  * NOTE: Browser-only hook behavior (client-side navigation, router.push,
  * router.back, etc.) requires Playwright and is not tested here.
@@ -19,6 +20,7 @@
  * - fixtures/app-basic/app/nextjs-compat/hooks-search/page.tsx
  * - fixtures/app-basic/app/nextjs-compat/hooks-search-readonly/page.tsx
  * - fixtures/app-basic/app/nextjs-compat/hooks-router/page.tsx
+ * - fixtures/app-basic/app/nextjs-compat/compat-router/page.tsx
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
@@ -133,6 +135,22 @@ describe("Next.js compat: hooks", () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-router");
     expect(html).toContain("Router Test Page");
     expect(html).toContain("/nextjs-compat/hooks-router");
+  });
+
+  // ── next/compat/router SSR ──────────────────────────────────
+  // Tests the shared-component use case: a client component that imports from
+  // next/compat/router and works in both App Router and Pages Router contexts.
+  // In App Router context, useRouter() must return null (no RouterContext.Provider
+  // is mounted), allowing the component to branch on null and render gracefully.
+
+  it("next/compat/router useRouter returns null in App Router context", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/compat-router");
+    expect(html).toContain("compat/router test (App Router)");
+    // The shared component detects no Pages Router provider and renders the
+    // app-router branch (router === null path)
+    expect(html).toContain('data-testid="router-context"');
+    expect(html).toContain("app-router");
+    expect(html).not.toContain("pages-router");
   });
 
   // ── Browser-only tests (documented, not ported) ──────────────

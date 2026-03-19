@@ -28,7 +28,7 @@ type BeforePopStateCallback = (state: {
   options: { shallow: boolean };
 }) => boolean;
 
-interface NextRouter {
+export interface NextRouter {
   /** Current pathname */
   pathname: string;
   /** Current route pattern (e.g., "/posts/[id]") */

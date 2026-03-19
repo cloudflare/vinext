@@ -40,7 +40,15 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   next: { status: "supported", detail: "type-only exports (Metadata, NextPage, etc.)" },
   "next/link": { status: "supported" },
   "next/image": { status: "supported", detail: "uses @unpic/react (no local optimization yet)" },
+  "next/legacy/image": {
+    status: "supported",
+    detail: "pre-Next.js 13 Image API with layout prop; translated to modern Image",
+  },
   "next/router": { status: "supported" },
+  "next/compat/router": {
+    status: "supported",
+    detail: "useRouter() returns null in App Router, router object in Pages Router",
+  },
   "next/navigation": { status: "supported" },
   "next/headers": { status: "supported" },
   "next/server": { status: "supported", detail: "NextRequest/NextResponse shimmed" },
@@ -65,6 +73,9 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next/document": { status: "supported", detail: "custom _document.tsx" },
   "next/app": { status: "supported", detail: "custom _app.tsx" },
   "next/error": { status: "supported" },
+  "next/form": { status: "supported", detail: "Form component with client-side navigation" },
+  "next/web-vitals": { status: "supported", detail: "reportWebVitals helper" },
+  "next/constants": { status: "supported", detail: "PHASE_* constants" },
   "next/third-parties/google": {
     status: "unsupported",
     detail: "third-party script optimization not implemented",

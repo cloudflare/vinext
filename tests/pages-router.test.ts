@@ -150,6 +150,19 @@ describe("Pages Router integration", () => {
     expect(html).toMatch(/Query ID:\s*(<!--\s*-->)?\s*42/);
   });
 
+  it("next/compat/router: useRouter returns router object in Pages Router context", async () => {
+    const res = await fetch(`${baseUrl}/compat-router-test`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    // The shared component detects Pages Router context (router !== null)
+    expect(html).toContain('data-testid="router-context"');
+    expect(html).toContain("pages-router");
+    // The router pathname should reflect the current page
+    expect(html).toContain('data-testid="router-pathname"');
+    expect(html).toContain("/compat-router-test");
+  });
+
   it("does not collapse encoded slashes onto nested routes in dev", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-encoded-dev-"));
     writeEncodedSlashPagesFixture(tmpDir);
