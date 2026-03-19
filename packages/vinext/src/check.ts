@@ -505,16 +505,37 @@ export function checkConventions(root: string): CheckItem[] {
     }
   }
 
-  // Scan for ViewTransition import from react
+  // Scan all source files once for per-file checks:
+  //   - ViewTransition import from react
+  //   - free uses of __dirname / __filename (CJS globals, not available in ESM)
+  //
+  // For __dirname/__filename we use a single-pass alternation regex that skips over
+  // string literals, template literals, and comments before testing for the identifier,
+  // so tokens inside those contexts are never matched.
   const allSourceFiles = findSourceFiles(root);
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
+  const cjsGlobalScanRegex =
+    /\/\/[^\n]*|\/\*[\s\S]*?\*\/|`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(__dirname|__filename)\b/g;
   const viewTransitionFiles: string[] = [];
+  const cjsGlobalFiles: string[] = [];
   for (const file of allSourceFiles) {
     const content = fs.readFileSync(file, "utf-8");
+    const rel = path.relative(root, file);
+
     if (viewTransitionRegex.test(content)) {
-      viewTransitionFiles.push(path.relative(root, file));
+      viewTransitionFiles.push(rel);
+    }
+
+    cjsGlobalScanRegex.lastIndex = 0;
+    let m;
+    while ((m = cjsGlobalScanRegex.exec(content)) !== null) {
+      if (m[1]) {
+        cjsGlobalFiles.push(rel);
+        break;
+      }
     }
   }
+  // Emit items for the combined scan results
   if (viewTransitionFiles.length > 0) {
     items.push({
       name: "ViewTransition (React canary API)",
@@ -550,27 +571,6 @@ export function checkConventions(root: string): CheckItem[] {
     }
   }
 
-  // Scan for free uses of __dirname / __filename (CJS globals, not available in ESM).
-  // Walk the source once with a single alternation regex that either:
-  //   - skips over a string literal, template literal, or comment (the skip branches), or
-  //   - matches the identifier (the capture branch).
-  // Only the capture branch sets match[1], so we never test inside skipped tokens.
-  const cjsGlobalScanRegex =
-    /\/\/[^\n]*|\/\*[\s\S]*?\*\/|`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(__dirname|__filename)\b/g;
-  const cjsGlobalFiles: string[] = [];
-  for (const file of allSourceFiles) {
-    const raw = fs.readFileSync(file, "utf-8");
-    cjsGlobalScanRegex.lastIndex = 0;
-    let found = false;
-    let m;
-    while ((m = cjsGlobalScanRegex.exec(raw)) !== null) {
-      if (m[1]) {
-        found = true;
-        break;
-      }
-    }
-    if (found) cjsGlobalFiles.push(path.relative(root, file));
-  }
   if (cjsGlobalFiles.length > 0) {
     items.push({
       name: "__dirname / __filename (CommonJS globals)",
