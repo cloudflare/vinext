@@ -2019,4 +2019,35 @@ describe("fetch cache shim", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
   });
+
+  // ── Set-Cookie stripping from cached responses ──────────────────────────
+
+  describe("Set-Cookie header stripping", () => {
+    it("does not include Set-Cookie in cached response headers", async () => {
+      fetchMock.mockImplementationOnce(async () => {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "set-cookie": "session=abc123; Path=/; HttpOnly",
+            "x-custom": "keep-me",
+          },
+        });
+      });
+
+      // First request — response has Set-Cookie
+      const res1 = await fetch("https://api.example.com/set-cookie-test", {
+        next: { revalidate: 300 },
+      });
+      expect(res1.headers.get("set-cookie")).toBe("session=abc123; Path=/; HttpOnly");
+      expect(res1.headers.get("x-custom")).toBe("keep-me");
+
+      // Second request — served from cache, Set-Cookie must be absent
+      const res2 = await fetch("https://api.example.com/set-cookie-test", {
+        next: { revalidate: 300 },
+      });
+      expect(res2.headers.get("set-cookie")).toBeNull();
+      expect(res2.headers.get("x-custom")).toBe("keep-me");
+    });
+  });
 });
