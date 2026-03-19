@@ -1662,10 +1662,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
             "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
             "vinext/html": path.resolve(__dirname, "server", "html"),
-          }).flatMap(([k, v]) => [
-            [k, v],
-            [`${k}.js`, v],
-          ]),
+          }).flatMap(([k, v]) =>
+            k.startsWith("next/")
+              ? [
+                  [k, v],
+                  [`${k}.js`, v],
+                ]
+              : [[k, v]],
+          ),
         );
 
         // Detect if Cloudflare's vite plugin is present — if so, skip
