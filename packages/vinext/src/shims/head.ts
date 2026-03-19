@@ -181,6 +181,22 @@ export function reduceHeadChildren(headChildren: React.ReactNode[]): React.React
 }
 
 /**
+ * Validate an HTML attribute name. Rejects names that could break out of
+ * the attribute context during SSR serialization, or that represent inline
+ * event handlers (on*). Only allows alphanumeric characters, hyphens, and
+ * common data-attribute patterns.
+ */
+const SAFE_ATTR_NAME_RE = /^[a-zA-Z][a-zA-Z0-9\-:.]*$/;
+
+export function isSafeAttrName(name: string): boolean {
+  if (!SAFE_ATTR_NAME_RE.test(name)) return false;
+  // Block inline event handlers (onclick, onerror, etc.)
+  if (name.length > 2 && name[0] === "o" && name[1] === "n" && name[2] >= "A" && name[2] <= "z")
+    return false;
+  return true;
+}
+
+/**
  * Convert a React element to an HTML string for SSR head injection.
  * Returns an empty string for disallowed tag types.
  */
@@ -211,8 +227,10 @@ function reactElementToHTML(child: React.ReactElement): string {
     } else if (key === "className") {
       attrs.push(`class="${escapeAttr(String(value))}"`);
     } else if (typeof value === "string") {
+      if (!isSafeAttrName(key)) continue;
       attrs.push(`${key}="${escapeAttr(value)}"`);
     } else if (typeof value === "boolean" && value) {
+      if (!isSafeAttrName(key)) continue;
       attrs.push(key);
     }
   }
@@ -280,8 +298,10 @@ function syncClientHead(): void {
       } else if (key === "className") {
         domEl.setAttribute("class", String(value));
       } else if (typeof value === "boolean" && value) {
+        if (!isSafeAttrName(key)) continue;
         domEl.setAttribute(key, "");
       } else if (key !== "children" && typeof value === "string") {
+        if (!isSafeAttrName(key)) continue;
         domEl.setAttribute(key, value);
       }
     }

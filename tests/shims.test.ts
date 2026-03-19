@@ -10758,3 +10758,73 @@ describe("shim alias map .js variants", () => {
     expect(missing, `Missing .js aliases for: ${missing.join(", ")}`).toEqual([]);
   });
 });
+
+// ── next/head attribute name validation ─────────────────────────────────────
+
+describe("isSafeAttrName", () => {
+  let isSafeAttrName: (name: string) => boolean;
+
+  beforeEach(async () => {
+    const mod = await import("../packages/vinext/src/shims/head.js");
+    isSafeAttrName = mod.isSafeAttrName;
+  });
+
+  it("allows standard HTML attribute names", () => {
+    expect(isSafeAttrName("name")).toBe(true);
+    expect(isSafeAttrName("content")).toBe(true);
+    expect(isSafeAttrName("charset")).toBe(true);
+    expect(isSafeAttrName("http-equiv")).toBe(true);
+    expect(isSafeAttrName("data-testid")).toBe(true);
+    expect(isSafeAttrName("property")).toBe(true);
+    expect(isSafeAttrName("rel")).toBe(true);
+    expect(isSafeAttrName("href")).toBe(true);
+    expect(isSafeAttrName("crossOrigin")).toBe(true);
+  });
+
+  it("allows xml-namespaced attributes", () => {
+    expect(isSafeAttrName("xml:lang")).toBe(true);
+    expect(isSafeAttrName("xlink:href")).toBe(true);
+  });
+
+  it("rejects attribute names containing quotes", () => {
+    expect(isSafeAttrName('x"')).toBe(false);
+    expect(isSafeAttrName("x'")).toBe(false);
+  });
+
+  it("rejects attribute names containing angle brackets", () => {
+    expect(isSafeAttrName("x>")).toBe(false);
+    expect(isSafeAttrName("x<script")).toBe(false);
+  });
+
+  it("rejects attribute names containing slashes", () => {
+    expect(isSafeAttrName("x/")).toBe(false);
+    expect(isSafeAttrName('x"/><script>alert(1)</script><meta a="')).toBe(false);
+  });
+
+  it("rejects attribute names containing spaces", () => {
+    expect(isSafeAttrName("x y")).toBe(false);
+    expect(isSafeAttrName("x\ty")).toBe(false);
+  });
+
+  it("rejects attribute names containing equals", () => {
+    expect(isSafeAttrName("x=y")).toBe(false);
+  });
+
+  it("rejects inline event handler attributes", () => {
+    expect(isSafeAttrName("onclick")).toBe(false);
+    expect(isSafeAttrName("onerror")).toBe(false);
+    expect(isSafeAttrName("onload")).toBe(false);
+    expect(isSafeAttrName("onmouseover")).toBe(false);
+  });
+
+  it("allows attributes starting with 'o' that are not event handlers", () => {
+    expect(isSafeAttrName("open")).toBe(true);
+    expect(isSafeAttrName("og:title")).toBe(true);
+  });
+
+  it("rejects empty or non-alpha-starting names", () => {
+    expect(isSafeAttrName("")).toBe(false);
+    expect(isSafeAttrName("123")).toBe(false);
+    expect(isSafeAttrName("-foo")).toBe(false);
+  });
+});
