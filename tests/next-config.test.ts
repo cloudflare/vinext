@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from "vite-plus/test";
+import { describe, it, expect, afterEach, vi, beforeEach } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +17,31 @@ import {
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "vinext-config-test-"));
 }
+
+describe("invalid config files", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTempDir();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should throw an error when loading a config fails", async () => {
+    fs.writeFileSync(path.join(tmpDir, "package.json"), `{ "type": "module" }`);
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `const path = require('path');\n module.exports = {};\n`,
+    );
+
+    await expect(loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD)).rejects.toThrow();
+  });
+});
 
 describe("loadNextConfig phase argument", () => {
   let tmpDir: string;
