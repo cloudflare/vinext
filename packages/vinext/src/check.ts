@@ -87,10 +87,6 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "RouterContext for Pages Router; used by testing utilities and older libraries",
   },
-  "next/dist/shared/lib/router-context": {
-    status: "supported",
-    detail: "RouterContext for Pages Router; used by testing utilities and older libraries",
-  },
 };
 
 // ── Config support map ─────────────────────────────────────────────────────
