@@ -550,6 +550,37 @@ export function checkConventions(root: string): CheckItem[] {
     }
   }
 
+  // Scan for free uses of __dirname / __filename (CJS globals, not available in ESM).
+  // Walk the source once with a single alternation regex that either:
+  //   - skips over a string literal, template literal, or comment (the skip branches), or
+  //   - matches the identifier (the capture branch).
+  // Only the capture branch sets match[1], so we never test inside skipped tokens.
+  const cjsGlobalScanRegex =
+    /\/\/[^\n]*|\/\*[\s\S]*?\*\/|`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(__dirname|__filename)\b/g;
+  const cjsGlobalFiles: string[] = [];
+  for (const file of allSourceFiles) {
+    const raw = fs.readFileSync(file, "utf-8");
+    cjsGlobalScanRegex.lastIndex = 0;
+    let found = false;
+    let m;
+    while ((m = cjsGlobalScanRegex.exec(raw)) !== null) {
+      if (m[1]) {
+        found = true;
+        break;
+      }
+    }
+    if (found) cjsGlobalFiles.push(path.relative(root, file));
+  }
+  if (cjsGlobalFiles.length > 0) {
+    items.push({
+      name: "__dirname / __filename (CommonJS globals)",
+      status: "partial",
+      detail:
+        "CJS globals unavailable in ESM — use fileURLToPath(import.meta.url) / dirname(...), or import.meta.dirname / import.meta.filename (Node 22+)",
+      files: cjsGlobalFiles,
+    });
+  }
+
   return items;
 }
 
