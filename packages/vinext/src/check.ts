@@ -87,6 +87,54 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "RouterContext for Pages Router; used by testing utilities and older libraries",
   },
+  "next/dist/shared/lib/app-router-context.shared-runtime": {
+    status: "supported",
+    detail: "AppRouterContext and layout contexts; used by testing utilities and UI libraries",
+  },
+  "next/dist/shared/lib/app-router-context": {
+    status: "supported",
+    detail: "AppRouterContext and layout contexts; used by testing utilities and UI libraries",
+  },
+  "next/dist/shared/lib/utils": {
+    status: "supported",
+    detail: "execOnce, getLocationOrigin and other shared utilities",
+  },
+  "next/dist/server/api-utils": {
+    status: "supported",
+    detail: "NextApiRequestCookies and Pages Router API route utilities",
+  },
+  "next/dist/server/web/spec-extension/cookies": {
+    status: "supported",
+    detail: "RequestCookies / ResponseCookies — shimmed via @edge-runtime/cookies",
+  },
+  "next/dist/compiled/@edge-runtime/cookies": {
+    status: "supported",
+    detail: "RequestCookies / ResponseCookies — shimmed via @edge-runtime/cookies",
+  },
+  "next/dist/server/app-render/work-unit-async-storage.external": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage for App Router server components",
+  },
+  "next/dist/client/components/work-unit-async-storage.external": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage for App Router server components",
+  },
+  "next/dist/client/components/request-async-storage.external": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage (legacy path alias)",
+  },
+  "next/dist/client/components/request-async-storage": {
+    status: "supported",
+    detail: "request-scoped AsyncLocalStorage (legacy path alias)",
+  },
+  "next/dist/client/components/navigation": {
+    status: "supported",
+    detail: "internal navigation module; re-exports next/navigation",
+  },
+  "next/dist/server/config-shared": {
+    status: "supported",
+    detail: "shared config utilities; re-exports next/dist/shared/lib/utils",
+  },
 };
 
 // ── Config support map ─────────────────────────────────────────────────────

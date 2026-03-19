@@ -239,6 +239,31 @@ describe("scanImports", () => {
     const item = items.find((i) => i.name === "next/dist/shared/lib/router-context.shared-runtime");
     expect(item?.status).toBe("supported");
   });
+
+  it("recognizes all other shimmed next/dist/* paths as supported", () => {
+    const distImports = [
+      "next/dist/shared/lib/app-router-context.shared-runtime",
+      "next/dist/shared/lib/app-router-context",
+      "next/dist/shared/lib/utils",
+      "next/dist/server/api-utils",
+      "next/dist/server/web/spec-extension/cookies",
+      "next/dist/compiled/@edge-runtime/cookies",
+      "next/dist/server/app-render/work-unit-async-storage.external",
+      "next/dist/client/components/work-unit-async-storage.external",
+      "next/dist/client/components/request-async-storage.external",
+      "next/dist/client/components/request-async-storage",
+      "next/dist/client/components/navigation",
+      "next/dist/server/config-shared",
+    ];
+
+    writeFile("lib/internals.ts", distImports.map((p) => `import * as m from "${p}";`).join("\n"));
+
+    const items = scanImports(tmpDir);
+    for (const p of distImports) {
+      const item = items.find((i) => i.name === p);
+      expect(item?.status, `expected ${p} to be supported`).toBe("supported");
+    }
+  });
 });
 
 // ── analyzeConfig ──────────────────────────────────────────────────────────
