@@ -274,7 +274,9 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
     stack.includes("next-intl/plugin") ||
     stack.includes("next-intl/dist");
 
-  console.warn(`[vinext] Failed to load ${filename}: ${msg}`);
+  console.log();
+  console.error(`[vinext] Failed to load ${filename}: ${msg}`);
+  console.log();
   if (isNextIntlPlugin) {
     console.warn(
       "[vinext] Hint: createNextIntlPlugin() is not needed with vinext. " +
@@ -338,12 +340,12 @@ export async function loadNextConfig(
           return await unwrapConfig({ default: mod }, phase);
         } catch (e2) {
           warnConfigLoadFailure(filename, e2 as Error);
-          return null;
+          throw e2;
         }
       }
 
       warnConfigLoadFailure(filename, e as Error);
-      return null;
+      throw e;
     }
   }
 
