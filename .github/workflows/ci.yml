@@ -44,7 +44,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - uses: voidzero-dev/setup-vp@v1.0.0
+      - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin
         run: vp run build
 
