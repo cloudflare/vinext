@@ -578,7 +578,7 @@ export function checkConventions(root: string): CheckItem[] {
   if (cjsGlobalFiles.length > 0) {
     items.push({
       name: "__dirname / __filename (CommonJS globals)",
-      status: "partial",
+      status: "unsupported",
       detail:
         "CJS globals unavailable in ESM — use fileURLToPath(import.meta.url) / dirname(...), or import.meta.dirname / import.meta.filename (Node 22+)",
       files: cjsGlobalFiles,
@@ -704,6 +704,11 @@ export function formatReport(result: CheckResult, opts?: { calledFromInit?: bool
     for (const item of allItems) {
       if (item.status === "unsupported") {
         lines.push(`    \x1b[31m✗\x1b[0m  ${item.name}${item.detail ? ` — ${item.detail}` : ""}`);
+        if (item.files && item.files.length > 0) {
+          for (const f of item.files) {
+            lines.push(`       \x1b[90m${f}\x1b[0m`);
+          }
+        }
       }
     }
   }

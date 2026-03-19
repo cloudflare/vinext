@@ -656,7 +656,7 @@ describe("checkConventions", () => {
     const items = checkConventions(tmpDir);
     const cjs = items.find((i) => i.name.includes("__dirname"));
     expect(cjs).toBeDefined();
-    expect(cjs?.status).toBe("partial");
+    expect(cjs?.status).toBe("unsupported");
     expect(cjs?.detail).toContain("fileURLToPath");
     expect(cjs?.detail).toContain("import.meta.dirname");
     expect(cjs?.files).toContain("lib/db.ts");
@@ -904,6 +904,19 @@ describe("formatReport", () => {
 
     expect(report).toContain("Issues to address");
     expect(report).toContain("next/amp");
+  });
+
+  it("lists affected files under unsupported items in issues section", () => {
+    writeFile("lib/db.ts", `const dir = path.join(__dirname, "data");`);
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+    writeFile("package.json", JSON.stringify({ type: "module", dependencies: {} }));
+
+    const result = runCheck(tmpDir);
+    const report = formatReport(result);
+
+    expect(report).toContain("Issues to address");
+    expect(report).toContain("__dirname");
+    expect(report).toContain("lib/db.ts");
   });
 
   it("shows partial support section when there are partial items", () => {
