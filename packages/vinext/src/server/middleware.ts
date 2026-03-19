@@ -32,6 +32,7 @@ import { NextRequest, NextFetchEvent } from "../shims/server.js";
 import { normalizePath } from "./normalize-path.js";
 import { shouldKeepMiddlewareHeader } from "./middleware-request-headers.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
+import { ValidFileMatcher } from "../routing/file-matcher.js";
 
 /**
  * Determine whether a middleware/proxy file path refers to a proxy file.
@@ -73,53 +74,35 @@ export function resolveMiddlewareHandler(mod: Record<string, unknown>, filePath:
   return handler as Function;
 }
 
-/**
- * Possible proxy/middleware file names.
- * proxy.ts (Next.js 16) is checked first, then middleware.ts (deprecated).
- */
-const PROXY_FILES = [
-  "proxy.ts",
-  "proxy.js",
-  "proxy.mjs",
-  "src/proxy.ts",
-  "src/proxy.js",
-  "src/proxy.mjs",
-];
-
-const MIDDLEWARE_FILES = [
-  "middleware.ts",
-  "middleware.tsx",
-  "middleware.js",
-  "middleware.mjs",
-  "src/middleware.ts",
-  "src/middleware.tsx",
-  "src/middleware.js",
-  "src/middleware.mjs",
-];
+const MIDDLEWARE_LOCATIONS = ["", "src/"];
 
 /**
  * Find the proxy or middleware file in the project root.
  * Checks for proxy.ts (Next.js 16) first, then falls back to middleware.ts.
  * If middleware.ts is found, logs a deprecation warning.
  */
-export function findMiddlewareFile(root: string): string | null {
+export function findMiddlewareFile(root: string, fileMatcher: ValidFileMatcher): string | null {
   // Check proxy.ts first (Next.js 16 replacement for middleware.ts)
-  for (const file of PROXY_FILES) {
-    const fullPath = path.join(root, file);
-    if (fs.existsSync(fullPath)) {
-      return fullPath;
+  for (const dir of MIDDLEWARE_LOCATIONS) {
+    for (const ext of fileMatcher.dottedExtensions) {
+      const fullPath = path.join(root, dir, `proxy${ext}`);
+      if (fs.existsSync(fullPath)) {
+        return fullPath;
+      }
     }
   }
 
   // Fall back to middleware.ts (deprecated in Next.js 16)
-  for (const file of MIDDLEWARE_FILES) {
-    const fullPath = path.join(root, file);
-    if (fs.existsSync(fullPath)) {
-      console.warn(
-        "[vinext] middleware.ts is deprecated in Next.js 16. " +
-          "Rename to proxy.ts and export a default or named proxy function.",
-      );
-      return fullPath;
+  for (const dir of MIDDLEWARE_LOCATIONS) {
+    for (const ext of fileMatcher.dottedExtensions) {
+      const fullPath = path.join(root, dir, `middleware${ext}`);
+      if (fs.existsSync(fullPath)) {
+        console.warn(
+          "[vinext] middleware.ts is deprecated in Next.js 16. " +
+            "Rename to proxy.ts and export a default or named proxy function.",
+        );
+        return fullPath;
+      }
     }
   }
   return null;
