@@ -338,6 +338,12 @@ declare module "next/constants" {
   export const SYSTEM_ENTRYPOINTS: Set<string>;
 }
 
+declare module "next/compat/router" {
+  import type { NextRouter } from "./router.js";
+  // oxlint-disable-next-line no-redundant-type-constituents -- NextRouter is a proper interface, not an error type
+  export function useRouter(): NextRouter | null;
+}
+
 declare module "next/server" {
   export class NextRequest extends Request {
     get nextUrl(): any;
