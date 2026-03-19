@@ -228,6 +228,28 @@ describe("scanImports", () => {
     const linkItem = items.find((i) => i.name === "next/link");
     expect(linkItem?.files).toHaveLength(1);
   });
+
+  it("recognizes next/dist/shared/lib/router-context.shared-runtime as supported", () => {
+    writeFile(
+      "lib/router.tsx",
+      `import { RouterContext } from "next/dist/shared/lib/router-context.shared-runtime";`,
+    );
+
+    const items = scanImports(tmpDir);
+    const item = items.find((i) => i.name === "next/dist/shared/lib/router-context.shared-runtime");
+    expect(item?.status).toBe("supported");
+  });
+
+  it("recognizes next/dist/shared/lib/router-context as supported", () => {
+    writeFile(
+      "lib/router.tsx",
+      `import { RouterContext } from "next/dist/shared/lib/router-context";`,
+    );
+
+    const items = scanImports(tmpDir);
+    const item = items.find((i) => i.name === "next/dist/shared/lib/router-context");
+    expect(item?.status).toBe("supported");
+  });
 });
 
 // ── analyzeConfig ──────────────────────────────────────────────────────────

@@ -82,6 +82,15 @@ const IMPORT_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   "server-only": { status: "supported" },
   "client-only": { status: "supported" },
+  // Internal next/dist/* paths used by libraries (testing utilities, older libs, etc.)
+  "next/dist/shared/lib/router-context.shared-runtime": {
+    status: "supported",
+    detail: "RouterContext for Pages Router; used by testing utilities and older libraries",
+  },
+  "next/dist/shared/lib/router-context": {
+    status: "supported",
+    detail: "RouterContext for Pages Router; used by testing utilities and older libraries",
+  },
 };
 
 // ── Config support map ─────────────────────────────────────────────────────
