@@ -379,7 +379,7 @@ export function findDir(root: string, ...candidates: string[]): string | null {
  */
 export async function printBuildReport(options: {
   root: string;
-  pageExtensions?: string[];
+  pageExtensions: string[];
   prerenderResult?: PrerenderResult;
 }): Promise<void> {
   const { root } = options;

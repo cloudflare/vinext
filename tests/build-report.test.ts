@@ -5,8 +5,10 @@
  * logic for both Pages Router and App Router routes, using real fixture files
  * where integration testing is needed.
  */
-import { describe, it, expect } from "vite-plus/test";
+import { describe, it, expect, afterEach } from "vite-plus/test";
 import path from "node:path";
+import os from "node:os";
+import fs from "node:fs/promises";
 import {
   hasNamedExport,
   extractExportConstString,
@@ -16,7 +18,10 @@ import {
   classifyAppRoute,
   buildReportRows,
   formatBuildReport,
+  printBuildReport,
 } from "../packages/vinext/src/build/report.js";
+import { invalidateAppRouteCache } from "../packages/vinext/src/routing/app-router.js";
+import { invalidateRouteCache } from "../packages/vinext/src/routing/pages-router.js";
 
 const FIXTURES_PAGES = path.resolve("tests/fixtures/pages-basic/pages");
 const FIXTURES_APP = path.resolve("tests/fixtures/app-basic/app");
@@ -451,5 +456,137 @@ describe("formatBuildReport", () => {
     expect(out).toContain("└ ƒ /dashboard");
     // Legend is alphabetical: API, Dynamic, ISR, Static
     expect(out).toContain("λ API  ƒ Dynamic  ◐ ISR  ○ Static");
+  });
+});
+
+// ─── printBuildReport with pageExtensions ─────────────────────────────────────
+
+describe("printBuildReport respects pageExtensions", () => {
+  let tmpRoot: string;
+
+  afterEach(async () => {
+    if (tmpRoot) {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      invalidateAppRouteCache();
+    }
+  });
+
+  it("app router: only reports routes matching configured pageExtensions", async () => {
+    // Ported from Next.js MDX e2e pageExtensions behaviour:
+    // test/e2e/app-dir/mdx/next.config.ts
+    // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/mdx/next.config.ts
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-app-"));
+    const appDir = path.join(tmpRoot, "app");
+    await fs.mkdir(path.join(appDir, "about"), { recursive: true });
+    await fs.writeFile(
+      path.join(appDir, "layout.tsx"),
+      "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+    );
+    await fs.writeFile(
+      path.join(appDir, "page.tsx"),
+      "export default function Page() { return <div>home</div>; }",
+    );
+    // This .mdx page should be excluded when mdx is not in pageExtensions
+    await fs.writeFile(path.join(appDir, "about", "page.mdx"), "# About");
+
+    // Capture stdout output from printBuildReport
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      invalidateAppRouteCache();
+      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js"] });
+    } finally {
+      console.log = origLog;
+    }
+
+    const output = lines.join("\n");
+    // / should appear (page.tsx matches)
+    expect(output).toContain("/");
+    // /about should NOT appear (page.mdx excluded — mdx not in pageExtensions)
+    expect(output).not.toContain("/about");
+  });
+
+  it("app router: reports mdx routes when pageExtensions includes mdx", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-app-mdx-"));
+    const appDir = path.join(tmpRoot, "app");
+    await fs.mkdir(path.join(appDir, "about"), { recursive: true });
+    await fs.writeFile(
+      path.join(appDir, "layout.tsx"),
+      "export default function Layout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }",
+    );
+    await fs.writeFile(
+      path.join(appDir, "page.tsx"),
+      "export default function Page() { return <div>home</div>; }",
+    );
+    await fs.writeFile(path.join(appDir, "about", "page.mdx"), "# About");
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      invalidateAppRouteCache();
+      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"] });
+    } finally {
+      console.log = origLog;
+    }
+
+    const output = lines.join("\n");
+    expect(output).toContain("/about");
+  });
+
+  it("pages router: only reports routes matching configured pageExtensions", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-pages-"));
+    const pagesDir = path.join(tmpRoot, "pages");
+    await fs.mkdir(pagesDir, { recursive: true });
+    await fs.writeFile(
+      path.join(pagesDir, "index.tsx"),
+      "export default function Page() { return <div>home</div>; }",
+    );
+    // This .mdx page should be excluded when mdx is not in pageExtensions
+    await fs.writeFile(path.join(pagesDir, "about.mdx"), "# About");
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      invalidateRouteCache(pagesDir);
+      await printBuildReport({ root: tmpRoot, pageExtensions: ["tsx", "ts", "jsx", "js"] });
+    } finally {
+      console.log = origLog;
+      invalidateRouteCache(pagesDir);
+    }
+
+    const output = lines.join("\n");
+    expect(output).toContain("/");
+    expect(output).not.toContain("/about");
+  });
+
+  it("pages router: reports mdx routes when pageExtensions includes mdx", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-report-pages-mdx-"));
+    const pagesDir = path.join(tmpRoot, "pages");
+    await fs.mkdir(pagesDir, { recursive: true });
+    await fs.writeFile(
+      path.join(pagesDir, "index.tsx"),
+      "export default function Page() { return <div>home</div>; }",
+    );
+    await fs.writeFile(path.join(pagesDir, "about.mdx"), "# About");
+
+    const lines: string[] = [];
+    const origLog = console.log;
+    console.log = (msg: string) => lines.push(msg);
+    try {
+      invalidateRouteCache(pagesDir);
+      await printBuildReport({
+        root: tmpRoot,
+        pageExtensions: ["tsx", "ts", "jsx", "js", "mdx"],
+      });
+    } finally {
+      console.log = origLog;
+      invalidateRouteCache(pagesDir);
+    }
+
+    const output = lines.join("\n");
+    expect(output).toContain("/about");
   });
 });

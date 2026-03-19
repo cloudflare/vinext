@@ -495,11 +495,10 @@ async function buildApp() {
     );
   }
 
+  const nextConfig = await resolveNextConfig(await loadNextConfig(process.cwd()), process.cwd());
+
   let prerenderResult;
-  const shouldPrerender =
-    parsed.prerenderAll ||
-    (await resolveNextConfig(await loadNextConfig(process.cwd()), process.cwd())).output ===
-      "export";
+  const shouldPrerender = parsed.prerenderAll || nextConfig.output === "export";
 
   if (shouldPrerender) {
     const label = parsed.prerenderAll
@@ -511,7 +510,11 @@ async function buildApp() {
   }
 
   process.stdout.write("\x1b[0m");
-  await printBuildReport({ root: process.cwd(), prerenderResult: prerenderResult ?? undefined });
+  await printBuildReport({
+    root: process.cwd(),
+    pageExtensions: nextConfig.pageExtensions,
+    prerenderResult: prerenderResult ?? undefined,
+  });
 
   console.log("\n  Build complete. Run `vinext start` to start the production server.\n");
   process.exit(0);
