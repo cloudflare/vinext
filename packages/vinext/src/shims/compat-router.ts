@@ -20,5 +20,5 @@ import type { NextRouter } from "./router.js";
  * @returns The `NextRouter` instance if it's available, otherwise `null`.
  */
 export function useRouter(): NextRouter | null {
-  return useContext(RouterContext) as NextRouter | null;
+  return useContext(RouterContext);
 }
