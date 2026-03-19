@@ -514,8 +514,12 @@ export function checkConventions(root: string): CheckItem[] {
   // so tokens inside those contexts are never matched.
   const allSourceFiles = findSourceFiles(root);
   const viewTransitionRegex = /import\s+\{[^}]*\bViewTransition\b[^}]*\}\s+from\s+['"]react['"]/;
+  // Single-pass regex: skip tokens that can contain identifier-like text, expose everything else
+  // to the identifier capture branch. Template literals are skipped segment-by-segment between
+  // `${` boundaries — the `${...}` body itself is NOT consumed, so `__dirname` inside template
+  // expressions (e.g. `${__dirname}/views`) is correctly exposed to the identifier branch.
   const cjsGlobalScanRegex =
-    /\/\/[^\n]*|\/\*[\s\S]*?\*\/|`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(__dirname|__filename)\b/g;
+    /\/\/[^\n]*|\/\*[\s\S]*?\*\/|`(?:[^`\\$]|\\.|\$(?!\{))*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\b(__dirname|__filename)\b/g;
   const viewTransitionFiles: string[] = [];
   const cjsGlobalFiles: string[] = [];
   for (const file of allSourceFiles) {

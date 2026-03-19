@@ -707,6 +707,25 @@ describe("checkConventions", () => {
     expect(cjs).toBeUndefined();
   });
 
+  it("does not flag __dirname inside a plain template literal (no interpolation)", () => {
+    writeFile("lib/msg.ts", "const msg = `use __dirname instead`;");
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeUndefined();
+  });
+
+  it("detects __dirname inside a template expression ${...}", () => {
+    writeFile("lib/db.ts", "const dir = `${__dirname}/views`;");
+    writeFile("app/page.tsx", `export default function Home() { return <div/>; }`);
+
+    const items = checkConventions(tmpDir);
+    const cjs = items.find((i) => i.name.includes("__dirname"));
+    expect(cjs).toBeDefined();
+    expect(cjs?.files).toContain("lib/db.ts");
+  });
+
   it("does not flag __dirname when not used at all", () => {
     writeFile(
       "lib/esm.ts",
