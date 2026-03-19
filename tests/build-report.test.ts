@@ -466,8 +466,12 @@ describe("printBuildReport respects pageExtensions", () => {
 
   afterEach(async () => {
     if (tmpRoot) {
-      await fs.rm(tmpRoot, { recursive: true, force: true });
+      // Invalidate both routers' caches — pages router tests set pagesDir at
+      // tmpRoot/pages, so we invalidate that path too. This ensures a failing
+      // test that skips its own finally-block cleanup doesn't pollute later tests.
       invalidateAppRouteCache();
+      invalidateRouteCache(path.join(tmpRoot, "pages"));
+      await fs.rm(tmpRoot, { recursive: true, force: true });
     }
   });
 
