@@ -52,7 +52,7 @@ describe("Vite tsconfig paths support", () => {
   });
 
   it("uses resolve.tsconfigPaths on Vite 8 instead of vite-tsconfig-paths", async () => {
-    const root = setupProject({ name: "vite", version: "8.0.0-beta.18" });
+    const root = setupProject({ name: "vite", version: "8.0.0" });
     process.chdir(root);
 
     const plugins = vinext({ appDir: root });
@@ -78,7 +78,7 @@ describe("Vite tsconfig paths support", () => {
   });
 
   it("does not override user-defined resolve.tsconfigPaths on Vite 8", async () => {
-    const root = setupProject({ name: "vite", version: "8.0.0-beta.18" });
+    const root = setupProject({ name: "vite", version: "8.0.0" });
     process.chdir(root);
 
     const plugins = vinext({ appDir: root });

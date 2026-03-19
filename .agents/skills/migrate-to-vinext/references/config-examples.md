@@ -1,5 +1,7 @@
 # Vite Config Examples
 
+These examples stay minimal on purpose. If you add custom build tuning on Vite 8, prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` / `worker.rolldownOptions` over older `esbuild` and `build.rollupOptions` settings.
+
 ## Pages Router — Local Development
 
 No Cloudflare, no deployment. Simplest possible config.

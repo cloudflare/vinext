@@ -99,6 +99,8 @@ This will:
 
 The migration is non-destructive -- your existing Next.js setup continues to work alongside vinext. It does not modify `next.config`, `tsconfig.json`, or any source files, and it does not remove Next.js dependencies.
 
+vinext supports both Vite 7 and Vite 8. If you bring custom Vite config or plugins from an older setup, note that Vite 8 now defaults to Rolldown, Oxc, Lightning CSS, and a newer browser baseline. Prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` over older `esbuild` and `build.rollupOptions` knobs, and override `build.target` if you still need older browsers. If a dependency only breaks on Vite 8 because of stricter CommonJS default import handling, fix the import or use `legacy.inconsistentCjsInterop: true` as a temporary escape hatch. See the [Vite 8 migration guide](https://vite.dev/guide/migration).
+
 ```bash
 npm run dev:vinext    # Start the vinext dev server (port 3001)
 npm run dev           # Still runs Next.js as before
@@ -696,7 +698,7 @@ Or add it to your `package.json` as a file dependency:
 }
 ```
 
-vinext has peer dependencies on `react ^19.2.4`, `react-dom ^19.2.4`, and `vite ^7.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
+vinext has peer dependencies on `react ^19.2.4`, `react-dom ^19.2.4`, and `vite ^7.0.0 || ^8.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
 
 ## Contributing
 

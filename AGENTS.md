@@ -355,6 +355,16 @@ The RSC entry's `default` export is the request handler. The plugin calls it for
 
 You **must** use `createBuilder()` + `builder.buildApp()` for production builds, not `build()` directly. Calling `build()` from the Vite JS API doesn't trigger the RSC plugin's multi-environment build pipeline. `buildApp()` runs the 5-step RSC/SSR/client build sequence in the correct order.
 
+### Vite 8 Defaults
+
+This repo currently resolves `vite` to `@voidzero-dev/vite-plus-core`, which bundles Vite 8. Keep that in mind when touching Vite config or plugin integration code:
+
+- Prefer `oxc` over `esbuild` for new JavaScript transform config
+- Prefer `optimizeDeps.rolldownOptions` over `optimizeDeps.esbuildOptions`
+- Prefer `build.rolldownOptions` / `worker.rolldownOptions` over adding new `*.rollupOptions` config
+- When touching existing `build.rollupOptions` or `manualChunks`, preserve Vite 7 compatibility but treat them as migration targets, not patterns to copy forward
+- If something breaks only on Vite 8, check the newer `build.target` baseline and stricter CommonJS default import behavior first
+
 ### Virtual Module Resolution Quirks
 
 - **Build-time root prefix:** Vite prefixes virtual module IDs with the project root path when resolving SSR build entries. The `resolveId` hook must handle both `virtual:vinext-server-entry` and `<root>/virtual:vinext-server-entry`.

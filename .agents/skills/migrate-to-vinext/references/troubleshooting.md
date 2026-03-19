@@ -12,6 +12,20 @@
 | RSC environment crash on dev start            | Native Node module (sharp, satori) loaded in RSC env | vinext auto-stubs these in production; in dev, ensure these are only imported in server code behind dynamic `import()` |
 | `ASSETS binding not found`                    | wrangler.jsonc missing assets config                 | Add `"assets": { "not_found_handling": "none" }` to wrangler.jsonc                                                     |
 
+## Vite 8 Migration Notes
+
+- **Symptom:** deprecation warnings for `esbuild`, `optimizeDeps.esbuildOptions`, or `build.rollupOptions`.
+  **Cause:** Vite 8 now defaults to Oxc and Rolldown.
+  **Fix:** Prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` / `worker.rolldownOptions` in custom Vite config.
+
+- **Symptom:** a package only breaks on Vite 8 with a bad `default` import from CommonJS.
+  **Cause:** Vite 8 made CommonJS default import handling more consistent.
+  **Fix:** Fix the import or package if possible. As a temporary workaround, set `legacy.inconsistentCjsInterop: true`.
+
+- **Symptom:** older browsers stop working after migration.
+  **Cause:** Vite 8 raised the default `build.target` browser baseline.
+  **Fix:** Set `build.target` explicitly in `vite.config.*` if you need older browser support.
+
 ## ESM Conversion Issues
 
 When adding `"type": "module"`, any `.js` file using `module.exports` or `require()` will break. Common files that need renaming to `.cjs`:
