@@ -1133,27 +1133,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // even if middleware rewrites the downstream route/render target.
       let resolvedPathname = resolvedUrl.split("?")[0];
 
-      // ── 5b. Serve public directory static files ────────────────────
-      // Public directory files (non-build-asset static files) are served
-      // after middleware so middleware can intercept or redirect them.
-      // Build assets (/assets/*) are already served in step 1.
-      // Middleware response headers are passed through so Set-Cookie,
-      // security headers, etc. from middleware are included in the response.
-      if (
-        staticLookupPath !== "/" &&
-        !staticLookupPath.startsWith("/api/") &&
-        !staticLookupPath.startsWith("/assets/") &&
-        tryServeStatic(req, res, clientDir, staticLookupPath, compress, middlewareHeaders)
-      ) {
-        return;
-      }
-
       // ── 6. Apply custom headers from next.config.js ───────────────
       // Config headers are additive for multi-value headers (Vary,
       // Set-Cookie) and override for everything else. Set-Cookie values
       // are stored as arrays (RFC 6265 forbids comma-joining cookies).
       // Middleware headers take precedence: skip config keys already set
       // by middleware so middleware always wins for the same key.
+      // This runs before step 5b so config headers are included in static
+      // public directory file responses (matching Next.js behavior).
       if (configHeaders.length) {
         const matched = matchHeaders(pathname, configHeaders, reqCtx);
         for (const h of matched) {
@@ -1175,6 +1162,22 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
             middlewareHeaders[lk] = h.value;
           }
         }
+      }
+
+      // ── 5b. Serve public directory static files ────────────────────
+      // Public directory files (non-build-asset static files) are served
+      // after middleware so middleware can intercept or redirect them.
+      // Build assets (/assets/*) are already served in step 1.
+      // Middleware response headers (including config headers applied above)
+      // are passed through so Set-Cookie, security headers, etc. from
+      // middleware and next.config.js are included in the response.
+      if (
+        staticLookupPath !== "/" &&
+        !staticLookupPath.startsWith("/api/") &&
+        !staticLookupPath.startsWith("/assets/") &&
+        tryServeStatic(req, res, clientDir, staticLookupPath, compress, middlewareHeaders)
+      ) {
+        return;
       }
 
       // ── 7. Apply beforeFiles rewrites from next.config.js ─────────
