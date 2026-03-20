@@ -255,7 +255,7 @@ function tryServeStatic(
   clientDir: string,
   pathname: string,
   compress: boolean,
-  extraHeaders?: Record<string, string>,
+  extraHeaders?: Record<string, string | string[]>,
 ): boolean {
   // Resolve the path and guard against directory traversal (e.g. /../../../etc/passwd)
   const resolvedClient = path.resolve(clientDir);
@@ -684,8 +684,13 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       // Fall through to the RSC handler below.
     }
 
-    // Serve static assets from client build
-    if (pathname !== "/" && tryServeStatic(req, res, clientDir, pathname, compress)) {
+    // Serve hashed build assets (Vite output in /assets/) directly.
+    // Public directory files fall through to the RSC handler, which runs
+    // middleware before serving them.
+    if (
+      pathname.startsWith("/assets/") &&
+      tryServeStatic(req, res, clientDir, pathname, compress)
+    ) {
       return;
     }
 
@@ -914,14 +919,14 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       return;
     }
 
-    // ── 1. Static assets ──────────────────────────────────────────
-    // Serve static files from client build. When basePath is configured,
-    // Vite's `base` config ensures assets are under basePath/assets/.
-    // We check both with and without basePath.
+    // ── 1. Hashed build assets ─────────────────────────────────────
+    // Serve Vite build output (hashed JS/CSS bundles in /assets/) before
+    // middleware. These are always public and don't need protection.
+    // Public directory files (e.g. /favicon.ico, /robots.txt) are served
+    // after middleware (step 5b) so middleware can intercept them.
     const staticLookupPath = stripBasePath(pathname, basePath);
     if (
-      staticLookupPath !== "/" &&
-      !staticLookupPath.startsWith("/api/") &&
+      staticLookupPath.startsWith("/assets/") &&
       tryServeStatic(req, res, clientDir, staticLookupPath, compress)
     ) {
       return;
@@ -1127,6 +1132,21 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       // Config header matching must keep using the original normalized pathname
       // even if middleware rewrites the downstream route/render target.
       let resolvedPathname = resolvedUrl.split("?")[0];
+
+      // ── 5b. Serve public directory static files ────────────────────
+      // Public directory files (non-build-asset static files) are served
+      // after middleware so middleware can intercept or redirect them.
+      // Build assets (/assets/*) are already served in step 1.
+      // Middleware response headers are passed through so Set-Cookie,
+      // security headers, etc. from middleware are included in the response.
+      if (
+        staticLookupPath !== "/" &&
+        !staticLookupPath.startsWith("/api/") &&
+        !staticLookupPath.startsWith("/assets/") &&
+        tryServeStatic(req, res, clientDir, staticLookupPath, compress, middlewareHeaders)
+      ) {
+        return;
+      }
 
       // ── 6. Apply custom headers from next.config.js ───────────────
       // Config headers are additive for multi-value headers (Vary,
