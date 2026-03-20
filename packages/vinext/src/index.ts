@@ -3933,15 +3933,27 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   isNamespace: boolean;
                 }
               >();
+              const barrelDir = path.dirname(barrelEntry);
               for (const { local, imported } of specifiers) {
                 const entry = exportMap.get(imported)!;
-                // Key on both source and isNamespace: a named import and a namespace
-                // import from the same sub-module must produce separate import statements
-                // (`import { foo } from "x/foo"` vs `import * as foo from "x/foo"`).
-                const key = `${entry.source}::${entry.isNamespace}`;
+                // Resolve relative sources against the barrel entry's directory so
+                // that `./chunk.js` in `/node_modules/lodash-es/index.js` becomes
+                // `/node_modules/lodash-es/chunk.js` — not resolved against the
+                // importing user file (`/app/chunk.js`).
+                const resolvedSource = entry.source.startsWith(".")
+                  ? path.resolve(barrelDir, entry.source)
+                  : entry.source;
+                // Key on both resolved source and isNamespace: a named import and a
+                // namespace import from the same sub-module must produce separate
+                // import statements.
+                const key = `${resolvedSource}::${entry.isNamespace}`;
                 let group = bySource.get(key);
                 if (!group) {
-                  group = { source: entry.source, locals: [], isNamespace: entry.isNamespace };
+                  group = {
+                    source: resolvedSource,
+                    locals: [],
+                    isNamespace: entry.isNamespace,
+                  };
                   bySource.set(key, group);
                 }
                 group.locals.push({
@@ -3959,16 +3971,29 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     replacements.push(`import * as ${local} from ${JSON.stringify(source)}`);
                   }
                 } else {
-                  // Group named imports from the same source
-                  const importSpecs = locals.map(({ local, originalName }) => {
-                    if (originalName && originalName !== local) {
-                      return `${originalName} as ${local}`;
+                  // Group named imports from the same source. A `default` re-export
+                  // (`export { default as X } from "sub"`) produces a default import
+                  // (`import X from "sub"`) rather than `import { default as X }`.
+                  const defaultLocals: string[] = [];
+                  const namedSpecs: string[] = [];
+                  for (const { local, originalName } of locals) {
+                    if (originalName === "default") {
+                      defaultLocals.push(local);
+                    } else if (originalName && originalName !== local) {
+                      namedSpecs.push(`${originalName} as ${local}`);
+                    } else {
+                      namedSpecs.push(local);
                     }
-                    return local;
-                  });
-                  replacements.push(
-                    `import { ${importSpecs.join(", ")} } from ${JSON.stringify(source)}`,
-                  );
+                  }
+                  // Emit default imports first, then named imports as a single statement
+                  for (const local of defaultLocals) {
+                    replacements.push(`import ${local} from ${JSON.stringify(source)}`);
+                  }
+                  if (namedSpecs.length > 0) {
+                    replacements.push(
+                      `import { ${namedSpecs.join(", ")} } from ${JSON.stringify(source)}`,
+                    );
+                  }
                 }
               }
 

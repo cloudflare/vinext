@@ -255,7 +255,7 @@ describe("vinext:optimize-imports transform", () => {
     // Create tmp project with a fake package in node_modules.
     // The package name must be in DEFAULT_OPTIMIZE_PACKAGES (or configured via
     // next.config.js) for the plugin's buildStart to include it.
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"));
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -311,8 +311,10 @@ describe("vinext:optimize-imports transform", () => {
     expect(result!.code).not.toContain(`from "lucide-react"`);
   });
 
-  it("rewrites named re-export: import { Button } from 'pkg' → import { Button } from './button'", async () => {
-    // date-fns is in DEFAULT_OPTIMIZE_PACKAGES
+  it("rewrites named re-export: relative source resolved against barrel dir, not user file", async () => {
+    // date-fns is in DEFAULT_OPTIMIZE_PACKAGES.
+    // Barrels commonly use relative re-exports (e.g. `export { Button } from "./button"`).
+    // The plugin must resolve these against the barrel entry's directory, not the user's file.
     const call = await setupTransform(
       "date-fns",
       `export { Button, buttonVariants } from "./button";\nexport { Input } from "./input";`,
@@ -320,9 +322,18 @@ describe("vinext:optimize-imports transform", () => {
     const code = `import { Button, Input } from "date-fns";`;
     const result = call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
-    expect(result!.code).toContain(`import { Button } from "./button"`);
-    expect(result!.code).toContain(`import { Input } from "./input"`);
+    // Expect absolute paths rooted at the package dir, not relative paths
+    const pkgDir = path.join(tmpDir, "node_modules", "date-fns");
+    expect(result!.code).toContain(
+      `import { Button } from ${JSON.stringify(path.resolve(pkgDir, "button"))}`,
+    );
+    expect(result!.code).toContain(
+      `import { Input } from ${JSON.stringify(path.resolve(pkgDir, "input"))}`,
+    );
     expect(result!.code).not.toContain(`from "date-fns"`);
+    // Must NOT contain the raw relative path (that would resolve against user file)
+    expect(result!.code).not.toContain(`from "./button"`);
+    expect(result!.code).not.toContain(`from "./input"`);
   });
 
   it("appends trailing semicolons to all replacement statements", async () => {
@@ -343,6 +354,9 @@ describe("vinext:optimize-imports transform", () => {
     for (const line of lines) {
       expect(line.trimEnd()).toMatch(/;$/);
     }
+    // Paths must be absolute (no bare relative paths)
+    expect(result!.code).not.toContain(`from "./a"`);
+    expect(result!.code).not.toContain(`from "./b"`);
   });
 
   it("leaves import unchanged when a specifier is not in the barrel map", async () => {
@@ -355,7 +369,7 @@ describe("vinext:optimize-imports transform", () => {
   });
 
   it("skips transform on client environment", async () => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"));
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
     fs.writeFileSync(
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
@@ -383,12 +397,15 @@ describe("vinext:optimize-imports transform", () => {
     const code = `import { Button, buttonVariants } from "ramda";`;
     const result = call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
-    // Both should be in a single import from "./button"
+    // Both should be in a single import from the resolved absolute path
     const importLines = result!.code.split("\n").filter((l: string) => l.includes("from"));
     expect(importLines).toHaveLength(1);
     expect(importLines[0]).toContain("Button");
     expect(importLines[0]).toContain("buttonVariants");
-    expect(importLines[0]).toContain(`from "./button"`);
+    // Relative path must be resolved to absolute (no bare ./button)
+    expect(result!.code).not.toContain(`from "./button"`);
+    const expected = path.resolve(path.join(tmpDir, "node_modules", "ramda"), "button");
+    expect(importLines[0]).toContain(expected);
   });
 
   it("produces separate statements for namespace and named imports from the same source", async () => {
@@ -399,7 +416,7 @@ describe("vinext:optimize-imports transform", () => {
     const call = await setupTransform(
       "lodash-es",
       [
-        // namespace re-export: import { Chunk } from "lodash-es" → import * as Chunk from "./chunk"
+        // namespace re-export: import { Chunk } from "lodash-es" → import * as Chunk from <abs>
         `export * as Chunk from "./chunk";`,
         // named re-export from the very same sub-module path
         `export { chunkHelper } from "./chunk";`,
@@ -421,9 +438,30 @@ describe("vinext:optimize-imports transform", () => {
     expect(nsLine).toBeDefined();
     expect(namedLine).toBeDefined();
 
+    // Both must resolve relative path to absolute — no bare ./chunk
+    expect(result!.code).not.toContain(`from "./chunk"`);
+    const absChunk = path.resolve(path.join(tmpDir, "node_modules", "lodash-es"), "chunk");
     // Namespace import must use `import * as` syntax
-    expect(nsLine).toMatch(/^import \* as Chunk from "\.\/chunk";$/);
+    expect(nsLine).toContain("import * as Chunk from");
+    expect(nsLine).toContain(absChunk);
     // Named import must use `import { ... }` syntax
-    expect(namedLine).toMatch(/^import \{ chunkHelper \} from "\.\/chunk";$/);
+    expect(namedLine).toContain("import { chunkHelper } from");
+    expect(namedLine).toContain(absChunk);
+  });
+
+  it("rewrites default re-export: import { Calendar } from 'pkg' → import Calendar from 'sub'", async () => {
+    // rxjs is in DEFAULT_OPTIMIZE_PACKAGES.
+    // `export { default as Calendar } from "./calendar"` in the barrel should produce
+    // `import Calendar from "./calendar"` (a default import), not `import { default as Calendar }`.
+    const call = await setupTransform("rxjs", `export { default as Calendar } from "./calendar";`);
+    const code = `import { Calendar } from "rxjs";`;
+    const result = call(code, "/app/page.tsx");
+    expect(result).not.toBeNull();
+
+    const absCalendar = path.resolve(path.join(tmpDir, "node_modules", "rxjs"), "calendar");
+    // Must emit a default import, not a named `{ default as ... }` import
+    expect(result!.code).toContain(`import Calendar from ${JSON.stringify(absCalendar)}`);
+    expect(result!.code).not.toContain("{ default as Calendar }");
+    expect(result!.code).not.toContain(`from "rxjs"`);
   });
 });
