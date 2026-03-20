@@ -25,15 +25,54 @@ jobs:
         run: vp run build
       - run: vp run check
 
-  test:
-    name: Vitest
+  test-unit:
+    name: Vitest (unit)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: voidzero-dev/setup-vp@v1
-      - name: Build plugin (needed by ecosystem fixtures)
+      - run: vp test run --project unit
+
+  test-integration:
+    name: Vitest (integration ${{ matrix.shardIndex }}/${{ matrix.shardTotal }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shardIndex: [1, 2, 3]
+        shardTotal: [3]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: voidzero-dev/setup-vp@v1
+      - name: Build plugin (needed by ecosystem and nextjs-compat fixtures)
         run: vp run build
-      - run: vp run test
+      - run: vp test run --project integration --reporter=blob --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
+        env:
+          CI: true
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: blob-report-${{ matrix.shardIndex }}
+          path: .vitest-reports/*
+          include-hidden-files: true
+          retention-days: 1
+
+  test-integration-merge:
+    name: Vitest (integration report)
+    if: ${{ !cancelled() }}
+    needs: [test-integration]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: voidzero-dev/setup-vp@v1
+      - uses: actions/download-artifact@v7
+        with:
+          path: .vitest-reports
+          pattern: blob-report-*
+          merge-multiple: true
+      - run: vp test run --merge-reports
+        env:
+          CI: true
 
   create-next-app:
     name: create-next-app (${{ matrix.os }})
