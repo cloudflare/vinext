@@ -47,6 +47,10 @@ export interface UnifiedRequestContext
   // ── request-context.ts ─────────────────────────────────────────────
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
   executionContext: ExecutionContextLike | null;
+
+  // ── request-store.ts ──────────────────────────────────────────────
+  /** User-defined per-request key-value store. Auto-cleared between requests. */
+  userStore: Map<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +96,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     _privateCache: null,
     currentRequestTags: [],
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
+    userStore: new Map(),
     ssrContext: null,
     ssrHeadChildren: [],
     ...opts,
