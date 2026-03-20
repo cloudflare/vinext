@@ -1,8 +1,8 @@
-import type { AppProps } from "next/app";
+import type { AppProps, AppContext } from "next/app";
 
-export default function MyApp({ Component, pageProps }: AppProps) {
+function MyApp({ Component, pageProps, appProps }: AppProps & { appProps: { appProp: string } }) {
   return (
-    <div id="app-wrapper" data-testid="app-wrapper">
+    <div id="app-wrapper" data-testid="app-wrapper" data-app-prop={appProps.appProp}>
       <nav data-testid="global-nav">
         <span>My App</span>
       </nav>
@@ -10,3 +10,7 @@ export default function MyApp({ Component, pageProps }: AppProps) {
     </div>
   );
 }
+
+MyApp.getInitialProps = (ctx: AppContext) => ({ appProps: { appProp: ctx.router.query.appProp } });
+
+export default MyApp;

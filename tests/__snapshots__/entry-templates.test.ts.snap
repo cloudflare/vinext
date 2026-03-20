@@ -19206,7 +19206,7 @@ async function hydrate() {
     return;
   }
 
-  const { pageProps } = nextData.props;
+  const { pageProps, ...appInitialProps } = nextData.props;
   const loader = pageLoaders[nextData.page];
   if (!loader) {
     console.error("[vinext] No page loader for route:", nextData.page);
@@ -19226,7 +19226,7 @@ async function hydrate() {
     const appModule = await import("<ROOT>/tests/fixtures/pages-basic/pages/_app.tsx");
     const AppComponent = appModule.default;
     window.__VINEXT_APP__ = AppComponent;
-    element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+    element = React.createElement(AppComponent, { Component: PageComponent, pageProps, ...appInitialProps });
   } catch {
     element = React.createElement(PageComponent, pageProps);
   }
@@ -19522,7 +19522,7 @@ function patternToNextFormat(pattern) {
     .replace(/:([\\w]+)/g, "[$1]");
 }
 
-function collectAssetTags(manifest, moduleIds) {
+function collectAssetTags(manifest, moduleIds, eagerModuleIds) {
   // Fall back to embedded manifest (set by vinext:cloudflare-build for Workers)
   const m = (manifest && Object.keys(manifest).length > 0)
     ? manifest
@@ -19536,6 +19536,35 @@ function collectAssetTags(manifest, moduleIds) {
   // chunks behind React.lazy() or next/dynamic boundaries).
   var lazyChunks = (typeof globalThis !== "undefined" && globalThis.__VINEXT_LAZY_CHUNKS__) || null;
   var lazySet = lazyChunks && lazyChunks.length > 0 ? new Set(lazyChunks) : null;
+
+  // Build a set of files that should bypass the lazySet filter even if they
+  // are technically reached via dynamic import. Used for _app: it is
+  // dynamically imported at hydration time, but since it is needed on every
+  // page we preload it unconditionally so the browser can fetch it in parallel
+  // with the entry script rather than waiting until hydrate() runs.
+  var eagerFiles = null;
+  if (lazySet && m && eagerModuleIds && eagerModuleIds.length > 0) {
+    eagerFiles = new Set();
+    for (var ei = 0; ei < eagerModuleIds.length; ei++) {
+      var eid = eagerModuleIds[ei];
+      var efiles = m[eid];
+      if (!efiles) {
+        for (var emk in m) {
+          if (eid.endsWith("/" + emk) || eid === emk) {
+            efiles = m[emk];
+            break;
+          }
+        }
+      }
+      if (efiles) {
+        for (var efi = 0; efi < efiles.length; efi++) {
+          var ef = efiles[efi];
+          if (ef.charAt(0) === '/') ef = ef.slice(1);
+          if (ef.endsWith(".js")) eagerFiles.add(ef);
+        }
+      }
+    }
+  }
 
   // Inject the client entry script if embedded by vinext:cloudflare-build
   if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
@@ -19621,9 +19650,14 @@ function collectAssetTags(manifest, moduleIds) {
       } else if (tf.endsWith(".js")) {
         // Skip lazy chunks — they are behind dynamic import() boundaries
         // (React.lazy, next/dynamic) and should only be fetched on demand.
-        if (lazySet && lazySet.has(tf)) continue;
+        // Exception: eagerFiles bypasses this filter (used for _app and current page).
+        if (lazySet && lazySet.has(tf) && !(eagerFiles && eagerFiles.has(tf))) continue;
+        // Only emit <link rel="modulepreload"> — not a <script> tag. The client
+        // entry script (injected separately via __VINEXT_CLIENT_ENTRY__) is the
+        // sole entry point that triggers execution. All other chunks are imported
+        // transitively; emitting extra <script> tags for them would cause duplicate
+        // module evaluation and side-effect re-runs.
         tags.push('<link rel="modulepreload" href="/' + tf + '" />');
-        tags.push('<script type="module" src="/' + tf + '" crossorigin></script>');
       }
     }
   }
@@ -19797,6 +19831,102 @@ async function readBodyWithLimit(request, maxBytes) {
   return chunks.join("");
 }
 
+/**
+ * Render a 404 or 500 error page through the custom _document (if any).
+ *
+ * Resolution order mirrors Next.js:
+ *   404 -> pages/404 -> pages/_error -> plain text fallback
+ *   500 -> pages/500 -> pages/_error -> plain text fallback
+ *
+ * NOTE: In the Cloudflare Workers runtime there is no Node.js IncomingMessage /
+ * ServerResponse, so ctx.req / ctx.res are not passed to DocumentContext.
+ * Custom documents that inspect ctx.req will receive undefined — this is an
+ * intentional limitation for now and is documented here.
+ */
+async function renderErrorPageResponse(statusCode, url, request) {
+  var candidates = statusCode === 404
+    ? ["/404", "/_error"]
+    : statusCode === 500
+    ? ["/500", "/_error"]
+    : ["/_error"];
+
+  for (var ci = 0; ci < candidates.length; ci++) {
+    var candidate = candidates[ci];
+    var errorRoute = null;
+    for (var ri = 0; ri < pageRoutes.length; ri++) {
+      if (pageRoutes[ri].pattern === candidate) { errorRoute = pageRoutes[ri]; break; }
+    }
+    if (!errorRoute) continue;
+    var ErrorComponent = errorRoute.module.default;
+    if (!ErrorComponent) continue;
+
+    var errorProps = { statusCode: statusCode };
+    var errorElement;
+    if (AppComponent) {
+      var _errAppProps = {};
+      if (typeof AppComponent.getInitialProps === "function") {
+        var _errParsedQuery = request ? Object.fromEntries(new URL(request.url).searchParams.entries()) : {};
+        var _errPathname = (url || "/").split("?")[0] || "/";
+        try {
+          _errAppProps = await AppComponent.getInitialProps({
+            Component: ErrorComponent,
+            AppTree: AppComponent,
+            router: { pathname: _errPathname, query: _errParsedQuery, asPath: url || "/" },
+            ctx: { pathname: _errPathname, query: _errParsedQuery, asPath: url || "/" },
+          });
+        } catch (e) { /* ignore getInitialProps errors on error pages */ }
+      }
+      errorElement = React.createElement(AppComponent, { Component: ErrorComponent, pageProps: errorProps, ..._errAppProps });
+    } else {
+      errorElement = React.createElement(ErrorComponent, errorProps);
+    }
+    errorElement = wrapWithRouterContext(errorElement);
+    var bodyHtml = await renderToStringAsync(errorElement);
+
+    var html;
+    if (DocumentComponent) {
+      var _docErrProps = {};
+      var _DocErrClass = DocumentComponent;
+      if (typeof _DocErrClass.getInitialProps === "function") {
+        try {
+          var _docErrCtx = {
+            // NOTE: req/res are not available in the Workers runtime.
+            // ctx.req / ctx.res will be undefined for production Workers builds.
+            pathname: (url || "/").split("?")[0] || "/",
+            query: request ? Object.fromEntries(new URL(request.url).searchParams.entries()) : {},
+            asPath: url || "/",
+            // renderPage is a no-op in vinext — the body is streamed separately.
+            // Returning empty html here is an intentional architectural deviation
+            // from Next.js (where renderPage actually renders the app). CSS-in-JS
+            // libraries that rely on renderPage for style extraction will get an
+            // empty html string; see buildDocumentContext in dev-server.ts for more.
+            renderPage: async () => ({ html: "" }),
+            defaultGetInitialProps: async (ctx) => ctx.renderPage(),
+          };
+          _docErrProps = await _DocErrClass.getInitialProps(_docErrCtx);
+        } catch (e) {
+          console.error("[vinext] _document.getInitialProps threw during error page render:", e);
+          throw e;
+        }
+      }
+      var docErrElement = React.createElement(DocumentComponent, _docErrProps);
+      var docErrHtml = await renderToStringAsync(docErrElement);
+      docErrHtml = docErrHtml.replace("__NEXT_MAIN__", bodyHtml);
+      docErrHtml = docErrHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");
+      html = docErrHtml;
+    } else {
+      html = "<!DOCTYPE html>\\n<html>\\n<head>\\n  <meta charset=\\"utf-8\\" />\\n  <meta name=\\"viewport\\" content=\\"width=device-width, initial-scale=1\\" />\\n</head>\\n<body>\\n  <div id=\\"__next\\">" + bodyHtml + "</div>\\n</body>\\n</html>";
+    }
+    return new Response(html, { status: statusCode, headers: { "Content-Type": "text/html" } });
+  }
+
+  // No custom error page found — plain text fallback
+  return new Response(
+    statusCode + " - " + (statusCode === 404 ? "Page not found" : "Internal Server Error"),
+    { status: statusCode, headers: { "Content-Type": "text/plain" } }
+  );
+}
+
 export async function renderPage(request, url, manifest, ctx) {
   if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest));
   return _renderPage(request, url, manifest);
@@ -19826,8 +19956,7 @@ async function _renderPage(request, url, manifest) {
 
   const match = matchRoute(routeUrl, pageRoutes);
   if (!match) {
-    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
-      { status: 404, headers: { "Content-Type": "text/html" } });
+    return renderErrorPageResponse(404, routeUrl, request);
   }
 
   const { route, params } = match;
@@ -19886,8 +20015,7 @@ async function _renderPage(request, url, manifest) {
           });
         });
         if (!isValidPath) {
-          return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
-            { status: 404, headers: { "Content-Type": "text/html" } });
+          return renderErrorPageResponse(404, routeUrl, request);
         }
       }
     }
@@ -19915,7 +20043,7 @@ async function _renderPage(request, url, manifest) {
         return new Response(null, { status: gsspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
       }
       if (result && result.notFound) {
-        return new Response("404", { status: 404 });
+        return renderErrorPageResponse(404, routeUrl, request);
       }
       // Preserve the res object so headers/status/cookies set by gSSP
       // can be merged into the final HTML response.
@@ -19986,14 +20114,25 @@ async function _renderPage(request, url, manifest) {
                 }
                 // Re-render the page with fresh props inside fresh render sub-scopes
                 // so head/cache state cannot leak across passes.
+                var _regenAppProps = {};
+                if (AppComponent && typeof AppComponent.getInitialProps === "function") {
+                  try {
+                    _regenAppProps = await AppComponent.getInitialProps({
+                      Component: PageComponent,
+                      AppTree: AppComponent,
+                      router: { pathname: patternToNextFormat(route.pattern), query: { ...params, ...parseQuery(routeUrl) }, asPath: routeUrl },
+                      ctx: { pathname: patternToNextFormat(route.pattern), query: { ...params, ...parseQuery(routeUrl) }, asPath: routeUrl },
+                    });
+                  } catch(e) { /* ignore getInitialProps errors during regen */ }
+                }
                 var _el = AppComponent
-                  ? React.createElement(AppComponent, { Component: PageComponent, pageProps: _fp })
+                  ? React.createElement(AppComponent, { Component: PageComponent, pageProps: _fp, ..._regenAppProps })
                   : React.createElement(PageComponent, _fp);
                 _el = wrapWithRouterContext(_el);
                 var _freshBody = await renderIsrPassToStringAsync(_el);
                 // Rebuild __NEXT_DATA__ with fresh props
                 var _regenPayload = {
-                  props: { pageProps: _fp }, page: patternToNextFormat(route.pattern),
+                  props: { pageProps: _fp, ..._regenAppProps }, page: patternToNextFormat(route.pattern),
                   query: params, buildId: buildId, isFallback: false,
                 };
                 if (i18nConfig) {
@@ -20056,7 +20195,7 @@ async function _renderPage(request, url, manifest) {
         return new Response(null, { status: gspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
       }
       if (result && result.notFound) {
-        return new Response("404", { status: 404 });
+        return renderErrorPageResponse(404, routeUrl, request);
       }
       if (typeof result.revalidate === "number" && result.revalidate > 0) {
         isrRevalidateSeconds = result.revalidate;
@@ -20065,7 +20204,18 @@ async function _renderPage(request, url, manifest) {
 
     let element;
     if (AppComponent) {
-      element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+      var _appProps = {};
+      if (typeof AppComponent.getInitialProps === "function") {
+        var _parsedQ = parseQuery(routeUrl);
+        var _pathname = routeUrl.split("?")[0];
+        _appProps = await AppComponent.getInitialProps({
+          Component: PageComponent,
+          AppTree: AppComponent,
+          router: { pathname: _pathname, query: { ...params, ..._parsedQ }, asPath: routeUrl },
+          ctx: { pathname: _pathname, query: { ...params, ..._parsedQ }, asPath: routeUrl },
+        });
+      }
+      element = React.createElement(AppComponent, { Component: PageComponent, pageProps, ..._appProps });
     } else {
       element = React.createElement(PageComponent, pageProps);
     }
@@ -20093,9 +20243,10 @@ async function _renderPage(request, url, manifest) {
     } catch (e) { /* font styles not available */ }
 
     const pageModuleIds = route.filePath ? [route.filePath] : [];
-    const assetTags = collectAssetTags(manifest, pageModuleIds);
+    pageModuleIds.push("<ROOT>/tests/fixtures/pages-basic/pages/_app.tsx");
+    const assetTags = collectAssetTags(manifest, pageModuleIds, pageModuleIds);
     const nextDataPayload = {
-      props: { pageProps }, page: patternToNextFormat(route.pattern), query: params, buildId, isFallback: false,
+      props: { pageProps, ..._appProps }, page: patternToNextFormat(route.pattern), query: params, buildId, isFallback: false,
     };
     if (i18nConfig) {
       nextDataPayload.locale = locale;
@@ -20114,7 +20265,34 @@ async function _renderPage(request, url, manifest) {
     var BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
     var shellHtml;
     if (DocumentComponent) {
-      const docElement = React.createElement(DocumentComponent);
+      // Call getInitialProps if the custom Document class defines it,
+      // mirroring the dev-server behavior so props (e.g. a theme) are
+      // available during rendering in production.
+      var _docProps = {};
+      var _DocClass = DocumentComponent;
+      if (typeof _DocClass.getInitialProps === "function") {
+        try {
+          var _docCtx = {
+            // NOTE: req/res are not available in the Workers runtime.
+            // ctx.req / ctx.res will be undefined for production Workers builds.
+            pathname: url.split("?")[0] || "/",
+            query: Object.fromEntries(new URL(request.url).searchParams.entries()),
+            asPath: url,
+            // renderPage is a no-op in vinext — the body is streamed separately.
+            // Returning empty html here is an intentional architectural deviation
+            // from Next.js (where renderPage actually renders the app). CSS-in-JS
+            // libraries that rely on renderPage for style extraction will get an
+            // empty html string; see buildDocumentContext in dev-server.ts for more.
+            renderPage: async () => ({ html: "" }),
+            defaultGetInitialProps: async (ctx) => ctx.renderPage(),
+          };
+          _docProps = await _DocClass.getInitialProps(_docCtx);
+        } catch (e) {
+          console.error("[vinext] _document.getInitialProps threw:", e);
+          throw e;
+        }
+      }
+      const docElement = React.createElement(DocumentComponent, _docProps);
       shellHtml = await renderToStringAsync(docElement);
       shellHtml = shellHtml.replace("__NEXT_MAIN__", BODY_MARKER);
       if (ssrHeadHTML || assetTags || fontHeadHTML) {
@@ -20164,7 +20342,7 @@ async function _renderPage(request, url, manifest) {
       // but ISR responses are rare on first hit. Re-render to get complete HTML for cache.
       var isrElement;
       if (AppComponent) {
-        isrElement = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+        isrElement = React.createElement(AppComponent, { Component: PageComponent, pageProps, ..._appProps });
       } else {
         isrElement = React.createElement(PageComponent, pageProps);
       }

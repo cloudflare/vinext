@@ -839,6 +839,26 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
       if (lazyChunks.length > 0) {
         globalThis.__VINEXT_LAZY_CHUNKS__ = lazyChunks;
       }
+      // Find the client entry file (the chunk that kicks off hydration).
+      // It is identified as the entry chunk whose source is the virtual client
+      // entry module. collectAssetTags uses __VINEXT_CLIENT_ENTRY__ to emit the
+      // <script type="module"> tag that bootstraps the browser runtime.
+      for (const chunk of Object.values(buildManifest) as Array<{
+        isEntry?: boolean;
+        src?: string;
+        file?: string;
+      }>) {
+        if (
+          chunk.isEntry &&
+          chunk.src &&
+          (chunk.src.includes("vinext-client-entry") ||
+            chunk.src.includes("vinext-app-browser-entry")) &&
+          chunk.file
+        ) {
+          globalThis.__VINEXT_CLIENT_ENTRY__ = manifestFileWithBase(chunk.file, assetBase);
+          break;
+        }
+      }
     } catch {
       /* ignore parse errors */
     }

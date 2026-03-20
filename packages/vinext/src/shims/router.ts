@@ -377,7 +377,10 @@ async function navigateClient(url: string): Promise<void> {
     }
 
     const nextData = JSON.parse(match[1]);
-    const { pageProps } = nextData.props;
+    const { pageProps = {}, ...appInitialProps } = (nextData.props ?? {}) as Record<
+      string,
+      unknown
+    > & { pageProps?: Record<string, unknown> };
     window.__NEXT_DATA__ = nextData;
 
     // Get the page module URL from __NEXT_DATA__.__vinext (preferred),
@@ -439,6 +442,7 @@ async function navigateClient(url: string): Promise<void> {
       element = React.createElement(AppComponent, {
         Component: PageComponent,
         pageProps,
+        ...appInitialProps,
       });
     } else {
       element = React.createElement(PageComponent, pageProps);

@@ -61,7 +61,7 @@ async function hydrate() {
     return;
   }
 
-  const { pageProps } = nextData.props;
+  const { pageProps, ...appInitialProps } = nextData.props;
   const loader = pageLoaders[nextData.page];
   if (!loader) {
     console.error("[vinext] No page loader for route:", nextData.page);
@@ -83,7 +83,7 @@ async function hydrate() {
     const appModule = await import(${JSON.stringify(appFileBase!)});
     const AppComponent = appModule.default;
     window.__VINEXT_APP__ = AppComponent;
-    element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+    element = React.createElement(AppComponent, { Component: PageComponent, pageProps, ...appInitialProps });
   } catch {
     element = React.createElement(PageComponent, pageProps);
   }

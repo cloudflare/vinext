@@ -107,9 +107,42 @@ declare module "next/dynamic" {
 
 declare module "next/app" {
   import { ComponentType } from "react";
-  export interface AppProps {
+  export type AppTree = ComponentType<AppInitialProps & { [name: string]: unknown }>;
+  export interface AppInitialProps<PageProps = unknown> {
+    pageProps: PageProps;
+  }
+  export interface AppContext {
     Component: ComponentType<any>;
-    pageProps: Record<string, unknown>;
+    AppTree: AppTree;
+    ctx: {
+      req?: unknown;
+      res?: unknown;
+      pathname: string;
+      query: Record<string, string | string[]>;
+      asPath: string;
+      err?: Error & { statusCode?: number };
+      locale?: string;
+      locales?: readonly string[];
+      defaultLocale?: string;
+    };
+    router: {
+      pathname: string;
+      query: Record<string, string | string[]>;
+      asPath: string;
+      locale?: string;
+      locales?: readonly string[];
+      defaultLocale?: string;
+      [key: string]: unknown;
+    };
+  }
+  export interface AppProps<P = Record<string, unknown>> {
+    Component: ComponentType<P>;
+    pageProps: P;
+    router: AppContext["router"];
+  }
+  export default class App<P = unknown> {
+    static getInitialProps(ctx: AppContext): Promise<AppInitialProps>;
+    render(): JSX.Element;
   }
 }
 
@@ -129,11 +162,45 @@ declare module "next" {
 }
 
 declare module "next/document" {
-  import { ComponentType, ReactNode } from "react";
-  export const Html: ComponentType<{ lang?: string; children?: ReactNode; [key: string]: unknown }>;
-  export const Head: ComponentType<{ children?: ReactNode }>;
-  export const Main: ComponentType;
-  export const NextScript: ComponentType;
+  import type { IncomingMessage, ServerResponse } from "node:http";
+  import { Component, type HTMLAttributes, type ReactNode, type ReactElement } from "react";
+
+  export type DocumentInitialProps = {
+    html: string;
+    head?: Array<ReactElement | null>;
+    styles?: ReactElement[] | Iterable<ReactNode> | ReactElement;
+  };
+
+  export type DocumentContext = {
+    pathname: string;
+    query: Record<string, string | string[] | undefined>;
+    asPath?: string;
+    req?: IncomingMessage;
+    res?: ServerResponse;
+    err?: (Error & { statusCode?: number }) | null;
+    locale?: string;
+    locales?: readonly string[];
+    defaultLocale?: string;
+    renderPage: () => DocumentInitialProps | Promise<DocumentInitialProps>;
+    defaultGetInitialProps(
+      ctx: DocumentContext,
+      options?: { nonce?: string },
+    ): Promise<DocumentInitialProps>;
+  };
+
+  export type DocumentProps = DocumentInitialProps & { [key: string]: unknown };
+
+  export function Html(
+    props: HTMLAttributes<HTMLHtmlElement> & { children?: ReactNode },
+  ): ReactElement;
+  export function Head(props: { children?: ReactNode }): ReactElement;
+  export function Main(): ReactElement;
+  export function NextScript(): ReactElement;
+
+  export default class Document<P = {}> extends Component<DocumentInitialProps & P> {
+    static getInitialProps(ctx: DocumentContext): Promise<DocumentInitialProps>;
+    render(): ReactElement;
+  }
 }
 
 declare module "next/config" {

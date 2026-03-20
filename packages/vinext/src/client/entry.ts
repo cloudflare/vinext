@@ -19,9 +19,12 @@ import type { VinextNextData } from "./vinext-next-data.js";
 
 // Read the SSR data injected by the server
 const nextData = window.__NEXT_DATA__ as VinextNextData | undefined;
-const pageProps = (nextData?.props.pageProps ?? {}) as Record<string, unknown>;
-const pageModulePath = nextData?.__pageModule;
-const appModulePath = nextData?.__appModule;
+const { pageProps = {}, ...appInitialProps } = (nextData?.props ?? {}) as Record<
+  string,
+  unknown
+> & { pageProps?: Record<string, unknown> };
+const pageModulePath = nextData?.__vinext?.pageModuleUrl ?? nextData?.__pageModule;
+const appModulePath = nextData?.__vinext?.appModuleUrl ?? nextData?.__appModule;
 
 async function hydrate() {
   if (!isValidModulePath(pageModulePath)) {
@@ -51,6 +54,7 @@ async function hydrate() {
         element = React.createElement(AppComponent, {
           Component: PageComponent,
           pageProps,
+          ...appInitialProps,
         });
       } catch {
         // No _app, render page directly

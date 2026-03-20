@@ -83,11 +83,57 @@ const STREAM_BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
  * deferring them reduces TTFB and lets the browser start parsing the
  * shell sooner).
  */
+/**
+ * Build a minimal DocumentContext for calling _document.getInitialProps.
+ *
+ * Next.js DocumentContext includes renderPage, defaultGetInitialProps,
+ * req/res, pathname, query, asPath, and locale info. We provide the
+ * subset that custom documents typically use.
+ */
+function buildDocumentContext(
+  req: IncomingMessage,
+  url: string,
+  res?: ServerResponse,
+): import("../shims/document.js").DocumentContext {
+  const [pathname, search] = url.split("?");
+  const query: Record<string, string | string[] | undefined> = {};
+  if (search) {
+    for (const [k, v] of new URLSearchParams(search)) {
+      const existing = query[k];
+      if (existing !== undefined) {
+        query[k] = Array.isArray(existing) ? [...existing, v] : [existing, v];
+      } else {
+        query[k] = v;
+      }
+    }
+  }
+  const renderPage = async (): Promise<import("../shims/document.js").DocumentInitialProps> => ({
+    // NOTE: renderPage is intentionally a no-op in vinext — the app body is
+    // streamed separately rather than being rendered inside renderPage as Next.js
+    // does. This is an intentional architectural deviation: css-in-js libraries
+    // that rely on renderPage for style extraction (e.g. styled-components)
+    // will receive an empty html string. The real body content comes from the
+    // SSR stream that replaces __NEXT_MAIN__ after document rendering.
+    html: "",
+  });
+  const ctx: import("../shims/document.js").DocumentContext = {
+    pathname: pathname || "/",
+    query,
+    asPath: url,
+    req,
+    res,
+    renderPage,
+    defaultGetInitialProps: async (c) => c.renderPage(),
+  };
+  return ctx;
+}
+
 async function streamPageToResponse(
   res: ServerResponse,
   element: React.ReactElement,
   options: {
     url: string;
+    req: IncomingMessage;
     server: ViteDevServer;
     fontHeadHTML: string;
     scripts: string;
@@ -100,6 +146,7 @@ async function streamPageToResponse(
 ): Promise<void> {
   const {
     url,
+    req,
     server,
     fontHeadHTML,
     scripts,
@@ -121,7 +168,27 @@ async function streamPageToResponse(
   let shellTemplate: string;
 
   if (DocumentComponent) {
-    const docElement = React.createElement(DocumentComponent);
+    // Call getInitialProps if the custom Document class defines it.
+    // This allows documents to augment props (e.g. inject a theme prop).
+    let docProps: Record<string, unknown> = {};
+    const DocClass = DocumentComponent as unknown as {
+      getInitialProps?: (
+        ctx: import("../shims/document.js").DocumentContext,
+      ) => Promise<Record<string, unknown>>;
+    };
+    if (typeof DocClass.getInitialProps === "function") {
+      try {
+        const ctx = buildDocumentContext(req, url, res);
+        docProps = await DocClass.getInitialProps(ctx);
+      } catch (e) {
+        console.error("[vinext] _document.getInitialProps threw during page render:", e);
+        throw e;
+      }
+    }
+    const docElement = React.createElement(
+      DocumentComponent,
+      docProps as React.ComponentProps<typeof DocumentComponent>,
+    );
     let docHtml = await renderToStringAsync(docElement);
     // Replace __NEXT_MAIN__ with our stream marker
     docHtml = docHtml.replace("__NEXT_MAIN__", STREAM_BODY_MARKER);
@@ -636,12 +703,44 @@ export function createSSRHandler(
                       }
                     }
 
-                    let el = RegenApp
-                      ? React.createElement(RegenApp, {
-                          Component: pageModule.default,
-                          pageProps: freshProps,
-                        })
-                      : React.createElement(pageModule.default, freshProps);
+                    let el: React.ReactElement;
+                    let _regenAppProps: Record<string, unknown> = {};
+                    if (RegenApp) {
+                      if (
+                        typeof (RegenApp as { getInitialProps?: unknown }).getInitialProps ===
+                        "function"
+                      ) {
+                        const _regenParsedQ = parseQuery(url);
+                        const _regenPathname = url.split("?")[0];
+                        try {
+                          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                          _regenAppProps =
+                            (await (RegenApp as any).getInitialProps({
+                              Component: pageModule.default,
+                              AppTree: RegenApp,
+                              router: {
+                                pathname: _regenPathname,
+                                query: { ...params, ..._regenParsedQ },
+                                asPath: url,
+                              },
+                              ctx: {
+                                pathname: _regenPathname,
+                                query: { ...params, ..._regenParsedQ },
+                                asPath: url,
+                              },
+                            })) ?? {};
+                        } catch {
+                          /* ignore */
+                        }
+                      }
+                      el = React.createElement(RegenApp, {
+                        Component: pageModule.default,
+                        pageProps: freshProps,
+                        ..._regenAppProps,
+                      });
+                    } else {
+                      el = React.createElement(pageModule.default, freshProps);
+                    }
                     if (routerShim.wrapWithRouterContext) {
                       el = routerShim.wrapWithRouterContext(el);
                     }
@@ -661,7 +760,7 @@ export function createSSRHandler(
                       : null;
 
                     const freshNextData = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
-                      props: { pageProps: freshProps },
+                      props: { pageProps: freshProps, ..._regenAppProps },
                       page: patternToNextFormat(route.pattern),
                       query: params,
                       buildId: process.env.__VINEXT_BUILD_ID,
@@ -770,10 +869,35 @@ export function createSSRHandler(
         // next/compat/router's useRouter() returns the real router.
         const wrapWithRouterContext = routerShim.wrapWithRouterContext;
 
+        // App.getInitialProps: call if _app defines it, spread result into AppComponent props.
+        let _devAppProps: Record<string, unknown> = {};
+        if (
+          AppComponent &&
+          typeof (AppComponent as { getInitialProps?: unknown }).getInitialProps === "function"
+        ) {
+          const _devParsedQ = parseQuery(url);
+          const _devPathname = url.split("?")[0];
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          _devAppProps =
+            (await (AppComponent as any).getInitialProps({
+              Component: PageComponent,
+              AppTree: AppComponent,
+              router: { pathname: _devPathname, query: { ...params, ..._devParsedQ }, asPath: url },
+              ctx: {
+                pathname: _devPathname,
+                query: { ...params, ..._devParsedQ },
+                asPath: url,
+                req,
+                res,
+              },
+            })) ?? {};
+        }
+
         if (AppComponent) {
           element = createElement(AppComponent, {
             Component: PageComponent,
             pageProps,
+            ..._devAppProps,
           });
         } else {
           element = createElement(PageComponent, pageProps);
@@ -862,7 +986,7 @@ import { hydrateRoot } from "react-dom/client";
 import { wrapWithRouterContext } from "next/router";
 
 const nextData = window.__NEXT_DATA__;
-const { pageProps } = nextData.props;
+const { pageProps, ...appInitialProps } = nextData.props;
 
 async function hydrate() {
   const pageModule = await import("${pageModuleUrl}");
@@ -874,7 +998,7 @@ async function hydrate() {
   const appModule = await import("${appModuleUrl}");
   const AppComponent = appModule.default;
   window.__VINEXT_APP__ = AppComponent;
-  element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
+  element = React.createElement(AppComponent, { Component: PageComponent, pageProps, ...appInitialProps });
   `
       : `
   element = React.createElement(PageComponent, pageProps);
@@ -888,7 +1012,7 @@ hydrate();
 </script>`;
 
         const nextDataScript = `<script>window.__NEXT_DATA__ = ${safeJsonStringify({
-          props: { pageProps },
+          props: { pageProps, ..._devAppProps },
           page: patternToNextFormat(route.pattern),
           query: params,
           buildId: process.env.__VINEXT_BUILD_ID,
@@ -942,6 +1066,7 @@ hydrate();
         // Suspense content streams in as it resolves.
         await streamPageToResponse(res, element, {
           url,
+          req,
           server,
           fontHeadHTML,
           scripts: allScripts,
@@ -969,6 +1094,7 @@ hydrate();
             ? createElement(AppComponent, {
                 Component: pageModule.default,
                 pageProps,
+                ..._devAppProps,
               })
             : createElement(pageModule.default, pageProps);
           if (wrapWithRouterContext) {
@@ -1090,9 +1216,33 @@ async function renderErrorPage(
 
       let element: React.ReactElement;
       if (AppComponent) {
+        let _errDevAppProps: Record<string, unknown> = {};
+        if (typeof (AppComponent as { getInitialProps?: unknown }).getInitialProps === "function") {
+          const _errParsedQ = url ? parseQuery(url) : {};
+          const _errPathname = url ? url.split("?")[0] : "/";
+          try {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            _errDevAppProps =
+              (await (AppComponent as any).getInitialProps({
+                Component: ErrorComponent,
+                AppTree: AppComponent,
+                router: { pathname: _errPathname, query: _errParsedQ, asPath: url ?? "/" },
+                ctx: {
+                  pathname: _errPathname,
+                  query: _errParsedQ,
+                  asPath: url ?? "/",
+                  req: _req,
+                  res,
+                },
+              })) ?? {};
+          } catch {
+            /* ignore getInitialProps errors on error pages */
+          }
+        }
         element = createElement(AppComponent, {
           Component: ErrorComponent,
           pageProps: errorProps,
+          ..._errDevAppProps,
         });
       } else {
         element = createElement(ErrorComponent, errorProps);
@@ -1118,7 +1268,26 @@ async function renderErrorPage(
       }
 
       if (DocumentComponent) {
-        const docElement = createElement(DocumentComponent);
+        // Call getInitialProps for error pages too — same as normal pages.
+        let docErrorProps: Record<string, unknown> = {};
+        const DocErrorClass = DocumentComponent as unknown as {
+          getInitialProps?: (
+            ctx: import("../shims/document.js").DocumentContext,
+          ) => Promise<Record<string, unknown>>;
+        };
+        if (typeof DocErrorClass.getInitialProps === "function") {
+          try {
+            const errCtx = buildDocumentContext(_req, url, res);
+            docErrorProps = await DocErrorClass.getInitialProps(errCtx);
+          } catch (e) {
+            console.error("[vinext] _document.getInitialProps threw during error page render:", e);
+            throw e;
+          }
+        }
+        const docElement = createElement(
+          DocumentComponent,
+          docErrorProps as React.ComponentProps<typeof DocumentComponent>,
+        );
         let docHtml = await renderToStringAsync(docElement);
         docHtml = docHtml.replace("__NEXT_MAIN__", bodyHtml);
         docHtml = docHtml.replace("<!-- __NEXT_SCRIPTS__ -->", "");

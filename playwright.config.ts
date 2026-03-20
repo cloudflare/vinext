@@ -45,7 +45,9 @@ const projectServers = {
     },
   },
   "pages-router-prod": {
-    testDir: "./tests/e2e/pages-router-prod",
+    testDir: "./tests/e2e",
+    testMatch: ["**/pages-router-prod/**/*.spec.ts", "**/pages-router/document.spec.ts"],
+    use: { baseURL: "http://localhost:4175" },
     server: {
       // Use node to invoke the CLI directly — npx vinext may not be on PATH
       // in fixture subdirectories since vinext is a workspace dependency.
