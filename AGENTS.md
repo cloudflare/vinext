@@ -90,7 +90,34 @@ When you find relevant Next.js tests, port the test cases to our test suite and 
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/proxy-missing-export/proxy-missing-export.test.ts
 ```
 
-**Use `gh search code` for efficient searching:**
+**Local Next.js clone for fast searching:**
+
+Keep a local clone of the Next.js repo for fast `rg` (ripgrep) searches. This is much faster and more reliable than `gh search code` for exploratory searches.
+
+```bash
+# First time: clone into .nextjs-ref (gitignored)
+git clone --depth 1 --single-branch --branch canary https://github.com/vercel/next.js.git .nextjs-ref
+
+# Update periodically
+git -C .nextjs-ref pull --ff-only
+```
+
+The `.nextjs-ref` directory is gitignored. Use it for searching source, tests, and closed PR context:
+
+```bash
+# Search test suite for how Next.js handles a behavior
+rg -rn "javascript:" .nextjs-ref/test/ --include "*.test.*" -l
+rg -rn "router\.push" .nextjs-ref/test/e2e/ -l | head -20
+
+# Search source for implementation details
+rg -rn "x-middleware-override-headers" .nextjs-ref/packages/next/src/
+rg -rn "isExternalUrl" .nextjs-ref/packages/next/src/
+
+# Search for how config headers/redirects are ordered relative to middleware
+rg -rn "headers.*redirect.*middleware" .nextjs-ref/packages/next/src/server/
+```
+
+**Use `gh search code` when the local clone is not available:**
 
 ```bash
 gh search code "middleware" --repo vercel/next.js --filename "*.test.*" --limit 20
@@ -134,6 +161,15 @@ pnpm test -t "middleware"
 **When to run the full suite locally:** Only if you're making a broad change that touches shared infrastructure (e.g., the Vite plugin's `resolveId` hook, virtual module generation, or the test helpers themselves). Even then, consider pushing and letting CI do it.
 
 ### Fixing Bugs
+
+**Always verify Next.js behavior first.** Before writing a fix, confirm how Next.js handles the same scenario. This applies to security fixes, bug reports, and behavioral changes. We have repeatedly shipped fixes that diverged from Next.js because this step was skipped. Specific things to check:
+
+1. **Search the Next.js test suite** (in `.nextjs-ref/test/`) for tests covering the behavior. If Next.js has a test, that is the authoritative answer for what the correct behavior is.
+2. **Search Next.js issues and PRs** for prior discussion. Many behaviors are intentional design choices (e.g., Next.js intentionally does not block `javascript:` URIs in `router.push()`, config headers intentionally run before middleware). Use `gh search code` or EXA web search for this.
+3. **Search Next.js source** (in `.nextjs-ref/packages/next/src/`) for the implementation. Understand what they do before deciding what we should do.
+4. **Document what you found.** When creating a PR or closing an issue, link to the Next.js test, issue, or docs that informed the decision.
+
+If Next.js and vinext should behave differently (defense-in-depth, Cloudflare-specific requirements), that is OK, but it must be a deliberate, documented decision, not an accidental divergence.
 
 **Always check dev and prod server parity.** Request handling logic exists in multiple places that must stay in sync:
 
@@ -249,7 +285,13 @@ Use EXA for web search when you need to find recent discussions, blog posts, Git
 
 **When in doubt, look at how Next.js does it.** Vinext aims to replicate Next.js behavior, so their implementation is the authoritative reference.
 
-If you're trying to understand how something works under the hood — route matching, RSC streaming, caching behavior, API semantics — the best approach is to go look at the Next.js source code and understand what they're doing, then apply it to how we do things in this project.
+If you're trying to understand how something works under the hood (route matching, RSC streaming, caching behavior, API semantics), the best approach is to go look at the Next.js source code and understand what they're doing, then apply it to how we do things in this project.
+
+Use the local `.nextjs-ref` clone for fast searching. If the clone doesn't exist yet, create it:
+
+```bash
+git clone --depth 1 --single-branch --branch canary https://github.com/vercel/next.js.git .nextjs-ref
+```
 
 ---
 
@@ -381,6 +423,27 @@ The ISR cache layer sits **above** `CacheHandler`, not inside it. `CacheHandler`
 - **Tag invalidation:** Tag-invalidated entries are hard-deleted (return null), unlike time-expired entries which return stale
 
 The caching layer is pluggable via `setCacheHandler()`. KV is the default for Cloudflare Workers. The ISR logic works automatically with any backend.
+
+### Next.js Request Execution Order
+
+This is critical to get right. Many security reports and bug fixes depend on understanding which steps run before vs after middleware. The Next.js documented execution order is (source: [Next.js middleware docs](https://nextjs.org/docs/app/building-your-application/routing/middleware#matching-paths), [rewrites docs](https://nextjs.org/docs/app/api-reference/config/next-config-js/rewrites)):
+
+1. `headers` from next.config.js (has/missing conditions use the **original** request)
+2. `redirects` from next.config.js (has/missing conditions use the **original** request)
+3. **Middleware** (rewrites, redirects, header modifications, etc.)
+4. `beforeFiles` rewrites from next.config.js (has/missing conditions use **post-middleware** request)
+5. Filesystem routes (`public/`, `_next/static/`, pages, app)
+6. `afterFiles` rewrites from next.config.js (has/missing conditions use **post-middleware** request)
+7. Dynamic routes (`/blog/[slug]`)
+8. `fallback` rewrites from next.config.js
+
+**Key implications:**
+
+- Config headers and redirects run BEFORE middleware. Their `has`/`missing` conditions evaluate against the original incoming request, not middleware-modified state. If you need middleware-aware conditional headers, set them in middleware itself.
+- `_next/static/*` (build output) is served directly without middleware. But `public/` directory files go through middleware.
+- `beforeFiles`, `afterFiles`, and `fallback` rewrites run AFTER middleware and should see middleware-modified request state.
+
+**Current vinext gap:** vinext evaluates config headers at step 6 (after middleware) instead of step 1 (before middleware). The has/missing conditions correctly use the pre-middleware request context, but the timing of when headers are applied differs from Next.js. This is a known parity gap tracked for future work.
 
 ### Ecosystem Library Compatibility
 
