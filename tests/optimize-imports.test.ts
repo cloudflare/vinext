@@ -298,7 +298,9 @@ describe("vinext:optimize-imports transform", () => {
   });
 
   it("rewrites namespace re-export: import { Slot } from 'pkg' → import * as Slot from 'sub-pkg'", async () => {
-    // lucide-react is in DEFAULT_OPTIMIZE_PACKAGES
+    // lucide-react is in DEFAULT_OPTIMIZE_PACKAGES. The barrel contents below use
+    // @radix-ui sub-packages intentionally — this tests the namespace rewrite path
+    // with an arbitrary barrel; the package name just needs to be in the optimized list.
     const call = await setupTransform(
       "lucide-react",
       `export * as Slot from "@radix-ui/react-slot";\nexport * as Dialog from "@radix-ui/react-dialog";`,

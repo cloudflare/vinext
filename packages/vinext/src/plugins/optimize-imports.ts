@@ -21,7 +21,9 @@ import type { ResolvedNextConfig } from "../config/next-config.js";
 
 /** Extract the string name from an Identifier ({name}) or Literal ({value}) AST node. */
 function astName(node: { name?: string; value?: string | boolean | number | null }): string {
-  return node.name ?? String(node.value);
+  if (node.name !== undefined) return node.name;
+  if (typeof node.value === "string") return node.value;
+  throw new Error(`Unexpected AST node: no name or string value`);
 }
 
 /** Nested conditional exports value (string path or nested conditions). */
@@ -235,17 +237,17 @@ function resolvePackageEntry(packageName: string, projectRoot: string): string |
       if (dotExport) {
         const entryPath = resolveExportsValue(dotExport);
         if (entryPath) {
-          return path.resolve(pkgDir, entryPath);
+          return path.resolve(pkgDir, entryPath).split(path.sep).join("/");
         }
       }
     }
 
     const entryField = pkgJson.module ?? pkgJson.main;
     if (typeof entryField === "string") {
-      return path.resolve(pkgDir, entryField);
+      return path.resolve(pkgDir, entryField).split(path.sep).join("/");
     }
 
-    return req.resolve(packageName);
+    return req.resolve(packageName).split(path.sep).join("/");
   } catch {
     return null;
   }
@@ -365,6 +367,9 @@ export function createOptimizeImportsPlugin(
   // file that imports from the same barrel package.
   const entryPathCache = new Map<string, string | null>();
   let optimizedPackages: Set<string> = new Set();
+  // Pre-built quoted forms used for the per-file quick-check. Computed once in
+  // buildStart so the transform loop doesn't allocate template literals per file.
+  let quotedPackages: string[] = [];
 
   return {
     name: "vinext:optimize-imports",
@@ -379,6 +384,9 @@ export function createOptimizeImportsPlugin(
         ...DEFAULT_OPTIMIZE_PACKAGES,
         ...(nextConfig?.optimizePackageImports ?? []),
       ]);
+      // Pre-build quoted package strings once so the per-file quick-check
+      // doesn't allocate template literals for every transformed file.
+      quotedPackages = [...optimizedPackages].flatMap((pkg) => [`"${pkg}"`, `'${pkg}'`]);
       // Clear all caches across rebuilds so stale data doesn't linger.
       // exportMapCache and subpkgOrigin hold barrel AST analysis and sub-package
       // origin mappings which may change if a dependency is updated mid-dev.
@@ -417,10 +425,11 @@ export function createOptimizeImportsPlugin(
 
         // Quick string check: does the code mention any optimized package?
         // Use quoted forms to avoid false positives (e.g. "effect" in "useEffect").
+        // quotedPackages is pre-built in buildStart to avoid per-file allocations.
         const packages = optimizedPackages;
         let hasBarrelImport = false;
-        for (const pkg of packages) {
-          if (code.includes(`"${pkg}"`) || code.includes(`'${pkg}'`)) {
+        for (const quoted of quotedPackages) {
+          if (code.includes(quoted)) {
             hasBarrelImport = true;
             break;
           }
@@ -469,6 +478,8 @@ export function createOptimizeImportsPlugin(
           // the barrel's context (needed for pnpm strict hoisting)
           for (const entry of exportMap.values()) {
             if (!entry.source.startsWith(".") && !barrelCaches.subpkgOrigin.has(entry.source)) {
+              // First barrel to register this sub-package specifier wins — the resolved
+              // path is the same regardless of which barrel's context we resolve from.
               barrelCaches.subpkgOrigin.set(entry.source, barrelEntry);
             }
           }
@@ -556,7 +567,7 @@ export function createOptimizeImportsPlugin(
               for (const { local, originalName } of locals) {
                 if (originalName === "default") {
                   defaultLocals.push(local);
-                } else if (originalName && originalName !== local) {
+                } else if (originalName !== undefined && originalName !== local) {
                   namedSpecs.push(`${originalName} as ${local}`);
                 } else {
                   namedSpecs.push(local);
