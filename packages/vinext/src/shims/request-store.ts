@@ -50,21 +50,20 @@
 
 import { getRequestContext, isInsideUnifiedScope } from "./unified-request-context.js";
 
-// Fallback store for calls outside a request scope (dev server top-level, tests).
-// Ephemeral — not persisted across calls, prevents crashes but data won't survive.
-const _fallbackStore = new Map<string, unknown>();
-
 /**
  * Get the per-request key-value store.
  *
  * Inside a request scope: returns the request-scoped Map (isolated, auto-cleaned).
- * Outside a request scope: returns a shared fallback Map (for dev/test ergonomics).
+ * Outside a request scope: returns a fresh empty Map each time to prevent
+ * cross-call data leakage and unbounded growth.
  *
  * @returns A Map<string, unknown> scoped to the current request.
  */
 export function getRequestStore(): Map<string, unknown> {
   if (!isInsideUnifiedScope()) {
-    return _fallbackStore;
+    // Return a fresh Map — not a shared global — to prevent data leaking
+    // across unrelated calls outside request scope (dev server, tests).
+    return new Map();
   }
   return getRequestContext().userStore;
 }
