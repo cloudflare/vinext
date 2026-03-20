@@ -11,7 +11,7 @@
  * React.createContext() in RSC environments where createContext doesn't exist.
  */
 
-import type { Plugin, Environment } from "vite";
+import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import { createRequire } from "node:module";
 import fs from "node:fs";
@@ -35,11 +35,6 @@ interface PackageJson {
   exports?: Record<string, ExportsValue>;
   module?: string;
   main?: string;
-}
-
-/** Plugin context with Vite's environment property (not in Rollup base types). */
-interface EnvironmentPluginContext {
-  environment?: Environment;
 }
 
 interface BarrelExportEntry {
@@ -418,8 +413,7 @@ export function createOptimizeImportsPlugin(
       handler(code, id) {
         // Only apply on server environments (RSC/SSR). The client uses Vite's
         // dep optimizer which handles barrel imports correctly.
-        const ctx = this as unknown as EnvironmentPluginContext;
-        if (ctx.environment?.name === "client") return null;
+        if (this.environment?.name === "client") return null;
         // Skip virtual modules
         if (id.startsWith("\0")) return null;
 
@@ -478,8 +472,10 @@ export function createOptimizeImportsPlugin(
           // the barrel's context (needed for pnpm strict hoisting)
           for (const entry of exportMap.values()) {
             if (!entry.source.startsWith(".") && !barrelCaches.subpkgOrigin.has(entry.source)) {
-              // First barrel to register this sub-package specifier wins — the resolved
-              // path is the same regardless of which barrel's context we resolve from.
+              // First barrel to register this specifier wins. This is safe because the
+              // sub-package specifier (e.g. "@radix-ui/react-slot") resolves to the same
+              // path regardless of which barrel we resolve from — only the importer context
+              // differs, not the target.
               barrelCaches.subpkgOrigin.set(entry.source, barrelEntry);
             }
           }
