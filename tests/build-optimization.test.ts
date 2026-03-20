@@ -2,7 +2,7 @@
  * Build optimization tests — verifies tree-shaking and chunking configuration
  * is correctly applied to client builds.
  *
- * Tests the treeshake config, manualChunks function, and experimentalMinChunkSize
+ * Tests the treeshake config, manualChunks function, and minimum chunk sizing
  * to ensure large barrel-exporting libraries (e.g. mermaid) produce smaller bundles.
  */
 import fsp from "node:fs/promises";
@@ -34,6 +34,14 @@ afterEach(() => {
     process.env.NODE_ENV = originalNodeEnv;
   }
 });
+
+function getBuildBundlerOptions(result: any) {
+  return result.build?.rolldownOptions ?? result.build?.rollupOptions;
+}
+
+function getEnvBuildBundlerOptions(env: any) {
+  return env?.build?.rolldownOptions ?? env?.build?.rollupOptions;
+}
 
 // ─── clientTreeshakeConfig ────────────────────────────────────────────────────
 
@@ -377,8 +385,8 @@ describe("treeshake config integration", () => {
       };
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
-      // treeshake should be set on rollupOptions for non-SSR builds
-      expect(result.build.rollupOptions.treeshake).toEqual({
+      // treeshake should be set on bundler options for non-SSR builds
+      expect(getBuildBundlerOptions(result).treeshake).toEqual({
         preset: "recommended",
         moduleSideEffects: "no-external",
       });
@@ -420,7 +428,7 @@ describe("treeshake config integration", () => {
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
       // treeshake should NOT be set for SSR builds
-      expect(result.build.rollupOptions.treeshake).toBeUndefined();
+      expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -429,7 +437,7 @@ describe("treeshake config integration", () => {
   it("multi-env build scopes treeshake to client environment only", async () => {
     // In App Router builds (multi-env), treeshake must NOT be set globally
     // (which would leak into RSC/SSR) — it should only appear on the client
-    // environment's rollupOptions.
+    // environment's bundler options.
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
 
@@ -466,24 +474,24 @@ describe("treeshake config integration", () => {
       };
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
-      // Global rollupOptions should NOT have treeshake (would leak into RSC/SSR)
-      expect(result.build.rollupOptions.treeshake).toBeUndefined();
+      // Global bundler options should NOT have treeshake (would leak into RSC/SSR)
+      expect(getBuildBundlerOptions(result).treeshake).toBeUndefined();
 
       // Client environment should have treeshake
-      expect(result.environments.client.build.rollupOptions.treeshake).toEqual({
+      expect(getEnvBuildBundlerOptions(result.environments.client).treeshake).toEqual({
         preset: "recommended",
         moduleSideEffects: "no-external",
       });
 
       // RSC and SSR environments should NOT have treeshake
-      expect(result.environments.rsc.build?.rollupOptions?.treeshake).toBeUndefined();
-      expect(result.environments.ssr.build?.rollupOptions?.treeshake).toBeUndefined();
+      expect(getEnvBuildBundlerOptions(result.environments.rsc)?.treeshake).toBeUndefined();
+      expect(getEnvBuildBundlerOptions(result.environments.ssr)?.treeshake).toBeUndefined();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
 
-  it("client output config includes experimentalMinChunkSize", async () => {
+  it("client output config includes minimum chunk sizing", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();
 
@@ -516,10 +524,14 @@ describe("treeshake config integration", () => {
       const result = await (mainPlugin as any).config(mockConfig, { command: "build" });
 
       // For standalone client builds (non-SSR, non-multi-env),
-      // output config should include experimentalMinChunkSize
-      const output = result.build.rollupOptions.output;
+      // output config should include the min chunk size setting.
+      const output = getBuildBundlerOptions(result).output;
       expect(output).toBeDefined();
-      expect(output.experimentalMinChunkSize).toBe(10_000);
+      if (output.codeSplitting) {
+        expect(output.codeSplitting.minSize).toBe(10_000);
+      } else {
+        expect(output.experimentalMinChunkSize).toBe(10_000);
+      }
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

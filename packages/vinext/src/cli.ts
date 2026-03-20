@@ -13,7 +13,7 @@
  * needed for most Next.js apps.
  */
 
-import vinext, { clientOutputConfig, clientTreeshakeConfig } from "./index.js";
+import vinext, { clientTreeshakeConfig, getClientOutputConfigForVite } from "./index.js";
 import { printBuildReport } from "./build/report.js";
 import { runPrerender } from "./build/run-prerender.js";
 import path from "node:path";
@@ -358,6 +358,12 @@ async function buildApp() {
   applyViteConfigCompatibility(process.cwd());
 
   const vite = await loadVite();
+  const viteMajorVersion = Number.parseInt(vite.version, 10) || 7;
+
+  const withBuildBundlerOptions = (bundlerOptions: Record<string, unknown>) =>
+    viteMajorVersion >= 8
+      ? { rolldownOptions: bundlerOptions }
+      : { rollupOptions: bundlerOptions };
 
   console.log(`\n  vinext build  (Vite ${getViteVersion()})\n`);
 
@@ -445,11 +451,11 @@ async function buildApp() {
           outDir: "dist/server",
           emptyOutDir: false, // preserve RSC artefacts from buildApp()
           ssr: "virtual:vinext-server-entry",
-          rollupOptions: {
+          ...withBuildBundlerOptions({
             output: {
               entryFileNames: "entry.js",
             },
-          },
+          }),
         },
       });
     }
@@ -465,11 +471,11 @@ async function buildApp() {
             outDir: "dist/client",
             manifest: true,
             ssrManifest: true,
-            rollupOptions: {
+            ...withBuildBundlerOptions({
               input: "virtual:vinext-client-entry",
-              output: clientOutputConfig,
+              output: getClientOutputConfigForVite(viteMajorVersion),
               treeshake: clientTreeshakeConfig,
-            },
+            }),
           },
         },
         logger,
@@ -483,11 +489,11 @@ async function buildApp() {
           build: {
             outDir: "dist/server",
             ssr: "virtual:vinext-server-entry",
-            rollupOptions: {
+            ...withBuildBundlerOptions({
               output: {
                 entryFileNames: "entry.js",
               },
-            },
+            }),
           },
         },
         logger,

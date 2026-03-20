@@ -27,6 +27,10 @@ type ClientBuildManifestEntry = {
   assets?: string[];
 };
 
+function getBuildBundlerOptions(result: any) {
+  return result.build?.rolldownOptions ?? result.build?.rollupOptions;
+}
+
 function writeEncodedSlashPagesFixture(rootDir: string): void {
   fs.mkdirSync(path.join(rootDir, "pages", "a"), { recursive: true });
   const nmLink = path.join(rootDir, "node_modules");
@@ -1393,20 +1397,21 @@ describe("Plugin config", () => {
     const result = await configPlugin.config({ root: FIXTURE_DIR, plugins: [] });
 
     expect(result.build).toBeDefined();
-    expect(result.build.rollupOptions).toBeDefined();
-    expect(result.build.rollupOptions.onwarn).toBeDefined();
+    const bundlerOptions = getBuildBundlerOptions(result);
+    expect(bundlerOptions).toBeDefined();
+    expect(bundlerOptions.onwarn).toBeDefined();
 
     const defaultHandler = vi.fn();
 
     // "use client" MODULE_LEVEL_DIRECTIVE warnings should be silenced
-    result.build.rollupOptions.onwarn(
+    bundlerOptions.onwarn(
       { code: "MODULE_LEVEL_DIRECTIVE", message: '"use client" was ignored' },
       defaultHandler,
     );
     expect(defaultHandler).not.toHaveBeenCalled();
 
     // "use server" MODULE_LEVEL_DIRECTIVE warnings should be silenced
-    result.build.rollupOptions.onwarn(
+    bundlerOptions.onwarn(
       { code: "MODULE_LEVEL_DIRECTIVE", message: '"use server" was ignored' },
       defaultHandler,
     );
@@ -1417,13 +1422,13 @@ describe("Plugin config", () => {
       code: "MODULE_LEVEL_DIRECTIVE",
       message: '"use strict" was ignored',
     };
-    result.build.rollupOptions.onwarn(otherDirectiveWarning, defaultHandler);
+    bundlerOptions.onwarn(otherDirectiveWarning, defaultHandler);
     expect(defaultHandler).toHaveBeenCalledWith(otherDirectiveWarning);
 
     // Other warning codes should pass through to the default handler
     defaultHandler.mockClear();
     const otherWarning = { code: "CIRCULAR_DEPENDENCY", message: "circular" };
-    result.build.rollupOptions.onwarn(otherWarning, defaultHandler);
+    bundlerOptions.onwarn(otherWarning, defaultHandler);
     expect(defaultHandler).toHaveBeenCalledWith(otherWarning);
   });
 
@@ -1439,10 +1444,11 @@ describe("Plugin config", () => {
       build: { rollupOptions: { onwarn: userOnwarn } },
     });
 
+    const bundlerOptions = getBuildBundlerOptions(result);
     const defaultHandler = vi.fn();
 
     // "use client" should still be suppressed (user handler NOT called)
-    result.build.rollupOptions.onwarn(
+    bundlerOptions.onwarn(
       { code: "MODULE_LEVEL_DIRECTIVE", message: '"use client" was ignored' },
       defaultHandler,
     );
@@ -1451,7 +1457,7 @@ describe("Plugin config", () => {
 
     // Other warnings should be forwarded to the user's handler
     const otherWarning = { code: "CIRCULAR_DEPENDENCY", message: "circular" };
-    result.build.rollupOptions.onwarn(otherWarning, defaultHandler);
+    bundlerOptions.onwarn(otherWarning, defaultHandler);
     expect(userOnwarn).toHaveBeenCalledWith(otherWarning, defaultHandler);
     expect(defaultHandler).not.toHaveBeenCalled();
   });

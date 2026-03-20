@@ -867,6 +867,17 @@ const clientOutputConfig = {
   experimentalMinChunkSize: 10_000,
 };
 
+const clientCodeSplittingConfig = {
+  minSize: 10_000,
+  groups: [
+    {
+      name(moduleId: string) {
+        return clientManualChunks(moduleId) ?? null;
+      },
+    },
+  ],
+};
+
 /**
  * Rollup treeshake configuration for production client builds.
  *
@@ -896,6 +907,36 @@ const clientTreeshakeConfig = {
   preset: "recommended" as const,
   moduleSideEffects: "no-external" as const,
 };
+
+type VinextBuildConfig = NonNullable<UserConfig["build"]>;
+type VinextBuildBundlerOptions = NonNullable<VinextBuildConfig["rolldownOptions"]>;
+type VinextBuildConfigWithLegacy = VinextBuildConfig & {
+  rollupOptions?: VinextBuildBundlerOptions;
+};
+
+function getBuildBundlerOptions(
+  build: UserConfig["build"] | undefined,
+): VinextBuildBundlerOptions | undefined {
+  const buildConfig = build as VinextBuildConfigWithLegacy | undefined;
+  return buildConfig?.rolldownOptions ?? buildConfig?.rollupOptions;
+}
+
+function withBuildBundlerOptions(
+  viteMajorVersion: number,
+  bundlerOptions: VinextBuildBundlerOptions,
+): Partial<VinextBuildConfigWithLegacy> {
+  return viteMajorVersion >= 8
+    ? { rolldownOptions: bundlerOptions }
+    : { rollupOptions: bundlerOptions };
+}
+
+function getClientOutputConfigForVite(viteMajorVersion: number) {
+  return viteMajorVersion >= 8
+    ? {
+        codeSplitting: clientCodeSplittingConfig,
+      }
+    : clientOutputConfig;
+}
 
 type BuildManifestChunk = {
   file: string;
@@ -2117,7 +2158,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // Disable Vite's default HTML serving - we handle all routing
           appType: "custom",
           build: {
-            rollupOptions: {
+            ...withBuildBundlerOptions(viteMajorVersion, {
               // Suppress "Module level directives cause errors when bundled"
               // warnings for "use client" / "use server" directives. Our shims
               // and third-party libraries legitimately use these directives;
@@ -2125,7 +2166,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // final bundle. We preserve any user-supplied onwarn so custom
               // warning handling is not lost.
               onwarn: (() => {
-                const userOnwarn = config.build?.rollupOptions?.onwarn;
+                const userOnwarn = getBuildBundlerOptions(config.build)?.onwarn;
                 return (warning, defaultHandler) => {
                   if (
                     warning.code === "MODULE_LEVEL_DIRECTIVE" &&
@@ -2168,8 +2209,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               // Router). For multi-environment builds (App Router, Cloudflare),
               // manualChunks is set per-environment on the client env below
               // to avoid leaking into RSC/SSR environments.
-              ...(!isSSR && !isMultiEnv ? { output: clientOutputConfig } : {}),
-            },
+              ...(!isSSR && !isMultiEnv
+                ? { output: getClientOutputConfigForVite(viteMajorVersion) }
+                : {}),
+            }),
           },
           // Let OPTIONS requests pass through Vite's CORS middleware to our
           // route handlers so they can set the Allow header and run user-defined
@@ -2312,9 +2355,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
               build: {
                 outDir: options.rscOutDir ?? "dist/server",
-                rollupOptions: {
+                ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_RSC_ENTRY },
-                },
+                }),
               },
             },
             ssr: {
@@ -2337,9 +2380,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
               build: {
                 outDir: options.ssrOutDir ?? "dist/server/ssr",
-                rollupOptions: {
+                ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_APP_SSR_ENTRY },
-                },
+                }),
               },
             },
             client: {
@@ -2388,11 +2431,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // on every page — defeating code-splitting for React.lazy() and
                 // next/dynamic boundaries.
                 ...(hasCloudflarePlugin ? { manifest: true } : {}),
-                rollupOptions: {
+                ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_APP_BROWSER_ENTRY },
-                  output: clientOutputConfig,
+                  output: getClientOutputConfigForVite(viteMajorVersion),
                   treeshake: clientTreeshakeConfig,
-                },
+                }),
               },
             },
           };
@@ -2407,11 +2450,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               build: {
                 manifest: true,
                 ssrManifest: true,
-                rollupOptions: {
+                ...withBuildBundlerOptions(viteMajorVersion, {
                   input: { index: VIRTUAL_CLIENT_ENTRY },
-                  output: clientOutputConfig,
+                  output: getClientOutputConfigForVite(viteMajorVersion),
                   treeshake: clientTreeshakeConfig,
-                },
+                }),
               },
             },
           };
@@ -5040,7 +5083,13 @@ export type {
 export type { NextConfig } from "./config/next-config.js";
 
 // Exported for CLI and testing
-export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig, computeLazyChunks };
+export {
+  clientManualChunks,
+  clientOutputConfig,
+  clientTreeshakeConfig,
+  computeLazyChunks,
+  getClientOutputConfigForVite,
+};
 export { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
 export { _postcssCache };
