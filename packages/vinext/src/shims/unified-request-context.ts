@@ -47,6 +47,10 @@ export interface UnifiedRequestContext
   // ── request-context.ts ─────────────────────────────────────────────
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
   executionContext: ExecutionContextLike | null;
+
+  // ── request-store.ts ─────────────────────────────────────────────
+  /** User-defined per-request key-value store. Auto-cleaned on request end. */
+  userStore: Map<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +96,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     _privateCache: null,
     currentRequestTags: [],
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
+    userStore: new Map(),
     ssrContext: null,
     ssrHeadChildren: [],
     ...opts,
@@ -129,8 +134,8 @@ export function runWithUnifiedStateMutation<T>(
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Array fields (pendingSetCookies,
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), the
-  // _privateCache Map, and object fields (headersContext, i18nContext,
-  // serverContext, ssrContext, executionContext, requestScopedCacheLife)
+  // _privateCache Map, the userStore Map, and object fields (headersContext,
+  // i18nContext, serverContext, ssrContext, executionContext, requestScopedCacheLife)
   // still share references with the parent until replaced. The mutate
   // callback must replace those reference-typed slices (for example
   // `ctx.currentRequestTags = []`) rather than mutating them in-place (for

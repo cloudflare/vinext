@@ -48,6 +48,10 @@
     "./server/worker-utils": {
       "types": "./dist/server/worker-utils.d.ts",
       "import": "./dist/server/worker-utils.js"
+    },
+    "./request-store": {
+      "types": "./dist/shims/request-store.d.ts",
+      "import": "./dist/shims/request-store.js"
     }
   },
   "scripts": {
