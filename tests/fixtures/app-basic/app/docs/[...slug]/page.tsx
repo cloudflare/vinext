@@ -1,8 +1,4 @@
-export default function DocsPage({
-  params,
-}: {
-  params: { slug: string[] };
-}) {
+export default function DocsPage({ params }: { params: { slug: string[] } }) {
   return (
     <main>
       <h1>Documentation</h1>

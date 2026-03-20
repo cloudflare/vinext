@@ -51,4 +51,3 @@ export function normalizePath(pathname: string): string {
 
   return "/" + resolved.join("/");
 }
-

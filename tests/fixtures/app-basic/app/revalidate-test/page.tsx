@@ -6,7 +6,9 @@ export default function RevalidateTestPage() {
   return (
     <div data-testid="revalidate-test-page">
       <h1>ISR Revalidate Page</h1>
-      <p>Rendered at: <span data-testid="timestamp">{timestamp}</span></p>
+      <p>
+        Rendered at: <span data-testid="timestamp">{timestamp}</span>
+      </p>
       <p>Revalidates every 60 seconds</p>
     </div>
   );

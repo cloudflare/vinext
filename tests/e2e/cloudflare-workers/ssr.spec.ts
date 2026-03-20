@@ -6,12 +6,8 @@ test.describe("Cloudflare Workers SSR", () => {
   test("home page renders server-side HTML", async ({ page }) => {
     await page.goto(`${BASE}/`);
 
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
-    await expect(page.locator("p").first()).toContainText(
-      "server-rendered by vinext",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
+    await expect(page.locator("p").first()).toContainText("server-rendered by vinext");
   });
 
   test("SSR HTML is present without JavaScript", async ({ page }) => {
@@ -20,9 +16,7 @@ test.describe("Cloudflare Workers SSR", () => {
 
     await page.goto(`${BASE}/`);
 
-    await expect(page.locator("h1")).toHaveText(
-      "vinext on Cloudflare Workers",
-    );
+    await expect(page.locator("h1")).toHaveText("vinext on Cloudflare Workers");
     // Counter should show initial state from SSR
     await expect(page.locator('[data-testid="count"]')).toHaveText("Count: 0");
     // Timestamp should be present (server-rendered)
@@ -39,9 +33,7 @@ test.describe("Cloudflare Workers SSR", () => {
     );
   });
 
-  test("each request gets a fresh server render (dynamic timestamp)", async ({
-    page,
-  }) => {
+  test("each request gets a fresh server render (dynamic timestamp)", async ({ page }) => {
     await page.goto(`${BASE}/`);
     const ts1 = await page.textContent('[data-testid="timestamp"]');
 
@@ -71,10 +63,7 @@ test.describe("Cloudflare Workers SSR", () => {
     expect(title).toBe("vinext on Cloudflare Workers");
 
     // Check meta viewport
-    const viewport = await page.getAttribute(
-      'meta[name="viewport"]',
-      "content",
-    );
+    const viewport = await page.getAttribute('meta[name="viewport"]', "content");
     expect(viewport).toBe("width=device-width, initial-scale=1");
   });
 });

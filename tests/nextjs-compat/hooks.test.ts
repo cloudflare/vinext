@@ -8,6 +8,7 @@
  * - useSearchParams reads query string values and handles missing params
  * - usePathname returns the correct path
  * - useRouter page renders correctly with pathname
+ * - next/compat/router returns null in App Router context (for shared components)
  *
  * NOTE: Browser-only hook behavior (client-side navigation, router.push,
  * router.back, etc.) requires Playwright and is not tested here.
@@ -17,11 +18,13 @@
  * - fixtures/app-basic/app/nextjs-compat/hooks-params/[id]/[subid]/page.tsx
  * - fixtures/app-basic/app/nextjs-compat/hooks-params/catchall/[...slug]/page.tsx
  * - fixtures/app-basic/app/nextjs-compat/hooks-search/page.tsx
+ * - fixtures/app-basic/app/nextjs-compat/hooks-search-readonly/page.tsx
  * - fixtures/app-basic/app/nextjs-compat/hooks-router/page.tsx
+ * - fixtures/app-basic/app/nextjs-compat/compat-router/page.tsx
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import type { ViteDevServer } from "vite";
+import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import type { ViteDevServer } from "vite-plus";
 import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml } from "../helpers.js";
 
 describe("Next.js compat: hooks", () => {
@@ -45,10 +48,7 @@ describe("Next.js compat: hooks", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
 
   it("useParams returns correct single dynamic param in SSR", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/hooks-params/my-id",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-params/my-id");
     expect(html).toContain('<p id="param-id">my-id</p>');
   });
 
@@ -56,10 +56,7 @@ describe("Next.js compat: hooks", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
 
   it("useParams returns correct nested dynamic params in SSR", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/hooks-params/parent-id/child-id",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-params/parent-id/child-id");
     expect(html).toContain("parent-id");
     expect(html).toContain("child-id");
   });
@@ -68,12 +65,9 @@ describe("Next.js compat: hooks", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
 
   it("useParams returns correct catch-all params in SSR", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/hooks-params/catchall/a/b/c",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-params/catchall/a/b/c");
     // React HTML-encodes quotes in SSR output: &quot; instead of "
-    expect(html).toContain('[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;]');
+    expect(html).toContain("[&quot;a&quot;,&quot;b&quot;,&quot;c&quot;]");
   });
 
   // ── useSearchParams SSR ─────────────────────────────────────
@@ -81,10 +75,7 @@ describe("Next.js compat: hooks", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
 
   it("useSearchParams reads query string in SSR", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/hooks-search?q=hello&page=3",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-search?q=hello&page=3");
     expect(html).toContain("hello");
     expect(html).toContain("3");
   });
@@ -93,13 +84,38 @@ describe("Next.js compat: hooks", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
 
   it("useSearchParams returns empty when no query", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/hooks-search",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-search");
     // Both q and page should show "N/A" when no query string is provided
     expect(html).toContain('<p id="param-q">N/A</p>');
     expect(html).toContain('<p id="param-page">N/A</p>');
+  });
+
+  // Next.js: 'should be able to use instanceof ReadonlyURLSearchParams'
+  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
+  // Source fixture: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/app/hooks/use-search-params/instanceof/page.js
+
+  it("useSearchParams returns a ReadonlyURLSearchParams instance in SSR", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/hooks-search-readonly?foo=bar&foo=baz&zap=zazzle",
+    );
+
+    expect(html).toContain("PASS instanceof check");
+    expect(html).toContain("PASS mutation blocked");
+    expect(html).toContain("foo=bar&amp;foo=baz&amp;zap=zazzle");
+    expect(html).not.toContain("attempted=1");
+  });
+
+  // Vinext regression coverage for readonly behavior. Next.js enforces this at runtime
+  // with ReadonlyURLSearchParams, so verify the thrown error text is surfaced in SSR too.
+
+  it("useSearchParams blocks mutation methods during SSR", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-search-readonly?foo=bar");
+
+    expect(html).toContain("PASS mutation blocked");
+    expect(html).toContain("Method unavailable on `ReadonlyURLSearchParams`.");
+    expect(html).toContain("foo=bar");
+    expect(html).not.toContain("attempted=1");
   });
 
   // ── usePathname SSR ─────────────────────────────────────────
@@ -107,10 +123,7 @@ describe("Next.js compat: hooks", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
 
   it("usePathname returns correct path in SSR", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/hooks-search",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-search");
     expect(html).toContain("/nextjs-compat/hooks-search");
   });
 
@@ -119,12 +132,25 @@ describe("Next.js compat: hooks", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/hooks/hooks.test.ts
 
   it("useRouter page renders correctly in SSR", async () => {
-    const { html } = await fetchHtml(
-      baseUrl,
-      "/nextjs-compat/hooks-router",
-    );
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/hooks-router");
     expect(html).toContain("Router Test Page");
     expect(html).toContain("/nextjs-compat/hooks-router");
+  });
+
+  // ── next/compat/router SSR ──────────────────────────────────
+  // Tests the shared-component use case: a client component that imports from
+  // next/compat/router and works in both App Router and Pages Router contexts.
+  // In App Router context, useRouter() must return null (no RouterContext.Provider
+  // is mounted), allowing the component to branch on null and render gracefully.
+
+  it("next/compat/router useRouter returns null in App Router context", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/compat-router");
+    expect(html).toContain("compat/router test (App Router)");
+    // The shared component detects no Pages Router provider and renders the
+    // app-router branch (router === null path)
+    expect(html).toContain('data-testid="router-context"');
+    expect(html).toContain("app-router");
+    expect(html).not.toContain("pages-router");
   });
 
   // ── Browser-only tests (documented, not ported) ──────────────

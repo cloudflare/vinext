@@ -55,9 +55,19 @@ function sanitizeCSSVarName(name: string): string | undefined {
 function sanitizeFallback(name: string): string {
   // CSS generic font families — safe to use unquoted
   const generics = new Set([
-    "serif", "sans-serif", "monospace", "cursive", "fantasy",
-    "system-ui", "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded",
-    "emoji", "math", "fangsong",
+    "serif",
+    "sans-serif",
+    "monospace",
+    "cursive",
+    "fantasy",
+    "system-ui",
+    "ui-serif",
+    "ui-sans-serif",
+    "ui-monospace",
+    "ui-rounded",
+    "emoji",
+    "math",
+    "fangsong",
   ]);
   const trimmed = name.trim();
   if (generics.has(trimmed)) return trimmed;
@@ -176,10 +186,7 @@ const injectedClassRules = new Set<string>();
  * In Next.js, the .className class ONLY sets font-family — it does NOT
  * set CSS variables. CSS variables are handled separately by the .variable class.
  */
-function injectClassNameRule(
-  className: string,
-  fontFamily: string,
-): void {
+function injectClassNameRule(className: string, fontFamily: string): void {
   if (injectedClassRules.has(className)) return;
   injectedClassRules.add(className);
 
@@ -226,7 +233,7 @@ function injectVariableClassRule(
   // Only set the CSS variable — do NOT set font-family.
   // This matches Next.js behavior where .variable classes only define CSS variables.
   let css = `.${variableClassName} { ${cssVarName}: ${fontFamily}; }\n`;
-  
+
   // Also inject at :root so CSS variable inheritance works throughout the page.
   // This ensures Tailwind utilities like `font-sans` that reference these
   // variables via var(--font-geist-sans) work correctly.
@@ -369,7 +376,9 @@ export function createFontLoader(family: string): FontLoader {
     // Validate CSS variable name — reject anything that could inject CSS.
     // Fall back to auto-generated name if invalid.
     const defaultVarName = toVarName(family);
-    const cssVarName = options.variable ? (sanitizeCSSVarName(options.variable) ?? defaultVarName) : defaultVarName;
+    const cssVarName = options.variable
+      ? (sanitizeCSSVarName(options.variable) ?? defaultVarName)
+      : defaultVarName;
     // In Next.js, `variable` returns a CLASS NAME that sets the CSS variable.
     // Users apply this class to set the CSS variable on that element.
     const variableClassName = `__variable_${family.toLowerCase().replace(/\s+/g, "_")}_${id}`;
@@ -393,7 +402,7 @@ export function createFontLoader(family: string): FontLoader {
     // Inject a CSS rule that maps className to font-family.
     // This is what makes `<div className={inter.className}>` work.
     injectClassNameRule(className, fontFamily);
-    
+
     // Inject a CSS rule for the variable class name.
     // This is what makes `<html className={inter.variable}>` set the CSS variable.
     injectVariableClassRule(variableClassName, cssVarName, fontFamily);
@@ -409,18 +418,15 @@ export function createFontLoader(family: string): FontLoader {
 // Export a Proxy that creates font loaders for any Google Font family.
 // Usage: import { Inter } from 'next/font/google'
 // The proxy intercepts property access and returns a loader for that font.
-const googleFonts = new Proxy(
-  {} as Record<string, (options?: FontOptions) => FontResult>,
-  {
-    get(_target, prop: string) {
-      if (prop === "__esModule") return true;
-      if (prop === "default") return googleFonts;
-      // Convert camelCase/PascalCase to proper font family name
-      // e.g., "Inter" -> "Inter", "RobotoMono" -> "Roboto Mono"
-      const family = prop.replace(/([a-z])([A-Z])/g, "$1 $2");
-      return createFontLoader(family);
-    },
+const googleFonts = new Proxy({} as Record<string, (options?: FontOptions) => FontResult>, {
+  get(_target, prop: string) {
+    if (prop === "__esModule") return true;
+    if (prop === "default") return googleFonts;
+    // Convert camelCase/PascalCase to proper font family name
+    // e.g., "Inter" -> "Inter", "RobotoMono" -> "Roboto Mono"
+    const family = prop.replace(/([a-z])([A-Z])/g, "$1 $2");
+    return createFontLoader(family);
   },
-);
+});
 
 export default googleFonts;

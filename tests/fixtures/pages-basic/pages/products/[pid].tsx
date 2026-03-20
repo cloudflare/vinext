@@ -26,10 +26,7 @@ export default function Product({ pid, name }: ProductProps) {
 
 export async function getStaticPaths() {
   return {
-    paths: [
-      { params: { pid: "widget" } },
-      { params: { pid: "gadget" } },
-    ],
+    paths: [{ params: { pid: "widget" } }, { params: { pid: "gadget" } }],
     fallback: true,
   };
 }

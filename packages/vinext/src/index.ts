@@ -1,14 +1,22 @@
-import type { Plugin, UserConfig, ViteDevServer, Environment } from "vite";
+import type { Plugin, PluginOption, UserConfig, ViteDevServer, Environment } from "vite";
 import { loadEnv, parseAst } from "vite";
-import { pagesRouter, apiRouter, invalidateRouteCache, matchRoute, patternToNextFormat as pagesPatternToNextFormat, type Route } from "./routing/pages-router.js";
+import {
+  pagesRouter,
+  apiRouter,
+  invalidateRouteCache,
+  matchRoute,
+} from "./routing/pages-router.js";
+import { generateServerEntry as _generateServerEntry } from "./entries/pages-server-entry.js";
+import { generateClientEntry as _generateClientEntry } from "./entries/pages-client-entry.js";
 import { appRouter, invalidateAppRouteCache } from "./routing/app-router.js";
+import { createValidFileMatcher } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
-import {
-  generateRscEntry,
-  generateSsrEntry,
-  generateBrowserEntry,
-} from "./server/app-dev-server.js";
+import { createDirectRunner } from "./server/dev-module-runner.js";
+import { generateRscEntry } from "./entries/app-rsc-entry.js";
+import { generateSsrEntry } from "./entries/app-ssr-entry.js";
+import { generateBrowserEntry } from "./entries/app-browser-entry.js";
+import { normalizePathnameForRouteMatchStrict } from "./routing/utils.js";
 import {
   loadNextConfig,
   resolveNextConfig,
@@ -18,33 +26,73 @@ import {
   type NextHeader,
 } from "./config/next-config.js";
 
-import { findMiddlewareFile, isProxyFile, runMiddleware } from "./server/middleware.js";
-import { generateSafeRegExpCode, generateMiddlewareMatcherCode, generateNormalizePathCode } from "./server/middleware-codegen.js";
+import { findMiddlewareFile, runMiddleware } from "./server/middleware.js";
+import { logRequest, now } from "./server/request-log.js";
 import { normalizePath } from "./server/normalize-path.js";
 import { findInstrumentationFile, runInstrumentation } from "./server/instrumentation.js";
+import { PHASE_PRODUCTION_BUILD, PHASE_DEVELOPMENT_SERVER } from "./shims/constants.js";
 import { validateDevRequest } from "./server/dev-origin-check.js";
 import {
-  safeRegExp,
   isExternalUrl,
   proxyExternalRequest,
-  parseCookies,
   matchHeaders,
   matchRedirect,
   matchRewrite,
+  requestContextFromRequest,
+  sanitizeDestination,
   type RequestContext,
 } from "./config/config-matchers.js";
 import { scanMetadataFiles } from "./server/metadata-routes.js";
-import { staticExportPages } from "./build/static-export.js";
+import { buildRequestHeadersFromMiddlewareResponse } from "./server/middleware-request-headers.js";
 import { detectPackageManager } from "./utils/project.js";
+import {
+  manifestFileWithBase,
+  manifestFilesWithBase,
+  normalizeManifestFile,
+} from "./utils/manifest-paths.js";
+import { hasBasePath } from "./utils/base-path.js";
+import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
+import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
+import { hasWranglerConfig, formatMissingCloudflarePluginError } from "./deploy.js";
 import tsconfigPaths from "vite-tsconfig-paths";
+import type { Options as VitePluginReactOptions } from "@vitejs/plugin-react";
 import MagicString from "magic-string";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import { randomBytes } from "node:crypto";
 import commonjs from "vite-plugin-commonjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+type VitePluginReactModule = typeof import("@vitejs/plugin-react");
+
+function resolveOptionalDependency(projectRoot: string, specifier: string): string | null {
+  try {
+    const projectRequire = createRequire(path.join(projectRoot, "package.json"));
+    return projectRequire.resolve(specifier);
+  } catch {}
+
+  try {
+    const selfRequire = createRequire(import.meta.url);
+    return selfRequire.resolve(specifier);
+  } catch {}
+
+  return null;
+}
+
+function resolveShimModulePath(shimsDir: string, moduleName: string): string {
+  // Source checkouts only ship TypeScript shims, while built packages only ship
+  // JavaScript. Check .ts first to avoid an extra stat in development.
+  const candidates = [".ts", ".js"];
+  for (const ext of candidates) {
+    const candidate = path.join(shimsDir, `${moduleName}${ext}`);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return path.join(shimsDir, `${moduleName}.js`);
+}
 
 /**
  * Fetch Google Fonts CSS, download .woff2 files, cache locally, and return
@@ -73,7 +121,8 @@ async function fetchAndCacheFont(
   // Fetch CSS from Google Fonts (woff2 user-agent gives woff2 URLs)
   const cssResponse = await fetch(cssUrl, {
     headers: {
-      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      "User-Agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     },
   });
   if (!cssResponse.ok) {
@@ -88,7 +137,11 @@ async function fetchAndCacheFont(
   while ((urlMatch = urlRe.exec(css)) !== null) {
     const fontUrl = urlMatch[1];
     if (!urls.has(fontUrl)) {
-      const ext = fontUrl.includes(".woff2") ? ".woff2" : fontUrl.includes(".woff") ? ".woff" : ".ttf";
+      const ext = fontUrl.includes(".woff2")
+        ? ".woff2"
+        : fontUrl.includes(".woff")
+          ? ".woff"
+          : ".ttf";
       const fileHash = createHash("md5").update(fontUrl).digest("hex").slice(0, 8);
       urls.set(fontUrl, `${family.toLowerCase().replace(/\s+/g, "-")}-${fileHash}${ext}`);
     }
@@ -160,7 +213,11 @@ function extractStaticValue(node: any): unknown {
 
     case "UnaryExpression":
       // Handle negative numbers: -1, -3.14
-      if (node.operator === "-" && node.argument?.type === "Literal" && typeof node.argument.value === "number") {
+      if (
+        node.operator === "-" &&
+        node.argument?.type === "Literal" &&
+        typeof node.argument.value === "number"
+      ) {
         return -node.argument.value;
       }
       return undefined;
@@ -226,7 +283,7 @@ interface AstBodyNode {
 
 /** Extract the string name from an Identifier ({name}) or Literal ({value}) AST node. */
 function astName(node: { name?: string; value?: string | boolean | number | null }): string {
-  return (node.name ?? String(node.value));
+  return node.name ?? String(node.value);
 }
 
 /** Nested conditional exports value (string path or nested conditions). */
@@ -463,7 +520,10 @@ function buildBarrelExportMap(
   const exportMap: BarrelExportMap = new Map();
 
   // Track import bindings: local name → { source, isNamespace, originalName }
-  const importBindings = new Map<string, { source: string; isNamespace: boolean; originalName?: string }>();
+  const importBindings = new Map<
+    string,
+    { source: string; isNamespace: boolean; originalName?: string }
+  >();
 
   for (const node of ast.body as AstBodyNode[]) {
     if (node.type === "ImportDeclaration") {
@@ -473,9 +533,17 @@ function buildBarrelExportMap(
           importBindings.set(spec.local.name, { source, isNamespace: true });
         } else if (spec.type === "ImportSpecifier") {
           const imported = astName(spec.imported!);
-          importBindings.set(spec.local.name, { source, isNamespace: false, originalName: imported });
+          importBindings.set(spec.local.name, {
+            source,
+            isNamespace: false,
+            originalName: imported,
+          });
         } else if (spec.type === "ImportDefaultSpecifier") {
-          importBindings.set(spec.local.name, { source, isNamespace: false, originalName: "default" });
+          importBindings.set(spec.local.name, {
+            source,
+            isNamespace: false,
+            originalName: "default",
+          });
         }
       }
     } else if (node.type === "ExportAllDeclaration" && node.exported) {
@@ -487,7 +555,11 @@ function buildBarrelExportMap(
       for (const spec of node.specifiers!) {
         const exported = astName(spec.exported!);
         const local = astName(spec.local);
-        exportMap.set(exported, { source: node.source.value as string, isNamespace: false, originalName: local });
+        exportMap.set(exported, {
+          source: node.source.value as string,
+          isNamespace: false,
+          originalName: local,
+        });
       }
     } else if (node.type === "ExportNamedDeclaration" && !node.source && node.specifiers) {
       // export { X } — look up X in importBindings
@@ -521,11 +593,33 @@ function getViteMajorVersion(): number {
   try {
     const require = createRequire(path.join(process.cwd(), "package.json"));
     const vitePkg = require("vite/package.json");
-    return parseInt(vitePkg.version, 10);
-  } catch {
-    return 7; // default to Vite 7
+
+    const viteMajor = parseInt(vitePkg?.version, 10);
+    if (vitePkg?.name === "vite" && Number.isFinite(viteMajor)) {
+      return viteMajor;
+    }
+
+    const bundledViteMajor = parseInt(vitePkg?.bundledVersions?.vite, 10);
+    if (Number.isFinite(bundledViteMajor)) {
+      return bundledViteMajor;
+    }
+
+    // npm aliases like `vite: npm:@voidzero-dev/vite-plus-core@...` expose the
+    // aliased package.json, whose own version is not Vite's version.
+    console.warn(
+      `[vinext] Could not determine Vite major version from ${vitePkg?.name ?? "vite/package.json"}; assuming Vite 7`,
+    );
+    return 7;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[vinext] Failed to resolve vite/package.json (${message}); assuming Vite 7`);
+    return 7;
   }
 }
+
+type UserResolveConfigWithTsconfigPaths = NonNullable<UserConfig["resolve"]> & {
+  tsconfigPaths?: boolean;
+};
 
 /**
  * PostCSS config file names to search for, in priority order.
@@ -551,6 +645,13 @@ const POSTCSS_CONFIG_FILES = [
 ];
 
 /**
+ * Module-level cache for resolvePostcssStringPlugins — avoids re-scanning per Vite environment.
+ * Stores the Promise itself so concurrent calls (RSC/SSR/Client config() hooks firing in
+ * parallel) all await the same in-flight scan rather than each starting their own.
+ */
+const _postcssCache = new Map<string, Promise<{ plugins: any[] } | undefined>>();
+
+/**
  * Resolve PostCSS string plugin names in a project's PostCSS config.
  *
  * Next.js (via postcss-load-config) resolves string plugin names in the
@@ -562,7 +663,15 @@ const POSTCSS_CONFIG_FILES = [
  * Returns the resolved PostCSS config object to inject into Vite's
  * `css.postcss`, or `undefined` if no resolution is needed.
  */
-async function resolvePostcssStringPlugins(
+function resolvePostcssStringPlugins(projectRoot: string): Promise<{ plugins: any[] } | undefined> {
+  if (_postcssCache.has(projectRoot)) return _postcssCache.get(projectRoot)!;
+
+  const promise = _resolvePostcssStringPluginsUncached(projectRoot);
+  _postcssCache.set(projectRoot, promise);
+  return promise;
+}
+
+async function _resolvePostcssStringPluginsUncached(
   projectRoot: string,
 ): Promise<{ plugins: any[] } | undefined> {
   // Find the PostCSS config file
@@ -574,12 +683,18 @@ async function resolvePostcssStringPlugins(
       break;
     }
   }
-  if (!configPath) return undefined;
+  if (!configPath) {
+    return undefined;
+  }
 
   // Load the config file
   let config: any;
   try {
-    if (configPath.endsWith(".json") || configPath.endsWith(".yaml") || configPath.endsWith(".yml")) {
+    if (
+      configPath.endsWith(".json") ||
+      configPath.endsWith(".yaml") ||
+      configPath.endsWith(".yml")
+    ) {
       // JSON/YAML configs use object form — postcss-load-config handles these fine
       return undefined;
     }
@@ -600,13 +715,15 @@ async function resolvePostcssStringPlugins(
 
   // Only process array-form plugins that contain string entries
   // (either bare strings or tuple form ["plugin-name", { options }])
-  if (!config || !Array.isArray(config.plugins)) return undefined;
+  if (!config || !Array.isArray(config.plugins)) {
+    return undefined;
+  }
   const hasStringPlugins = config.plugins.some(
-    (p: any) =>
-      typeof p === "string" ||
-      (Array.isArray(p) && typeof p[0] === "string"),
+    (p: any) => typeof p === "string" || (Array.isArray(p) && typeof p[0] === "string"),
   );
-  if (!hasStringPlugins) return undefined;
+  if (!hasStringPlugins) {
+    return undefined;
+  }
 
   // Resolve string plugin names to actual plugin functions
   const req = createRequire(path.join(projectRoot, "package.json"));
@@ -710,11 +827,7 @@ function clientManualChunks(id: string): string | undefined {
   if (id.includes("node_modules")) {
     const pkg = getPackageName(id);
     if (!pkg) return undefined;
-    if (
-      pkg === "react" ||
-      pkg === "react-dom" ||
-      pkg === "scheduler"
-    ) {
+    if (pkg === "react" || pkg === "react-dom" || pkg === "scheduler") {
       return "framework";
     }
     // Let Rollup handle all other vendor code via its default
@@ -778,6 +891,16 @@ const clientTreeshakeConfig = {
   moduleSideEffects: "no-external" as const,
 };
 
+type BuildManifestChunk = {
+  file: string;
+  isEntry?: boolean;
+  isDynamicEntry?: boolean;
+  imports?: string[];
+  dynamicImports?: string[];
+  css?: string[];
+  assets?: string[];
+};
+
 /**
  * Compute the set of chunk filenames that are ONLY reachable through dynamic
  * imports (i.e. behind React.lazy(), next/dynamic, or manual import()).
@@ -795,16 +918,7 @@ const clientTreeshakeConfig = {
  * @returns Array of chunk filenames (e.g. "assets/mermaid-NOHMQCX5.js") that
  *   should be excluded from modulepreload hints.
  */
-function computeLazyChunks(
-  buildManifest: Record<string, {
-    file: string;
-    isEntry?: boolean;
-    isDynamicEntry?: boolean;
-    imports?: string[];
-    dynamicImports?: string[];
-    css?: string[];
-  }>
-): string[] {
+function computeLazyChunks(buildManifest: Record<string, BuildManifestChunk>): string[] {
   // Collect all chunk files that are statically reachable from entries
   const eagerFiles = new Set<string>();
   const visited = new Set<string>();
@@ -862,6 +976,132 @@ function computeLazyChunks(
   return lazyChunks;
 }
 
+type BundleBackfillChunk = {
+  type: "chunk";
+  fileName: string;
+  imports?: string[];
+  modules?: Record<string, unknown>;
+  viteMetadata?: {
+    importedCss?: Set<string>;
+    importedAssets?: Set<string>;
+  };
+};
+
+function tryRealpathSync(candidate: string): string | null {
+  try {
+    return fs.realpathSync.native(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function isWindowsAbsolutePath(candidate: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(candidate) || candidate.startsWith("\\\\");
+}
+
+function relativeWithinRoot(root: string, moduleId: string): string | null {
+  const useWindowsPath = isWindowsAbsolutePath(root) || isWindowsAbsolutePath(moduleId);
+  const relativeId = (
+    useWindowsPath ? path.win32.relative(root, moduleId) : path.relative(root, moduleId)
+  ).replace(/\\/g, "/");
+  // path.relative(root, root) returns "", which is not a usable manifest key and should be
+  // treated the same as "outside root" for this helper.
+  if (!relativeId || relativeId === ".." || relativeId.startsWith("../")) return null;
+  return relativeId;
+}
+
+function normalizeManifestModuleId(moduleId: string, root: string): string {
+  const normalizedId = moduleId.replace(/\\/g, "/");
+  if (normalizedId.startsWith("\0")) return normalizedId;
+  if (normalizedId.startsWith("node_modules/") || normalizedId.includes("/node_modules/")) {
+    return normalizedId;
+  }
+
+  if (!isWindowsAbsolutePath(moduleId) && !path.isAbsolute(moduleId)) {
+    if (!normalizedId.startsWith(".") && !normalizedId.includes("../")) {
+      // Preserve bare specifiers like "pages/counter.tsx". These are already
+      // stable manifest keys and resolving them against root would rewrite them
+      // into filesystem paths that no longer match the bundle/module graph.
+      return normalizedId;
+    }
+  }
+
+  const rootCandidates = new Set<string>([root]);
+  const realRoot = tryRealpathSync(root);
+  if (realRoot) rootCandidates.add(realRoot);
+
+  const moduleCandidates = new Set<string>();
+  if (isWindowsAbsolutePath(moduleId) || path.isAbsolute(moduleId)) {
+    moduleCandidates.add(moduleId);
+  } else {
+    moduleCandidates.add(path.resolve(root, moduleId));
+  }
+
+  for (const candidate of moduleCandidates) {
+    const realCandidate = tryRealpathSync(candidate);
+    // Set iteration stays live as entries are appended, so this also checks the
+    // realpath variant without needing a second pass or an intermediate array.
+    if (realCandidate) moduleCandidates.add(realCandidate);
+  }
+
+  for (const rootCandidate of rootCandidates) {
+    for (const moduleCandidate of moduleCandidates) {
+      const relativeId = relativeWithinRoot(rootCandidate, moduleCandidate);
+      if (relativeId) return relativeId;
+    }
+  }
+
+  return normalizedId;
+}
+
+function augmentSsrManifestFromBundle(
+  ssrManifest: Record<string, string[]>,
+  bundle: Record<string, BundleBackfillChunk | { type: string }>,
+  root: string,
+  base = "/",
+): Record<string, string[]> {
+  const nextManifest = {} as Record<string, Set<string>>;
+
+  for (const [key, files] of Object.entries(ssrManifest)) {
+    const normalizedKey = normalizeManifestModuleId(key, root);
+    if (!nextManifest[normalizedKey]) nextManifest[normalizedKey] = new Set<string>();
+    for (const file of files) {
+      nextManifest[normalizedKey].add(normalizeManifestFile(file));
+    }
+  }
+
+  for (const item of Object.values(bundle)) {
+    if (item.type !== "chunk") continue;
+    const chunk = item as BundleBackfillChunk;
+
+    const files = new Set<string>();
+    files.add(manifestFileWithBase(chunk.fileName, base));
+    for (const importedFile of chunk.imports ?? []) {
+      files.add(manifestFileWithBase(importedFile, base));
+    }
+    for (const cssFile of chunk.viteMetadata?.importedCss ?? []) {
+      files.add(manifestFileWithBase(cssFile, base));
+    }
+    for (const assetFile of chunk.viteMetadata?.importedAssets ?? []) {
+      files.add(manifestFileWithBase(assetFile, base));
+    }
+
+    for (const moduleId of Object.keys(chunk.modules ?? {})) {
+      const key = normalizeManifestModuleId(moduleId, root);
+      if (key.startsWith("node_modules/") || key.includes("/node_modules/")) continue;
+      if (key.startsWith("\0")) continue;
+      if (!nextManifest[key]) nextManifest[key] = new Set<string>();
+      for (const file of files) {
+        nextManifest[key].add(file);
+      }
+    }
+  }
+
+  return Object.fromEntries(
+    Object.entries(nextManifest).map(([key, files]) => [key, [...files]]),
+  ) as Record<string, string[]>;
+}
+
 export interface VinextOptions {
   /**
    * Base directory containing the app/ and pages/ directories.
@@ -872,21 +1112,69 @@ export interface VinextOptions {
    */
   appDir?: string;
   /**
+   * Force-disable App Router detection even when an app/ directory exists.
+   * Only the Pages Router pipeline will be active.
+   * Intended for testing and tools that need to build only the Pages Router
+   * bundle from a hybrid (app + pages) project.
+   * @default false
+   */
+  disableAppRouter?: boolean;
+  /**
+   * Override the output directory for the RSC server bundle.
+   * Absolute paths are used as-is; relative paths are resolved from the
+   * Vite root. Defaults to "dist/server".
+   * Intended for tests that need to build multiple fixtures in parallel
+   * without clobbering each other's output.
+   */
+  rscOutDir?: string;
+  /**
+   * Override the output directory for the SSR bundle.
+   * Defaults to "dist/server/ssr".
+   */
+  ssrOutDir?: string;
+  /**
+   * Override the output directory for the client bundle.
+   * Defaults to Vite's default (dist/client or dist).
+   */
+  clientOutDir?: string;
+  /**
    * Auto-register @vitejs/plugin-rsc when an app/ directory is detected.
    * Set to `false` to disable auto-registration (e.g. if you configure
    * @vitejs/plugin-rsc manually with custom options).
    * @default true
    */
   rsc?: boolean;
+  /**
+   * Options passed to @vitejs/plugin-react (React Fast Refresh + JSX transform).
+   * Enabled by default. Set to `false` to disable (e.g. if you configure
+   * @vitejs/plugin-react manually in your vite.config.ts), or pass an options
+   * object to customize the Babel transform.
+   * @default true
+   */
+  react?: VitePluginReactOptions | boolean;
+  /**
+   * Experimental vinext-only feature flags.
+   */
+  experimental?: {
+    /**
+     * Dedup client references emitted from RSC proxy modules in dev.
+     * Disabled by default until the behavior is better proven across
+     * ecosystem apps.
+     * @default false
+     */
+    clientReferenceDedup?: boolean;
+  };
 }
 
-export default function vinext(options: VinextOptions = {}): Plugin[] {
+export default function vinext(options: VinextOptions = {}): PluginOption[] {
+  const viteMajorVersion = getViteMajorVersion();
   let root: string;
   let pagesDir: string;
   let appDir: string;
   let hasAppDir = false;
   let hasPagesDir = false;
   let nextConfig: ResolvedNextConfig;
+  let fileMatcher: ReturnType<typeof createValidFileMatcher>;
   let middlewarePath: string | null = null;
   let instrumentationPath: string | null = null;
   let hasCloudflarePlugin = false;
@@ -898,935 +1186,24 @@ export default function vinext(options: VinextOptions = {}): Plugin[] {
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
 
+  // Build-only cache for og-inline-fetch-assets to avoid repeated file reads
+  // during a single production build. Dev mode skips the cache so asset edits
+  // are picked up without restarting the Vite server.
+  const _ogInlineCache = new Map<string, string>();
+  let _ogInlineIsBuild = false;
+
   /**
    * Generate the virtual SSR server entry module.
    * This is the entry point for `vite build --ssr`.
    */
   async function generateServerEntry(): Promise<string> {
-    const pageRoutes = await pagesRouter(pagesDir);
-    const apiRoutes = await apiRouter(pagesDir);
-
-    // Generate import statements using absolute paths since virtual
-    // modules don't have a real file location for relative resolution.
-    const pageImports = pageRoutes.map((r: Route, i: number) => {
-      const absPath = r.filePath.replace(/\\/g, "/");
-      return `import * as page_${i} from ${JSON.stringify(absPath)};`;
-    });
-
-    const apiImports = apiRoutes.map((r: Route, i: number) => {
-      const absPath = r.filePath.replace(/\\/g, "/");
-      return `import * as api_${i} from ${JSON.stringify(absPath)};`;
-    });
-
-    // Build the route table — include filePath for SSR manifest lookup
-    const pageRouteEntries = pageRoutes.map((r: Route, i: number) => {
-      const absPath = r.filePath.replace(/\\/g, "/");
-      return `  { pattern: ${JSON.stringify(r.pattern)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: page_${i}, filePath: ${JSON.stringify(absPath)} }`;
-    });
-
-    const apiRouteEntries = apiRoutes.map((r: Route, i: number) => {
-      return `  { pattern: ${JSON.stringify(r.pattern)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: api_${i} }`;
-    });
-
-    // Check for _app and _document
-    const hasApp = fs.existsSync(path.join(pagesDir, "_app.tsx")) || fs.existsSync(path.join(pagesDir, "_app.jsx")) || fs.existsSync(path.join(pagesDir, "_app.ts")) || fs.existsSync(path.join(pagesDir, "_app.js"));
-    const hasDoc = fs.existsSync(path.join(pagesDir, "_document.tsx")) || fs.existsSync(path.join(pagesDir, "_document.jsx")) || fs.existsSync(path.join(pagesDir, "_document.ts")) || fs.existsSync(path.join(pagesDir, "_document.js"));
-
-    // Use absolute paths for _app and _document too
-    const appFileBase = path.join(pagesDir, "_app").replace(/\\/g, "/");
-    const docFileBase = path.join(pagesDir, "_document").replace(/\\/g, "/");
-
-    const appImportCode = hasApp
-      ? `import { default as AppComponent } from ${JSON.stringify(appFileBase)};`
-      : `const AppComponent = null;`;
-
-    const docImportCode = hasDoc
-      ? `import { default as DocumentComponent } from ${JSON.stringify(docFileBase)};`
-      : `const DocumentComponent = null;`;
-
-    // Serialize i18n config for embedding in the server entry
-    const i18nConfigJson = nextConfig?.i18n
-      ? JSON.stringify({
-          locales: nextConfig.i18n.locales,
-          defaultLocale: nextConfig.i18n.defaultLocale,
-          localeDetection: nextConfig.i18n.localeDetection,
-        })
-      : "null";
-
-    // Serialize the full resolved config for the production server.
-    // This embeds redirects, rewrites, headers, basePath, trailingSlash
-    // so prod-server.ts can apply them without loading next.config.js at runtime.
-    const vinextConfigJson = JSON.stringify({
-      basePath: nextConfig?.basePath ?? "",
-      trailingSlash: nextConfig?.trailingSlash ?? false,
-      redirects: nextConfig?.redirects ?? [],
-      rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
-      headers: nextConfig?.headers ?? [],
-      i18n: nextConfig?.i18n ?? null,
-      images: {
-        deviceSizes: nextConfig?.images?.deviceSizes,
-        imageSizes: nextConfig?.images?.imageSizes,
-        dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
-        contentDispositionType: nextConfig?.images?.contentDispositionType,
-        contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
-      },
-    });
-
-    // Generate middleware code if middleware.ts exists
-    const middlewareImportCode = middlewarePath
-      ? `import * as middlewareModule from ${JSON.stringify(middlewarePath.replace(/\\/g, "/"))};
-import { NextRequest } from "next/server";`
-      : "";
-
-    // The matcher config is read from the middleware module at import time.
-    // We inline the matching + execution logic so the prod server can call it.
-    const middlewareExportCode = middlewarePath
-      ? `
-// --- Middleware support (generated from middleware-codegen.ts) ---
-${generateNormalizePathCode("es5")}
-${generateSafeRegExpCode("es5")}
-${generateMiddlewareMatcherCode("es5")}
-
-export async function runMiddleware(request) {
-  var isProxy = ${middlewarePath ? JSON.stringify(isProxyFile(middlewarePath)) : "false"};
-  var middlewareFn = isProxy
-    ? (middlewareModule.proxy ?? middlewareModule.default)
-    : (middlewareModule.middleware ?? middlewareModule.default);
-  if (typeof middlewareFn !== "function") {
-    var fileType = isProxy ? "Proxy" : "Middleware";
-    var expectedExport = isProxy ? "proxy" : "middleware";
-    throw new Error("The " + fileType + " file must export a function named \`" + expectedExport + "\` or a \`default\` function.");
-  }
-
-  var config = middlewareModule.config;
-  var matcher = config && config.matcher;
-  var url = new URL(request.url);
-
-  // Normalize pathname before matching to prevent path-confusion bypasses
-  // (percent-encoding like /%61dmin, double slashes like /dashboard//settings).
-  var decodedPathname;
-  try { decodedPathname = decodeURIComponent(url.pathname); } catch (e) {
-    return { continue: false, response: new Response("Bad Request", { status: 400 }) };
-  }
-  var normalizedPathname = __normalizePath(decodedPathname);
-
-  if (!matchesMiddleware(normalizedPathname, matcher)) return { continue: true };
-
-   // Construct a new Request with the decoded + normalized pathname so middleware
-   // always sees the same canonical path that the router uses.
-  var mwRequest = request;
-  if (normalizedPathname !== url.pathname) {
-    var mwUrl = new URL(url);
-    mwUrl.pathname = normalizedPathname;
-    mwRequest = new Request(mwUrl, request);
-  }
-  var nextRequest = mwRequest instanceof NextRequest ? mwRequest : new NextRequest(mwRequest);
-  var response;
-  try { response = await middlewareFn(nextRequest); }
-  catch (e) {
-    console.error("[vinext] Middleware error:", e);
-    return { continue: false, response: new Response("Internal Server Error", { status: 500 }) };
-  }
-
-  if (!response) return { continue: true };
-
-  if (response.headers.get("x-middleware-next") === "1") {
-    var rHeaders = new Headers();
-    for (var [key, value] of response.headers) {
-      // Keep x-middleware-request-* headers so the production server can
-      // apply middleware-request header overrides before stripping internals
-      // from the final client response.
-      if (
-        !key.startsWith("x-middleware-") ||
-        key.startsWith("x-middleware-request-")
-      ) rHeaders.append(key, value);
-    }
-    return { continue: true, responseHeaders: rHeaders };
-  }
-
-  if (response.status >= 300 && response.status < 400) {
-    var location = response.headers.get("Location") || response.headers.get("location");
-    if (location) return { continue: false, redirectUrl: location, redirectStatus: response.status };
-  }
-
-  var rewriteUrl = response.headers.get("x-middleware-rewrite");
-  if (rewriteUrl) {
-    var rwHeaders = new Headers();
-    for (var [k, v] of response.headers) {
-      if (!k.startsWith("x-middleware-") || k.startsWith("x-middleware-request-")) rwHeaders.append(k, v);
-    }
-    var rewritePath;
-    try { var parsed = new URL(rewriteUrl, request.url); rewritePath = parsed.pathname + parsed.search; }
-    catch { rewritePath = rewriteUrl; }
-    return { continue: true, rewriteUrl: rewritePath, rewriteStatus: response.status !== 200 ? response.status : undefined, responseHeaders: rwHeaders };
-  }
-
-  return { continue: false, response: response };
-}
-`
-      : `
-export async function runMiddleware() { return { continue: true }; }
-`;
-
-    // The server entry is a self-contained module that uses Web-standard APIs
-    // (Request/Response, renderToReadableStream) so it runs on Cloudflare Workers.
-    return `
-import React from "react";
-import { renderToReadableStream } from "react-dom/server.edge";
-import { resetSSRHead, getSSRHeadHTML } from "next/head";
-import { flushPreloads } from "next/dynamic";
-import { setSSRContext } from "next/router";
-import { getCacheHandler } from "next/cache";
-import { runWithFetchCache } from "vinext/fetch-cache";
-import { _runWithCacheState } from "next/cache";
-import { runWithPrivateCache } from "vinext/cache-runtime";
-import { runWithRouterState } from "vinext/router-state";
-import { runWithHeadState } from "vinext/head-state";
-import { safeJsonStringify } from "vinext/html";
-import { getSSRFontLinks as _getSSRFontLinks, getSSRFontStyles as _getSSRFontStylesGoogle, getSSRFontPreloads as _getSSRFontPreloadsGoogle } from "next/font/google";
-import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getSSRFontPreloadsLocal } from "next/font/local";
-${middlewareImportCode}
-
-// i18n config (embedded at build time)
-const i18nConfig = ${i18nConfigJson};
-
-// Full resolved config for production server (embedded at build time)
-export const vinextConfig = ${vinextConfigJson};
-
-// ISR cache helpers (inlined for the server entry)
-async function isrGet(key) {
-  const handler = getCacheHandler();
-  const result = await handler.get(key);
-  if (!result || !result.value) return null;
-  return { value: result, isStale: result.cacheState === "stale" };
-}
-async function isrSet(key, data, revalidateSeconds, tags) {
-  const handler = getCacheHandler();
-  await handler.set(key, data, { revalidate: revalidateSeconds, tags: tags || [] });
-}
-const pendingRegenerations = new Map();
-function triggerBackgroundRegeneration(key, renderFn) {
-  if (pendingRegenerations.has(key)) return;
-  const promise = renderFn()
-    .catch((err) => console.error("[vinext] ISR regen failed for " + key + ":", err))
-    .finally(() => pendingRegenerations.delete(key));
-  pendingRegenerations.set(key, promise);
-}
-
-async function renderToStringAsync(element) {
-  const stream = await renderToReadableStream(element);
-  await stream.allReady;
-  return new Response(stream).text();
-}
-
-${pageImports.join("\n")}
-${apiImports.join("\n")}
-
-${appImportCode}
-${docImportCode}
-
-const pageRoutes = [
-${pageRouteEntries.join(",\n")}
-];
-
-const apiRoutes = [
-${apiRouteEntries.join(",\n")}
-];
-
-function matchRoute(url, routes) {
-  const pathname = url.split("?")[0];
-  let normalizedUrl = pathname === "/" ? "/" : pathname.replace(/\\/$/, "");
-  // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
-  // the entry point. Decoding again would create a double-decode vector.
-  for (const route of routes) {
-    const params = matchPattern(normalizedUrl, route.pattern);
-    if (params !== null) return { route, params };
-  }
-  return null;
-}
-
-function matchPattern(url, pattern) {
-  const urlParts = url.split("/").filter(Boolean);
-  const patternParts = pattern.split("/").filter(Boolean);
-  const params = Object.create(null);
-  for (let i = 0; i < patternParts.length; i++) {
-    const pp = patternParts[i];
-    if (pp.endsWith("+")) {
-      const paramName = pp.slice(1, -1);
-      const remaining = urlParts.slice(i);
-      if (remaining.length === 0) return null;
-      params[paramName] = remaining;
-      return params;
-    }
-    if (pp.endsWith("*")) {
-      const paramName = pp.slice(1, -1);
-      params[paramName] = urlParts.slice(i);
-      return params;
-    }
-    if (pp.startsWith(":")) {
-      if (i >= urlParts.length) return null;
-      params[pp.slice(1)] = urlParts[i];
-      continue;
-    }
-    if (i >= urlParts.length || urlParts[i] !== pp) return null;
-  }
-  if (urlParts.length !== patternParts.length) return null;
-  return params;
-}
-
-function parseQuery(url) {
-  const qs = url.split("?")[1];
-  if (!qs) return {};
-  const p = new URLSearchParams(qs);
-  const q = {};
-  for (const [k, v] of p) {
-    if (k in q) {
-      q[k] = Array.isArray(q[k]) ? q[k].concat(v) : [q[k], v];
-    } else {
-      q[k] = v;
-    }
-  }
-  return q;
-}
-
-function patternToNextFormat(pattern) {
-  return pattern
-    .replace(/:([\\w]+)\\*/g, "[[...$1]]")
-    .replace(/:([\\w]+)\\+/g, "[...$1]")
-    .replace(/:([\\w]+)/g, "[$1]");
-}
-
-function collectAssetTags(manifest, moduleIds) {
-  // Fall back to embedded manifest (set by vinext:cloudflare-build for Workers)
-  const m = (manifest && Object.keys(manifest).length > 0)
-    ? manifest
-    : (typeof globalThis !== "undefined" && globalThis.__VINEXT_SSR_MANIFEST__) || null;
-  const tags = [];
-  const seen = new Set();
-
-  // Load the set of lazy chunk filenames (only reachable via dynamic imports).
-  // These should NOT get <link rel="modulepreload"> or <script type="module">
-  // tags — they are fetched on demand when the dynamic import() executes (e.g.
-  // chunks behind React.lazy() or next/dynamic boundaries).
-  var lazyChunks = (typeof globalThis !== "undefined" && globalThis.__VINEXT_LAZY_CHUNKS__) || null;
-  var lazySet = lazyChunks && lazyChunks.length > 0 ? new Set(lazyChunks) : null;
-
-  // Inject the client entry script if embedded by vinext:cloudflare-build
-  if (typeof globalThis !== "undefined" && globalThis.__VINEXT_CLIENT_ENTRY__) {
-    const entry = globalThis.__VINEXT_CLIENT_ENTRY__;
-    seen.add(entry);
-    tags.push('<link rel="modulepreload" href="/' + entry + '" />');
-    tags.push('<script type="module" src="/' + entry + '" crossorigin></script>');
-  }
-  if (m) {
-    // Always inject shared chunks (framework, vinext runtime, entry) and
-    // page-specific chunks. The manifest maps module file paths to their
-    // associated JS/CSS assets.
-    //
-    // For page-specific injection, the module IDs may be absolute paths
-    // while the manifest uses relative paths. Try both the original ID
-    // and a suffix match to find the correct manifest entry.
-    var allFiles = [];
-
-    if (moduleIds && moduleIds.length > 0) {
-      // Collect assets for the requested page modules
-      for (var mi = 0; mi < moduleIds.length; mi++) {
-        var id = moduleIds[mi];
-        var files = m[id];
-        if (!files) {
-          // Absolute path didn't match — try matching by suffix.
-          // Manifest keys are relative (e.g. "pages/about.tsx") while
-          // moduleIds may be absolute (e.g. "/home/.../pages/about.tsx").
-          for (var mk in m) {
-            if (id.endsWith("/" + mk) || id === mk) {
-              files = m[mk];
-              break;
-            }
-          }
-        }
-        if (files) {
-          for (var fi = 0; fi < files.length; fi++) allFiles.push(files[fi]);
-        }
-      }
-
-      // Also inject shared chunks that every page needs: framework,
-      // vinext runtime, and the entry bootstrap. These are identified
-      // by scanning all manifest values for chunk filenames containing
-      // known prefixes.
-      for (var key in m) {
-        var vals = m[key];
-        if (!vals) continue;
-        for (var vi = 0; vi < vals.length; vi++) {
-          var file = vals[vi];
-          var basename = file.split("/").pop() || "";
-          if (
-            basename.startsWith("framework-") ||
-            basename.startsWith("vinext-") ||
-            basename.includes("vinext-client-entry") ||
-            basename.includes("vinext-app-browser-entry")
-          ) {
-            allFiles.push(file);
-          }
-        }
-      }
-    } else {
-      // No specific modules — include all assets from manifest
-      for (var akey in m) {
-        var avals = m[akey];
-        if (avals) {
-          for (var ai = 0; ai < avals.length; ai++) allFiles.push(avals[ai]);
-        }
-      }
-    }
-
-    for (var ti = 0; ti < allFiles.length; ti++) {
-      var tf = allFiles[ti];
-      // Normalize: Vite's SSR manifest values include a leading '/'
-      // (from base path), but we prepend '/' ourselves when building
-      // href/src attributes. Strip any existing leading slash to avoid
-      // producing protocol-relative URLs like "//assets/chunk.js".
-      // This also ensures consistent keys for the seen-set dedup and
-      // lazySet.has() checks (which use values without leading slash).
-      if (tf.charAt(0) === '/') tf = tf.slice(1);
-      if (seen.has(tf)) continue;
-      seen.add(tf);
-      if (tf.endsWith(".css")) {
-        tags.push('<link rel="stylesheet" href="/' + tf + '" />');
-      } else if (tf.endsWith(".js")) {
-        // Skip lazy chunks — they are behind dynamic import() boundaries
-        // (React.lazy, next/dynamic) and should only be fetched on demand.
-        if (lazySet && lazySet.has(tf)) continue;
-        tags.push('<link rel="modulepreload" href="/' + tf + '" />');
-        tags.push('<script type="module" src="/' + tf + '" crossorigin></script>');
-      }
-    }
-  }
-  return tags.join("\\n  ");
-}
-
-// i18n helpers
-function extractLocale(url) {
-  if (!i18nConfig) return { locale: undefined, url, hadPrefix: false };
-  const pathname = url.split("?")[0];
-  const parts = pathname.split("/").filter(Boolean);
-  const query = url.includes("?") ? url.slice(url.indexOf("?")) : "";
-  if (parts.length > 0 && i18nConfig.locales.includes(parts[0])) {
-    const locale = parts[0];
-    const rest = "/" + parts.slice(1).join("/");
-    return { locale, url: (rest || "/") + query, hadPrefix: true };
-  }
-  return { locale: i18nConfig.defaultLocale, url, hadPrefix: false };
-}
-
-function detectLocaleFromHeaders(headers) {
-  if (!i18nConfig) return null;
-  const acceptLang = headers.get("accept-language");
-  if (!acceptLang) return null;
-  const langs = acceptLang.split(",").map(function(part) {
-    const pieces = part.trim().split(";");
-    const q = pieces[1] ? parseFloat(pieces[1].replace("q=", "")) : 1;
-    return { lang: pieces[0].trim().toLowerCase(), q: q };
-  }).sort(function(a, b) { return b.q - a.q; });
-  for (let k = 0; k < langs.length; k++) {
-    const lang = langs[k].lang;
-    for (let j = 0; j < i18nConfig.locales.length; j++) {
-      if (i18nConfig.locales[j].toLowerCase() === lang) return i18nConfig.locales[j];
-    }
-    const prefix = lang.split("-")[0];
-    for (let j = 0; j < i18nConfig.locales.length; j++) {
-      const loc = i18nConfig.locales[j].toLowerCase();
-      if (loc === prefix || loc.startsWith(prefix + "-")) return i18nConfig.locales[j];
-    }
-  }
-  return null;
-}
-
-function parseCookieLocaleFromHeader(cookieHeader) {
-  if (!i18nConfig || !cookieHeader) return null;
-  const match = cookieHeader.match(/(?:^|;\\s*)NEXT_LOCALE=([^;]*)/);
-  if (!match) return null;
-  var value;
-  try { value = decodeURIComponent(match[1].trim()); } catch (e) { return null; }
-  if (i18nConfig.locales.indexOf(value) !== -1) return value;
-  return null;
-}
-
-function parseCookies(cookieHeader) {
-  const cookies = {};
-  if (!cookieHeader) return cookies;
-  for (const part of cookieHeader.split(";")) {
-    const [key, ...rest] = part.split("=");
-    if (key) cookies[key.trim()] = rest.join("=").trim();
-  }
-  return cookies;
-}
-
-// Lightweight req/res facade for getServerSideProps and API routes.
-// Next.js pages expect ctx.req/ctx.res with Node-like shapes.
-function createReqRes(request, url, query, body) {
-  const headersObj = {};
-  for (const [k, v] of request.headers) headersObj[k.toLowerCase()] = v;
-
-  const req = {
-    method: request.method,
-    url: url,
-    headers: headersObj,
-    query: query,
-    body: body,
-    cookies: parseCookies(request.headers.get("cookie")),
-  };
-
-  let resStatusCode = 200;
-  const resHeaders = {};
-  // set-cookie needs array support (multiple Set-Cookie headers are common)
-  const setCookieHeaders = [];
-  let resBody = null;
-  let ended = false;
-  let resolveResponse;
-  const responsePromise = new Promise(function(r) { resolveResponse = r; });
-
-  const res = {
-    get statusCode() { return resStatusCode; },
-    set statusCode(code) { resStatusCode = code; },
-    writeHead: function(code, headers) {
-      resStatusCode = code;
-      if (headers) {
-        for (const [k, v] of Object.entries(headers)) {
-          if (k.toLowerCase() === "set-cookie") {
-            if (Array.isArray(v)) { for (const c of v) setCookieHeaders.push(c); }
-            else { setCookieHeaders.push(v); }
-          } else {
-            resHeaders[k] = v;
-          }
-        }
-      }
-      return res;
-    },
-    setHeader: function(name, value) {
-      if (name.toLowerCase() === "set-cookie") {
-        if (Array.isArray(value)) { for (const c of value) setCookieHeaders.push(c); }
-        else { setCookieHeaders.push(value); }
-      } else {
-        resHeaders[name.toLowerCase()] = value;
-      }
-      return res;
-    },
-    getHeader: function(name) {
-      if (name.toLowerCase() === "set-cookie") return setCookieHeaders.length > 0 ? setCookieHeaders : undefined;
-      return resHeaders[name.toLowerCase()];
-    },
-    end: function(data) {
-      if (ended) return;
-      ended = true;
-      if (data !== undefined && data !== null) resBody = data;
-      const h = new Headers(resHeaders);
-      for (const c of setCookieHeaders) h.append("set-cookie", c);
-      resolveResponse(new Response(resBody, { status: resStatusCode, headers: h }));
-    },
-    status: function(code) { resStatusCode = code; return res; },
-    json: function(data) {
-      resHeaders["content-type"] = "application/json";
-      res.end(JSON.stringify(data));
-    },
-    send: function(data) {
-      if (typeof data === "object" && data !== null) { res.json(data); }
-      else { if (!resHeaders["content-type"]) resHeaders["content-type"] = "text/plain"; res.end(String(data)); }
-    },
-    redirect: function(statusOrUrl, url2) {
-      if (typeof statusOrUrl === "string") { res.writeHead(307, { Location: statusOrUrl }); }
-      else { res.writeHead(statusOrUrl, { Location: url2 }); }
-      res.end();
-    },
-  };
-
-  return { req, res, responsePromise };
-}
-
-/**
- * Read request body as text with a size limit.
- * Throws if the body exceeds maxBytes. This prevents DoS via chunked
- * transfer encoding where Content-Length is absent or spoofed.
- */
-async function readBodyWithLimit(request, maxBytes) {
-  if (!request.body) return "";
-  var reader = request.body.getReader();
-  var decoder = new TextDecoder();
-  var chunks = [];
-  var totalSize = 0;
-  for (;;) {
-    var result = await reader.read();
-    if (result.done) break;
-    totalSize += result.value.byteLength;
-    if (totalSize > maxBytes) {
-      reader.cancel();
-      throw new Error("Request body too large");
-    }
-    chunks.push(decoder.decode(result.value, { stream: true }));
-  }
-  chunks.push(decoder.decode());
-  return chunks.join("");
-}
-
-export async function renderPage(request, url, manifest) {
-  const localeInfo = extractLocale(url);
-  const locale = localeInfo.locale;
-  const routeUrl = localeInfo.url;
-  const cookieHeader = request.headers.get("cookie") || "";
-
-  // i18n redirect: check NEXT_LOCALE cookie first, then Accept-Language
-  if (i18nConfig && !localeInfo.hadPrefix) {
-    const cookieLocale = parseCookieLocaleFromHeader(cookieHeader);
-    if (cookieLocale && cookieLocale !== i18nConfig.defaultLocale) {
-      return new Response(null, { status: 307, headers: { Location: "/" + cookieLocale + routeUrl } });
-    }
-    if (!cookieLocale && i18nConfig.localeDetection !== false) {
-      const detected = detectLocaleFromHeaders(request.headers);
-      if (detected && detected !== i18nConfig.defaultLocale) {
-        return new Response(null, { status: 307, headers: { Location: "/" + detected + routeUrl } });
-      }
-    }
-  }
-
-  const match = matchRoute(routeUrl, pageRoutes);
-  if (!match) {
-    return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
-      { status: 404, headers: { "Content-Type": "text/html" } });
-  }
-
-  const { route, params } = match;
-  return runWithRouterState(() =>
-    runWithHeadState(() =>
-      _runWithCacheState(() =>
-        runWithPrivateCache(() =>
-          runWithFetchCache(async () => {
-  try {
-    if (typeof setSSRContext === "function") {
-      setSSRContext({
-        pathname: routeUrl.split("?")[0],
-        query: { ...params, ...parseQuery(routeUrl) },
-        asPath: routeUrl,
-        locale: locale,
-        locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
-      });
-    }
-
-    if (i18nConfig) {
-      globalThis.__VINEXT_LOCALE__ = locale;
-      globalThis.__VINEXT_LOCALES__ = i18nConfig.locales;
-      globalThis.__VINEXT_DEFAULT_LOCALE__ = i18nConfig.defaultLocale;
-    }
-
-    const pageModule = route.module;
-    const PageComponent = pageModule.default;
-    if (!PageComponent) {
-      return new Response("Page has no default export", { status: 500 });
-    }
-
-    // Handle getStaticPaths for dynamic routes
-    if (typeof pageModule.getStaticPaths === "function" && route.isDynamic) {
-      const pathsResult = await pageModule.getStaticPaths({
-        locales: i18nConfig ? i18nConfig.locales : [],
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : "",
-      });
-      const fallback = pathsResult && pathsResult.fallback !== undefined ? pathsResult.fallback : false;
-
-      if (fallback === false) {
-        const paths = pathsResult && pathsResult.paths ? pathsResult.paths : [];
-        const isValidPath = paths.some(function(p) {
-          return Object.entries(p.params).every(function(entry) {
-            var key = entry[0], val = entry[1];
-            var actual = params[key];
-            if (Array.isArray(val)) {
-              return Array.isArray(actual) && val.join("/") === actual.join("/");
-            }
-            return String(val) === String(actual);
-          });
-        });
-        if (!isValidPath) {
-          return new Response("<!DOCTYPE html><html><body><h1>404 - Page not found</h1></body></html>",
-            { status: 404, headers: { "Content-Type": "text/html" } });
-        }
-      }
-    }
-
-    let pageProps = {};
-    if (typeof pageModule.getServerSideProps === "function") {
-      const { req, res } = createReqRes(request, routeUrl, parseQuery(routeUrl), undefined);
-      const ctx = {
-        params, req, res,
-        query: parseQuery(routeUrl),
-        resolvedUrl: routeUrl,
-        locale: locale,
-        locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
-      };
-      const result = await pageModule.getServerSideProps(ctx);
-      if (result && result.props) pageProps = result.props;
-      if (result && result.redirect) {
-        var gsspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
-        return new Response(null, { status: gsspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
-      }
-      if (result && result.notFound) {
-        return new Response("404", { status: 404 });
-      }
-    }
-    // Build font Link header early so it's available for ISR cached responses too.
-    // Font preloads are module-level state populated at import time and persist across requests.
-    var _fontLinkHeader = "";
-    var _allFp = [];
-    try {
-      var _fpGoogle = typeof _getSSRFontPreloadsGoogle === "function" ? _getSSRFontPreloadsGoogle() : [];
-      var _fpLocal = typeof _getSSRFontPreloadsLocal === "function" ? _getSSRFontPreloadsLocal() : [];
-      _allFp = _fpGoogle.concat(_fpLocal);
-      if (_allFp.length > 0) {
-        _fontLinkHeader = _allFp.map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; }).join(", ");
-      }
-    } catch (e) { /* font preloads not available */ }
-
-    let isrRevalidateSeconds = null;
-    if (typeof pageModule.getStaticProps === "function") {
-      const pathname = routeUrl.split("?")[0];
-      const cacheKey = "pages:" + (pathname === "/" ? "/" : pathname.replace(/\\/$/, ""));
-      const cached = await isrGet(cacheKey);
-
-      if (cached && !cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
-        var _hitHeaders = {
-          "Content-Type": "text/html", "X-Vinext-Cache": "HIT",
-          "Cache-Control": "s-maxage=" + (cached.value.value.revalidate || 60) + ", stale-while-revalidate",
-        };
-        if (_fontLinkHeader) _hitHeaders["Link"] = _fontLinkHeader;
-        return new Response(cached.value.value.html, { status: 200, headers: _hitHeaders });
-      }
-
-      if (cached && cached.isStale && cached.value.value && cached.value.value.kind === "PAGES") {
-        triggerBackgroundRegeneration(cacheKey, async function() {
-          const freshResult = await pageModule.getStaticProps({ params });
-          if (freshResult && freshResult.props && typeof freshResult.revalidate === "number" && freshResult.revalidate > 0) {
-            await isrSet(cacheKey, { kind: "PAGES", html: cached.value.value.html, pageData: freshResult.props, headers: undefined, status: undefined }, freshResult.revalidate);
-          }
-        });
-        var _staleHeaders = {
-          "Content-Type": "text/html", "X-Vinext-Cache": "STALE",
-          "Cache-Control": "s-maxage=0, stale-while-revalidate",
-        };
-        if (_fontLinkHeader) _staleHeaders["Link"] = _fontLinkHeader;
-        return new Response(cached.value.value.html, { status: 200, headers: _staleHeaders });
-      }
-
-      const ctx = {
-        params,
-        locale: locale,
-        locales: i18nConfig ? i18nConfig.locales : undefined,
-        defaultLocale: i18nConfig ? i18nConfig.defaultLocale : undefined,
-      };
-      const result = await pageModule.getStaticProps(ctx);
-      if (result && result.props) pageProps = result.props;
-      if (result && result.redirect) {
-        var gspStatus = result.redirect.statusCode != null ? result.redirect.statusCode : (result.redirect.permanent ? 308 : 307);
-        return new Response(null, { status: gspStatus, headers: { Location: sanitizeDestinationLocal(result.redirect.destination) } });
-      }
-      if (result && result.notFound) {
-        return new Response("404", { status: 404 });
-      }
-      if (typeof result.revalidate === "number" && result.revalidate > 0) {
-        isrRevalidateSeconds = result.revalidate;
-      }
-    }
-
-    let element;
-    if (AppComponent) {
-      element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
-    } else {
-      element = React.createElement(PageComponent, pageProps);
-    }
-
-    if (typeof resetSSRHead === "function") resetSSRHead();
-    if (typeof flushPreloads === "function") await flushPreloads();
-
-    const ssrHeadHTML = typeof getSSRHeadHTML === "function" ? getSSRHeadHTML() : "";
-
-    // Collect SSR font data (Google Font links, font preloads, font-face styles)
-    var fontHeadHTML = "";
-    function _escAttr(s) { return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;"); }
-    try {
-      var fontLinks = typeof _getSSRFontLinks === "function" ? _getSSRFontLinks() : [];
-      for (var fl of fontLinks) { fontHeadHTML += '<link rel="stylesheet" href="' + _escAttr(fl) + '" />\\n  '; }
-    } catch (e) { /* next/font/google not used */ }
-    // Emit <link rel="preload"> for all font files (reuse _allFp collected earlier for Link header)
-    for (var fp of _allFp) { fontHeadHTML += '<link rel="preload" href="' + _escAttr(fp.href) + '" as="font" type="' + _escAttr(fp.type) + '" crossorigin />\\n  '; }
-    try {
-      var allFontStyles = [];
-      if (typeof _getSSRFontStylesGoogle === "function") allFontStyles.push(..._getSSRFontStylesGoogle());
-      if (typeof _getSSRFontStylesLocal === "function") allFontStyles.push(..._getSSRFontStylesLocal());
-      if (allFontStyles.length > 0) { fontHeadHTML += '<style data-vinext-fonts>' + allFontStyles.join("\\n") + '</style>\\n  '; }
-    } catch (e) { /* font styles not available */ }
-
-    const pageModuleIds = route.filePath ? [route.filePath] : [];
-    const assetTags = collectAssetTags(manifest, pageModuleIds);
-    const nextDataPayload = {
-      props: { pageProps }, page: patternToNextFormat(route.pattern), query: params, isFallback: false,
-    };
-    if (i18nConfig) {
-      nextDataPayload.locale = locale;
-      nextDataPayload.locales = i18nConfig.locales;
-      nextDataPayload.defaultLocale = i18nConfig.defaultLocale;
-    }
-    const localeGlobals = i18nConfig
-      ? ";window.__VINEXT_LOCALE__=" + safeJsonStringify(locale) +
-        ";window.__VINEXT_LOCALES__=" + safeJsonStringify(i18nConfig.locales) +
-        ";window.__VINEXT_DEFAULT_LOCALE__=" + safeJsonStringify(i18nConfig.defaultLocale)
-      : "";
-    const nextDataScript = "<script>window.__NEXT_DATA__ = " + safeJsonStringify(nextDataPayload) + localeGlobals + "</script>";
-
-    // Build the document shell with a placeholder for the streamed body
-    var BODY_MARKER = "<!--VINEXT_STREAM_BODY-->";
-    var shellHtml;
-    if (DocumentComponent) {
-      const docElement = React.createElement(DocumentComponent);
-      shellHtml = await renderToStringAsync(docElement);
-      shellHtml = shellHtml.replace("__NEXT_MAIN__", BODY_MARKER);
-      if (ssrHeadHTML || assetTags || fontHeadHTML) {
-        shellHtml = shellHtml.replace("</head>", "  " + fontHeadHTML + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>");
-      }
-      shellHtml = shellHtml.replace("<!-- __NEXT_SCRIPTS__ -->", nextDataScript);
-      if (!shellHtml.includes("__NEXT_DATA__")) {
-        shellHtml = shellHtml.replace("</body>", "  " + nextDataScript + "\\n</body>");
-      }
-    } else {
-      shellHtml = "<!DOCTYPE html>\\n<html>\\n<head>\\n  <meta charset=\\"utf-8\\" />\\n  <meta name=\\"viewport\\" content=\\"width=device-width, initial-scale=1\\" />\\n  " + fontHeadHTML + ssrHeadHTML + "\\n  " + assetTags + "\\n</head>\\n<body>\\n  <div id=\\"__next\\">" + BODY_MARKER + "</div>\\n  " + nextDataScript + "\\n</body>\\n</html>";
-    }
-
-    if (typeof setSSRContext === "function") setSSRContext(null);
-
-    // Split the shell at the body marker
-    var markerIdx = shellHtml.indexOf(BODY_MARKER);
-    var shellPrefix = shellHtml.slice(0, markerIdx);
-    var shellSuffix = shellHtml.slice(markerIdx + BODY_MARKER.length);
-
-    // Start the React body stream — progressive SSR (no allReady wait)
-    var bodyStream = await renderToReadableStream(element);
-    var encoder = new TextEncoder();
-
-    // Create a composite stream: prefix + body + suffix
-    var compositeStream = new ReadableStream({
-      async start(controller) {
-        controller.enqueue(encoder.encode(shellPrefix));
-        var reader = bodyStream.getReader();
-        try {
-          for (;;) {
-            var chunk = await reader.read();
-            if (chunk.done) break;
-            controller.enqueue(chunk.value);
-          }
-        } finally {
-          reader.releaseLock();
-        }
-        controller.enqueue(encoder.encode(shellSuffix));
-        controller.close();
-      }
-    });
-
-    // Cache the rendered HTML for ISR (needs the full string — re-render synchronously)
-    if (isrRevalidateSeconds !== null && isrRevalidateSeconds > 0) {
-      // Tee the stream so we can cache and respond simultaneously would be ideal,
-      // but ISR responses are rare on first hit. Re-render to get complete HTML for cache.
-      var isrElement;
-      if (AppComponent) {
-        isrElement = React.createElement(AppComponent, { Component: PageComponent, pageProps });
-      } else {
-        isrElement = React.createElement(PageComponent, pageProps);
-      }
-      var isrHtml = await renderToStringAsync(isrElement);
-      var fullHtml = shellPrefix + isrHtml + shellSuffix;
-      var isrPathname = url.split("?")[0];
-      var isrCacheKey = "pages:" + (isrPathname === "/" ? "/" : isrPathname.replace(/\\/$/, ""));
-      await isrSet(isrCacheKey, { kind: "PAGES", html: fullHtml, pageData: pageProps, headers: undefined, status: undefined }, isrRevalidateSeconds);
-    }
-
-    const responseHeaders = { "Content-Type": "text/html" };
-    if (isrRevalidateSeconds) {
-      responseHeaders["Cache-Control"] = "s-maxage=" + isrRevalidateSeconds + ", stale-while-revalidate";
-      responseHeaders["X-Vinext-Cache"] = "MISS";
-    }
-    // Set HTTP Link header for font preloading
-    if (_fontLinkHeader) {
-      responseHeaders["Link"] = _fontLinkHeader;
-    }
-    return new Response(compositeStream, { status: 200, headers: responseHeaders });
-  } catch (e) {
-    console.error("[vinext] SSR error:", e);
-    return new Response("Internal Server Error", { status: 500 });
-  }
-          }) // end runWithFetchCache
-        ) // end runWithPrivateCache
-      ) // end _runWithCacheState
-    ) // end runWithHeadState
-  ); // end runWithRouterState
-}
-
-export async function handleApiRoute(request, url) {
-  const match = matchRoute(url, apiRoutes);
-  if (!match) {
-    return new Response("404 - API route not found", { status: 404 });
-  }
-
-  const { route, params } = match;
-  const handler = route.module.default;
-  if (typeof handler !== "function") {
-    return new Response("API route does not export a default function", { status: 500 });
-  }
-
-  const query = { ...params };
-  const qs = url.split("?")[1];
-  if (qs) {
-    for (const [k, v] of new URLSearchParams(qs)) {
-      if (k in query) {
-        // Multi-value: promote to array (Next.js returns string[] for duplicate keys)
-        query[k] = Array.isArray(query[k]) ? query[k].concat(v) : [query[k], v];
-      } else {
-        query[k] = v;
-      }
-    }
-  }
-
-  // Parse request body (enforce 1MB limit to prevent memory exhaustion,
-  // matching Next.js default bodyParser sizeLimit).
-  // Check Content-Length first as a fast path, then enforce on the actual
-  // stream to prevent bypasses via chunked transfer encoding.
-  const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
-  if (contentLength > 1 * 1024 * 1024) {
-    return new Response("Request body too large", { status: 413 });
-  }
-  let body;
-  const ct = request.headers.get("content-type") || "";
-  let rawBody;
-  try { rawBody = await readBodyWithLimit(request, 1 * 1024 * 1024); }
-  catch { return new Response("Request body too large", { status: 413 }); }
-  if (!rawBody) {
-    body = undefined;
-  } else if (ct.includes("application/json")) {
-    try { body = JSON.parse(rawBody); } catch { body = rawBody; }
-  } else {
-    body = rawBody;
-  }
-
-  const { req, res, responsePromise } = createReqRes(request, url, query, body);
-
-  try {
-    await handler(req, res);
-    // If handler didn't call res.end(), end it now.
-    // The end() method is idempotent — safe to call twice.
-    res.end();
-    return await responsePromise;
-  } catch (e) {
-    console.error("[vinext] API error:", e);
-    return new Response("Internal Server Error", { status: 500 });
-  }
-}
-
-${middlewareExportCode}
-`;
+    return _generateServerEntry(
+      pagesDir,
+      nextConfig,
+      fileMatcher,
+      middlewarePath,
+      instrumentationPath,
+    );
   }
 
   /**
@@ -1838,83 +1215,7 @@ ${middlewareExportCode}
    * __NEXT_DATA__ to determine which page to hydrate.
    */
   async function generateClientEntry(): Promise<string> {
-    const pageRoutes = await pagesRouter(pagesDir);
-
-    const hasApp = fs.existsSync(path.join(pagesDir, "_app.tsx")) || fs.existsSync(path.join(pagesDir, "_app.jsx")) || fs.existsSync(path.join(pagesDir, "_app.ts")) || fs.existsSync(path.join(pagesDir, "_app.js"));
-
-    // Build a map of route pattern -> dynamic import.
-    // Keys must use Next.js bracket format (e.g. "/user/[id]") to match
-    // __NEXT_DATA__.page which is set via patternToNextFormat() during SSR.
-    const loaderEntries = pageRoutes.map((r: Route) => {
-      const absPath = r.filePath.replace(/\\/g, "/");
-      const nextFormatPattern = pagesPatternToNextFormat(r.pattern);
-      // JSON.stringify safely escapes quotes, backslashes, and special chars in
-      // both the route pattern and the absolute file path.
-      // lgtm[js/bad-code-sanitization]
-      return `  ${JSON.stringify(nextFormatPattern)}: () => import(${JSON.stringify(absPath)})`;
-    });
-
-    const appFileBase = path.join(pagesDir, "_app").replace(/\\/g, "/");
-
-    return `
-import React from "react";
-import { hydrateRoot } from "react-dom/client";
-// Eagerly import the router shim so its module-level popstate listener is
-// registered.  Without this, browser back/forward buttons do nothing because
-// navigateClient() is never invoked on history changes.
-import "next/router";
-
-const pageLoaders = {
-${loaderEntries.join(",\n")}
-};
-
-async function hydrate() {
-  const nextData = window.__NEXT_DATA__;
-  if (!nextData) {
-    console.error("[vinext] No __NEXT_DATA__ found");
-    return;
-  }
-
-  const { pageProps } = nextData.props;
-  const loader = pageLoaders[nextData.page];
-  if (!loader) {
-    console.error("[vinext] No page loader for route:", nextData.page);
-    return;
-  }
-
-  const pageModule = await loader();
-  const PageComponent = pageModule.default;
-  if (!PageComponent) {
-    console.error("[vinext] Page module has no default export");
-    return;
-  }
-
-  let element;
-  ${hasApp ? `
-  try {
-    const appModule = await import(${JSON.stringify(appFileBase)});
-    const AppComponent = appModule.default;
-    window.__VINEXT_APP__ = AppComponent;
-    element = React.createElement(AppComponent, { Component: PageComponent, pageProps });
-  } catch {
-    element = React.createElement(PageComponent, pageProps);
-  }
-  ` : `
-  element = React.createElement(PageComponent, pageProps);
-  `}
-
-  const container = document.getElementById("__next");
-  if (!container) {
-    console.error("[vinext] No #__next element found");
-    return;
-  }
-
-  const root = hydrateRoot(container, element);
-  window.__VINEXT_ROOT__ = root;
-}
-
-hydrate();
-`;
+    return _generateClientEntry(pagesDir, nextConfig, fileMatcher);
   }
 
   // Auto-register @vitejs/plugin-rsc when App Router is detected.
@@ -1923,8 +1224,9 @@ hydrate();
   const autoRsc = options.rsc !== false;
   const earlyBaseDir = options.appDir ?? process.cwd();
   const earlyAppDirExists =
-    fs.existsSync(path.join(earlyBaseDir, "app")) ||
-    fs.existsSync(path.join(earlyBaseDir, "src", "app"));
+    !options.disableAppRouter &&
+    (fs.existsSync(path.join(earlyBaseDir, "app")) ||
+      fs.existsSync(path.join(earlyBaseDir, "src", "app")));
 
   // IMPORTANT: Resolve @vitejs/plugin-rsc subpath imports from the user's
   // project root, not from vinext's own package location. When vinext is
@@ -1938,16 +1240,18 @@ hydrate();
   //
   // Pre-resolve both the main plugin and the /transforms subpath eagerly
   // so all import() calls in this module use consistent resolution.
-  const earlyRequire = createRequire(path.join(earlyBaseDir, "package.json"));
+  let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
   let resolvedRscTransformsPath: string | null = null;
-  try {
-    resolvedRscPath = earlyRequire.resolve("@vitejs/plugin-rsc");
-    resolvedRscTransformsPath = earlyRequire.resolve("@vitejs/plugin-rsc/transforms");
-  } catch {
-    // @vitejs/plugin-rsc not installed — that's fine for Pages Router
-    // projects. If App Router is detected, the error is thrown below.
-  }
+  // Prefer the user's project graph so vinext shares the app's Vite/plugin
+  // instances. In source/workspace development, test fixtures may not declare
+  // peer deps explicitly, so fall back to vinext's own install location.
+  resolvedReactPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-react");
+  resolvedRscPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-rsc");
+  resolvedRscTransformsPath = resolveOptionalDependency(
+    earlyBaseDir,
+    "@vitejs/plugin-rsc/transforms",
+  );
 
   // If app/ exists and auto-RSC is enabled, create a lazy Promise that
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
@@ -1957,7 +1261,9 @@ hydrate();
     if (!resolvedRscPath) {
       throw new Error(
         "vinext: App Router detected but @vitejs/plugin-rsc is not installed.\n" +
-        "Run: " + detectPackageManager(process.cwd()) + " @vitejs/plugin-rsc",
+          "Run: " +
+          detectPackageManager(process.cwd()) +
+          " @vitejs/plugin-rsc",
       );
     }
     const rscImport = import(pathToFileURL(resolvedRscPath).href);
@@ -1971,24 +1277,501 @@ hydrate();
             client: VIRTUAL_APP_BROWSER_ENTRY,
           },
         });
+      })
+      .catch((cause) => {
+        throw new Error("vinext: Failed to load @vitejs/plugin-rsc.", { cause });
+      });
+  }
+
+  const reactOptions = options.react && options.react !== true ? options.react : undefined;
+
+  let reactPluginPromise: Promise<PluginOption[]> | null = null;
+  if (options.react !== false) {
+    if (!resolvedReactPath) {
+      throw new Error(
+        "vinext: @vitejs/plugin-react is not installed.\n" +
+          "Run: " +
+          detectPackageManager(process.cwd()) +
+          " @vitejs/plugin-react",
+      );
+    }
+    const reactImport = import(pathToFileURL(resolvedReactPath).href);
+    reactPluginPromise = reactImport
+      .then((mod) => (mod as VitePluginReactModule).default(reactOptions))
+      .catch((cause) => {
+        throw new Error("vinext: Failed to load @vitejs/plugin-react.", { cause });
       });
   }
 
   const imageImportDimCache = new Map<string, { width: number; height: number }>();
 
-  const plugins: (Plugin | Promise<Plugin[]>)[] = [
+  // Shared state for the MDX proxy plugin. Populated during config() if MDX
+  // files are detected and @mdx-js/rollup is installed.
+  let mdxDelegate: Plugin | null = null;
+
+  const plugins: PluginOption[] = [
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
-    tsconfigPaths(),
+    // Vite 8+ supports this natively via resolve.tsconfigPaths.
+    ...(viteMajorVersion >= 8 ? [] : [tsconfigPaths()]),
+    // React Fast Refresh + JSX transform for client components.
+    reactPluginPromise,
     // Transform CJS require()/module.exports to ESM before other plugins
     // analyze imports (RSC directive scanning, shim resolution, etc.)
     commonjs(),
+    // Fix 'use server' closure variable collision with local declarations.
+    //
+    // @vitejs/plugin-rsc uses `periscopic` to find closure variables for
+    // 'use server' inline functions. Due to how periscopic handles block scopes,
+    // `const X = ...` declared inside a 'use server' function body is tracked in
+    // the BlockStatement scope (not the FunctionDeclaration scope). When periscopic
+    // searches for the owner of a reference `X`, it finds the block scope — which
+    // is neither the function scope nor the module scope — so it incorrectly
+    // classifies `X` as a closure variable from the outer scope.
+    //
+    // The result: plugin-rsc injects `const [X] = await decryptActionBoundArgs(...)`
+    // at the top of the hoisted function, colliding with the existing `const X = ...`
+    // declaration in the body. This causes a SyntaxError.
+    //
+    // Fix: before plugin-rsc sees the file, detect any 'use server' function whose
+    // local `const/let/var` declarations shadow an outer-scope variable, and rename
+    // the inner declarations (+ usages within that function) to `__local_X`. This
+    // eliminates the collision without changing semantics.
+    //
+    // This is a general fix that works for any library — not just @payloadcms/next.
+    {
+      name: "vinext:fix-use-server-closure-collision",
+      enforce: "pre" as const,
+      transform(code: string, id: string) {
+        // Quick bail-out: only files that contain 'use server' inline
+        if (!code.includes("use server")) return null;
+        // Only JS/TS files
+        if (!/\.(js|jsx|ts|tsx|mjs|cjs)$/.test(id.split("?")[0])) return null;
+
+        let ast: any;
+        try {
+          ast = parseAst(code);
+        } catch {
+          return null;
+        }
+
+        function collectPatternNames(pattern: any, names: Set<string>) {
+          if (!pattern) return;
+          if (pattern.type === "Identifier") {
+            names.add(pattern.name);
+          } else if (pattern.type === "ObjectPattern") {
+            for (const prop of pattern.properties) {
+              collectPatternNames(prop.value ?? prop.argument, names);
+            }
+          } else if (pattern.type === "ArrayPattern") {
+            for (const elem of pattern.elements) {
+              collectPatternNames(elem, names);
+            }
+          } else if (pattern.type === "RestElement" || pattern.type === "AssignmentPattern") {
+            collectPatternNames(pattern.left ?? pattern.argument, names);
+          }
+        }
+
+        // Check if a block body has 'use server' as its leading directive prologue.
+        // Only the first contiguous run of string-literal expression statements
+        // counts — a "use server" string mid-function is not a directive.
+        function hasUseServerDirective(body: any[]): boolean {
+          for (const stmt of body) {
+            if (
+              stmt.type === "ExpressionStatement" &&
+              stmt.expression?.type === "Literal" &&
+              typeof stmt.expression.value === "string"
+            ) {
+              if (stmt.expression.value === "use server") return true;
+              // Any other string literal in the prologue — keep scanning
+              continue;
+            }
+            // First non-string-literal statement ends the prologue
+            break;
+          }
+          return false;
+        }
+
+        // Find all 'use server' inline functions and check for collisions.
+        //
+        // `ancestorNames` accumulates the names that are in scope in all ancestor
+        // function/program bodies as we descend — this is the correct set to
+        // compare against, not a whole-AST walk (which would pick up siblings).
+        const s = new MagicString(code);
+        // Track source ranges already rewritten so renamingWalk never calls
+        // s.update() twice on the same span (MagicString throws if it does).
+        const renamedRanges = new Set<string>();
+        let changed = false;
+
+        function visitNode(node: any, ancestorNames: Set<string>) {
+          if (!node || typeof node !== "object") return;
+
+          const isFn =
+            node.type === "FunctionDeclaration" ||
+            node.type === "FunctionExpression" ||
+            node.type === "ArrowFunctionExpression";
+
+          if (!isFn) {
+            // Non-function nodes (Program, BlockStatement, IfStatement, CatchClause,
+            // etc.) don't introduce a new function scope, but they may contain
+            // variable declarations and catch bindings that are visible to nested
+            // functions as ancestor names.  Accumulate those into a new set before
+            // recursing so we don't mutate the caller's set.
+            const namesForChildren = new Set(ancestorNames);
+
+            // CatchClause: `catch (e)` — `e` is in scope for the catch body
+            if (node.type === "CatchClause" && node.param) {
+              collectPatternNames(node.param, namesForChildren);
+            }
+
+            // Collect names visible at function scope from this node:
+            //   - FunctionDeclaration names (hoisted to enclosing scope)
+            //   - ClassDeclaration names (block-scoped like let, but treated as
+            //     function-scoped for our purposes since periscopic sees them)
+            //   - var declarations (hoisted to function scope, found anywhere)
+            // We do NOT collect let/const from nested blocks here — those are
+            // block-scoped and not visible to sibling/outer function declarations.
+            collectFunctionScopedNames(node, namesForChildren);
+            // Also collect let/const/var/class/import declared as immediate children
+            // of this node (e.g. top-level Program statements, or the direct body of
+            // a BlockStatement) — those ARE in scope for everything in the same block.
+            const immediateStmts: any[] =
+              node.type === "Program" ? node.body : node.type === "BlockStatement" ? node.body : [];
+            for (const stmt of immediateStmts) {
+              if (stmt?.type === "VariableDeclaration") {
+                for (const decl of stmt.declarations)
+                  collectPatternNames(decl.id, namesForChildren);
+              } else if (stmt?.type === "ClassDeclaration" && stmt.id?.name) {
+                namesForChildren.add(stmt.id.name);
+              } else if (stmt?.type === "ImportDeclaration") {
+                for (const spec of stmt.specifiers ?? []) {
+                  // ImportDefaultSpecifier, ImportNamespaceSpecifier, ImportSpecifier
+                  // all have `local.name` as the binding name in this module.
+                  if (spec.local?.name) namesForChildren.add(spec.local.name);
+                }
+              }
+            }
+
+            for (const key of Object.keys(node)) {
+              if (key === "type") continue;
+              const child = node[key];
+              if (Array.isArray(child)) {
+                for (const c of child) visitNode(c, namesForChildren);
+              } else if (child && typeof child === "object" && child.type) {
+                visitNode(child, namesForChildren);
+              }
+            }
+            return;
+          }
+
+          // Build the ancestor name set visible inside this function:
+          // everything the parent saw, plus this function's own params.
+          const namesForBody = new Set(ancestorNames);
+          for (const p of node.params ?? []) collectPatternNames(p, namesForBody);
+
+          // Check whether the body has the 'use server' directive.
+          const bodyStmts: any[] = node.body?.type === "BlockStatement" ? node.body.body : [];
+          const isServerFn = hasUseServerDirective(bodyStmts);
+
+          if (isServerFn) {
+            // Collect ALL variables declared anywhere in this function body.
+            // This includes direct bodyStmts, but also for...of/for...in loop
+            // variables, declarations inside if/try/while blocks, etc.
+            // periscopic puts these in the BlockStatement scope (not the function
+            // scope), so they get mis-classified as closure vars from the outer scope.
+            // We use collectAllDeclaredNames (recursive, crosses blocks, stops at
+            // nested function bodies) to catch every possible declaration site.
+            const localDecls = new Set<string>();
+            collectAllDeclaredNames(node.body, localDecls);
+
+            // Find collisions: local decls that shadow a name from ancestor scopes.
+            // collisionRenames maps original name → chosen rename target, taking
+            // into account that `__local_${name}` may itself already be declared
+            // (e.g. the user wrote `const __local_cookies = ...`).  In that case
+            // we try `__local_0_${name}`, `__local_1_${name}`, … until we find a
+            // free name.  This prevents a secondary collision.
+            const collisionRenames = new Map<string, string>();
+            for (const name of localDecls) {
+              if (namesForBody.has(name)) {
+                let to = `__local_${name}`;
+                let suffix = 0;
+                while (localDecls.has(to) || namesForBody.has(to)) {
+                  to = `__local_${suffix}_${name}`;
+                  suffix++;
+                }
+                collisionRenames.set(name, to);
+              }
+            }
+
+            if (collisionRenames.size > 0) {
+              for (const [name, to] of collisionRenames) {
+                renamingWalk(node.body, name, to);
+              }
+              changed = true;
+            }
+
+            // Build the ancestor set for children of this server function.
+            // Colliding names have been renamed in this body, e.g. `cookies` →
+            // `__local_cookies`.  The original name no longer exists as a binding
+            // in this scope, so we must remove it from the set and add the renamed
+            // version instead.  Leaving the original name in would cause nested
+            // server functions to see it as an ancestor binding and spuriously flag
+            // their own independent `const cookies` as a collision.
+            const namesForChildren = new Set(namesForBody);
+            for (const name of localDecls) {
+              if (collisionRenames.has(name)) {
+                namesForChildren.delete(name);
+                namesForChildren.add(collisionRenames.get(name)!);
+              } else {
+                namesForChildren.add(name);
+              }
+            }
+
+            // Recurse into children — nested 'use server' functions must be visited.
+            // Skip node.body itself (already handled by renamingWalk above for
+            // collisions); we recurse into each statement individually so that
+            // nested functions inside the body get their own visitNode pass with
+            // the correct ancestorNames.
+            for (const stmt of bodyStmts) {
+              visitNode(stmt, namesForChildren);
+            }
+            // Also visit params (they can contain default expressions with closures)
+            for (const p of node.params ?? []) visitNode(p, ancestorNames);
+            return;
+          }
+
+          // Not a server function — build the ancestor set for nested functions:
+          //   - var declarations anywhere in this function body (function-scoped)
+          //   - FunctionDeclaration names anywhere in this function body
+          //   - let/const only from the top-level statements of this function body
+          //     (block-scoped — not visible to nested fns in sibling blocks)
+          const namesForChildren = new Set(namesForBody);
+          collectFunctionScopedNames(node.body, namesForChildren);
+          for (const stmt of bodyStmts) {
+            if (stmt?.type === "VariableDeclaration" && stmt.kind !== "var") {
+              for (const decl of stmt.declarations) collectPatternNames(decl.id, namesForChildren);
+            }
+          }
+
+          for (const key of Object.keys(node)) {
+            if (key === "type") continue;
+            const child = node[key];
+            if (Array.isArray(child)) {
+              for (const c of child) visitNode(c, namesForChildren);
+            } else if (child && typeof child === "object" && child.type) {
+              visitNode(child, namesForChildren);
+            }
+          }
+        }
+
+        // Walk an AST subtree renaming all variable-reference Identifier nodes
+        // matching `from` to `to`.
+        //
+        // Correctness rules:
+        //   - Non-computed MemberExpression.property is NOT a variable reference
+        //   - Non-computed Property.key is NOT a variable reference
+        //   - Shorthand Property { x } must be expanded to { x: __local_x }
+        //   - A nested function that re-declares `from` in its params OR anywhere
+        //     in its body via var/const/let (including inside control flow) is a
+        //     new binding — stop descending into it
+        //   - Never call s.update() on the same source range twice
+        //
+        // `parent` is the direct parent AST node, used to detect property contexts.
+        function renamingWalk(node: any, from: string, to: string, parent?: any) {
+          if (!node || typeof node !== "object") return;
+
+          if (node.type === "Identifier" && node.name === from) {
+            // Non-computed member expression property: obj.cookies — not a ref
+            if (
+              parent?.type === "MemberExpression" &&
+              parent.property === node &&
+              !parent.computed
+            ) {
+              return;
+            }
+
+            // Non-computed property key in an object literal
+            if (parent?.type === "Property" && parent.key === node && !parent.computed) {
+              if (parent.shorthand) {
+                // { cookies } — key and value are the same AST node.
+                // Expand to { cookies: __local_cookies } by rewriting at the key
+                // visit; skip the value visit via the guard below.
+                const rangeKey = `${node.start}:${node.end}`;
+                if (!renamedRanges.has(rangeKey)) {
+                  renamedRanges.add(rangeKey);
+                  s.update(node.start, node.end, `${from}: ${to}`);
+                }
+              }
+              // Either way, key is not a variable reference — do not rename it.
+              return;
+            }
+
+            // Value side of a shorthand property — same node as key, already handled
+            if (parent?.type === "Property" && parent.shorthand && parent.value === node) {
+              return;
+            }
+
+            // LabeledStatement label: `cookies: for (...)` — not a variable reference
+            if (parent?.type === "LabeledStatement" && parent.label === node) {
+              return;
+            }
+
+            // break/continue label: `break cookies` / `continue cookies` — not a variable reference
+            if (
+              (parent?.type === "BreakStatement" || parent?.type === "ContinueStatement") &&
+              parent.label === node
+            ) {
+              return;
+            }
+
+            const rangeKey = `${node.start}:${node.end}`;
+            if (!renamedRanges.has(rangeKey)) {
+              renamedRanges.add(rangeKey);
+              s.update(node.start, node.end, to);
+            }
+            return;
+          }
+
+          // For nested function nodes, check whether they re-declare `from`.
+          // If they do, stop — the name in that nested scope is a different binding.
+          // We must check ALL var declarations anywhere in the body (var hoists),
+          // not just top-level statements.
+          if (
+            node.type === "FunctionDeclaration" ||
+            node.type === "FunctionExpression" ||
+            node.type === "ArrowFunctionExpression"
+          ) {
+            const nestedDecls = new Set<string>();
+            // Params
+            for (const p of node.params ?? []) collectPatternNames(p, nestedDecls);
+            // Recursively find all var/const/let declarations in the body,
+            // including those nested inside if/for/while/etc.
+            collectAllDeclaredNames(node.body, nestedDecls);
+            if (nestedDecls.has(from)) return;
+
+            // Also stop at nested 'use server' functions — visitNode will handle them
+            // independently with the correct collision set, preventing double-rewrites.
+            if (node.body?.type === "BlockStatement" && hasUseServerDirective(node.body.body)) {
+              return;
+            }
+          }
+
+          for (const key of Object.keys(node)) {
+            if (key === "type" || key === "start" || key === "end") continue;
+            const child = node[key];
+            if (Array.isArray(child)) {
+              for (const c of child) renamingWalk(c, from, to, node);
+            } else if (child && typeof child === "object" && child.type) {
+              renamingWalk(child, from, to, node);
+            }
+          }
+        }
+
+        // Collect names that are visible at function scope from a given subtree.
+        //
+        // Two separate helpers with different traversal rules:
+        //
+        //   collectFunctionScopedNames(node, names)
+        //     Collects `var` declarations and `FunctionDeclaration` names anywhere
+        //     in the subtree, crossing block boundaries (if/for/while/try/catch)
+        //     but NOT crossing nested function bodies.  `let`/`const` in nested
+        //     blocks are intentionally skipped — they are block-scoped and not
+        //     visible outside that block.
+        //     Use this when building ancestorNames for nested functions.
+        //
+        //   collectAllDeclaredNames(node, names)
+        //     Collects ALL var/let/const declarations anywhere in the subtree,
+        //     crossing block boundaries but not nested function bodies.
+        //     Used only by renamingWalk's re-declaration check, where we want to
+        //     know if ANY declaration of `from` exists in a nested function's scope
+        //     (params already handled separately).
+
+        function collectFunctionScopedNames(node: any, names: Set<string>) {
+          if (!node || typeof node !== "object") return;
+          // FunctionDeclaration: its name is a binding in the enclosing scope.
+          // Record it, then stop — don't recurse into the body (different scope).
+          if (node.type === "FunctionDeclaration") {
+            if (node.id?.name) names.add(node.id.name);
+            return;
+          }
+          // ClassDeclaration: like FunctionDeclaration, its name is a binding in
+          // the enclosing scope.  Don't recurse into the body.
+          if (node.type === "ClassDeclaration") {
+            if (node.id?.name) names.add(node.id.name);
+            return;
+          }
+          // FunctionExpression / ArrowFunctionExpression names are only in scope
+          // inside their own body, not the enclosing scope — skip entirely.
+          if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+            return;
+          }
+          // var declarations are function-scoped — collect them wherever they appear.
+          // let/const at a nested block level are block-scoped and NOT visible to
+          // sibling or outer function declarations, so skip them here.
+          if (node.type === "VariableDeclaration" && node.kind === "var") {
+            for (const decl of node.declarations) collectPatternNames(decl.id, names);
+          }
+          for (const key of Object.keys(node)) {
+            if (key === "type") continue;
+            const child = node[key];
+            if (Array.isArray(child)) {
+              for (const c of child) collectFunctionScopedNames(c, names);
+            } else if (child && typeof child === "object" && child.type) {
+              collectFunctionScopedNames(child, names);
+            }
+          }
+        }
+
+        // Collect ALL declared names (var/let/const/class/function) in a subtree,
+        // crossing blocks but not nested function bodies or class bodies.
+        // Used by renamingWalk's re-declaration check where any shadowing
+        // declaration — regardless of kind — must stop the rename from descending
+        // further, and by the server-function local-decl scan to detect all
+        // possible collision sites (including class declarations in the body).
+        function collectAllDeclaredNames(node: any, names: Set<string>) {
+          if (!node || typeof node !== "object") return;
+          if (node.type === "VariableDeclaration") {
+            for (const decl of node.declarations) collectPatternNames(decl.id, names);
+          }
+          // FunctionDeclaration name is a binding in the enclosing scope — record it.
+          if (node.type === "FunctionDeclaration") {
+            if (node.id?.name) names.add(node.id.name);
+            return; // don't recurse into its body
+          }
+          // ClassDeclaration name is a binding in the enclosing scope — record it.
+          if (node.type === "ClassDeclaration") {
+            if (node.id?.name) names.add(node.id.name);
+            return; // don't recurse into the class body (separate scope)
+          }
+          if (node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") {
+            return; // different scope — stop
+          }
+          for (const key of Object.keys(node)) {
+            if (key === "type") continue;
+            const child = node[key];
+            if (Array.isArray(child)) {
+              for (const c of child) collectAllDeclaredNames(c, names);
+            } else if (child && typeof child === "object" && child.type) {
+              collectAllDeclaredNames(child, names);
+            }
+          }
+        }
+
+        visitNode(ast, new Set());
+
+        if (!changed) return null;
+        return { code: s.toString(), map: s.generateMap({ hires: "boundary" }) };
+      },
+    },
     {
       name: "vinext:config",
       enforce: "pre",
 
       async config(config, env) {
         root = config.root ?? process.cwd();
+        const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
+        const shouldEnableNativeTsconfigPaths =
+          viteMajorVersion >= 8 && userResolve?.tsconfigPaths === undefined;
 
         // Load .env files into process.env before anything else.
         // Next.js loads .env files before evaluating next.config.js, so
@@ -2002,6 +1785,19 @@ hydrate();
           if (process.env[key] === undefined) {
             process.env[key] = value;
           }
+        }
+        // Align NODE_ENV with Next.js semantics: build -> production, serve -> development.
+        // Next.js unconditionally forces NODE_ENV during build/dev, so we do the same.
+        let resolvedNodeEnv: string;
+        if (mode === "test") {
+          resolvedNodeEnv = "test";
+        } else if (env?.command === "build") {
+          resolvedNodeEnv = "production";
+        } else {
+          resolvedNodeEnv = "development";
+        }
+        if (process.env.NODE_ENV !== resolvedNodeEnv) {
+          process.env.NODE_ENV = resolvedNodeEnv;
         }
 
         // Resolve the base directory for app/pages detection.
@@ -2031,23 +1827,33 @@ hydrate();
         pagesDir = path.join(baseDir, "pages");
         appDir = path.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
-        hasAppDir = fs.existsSync(appDir);
-        middlewarePath = findMiddlewareFile(root);
-        instrumentationPath = findInstrumentationFile(root);
+        hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
 
         // Load next.config.js if present (always from project root, not src/)
-        const rawConfig = await loadNextConfig(root);
-        nextConfig = await resolveNextConfig(rawConfig);
+        const phase = env?.command === "build" ? PHASE_PRODUCTION_BUILD : PHASE_DEVELOPMENT_SERVER;
+        const rawConfig = await loadNextConfig(root, phase);
+        nextConfig = await resolveNextConfig(rawConfig, root);
+        fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
+        instrumentationPath = findInstrumentationFile(root, fileMatcher);
+        middlewarePath = findMiddlewareFile(root, fileMatcher);
 
         // Merge env from next.config.js with NEXT_PUBLIC_* env vars
         const defines = getNextPublicEnvDefines();
+        if (
+          !config.define ||
+          typeof config.define !== "object" ||
+          !("process.env.NODE_ENV" in config.define)
+        ) {
+          defines["process.env.NODE_ENV"] = JSON.stringify(resolvedNodeEnv);
+        }
         for (const [key, value] of Object.entries(nextConfig.env)) {
+          // Skip NODE_ENV from next.config.js env — Next.js ignores it too,
+          // and it would silently override the value we just set above.
+          if (key === "NODE_ENV") continue;
           defines[`process.env.${key}`] = JSON.stringify(value);
         }
         // Expose basePath to client-side code
-        defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(
-          nextConfig.basePath,
-        );
+        defines["process.env.__NEXT_ROUTER_BASEPATH"] = JSON.stringify(nextConfig.basePath);
         // Expose image remote patterns for validation in next/image shim
         defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.remotePatterns ?? []),
@@ -2059,14 +1865,14 @@ hydrate();
         // server-side validation. Matches Next.js behavior: only configured
         // sizes are accepted by the image optimization endpoint.
         {
-          const deviceSizes = nextConfig.images?.deviceSizes ?? [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
+          const deviceSizes = nextConfig.images?.deviceSizes ?? [
+            640, 750, 828, 1080, 1200, 1920, 2048, 3840,
+          ];
           const imageSizes = nextConfig.images?.imageSizes ?? [16, 32, 48, 64, 96, 128, 256, 384];
           defines["process.env.__VINEXT_IMAGE_DEVICE_SIZES"] = JSON.stringify(
             JSON.stringify(deviceSizes),
           );
-          defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(
-            JSON.stringify(imageSizes),
-          );
+          defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(JSON.stringify(imageSizes));
         }
         // Expose dangerouslyAllowSVG flag for the image shim's auto-skip logic.
         // When false (default), .svg sources bypass the optimization endpoint.
@@ -2076,66 +1882,116 @@ hydrate();
         // Draft mode secret — generated once at build time so the
         // __prerender_bypass cookie is consistent across all server
         // instances (e.g. multiple Cloudflare Workers isolates).
-        defines["process.env.__VINEXT_DRAFT_SECRET"] = JSON.stringify(
-          crypto.randomUUID(),
-        );
+        defines["process.env.__VINEXT_DRAFT_SECRET"] = JSON.stringify(crypto.randomUUID());
+        // Build ID — resolved from next.config generateBuildId() or random UUID.
+        // Exposed so server entries and the next/server shim can inject it.
+        // Also used to namespace ISR cache keys so old cached entries from a
+        // previous deploy are never served by the new one.
+        defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
 
-        // Build the shim alias map — used by both resolve.alias and resolveId
-        // (resolveId handles .js extension variants for libraries like nuqs)
-        nextShimMap = {
-          "next/link": path.join(shimsDir, "link"),
-          "next/head": path.join(shimsDir, "head"),
-          "next/router": path.join(shimsDir, "router"),
-          "next/compat/router": path.join(shimsDir, "compat-router"),
-          "next/image": path.join(shimsDir, "image"),
-          "next/legacy/image": path.join(shimsDir, "legacy-image"),
-          "next/dynamic": path.join(shimsDir, "dynamic"),
-          "next/app": path.join(shimsDir, "app"),
-          "next/document": path.join(shimsDir, "document"),
-          "next/config": path.join(shimsDir, "config"),
-          "next/script": path.join(shimsDir, "script"),
-          "next/server": path.join(shimsDir, "server"),
-          "next/navigation": path.join(shimsDir, "navigation"),
-          "next/headers": path.join(shimsDir, "headers"),
-          "next/font/google": path.join(shimsDir, "font-google"),
-          "next/font/local": path.join(shimsDir, "font-local"),
-          "next/cache": path.join(shimsDir, "cache"),
-          "next/form": path.join(shimsDir, "form"),
-          "next/og": path.join(shimsDir, "og"),
-          "next/web-vitals": path.join(shimsDir, "web-vitals"),
-          "next/amp": path.join(shimsDir, "amp"),
-          "next/error": path.join(shimsDir, "error"),
-          "next/constants": path.join(shimsDir, "constants"),
-          // Internal next/dist/* paths used by popular libraries
-          // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
-          "next/dist/shared/lib/app-router-context.shared-runtime": path.join(shimsDir, "internal", "app-router-context"),
-          "next/dist/shared/lib/app-router-context": path.join(shimsDir, "internal", "app-router-context"),
-          "next/dist/shared/lib/router-context.shared-runtime": path.join(shimsDir, "internal", "router-context"),
-          "next/dist/shared/lib/utils": path.join(shimsDir, "internal", "utils"),
-          "next/dist/server/api-utils": path.join(shimsDir, "internal", "api-utils"),
-          "next/dist/server/web/spec-extension/cookies": path.join(shimsDir, "internal", "cookies"),
-          "next/dist/compiled/@edge-runtime/cookies": path.join(shimsDir, "internal", "cookies"),
-          "next/dist/server/app-render/work-unit-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
-          "next/dist/client/components/work-unit-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
-          "next/dist/client/components/request-async-storage.external": path.join(shimsDir, "internal", "work-unit-async-storage"),
-          "next/dist/client/components/request-async-storage": path.join(shimsDir, "internal", "work-unit-async-storage"),
-          // Re-export public modules for internal path imports
-          "next/dist/client/components/navigation": path.join(shimsDir, "navigation"),
-          "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
-          // server-only / client-only marker packages
-          "server-only": path.join(shimsDir, "server-only"),
-          "client-only": path.join(shimsDir, "client-only"),
-          "vinext/error-boundary": path.join(shimsDir, "error-boundary"),
-          "vinext/layout-segment-context": path.join(shimsDir, "layout-segment-context"),
-          "vinext/metadata": path.join(shimsDir, "metadata"),
-          "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
-          "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
-          "vinext/navigation-state": path.join(shimsDir, "navigation-state"),
-          "vinext/router-state": path.join(shimsDir, "router-state"),
-          "vinext/head-state": path.join(shimsDir, "head-state"),
-          "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
-          "vinext/html": path.resolve(__dirname, "server", "html"),
-        };
+        // Build the shim alias map. Exact `.js` variants are included for the
+        // public Next entrypoints that are file-backed in `next/package.json`.
+        // Some libraries (for example `nuqs`) import `next/navigation.js`
+        // directly; aliasing the `.js` form ensures optimizeDeps pre-bundles
+        // vinext's shim instead of real Next.
+        nextShimMap = Object.fromEntries(
+          Object.entries({
+            "next/link": path.join(shimsDir, "link"),
+            "next/head": path.join(shimsDir, "head"),
+            "next/router": path.join(shimsDir, "router"),
+            "next/compat/router": path.join(shimsDir, "compat-router"),
+            "next/image": path.join(shimsDir, "image"),
+            "next/legacy/image": path.join(shimsDir, "legacy-image"),
+            "next/dynamic": path.join(shimsDir, "dynamic"),
+            "next/app": path.join(shimsDir, "app"),
+            "next/document": path.join(shimsDir, "document"),
+            "next/config": path.join(shimsDir, "config"),
+            "next/script": path.join(shimsDir, "script"),
+            "next/server": path.join(shimsDir, "server"),
+            "next/navigation": path.join(shimsDir, "navigation"),
+            "next/headers": path.join(shimsDir, "headers"),
+            "next/font/google": path.join(shimsDir, "font-google"),
+            "next/font/local": path.join(shimsDir, "font-local"),
+            "next/cache": path.join(shimsDir, "cache"),
+            "next/form": path.join(shimsDir, "form"),
+            "next/og": path.join(shimsDir, "og"),
+            "next/web-vitals": path.join(shimsDir, "web-vitals"),
+            "next/amp": path.join(shimsDir, "amp"),
+            "next/error": path.join(shimsDir, "error"),
+            "next/constants": path.join(shimsDir, "constants"),
+            // Internal next/dist/* paths used by popular libraries
+            // (next-intl, @clerk/nextjs, @sentry/nextjs, next-nprogress-bar, etc.)
+            "next/dist/shared/lib/app-router-context.shared-runtime": path.join(
+              shimsDir,
+              "internal",
+              "app-router-context",
+            ),
+            "next/dist/shared/lib/app-router-context": path.join(
+              shimsDir,
+              "internal",
+              "app-router-context",
+            ),
+            "next/dist/shared/lib/router-context.shared-runtime": path.join(
+              shimsDir,
+              "internal",
+              "router-context",
+            ),
+            "next/dist/shared/lib/utils": path.join(shimsDir, "internal", "utils"),
+            "next/dist/server/api-utils": path.join(shimsDir, "internal", "api-utils"),
+            "next/dist/server/web/spec-extension/cookies": path.join(
+              shimsDir,
+              "internal",
+              "cookies",
+            ),
+            "next/dist/compiled/@edge-runtime/cookies": path.join(shimsDir, "internal", "cookies"),
+            "next/dist/server/app-render/work-unit-async-storage.external": path.join(
+              shimsDir,
+              "internal",
+              "work-unit-async-storage",
+            ),
+            "next/dist/client/components/work-unit-async-storage.external": path.join(
+              shimsDir,
+              "internal",
+              "work-unit-async-storage",
+            ),
+            "next/dist/client/components/request-async-storage.external": path.join(
+              shimsDir,
+              "internal",
+              "work-unit-async-storage",
+            ),
+            "next/dist/client/components/request-async-storage": path.join(
+              shimsDir,
+              "internal",
+              "work-unit-async-storage",
+            ),
+            // Re-export public modules for internal path imports
+            "next/dist/client/components/navigation": path.join(shimsDir, "navigation"),
+            "next/dist/server/config-shared": path.join(shimsDir, "internal", "utils"),
+            // server-only / client-only marker packages
+            "server-only": path.join(shimsDir, "server-only"),
+            "client-only": path.join(shimsDir, "client-only"),
+            "vinext/error-boundary": path.join(shimsDir, "error-boundary"),
+            "vinext/layout-segment-context": path.join(shimsDir, "layout-segment-context"),
+            "vinext/metadata": path.join(shimsDir, "metadata"),
+            "vinext/fetch-cache": path.join(shimsDir, "fetch-cache"),
+            "vinext/cache-runtime": path.join(shimsDir, "cache-runtime"),
+            "vinext/navigation-state": path.join(shimsDir, "navigation-state"),
+            "vinext/unified-request-context": path.join(shimsDir, "unified-request-context"),
+            "vinext/router-state": path.join(shimsDir, "router-state"),
+            "vinext/head-state": path.join(shimsDir, "head-state"),
+            "vinext/i18n-state": path.join(shimsDir, "i18n-state"),
+            "vinext/i18n-context": path.join(shimsDir, "i18n-context"),
+            "vinext/instrumentation": path.resolve(__dirname, "server", "instrumentation"),
+            "vinext/html": path.resolve(__dirname, "server", "html"),
+          }).flatMap(([k, v]) =>
+            k.startsWith("next/")
+              ? [
+                  [k, v],
+                  [`${k}.js`, v],
+                ]
+              : [[k, v]],
+          ),
+        );
 
         // Detect if Cloudflare's vite plugin is present — if so, skip
         // SSR externals (Workers bundle everything, can't have Node.js externals).
@@ -2146,16 +2002,20 @@ hydrate();
             else if (p) pluginsFlat.push(p);
           }
         }
-        flattenPlugins(config.plugins as any[] ?? []);
+        flattenPlugins((config.plugins as any[]) ?? []);
         hasCloudflarePlugin = pluginsFlat.some(
-          (p: any) => p && typeof p === "object" && typeof p.name === "string" && (
-            p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")
-          ),
+          (p: any) =>
+            p &&
+            typeof p === "object" &&
+            typeof p.name === "string" &&
+            (p.name === "vite-plugin-cloudflare" || p.name.startsWith("vite-plugin-cloudflare:")),
         );
         hasNitroPlugin = pluginsFlat.some(
-          (p: any) => p && typeof p === "object" && typeof p.name === "string" && (
-            p.name === "nitro" || p.name.startsWith("nitro:")
-          ),
+          (p: any) =>
+            p &&
+            typeof p === "object" &&
+            typeof p.name === "string" &&
+            (p.name === "nitro" || p.name.startsWith("nitro:")),
         );
 
         // Resolve PostCSS string plugin names that Vite can't handle.
@@ -2173,23 +2033,32 @@ hydrate();
         // Auto-inject @mdx-js/rollup when MDX files exist and no MDX plugin is
         // already configured. Applies remark/rehype plugins from next.config.
         const hasMdxPlugin = pluginsFlat.some(
-          (p: any) => p && typeof p === "object" && typeof p.name === "string" &&
+          (p: any) =>
+            p &&
+            typeof p === "object" &&
+            typeof p.name === "string" &&
             (p.name === "@mdx-js/rollup" || p.name === "mdx"),
         );
-        const mdxPlugins: any[] = [];
-        if (!hasMdxPlugin && hasMdxFiles(root, hasAppDir ? appDir : null, hasPagesDir ? pagesDir : null)) {
+        if (
+          !hasMdxPlugin &&
+          hasMdxFiles(root, hasAppDir ? appDir : null, hasPagesDir ? pagesDir : null)
+        ) {
           try {
             const mdxRollup = await import("@mdx-js/rollup");
-            const mdxPlugin = mdxRollup.default ?? mdxRollup;
+            const mdxFactory = mdxRollup.default ?? mdxRollup;
             const mdxOpts: Record<string, unknown> = {};
             if (nextConfig.mdx) {
-              if (nextConfig.mdx.remarkPlugins) mdxOpts.remarkPlugins = nextConfig.mdx.remarkPlugins;
-              if (nextConfig.mdx.rehypePlugins) mdxOpts.rehypePlugins = nextConfig.mdx.rehypePlugins;
+              if (nextConfig.mdx.remarkPlugins)
+                mdxOpts.remarkPlugins = nextConfig.mdx.remarkPlugins;
+              if (nextConfig.mdx.rehypePlugins)
+                mdxOpts.rehypePlugins = nextConfig.mdx.rehypePlugins;
               if (nextConfig.mdx.recmaPlugins) mdxOpts.recmaPlugins = nextConfig.mdx.recmaPlugins;
             }
-            mdxPlugins.push(mdxPlugin(mdxOpts));
+            mdxDelegate = mdxFactory(mdxOpts);
             if (nextConfig.mdx) {
-              console.log("[vinext] Auto-injected @mdx-js/rollup with remark/rehype plugins from next.config");
+              console.log(
+                "[vinext] Auto-injected @mdx-js/rollup with remark/rehype plugins from next.config",
+              );
             } else {
               console.log("[vinext] Auto-injected @mdx-js/rollup for MDX support");
             }
@@ -2197,7 +2066,9 @@ hydrate();
             // @mdx-js/rollup not installed — warn but don't fail
             console.warn(
               "[vinext] MDX files detected but @mdx-js/rollup is not installed. " +
-              "Install it with: " + detectPackageManager(process.cwd()) + " @mdx-js/rollup"
+                "Install it with: " +
+                detectPackageManager(process.cwd()) +
+                " @mdx-js/rollup",
             );
           }
         }
@@ -2230,6 +2101,17 @@ hydrate();
                     warning.code === "MODULE_LEVEL_DIRECTIVE" &&
                     (warning.message?.includes('"use client"') ||
                       warning.message?.includes('"use server"'))
+                  ) {
+                    return;
+                  }
+                  // Dynamic route pages that don't export generateStaticParams
+                  // produce IMPORT_IS_UNDEFINED warnings because the virtual RSC
+                  // entry unconditionally references mod?.generateStaticParams for
+                  // every dynamic route. The ?. guards the access safely at runtime;
+                  // suppress the build-time noise.
+                  if (
+                    warning.code === "IMPORT_IS_UNDEFINED" &&
+                    warning.message?.includes("generateStaticParams")
                   ) {
                     return;
                   }
@@ -2272,37 +2154,41 @@ hydrate();
               origin: /^https?:\/\/(?:(?:[^:]+\.)?localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/,
             },
           },
-          // Externalize React packages from SSR transform — they are CJS and
-          // must be loaded natively by Node, not through Vite's ESM evaluator.
+          // Configure SSR transform behaviour for Node targets.
+          // - `external`: React packages are loaded natively by Node (CJS)
+          //   rather than through Vite's ESM evaluator.
+          // - `noExternal: true`: force everything else through Vite's
+          //   transform pipeline so non-JS imports (CSS, images) from
+          //   node_modules don't hit Node's native ESM loader.
+          //   Any user-provided `ssr.noExternal` is intentionally superseded
+          //   by this setting; only `ssr.external` entries escape Vite's transform.
           // Skip when targeting bundled runtimes (Cloudflare/Nitro bundle everything).
-          ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
-            ssr: {
-              external: ["react", "react-dom", "react-dom/server"],
-            },
-          }),
+          // This also resolves extensionless-import issues in packages like
+          // `validator` (see #189) by routing them through Vite's resolver.
+          ...(hasCloudflarePlugin || hasNitroPlugin
+            ? {}
+            : {
+                ssr: {
+                  external: ["react", "react-dom", "react-dom/server"],
+                  noExternal: true,
+                },
+              }),
           resolve: {
-            alias: nextShimMap,
+            alias: { ...nextConfig.aliases, ...nextShimMap },
             // Dedupe React packages to prevent dual-instance errors.
             // When vinext is linked (npm link / bun link) or any dependency
             // brings its own React copy, multiple React instances can load,
             // causing cryptic "Invalid hook call" errors. This is a no-op
             // when only one copy exists.
-            dedupe: [
-              "react",
-              "react-dom",
-              "react/jsx-runtime",
-              "react/jsx-dev-runtime",
-            ],
+            dedupe: ["react", "react-dom", "react/jsx-runtime", "react/jsx-dev-runtime"],
+            ...(shouldEnableNativeTsconfigPaths ? { tsconfigPaths: true } : {}),
           },
-          // Exclude vinext from dependency optimization so esbuild doesn't
-          // scan dist files containing virtual module imports (virtual:vinext-*)
-          // that only resolve at Vite plugin time, not during pre-bundling.
-          optimizeDeps: {
-            exclude: ["vinext"],
-          },
+          // NOTE: top-level optimizeDeps is now set below (after capturing
+          // incoming values from earlier plugins) so both Pages Router and
+          // App Router builds merge correctly.
           // Enable JSX in .tsx/.jsx files
           // Vite 7 uses `esbuild` for transforms, Vite 8+ uses `oxc`
-          ...(getViteMajorVersion() >= 8
+          ...(viteMajorVersion >= 8
             ? { oxc: { jsx: { runtime: "automatic" } } }
             : { esbuild: { jsx: "automatic" } }),
           // Define env vars for client bundle
@@ -2311,6 +2197,45 @@ hydrate();
           ...(nextConfig.basePath ? { base: nextConfig.basePath + "/" } : {}),
           // Inject resolved PostCSS plugins if string names were found
           ...(postcssOverride ? { css: { postcss: postcssOverride } } : {}),
+        };
+
+        // Collect user-provided ssr.external so we can propagate it into
+        // both the RSC and SSR environment configs. Vite's `ssr.*` config
+        // only applies to the default `ssr` environment, not custom ones
+        // like `rsc`. Native addon packages (e.g. better-sqlite3) listed
+        // in ssr.external must be externalized from ALL server environments.
+        // Vite's SSROptions.external is `string[] | true`; handle both forms.
+        //
+        // Also merge in `serverExternalPackages` from next.config (and the
+        // legacy `experimental.serverComponentsExternalPackages` alias). These
+        // are packages that Next.js intentionally skips bundling and loads
+        // natively — e.g. packages that import Node-specific entry points via
+        // conditional exports (like `file-type` which exports `fileTypeFromFile`
+        // only from its `node` condition, not from the universal `default` one).
+        // Without externalizing them, Vite's optimizer picks the wrong export
+        // condition and the build fails with MISSING_EXPORT errors.
+        const nextServerExternal: string[] = nextConfig?.serverExternalPackages ?? [];
+        const userSsrExternal: string[] | true = Array.isArray(config.ssr?.external)
+          ? [...config.ssr.external, ...nextServerExternal]
+          : config.ssr?.external === true
+            ? true
+            : nextServerExternal;
+
+        // Capture top-level optimizeDeps populated by earlier plugins
+        // (e.g. @lingui/vite-plugin) so we merge rather than overwrite.
+        // Moved above the hasAppDir branch so both Pages Router and App
+        // Router code paths can use these values.
+        const incomingExclude: string[] =
+          (config.optimizeDeps?.exclude as string[] | undefined) ?? [];
+        const incomingInclude: string[] =
+          (config.optimizeDeps?.include as string[] | undefined) ?? [];
+
+        // Merge incoming excludes into the top-level optimizeDeps so
+        // Pages Router builds (which don't set per-environment configs)
+        // also preserve entries from earlier plugins.
+        viteConfig.optimizeDeps = {
+          exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
+          ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
         };
 
         // If app/ directory exists, configure RSC environments
@@ -2322,61 +2247,104 @@ hydrate();
           // "Invalid hook call" from duplicate React instances).
           // The entries must be relative to the project root.
           const relAppDir = path.relative(root, appDir);
-          const appEntries = [
-            `${relAppDir}/**/*.{tsx,ts,jsx,js}`,
-          ];
+          const appEntries = [`${relAppDir}/**/*.{tsx,ts,jsx,js}`];
 
           viteConfig.environments = {
             rsc: {
-              ...(hasCloudflarePlugin || hasNitroPlugin ? {} : {
-                resolve: {
-                  // Externalize native/heavy packages so the RSC environment
-                  // loads them natively via Node rather than through Vite's
-                  // ESM module evaluator (which can't handle native addons).
-                  // Note: Do NOT externalize react/react-dom here — they must
-                  // be bundled with the "react-server" condition for RSC.
-                  // Skip when targeting bundled runtimes (Cloudflare/Nitro).
-                  external: [
-                    "satori",
-                    "@resvg/resvg-js",
-                    "yoga-wasm-web",
-                  ],
-                },
-              }),
+              ...(hasCloudflarePlugin || hasNitroPlugin
+                ? {}
+                : {
+                    resolve: {
+                      // Externalize native/heavy packages so the RSC environment
+                      // loads them natively via Node rather than through Vite's
+                      // ESM module evaluator (which can't handle native addons).
+                      // Note: Do NOT externalize react/react-dom here — they must
+                      // be bundled with the "react-server" condition for RSC.
+                      // Skip when targeting bundled runtimes (Cloudflare/Nitro).
+                      external:
+                        userSsrExternal === true
+                          ? true
+                          : ["satori", "@resvg/resvg-js", "yoga-wasm-web", ...userSsrExternal],
+                      // Force all node_modules through Vite's transform pipeline
+                      // so non-JS imports (CSS, images) don't hit Node's native
+                      // ESM loader. Matches Next.js behavior of bundling everything.
+                      // Packages in `external` above take precedence per Vite rules.
+                      // When user sets `ssr.external: true`, skip noExternal since
+                      // everything is already externalized.
+                      ...(userSsrExternal === true ? {} : { noExternal: true as const }),
+                    },
+                  }),
               optimizeDeps: {
-                exclude: ["vinext"],
+                exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
                 entries: appEntries,
               },
               build: {
-                outDir: "dist/server",
+                outDir: options.rscOutDir ?? "dist/server",
                 rollupOptions: {
                   input: { index: VIRTUAL_RSC_ENTRY },
                 },
               },
             },
             ssr: {
+              ...(hasCloudflarePlugin || hasNitroPlugin
+                ? {}
+                : {
+                    resolve: {
+                      external: userSsrExternal === true ? true : [...userSsrExternal],
+                      // Force all node_modules through Vite's transform pipeline
+                      // so non-JS imports (CSS, images) don't hit Node's native
+                      // ESM loader. Matches Next.js behavior of bundling everything.
+                      // When user sets `ssr.external: true`, skip noExternal since
+                      // everything is already externalized.
+                      ...(userSsrExternal === true ? {} : { noExternal: true as const }),
+                    },
+                  }),
               optimizeDeps: {
-                exclude: ["vinext"],
+                exclude: [...new Set([...incomingExclude, "vinext", "@vercel/og"])],
                 entries: appEntries,
               },
               build: {
-                outDir: "dist/server/ssr",
+                outDir: options.ssrOutDir ?? "dist/server/ssr",
                 rollupOptions: {
                   input: { index: VIRTUAL_APP_SSR_ENTRY },
                 },
               },
             },
             client: {
+              // Explicitly mark as client consumer so other plugins (e.g. Nitro)
+              // can detect this during configEnvironment hooks — before Vite
+              // applies the default consumer based on environment name.
+              // Without this, Nitro's configEnvironment creates a server-side
+              // service for the client environment, causing virtual module
+              // imports to leak to Node's native ESM loader (ERR_UNSUPPORTED_ESM_URL_SCHEME).
+              consumer: "client",
               optimizeDeps: {
-                exclude: ["vinext"],
+                // Exclude server-external packages from the client dep optimizer.
+                // These packages are server-only by design (listed in next.config's
+                // `serverExternalPackages`). If the client optimizer crawls into
+                // them through app/ entries, it will use browser export conditions
+                // and pick the wrong conditional export (e.g. `file-type` exports
+                // `fileTypeFromFile` only from its `node` condition via `index.js`,
+                // but the browser optimizer resolves to `core.js` which lacks it,
+                // causing MISSING_EXPORT build failures).
+                exclude: [
+                  ...new Set([...incomingExclude, "vinext", "@vercel/og", ...nextServerExternal]),
+                ],
+                // Crawl app/ source files up front so client-only deps imported
+                // by user components are discovered during startup instead of
+                // triggering a late re-optimisation + full page reload.
+                entries: appEntries,
                 // React packages aren't crawled from app/ source files,
                 // so must be pre-included to avoid late discovery (#25).
                 include: [
-                  "react",
-                  "react-dom",
-                  "react-dom/client",
-                  "react/jsx-runtime",
-                  "react/jsx-dev-runtime",
+                  ...new Set([
+                    ...incomingInclude,
+                    "react",
+                    "react-dom",
+                    "react-dom/client",
+                    "react/jsx-runtime",
+                    "react/jsx-dev-runtime",
+                  ]),
                 ],
               },
               build: {
@@ -2403,6 +2371,7 @@ hydrate();
           // and there's no client-side hydration.
           viteConfig.environments = {
             client: {
+              consumer: "client",
               build: {
                 manifest: true,
                 ssrManifest: true,
@@ -2416,15 +2385,35 @@ hydrate();
           };
         }
 
-        // Add auto-injected MDX plugin if needed
-        if (mdxPlugins.length > 0) {
-          viteConfig.plugins = mdxPlugins;
-        }
-
         return viteConfig;
       },
 
       configResolved(config) {
+        // Detect double React plugin registration. When vinext auto-injects
+        // @vitejs/plugin-react AND the user also registers it manually, the
+        // React transform / refresh pipeline runs twice.
+        if (reactPluginPromise) {
+          // Assumes @vitejs/plugin-react top-level plugin names continue to use
+          // the vite:react* prefix across supported versions.
+          const reactRootPlugins = config.plugins.filter(
+            (p: any) => p && typeof p.name === "string" && p.name.startsWith("vite:react"),
+          );
+          const counts = new Map<string, number>();
+          for (const plugin of reactRootPlugins) {
+            counts.set(plugin.name, (counts.get(plugin.name) ?? 0) + 1);
+          }
+          const hasDuplicateReactPlugin = [...counts.values()].some((count) => count > 1);
+          if (hasDuplicateReactPlugin) {
+            throw new Error(
+              "[vinext] Duplicate @vitejs/plugin-react detected.\n" +
+                "         vinext auto-registers @vitejs/plugin-react by default.\n" +
+                "         Your config also registers it manually, which duplicates React transforms.\n\n" +
+                "         Fix: remove the explicit react() call from your plugins array.\n" +
+                "         Or: pass react: false to vinext() if you want to configure react() yourself.",
+            );
+          }
+        }
+
         // Detect double RSC plugin registration. When vinext auto-injects
         // @vitejs/plugin-rsc AND the user also registers it manually, the
         // RSC transform pipeline runs twice — doubling build time.
@@ -2433,18 +2422,34 @@ hydrate();
         if (rscPluginPromise) {
           // Count top-level RSC plugins (name === "rsc") — each call to
           // the rsc() factory produces exactly one plugin with this name.
-          const rscRootPlugins = config.plugins.filter(
-            (p: any) => p && p.name === "rsc",
-          );
+          const rscRootPlugins = config.plugins.filter((p: any) => p && p.name === "rsc");
           if (rscRootPlugins.length > 1) {
             throw new Error(
               "[vinext] Duplicate @vitejs/plugin-rsc detected.\n" +
-              "         vinext auto-registers @vitejs/plugin-rsc when app/ is detected.\n" +
-              "         Your config also registers it manually, which doubles build time.\n\n" +
-              "         Fix: remove the explicit rsc() call from your plugins array.\n" +
-              "         Or: pass rsc: false to vinext() if you want to configure rsc() yourself.",
+                "         vinext auto-registers @vitejs/plugin-rsc when app/ is detected.\n" +
+                "         Your config also registers it manually, which doubles build time.\n\n" +
+                "         Fix: remove the explicit rsc() call from your plugins array.\n" +
+                "         Or: pass rsc: false to vinext() if you want to configure rsc() yourself.",
             );
           }
+        }
+
+        // Fail the build when targeting Cloudflare Workers without the
+        // cloudflare() plugin. Without it, wrangler's esbuild can't resolve
+        // virtual:vinext-rsc-entry and produces a cryptic error. (#325)
+        if (
+          config.command === "build" &&
+          !hasCloudflarePlugin &&
+          !hasNitroPlugin &&
+          hasWranglerConfig(root) &&
+          !options.disableAppRouter
+        ) {
+          throw new Error(
+            formatMissingCloudflarePluginError({
+              isAppRouter: hasAppDir,
+              configFile: config.configFile,
+            }),
+          );
         }
       },
 
@@ -2462,39 +2467,41 @@ hydrate();
           // environment's import-analysis can find it.
           const cleanId = id.startsWith("\0") ? id.slice(1) : id;
 
-          // Handle next/* imports with .js extension (e.g. "next/navigation.js")
-          // Libraries like nuqs import "next/navigation.js" which doesn't match
-          // our resolve.alias for "next/navigation". Strip the .js and resolve
-          // through our shim map, appending .js to the resolved path.
-          if (cleanId.startsWith("next/") && cleanId.endsWith(".js")) {
-            const withoutExt = cleanId.slice(0, -3);
-            if (nextShimMap[withoutExt]) {
-              const shimPath = nextShimMap[withoutExt];
-              // Alias values don't include .js — append it for resolveId
-              return shimPath.endsWith(".js") ? shimPath : shimPath + ".js";
-            }
-          }
-
           // Pages Router virtual modules
           if (cleanId === VIRTUAL_SERVER_ENTRY) return RESOLVED_SERVER_ENTRY;
           if (cleanId === VIRTUAL_CLIENT_ENTRY) return RESOLVED_CLIENT_ENTRY;
-          if (cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_SERVER_ENTRY)) {
+          if (
+            cleanId.endsWith("/" + VIRTUAL_SERVER_ENTRY) ||
+            cleanId.endsWith("\\" + VIRTUAL_SERVER_ENTRY)
+          ) {
             return RESOLVED_SERVER_ENTRY;
           }
-          if (cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)) {
+          if (
+            cleanId.endsWith("/" + VIRTUAL_CLIENT_ENTRY) ||
+            cleanId.endsWith("\\" + VIRTUAL_CLIENT_ENTRY)
+          ) {
             return RESOLVED_CLIENT_ENTRY;
           }
           // App Router virtual modules
           if (cleanId === VIRTUAL_RSC_ENTRY) return RESOLVED_RSC_ENTRY;
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
           if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
-          if (cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_RSC_ENTRY)) {
+          if (
+            cleanId.endsWith("/" + VIRTUAL_RSC_ENTRY) ||
+            cleanId.endsWith("\\" + VIRTUAL_RSC_ENTRY)
+          ) {
             return RESOLVED_RSC_ENTRY;
           }
-          if (cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_APP_SSR_ENTRY)) {
+          if (
+            cleanId.endsWith("/" + VIRTUAL_APP_SSR_ENTRY) ||
+            cleanId.endsWith("\\" + VIRTUAL_APP_SSR_ENTRY)
+          ) {
             return RESOLVED_APP_SSR_ENTRY;
           }
-          if (cleanId.endsWith("/" + VIRTUAL_APP_BROWSER_ENTRY) || cleanId.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)) {
+          if (
+            cleanId.endsWith("/" + VIRTUAL_APP_BROWSER_ENTRY) ||
+            cleanId.endsWith("\\" + VIRTUAL_APP_BROWSER_ENTRY)
+          ) {
             return RESOLVED_APP_BROWSER_ENTRY;
           }
         },
@@ -2510,24 +2517,67 @@ hydrate();
         }
         // App Router virtual modules
         if (id === RESOLVED_RSC_ENTRY && hasAppDir) {
-          const routes = await appRouter(appDir);
+          const routes = await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher);
           const metaRoutes = scanMetadataFiles(appDir);
           // Check for global-error.tsx at app root
-          const globalErrorPath = findFileWithExts(appDir, "global-error");
-          return generateRscEntry(appDir, routes, middlewarePath, metaRoutes, globalErrorPath, nextConfig?.basePath, nextConfig?.trailingSlash, {
-            redirects: nextConfig?.redirects,
-            rewrites: nextConfig?.rewrites,
-            headers: nextConfig?.headers,
-            allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
-            allowedDevOrigins: nextConfig?.serverActionsAllowedOrigins,
-          });
+          const globalErrorPath = findFileWithExts(appDir, "global-error", fileMatcher);
+          return generateRscEntry(
+            appDir,
+            routes,
+            middlewarePath,
+            metaRoutes,
+            globalErrorPath,
+            nextConfig?.basePath,
+            nextConfig?.trailingSlash,
+            {
+              redirects: nextConfig?.redirects,
+              rewrites: nextConfig?.rewrites,
+              headers: nextConfig?.headers,
+              allowedOrigins: nextConfig?.serverActionsAllowedOrigins,
+              allowedDevOrigins: nextConfig?.allowedDevOrigins,
+              bodySizeLimit: nextConfig?.serverActionsBodySizeLimit,
+              i18n: nextConfig?.i18n,
+              hasPagesDir,
+            },
+            instrumentationPath,
+          );
         }
         if (id === RESOLVED_APP_SSR_ENTRY && hasAppDir) {
-          return generateSsrEntry();
+          return generateSsrEntry(hasPagesDir);
         }
         if (id === RESOLVED_APP_BROWSER_ENTRY && hasAppDir) {
           return generateBrowserEntry();
         }
+      },
+    },
+    // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
+    asyncHooksStubPlugin,
+    // Dedup client references from RSC proxy modules — see src/plugins/client-reference-dedup.ts
+    ...(options.experimental?.clientReferenceDedup ? [clientReferenceDedupPlugin()] : []),
+    // Proxy plugin for @mdx-js/rollup. The real MDX plugin is created lazily
+    // during vinext:config's config() (when MDX files are detected), but
+    // plugins returned from config() hooks run too late in the pipeline —
+    // after vite:import-analysis. This top-level proxy with enforce:"pre"
+    // ensures MDX transforms run at the correct stage. Both vinext:config
+    // and this proxy are enforce:"pre", and vinext:config comes first in
+    // the array, so mdxDelegate is already set when this proxy's hooks fire.
+    {
+      name: "vinext:mdx",
+      enforce: "pre",
+      config(config, env) {
+        if (!mdxDelegate?.config) return;
+        const hook = mdxDelegate.config;
+        const fn = typeof hook === "function" ? hook : hook.handler;
+        return fn.call(this, config, env);
+      },
+      transform(code, id, options) {
+        // Skip ?raw and other query imports — @mdx-js/rollup ignores the query
+        // and would compile the file as MDX instead of returning raw text.
+        if (id.includes("?")) return;
+        if (!mdxDelegate?.transform) return;
+        const hook = mdxDelegate.transform;
+        const fn = typeof hook === "function" ? hook : hook.handler;
+        return fn.call(this, code, id, options);
       },
     },
     // Shim React canary/experimental APIs (ViewTransition, addTransitionType)
@@ -2569,16 +2619,14 @@ hydrate();
         }
 
         // Only rewrite if the import actually destructures a canary API
-        const canaryImportRegex = /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/;
+        const canaryImportRegex =
+          /import\s*\{[^}]*(ViewTransition|addTransitionType)[^}]*\}\s*from\s*['"]react['"]/;
         if (!canaryImportRegex.test(code)) return null;
 
         // Rewrite all `from "react"` / `from 'react'` to use the canary shim.
         // This is safe because the virtual module re-exports everything from
         // react, so non-canary imports continue to work.
-        const result = code.replace(
-          /from\s*['"]react['"]/g,
-          'from "virtual:vinext-react-canary"',
-        );
+        const result = code.replace(/from\s*['"]react['"]/g, 'from "virtual:vinext-react-canary"');
         if (result !== code) {
           return { code: result, map: null };
         }
@@ -2589,16 +2637,14 @@ hydrate();
       name: "vinext:pages-router",
 
       // HMR: trigger full-reload for Pages Router page changes.
-      // Without @vitejs/plugin-react (React Fast Refresh), component edits
-      // can't be hot-updated. In theory Vite's default propagation should
-      // reach the root and trigger a full-reload, but the Pages Router
-      // injects hydration via inline <script type="module"> which may not
-      // be tracked in the module graph. Explicitly sending full-reload
-      // ensures changes are always reflected in the browser.
+      // Even with @vitejs/plugin-react providing React Fast Refresh,
+      // the Pages Router injects hydration via inline <script type="module">
+      // which may not be tracked in Vite's module graph. Explicitly
+      // sending full-reload ensures changes are always reflected in
+      // the browser.
       hotUpdate(options: { file: string; server: ViteDevServer; modules: any[] }) {
         if (!hasPagesDir || hasAppDir) return;
-        const ext = /\.(tsx?|jsx?|mdx)$/;
-        if (options.file.startsWith(pagesDir) && ext.test(options.file)) {
+        if (options.file.startsWith(pagesDir) && fileMatcher.extensionRegex.test(options.file)) {
           options.server.environments.client.hot.send({ type: "full-reload" });
           return [];
         }
@@ -2606,7 +2652,35 @@ hydrate();
 
       configureServer(server: ViteDevServer) {
         // Watch pages directory for file additions/removals to invalidate route cache.
-        const pageExtensions = /\.(tsx?|jsx?|mdx)$/;
+        const pageExtensions = fileMatcher.extensionRegex;
+
+        // Build a long-lived ModuleRunner for loading all Pages Router modules
+        // (middleware, API routes, SSR page rendering) on every request.
+        //
+        // We must NOT use server.ssrLoadModule() here: when @cloudflare/vite-plugin
+        // is present its environments replace the SSR transport, causing
+        // SSRCompatModuleRunner to crash with:
+        //   TypeError: Cannot read properties of undefined (reading 'outsideEmitter')
+        // on the very first request.
+        //
+        // createDirectRunner() builds a runner on environment.fetchModule() which
+        // is a plain async method — safe with all plugin combinations, including
+        // @cloudflare/vite-plugin.
+        //
+        // The runner is created lazily on first use so that all environments are
+        // fully registered before we inspect them. We prefer "ssr", then any
+        // non-"rsc" environment, then whatever is available.
+        let pagesRunner: import("vite/module-runner").ModuleRunner | null = null;
+        function getPagesRunner() {
+          if (!pagesRunner) {
+            const env =
+              server.environments["ssr"] ??
+              Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
+              Object.values(server.environments)[0];
+            pagesRunner = createDirectRunner(env);
+          }
+          return pagesRunner;
+        }
 
         /**
          * Invalidate the virtual RSC entry module in Vite's module graph.
@@ -2646,15 +2720,188 @@ hydrate();
           }
         });
 
-        // Run instrumentation.ts register() if present (once at server startup)
-        if (instrumentationPath) {
-          runInstrumentation(server, instrumentationPath).catch((err) => {
-            console.error("[vinext] Instrumentation error:", err);
-          });
-        }
+        // ── Dev request origin check ─────────────────────────────────────
+        // Registered directly (not in the returned function) so it runs
+        // BEFORE Vite's built-in middleware. This ensures all requests
+        // (including /@*, /__vite*, /node_modules* paths) are validated
+        // before Vite serves any content.
+        server.middlewares.use((req: any, res: any, next: any) => {
+          const blockReason = validateDevRequest(
+            {
+              origin: req.headers.origin as string | undefined,
+              host: req.headers.host,
+              "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
+              "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
+              "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
+            },
+            nextConfig?.allowedDevOrigins,
+          );
+          if (blockReason) {
+            console.warn(`[vinext] Blocked dev request: ${blockReason} (${req.url})`);
+            res.writeHead(403, { "Content-Type": "text/plain" });
+            res.end("Forbidden");
+            return;
+          }
+          next();
+        });
 
         // Return a function to register middleware AFTER Vite's built-in middleware
         return () => {
+          // Run instrumentation.ts register() if present (once at server startup).
+          // Must be inside the returned function so that all environments are
+          // fully registered before getPagesRunner() inspects them.
+          //
+          // App Router: register() is baked into the generated RSC entry as a
+          // top-level await, so it runs inside the Worker process (or RSC Vite
+          // environment) — the same process as request handling. Calling
+          // runInstrumentation() here too would run it a second time in the host
+          // process, which is wrong when @cloudflare/vite-plugin is present.
+          //
+          // Pages Router prod: register() is baked into generateServerEntry() as
+          // a top-level await, so it runs inside the Worker bundle — the same
+          // process as request handling. configureServer() is never called during
+          // a prod build, so there is no double-invocation risk there either.
+          //
+          // We pass getPagesRunner() (createDirectRunner) rather than server so
+          // that this is safe when @cloudflare/vite-plugin is present. That
+          // plugin replaces the SSR environment's hot channel, causing
+          // server.ssrLoadModule() to crash with outsideEmitter. The runner
+          // calls environment.fetchModule() directly and never touches the hot
+          // channel, making it safe with all Vite plugin combinations.
+          if (instrumentationPath && !hasAppDir) {
+            runInstrumentation(getPagesRunner(), instrumentationPath).catch((err) => {
+              console.error("[vinext] Instrumentation error:", err);
+            });
+          }
+          // App Router request logging in dev server
+          //
+          // For App Router, the RSC plugin handles requests internally.
+          // We install a timing middleware here that:
+          //   1. Intercepts writeHead() to pluck the X-Vinext-Timing header
+          //      (compileMs,renderMs) that the RSC entry attaches before
+          //      it is flushed to the client.
+          //   2. Logs the full request after res finishes, using those timings.
+          if (hasAppDir) {
+            server.middlewares.use((req, res, next) => {
+              const url = req.url ?? "/";
+              // Skip Vite internals, HMR, and static assets.
+              // Do NOT skip .rsc-suffixed URLs or RSC wire requests (Accept: text/x-component)
+              // — those are soft navigations and should be logged like any other page request.
+              const [pathname] = url.split("?");
+              if (
+                url.startsWith("/@") ||
+                url.startsWith("/__vite") ||
+                url.startsWith("/node_modules") ||
+                (url.includes(".") && !pathname.endsWith(".html") && !pathname.endsWith(".rsc"))
+              ) {
+                return next();
+              }
+              const _reqStart = now();
+              let _compileMs: number | undefined;
+              let _renderMs: number | undefined;
+
+              // Intercept setHeader and writeHead so we can strip X-Vinext-Timing
+              // before it reaches the client and capture the compile/render split.
+              // The RSC plugin may set headers either way depending on its version.
+              // Parse the three-part X-Vinext-Timing header:
+              //   "handlerStart,inHandlerCompileMs,renderMs"
+              //
+              // True compile time = time the RSC plugin spent loading/transforming
+              // modules before our handler code ran, plus any in-handler work before
+              // renderToReadableStream. Concretely:
+              //   compileMs = (handlerStart - _reqStart) + inHandlerCompileMs
+              //   renderMs  = renderMs from header, or -1 for RSC-only (soft-nav)
+              //               responses where rendering is not measured in the handler.
+              //               In that case the middleware computes render time as
+              //               totalMs - compileMs.
+              //
+              // handlerStart is performance.now() recorded at the very top of
+              // _handleRequest in the generated RSC entry. _reqStart is recorded
+              // here in the Node middleware, one stack frame before the RSC plugin
+              // loads the module. The gap between them is exactly the Vite
+              // compile/transform cost.
+              function _parseTiming(raw: unknown) {
+                const [handlerStart, inHandlerCompileMs, renderMs] = String(raw)
+                  .split(",")
+                  .map((v) => Number(v));
+                if (
+                  !Number.isNaN(handlerStart) &&
+                  !Number.isNaN(inHandlerCompileMs) &&
+                  inHandlerCompileMs !== -1
+                ) {
+                  _compileMs =
+                    Math.max(0, Math.round(handlerStart - _reqStart)) + inHandlerCompileMs;
+                }
+                if (!Number.isNaN(renderMs) && renderMs !== -1) {
+                  _renderMs = renderMs;
+                }
+              }
+
+              const _origSetHeader = res.setHeader.bind(res);
+              res.setHeader = function (name, value) {
+                if (name.toLowerCase() === "x-vinext-timing") {
+                  _parseTiming(value);
+                  return res; // drop the header — don't forward to client
+                }
+                return _origSetHeader(name, value);
+              };
+
+              const _origWriteHead = res.writeHead.bind(res);
+              res.writeHead = function (statusCode, ...args: any[]) {
+                // Normalise the optional headers argument (may be reason, headers object, or both).
+                let headers: Record<string, unknown> | undefined;
+                const [reasonOrHeaders, maybeHeaders] = args;
+                if (typeof reasonOrHeaders === "string") {
+                  headers = maybeHeaders;
+                } else {
+                  headers = reasonOrHeaders;
+                }
+
+                // Pull timing out of the headers object when present.
+                if (headers && typeof headers === "object" && !Array.isArray(headers)) {
+                  const timingKey = Object.keys(headers).find(
+                    (k) => k.toLowerCase() === "x-vinext-timing",
+                  );
+                  if (timingKey) {
+                    _parseTiming(headers[timingKey]);
+                    delete headers[timingKey];
+                  }
+                }
+
+                return _origWriteHead(statusCode, ...args);
+              };
+
+              res.on("finish", () => {
+                // Strip .rsc suffix — it's an internal RSC protocol detail,
+                // not part of the actual page path the user navigated to.
+                const logUrl = url.replace(/\.rsc(\?|$)/, "$1");
+                const totalMs = now() - _reqStart;
+
+                // For RSC-only responses (soft nav), renderMs is -1 (sentinel meaning
+                // "not measured in the handler"). Compute it as totalMs - compileMs,
+                // which is how long the RSC stream took to fully flush to the client —
+                // matching what Next.js shows for soft navigations.
+                const resolvedRenderMs =
+                  _renderMs !== undefined
+                    ? _renderMs
+                    : _compileMs !== undefined
+                      ? Math.max(0, Math.round(totalMs - _compileMs))
+                      : undefined;
+
+                logRequest({
+                  method: req.method ?? "GET",
+                  url: logUrl,
+                  status: res.statusCode,
+                  totalMs,
+                  compileMs: _compileMs,
+                  renderMs: resolvedRenderMs,
+                });
+              });
+
+              next();
+            });
+          }
+
           server.middlewares.use(async (req, res, next) => {
             try {
               let url: string = req.url ?? "/";
@@ -2677,9 +2924,12 @@ hydrate();
                 return next();
               }
 
-              // ── Cross-origin request protection ─────────────────────────
-              // Block requests from non-localhost origins to prevent
-              // cross-origin data exfiltration from the dev server.
+              // ── Cross-origin request protection (defense-in-depth) ──────
+              // The pre-Vite middleware above already blocks cross-origin
+              // requests before Vite serves any content. This second check
+              // guards the Pages Router handler specifically, in case the
+              // middleware ordering changes or new middleware is added between
+              // the two. Both calls use the same validateDevRequest() function.
               const blockReason = validateDevRequest(
                 {
                   origin: req.headers.origin as string | undefined,
@@ -2688,7 +2938,7 @@ hydrate();
                   "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
                   "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
                 },
-                nextConfig?.serverActionsAllowedOrigins,
+                nextConfig?.allowedDevOrigins,
               );
               if (blockReason) {
                 console.warn(`[vinext] Blocked dev request: ${blockReason} (${url})`);
@@ -2707,7 +2957,16 @@ hydrate();
                 const imgUrl = rawImgUrl?.replaceAll("\\", "/") ?? null;
                 // Allowlist: must start with "/" but not "//" — blocks absolute
                 // URLs, protocol-relative, backslash variants, and exotic schemes.
-                if (!imgUrl || !imgUrl.startsWith("/") || imgUrl.startsWith("//")) {
+                // Also block internal Vite paths (/@*, /__vite*, /node_modules*)
+                // to prevent redirecting to dev server endpoints.
+                if (
+                  !imgUrl ||
+                  !imgUrl.startsWith("/") ||
+                  imgUrl.startsWith("//") ||
+                  imgUrl.startsWith("/@") ||
+                  imgUrl.startsWith("/__vite") ||
+                  imgUrl.startsWith("/node_modules")
+                ) {
                   res.writeHead(400);
                   res.end(!rawImgUrl ? "Missing url parameter" : "Only relative URLs allowed");
                   return;
@@ -2719,7 +2978,8 @@ hydrate();
                   res.end("Only relative URLs allowed");
                   return;
                 }
-                res.writeHead(302, { Location: imgUrl });
+                const encodedLocation = resolvedImg.pathname + resolvedImg.search;
+                res.writeHead(302, { Location: encodedLocation });
                 res.end();
                 return;
               }
@@ -2755,7 +3015,7 @@ hydrate();
               // decodeURIComponent prevents /%61dmin bypassing /admin matchers.
               // normalizePath collapses // and resolves . / .. segments.
               try {
-                pathname = normalizePath(decodeURIComponent(pathname));
+                pathname = normalizePath(normalizePathnameForRouteMatchStrict(pathname));
               } catch {
                 // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of crashing.
                 res.writeHead(400);
@@ -2782,7 +3042,12 @@ hydrate();
 
               // Normalize trailing slash based on next.config.js trailingSlash setting.
               // Redirect to the canonical form if needed.
-              if (nextConfig && pathname !== "/" && !pathname.startsWith("/api")) {
+              if (
+                nextConfig &&
+                pathname !== "/" &&
+                pathname !== "/api" &&
+                !pathname.startsWith("/api/")
+              ) {
                 const hasTrailing = pathname.endsWith("/");
                 if (nextConfig.trailingSlash && !hasTrailing) {
                   // trailingSlash: true — redirect /about → /about/
@@ -2801,30 +3066,107 @@ hydrate();
                 }
               }
 
+              // When @cloudflare/vite-plugin is present, delegate the entire
+              // Pages Router request pipeline to the Worker/miniflare side.
+              // That keeps middleware, headers, redirects, rewrites, API
+              // routes, and rendering in one place instead of mutating the
+              // host request and forwarding post-middleware state downstream.
+              if (hasCloudflarePlugin) return next();
+
+              // Snapshot of req.headers before middleware runs. Used for both
+              // preMiddlewareReqCtx and the middleware Request itself. Intentionally
+              // captured once here — applyRequestHeadersToNodeRequest() mutates
+              // req.headers later, but by then this Headers object is no longer read.
+              const nodeRequestHeaders = new Headers(
+                Object.fromEntries(
+                  Object.entries(req.headers)
+                    .filter(([, v]) => v !== undefined)
+                    .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)]),
+                ),
+              );
+
+              const requestOrigin = `http://${req.headers.host || "localhost"}`;
+              const preMiddlewareReqUrl = new URL(url, requestOrigin);
+              const preMiddlewareReqCtx: RequestContext = requestContextFromRequest(
+                new Request(preMiddlewareReqUrl, { headers: nodeRequestHeaders }),
+              );
+
+              // Config redirects run before middleware, but still match against
+              // the original normalized pathname and request headers/cookies.
+              if (nextConfig?.redirects.length) {
+                const redirected = applyRedirects(
+                  pathname,
+                  res,
+                  nextConfig.redirects,
+                  preMiddlewareReqCtx,
+                  nextConfig.basePath ?? "",
+                );
+                if (redirected) return;
+              }
+
+              const applyRequestHeadersToNodeRequest = (nextRequestHeaders: Headers) => {
+                for (const key of Object.keys(req.headers)) {
+                  delete req.headers[key];
+                }
+                for (const [key, value] of nextRequestHeaders) {
+                  req.headers[key] = value;
+                }
+              };
+
+              let middlewareRequestHeaders: Headers | null = null;
+              let deferredMwResponseHeaders: [string, string][] | null = null;
+
+              const applyDeferredMwHeaders = () => {
+                if (deferredMwResponseHeaders) {
+                  for (const [key, value] of deferredMwResponseHeaders) {
+                    res.appendHeader(key, value);
+                  }
+                }
+              };
+
               // Run middleware.ts if present
               if (middlewarePath) {
                 // Only trust X-Forwarded-Proto when behind a trusted proxy
-                const devTrustProxy = process.env.VINEXT_TRUST_PROXY === "1" || (process.env.VINEXT_TRUSTED_HOSTS ?? "").split(",").some(h => h.trim());
+                const devTrustProxy =
+                  process.env.VINEXT_TRUST_PROXY === "1" ||
+                  (process.env.VINEXT_TRUSTED_HOSTS ?? "").split(",").some((h) => h.trim());
                 const rawProto = devTrustProxy
-                  ? String(req.headers["x-forwarded-proto"] || "").split(",")[0].trim()
+                  ? String(req.headers["x-forwarded-proto"] || "")
+                      .split(",")[0]
+                      .trim()
                   : "";
                 const mwProto = rawProto === "https" || rawProto === "http" ? rawProto : "http";
                 const origin = `${mwProto}://${req.headers.host || "localhost"}`;
                 const middlewareRequest = new Request(new URL(url, origin), {
                   method: req.method,
-                  headers: Object.fromEntries(
-                    Object.entries(req.headers)
-                      .filter(([, v]) => v !== undefined)
-                      .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])
-                  ),
+                  headers: nodeRequestHeaders,
                 });
-                const result = await runMiddleware(server, middlewarePath, middlewareRequest);
+                const result = await runMiddleware(
+                  getPagesRunner(),
+                  middlewarePath,
+                  middlewareRequest,
+                  nextConfig?.i18n,
+                  nextConfig?.basePath,
+                );
 
                 if (!result.continue) {
                   if (result.redirectUrl) {
-                    res.writeHead(result.redirectStatus ?? 307, {
+                    const redirectHeaders: Record<string, string | string[]> = {
                       Location: result.redirectUrl,
-                    });
+                    };
+                    if (result.responseHeaders) {
+                      for (const [key, value] of result.responseHeaders) {
+                        const existing = redirectHeaders[key];
+                        if (existing === undefined) {
+                          redirectHeaders[key] = value;
+                        } else if (Array.isArray(existing)) {
+                          existing.push(value);
+                        } else {
+                          redirectHeaders[key] = [existing, value];
+                        }
+                      }
+                    }
+                    res.writeHead(result.redirectStatus ?? 307, redirectHeaders);
                     res.end();
                     return;
                   }
@@ -2833,97 +3175,159 @@ hydrate();
                     for (const [key, value] of result.response.headers) {
                       res.appendHeader(key, value);
                     }
-                    const body = await result.response.text();
+                    const body = Buffer.from(await result.response.arrayBuffer());
                     res.end(body);
                     return;
                   }
                 }
 
-                // Apply middleware response headers
+                // Apply middleware response headers. Unpack
+                // x-middleware-request-* headers into req.headers so
+                // config has/missing conditions and downstream handlers
+                // see middleware-modified cookies and headers.
                 if (result.responseHeaders) {
-                  for (const [key, value] of result.responseHeaders) {
-                    res.appendHeader(key, value);
+                  const currentRequestHeaders = new Headers();
+                  for (const [key, value] of Object.entries(req.headers)) {
+                    if (Array.isArray(value)) {
+                      currentRequestHeaders.set(key, value.join(", "));
+                    } else if (value !== undefined) {
+                      currentRequestHeaders.set(key, value);
+                    }
+                  }
+
+                  middlewareRequestHeaders = buildRequestHeadersFromMiddlewareResponse(
+                    currentRequestHeaders,
+                    result.responseHeaders,
+                  );
+
+                  if (middlewareRequestHeaders && !hasAppDir) {
+                    applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
+                  }
+
+                  if (hasAppDir) {
+                    // Hybrid app+pages: defer response headers. They'll be
+                    // applied to res for Pages routes or forwarded to the RSC
+                    // entry (via x-vinext-mw-ctx) for App Router routes.
+                    deferredMwResponseHeaders = [];
+                    for (const [key, value] of result.responseHeaders) {
+                      if (!key.startsWith("x-middleware-")) {
+                        deferredMwResponseHeaders.push([key, value]);
+                      }
+                    }
+                  } else {
+                    for (const [key, value] of result.responseHeaders) {
+                      if (!key.startsWith("x-middleware-")) {
+                        res.appendHeader(key, value);
+                      }
+                    }
                   }
                 }
 
                 // Apply middleware rewrite (URL and optional status code)
                 if (result.rewriteUrl) {
                   url = result.rewriteUrl;
+                  // Write the rewritten URL back onto req.url so every subsequent
+                  // handler in the connect chain sees the correct path. The local
+                  // `url` variable is only visible within this handler — anything
+                  // further down the chain (Vite's built-in middleware, the
+                  // Cloudflare plugin's handler, or any other connect middleware)
+                  // reads req.url directly. Without this, a middleware rewrite
+                  // would be invisible to those handlers and the original URL
+                  // would be dispatched instead.
+                  req.url = url;
                 }
                 if (result.rewriteStatus) {
-                  (req as any).__vinextRewriteStatus = result.rewriteStatus;
+                  req.__vinextRewriteStatus = result.rewriteStatus;
+                }
+
+                // Forward middleware context to the RSC entry so it can
+                // populate _mwCtx without re-running the middleware function.
+                // This prevents double execution in hybrid app+pages dev mode.
+                if (hasAppDir) {
+                  const mwCtxEntries: [string, string][] = [];
+                  if (result.responseHeaders) {
+                    for (const [key, value] of result.responseHeaders) {
+                      // Exclude control headers that runMiddleware already
+                      // consumed — matches the RSC entry's inline filtering.
+                      if (key !== "x-middleware-next" && key !== "x-middleware-rewrite") {
+                        mwCtxEntries.push([key, value]);
+                      }
+                    }
+                  }
+                  req.headers["x-vinext-mw-ctx"] = JSON.stringify({
+                    h: mwCtxEntries,
+                    s: result.rewriteStatus ?? null,
+                    r: result.rewriteUrl ?? null,
+                  });
                 }
               }
 
               // Build request context once for has/missing condition checks
-              // across headers, redirects, and rewrites.
-              const reqUrl = new URL(url, `http://${req.headers.host || "localhost"}`);
-              const reqCtxHeaders = new Headers(
-                Object.fromEntries(
-                  Object.entries(req.headers)
-                    .filter(([, v]) => v !== undefined)
-                    .map(([k, v]) => [k, Array.isArray(v) ? v.join(", ") : String(v)])
-                ),
+              // for config rules that execute after middleware (rewrites).
+              // Convert Node.js IncomingMessage headers to a Web Request for
+              // requestContextFromRequest(), which uses the standard Web API.
+              const reqUrl = new URL(url, requestOrigin);
+              const reqCtxHeaders = middlewareRequestHeaders ?? nodeRequestHeaders;
+              const reqCtx: RequestContext = requestContextFromRequest(
+                new Request(reqUrl, { headers: reqCtxHeaders }),
               );
-              const reqCtx: RequestContext = {
-                headers: reqCtxHeaders,
-                cookies: parseCookies(reqCtxHeaders.get("cookie")),
-                query: reqUrl.searchParams,
-                host: reqCtxHeaders.get("host") ?? reqUrl.host,
-              };
 
               // Apply custom headers from next.config.js
+              // Header matching still uses the original normalized pathname and
+              // pre-middleware request state; middleware response headers win
+              // later because they are already on the outgoing response.
               if (nextConfig?.headers.length) {
-                applyHeaders(pathname, res, nextConfig.headers, reqCtx);
-              }
-
-              // Apply redirects from next.config.js
-              if (nextConfig?.redirects.length) {
-                const redirected = applyRedirects(
-                  pathname,
-                  res,
-                  nextConfig.redirects,
-                  reqCtx,
-                );
-                if (redirected) return;
+                applyHeaders(pathname, res, nextConfig.headers, preMiddlewareReqCtx);
               }
 
               // Apply rewrites from next.config.js (beforeFiles)
               let resolvedUrl = url;
               if (nextConfig?.rewrites.beforeFiles.length) {
                 resolvedUrl =
-                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles, reqCtx) ??
-                  url;
+                  applyRewrites(pathname, nextConfig.rewrites.beforeFiles, reqCtx) ?? url;
               }
 
               // External rewrite from beforeFiles — proxy to external URL
               if (isExternalUrl(resolvedUrl)) {
+                applyDeferredMwHeaders();
                 await proxyExternalRewriteNode(req, res, resolvedUrl);
                 return;
               }
 
               // Handle API routes first (pages/api/*)
               const resolvedPathname = resolvedUrl.split("?")[0];
-              if (
-                resolvedPathname.startsWith("/api/") ||
-                resolvedPathname === "/api"
-              ) {
-                const apiRoutes = await apiRouter(pagesDir);
+              if (resolvedPathname.startsWith("/api/") || resolvedPathname === "/api") {
+                const apiRoutes = await apiRouter(
+                  pagesDir,
+                  nextConfig?.pageExtensions,
+                  fileMatcher,
+                );
+                const apiMatch = matchRoute(resolvedUrl, apiRoutes);
+                if (apiMatch) {
+                  applyDeferredMwHeaders();
+                  if (middlewareRequestHeaders) {
+                    applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
+                  }
+                }
                 const handled = await handleApiRoute(
-                  server,
+                  getPagesRunner(),
                   req,
                   res,
                   resolvedUrl,
                   apiRoutes,
                 );
                 if (handled) return;
-                // No API route matched — fall through to 404
+
+                // No API route matched — if app dir exists, let the RSC plugin handle it
+                // (app/api/* route handlers live there). Otherwise hard-404.
+                if (hasAppDir) return next();
+
                 res.statusCode = 404;
                 res.end("404 - API route not found");
                 return;
               }
 
-              const routes = await pagesRouter(pagesDir);
+              const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
               // Apply afterFiles rewrites — these run after initial route matching
               // If beforeFiles already rewrote the URL, afterFiles still run on the
@@ -2940,16 +3344,30 @@ hydrate();
 
               // External rewrite from afterFiles — proxy to external URL
               if (isExternalUrl(resolvedUrl)) {
+                applyDeferredMwHeaders();
                 await proxyExternalRewriteNode(req, res, resolvedUrl);
                 return;
               }
 
-              const handler = createSSRHandler(server, routes, pagesDir, nextConfig?.i18n);
-              const mwStatus = (req as any).__vinextRewriteStatus as number | undefined;
+              const handler = createSSRHandler(
+                server,
+                getPagesRunner(),
+                routes,
+                pagesDir,
+                nextConfig?.i18n,
+                fileMatcher,
+                nextConfig?.basePath ?? "",
+                nextConfig?.trailingSlash ?? false,
+              );
+              const mwStatus = req.__vinextRewriteStatus;
 
               // Try rendering the resolved URL
               const match = matchRoute(resolvedUrl.split("?")[0], routes);
               if (match) {
+                applyDeferredMwHeaders();
+                if (middlewareRequestHeaders) {
+                  applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
+                }
                 await handler(req, res, resolvedUrl, mwStatus);
                 return;
               }
@@ -2964,21 +3382,63 @@ hydrate();
                 if (fallbackRewrite) {
                   // External fallback rewrite — proxy to external URL
                   if (isExternalUrl(fallbackRewrite)) {
+                    applyDeferredMwHeaders();
                     await proxyExternalRewriteNode(req, res, fallbackRewrite);
                     return;
+                  }
+                  const fallbackMatch = matchRoute(fallbackRewrite.split("?")[0], routes);
+                  if (!fallbackMatch && hasAppDir) {
+                    return next();
+                  }
+                  applyDeferredMwHeaders();
+                  if (middlewareRequestHeaders) {
+                    applyRequestHeadersToNodeRequest(middlewareRequestHeaders);
                   }
                   await handler(req, res, fallbackRewrite, mwStatus);
                   return;
                 }
               }
 
-              // No fallback matched — render as-is (will hit 404 handler)
+              // No fallback matched - if app dir exists, let the RSC plugin handle it,
+              // otherwise render via the pages SSR handler (will 404 for unknown routes).
+              if (hasAppDir) return next();
+
               await handler(req, res, resolvedUrl, mwStatus);
             } catch (e) {
               next(e);
             }
           });
         };
+      },
+    },
+    // Strip server-only data-fetching exports (getServerSideProps, getStaticProps,
+    // getStaticPaths) from page modules in the client bundle. These functions
+    // often import server-only modules (database drivers, fs, etc.) that would
+    // break or bloat the client bundle. Next.js does this via an SWC transform
+    // (next-ssg-transform); we use Vite's parseAst + MagicString.
+    //
+    // Only applies to client builds (not SSR) and only to files under the
+    // pages/ directory.
+    {
+      name: "vinext:strip-server-exports",
+      transform: {
+        // Only match page source files, not node_modules
+        filter: { id: /\.(tsx?|jsx?|mjs)$/ },
+        handler(code, id) {
+          const ssr = this.environment?.name !== "client";
+          if (ssr) return null;
+          if (!hasPagesDir) return null;
+          // Only transform files under the pages/ directory
+          if (!id.startsWith(pagesDir)) return null;
+          // Skip API routes, _app, _document, _error
+          const relativePath = id.slice(pagesDir.length);
+          if (relativePath.startsWith("/api/") || relativePath === "/api") return null;
+          if (/\/_(?:app|document|error)\b/.test(relativePath)) return null;
+
+          const result = stripServerExports(code);
+          if (!result) return null;
+          return { code: result, map: null };
+        },
       },
     },
     // Local image import transform:
@@ -3045,7 +3505,10 @@ hydrate();
           if (id.startsWith("\0")) return null;
           if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
 
-          const imageImportRe = new RegExp(`import\\s+(\\w+)\\s+from\\s+['"]([^'"]+\\.(${IMAGE_EXTS}))['"];?`, "g");
+          const imageImportRe = new RegExp(
+            `import\\s+(\\w+)\\s+from\\s+['"]([^'"]+\\.(${IMAGE_EXTS}))['"];?`,
+            "g",
+          );
           if (!imageImportRe.test(code)) return null;
 
           imageImportRe.lastIndex = 0;
@@ -3138,7 +3601,10 @@ hydrate();
           if (!importMatch) return null;
 
           const importedNames = new Set(
-            importMatch[1].split(",").map((s) => s.trim()).filter(Boolean),
+            importMatch[1]
+              .split(",")
+              .map((s) => s.trim())
+              .filter(Boolean),
           );
 
           const s = new MagicString(code);
@@ -3168,10 +3634,14 @@ hydrate();
 
             // Build the Google Fonts CSS URL
             const weights = options.weight
-              ? Array.isArray(options.weight) ? options.weight : [options.weight]
+              ? Array.isArray(options.weight)
+                ? options.weight
+                : [options.weight]
               : [];
             const styles = options.style
-              ? Array.isArray(options.style) ? options.style : [options.style]
+              ? Array.isArray(options.style)
+                ? options.style
+                : [options.style]
               : [];
             const display = options.display ?? "swap";
 
@@ -3180,7 +3650,10 @@ hydrate();
               const hasItalic = styles.includes("italic");
               if (hasItalic) {
                 const pairs: string[] = [];
-                for (const w of weights) { pairs.push(`0,${w}`); pairs.push(`1,${w}`); }
+                for (const w of weights) {
+                  pairs.push(`0,${w}`);
+                  pairs.push(`1,${w}`);
+                }
                 spec += `:ital,wght@${pairs.join(";")}`;
               } else {
                 spec += `:wght@${weights.join(";")}`;
@@ -3212,7 +3685,8 @@ hydrate();
             const matchEnd = matchStart + fullMatch.length;
             const escapedCSS = JSON.stringify(localCSS);
             const closingBrace = optionsStr.lastIndexOf("}");
-            const optionsWithCSS = optionsStr.slice(0, closingBrace) +
+            const optionsWithCSS =
+              optionsStr.slice(0, closingBrace) +
               (optionsStr.slice(0, closingBrace).trim().endsWith("{") ? "" : ", ") +
               `_selfHostedCSS: ${escapedCSS}` +
               optionsStr.slice(closingBrace);
@@ -3306,175 +3780,189 @@ hydrate();
     // This prevents Vite from eagerly evaluating barrel re-exports that call
     // React.createContext() in RSC environments where createContext doesn't exist.
     (() => {
-    const barrelCaches: BarrelCaches = {
-      exportMapCache: new Map<string, BarrelExportMap>(),
-      subpkgOrigin: new Map<string, string>(),
-    };
-    let optimizedPackages: Set<string> | null = null;
-    function getOptimizedPackages(): Set<string> {
-      if (!optimizedPackages) {
-        optimizedPackages = new Set<string>([
-          ...DEFAULT_OPTIMIZE_PACKAGES,
-          ...(nextConfig?.optimizePackageImports ?? []),
-        ]);
+      const barrelCaches: BarrelCaches = {
+        exportMapCache: new Map<string, BarrelExportMap>(),
+        subpkgOrigin: new Map<string, string>(),
+      };
+      let optimizedPackages: Set<string> | null = null;
+      function getOptimizedPackages(): Set<string> {
+        if (!optimizedPackages) {
+          optimizedPackages = new Set<string>([
+            ...DEFAULT_OPTIMIZE_PACKAGES,
+            ...(nextConfig?.optimizePackageImports ?? []),
+          ]);
+        }
+        return optimizedPackages;
       }
-      return optimizedPackages;
-    }
-    return {
-      name: "vinext:optimize-imports",
-      // No enforce — runs after JSX transform so parseAst gets plain JS.
-      // The transform hook still rewrites imports before Vite resolves them.
+      return {
+        name: "vinext:optimize-imports",
+        // No enforce — runs after JSX transform so parseAst gets plain JS.
+        // The transform hook still rewrites imports before Vite resolves them.
 
-      async resolveId(source) {
-        // Only apply on server environments (RSC/SSR). The client uses Vite's
-        // dep optimizer which handles barrel CJS→ESM conversion correctly.
-        if (this.environment?.name === "client") return;
-        // Resolve sub-package specifiers that were introduced by barrel optimization.
-        // In pnpm strict mode, sub-packages like @radix-ui/react-slot are only
-        // resolvable from the barrel package's location, not from user code.
-        // Use Vite's own resolver (not createRequire) so it picks the ESM entry.
-        const barrelEntry = barrelCaches.subpkgOrigin.get(source);
-        if (!barrelEntry) return;
-        const resolved = await this.resolve(source, barrelEntry, { skipSelf: true });
-        return resolved ?? undefined;
-      },
-
-      transform: {
-        filter: {
-          id: {
-            include: /\.(tsx?|jsx?|mjs)$/,
-          },
-        },
-        handler(code, id) {
+        async resolveId(source) {
           // Only apply on server environments (RSC/SSR). The client uses Vite's
-          // dep optimizer which handles barrel imports correctly.
-          const ctx = this as unknown as EnvironmentPluginContext;
-          if (ctx.environment?.name === "client") return null;
-          // Skip virtual modules
-          if (id.startsWith("\0")) return null;
+          // dep optimizer which handles barrel CJS→ESM conversion correctly.
+          if (this.environment?.name === "client") return;
+          // Resolve sub-package specifiers that were introduced by barrel optimization.
+          // In pnpm strict mode, sub-packages like @radix-ui/react-slot are only
+          // resolvable from the barrel package's location, not from user code.
+          // Use Vite's own resolver (not createRequire) so it picks the ESM entry.
+          const barrelEntry = barrelCaches.subpkgOrigin.get(source);
+          if (!barrelEntry) return;
+          const resolved = await this.resolve(source, barrelEntry, { skipSelf: true });
+          return resolved ?? undefined;
+        },
 
-          // Quick string check: does the code mention any optimized package?
-          // Use quoted forms to avoid false positives (e.g. "effect" in "useEffect").
-          const packages = getOptimizedPackages();
-          let hasBarrelImport = false;
-          for (const pkg of packages) {
-            if (code.includes(`"${pkg}"`) || code.includes(`'${pkg}'`)) { hasBarrelImport = true; break; }
-          }
-          if (!hasBarrelImport) return null;
+        transform: {
+          filter: {
+            id: {
+              include: /\.(tsx?|jsx?|mjs)$/,
+            },
+          },
+          handler(code, id) {
+            // Only apply on server environments (RSC/SSR). The client uses Vite's
+            // dep optimizer which handles barrel imports correctly.
+            const ctx = this as unknown as EnvironmentPluginContext;
+            if (ctx.environment?.name === "client") return null;
+            // Skip virtual modules
+            if (id.startsWith("\0")) return null;
 
-          let ast: ReturnType<typeof parseAst>;
-          try {
-            ast = parseAst(code);
-          } catch {
-            return null;
-          }
-
-          const s = new MagicString(code);
-          let hasChanges = false;
-
-          for (const node of ast.body as AstBodyNode[]) {
-            if (node.type !== "ImportDeclaration") continue;
-
-            const importSource = node.source!.value as string;
-            if (!packages.has(importSource)) continue;
-
-            // Build or retrieve the barrel export map for this package
-            const barrelEntry = resolvePackageEntry(importSource, root);
-            const exportMap = buildBarrelExportMap(
-              importSource,
-              () => barrelEntry,
-              (filepath) => {
-                try {
-                  return fs.readFileSync(filepath, "utf-8");
-                } catch {
-                  return null;
-                }
-              },
-              barrelCaches.exportMapCache,
-            );
-            if (!exportMap || !barrelEntry) continue;
-
-            // Register sub-package sources so resolveId can find them from
-            // the barrel's context (needed for pnpm strict hoisting)
-            for (const entry of exportMap.values()) {
-              if (!entry.source.startsWith(".") && !barrelCaches.subpkgOrigin.has(entry.source)) {
-                barrelCaches.subpkgOrigin.set(entry.source, barrelEntry);
-              }
-            }
-
-            // Check if ALL specifiers can be resolved. If any can't, leave the import unchanged.
-            const specifiers: Array<{ local: string; imported: string }> = [];
-            let allResolved = true;
-            for (const spec of node.specifiers!) {
-              if (spec.type === "ImportSpecifier") {
-                const imported = astName(spec.imported!);
-                specifiers.push({ local: spec.local.name, imported });
-                if (!exportMap.has(imported)) {
-                  allResolved = false;
-                  break;
-                }
-              } else if (spec.type === "ImportDefaultSpecifier") {
-                specifiers.push({ local: spec.local.name, imported: "default" });
-                if (!exportMap.has("default")) {
-                  allResolved = false;
-                  break;
-                }
-              } else if (spec.type === "ImportNamespaceSpecifier") {
-                // import * as X from "pkg" — can't optimize namespace imports
-                allResolved = false;
+            // Quick string check: does the code mention any optimized package?
+            // Use quoted forms to avoid false positives (e.g. "effect" in "useEffect").
+            const packages = getOptimizedPackages();
+            let hasBarrelImport = false;
+            for (const pkg of packages) {
+              if (code.includes(`"${pkg}"`) || code.includes(`'${pkg}'`)) {
+                hasBarrelImport = true;
                 break;
               }
             }
+            if (!hasBarrelImport) return null;
 
-            if (!allResolved || specifiers.length === 0) continue;
-
-            // Group specifiers by their resolved source module
-            const bySource = new Map<string, { locals: Array<{ local: string; originalName: string | undefined }>; isNamespace: boolean }>();
-            for (const { local, imported } of specifiers) {
-              const entry = exportMap.get(imported)!;
-              const key = entry.source;
-              let group = bySource.get(key);
-              if (!group) {
-                group = { locals: [], isNamespace: entry.isNamespace };
-                bySource.set(key, group);
-              }
-              group.locals.push({ local, originalName: entry.isNamespace ? undefined : entry.originalName });
+            let ast: ReturnType<typeof parseAst>;
+            try {
+              ast = parseAst(code);
+            } catch {
+              return null;
             }
 
-            // Build replacement import statements
-            const replacements: string[] = [];
-            for (const [source, { locals, isNamespace }] of bySource) {
-              if (isNamespace) {
-                // Each namespace import gets its own statement
-                for (const { local } of locals) {
-                  replacements.push(`import * as ${local} from ${JSON.stringify(source)}`);
-                }
-              } else {
-                // Group named imports from the same source
-                const importSpecs = locals.map(({ local, originalName }) => {
-                  if (originalName && originalName !== local) {
-                    return `${originalName} as ${local}`;
+            const s = new MagicString(code);
+            let hasChanges = false;
+
+            for (const node of ast.body as AstBodyNode[]) {
+              if (node.type !== "ImportDeclaration") continue;
+
+              const importSource = node.source!.value as string;
+              if (!packages.has(importSource)) continue;
+
+              // Build or retrieve the barrel export map for this package
+              const barrelEntry = resolvePackageEntry(importSource, root);
+              const exportMap = buildBarrelExportMap(
+                importSource,
+                () => barrelEntry,
+                (filepath) => {
+                  try {
+                    return fs.readFileSync(filepath, "utf-8");
+                  } catch {
+                    return null;
                   }
-                  return local;
-                });
-                replacements.push(`import { ${importSpecs.join(", ")} } from ${JSON.stringify(source)}`);
+                },
+                barrelCaches.exportMapCache,
+              );
+              if (!exportMap || !barrelEntry) continue;
+
+              // Register sub-package sources so resolveId can find them from
+              // the barrel's context (needed for pnpm strict hoisting)
+              for (const entry of exportMap.values()) {
+                if (!entry.source.startsWith(".") && !barrelCaches.subpkgOrigin.has(entry.source)) {
+                  barrelCaches.subpkgOrigin.set(entry.source, barrelEntry);
+                }
               }
+
+              // Check if ALL specifiers can be resolved. If any can't, leave the import unchanged.
+              const specifiers: Array<{ local: string; imported: string }> = [];
+              let allResolved = true;
+              for (const spec of node.specifiers!) {
+                if (spec.type === "ImportSpecifier") {
+                  const imported = astName(spec.imported!);
+                  specifiers.push({ local: spec.local.name, imported });
+                  if (!exportMap.has(imported)) {
+                    allResolved = false;
+                    break;
+                  }
+                } else if (spec.type === "ImportDefaultSpecifier") {
+                  specifiers.push({ local: spec.local.name, imported: "default" });
+                  if (!exportMap.has("default")) {
+                    allResolved = false;
+                    break;
+                  }
+                } else if (spec.type === "ImportNamespaceSpecifier") {
+                  // import * as X from "pkg" — can't optimize namespace imports
+                  allResolved = false;
+                  break;
+                }
+              }
+
+              if (!allResolved || specifiers.length === 0) continue;
+
+              // Group specifiers by their resolved source module
+              const bySource = new Map<
+                string,
+                {
+                  locals: Array<{ local: string; originalName: string | undefined }>;
+                  isNamespace: boolean;
+                }
+              >();
+              for (const { local, imported } of specifiers) {
+                const entry = exportMap.get(imported)!;
+                const key = entry.source;
+                let group = bySource.get(key);
+                if (!group) {
+                  group = { locals: [], isNamespace: entry.isNamespace };
+                  bySource.set(key, group);
+                }
+                group.locals.push({
+                  local,
+                  originalName: entry.isNamespace ? undefined : entry.originalName,
+                });
+              }
+
+              // Build replacement import statements
+              const replacements: string[] = [];
+              for (const [source, { locals, isNamespace }] of bySource) {
+                if (isNamespace) {
+                  // Each namespace import gets its own statement
+                  for (const { local } of locals) {
+                    replacements.push(`import * as ${local} from ${JSON.stringify(source)}`);
+                  }
+                } else {
+                  // Group named imports from the same source
+                  const importSpecs = locals.map(({ local, originalName }) => {
+                    if (originalName && originalName !== local) {
+                      return `${originalName} as ${local}`;
+                    }
+                    return local;
+                  });
+                  replacements.push(
+                    `import { ${importSpecs.join(", ")} } from ${JSON.stringify(source)}`,
+                  );
+                }
+              }
+
+              // Replace the original import with the optimized one(s)
+              s.overwrite(node.start, node.end, replacements.join(";\n"));
+              hasChanges = true;
             }
 
-            // Replace the original import with the optimized one(s)
-            s.overwrite(node.start, node.end, replacements.join(";\n"));
-            hasChanges = true;
-          }
+            if (!hasChanges) return null;
 
-          if (!hasChanges) return null;
-
-          return {
-            code: s.toString(),
-            map: s.generateMap({ hires: "boundary" }),
-          };
+            return {
+              code: s.toString(),
+              map: s.generateMap({ hires: "boundary" }),
+            };
+          },
         },
-      },
-    } as Plugin;
+      } as Plugin;
     })(),
     // "use cache" directive transform:
     // Detects "use cache" at file-level or function-level and wraps the
@@ -3500,13 +3988,10 @@ hydrate();
           if (!id.match(/\.(tsx?|jsx?|mjs)$/)) return null;
           if (!code.includes("use cache")) return null;
 
-          if (!resolvedRscTransformsPath) {
-            throw new Error(
-              "vinext: 'use cache' requires @vitejs/plugin-rsc to be installed.\n" +
-              "Run: " + detectPackageManager(process.cwd()) + " @vitejs/plugin-rsc",
-            );
-          }
-          const { transformWrapExport, transformHoistInlineDirective } = await import(pathToFileURL(resolvedRscTransformsPath).href);
+          // Parse the AST first to check for actual "use cache" directives before
+          // throwing the missing-RSC error. The fast-path string check above can
+          // fire on files that contain "use cache" only in comments or string
+          // literals (e.g., in error messages), not as real directives.
           const ast = parseAst(code);
 
           // Check for file-level "use cache" directive
@@ -3518,13 +4003,83 @@ hydrate();
               node.expression.value.startsWith("use cache"),
           );
 
+          // Check for function-level "use cache" directives by walking function bodies.
+          // Accepts any function-like node: FunctionDeclaration/Expression, ArrowFunctionExpression,
+          // or MethodDefinition. MethodDefinition stores its FunctionExpression in `.value`, not
+          // `.body`, so we unwrap it here rather than at each call site to keep the callee safe.
+          function nodeHasInlineCacheDirective(node: any): boolean {
+            if (!node || typeof node !== "object") return false;
+            // MethodDefinition wraps its FunctionExpression in .value; unwrap to reach .body.
+            const fn = node.type === "MethodDefinition" ? node.value : node;
+            // fn.body is a BlockStatement node ({type:"BlockStatement", body:Statement[]}), not
+            // a raw array. Unwrap it. Arrow functions with expression bodies have a non-array
+            // .body — the BlockStatement check handles that case (body.body would be undefined).
+            const stmts = fn?.body?.type === "BlockStatement" ? fn.body.body : null;
+            if (Array.isArray(stmts)) {
+              for (const stmt of stmts) {
+                if (
+                  stmt?.type === "ExpressionStatement" &&
+                  stmt.expression?.type === "Literal" &&
+                  typeof stmt.expression?.value === "string" &&
+                  /^use cache(:\s*\w+)?$/.test(stmt.expression.value)
+                ) {
+                  return true;
+                }
+              }
+            }
+            return false;
+          }
+          function astHasInlineCache(nodes: any[]): boolean {
+            for (const node of nodes) {
+              if (!node || typeof node !== "object") continue;
+              if (
+                (node.type === "FunctionDeclaration" ||
+                  node.type === "FunctionExpression" ||
+                  node.type === "ArrowFunctionExpression" ||
+                  node.type === "MethodDefinition") &&
+                nodeHasInlineCacheDirective(node)
+              ) {
+                return true;
+              }
+              // Walk into variable declarations, export declarations, etc.
+              for (const key of Object.keys(node)) {
+                if (key === "type" || key === "start" || key === "end" || key === "loc") continue;
+                const child = node[key];
+                if (Array.isArray(child) && child.some((c) => c && typeof c === "object")) {
+                  if (astHasInlineCache(child)) return true;
+                } else if (child && typeof child === "object" && child.type) {
+                  if (astHasInlineCache([child])) return true;
+                }
+              }
+            }
+            return false;
+          }
+          const hasInlineCache = !cacheDirective && astHasInlineCache(ast.body as any[]);
+
+          if (!cacheDirective && !hasInlineCache) return null;
+
+          if (!resolvedRscTransformsPath) {
+            throw new Error(
+              "vinext: 'use cache' requires @vitejs/plugin-rsc to be installed.\n" +
+                "Run: " +
+                detectPackageManager(process.cwd()) +
+                " @vitejs/plugin-rsc",
+            );
+          }
+          const { transformWrapExport, transformHoistInlineDirective } = await import(
+            pathToFileURL(resolvedRscTransformsPath).href
+          );
+
           if (cacheDirective) {
             // File-level "use cache" — wrap function exports with
             // registerCachedFunction. Page default exports are wrapped directly
             // (they're leaf components). Layout/template defaults are excluded
             // because they receive {children} from the framework.
             const directiveValue: string = cacheDirective.expression.value;
-            const variant = directiveValue === "use cache" ? "" : directiveValue.replace("use cache:", "").replace("use cache: ", "").trim();
+            const variant =
+              directiveValue === "use cache"
+                ? ""
+                : directiveValue.replace("use cache:", "").replace("use cache: ", "").trim();
 
             // Only skip default export wrapping for layouts and templates —
             // they receive {children} from the framework which requires
@@ -3533,7 +4088,9 @@ hydrate();
             // leaf components with no {children} prop and can be cached directly.
             const isLayoutOrTemplate = /\/(layout|template)\.(tsx?|jsx?|mjs)$/.test(id);
 
-            const runtimeModuleUrl = pathToFileURL(path.join(shimsDir, "cache-runtime.js")).href;
+            const runtimeModuleUrl = pathToFileURL(
+              resolveShimModulePath(shimsDir, "cache-runtime"),
+            ).href;
             const result = transformWrapExport(code, ast as any, {
               runtime: (value: any, name: any) =>
                 `(await import(${JSON.stringify(runtimeModuleUrl)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`,
@@ -3553,7 +4110,11 @@ hydrate();
             if (result.exportNames.length > 0) {
               // Remove the directive itself so it doesn't cause runtime errors
               const output = result.output;
-              output.overwrite(cacheDirective.start, cacheDirective.end, `/* "use cache" — wrapped by vinext */`);
+              output.overwrite(
+                cacheDirective.start,
+                cacheDirective.end,
+                `/* "use cache" — wrapped by vinext */`,
+              );
               return {
                 code: output.toString(),
                 map: output.generateMap({ hires: "boundary" }),
@@ -3563,7 +4124,11 @@ hydrate();
             // Even if no exports were wrapped, still strip the directive
             // (e.g., layout/template file with only a default export)
             const output = new MagicString(code);
-            output.overwrite(cacheDirective.start, cacheDirective.end, `/* "use cache" — handled by vinext */`);
+            output.overwrite(
+              cacheDirective.start,
+              cacheDirective.end,
+              `/* "use cache" — handled by vinext */`,
+            );
             return {
               code: output.toString(),
               map: output.generateMap({ hires: "boundary" }),
@@ -3572,16 +4137,20 @@ hydrate();
 
           // Check for function-level "use cache" directives
           // (e.g., async function getData() { "use cache"; ... })
-          const hasInlineCache = code.includes("use cache") && !cacheDirective;
           if (hasInlineCache) {
-            const runtimeModuleUrl2 = pathToFileURL(path.join(shimsDir, "cache-runtime.js")).href;
+            const runtimeModuleUrl2 = pathToFileURL(
+              resolveShimModulePath(shimsDir, "cache-runtime"),
+            ).href;
 
             try {
               const result = transformHoistInlineDirective(code, ast as any, {
                 directive: /^use cache(:\s*\w+)?$/,
                 runtime: (value: any, name: any, meta: any) => {
                   const directiveMatch = meta.directiveMatch[0];
-                  const variant = directiveMatch === "use cache" ? "" : directiveMatch.replace("use cache:", "").replace("use cache: ", "").trim();
+                  const variant =
+                    directiveMatch === "use cache"
+                      ? ""
+                      : directiveMatch.replace("use cache:", "").replace("use cache: ", "").trim();
                   return `(await import(${JSON.stringify(runtimeModuleUrl2)})).registerCachedFunction(${value}, ${JSON.stringify(id + ":" + name)}, ${JSON.stringify(variant)})`;
                 },
                 rejectNonAsyncFunction: false,
@@ -3602,11 +4171,142 @@ hydrate();
         },
       },
     },
-    // Copy @vercel/og assets (font, WASM) to the RSC output directory.
-    // @vercel/og uses readFileSync(new URL("./font.ttf", import.meta.url)) which
-    // breaks when the module is bundled because Vite doesn't process
-    // new URL(..., import.meta.url) for server-side (SSR/RSC) builds.
-    // This plugin copies the required assets so they exist alongside the bundle.
+    // Inline binary assets fetched via `fetch(new URL("./asset", import.meta.url))`.
+    //
+    // Some bundled libraries (notably @vercel/og) load assets at module init time
+    // with the pattern:
+    //
+    //   fetch(new URL("./some-font.ttf", import.meta.url)).then(res => res.arrayBuffer())
+    //
+    // This works in browser and standard Node.js because import.meta.url is a real
+    // file:// URL. In Cloudflare Workers (both wrangler dev and production), however,
+    // import.meta.url is the string "worker" — not a URL — so new URL(...) throws
+    // "TypeError: Invalid URL string" and the Worker fails to start.
+    //
+    // Fix: at Vite transform time, find every such pattern, resolve the referenced
+    // file relative to the module's actual path on disk (available as `id`), read it,
+    // and replace the entire fetch(new URL(...)) expression with an inline base64 IIFE
+    // that resolves synchronously. This eliminates the runtime fetch entirely and works
+    // in all environments (workerd, Node.js, browser).
+    //
+    // Note: WASM files imported via `import ... from "./foo.wasm?module"` are handled
+    // by the bundler/Vite directly and do not need this treatment. Only assets that
+    // are runtime-fetched (not statically imported) need to be inlined here.
+    {
+      name: "vinext:og-inline-fetch-assets",
+      enforce: "pre",
+      configResolved(config) {
+        _ogInlineIsBuild = config.command === "build";
+      },
+      buildStart() {
+        if (_ogInlineIsBuild) {
+          _ogInlineCache.clear();
+        }
+      },
+      async transform(code, id) {
+        // Quick bail-out: only process modules that use new URL(..., import.meta.url)
+        if (!code.includes("import.meta.url")) {
+          return null;
+        }
+
+        const useCache = _ogInlineIsBuild;
+        const moduleDir = path.dirname(id);
+        let newCode = code;
+        let didReplace = false;
+
+        // Pattern 1 — edge build: fetch(new URL("./file", import.meta.url)).then((res) => res.arrayBuffer())
+        // Replace with an inline IIFE that decodes the asset as base64 and returns Promise<ArrayBuffer>.
+        if (code.includes("fetch(")) {
+          const fetchPattern =
+            /fetch\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)(?:\.then\(\s*(?:function\s*\([^)]*\)|\([^)]*\)\s*=>)\s*\{?\s*return\s+[^.]+\.arrayBuffer\(\)\s*\}?\s*\)|\.then\(\s*\([^)]*\)\s*=>\s*[^.]+\.arrayBuffer\(\)\s*\))/g;
+
+          for (const match of code.matchAll(fetchPattern)) {
+            const fullMatch = match[0];
+            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
+            const absPath = path.resolve(moduleDir, relPath);
+
+            let fileBase64 = useCache ? _ogInlineCache.get(absPath) : undefined;
+            if (fileBase64 === undefined) {
+              try {
+                const buf = await fs.promises.readFile(absPath);
+                fileBase64 = buf.toString("base64");
+                if (useCache) {
+                  _ogInlineCache.set(absPath, fileBase64);
+                }
+              } catch {
+                // File not found on disk — skip (may be a runtime-only asset)
+                continue;
+              }
+            }
+
+            // Replace fetch(...).then(...) with an inline IIFE that returns Promise<ArrayBuffer>.
+            const inlined = [
+              `(function(){`,
+              `var b=${JSON.stringify(fileBase64)};`,
+              `var r=atob(b);`,
+              `var a=new Uint8Array(r.length);`,
+              `for(var i=0;i<r.length;i++)a[i]=r.charCodeAt(i);`,
+              `return Promise.resolve(a.buffer);`,
+              `})()`,
+            ].join("");
+
+            newCode = newCode.replaceAll(fullMatch, inlined);
+            didReplace = true;
+          }
+        }
+
+        // Pattern 2 — node build: readFileSync(fileURLToPath(new URL("./file", import.meta.url)))
+        // Replace with Buffer.from("<base64>", "base64"), which returns a Buffer (compatible with
+        // both font data passed to satori and WASM bytes passed to initWasm).
+        if (code.includes("readFileSync(")) {
+          const readFilePattern =
+            /[a-zA-Z_$][a-zA-Z0-9_$]*\.readFileSync\(\s*(?:[a-zA-Z_$][a-zA-Z0-9_$]*\.)?fileURLToPath\(\s*new URL\(\s*(["'])(\.\/[^"']+)\1\s*,\s*import\.meta\.url\s*\)\s*\)\s*\)/g;
+
+          for (const match of newCode.matchAll(readFilePattern)) {
+            const fullMatch = match[0];
+            const relPath = match[2]; // e.g. "./noto-sans-v27-latin-regular.ttf"
+            const absPath = path.resolve(moduleDir, relPath);
+
+            let fileBase64 = useCache ? _ogInlineCache.get(absPath) : undefined;
+            if (fileBase64 === undefined) {
+              try {
+                const buf = await fs.promises.readFile(absPath);
+                fileBase64 = buf.toString("base64");
+                if (useCache) {
+                  _ogInlineCache.set(absPath, fileBase64);
+                }
+              } catch {
+                // File not found on disk — skip
+                continue;
+              }
+            }
+
+            // Replace readFileSync(...) with Buffer.from("<base64>", "base64").
+            // Buffer is always available in Node.js and in the vinext SSR/RSC environments.
+            const inlined = `Buffer.from(${JSON.stringify(fileBase64)},"base64")`;
+
+            newCode = newCode.replaceAll(fullMatch, inlined);
+            didReplace = true;
+          }
+        }
+
+        if (!didReplace) return null;
+        return { code: newCode, map: null };
+      },
+    },
+    // Copy @vercel/og binary assets to the RSC output directory for production builds.
+    //
+    // The edge build (dist/index.edge.js) uses:
+    //   - fetch(new URL("./noto-sans...", import.meta.url))  → inlined by og-inline-fetch-assets
+    //   - import resvg_wasm from "./resvg.wasm?module"       → static Vite import, emitted by Rollup
+    //
+    // The node build (dist/index.node.js) uses:
+    //   - fs.readFileSync(fileURLToPath(new URL("./noto-sans...", import.meta.url)))  → inlined
+    //   - fs.readFileSync(fileURLToPath(new URL("./resvg.wasm", import.meta.url)))   → inlined
+    //
+    // Both builds' font + WASM assets are inlined as base64 by vinext:og-inline-fetch-assets,
+    // so no file copy is strictly needed. This plugin is kept as a safety net for any edge-build
+    // ?module WASM imports that Rollup/Vite might not emit correctly in the RSC environment.
     {
       name: "vinext:og-assets",
       apply: "build",
@@ -3626,13 +4326,12 @@ hydrate();
           if (!fs.existsSync(indexPath)) return;
 
           const content = fs.readFileSync(indexPath, "utf-8");
-          const ogAssets = [
-            "noto-sans-v27-latin-regular.ttf",
-            "resvg.wasm",
-          ];
+          // The font is inlined as base64 by vinext:og-inline-fetch-assets, so only
+          // the WASM needs to be present as a file alongside the bundle.
+          const ogAssets = ["resvg.wasm"];
 
           // Only copy if the bundle actually references these files
-          const referencedAssets = ogAssets.filter(asset => content.includes(asset));
+          const referencedAssets = ogAssets.filter((asset) => content.includes(asset));
           if (referencedAssets.length === 0) return;
 
           // Find @vercel/og in node_modules
@@ -3678,10 +4377,82 @@ hydrate();
             contentSecurityPolicy: nextConfig?.images?.contentSecurityPolicy,
           };
 
-          fs.writeFileSync(
-            path.join(outDir, "image-config.json"),
-            JSON.stringify(imageConfig),
-          );
+          fs.writeFileSync(path.join(outDir, "image-config.json"), JSON.stringify(imageConfig));
+        },
+      },
+    },
+    // Write vinext-server.json to dist/server/ with a per-build prerender secret.
+    // The prerender secret is used by prod-server.ts to authenticate requests to
+    // the internal /__vinext/prerender/* endpoints, which are only reachable during
+    // the prerender phase of `vinext build`. A new secret is generated on every
+    // build so it rotates with every deployment.
+    //
+    // The secret is generated once at plugin creation time so that both the rsc
+    // and ssr environments write the exact same value (they share the same
+    // closure). Without this, each env would call randomBytes() independently
+    // and the second write would silently overwrite the first with a different
+    // secret, causing prerender auth to fail for whichever env's server reads
+    // the file last.
+    (() => {
+      const prerenderSecret = randomBytes(32).toString("hex");
+      return {
+        name: "vinext:server-manifest",
+        apply: "build" as const,
+        enforce: "post" as const,
+        writeBundle: {
+          sequential: true,
+          order: "post" as const,
+          handler(options: { dir?: string }) {
+            const envName = this.environment?.name;
+            // Fire for App Router RSC builds (rsc env) and Pages Router SSR builds
+            // (ssr env). Skip client and other environments.
+            if (envName !== "rsc" && envName !== "ssr") return;
+
+            const outDir = options.dir;
+            if (!outDir) return;
+
+            const manifest = { prerenderSecret };
+            fs.writeFileSync(path.join(outDir, "vinext-server.json"), JSON.stringify(manifest));
+          },
+        },
+      };
+    })(),
+    // Vite can emit empty SSR manifest entries for modules that Rollup inlines
+    // into another chunk. Pages Router looks up assets by page module path at
+    // runtime, so rebuild those mappings from the emitted client bundle.
+    {
+      name: "vinext:ssr-manifest-backfill",
+      apply: "build",
+      enforce: "post",
+      writeBundle: {
+        sequential: true,
+        order: "post",
+        handler(options, bundle) {
+          const outDir = options.dir;
+          if (!outDir) return;
+
+          const viteDir = path.join(outDir, ".vite");
+          const ssrManifestPath = path.join(viteDir, "ssr-manifest.json");
+          if (!fs.existsSync(ssrManifestPath)) return;
+
+          try {
+            const ssrManifest = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8")) as Record<
+              string,
+              string[]
+            >;
+            const buildRoot = this.environment?.config.root ?? process.cwd();
+            const buildBase = this.environment?.config.base ?? "/";
+            const augmentedManifest = augmentSsrManifestFromBundle(
+              ssrManifest,
+              bundle as Record<string, BundleBackfillChunk | { type: string }>,
+              buildRoot,
+              buildBase,
+            );
+            fs.writeFileSync(ssrManifestPath, JSON.stringify(augmentedManifest, null, 2));
+          } catch (err) {
+            // Leave Vite's manifest untouched if parsing fails.
+            console.warn("[vinext] Failed to augment SSR manifest:", err);
+          }
         },
       },
     },
@@ -3703,7 +4474,7 @@ hydrate();
         sequential: true,
         order: "post",
         async handler() {
-          const envName = this.environment?.name
+          const envName = this.environment?.name;
           if (!envName || !hasCloudflarePlugin) return;
           if (envName !== "client") return;
 
@@ -3714,6 +4485,7 @@ hydrate();
           if (!fs.existsSync(distDir)) return;
 
           const clientDir = path.resolve(buildRoot, "dist", "client");
+          const clientBase = envConfig.base ?? "/";
 
           // Read build manifest and compute lazy chunks (only reachable via
           // dynamic imports). This runs for BOTH App Router and Pages Router.
@@ -3727,13 +4499,15 @@ hydrate();
               const buildManifest = JSON.parse(fs.readFileSync(buildManifestPath, "utf-8"));
               for (const [, value] of Object.entries(buildManifest) as [string, any][]) {
                 if (value && value.isEntry && value.file) {
-                  clientEntryFile = value.file;
+                  clientEntryFile = manifestFileWithBase(value.file, clientBase);
                   break;
                 }
               }
-              const lazy = computeLazyChunks(buildManifest);
+              const lazy = manifestFilesWithBase(computeLazyChunks(buildManifest), clientBase);
               if (lazy.length > 0) lazyChunksData = lazy;
-            } catch { /* ignore parse errors */ }
+            } catch {
+              /* ignore parse errors */
+            }
           }
 
           // Read SSR manifest for per-page CSS/JS injection
@@ -3742,7 +4516,9 @@ hydrate();
           if (fs.existsSync(ssrManifestPath)) {
             try {
               ssrManifestData = JSON.parse(fs.readFileSync(ssrManifestPath, "utf-8"));
-            } catch { /* ignore parse errors */ }
+            } catch {
+              /* ignore parse errors */
+            }
           }
 
           if (hasAppDir) {
@@ -3755,10 +4531,14 @@ hydrate();
               let code = fs.readFileSync(workerEntry, "utf-8");
               const globals: string[] = [];
               if (ssrManifestData) {
-                globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+                globals.push(
+                  `globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`,
+                );
               }
               if (lazyChunksData) {
-                globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+                globals.push(
+                  `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`,
+                );
               }
               code = globals.join("\n") + "\n" + code;
               fs.writeFileSync(workerEntry, code);
@@ -3770,8 +4550,10 @@ hydrate();
             for (const entry of fs.readdirSync(distDir)) {
               const candidate = path.join(distDir, entry);
               if (entry === "client") continue;
-              if (fs.statSync(candidate).isDirectory() &&
-                  fs.existsSync(path.join(candidate, "wrangler.json"))) {
+              if (
+                fs.statSync(candidate).isDirectory() &&
+                fs.existsSync(path.join(candidate, "wrangler.json"))
+              ) {
                 workerOutDir = candidate;
                 break;
               }
@@ -3788,9 +4570,12 @@ hydrate();
               const assetsDir = path.join(clientDir, "assets");
               if (fs.existsSync(assetsDir)) {
                 const files = fs.readdirSync(assetsDir);
-                const entry = files.find((f: string) =>
-                  (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) && f.endsWith(".js"));
-                if (entry) clientEntryFile = "assets/" + entry;
+                const entry = files.find(
+                  (f: string) =>
+                    (f.includes("vinext-client-entry") || f.includes("vinext-app-browser-entry")) &&
+                    f.endsWith(".js"),
+                );
+                if (entry) clientEntryFile = manifestFileWithBase("assets/" + entry, clientBase);
               }
             }
 
@@ -3799,13 +4584,19 @@ hydrate();
               let code = fs.readFileSync(workerEntry, "utf-8");
               const globals: string[] = [];
               if (clientEntryFile) {
-                globals.push(`globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`);
+                globals.push(
+                  `globalThis.__VINEXT_CLIENT_ENTRY__ = ${JSON.stringify(clientEntryFile)};`,
+                );
               }
               if (ssrManifestData) {
-                globals.push(`globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`);
+                globals.push(
+                  `globalThis.__VINEXT_SSR_MANIFEST__ = ${JSON.stringify(ssrManifestData)};`,
+                );
               }
               if (lazyChunksData) {
-                globals.push(`globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`);
+                globals.push(
+                  `globalThis.__VINEXT_LAZY_CHUNKS__ = ${JSON.stringify(lazyChunksData)};`,
+                );
               }
               code = globals.join("\n") + "\n" + code;
               fs.writeFileSync(workerEntry, code);
@@ -3827,9 +4618,63 @@ hydrate();
               "  Cache-Control: public, max-age=31536000, immutable",
               "",
             ].join("\n");
+            fs.mkdirSync(clientDir, { recursive: true });
             fs.writeFileSync(headersPath, headersContent);
           }
         },
+      },
+    },
+    {
+      // @vercel/og patch for workerd (cloudflare-dev + cloudflare-workers)
+      //
+      // @vercel/og/dist/index.edge.js has one remaining workerd issue after the
+      // generic vinext:og-inline-fetch-assets plugin runs (which already handles
+      // the font fetch pattern):
+      //
+      // YOGA WASM: yoga-layout embeds its WASM as a base64 data URL and instantiates
+      // it via WebAssembly.instantiate(bytes) at runtime.
+      // workerd forbids dynamic WASM compilation from bytes — WASM must be loaded
+      // through the module system as a pre-compiled WebAssembly.Module.
+      // Fix: extract the yoga WASM bytes at Vite transform time (Node.js), write
+      // yoga.wasm to @vercel/og/dist/, import it via `?module` so @cloudflare/vite-plugin
+      // can serve it through the module system, and inject h2.instantiateWasm to
+      // use the pre-compiled module instead of bytes.
+      name: "vinext:og-font-patch",
+      enforce: "pre" as const,
+      transform(code: string, id: string) {
+        if (!id.includes("@vercel/og") || !id.includes("index.edge.js")) return null;
+        let result = code;
+
+        // ── Extract yoga WASM and import via ?module ──────────────────────────────────
+        // yoga-layout's emscripten bundle sets H to a data URL containing the yoga WASM,
+        // then later calls WebAssembly.instantiate(bytes, imports), which workerd rejects.
+        // Emscripten supports a custom h2.instantiateWasm(imports, callback) escape hatch
+        // that we inject to use a pre-compiled WebAssembly.Module loaded via ?module.
+        const YOGA_DATA_URL_RE = /H = "data:application\/octet-stream;base64,([A-Za-z0-9+/]+=*)";/;
+        const yogaMatch = YOGA_DATA_URL_RE.exec(result);
+        if (yogaMatch) {
+          const yogaBase64 = yogaMatch[1];
+          const distDir = path.dirname(id);
+          const yogaWasmPath = path.join(distDir, "yoga.wasm");
+          // Write yoga.wasm to disk idempotently at transform time (Node.js side)
+          if (!fs.existsSync(yogaWasmPath)) {
+            fs.writeFileSync(yogaWasmPath, Buffer.from(yogaBase64, "base64"));
+          }
+          // Disable the data-URL branch so emscripten doesn't try to instantiate from bytes
+          result = result.replace(yogaMatch[0], `H = "";`);
+          // Patch the loadYoga call site to inject instantiateWasm using the ?module import
+          const YOGA_CALL = `yoga_wasm_base64_esm_default()`;
+          const YOGA_CALL_PATCHED =
+            `yoga_wasm_base64_esm_default({ instantiateWasm: function(imports, callback) {` +
+            ` WebAssembly.instantiate(yoga_wasm_module, imports).then(function(inst) { callback(inst); });` +
+            ` return {}; } })`;
+          result = result.replace(YOGA_CALL, YOGA_CALL_PATCHED);
+          // Prepend the yoga wasm ?module import so @cloudflare/vite-plugin handles it
+          result = `import yoga_wasm_module from "./yoga.wasm?module";\n` + result;
+        }
+
+        if (result === code) return null;
+        return { code: result, map: null };
       },
     },
   ];
@@ -3839,7 +4684,7 @@ hydrate();
     plugins.push(rscPluginPromise);
   }
 
-  return plugins as Plugin[];
+  return plugins;
 }
 
 /**
@@ -3856,153 +4701,100 @@ function getNextPublicEnvDefines(): Record<string, string> {
   return defines;
 }
 
-/**
- * If the current position in `str` starts with a parenthesized group, consume
- * it and advance `re.lastIndex` past the closing `)`. Returns the group
- * contents or null if no group is present.
- */
-function extractConstraint(str: string, re: RegExp): string | null {
-  if (str[re.lastIndex] !== "(") return null;
-  const start = re.lastIndex + 1;
-  let depth = 1;
-  let i = start;
-  while (i < str.length && depth > 0) {
-    if (str[i] === "(") depth++;
-    else if (str[i] === ")") depth--;
-    i++;
-  }
-  if (depth !== 0) return null;
-  re.lastIndex = i;
-  return str.slice(start, i - 1);
-}
+// matchConfigPattern is imported from config-matchers.ts and re-exported
+// for tests and other consumers that import it from vinext's main entry.
+// The duplicate local implementation and its extractConstraint helper
+// have been removed in favor of the canonical config-matchers.ts version
+// which uses a single-pass tokenizer (fixing the chained .replace()
+// divergence that CodeQL flagged as incomplete sanitization).
+export { matchConfigPattern } from "./config/config-matchers.js";
 
 /**
- * Match a Next.js route pattern (e.g. "/blog/:slug", "/docs/:path*") against a pathname.
- * Returns matched params or null.
+ * Strip server-only data-fetching exports (getServerSideProps,
+ * getStaticProps, getStaticPaths) from page modules for the client
+ * bundle. Uses Vite's parseAst (Rollup/acorn) for correct handling
+ * of all export patterns including function expressions, arrow
+ * functions with TS return types, and re-exports.
  *
- * Supports:
- *   :param     — matches a single path segment
- *   :param*    — matches zero or more segments (catch-all)
- *   :param+    — matches one or more segments
- *   (regex)    — inline regex patterns in the source
+ * Modeled after Next.js's SWC `next-ssg-transform`.
  */
-export function matchConfigPattern(
-  pathname: string,
-  pattern: string,
-): Record<string, string> | null {
-  // If the pattern contains regex groups like (\\d+) or (.*), use regex matching.
-  // Also enter this branch when a catch-all parameter (:param* or :param+) is
-  // followed by a literal suffix (e.g. "/:path*.md"). Without this, the suffix
-  // pattern falls through to the simple segment matcher which incorrectly treats
-  // the whole segment (":path*.md") as a named parameter and matches everything.
-  if (
-    pattern.includes("(") ||
-    pattern.includes("\\") ||
-    /:[\w-]+[*+][^/]/.test(pattern) ||
-    /:[\w-]+\./.test(pattern)
-  ) {
-    try {
-      // Extract named params and their constraints from the pattern.
-      // :param(constraint) -> use constraint as the regex group
-      // :param -> ([^/]+)
-      // :param* -> (.*)
-      // :param+ -> (.+)
-      // Param names may contain hyphens (e.g. :auth-method, :sign-in).
-      const paramNames: string[] = [];
-      // Single-pass conversion with procedural suffix handling. The tokenizer
-      // matches only simple, non-overlapping tokens; quantifier/constraint
-      // suffixes after :param are consumed procedurally to avoid polynomial
-      // backtracking in the regex engine.
-      let regexStr = "";
-      const tokenRe = /:([\w-]+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
-      let tok: RegExpExecArray | null;
-      while ((tok = tokenRe.exec(pattern)) !== null) {
-        if (tok[1] !== undefined) {
-          const name = tok[1];
-          const rest = pattern.slice(tokenRe.lastIndex);
-          // Check for quantifier (* or +) with optional constraint
-          if (rest.startsWith("*") || rest.startsWith("+")) {
-            const quantifier = rest[0];
-            tokenRe.lastIndex += 1;
-            const constraint = extractConstraint(pattern, tokenRe);
-            paramNames.push(name);
-            if (constraint !== null) {
-              regexStr += `(${constraint})`;
-            } else {
-              regexStr += quantifier === "*" ? "(.*)" : "(.+)";
-            }
-          } else {
-            // Check for inline constraint without quantifier
-            const constraint = extractConstraint(pattern, tokenRe);
-            paramNames.push(name);
-            regexStr += constraint !== null ? `(${constraint})` : "([^/]+)";
+function stripServerExports(code: string): string | null {
+  const SERVER_EXPORTS = new Set(["getServerSideProps", "getStaticProps", "getStaticPaths"]);
+  if (![...SERVER_EXPORTS].some((name) => code.includes(name))) return null;
+
+  let ast: ReturnType<typeof parseAst>;
+  try {
+    ast = parseAst(code);
+  } catch {
+    // If parsing fails (shouldn't happen post-JSX/TS transform), bail out
+    return null;
+  }
+
+  const s = new MagicString(code);
+  let changed = false;
+
+  for (const node of ast.body as any[]) {
+    if (node.type !== "ExportNamedDeclaration") continue;
+
+    // Case 1: export function name() {} / export async function name() {}
+    // Case 2: export const/let/var name = ...
+    if (node.declaration) {
+      const decl = node.declaration;
+      if (decl.type === "FunctionDeclaration" && SERVER_EXPORTS.has(decl.id?.name)) {
+        s.overwrite(
+          node.start,
+          node.end,
+          `export function ${decl.id.name}() { return { props: {} }; }`,
+        );
+        changed = true;
+      } else if (decl.type === "VariableDeclaration") {
+        for (const declarator of decl.declarations) {
+          if (declarator.id?.type === "Identifier" && SERVER_EXPORTS.has(declarator.id.name)) {
+            s.overwrite(node.start, node.end, `export const ${declarator.id.name} = undefined;`);
+            changed = true;
           }
-        } else if (tok[0] === ".") {
-          regexStr += "\\.";
-        } else {
-          regexStr += tok[0];
         }
       }
-      const re = safeRegExp("^" + regexStr + "$");
-      if (!re) return null;
-      const match = re.exec(pathname);
-      if (!match) return null;
-      const params: Record<string, string> = {};
-      for (let i = 0; i < paramNames.length; i++) {
-        params[paramNames[i]] = match[i + 1] ?? "";
+      continue;
+    }
+
+    // Case 3: export { getServerSideProps } or export { getServerSideProps as gSSP }
+    if (node.specifiers && node.specifiers.length > 0 && !node.source) {
+      const kept: any[] = [];
+      const stripped: string[] = [];
+      for (const spec of node.specifiers) {
+        // spec.local.name is the binding name, spec.exported.name is the export name
+        const exportedName = spec.exported?.name ?? spec.exported?.value;
+        if (SERVER_EXPORTS.has(exportedName)) {
+          stripped.push(exportedName);
+        } else {
+          kept.push(spec);
+        }
       }
-      return params;
-    } catch {
-      // Fall through to segment-based matching
+      if (stripped.length > 0) {
+        // Build replacement: keep non-server specifiers, add stubs for stripped ones
+        const parts: string[] = [];
+        if (kept.length > 0) {
+          const keptStr = kept
+            .map((sp: any) => {
+              const local = sp.local.name;
+              const exported = sp.exported?.name ?? sp.exported?.value;
+              return local === exported ? local : `${local} as ${exported}`;
+            })
+            .join(", ");
+          parts.push(`export { ${keptStr} };`);
+        }
+        for (const name of stripped) {
+          parts.push(`export const ${name} = undefined;`);
+        }
+        s.overwrite(node.start, node.end, parts.join("\n"));
+        changed = true;
+      }
     }
   }
 
-  // Check for catch-all patterns (:param* or :param+) without regex groups
-  // Param names may contain hyphens (e.g. :sign-in*, :sign-up+).
-  const catchAllMatch = pattern.match(/:([\w-]+)(\*|\+)$/);
-  if (catchAllMatch) {
-    const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
-    const paramName = catchAllMatch[1];
-    const isPlus = catchAllMatch[2] === "+";
-
-    if (!pathname.startsWith(prefix.replace(/\/$/, ""))) return null;
-
-    const rest = pathname.slice(prefix.replace(/\/$/, "").length);
-    // For :path+ we need at least one segment (non-empty after the prefix)
-    if (isPlus && (!rest || rest === "/")) return null;
-    // For :path* zero segments is fine
-    let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
-    // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
-    // the entry point. Decoding again would create a double-decode vector.
-    return { [paramName]: restValue };
-  }
-
-  // Simple segment-based matching for exact patterns and :param
-  const parts = pattern.split("/");
-  const pathParts = pathname.split("/");
-
-  if (parts.length !== pathParts.length) return null;
-
-  const params: Record<string, string> = {};
-  for (let i = 0; i < parts.length; i++) {
-    if (parts[i].startsWith(":")) {
-      params[parts[i].slice(1)] = pathParts[i];
-    } else if (parts[i] !== pathParts[i]) {
-      return null;
-    }
-  }
-  return params;
-}
-
-/**
- * Sanitize a redirect/rewrite destination by collapsing leading slashes and
- * backslashes to a single "/" for non-external URLs. Browsers interpret "\"
- * as "/" in URL contexts, so "\/evil.com" becomes "//evil.com" (protocol-relative).
- */
-function sanitizeDestinationLocal(dest: string): string {
-  if (dest.startsWith("http://") || dest.startsWith("https://")) return dest;
-  dest = dest.replace(/^[\\/]+/, "/");
-  return dest;
+  if (!changed) return null;
+  return s.toString();
 }
 
 /**
@@ -4014,11 +4806,16 @@ function applyRedirects(
   res: any,
   redirects: NextRedirect[],
   ctx: RequestContext,
+  basePath = "",
 ): boolean {
   const result = matchRedirect(pathname, redirects, ctx);
   if (result) {
     // Sanitize to prevent open redirect via protocol-relative URLs
-    const dest = sanitizeDestinationLocal(result.destination);
+    const dest = sanitizeDestination(
+      basePath && !isExternalUrl(result.destination) && !hasBasePath(result.destination, basePath)
+        ? basePath + result.destination
+        : result.destination,
+    );
     res.writeHead(result.permanent ? 308 : 307, { Location: dest });
     res.end();
     return true;
@@ -4026,9 +4823,7 @@ function applyRedirects(
   return false;
 }
 
-/**
- * Proxy an external rewrite in the Node.js dev server context.
- *
+/*
  * Converts the Node.js IncomingMessage into a Web Request, calls
  * proxyExternalRequest(), and pipes the response back to the Node.js
  * ServerResponse.
@@ -4054,7 +4849,7 @@ async function proxyExternalRewriteNode(
     };
     if (hasBody) {
       const { Readable } = await import("node:stream");
-      init.body = Readable.toWeb(req) as unknown as ReadableStream;
+      init.body = Readable.toWeb(req) as ReadableStream;
       init.duplex = "half";
     }
     const webRequest = new Request(new URL(req.url ?? "/", origin), init);
@@ -4066,9 +4861,7 @@ async function proxyExternalRewriteNode(
     proxyResponse.headers.forEach((value, key) => {
       const existing = nodeHeaders[key];
       if (existing !== undefined) {
-        nodeHeaders[key] = Array.isArray(existing)
-          ? [...existing, value]
-          : [existing, value];
+        nodeHeaders[key] = Array.isArray(existing) ? [...existing, value] : [existing, value];
       } else {
         nodeHeaders[key] = value;
       }
@@ -4077,7 +4870,9 @@ async function proxyExternalRewriteNode(
 
     if (proxyResponse.body) {
       const { Readable: ReadableImport } = await import("node:stream");
-      const nodeStream = ReadableImport.fromWeb(proxyResponse.body as unknown as import("stream/web").ReadableStream);
+      const nodeStream = ReadableImport.fromWeb(
+        proxyResponse.body as import("stream/web").ReadableStream,
+      );
       nodeStream.pipe(res);
     } else {
       res.end();
@@ -4103,13 +4898,15 @@ function applyRewrites(
   const dest = matchRewrite(pathname, rewrites, ctx);
   if (dest) {
     // Sanitize to prevent open redirect via protocol-relative URLs
-    return sanitizeDestinationLocal(dest);
+    return sanitizeDestination(dest);
   }
   return null;
 }
 
 /**
  * Apply custom header rules from next.config.js.
+ * Middleware headers take precedence: if a header key was already set on the
+ * response (by middleware), the config value is skipped for that key.
  */
 function applyHeaders(
   pathname: string,
@@ -4119,31 +4916,71 @@ function applyHeaders(
 ): void {
   const matched = matchHeaders(pathname, headers, ctx);
   for (const header of matched) {
-    res.setHeader(header.key, header.value);
+    // Use append semantics for headers where multiple values must coexist
+    // (Vary, Set-Cookie). Using setHeader() on these would destroy
+    // existing values like "Vary: RSC, Accept".
+    const lk = header.key.toLowerCase();
+    if (lk === "set-cookie") {
+      // Node.js res.getHeader("set-cookie") returns string[] when
+      // multiple Set-Cookie headers have been set. Preserve the array.
+      const existing = res.getHeader(lk);
+      if (Array.isArray(existing)) {
+        res.setHeader(header.key, [...existing, header.value]);
+      } else if (existing) {
+        res.setHeader(header.key, [String(existing), header.value]);
+      } else {
+        res.setHeader(header.key, header.value);
+      }
+    } else if (lk === "vary") {
+      const existing = res.getHeader(lk);
+      if (existing) {
+        res.setHeader(header.key, existing + ", " + header.value);
+      } else {
+        res.setHeader(header.key, header.value);
+      }
+    } else {
+      // Middleware headers take precedence: skip config keys already set by
+      // middleware so middleware always wins over next.config.js headers.
+      if (!res.getHeader(lk)) {
+        res.setHeader(header.key, header.value);
+      }
+    }
   }
 }
 
 /**
  * Find a file by name (without extension) in a directory.
- * Checks .tsx, .ts, .jsx, .js extensions.
+ * Checks the configured page extensions.
  */
-function findFileWithExts(dir: string, name: string): string | null {
-  const extensions = [".tsx", ".ts", ".jsx", ".js"];
-  for (const ext of extensions) {
+function findFileWithExts(
+  dir: string,
+  name: string,
+  matcher: ReturnType<typeof createValidFileMatcher>,
+): string | null {
+  for (const ext of matcher.dottedExtensions) {
     const filePath = path.join(dir, name + ext);
     if (fs.existsSync(filePath)) return filePath;
   }
   return null;
 }
 
+/** Module-level cache for hasMdxFiles — avoids re-scanning per Vite environment. */
+const _mdxScanCache = new Map<string, boolean>();
+
 /**
  * Check if the project has .mdx files in app/ or pages/ directories.
  */
 function hasMdxFiles(root: string, appDir: string | null, pagesDir: string | null): boolean {
+  const cacheKey = `${root}\0${appDir ?? ""}\0${pagesDir ?? ""}`;
+  if (_mdxScanCache.has(cacheKey)) return _mdxScanCache.get(cacheKey)!;
   const dirs = [appDir, pagesDir].filter(Boolean) as string[];
   for (const dir of dirs) {
-    if (fs.existsSync(dir) && scanDirForMdx(dir)) return true;
+    if (fs.existsSync(dir) && scanDirForMdx(dir)) {
+      _mdxScanCache.set(cacheKey, true);
+      return true;
+    }
   }
+  _mdxScanCache.set(cacheKey, false);
   return false;
 }
 
@@ -4167,10 +5004,24 @@ function scanDirForMdx(dir: string): boolean {
 
 // Public exports for static export
 export { staticExportPages, staticExportApp } from "./build/static-export.js";
-export type { StaticExportResult, StaticExportOptions, AppStaticExportOptions } from "./build/static-export.js";
+export type {
+  StaticExportResult,
+  StaticExportOptions,
+  AppStaticExportOptions,
+} from "./build/static-export.js";
+
+// Export NextConfig type so next.config.ts files can import it from "vinext"
+// instead of "next".
+export type { NextConfig } from "./config/next-config.js";
 
 // Exported for CLI and testing
 export { clientManualChunks, clientOutputConfig, clientTreeshakeConfig, computeLazyChunks };
+export { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle };
 export { resolvePostcssStringPlugins as _resolvePostcssStringPlugins };
+export { _postcssCache };
+export { hasMdxFiles as _hasMdxFiles };
+export { _mdxScanCache };
 export { parseStaticObjectLiteral as _parseStaticObjectLiteral };
 export { buildBarrelExportMap as _buildBarrelExportMap };
+export { stripServerExports as _stripServerExports };
+export { asyncHooksStubPlugin as _asyncHooksStubPlugin };

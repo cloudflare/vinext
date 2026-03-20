@@ -11,18 +11,19 @@
  * to avoid creating separate contexts in different modules.
  */
 import { createElement, type ReactNode } from "react";
-import { getLayoutSegmentContext } from "next/navigation";
+import { getLayoutSegmentContext } from "./navigation.js";
 
 /**
- * Wraps children with the layout segment depth context.
+ * Wraps children with the layout segment context.
  * Each layout in the App Router tree wraps its children with this provider,
- * passing the number of URL segments consumed up to that layout's level.
+ * passing the remaining route tree segments below that layout level.
+ * Segments include route groups and resolved dynamic param values.
  */
 export function LayoutSegmentProvider({
-  depth,
+  childSegments,
   children,
 }: {
-  depth: number;
+  childSegments: string[];
   children: ReactNode;
 }) {
   const ctx = getLayoutSegmentContext();
@@ -30,5 +31,5 @@ export function LayoutSegmentProvider({
     // Fallback: no context available (shouldn't happen in SSR/Browser)
     return children as any;
   }
-  return createElement(ctx.Provider, { value: depth }, children);
+  return createElement(ctx.Provider, { value: childSegments }, children);
 }

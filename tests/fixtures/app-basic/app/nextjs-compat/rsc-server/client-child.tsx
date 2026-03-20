@@ -6,7 +6,9 @@ export function ClientChild({ greeting }: { greeting: string }) {
     <div id="client-child">
       <p id="server-greeting">{greeting}</p>
       <p id="click-count">{count}</p>
-      <button id="increment-btn" onClick={() => setCount(c => c + 1)}>+1</button>
+      <button id="increment-btn" onClick={() => setCount((c) => c + 1)}>
+        +1
+      </button>
     </div>
   );
 }

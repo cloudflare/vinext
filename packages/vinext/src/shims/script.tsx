@@ -13,6 +13,7 @@
  *   - "worker": sets type="text/partytown" (requires Partytown setup)
  */
 import React, { useEffect, useRef } from "react";
+import { escapeInlineContent } from "./head.js";
 
 export interface ScriptProps {
   /** Script source URL */
@@ -54,7 +55,16 @@ const loadedScripts = new Set<string>();
  * Load a script imperatively (outside of React).
  */
 export function handleClientScriptLoad(props: ScriptProps): void {
-  const { src, id, onLoad, onError, strategy: _strategy, onReady: _onReady, children, ...rest } = props;
+  const {
+    src,
+    id,
+    onLoad,
+    onError,
+    strategy: _strategy,
+    onReady: _onReady,
+    children,
+    ...rest
+  } = props;
   if (typeof window === "undefined") return;
 
   const key = id ?? src ?? "";
@@ -194,7 +204,12 @@ function Script(props: ScriptProps): React.ReactElement | null {
       if (src) scriptProps.src = src;
       if (id) scriptProps.id = id;
       if (dangerouslySetInnerHTML) {
-        scriptProps.dangerouslySetInnerHTML = dangerouslySetInnerHTML;
+        // Escape closing </script> sequences in inline content so the HTML
+        // parser doesn't prematurely terminate the element during SSR.
+        const raw = dangerouslySetInnerHTML.__html;
+        scriptProps.dangerouslySetInnerHTML = {
+          __html: escapeInlineContent(raw, "script"),
+        };
       }
       return React.createElement("script", scriptProps, children);
     }

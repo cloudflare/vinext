@@ -6,7 +6,9 @@ export default function DynamicTestPage() {
   return (
     <div data-testid="dynamic-test-page">
       <h1>Force Dynamic Page</h1>
-      <p>Rendered at: <span data-testid="timestamp">{timestamp}</span></p>
+      <p>
+        Rendered at: <span data-testid="timestamp">{timestamp}</span>
+      </p>
     </div>
   );
 }

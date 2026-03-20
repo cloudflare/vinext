@@ -1,8 +1,4 @@
-export async function generateStaticParams({
-  params,
-}: {
-  params: { category: string };
-}) {
+export async function generateStaticParams({ params }: { params: { category: string } }) {
   // Simulate parent-dependent params generation
   const items: Record<string, string[]> = {
     electronics: ["phone", "laptop"],

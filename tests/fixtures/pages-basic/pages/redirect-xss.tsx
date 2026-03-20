@@ -7,7 +7,7 @@ export default function RedirectXss() {
 export function getStaticProps() {
   return {
     redirect: {
-      destination: 'foo" /><script>alert(1)</script><meta x="'
-    }
+      destination: 'foo" /><script>alert(1)</script><meta x="',
+    },
   };
 }

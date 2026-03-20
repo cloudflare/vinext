@@ -8,7 +8,7 @@
  * Tests SSR output, srcSet generation, getImageProps(), fill mode,
  * priority, custom loader, and static image data handling.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Image, { getImageProps, type StaticImageData } from "../packages/vinext/src/shims/image.js";
@@ -435,7 +435,8 @@ describe("blurDataURL CSS injection prevention", () => {
       width: 400,
       height: 300,
       placeholder: "blur",
-      blurDataURL: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+      blurDataURL:
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
     });
 
     expect((props.style as any)?.backgroundImage).toContain("data:image/png;base64,");
@@ -474,5 +475,83 @@ describe("blurDataURL CSS injection prevention", () => {
     );
     expect(html).toContain("background-image");
     expect(html).toContain(validURL);
+  });
+});
+
+// ─── onLoadingComplete (deprecated but supported) ────────────────────────
+// Next.js deprecated onLoadingComplete in v14 but still supports it.
+// It should be handled internally and NOT leak through to the returned props.
+
+describe("onLoadingComplete prop", () => {
+  it("getImageProps does not leak onLoadingComplete into returned props", () => {
+    const { props } = getImageProps({
+      alt: "test",
+      src: "/photo.jpg",
+      width: 400,
+      height: 300,
+      onLoadingComplete: () => {},
+    });
+    // onLoadingComplete must be consumed internally, not passed through
+    expect((props as any).onLoadingComplete).toBeUndefined();
+  });
+
+  it("getImageProps does not leak onLoad or onLoadingComplete when both provided", () => {
+    const { props } = getImageProps({
+      alt: "test",
+      src: "/photo.jpg",
+      width: 400,
+      height: 300,
+      onLoad: () => {},
+      onLoadingComplete: () => {},
+    });
+    expect((props as any).onLoadingComplete).toBeUndefined();
+    expect((props as any).onLoad).toBeUndefined();
+  });
+
+  it("does not leak onLoadingComplete as a DOM attribute in SSR (local image)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "test",
+        src: "/photo.jpg",
+        width: 400,
+        height: 300,
+        onLoadingComplete: () => {},
+      }),
+    );
+    expect(html).not.toContain("onLoadingComplete");
+    expect(html).not.toContain("onloadingcomplete");
+    expect(html).toContain('alt="test"');
+  });
+
+  it("does not leak onLoadingComplete as a DOM attribute in SSR (custom loader)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "cdn",
+        src: "/photo.jpg",
+        width: 200,
+        height: 150,
+        loader: ({ src, width }: { src: string; width: number }) =>
+          `https://cdn.example.com${src}?w=${width}`,
+        onLoadingComplete: () => {},
+      }),
+    );
+    expect(html).not.toContain("onLoadingComplete");
+    expect(html).not.toContain("onloadingcomplete");
+    expect(html).toContain('alt="cdn"');
+  });
+
+  it("does not leak onLoadingComplete as a DOM attribute in SSR (remote URL)", () => {
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Image, {
+        alt: "remote",
+        src: "https://example.com/photo.jpg",
+        width: 400,
+        height: 300,
+        onLoadingComplete: () => {},
+      }),
+    );
+    expect(html).not.toContain("onLoadingComplete");
+    expect(html).not.toContain("onloadingcomplete");
+    expect(html).toContain('alt="remote"');
   });
 });

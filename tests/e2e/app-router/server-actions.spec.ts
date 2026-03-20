@@ -7,25 +7,19 @@ const BASE = "http://localhost:4174";
  */
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
 
 test.describe("Server Actions", () => {
-  test("like button calls server action and updates count", async ({
-    page,
-  }) => {
+  test("like button calls server action and updates count", async ({ page }) => {
     await page.goto(`${BASE}/actions`);
     await expect(page.locator("h1")).toHaveText("Server Actions");
     await waitForHydration(page);
 
     // Initial state
-    await expect(page.locator('[data-testid="likes"]')).toContainText(
-      "Likes:",
-    );
+    await expect(page.locator('[data-testid="likes"]')).toContainText("Likes:");
 
     // Click like button — should call incrementLikes server action
     // Use polling to handle initial hydration delay
@@ -39,10 +33,9 @@ test.describe("Server Actions", () => {
     const currentText = await page.locator('[data-testid="likes"]').textContent();
     const currentCount = parseInt(currentText!.replace("Likes: ", ""), 10);
     await page.click('[data-testid="like-btn"]');
-    await expect(page.locator('[data-testid="likes"]')).toHaveText(
-      `Likes: ${currentCount + 1}`,
-      { timeout: 10_000 },
-    );
+    await expect(page.locator('[data-testid="likes"]')).toHaveText(`Likes: ${currentCount + 1}`, {
+      timeout: 10_000,
+    });
   });
 
   test("message form calls server action with FormData", async ({ page }) => {
@@ -69,15 +62,11 @@ test.describe("Server Actions", () => {
     await page.goto(`${BASE}/actions`);
 
     await expect(page.locator("h1")).toHaveText("Server Actions");
-    await expect(page.locator('[data-testid="likes"]')).toContainText(
-      "Likes:",
-    );
+    await expect(page.locator('[data-testid="likes"]')).toContainText("Likes:");
     await expect(page.locator('[data-testid="like-btn"]')).toBeVisible();
   });
 
-  test("server action with redirect() navigates to target page", async ({
-    page,
-  }) => {
+  test("server action with redirect() navigates to target page", async ({ page }) => {
     await page.goto(`${BASE}/action-redirect-test`);
     await expect(page.locator("h1")).toHaveText("Action Redirect Test");
     await waitForHydration(page);
@@ -90,6 +79,42 @@ test.describe("Server Actions", () => {
     await expect(page.locator("h1")).toHaveText("About");
   });
 
+  test("server action cookie writes do not make the rerender path mutable", async ({ page }) => {
+    test.slow();
+    await page.goto(`${BASE}/nextjs-compat/action-cookie-phase`);
+    await expect(page.locator("h1")).toHaveText("Action Cookie Phase");
+    await waitForHydration(page);
+    await expect(page.locator("#cookie-value")).toHaveText("missing");
+    await expect(page.locator("#cookie-error")).toContainText(
+      "Cookies can only be modified in a Server Action or Route Handler",
+    );
+
+    await page.click("#submit-action");
+    const readActionCookie = async () =>
+      (await page.context().cookies()).find((cookie) => cookie.name === "action-cookie")?.value ??
+      null;
+
+    let cookieSet = false;
+    try {
+      await expect.poll(readActionCookie, { timeout: 5_000 }).toBe("from-action");
+      cookieSet = true;
+    } catch {
+      // Cold compile can swallow the first submit in dev; retry once after
+      // the route/action module is warm.
+    }
+
+    if (!cookieSet) {
+      await page.click("#submit-action");
+      await expect.poll(readActionCookie, { timeout: 20_000 }).toBe("from-action");
+    }
+
+    await page.reload();
+    await expect(page.locator("#cookie-value")).toHaveText("from-action");
+    await expect(page.locator("#cookie-error")).toContainText(
+      "Cookies can only be modified in a Server Action or Route Handler",
+    );
+  });
+
   test("action-redirect-test page SSR renders correctly", async ({ page }) => {
     await page.goto(`${BASE}/action-redirect-test`);
     await expect(page.locator("h1")).toHaveText("Action Redirect Test");
@@ -98,25 +123,19 @@ test.describe("Server Actions", () => {
 });
 
 test.describe("useActionState", () => {
-  test("action-state-test page SSR renders with initial state", async ({
-    page,
-  }) => {
+  test("action-state-test page SSR renders with initial state", async ({ page }) => {
     await page.goto(`${BASE}/action-state-test`);
     await expect(page.locator("h1")).toHaveText("useActionState Test");
     await expect(page.locator("#count")).toHaveText("Count: 0");
   });
 
-  test("useActionState counter increments via server action", async ({
-    page,
-  }) => {
+  test("useActionState counter increments via server action", async ({ page }) => {
     await page.goto(`${BASE}/action-state-test`);
     await expect(page.locator("h1")).toHaveText("useActionState Test");
 
     // Wait for hydration
     await expect(async () => {
-      const ready = await page.evaluate(
-        () => !!(window as any).__VINEXT_RSC_ROOT__,
-      );
+      const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
       expect(ready).toBe(true);
     }).toPass({ timeout: 10_000 });
 
@@ -136,16 +155,12 @@ test.describe("useActionState", () => {
     }).toPass({ timeout: 15_000 });
   });
 
-  test("useActionState counter decrements via server action", async ({
-    page,
-  }) => {
+  test("useActionState counter decrements via server action", async ({ page }) => {
     await page.goto(`${BASE}/action-state-test`);
     await expect(page.locator("h1")).toHaveText("useActionState Test");
 
     await expect(async () => {
-      const ready = await page.evaluate(
-        () => !!(window as any).__VINEXT_RSC_ROOT__,
-      );
+      const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
       expect(ready).toBe(true);
     }).toPass({ timeout: 10_000 });
 

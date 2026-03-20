@@ -9,9 +9,7 @@ const BASE = "http://localhost:4174";
 
 async function waitForHydration(page: import("@playwright/test").Page) {
   await expect(async () => {
-    const ready = await page.evaluate(
-      () => !!(window as any).__VINEXT_RSC_ROOT__,
-    );
+    const ready = await page.evaluate(() => !!(window as any).__VINEXT_RSC_ROOT__);
     expect(ready).toBe(true);
   }).toPass({ timeout: 10_000 });
 }
@@ -22,22 +20,16 @@ test.describe("Next.js compat: rsc-basic (browser)", () => {
     await page.goto(`${BASE}/nextjs-compat/rsc-server`);
     await waitForHydration(page);
 
-    await expect(page.locator("#server-rendered")).toHaveText(
-      "Server Component",
-    );
+    await expect(page.locator("#server-rendered")).toHaveText("Server Component");
     await expect(page.locator("#server-message")).toHaveText("from server");
   });
 
   // Client component receives props from server and is interactive
-  test("client component receives props from server and is interactive", async ({
-    page,
-  }) => {
+  test("client component receives props from server and is interactive", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/rsc-server`);
     await waitForHydration(page);
 
-    await expect(page.locator("#server-greeting")).toHaveText(
-      "hello from server",
-    );
+    await expect(page.locator("#server-greeting")).toHaveText("hello from server");
     await expect(page.locator("#click-count")).toHaveText("0");
 
     await page.click("#increment-btn");
@@ -69,9 +61,8 @@ test.describe("Next.js compat: rsc-basic (browser)", () => {
   test("async server component renders in browser", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/rsc-async`);
 
-    await expect(page.locator("#async-page")).toHaveText(
-      "Async Server Component",
-      { timeout: 10_000 },
-    );
+    await expect(page.locator("#async-page")).toHaveText("Async Server Component", {
+      timeout: 10_000,
+    });
   });
 });

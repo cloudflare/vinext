@@ -8,9 +8,7 @@ test.describe("App Router ISR", () => {
   // Next.js behavior (every request re-renders fresh). These tests should run
   // against a production server E2E project instead.
 
-  test("first request returns ISR page", async ({
-    request,
-  }) => {
+  test("first request returns ISR page", async ({ request }) => {
     const res = await request.get(`${BASE}/isr-test`);
 
     expect(res.status()).toBe(200);
@@ -20,9 +18,7 @@ test.describe("App Router ISR", () => {
     expect(html).toContain("Hello from ISR");
   });
 
-  test.skip("second request within TTL is a cache HIT with same timestamp", async ({
-    request,
-  }) => {
+  test.skip("second request within TTL is a cache HIT with same timestamp", async ({ request }) => {
     // SKIP: ISR cache is disabled in dev mode — no HIT/MISS/STALE semantics.
     // This test should run against a production server.
     const res1 = await request.get(`${BASE}/isr-test`);
@@ -59,9 +55,7 @@ test.describe("App Router ISR", () => {
     expect(ts2).toBe(ts1);
   });
 
-  test.skip("after STALE triggers regen, subsequent request is HIT", async ({
-    request,
-  }) => {
+  test.skip("after STALE triggers regen, subsequent request is HIT", async ({ request }) => {
     // SKIP: ISR cache is disabled in dev mode.
     await request.get(`${BASE}/isr-test`);
 
@@ -76,9 +70,7 @@ test.describe("App Router ISR", () => {
     expect(hitRes.headers()["x-vinext-cache"]).toBe("HIT");
   });
 
-  test("Cache-Control header includes s-maxage and stale-while-revalidate", async ({
-    request,
-  }) => {
+  test("Cache-Control header includes s-maxage and stale-while-revalidate", async ({ request }) => {
     const res = await request.get(`${BASE}/isr-test`);
     const cc = res.headers()["cache-control"];
 
@@ -109,9 +101,7 @@ test.describe("App Router ISR", () => {
     expect(Number(tsText)).toBeGreaterThan(0);
   });
 
-  test("existing revalidate-test page (60s TTL) has correct Cache-Control", async ({
-    request,
-  }) => {
+  test("existing revalidate-test page (60s TTL) has correct Cache-Control", async ({ request }) => {
     // The revalidate-test fixture uses revalidate=60
     const res = await request.get(`${BASE}/revalidate-test`);
     const cc = res.headers()["cache-control"];
@@ -148,9 +138,7 @@ test.describe("ISR dynamicParams cache headers", () => {
       expect(html).toMatch(/Product\s*(?:<!--.*?-->)*\s*1/);
     });
 
-    test("should return 404 for a path not in generateStaticParams", async ({
-      request,
-    }) => {
+    test("should return 404 for a path not in generateStaticParams", async ({ request }) => {
       // Ref: opennextjs-cloudflare isr.test.ts "should 404 for a path that is not found"
       const res = await request.get(`${BASE}/products/999`);
       expect(res.status()).toBe(404);
@@ -177,9 +165,7 @@ test.describe("ISR dynamicParams cache headers", () => {
       }
     });
 
-    test("should return different timestamps on each request", async ({
-      request,
-    }) => {
+    test("should return different timestamps on each request", async ({ request }) => {
       const res1 = await request.get(`${BASE}/dynamic-test`);
       const html1 = await res1.text();
       const ts1 = html1.match(/data-testid="timestamp">(\d+)</)?.[1];
@@ -195,9 +181,7 @@ test.describe("ISR dynamicParams cache headers", () => {
     });
   });
 
-  test("404 response has private no-cache Cache-Control", async ({
-    request,
-  }) => {
+  test("404 response has private no-cache Cache-Control", async ({ request }) => {
     // Ref: opennextjs-cloudflare isr.test.ts — 404 responses should have
     // "private, no-cache, no-store, max-age=0, must-revalidate"
     const res = await request.get(`${BASE}/products/999`);
@@ -228,9 +212,7 @@ test.describe("ISR dynamicParams cache headers", () => {
 test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () => {
   // SKIP: These tests depend on ISR caching (MISS/HIT/STALE semantics) which is
   // disabled in dev mode. They should run against a production server E2E project.
-  test.skip("revalidateTag invalidates cached page and regenerates", async ({
-    request,
-  }) => {
+  test.skip("revalidateTag invalidates cached page and regenerates", async ({ request }) => {
     // Ref: opennextjs-cloudflare revalidateTag.test.ts "Revalidate tag"
     test.setTimeout(30_000);
 
@@ -241,16 +223,20 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     // React SSR may insert <!-- --> comment nodes between text and expressions,
     // so use a flexible regex that allows anything between the tag and content.
     // lgtm[js/redos] — applied to trusted SSR output, not user input
-    const reqId1 = html1.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
-      ?? html1.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    const reqId1 =
+      html1.match(
+        /data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/,
+      )?.[1] ?? html1.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
     expect(reqId1).toBeDefined();
 
     // Load again to confirm it's cached (same request ID)
     const res2 = await request.get(`${BASE}/revalidate-tag-test`);
     const html2 = await res2.text();
     // lgtm[js/redos] — applied to trusted SSR output, not user input
-    const reqId2 = html2.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
-      ?? html2.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    const reqId2 =
+      html2.match(
+        /data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/,
+      )?.[1] ?? html2.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
     const cacheHeader = res2.headers()["x-vinext-cache"];
     if (cacheHeader) {
       expect(["HIT", "STALE"]).toContain(cacheHeader);
@@ -267,8 +253,10 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     const res3 = await request.get(`${BASE}/revalidate-tag-test`);
     const html3 = await res3.text();
     // lgtm[js/redos] — applied to trusted SSR output, not user input
-    const reqId3 = html3.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
-      ?? html3.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    const reqId3 =
+      html3.match(
+        /data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/,
+      )?.[1] ?? html3.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
 
     // After invalidation, should get fresh content
     expect(reqId3).not.toBe(reqId1);
@@ -289,8 +277,10 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     expect(res1.status()).toBe(200);
     const html1 = await res1.text();
     // lgtm[js/redos] — applied to trusted SSR output, not user input
-    const reqId1 = html1.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
-      ?? html1.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    const reqId1 =
+      html1.match(
+        /data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/,
+      )?.[1] ?? html1.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
     expect(reqId1).toBeDefined();
 
     // Wait a moment, then call revalidatePath
@@ -304,15 +294,15 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
     const res2 = await request.get(`${BASE}/revalidate-tag-test`);
     const html2 = await res2.text();
     // lgtm[js/redos] — applied to trusted SSR output, not user input
-    const reqId2 = html2.match(/data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/)?.[1]
-      ?? html2.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
+    const reqId2 =
+      html2.match(
+        /data-testid="request-id"[^>]*>(?:<!--.*?-->)*RequestID:\s*(?:<!--.*?-->)*([a-z0-9]+)/,
+      )?.[1] ?? html2.match(/request-id[^>]*>[^<]*?([a-z0-9]{6,})/)?.[1];
 
     expect(reqId2).not.toBe(reqId1);
   });
 
-  test.skip("after invalidation + regen, subsequent request is HIT", async ({
-    request,
-  }) => {
+  test.skip("after invalidation + regen, subsequent request is HIT", async ({ request }) => {
     // Ref: opennextjs-cloudflare revalidateTag.test.ts — after MISS, next request should be HIT
     test.setTimeout(30_000);
 
@@ -336,30 +326,27 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
   // Ref: opennextjs-cloudflare revalidateTag.test.ts — "nested page shares tag"
   // Tests: ON-2 #2 in TRACKING.md
   // Same blocker as parent: revalidateTag does not invalidate ISR cache in dev server.
-  test.fixme(
-    "nested page sharing same tag is also invalidated",
-    async ({ request }) => {
-      test.setTimeout(30_000);
+  test.fixme("nested page sharing same tag is also invalidated", async ({ request }) => {
+    test.setTimeout(30_000);
 
-      // Load nested page to populate cache
-      const res1 = await request.get(`${BASE}/revalidate-tag-test/nested`);
-      expect(res1.status()).toBe(200);
-      const html1 = await res1.text();
-      const ts1 = html1.match(/Fetched time:\s*(\d+)/)?.[1];
-      expect(ts1).toBeDefined();
+    // Load nested page to populate cache
+    const res1 = await request.get(`${BASE}/revalidate-tag-test/nested`);
+    expect(res1.status()).toBe(200);
+    const html1 = await res1.text();
+    const ts1 = html1.match(/Fetched time:\s*(\d+)/)?.[1];
+    expect(ts1).toBeDefined();
 
-      // Invalidate "test-data" tag (shared between parent and nested pages)
-      const tagRes = await request.get(`${BASE}/api/revalidate-tag`);
-      expect(tagRes.status()).toBe(200);
+    // Invalidate "test-data" tag (shared between parent and nested pages)
+    const tagRes = await request.get(`${BASE}/api/revalidate-tag`);
+    expect(tagRes.status()).toBe(200);
 
-      // Reload nested page — should get fresh content
-      const res2 = await request.get(`${BASE}/revalidate-tag-test/nested`);
-      const html2 = await res2.text();
-      const ts2 = html2.match(/Fetched time:\s*(\d+)/)?.[1];
+    // Reload nested page — should get fresh content
+    const res2 = await request.get(`${BASE}/revalidate-tag-test/nested`);
+    const html2 = await res2.text();
+    const ts2 = html2.match(/Fetched time:\s*(\d+)/)?.[1];
 
-      expect(ts2).not.toBe(ts1);
-    },
-  );
+    expect(ts2).not.toBe(ts1);
+  });
 });
 
 /**
@@ -371,25 +358,19 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
  * Verifies that unstable_cache (data cache) works alongside ISR page caching.
  */
 test.describe("unstable_cache data cache (OpenNext compat)", () => {
-  test("unstable_cache returns consistent data across requests", async ({
-    request,
-  }) => {
+  test("unstable_cache returns consistent data across requests", async ({ request }) => {
     // Ref: opennextjs-cloudflare isr.test.ts — data cache separate from page cache
     const res1 = await request.get(`${BASE}/unstable-cache-test`);
     expect(res1.status()).toBe(200);
     const html1 = await res1.text();
     // React SSR inserts <!-- --> comment nodes between text and expressions
-    const value1 = html1.match(
-      /CachedValue:\s*(?:<!--[^>]*-->)*\s*([a-z0-9]{4,})/,
-    )?.[1];
+    const value1 = html1.match(/CachedValue:\s*(?:<!--[^>]*-->)*\s*([a-z0-9]{4,})/)?.[1];
     expect(value1).toBeDefined();
 
     // Second request should return the same cached value
     const res2 = await request.get(`${BASE}/unstable-cache-test`);
     const html2 = await res2.text();
-    const value2 = html2.match(
-      /CachedValue:\s*(?:<!--[^>]*-->)*\s*([a-z0-9]{4,})/,
-    )?.[1];
+    const value2 = html2.match(/CachedValue:\s*(?:<!--[^>]*-->)*\s*([a-z0-9]{4,})/)?.[1];
 
     expect(value2).toBe(value1);
   });

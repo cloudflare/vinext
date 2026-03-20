@@ -14,9 +14,7 @@ import { test, expect } from "@playwright/test";
 const BASE = "http://localhost:4174";
 
 test.describe("SSE Streaming (OpenNext compat)", () => {
-  test("SSE messages arrive incrementally, not all at once", async ({
-    page,
-  }) => {
+  test("SSE messages arrive incrementally, not all at once", async ({ page }) => {
     // Ref: opennextjs-cloudflare sse.test.ts "Server Sent Events"
     test.setTimeout(30_000);
 
@@ -53,9 +51,7 @@ test.describe("SSE Streaming (OpenNext compat)", () => {
     await expect(msg4).toContainText('"message":"close"');
   });
 
-  test("SSE API route returns correct content-type and cache headers", async ({
-    request,
-  }) => {
+  test("SSE API route returns correct content-type and cache headers", async ({ request }) => {
     // Ref: opennextjs-cloudflare — SSE routes should have proper streaming headers
     const res = await request.get(`${BASE}/api/sse`);
     expect(res.status()).toBe(200);

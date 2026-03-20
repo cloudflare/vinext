@@ -87,20 +87,13 @@ jobs:
         with:
           ref: ${{ needs.check.outputs.sha }}
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - run: pnpm install
+      - uses: voidzero-dev/setup-vp@v1
 
       - name: Build vinext plugin
-        run: pnpm run build
+        run: vp run build
 
       - name: Build example
-        run: pnpm exec vite build
+        run: vp build
         working-directory: examples/${{ matrix.example.name }}
 
       - name: Deploy Preview Version
@@ -126,6 +119,7 @@ jobs:
   comment:
     name: Comment Preview URLs
     needs: [check, deploy]
+    if: always() && needs.check.result == 'success' && needs.deploy.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
