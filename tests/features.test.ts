@@ -20,6 +20,7 @@ import {
   requestNodeServerWithHost,
   startFixtureServer,
 } from "./helpers.js";
+import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 
 const FIXTURE_DIR = PAGES_FIXTURE_DIR;
 
@@ -2817,7 +2818,7 @@ describe("instrumentation.ts support", () => {
   it("findInstrumentationFile returns null when no file exists", async () => {
     const { findInstrumentationFile } =
       await import("../packages/vinext/src/server/instrumentation.js");
-    const result = findInstrumentationFile("/nonexistent/path");
+    const result = findInstrumentationFile("/nonexistent/path", createValidFileMatcher());
     expect(result).toBeNull();
   });
 
@@ -2835,7 +2836,7 @@ describe("instrumentation.ts support", () => {
       'export function register() { console.log("registered"); }',
     );
 
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
     expect(result).toBe(path.join(tmpDir, "instrumentation.ts"));
 
     // Cleanup
@@ -2856,7 +2857,7 @@ describe("instrumentation.ts support", () => {
       "export function register() {}",
     );
 
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
     expect(result).toBe(path.join(tmpDir, "src", "instrumentation.ts"));
 
     fs.rmSync(tmpDir, { recursive: true });

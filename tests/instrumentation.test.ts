@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { findInstrumentationFile } from "../packages/vinext/src/server/instrumentation.js";
+import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 
 // The runInstrumentation/reportRequestError describe blocks re-import via
 // vi.resetModules() to get fresh module-level state (_onRequestError).
@@ -22,7 +23,7 @@ describe("findInstrumentationFile", () => {
   it("returns the path when a file exists at root", () => {
     fs.writeFileSync(path.join(tmpDir, "instrumentation.ts"), "");
 
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
     expect(result).toBe(path.join(tmpDir, "instrumentation.ts"));
   });
@@ -33,7 +34,7 @@ describe("findInstrumentationFile", () => {
     fs.mkdirSync(path.join(tmpDir, "src"));
     fs.writeFileSync(path.join(tmpDir, "src", "instrumentation.ts"), "");
 
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
     // Root files come first in INSTRUMENTATION_FILES, so root wins
     expect(result).toBe(path.join(tmpDir, "instrumentation.ts"));
@@ -43,13 +44,13 @@ describe("findInstrumentationFile", () => {
     fs.mkdirSync(path.join(tmpDir, "src"));
     fs.writeFileSync(path.join(tmpDir, "src", "instrumentation.ts"), "");
 
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
     expect(result).toBe(path.join(tmpDir, "src", "instrumentation.ts"));
   });
 
   it("returns null when no instrumentation file exists", () => {
-    const result = findInstrumentationFile(tmpDir);
+    const result = findInstrumentationFile(tmpDir, createValidFileMatcher());
 
     expect(result).toBeNull();
   });

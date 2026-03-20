@@ -1507,13 +1507,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         appDir = path.join(baseDir, "app");
         hasPagesDir = fs.existsSync(pagesDir);
         hasAppDir = !options.disableAppRouter && fs.existsSync(appDir);
-        instrumentationPath = findInstrumentationFile(root);
 
         // Load next.config.js if present (always from project root, not src/)
         const phase = env?.command === "build" ? PHASE_PRODUCTION_BUILD : PHASE_DEVELOPMENT_SERVER;
         const rawConfig = await loadNextConfig(root, phase);
         nextConfig = await resolveNextConfig(rawConfig, root);
         fileMatcher = createValidFileMatcher(nextConfig.pageExtensions);
+        instrumentationPath = findInstrumentationFile(root, fileMatcher);
         middlewarePath = findMiddlewareFile(root, fileMatcher);
 
         // Merge env from next.config.js with NEXT_PUBLIC_* env vars

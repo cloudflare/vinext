@@ -39,6 +39,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getRequestExecutionContext } from "../shims/request-context.js";
+import { ValidFileMatcher } from "../routing/file-matcher.js";
 /**
  * Minimal duck-typed interface for the module runner passed to
  * `runInstrumentation`. Only `.import()` is used — this avoids requiring
@@ -63,26 +64,21 @@ export async function importModule(
   return (await runner.import(id)) as Record<string, any>;
 }
 
-/** Possible instrumentation file names. */
-const INSTRUMENTATION_FILES = [
-  "instrumentation.ts",
-  "instrumentation.tsx",
-  "instrumentation.js",
-  "instrumentation.mjs",
-  "src/instrumentation.ts",
-  "src/instrumentation.tsx",
-  "src/instrumentation.js",
-  "src/instrumentation.mjs",
-];
+const INSTRUMENTATION_LOCATIONS = ["", "src/"];
 
 /**
  * Find the instrumentation file in the project root.
  */
-export function findInstrumentationFile(root: string): string | null {
-  for (const file of INSTRUMENTATION_FILES) {
-    const fullPath = path.join(root, file);
-    if (fs.existsSync(fullPath)) {
-      return fullPath;
+export function findInstrumentationFile(
+  root: string,
+  fileMatcher: ValidFileMatcher,
+): string | null {
+  for (const dir of INSTRUMENTATION_LOCATIONS) {
+    for (const ext of fileMatcher.dottedExtensions) {
+      const fullPath = path.join(root, dir, `instrumentation${ext}`);
+      if (fs.existsSync(fullPath)) {
+        return fullPath;
+      }
     }
   }
   return null;
