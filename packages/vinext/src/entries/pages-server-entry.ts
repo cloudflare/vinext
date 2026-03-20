@@ -1177,7 +1177,12 @@ export async function handleApiRoute(request, url) {
     }
 
     const { req, res, responsePromise } = createReqRes(request, url, query, body);
-    await handler(req, res);
+    // Wrap in unified request context so getRequestStore() and other
+    // per-request APIs work in Pages Router API routes.
+    const __apiCtx = _createUnifiedCtx({
+      executionContext: _getRequestExecutionContext(),
+    });
+    await _runWithUnifiedCtx(__apiCtx, () => handler(req, res));
     // If handler didn't call res.end(), end it now.
     // The end() method is idempotent — safe to call twice.
     res.end();

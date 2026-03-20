@@ -12,6 +12,10 @@ import { decode as decodeQueryString } from "node:querystring";
 import { type Route, matchRoute } from "../routing/pages-router.js";
 import { reportRequestError, importModule, type ModuleImporter } from "./instrumentation.js";
 import { addQueryParam } from "../utils/query.js";
+import {
+  runWithRequestContext,
+  createRequestContext,
+} from "../shims/unified-request-context.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -230,8 +234,11 @@ export async function handleApiRoute(
     // Enhance req/res with Next.js helpers
     const { apiReq, apiRes } = enhanceApiObjects(req, res, query, body);
 
-    // Call the handler
-    await handler(apiReq, apiRes);
+    // Call the handler inside a unified request context so that
+    // getRequestStore() and other per-request APIs work in Pages Router
+    // API routes (previously only App Router had this scope).
+    const __uCtx = createRequestContext();
+    await runWithRequestContext(__uCtx, () => handler(apiReq, apiRes));
     return true;
   } catch (e) {
     if (e instanceof ApiBodyParseError) {
