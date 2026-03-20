@@ -3805,8 +3805,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ...DEFAULT_OPTIMIZE_PACKAGES,
             ...(nextConfig?.optimizePackageImports ?? []),
           ]);
-          // Clear the entry path cache across rebuilds so stale paths don't linger.
+          // Clear all caches across rebuilds so stale data doesn't linger.
+          // exportMapCache and subpkgOrigin hold barrel AST analysis and sub-package
+          // origin mappings which may change if a dependency is updated mid-dev.
           entryPathCache.clear();
+          barrelCaches.exportMapCache.clear();
+          barrelCaches.subpkgOrigin.clear();
         },
 
         async resolveId(source) {
@@ -3924,16 +3928,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               const bySource = new Map<
                 string,
                 {
+                  source: string;
                   locals: Array<{ local: string; originalName: string | undefined }>;
                   isNamespace: boolean;
                 }
               >();
               for (const { local, imported } of specifiers) {
                 const entry = exportMap.get(imported)!;
-                const key = entry.source;
+                // Key on both source and isNamespace: a named import and a namespace
+                // import from the same sub-module must produce separate import statements
+                // (`import { foo } from "x/foo"` vs `import * as foo from "x/foo"`).
+                const key = `${entry.source}::${entry.isNamespace}`;
                 let group = bySource.get(key);
                 if (!group) {
-                  group = { locals: [], isNamespace: entry.isNamespace };
+                  group = { source: entry.source, locals: [], isNamespace: entry.isNamespace };
                   bySource.set(key, group);
                 }
                 group.locals.push({
@@ -3944,7 +3952,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
               // Build replacement import statements
               const replacements: string[] = [];
-              for (const [source, { locals, isNamespace }] of bySource) {
+              for (const { source, locals, isNamespace } of bySource.values()) {
                 if (isNamespace) {
                   // Each namespace import gets its own statement
                   for (const { local } of locals) {

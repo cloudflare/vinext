@@ -390,4 +390,40 @@ describe("vinext:optimize-imports transform", () => {
     expect(importLines[0]).toContain("buttonVariants");
     expect(importLines[0]).toContain(`from "./button"`);
   });
+
+  it("produces separate statements for namespace and named imports from the same source", async () => {
+    // lodash-es is in DEFAULT_OPTIMIZE_PACKAGES.
+    // The barrel exports both a namespace re-export and a named re-export pointing at
+    // the same sub-module path. Without the `::${isNamespace}` key fix these two
+    // specifiers would be merged into one group, corrupting the output.
+    const call = await setupTransform(
+      "lodash-es",
+      [
+        // namespace re-export: import { Chunk } from "lodash-es" → import * as Chunk from "./chunk"
+        `export * as Chunk from "./chunk";`,
+        // named re-export from the very same sub-module path
+        `export { chunkHelper } from "./chunk";`,
+      ].join("\n"),
+    );
+    // Import both in a single statement
+    const code = `import { Chunk, chunkHelper } from "lodash-es";`;
+    const result = call(code, "/app/page.tsx");
+    expect(result).not.toBeNull();
+
+    const importLines = result!.code
+      .split("\n")
+      .filter((l: string) => l.trimStart().startsWith("import"));
+    // Must produce two separate import statements, not one corrupted one
+    expect(importLines).toHaveLength(2);
+
+    const nsLine = importLines.find((l: string) => l.includes("* as Chunk"));
+    const namedLine = importLines.find((l: string) => l.includes("chunkHelper"));
+    expect(nsLine).toBeDefined();
+    expect(namedLine).toBeDefined();
+
+    // Namespace import must use `import * as` syntax
+    expect(nsLine).toMatch(/^import \* as Chunk from "\.\/chunk";$/);
+    // Named import must use `import { ... }` syntax
+    expect(namedLine).toMatch(/^import \{ chunkHelper \} from "\.\/chunk";$/);
+  });
 });
