@@ -437,7 +437,7 @@ function resolvePackageEntry(packageName: string, projectRoot: string): string |
     let pkgJson: PackageJson | null = null;
 
     try {
-      const pkgJsonPath = req.resolve(path.join(packageName, "package.json"));
+      const pkgJsonPath = req.resolve(`${packageName}/package.json`);
       pkgDir = path.dirname(pkgJsonPath);
       pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as PackageJson;
     } catch {
@@ -468,6 +468,10 @@ function resolvePackageEntry(packageName: string, projectRoot: string): string |
     if (!pkgDir || !pkgJson) return null;
 
     if (pkgJson.exports) {
+      // TODO: Some packages export their barrel from a non-root subpath (e.g.
+      // exports["./index"] or exports["./*"]). Only exports["."] is checked here,
+      // which covers the vast majority of packages in the default list. User-provided
+      // packages with non-standard export maps may need manual sub-module imports.
       const dotExport = pkgJson.exports["."];
       if (dotExport) {
         const entryPath = resolveExportsValue(dotExport);
@@ -3784,20 +3788,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         exportMapCache: new Map<string, BarrelExportMap>(),
         subpkgOrigin: new Map<string, string>(),
       };
-      let optimizedPackages: Set<string> | null = null;
-      function getOptimizedPackages(): Set<string> {
-        if (!optimizedPackages) {
-          optimizedPackages = new Set<string>([
-            ...DEFAULT_OPTIMIZE_PACKAGES,
-            ...(nextConfig?.optimizePackageImports ?? []),
-          ]);
-        }
-        return optimizedPackages;
-      }
+      // Cache resolved entry paths — resolvePackageEntry does readFileSync/existsSync
+      // and dir-walking on every call; caching avoids repeating that work for each
+      // file that imports from the same barrel package.
+      const entryPathCache = new Map<string, string | null>();
+      let optimizedPackages: Set<string> = new Set();
       return {
         name: "vinext:optimize-imports",
         // No enforce — runs after JSX transform so parseAst gets plain JS.
         // The transform hook still rewrites imports before Vite resolves them.
+
+        buildStart() {
+          // Initialize eagerly (rather than lazily) so that nextConfig is fully
+          // resolved and there is no timing dependency on first transform call.
+          optimizedPackages = new Set<string>([
+            ...DEFAULT_OPTIMIZE_PACKAGES,
+            ...(nextConfig?.optimizePackageImports ?? []),
+          ]);
+          // Clear the entry path cache across rebuilds so stale paths don't linger.
+          entryPathCache.clear();
+        },
 
         async resolveId(source) {
           // Only apply on server environments (RSC/SSR). The client uses Vite's
@@ -3829,7 +3839,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
             // Quick string check: does the code mention any optimized package?
             // Use quoted forms to avoid false positives (e.g. "effect" in "useEffect").
-            const packages = getOptimizedPackages();
+            const packages = optimizedPackages;
             let hasBarrelImport = false;
             for (const pkg of packages) {
               if (code.includes(`"${pkg}"`) || code.includes(`'${pkg}'`)) {
@@ -3855,8 +3865,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               const importSource = node.source!.value as string;
               if (!packages.has(importSource)) continue;
 
-              // Build or retrieve the barrel export map for this package
-              const barrelEntry = resolvePackageEntry(importSource, root);
+              // Build or retrieve the barrel export map for this package.
+              // Cache the resolved entry path to avoid repeated FS work.
+              let barrelEntry: string | null | undefined = entryPathCache.get(importSource);
+              if (barrelEntry === undefined) {
+                barrelEntry = resolvePackageEntry(importSource, root);
+                entryPathCache.set(importSource, barrelEntry);
+              }
               const exportMap = buildBarrelExportMap(
                 importSource,
                 () => barrelEntry,
@@ -3950,7 +3965,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               }
 
               // Replace the original import with the optimized one(s)
-              s.overwrite(node.start, node.end, replacements.join(";\n"));
+              s.overwrite(node.start, node.end, replacements.join(";\n") + ";");
               hasChanges = true;
             }
 

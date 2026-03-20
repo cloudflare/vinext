@@ -4,14 +4,18 @@
  * Uses a pre-populated barrel export map cache so no real packages need to be
  * installed. Each test uses a unique fake entry path to avoid cache collisions.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import vinext, { _buildBarrelExportMap } from "../packages/vinext/src/index.js";
 import type { Plugin } from "vite";
 
 // ── Helpers ───────────────────────────────────────────────────
 
 /** Unwrap a Vite plugin hook that may use the object-with-filter format */
-function unwrapHook(hook: any): Function {
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+function unwrapHook(hook: any): ((...args: any[]) => any) | undefined {
   return typeof hook === "function" ? hook : hook?.handler;
 }
 
@@ -43,27 +47,30 @@ describe("vinext:optimize-imports plugin", () => {
 
   it("returns null for virtual modules", () => {
     const plugin = getOptimizeImportsPlugin();
-    const transform = unwrapHook(plugin.transform);
+    const transform = unwrapHook(plugin.transform)!;
     const code = `import { Slot } from "radix-ui";`;
-    const result = transform.call(plugin, code, "\0virtual:something");
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+    const result = (transform as any).call(plugin, code, "\0virtual:something");
     expect(result).toBeNull();
   });
 
   it("returns null for files without barrel imports", () => {
     const plugin = getOptimizeImportsPlugin();
-    const transform = unwrapHook(plugin.transform);
+    const transform = unwrapHook(plugin.transform)!;
     const code = `import React from 'react';\nconst x = 1;`;
-    const result = transform.call(plugin, code, "/app/page.tsx");
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+    const result = (transform as any).call(plugin, code, "/app/page.tsx");
     expect(result).toBeNull();
   });
 
   it("returns null when barrel package mentioned but no resolvable entry", () => {
     const plugin = getOptimizeImportsPlugin();
-    const transform = unwrapHook(plugin.transform);
+    const transform = unwrapHook(plugin.transform)!;
     // "radix-ui" is in DEFAULT_OPTIMIZE_PACKAGES but since we're not in a real
     // project, resolvePackageEntry will return null → buildBarrelExportMap returns null
     const code = `import { Slot } from "radix-ui";`;
-    const result = transform.call(plugin, code, "/app/page.tsx");
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+    const result = (transform as any).call(plugin, code, "/app/page.tsx");
     expect(result).toBeNull();
   });
 });
@@ -224,162 +231,163 @@ export { Button } from "./button";`;
   });
 });
 
-// ── Plugin transform with pre-populated cache ─────────────────
+// ── Plugin transform with real FS fixture ─────────────────────
+//
+// To exercise actual import rewriting (MagicString output), we create a minimal
+// fake barrel package in a tmp node_modules directory, wire the plugin up via
+// its `config` + `buildStart` hooks, and call the transform handler directly.
 
 describe("vinext:optimize-imports transform", () => {
+  let tmpDir: string;
+
+  function getAllPlugins(): Plugin[] {
+    return (vinext() as Plugin[]).flat(10) as Plugin[];
+  }
+
   /**
-   * Pre-populate the barrel export map cache by calling _buildBarrelExportMap
-   * with mock resolve/read functions. The cache is keyed by the resolved entry
-   * path. We use fixed paths here since we want the plugin's resolvePackageEntry
-   * to not find these packages (returning null) — instead the cache will have
-   * been pre-populated by the beforeEach and the plugin will find them there.
-   *
-   * Actually, the plugin calls buildBarrelExportMap with its own resolve/read
-   * functions. For the cache to work, the paths must match what the plugin would
-   * compute. Since we don't have real packages installed, the plugin's
-   * resolvePackageEntry will return null, and buildBarrelExportMap will also
-   * return null.
-   *
-   * To properly test, we directly test the transform output by pre-seeding
-   * the cache with paths that the plugin's resolvePackageEntry won't compute.
-   * We need a different approach: mock the resolve at the module level, or
-   * test the transform handler by calling buildBarrelExportMap first to seed
-   * the cache, then calling the plugin with the same package.
-   *
-   * The key insight: buildBarrelExportMap caches by ENTRY PATH. When the plugin
-   * calls buildBarrelExportMap("radix-ui", resolveEntry, readFile):
-   * 1. resolveEntry("radix-ui") → null (no real package)
-   * 2. Returns null because entry can't be resolved
-   *
-   * So pre-seeding won't help because the entry path won't match. We need
-   * to test the transform logic differently — by providing a real-ish package
-   * structure or by testing the helper functions independently.
-   *
-   * For plugin transform tests, we'll test that the transform handler correctly
-   * returns null when packages can't be resolved (already covered above), and
-   * test the rewriting logic through buildBarrelExportMap + MagicString directly.
+   * Set up a fake barrel package in a tmp project root, initialize the plugin,
+   * and return the transform handler ready to call.
    */
-
-  it("rewrites namespace re-export pattern via helper", () => {
-    // Test the rewriting logic by building the map and simulating what the plugin does
-    const entryPath = uniquePath("radix-ui-transform");
-    const map = _buildBarrelExportMap(
-      "radix-ui-test",
-      () => entryPath,
-      () => `export * as Slot from "@radix-ui/react-slot";
-export * as Tooltip from "@radix-ui/react-tooltip";
-export * as Dialog from "@radix-ui/react-dialog";`,
+  async function setupTransform(
+    packageName: string,
+    barrelContents: string,
+  ): Promise<(code: string, id: string) => ReturnType<(...args: any[]) => any>> {
+    // Create tmp project with a fake package in node_modules.
+    // The package name must be in DEFAULT_OPTIMIZE_PACKAGES (or configured via
+    // next.config.js) for the plugin's buildStart to include it.
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"));
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
     );
+    const pkgDir = path.join(tmpDir, "node_modules", packageName);
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name: packageName, type: "module", main: "./index.js" }),
+    );
+    fs.writeFileSync(path.join(pkgDir, "index.js"), barrelContents);
 
-    expect(map).not.toBeNull();
-    const slot = map!.get("Slot");
-    expect(slot).toBeDefined();
-    expect(slot!.isNamespace).toBe(true);
-    expect(slot!.source).toBe("@radix-ui/react-slot");
+    const plugins = getAllPlugins();
+    const configPlugin = plugins.find((p) => p.name === "vinext:config");
+    const optimizePlugin = plugins.find((p) => p.name === "vinext:optimize-imports");
+    if (!configPlugin || !optimizePlugin) throw new Error("required plugin not found");
+
+    // Wire up root via the config hook
+    const configHook = unwrapHook(configPlugin.config);
+    if (configHook)
+      await configHook.call(
+        configPlugin,
+        { root: tmpDir },
+        { command: "serve", mode: "development" },
+      );
+
+    // Initialize optimizedPackages via buildStart
+    const buildStartHook = unwrapHook(optimizePlugin.buildStart);
+    if (buildStartHook) await buildStartHook.call(optimizePlugin);
+
+    const transform = unwrapHook(optimizePlugin.transform)!;
+    // Return a caller that fakes the environment context as RSC (server)
+    return (code: string, id: string) =>
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+      (transform as any).call({ ...optimizePlugin, environment: { name: "rsc" } }, code, id);
+  }
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("rewrites named re-export pattern via helper", () => {
-    const entryPath = uniquePath("lucide-transform");
-    const map = _buildBarrelExportMap(
-      "lucide-react-test",
-      () => entryPath,
-      () => `export { default as Check } from "./icons/check";
-export { default as X } from "./icons/x";
-export { default as ChevronDown } from "./icons/chevron-down";`,
+  it("rewrites namespace re-export: import { Slot } from 'pkg' → import * as Slot from 'sub-pkg'", async () => {
+    // lucide-react is in DEFAULT_OPTIMIZE_PACKAGES
+    const call = await setupTransform(
+      "lucide-react",
+      `export * as Slot from "@radix-ui/react-slot";\nexport * as Dialog from "@radix-ui/react-dialog";`,
     );
-
-    expect(map).not.toBeNull();
-    const check = map!.get("Check");
-    expect(check).toBeDefined();
-    expect(check!.isNamespace).toBe(false);
-    expect(check!.originalName).toBe("default");
-    expect(check!.source).toBe("./icons/check");
+    const code = `import { Slot, Dialog } from "lucide-react";\nconst x = Slot;`;
+    const result = call(code, "/app/component.tsx");
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(`import * as Slot from "@radix-ui/react-slot"`);
+    expect(result!.code).toContain(`import * as Dialog from "@radix-ui/react-dialog"`);
+    expect(result!.code).not.toContain(`from "lucide-react"`);
   });
 
-  it("maps multiple specifiers from same barrel correctly", () => {
-    const entryPath = uniquePath("multi-specifier");
-    const map = _buildBarrelExportMap(
-      "test-barrel",
-      () => entryPath,
-      () => `export * as Slot from "@radix-ui/react-slot";
-export * as Dialog from "@radix-ui/react-dialog";
-export * as Tooltip from "@radix-ui/react-tooltip";`,
+  it("rewrites named re-export: import { Button } from 'pkg' → import { Button } from './button'", async () => {
+    // date-fns is in DEFAULT_OPTIMIZE_PACKAGES
+    const call = await setupTransform(
+      "date-fns",
+      `export { Button, buttonVariants } from "./button";\nexport { Input } from "./input";`,
     );
-
-    expect(map).not.toBeNull();
-    expect(map!.size).toBe(3);
-    expect(map!.get("Slot")!.source).toBe("@radix-ui/react-slot");
-    expect(map!.get("Dialog")!.source).toBe("@radix-ui/react-dialog");
-    expect(map!.get("Tooltip")!.source).toBe("@radix-ui/react-tooltip");
+    const code = `import { Button, Input } from "date-fns";`;
+    const result = call(code, "/app/page.tsx");
+    expect(result).not.toBeNull();
+    expect(result!.code).toContain(`import { Button } from "./button"`);
+    expect(result!.code).toContain(`import { Input } from "./input"`);
+    expect(result!.code).not.toContain(`from "date-fns"`);
   });
 
-  it("resolves aliased export correctly", () => {
-    const entryPath = uniquePath("aliased-export");
-    const map = _buildBarrelExportMap(
-      "test-aliased",
-      () => entryPath,
-      () => `export { Foo as Bar } from "./foo";`,
+  it("appends trailing semicolons to all replacement statements", async () => {
+    // lodash-es is in DEFAULT_OPTIMIZE_PACKAGES
+    const call = await setupTransform(
+      "lodash-es",
+      `export * as A from "./a";\nexport * as B from "./b";`,
     );
-
-    expect(map).not.toBeNull();
-    expect(map!.has("Bar")).toBe(true);
-    expect(map!.get("Bar")).toEqual({
-      source: "./foo",
-      isNamespace: false,
-      originalName: "Foo",
-    });
-    // "Foo" should not be in the map (only the exported name "Bar")
-    expect(map!.has("Foo")).toBe(false);
+    const code = `import { A, B } from "lodash-es";`;
+    const result = call(code, "/app/page.tsx");
+    expect(result).not.toBeNull();
+    // Every replacement statement should end with a semicolon
+    const lines = result!.code
+      .trim()
+      .split("\n")
+      .filter((l: string) => l.startsWith("import"));
+    expect(lines.length).toBe(2);
+    for (const line of lines) {
+      expect(line.trimEnd()).toMatch(/;$/);
+    }
   });
 
-  it("handles mixed namespace and named exports", () => {
-    const entryPath = uniquePath("mixed-exports");
-    const map = _buildBarrelExportMap(
-      "test-mixed",
-      () => entryPath,
-      () => `export * as Dialog from "@radix-ui/react-dialog";
-export { Button } from "./button";
-export { default as Icon } from "./icon";`,
-    );
-
-    expect(map).not.toBeNull();
-    expect(map!.size).toBe(3);
-
-    expect(map!.get("Dialog")).toEqual({
-      source: "@radix-ui/react-dialog",
-      isNamespace: true,
-    });
-    expect(map!.get("Button")).toEqual({
-      source: "./button",
-      isNamespace: false,
-      originalName: "Button",
-    });
-    expect(map!.get("Icon")).toEqual({
-      source: "./icon",
-      isNamespace: false,
-      originalName: "default",
-    });
+  it("leaves import unchanged when a specifier is not in the barrel map", async () => {
+    // rxjs is in DEFAULT_OPTIMIZE_PACKAGES
+    const call = await setupTransform("rxjs", `export * as Slot from "@radix-ui/react-slot";`);
+    // "Unknown" is not exported from the barrel
+    const code = `import { Slot, Unknown } from "rxjs";`;
+    const result = call(code, "/app/page.tsx");
+    expect(result).toBeNull();
   });
 
-  it("caches results for the same entry path", () => {
-    const entryPath = uniquePath("cache-test");
-    let callCount = 0;
+  it("skips transform on client environment", async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"));
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+    const plugins = getAllPlugins();
+    const optimizePlugin = plugins.find((p) => p.name === "vinext:optimize-imports")!;
+    const transform = unwrapHook(optimizePlugin.transform)!;
+    // lucide-react is in DEFAULT_OPTIMIZE_PACKAGES — use it to hit the env guard
+    const code = `import { Sun } from "lucide-react";`;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+    const result = (transform as any).call(
+      { ...optimizePlugin, environment: { name: "client" } },
+      code,
+      "/app/page.tsx",
+    );
+    expect(result).toBeNull();
+  });
 
-    const readFile = () => {
-      callCount++;
-      return `export { Button } from "./button";`;
-    };
-
-    const cache = new Map();
-
-    // First call — should parse the file
-    const map1 = _buildBarrelExportMap("cache-pkg", () => entryPath, readFile, cache);
-    expect(map1).not.toBeNull();
-    expect(callCount).toBe(1);
-
-    // Second call with same entry path — should use cache, not read again
-    const map2 = _buildBarrelExportMap("cache-pkg", () => entryPath, readFile, cache);
-    expect(map2).toBe(map1); // Same reference (cached)
-    expect(callCount).toBe(1); // readFile not called again
+  it("groups multiple specifiers from same source into one import statement", async () => {
+    // ramda is in DEFAULT_OPTIMIZE_PACKAGES
+    const call = await setupTransform(
+      "ramda",
+      `export { Button, buttonVariants } from "./button";`,
+    );
+    const code = `import { Button, buttonVariants } from "ramda";`;
+    const result = call(code, "/app/page.tsx");
+    expect(result).not.toBeNull();
+    // Both should be in a single import from "./button"
+    const importLines = result!.code.split("\n").filter((l: string) => l.includes("from"));
+    expect(importLines).toHaveLength(1);
+    expect(importLines[0]).toContain("Button");
+    expect(importLines[0]).toContain("buttonVariants");
+    expect(importLines[0]).toContain(`from "./button"`);
   });
 });
