@@ -30,7 +30,7 @@ jobs:
       pr_number: ${{ steps.pr.outputs.number }}
     steps:
       - name: React to comment
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             await github.rest.reactions.createForIssueComment({
@@ -42,7 +42,7 @@ jobs:
 
       - name: Get PR details
         id: pr
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const pr = await github.rest.pulls.get({
@@ -83,7 +83,7 @@ jobs:
             project: hackernews
             wrangler_config: dist/server/wrangler.json
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.check.outputs.sha }}
 
@@ -109,7 +109,7 @@ jobs:
     needs: [check, deploy]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.check.outputs.sha }}
 
@@ -125,7 +125,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Comment PR with preview URLs
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const prNumber = ${{ needs.check.outputs.pr_number }};

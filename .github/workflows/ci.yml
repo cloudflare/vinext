@@ -19,7 +19,7 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin (needed for benchmark workspace type resolution)
         run: vp run build
@@ -29,7 +29,7 @@ jobs:
     name: Vitest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin (needed by ecosystem fixtures)
         run: vp run build
@@ -43,7 +43,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin
         run: vp run build
@@ -100,13 +100,13 @@ jobs:
           - cloudflare-dev
           - cloudflare-pages-router-dev
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: voidzero-dev/setup-vp@v1
       - name: Build plugin
         run: vp run build
 
       - name: Cache Playwright browsers
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/ms-playwright
           key: playwright-chromium-${{ runner.os }}-${{ hashFiles('**/package.json') }}
@@ -118,7 +118,7 @@ jobs:
           CI: true
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: playwright-report-${{ matrix.project }}
