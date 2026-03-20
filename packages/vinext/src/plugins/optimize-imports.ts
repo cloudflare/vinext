@@ -475,7 +475,10 @@ export function createOptimizeImportsPlugin(
               // First barrel to register this specifier wins. This is safe because the
               // sub-package specifier (e.g. "@radix-ui/react-slot") resolves to the same
               // path regardless of which barrel we resolve from — only the importer context
-              // differs, not the target.
+              // differs, not the target. In pnpm strict mode there is exactly one copy of
+              // each sub-package, so any barrel's context reaches the same file.
+              // (In a monorepo with nested node_modules, two barrels could in theory see
+              // different versions; that edge case is out of scope for the default package list.)
               barrelCaches.subpkgOrigin.set(entry.source, barrelEntry);
             }
           }
@@ -524,6 +527,11 @@ export function createOptimizeImportsPlugin(
             // importing user file (`/app/chunk.js`).
             // Normalize to forward slashes for cross-platform safety (Windows
             // uses backslashes in path.resolve output).
+            // TODO: barrel sources without extensions (e.g. `"./chunk"`) produce
+            // extensionless absolute paths (e.g. `/node_modules/lodash-es/chunk`).
+            // Vite's resolver handles extension resolution on these paths, so this
+            // works in practice, but a future improvement would be to resolve the
+            // extension here (or verify via the barrel AST that the file exists).
             const resolvedSource = entry.source.startsWith(".")
               ? path.resolve(barrelDir, entry.source).split(path.sep).join("/")
               : entry.source;

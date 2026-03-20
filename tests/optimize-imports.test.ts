@@ -4,12 +4,12 @@
  * Uses a pre-populated barrel export map cache so no real packages need to be
  * installed. Each test uses a unique fake entry path to avoid cache collisions.
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach } from "vite-plus/test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import vinext, { _buildBarrelExportMap } from "../packages/vinext/src/index.js";
-import type { Plugin } from "vite";
+import type { Plugin } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
 
