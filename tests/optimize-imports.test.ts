@@ -464,4 +464,25 @@ describe("vinext:optimize-imports transform", () => {
     expect(result!.code).not.toContain("{ default as Calendar }");
     expect(result!.code).not.toContain(`from "rxjs"`);
   });
+
+  it("rewrites ImportDefaultSpecifier: import MyFoo from 'pkg' → import MyFoo from 'sub'", async () => {
+    // ramda is in DEFAULT_OPTIMIZE_PACKAGES.
+    // Barrel exposes its default export via `import Foo from "./foo"; export { Foo as default }`.
+    // A user writing `import MyFoo from "ramda"` (ImportDefaultSpecifier) should get
+    // rewritten to `import MyFoo from "<abs>/foo"` (default import from the sub-module).
+    const call = await setupTransform(
+      "ramda",
+      [`import Foo from "./foo";`, `export { Foo as default };`].join("\n"),
+    );
+    const code = `import MyFoo from "ramda";`;
+    const result = call(code, "/app/page.tsx");
+    expect(result).not.toBeNull();
+
+    const absFoo = path.resolve(path.join(tmpDir, "node_modules", "ramda"), "foo");
+    // Must emit a default import to the sub-module, not a named import
+    expect(result!.code).toContain(`import MyFoo from ${JSON.stringify(absFoo)}`);
+    expect(result!.code).not.toContain(`from "ramda"`);
+    // Must not contain named import syntax for the default specifier
+    expect(result!.code).not.toContain("{ MyFoo }");
+  });
 });
