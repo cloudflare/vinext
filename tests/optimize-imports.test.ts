@@ -221,14 +221,18 @@ export { format };`;
     expect(map).toBeNull();
   });
 
-  it("returns null when entry file has syntax errors", () => {
+  it("returns an empty map when entry file has syntax errors", () => {
+    // Parse errors produce an empty map (safe fallback — leaves the import
+    // unchanged in the transform), not null. Null is only returned when the
+    // entry path itself cannot be resolved or the file cannot be read.
     const entryPath = uniquePath("syntax-error");
     const map = buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
       () => "export { unclosed",
     );
-    expect(map).toBeNull();
+    expect(map).not.toBeNull();
+    expect(map!.size).toBe(0);
   });
 
   it("resolves wildcard export * from './sub' by merging sub-module exports", () => {
@@ -352,6 +356,30 @@ export { Button } from "./button";`;
     expect(buttonEntry!.source).toBe("/fake/nested/components/Button");
     expect(buttonEntry!.source).not.toBe("/fake/nested/Button");
   });
+
+  it("resolves wildcard export * from './components' where components/ is a directory with index.js", () => {
+    // Tests the `/index.js` candidate added to the wildcard resolution path.
+    // `export * from "./components"` with no extension — the resolver must
+    // try `components/index.js` when `components.js` does not exist.
+    const entryPath = "/fake/dir-wildcard/index.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export * from "./components";`,
+      "/fake/dir-wildcard/components/index.js": `export { Button } from "./Button";`,
+      "/fake/dir-wildcard/components/Button.js": `export function Button() {}`,
+    };
+
+    const map = buildBarrelExportMap(
+      "test-pkg",
+      () => entryPath,
+      (fp) => files[fp] ?? null,
+    );
+
+    expect(map).not.toBeNull();
+    const buttonEntry = map!.get("Button");
+    expect(buttonEntry).toBeDefined();
+    // Must resolve through the directory index, relative to components/
+    expect(buttonEntry!.source).toBe("/fake/dir-wildcard/components/Button");
+  });
 });
 
 // ── Plugin transform with real FS fixture ─────────────────────
@@ -408,7 +436,7 @@ describe("vinext:optimize-imports transform", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("rewrites namespace re-export: import { Slot } from 'pkg' → import * as Slot from 'sub-pkg'", async () => {
+  it("rewrites namespace re-export: import { X } from 'barrel' → import * as X from 'sub-pkg'", async () => {
     // lucide-react is in DEFAULT_OPTIMIZE_PACKAGES. The barrel contents below use
     // @radix-ui sub-packages intentionally — this tests the namespace rewrite path
     // with an arbitrary barrel; the package name just needs to be in the optimized list.

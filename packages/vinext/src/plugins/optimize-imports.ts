@@ -284,8 +284,12 @@ function resolvePackageEntry(
  *   - `import * as X; export { X }` — indirect namespace re-export
  *   - `export * from "./sub"` — wildcard: recursively parse sub-module and merge exports
  *
+ * Returns an empty map when the file cannot be read or has a parse error, so that
+ * recursive wildcard calls degrade gracefully without aborting the whole barrel walk.
+ *
  * @param initialContent - Pre-read file content for `filePath`. If provided, skips the
- *   `readFile` call for the entry file — useful when the caller already has the content.
+ *   `readFile` call for the entry file — avoids a redundant read when the caller
+ *   already has the content in hand.
  */
 function buildExportMapFromFile(
   filePath: string,
@@ -377,7 +381,16 @@ function buildExportMapFromFile(
           if (rawSource.startsWith(".")) {
             const subPath = path.resolve(fileDir, rawSource).split(path.sep).join("/");
             // Try with the path as-is first, then with common extensions
-            const candidates = [subPath, `${subPath}.js`, `${subPath}.mjs`, `${subPath}.ts`];
+            const candidates = [
+              subPath,
+              `${subPath}.js`,
+              `${subPath}.mjs`,
+              `${subPath}.ts`,
+              // Directory-style sub-modules: `export * from "./components"` where
+              // `components/` is a directory with an index file.
+              `${subPath}/index.js`,
+              `${subPath}/index.ts`,
+            ];
             for (const candidate of candidates) {
               if (readFile(candidate) !== null) {
                 const subMap = buildExportMapFromFile(candidate, readFile, cache, visited);
@@ -463,16 +476,14 @@ export function buildBarrelExportMap(
   const cached = exportMapCache.get(entryPath);
   if (cached) return cached;
 
-  // Verify the entry file is readable and parseable before delegating to the
-  // recursive helper. This lets us return null (instead of an empty map) for
-  // unresolvable or unparseable entries.
+  // Verify the entry file is readable before delegating to the recursive helper.
+  // This lets us return null (instead of an empty map) for unresolvable entries,
+  // giving callers a clear signal that the package barrel could not be analyzed.
+  // Parse errors in the entry file are handled gracefully by buildExportMapFromFile
+  // (returns an empty map), which causes the transform to leave all imports unchanged —
+  // the correct safe fallback.
   const content = readFile(entryPath);
   if (!content) return null;
-  try {
-    parseAst(content);
-  } catch {
-    return null;
-  }
 
   const visited = new Set<string>();
   // Pass the already-read content so buildExportMapFromFile skips the redundant
@@ -507,6 +518,9 @@ export function createOptimizeImportsPlugin(
   // buildStart so the transform loop doesn't allocate template literals per file.
   let quotedPackages: string[] = [];
 
+  // `satisfies Plugin` gives a structural type-check at the object literal in addition
+  // to the `: Plugin` return type annotation on the function, catching hook name typos
+  // or shape mismatches that the return-type check alone would accept silently.
   return {
     name: "vinext:optimize-imports",
     // No enforce — runs after JSX transform so parseAst gets plain JS.
@@ -669,6 +683,7 @@ export function createOptimizeImportsPlugin(
             if (!allResolved) break;
           }
 
+          // TODO: consider debug logging which specifier was unresolved
           if (!allResolved || specifiers.length === 0) continue;
 
           // Group specifiers by their resolved source module
@@ -758,5 +773,5 @@ export function createOptimizeImportsPlugin(
         };
       },
     },
-  };
+  } satisfies Plugin;
 }
