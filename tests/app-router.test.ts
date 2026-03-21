@@ -3711,6 +3711,13 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("const __preRenderResponse = await __probeAppPageBeforeRender({");
   });
 
+  it("generated code handles SSR special errors without a legacy handleRenderError helper", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("const __ssrSpecialError = __resolveAppPageSpecialError(ssrErr);");
+    expect(code).toContain("specialError: __ssrSpecialError");
+    expect(code).not.toContain("handleRenderError(ssrErr)");
+  });
+
   it("generated code delegates page HTML stream plumbing to typed helpers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("createAppPageFontData as __createAppPageFontData");

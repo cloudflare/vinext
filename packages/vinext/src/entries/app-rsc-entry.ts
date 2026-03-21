@@ -2726,7 +2726,22 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // Shell render complete; Suspense boundaries stream asynchronously
     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
   } catch (ssrErr) {
-    const specialResponse = await handleRenderError(ssrErr);
+    const __ssrSpecialError = __resolveAppPageSpecialError(ssrErr);
+    const specialResponse = __ssrSpecialError
+      ? await __buildAppPageSpecialErrorResponse({
+          clearRequestContext() {
+            setHeadersContext(null);
+            setNavigationContext(null);
+          },
+          renderFallbackPage(statusCode) {
+            return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
+              matchedParams: params,
+            });
+          },
+          requestUrl: request.url,
+          specialError: __ssrSpecialError,
+        })
+      : null;
     if (specialResponse) return specialResponse;
     // Non-special error during SSR — render error.tsx if available
     const errorBoundaryResp = await renderErrorBoundaryPage(route, ssrErr, isRscRequest, request, params);
