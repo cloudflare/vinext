@@ -3634,14 +3634,17 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain('"X-Vinext-Cache": "MISS"');
   });
 
-  it("generated code emits X-Vinext-Cache: HIT header on cache hits", () => {
+  it("generated code delegates X-Vinext-Cache: HIT responses to the page-cache helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain('"X-Vinext-Cache": "HIT"');
+    expect(code).toContain("readAppPageCacheResponse as __readAppPageCacheResponse");
+    expect(code).toContain("await __readAppPageCacheResponse({");
   });
 
-  it("generated code emits X-Vinext-Cache: STALE header on stale hits", () => {
+  it("generated code delegates X-Vinext-Cache: STALE responses to the page-cache helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain('"X-Vinext-Cache": "STALE"');
+    expect(code).toContain("readAppPageCacheResponse as __readAppPageCacheResponse");
+    expect(code).toContain("scheduleBackgroundRegeneration: __triggerBackgroundRegeneration");
+    expect(code).toContain("renderFreshPageForCache: async function()");
   });
 
   it("generated code uses request execution context for background cache write", () => {
