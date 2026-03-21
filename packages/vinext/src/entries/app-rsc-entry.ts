@@ -41,6 +41,9 @@ const requestContextShimPath = fileURLToPath(
 const appRouteHandlerRuntimePath = fileURLToPath(
   new URL("../server/app-route-handler-runtime.js", import.meta.url),
 ).replace(/\\/g, "/");
+const appRouteHandlerResponsePath = fileURLToPath(
+  new URL("../server/app-route-handler-response.js", import.meta.url),
+).replace(/\\/g, "/");
 const routeTriePath = fileURLToPath(new URL("../routing/route-trie.js", import.meta.url)).replace(
   /\\/g,
   "/",
@@ -338,6 +341,14 @@ import {
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
   markKnownDynamicAppRoute as __markKnownDynamicAppRoute,
 } from ${JSON.stringify(appRouteHandlerRuntimePath)};
+import {
+  applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
+  applyRouteHandlerRevalidateHeader as __applyRouteHandlerRevalidateHeader,
+  buildAppRouteCacheValue as __buildAppRouteCacheValue,
+  buildRouteHandlerCachedResponse as __buildRouteHandlerCachedResponse,
+  finalizeRouteHandlerResponse as __finalizeRouteHandlerResponse,
+  markRouteHandlerCacheMiss as __markRouteHandlerCacheMiss,
+} from ${JSON.stringify(appRouteHandlerResponsePath)};
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags } from "vinext/fetch-cache";
@@ -2199,37 +2210,17 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     const exportedMethods = collectRouteHandlerMethods(handler);
     const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods);
 
-    // Route handlers need the same middleware header/status merge behavior as
-    // page responses. This keeps middleware response headers visible on API
-    // routes in Workers/dev, and preserves custom rewrite status overrides.
-    function attachRouteHandlerMiddlewareContext(response) {
-      // _mwCtx.headers is only set (non-null) when middleware actually ran and
-      // produced a continue/rewrite response. An empty Headers object (middleware
-      // ran but produced no response headers) is a harmless edge case: the early
-      // return is skipped, but the copy loop below is a no-op, so no incorrect
-      // headers are added. The allocation cost in that case is acceptable.
-      if (!_mwCtx.headers && _mwCtx.status == null) return response;
-      const responseHeaders = new Headers(response.headers);
-      if (_mwCtx.headers) {
-        for (const [key, value] of _mwCtx.headers) {
-          responseHeaders.append(key, value);
-        }
-      }
-      return new Response(response.body, {
-        status: _mwCtx.status ?? response.status,
-        statusText: response.statusText,
-        headers: responseHeaders,
-      });
-    }
-
     // OPTIONS auto-implementation: respond with Allow header and 204
     if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
       setHeadersContext(null);
       setNavigationContext(null);
-      return attachRouteHandlerMiddlewareContext(new Response(null, {
-        status: 204,
-        headers: { "Allow": allowHeaderForOptions },
-      }));
+      return __applyRouteHandlerMiddlewareContext(
+        new Response(null, {
+          status: 204,
+          headers: { "Allow": allowHeaderForOptions },
+        }),
+        _mwCtx,
+      );
     }
 
     // HEAD auto-implementation: run GET handler and strip body
@@ -2262,13 +2253,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           __isrDebug?.("HIT (route)", cleanPathname);
           setHeadersContext(null);
           setNavigationContext(null);
-          const __hitHeaders = Object.assign({}, __cv.headers || {});
-          __hitHeaders["X-Vinext-Cache"] = "HIT";
-          __hitHeaders["Cache-Control"] = "s-maxage=" + revalidateSeconds + ", stale-while-revalidate";
-          if (isAutoHead) {
-            return attachRouteHandlerMiddlewareContext(new Response(null, { status: __cv.status, headers: __hitHeaders }));
-          }
-          return attachRouteHandlerMiddlewareContext(new Response(__cv.body, { status: __cv.status, headers: __hitHeaders }));
+          return __applyRouteHandlerMiddlewareContext(
+            __buildRouteHandlerCachedResponse(__cv, {
+              cacheState: "HIT",
+              isHead: isAutoHead,
+              revalidateSeconds,
+            }),
+            _mwCtx,
+          );
         }
         if (__cached && __cached.isStale && __cached.value.value && __cached.value.value.kind === "APP_ROUTE") {
           // STALE — serve stale response, trigger background regeneration
@@ -2308,26 +2300,23 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
                 __isrDebug?.("route regen skipped (dynamic usage)", cleanPathname);
                 return;
               }
-              const __freshBody = await __revalResponse.arrayBuffer();
-              const __freshHeaders = {};
-              __revalResponse.headers.forEach(function(v, k) {
-                if (k !== "x-vinext-cache" && k !== "cache-control") __freshHeaders[k] = v;
-              });
               const __routeTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-              await __isrSet(__routeKey, { kind: "APP_ROUTE", body: __freshBody, status: __revalResponse.status, headers: __freshHeaders }, __revalSecs, __routeTags);
+              const __routeCacheValue = await __buildAppRouteCacheValue(__revalResponse);
+              await __isrSet(__routeKey, __routeCacheValue, __revalSecs, __routeTags);
               __isrDebug?.("route regen complete", __routeKey);
             });
           });
           __isrDebug?.("STALE (route)", cleanPathname);
           setHeadersContext(null);
           setNavigationContext(null);
-          const __staleHeaders = Object.assign({}, __sv.headers || {});
-          __staleHeaders["X-Vinext-Cache"] = "STALE";
-          __staleHeaders["Cache-Control"] = "s-maxage=0, stale-while-revalidate";
-          if (isAutoHead) {
-            return attachRouteHandlerMiddlewareContext(new Response(null, { status: __sv.status, headers: __staleHeaders }));
-          }
-          return attachRouteHandlerMiddlewareContext(new Response(__sv.body, { status: __sv.status, headers: __staleHeaders }));
+          return __applyRouteHandlerMiddlewareContext(
+            __buildRouteHandlerCachedResponse(__sv, {
+              cacheState: "STALE",
+              isHead: isAutoHead,
+              revalidateSeconds,
+            }),
+            _mwCtx,
+          );
         }
       } catch (__routeCacheErr) {
         // Cache read failure — fall through to normal handler execution
@@ -2363,7 +2352,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           (method === "GET" || isAutoHead) &&
           !handlerSetCacheControl
         ) {
-          response.headers.set("cache-control", "s-maxage=" + revalidateSeconds + ", stale-while-revalidate");
+          __applyRouteHandlerRevalidateHeader(response, revalidateSeconds);
         }
 
         // ISR cache write for route handlers (production, MISS).
@@ -2377,19 +2366,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           (method === "GET" || isAutoHead) &&
           !handlerSetCacheControl
         ) {
-          response.headers.set("X-Vinext-Cache", "MISS");
+          __markRouteHandlerCacheMiss(response);
           const __routeClone = response.clone();
           const __routeKey = __isrRouteKey(cleanPathname);
           const __revalSecs = revalidateSeconds;
           const __routeTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
           const __routeWritePromise = (async () => {
             try {
-              const __buf = await __routeClone.arrayBuffer();
-              const __hdrs = {};
-              __routeClone.headers.forEach(function(v, k) {
-                if (k !== "x-vinext-cache" && k !== "cache-control") __hdrs[k] = v;
-              });
-              await __isrSet(__routeKey, { kind: "APP_ROUTE", body: __buf, status: __routeClone.status, headers: __hdrs }, __revalSecs, __routeTags);
+              const __routeCacheValue = await __buildAppRouteCacheValue(__routeClone);
+              await __isrSet(__routeKey, __routeCacheValue, __revalSecs, __routeTags);
               __isrDebug?.("route cache written", __routeKey);
             } catch (__cacheErr) {
               console.error("[vinext] ISR route cache write error:", __cacheErr);
@@ -2403,38 +2388,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         const draftCookie = getDraftModeCookieHeader();
         setHeadersContext(null);
         setNavigationContext(null);
-
-        // If we have pending cookies, create a new response with them attached
-        if (pendingCookies.length > 0 || draftCookie) {
-          const newHeaders = new Headers(response.headers);
-          for (const cookie of pendingCookies) {
-            newHeaders.append("Set-Cookie", cookie);
-          }
-          if (draftCookie) newHeaders.append("Set-Cookie", draftCookie);
-
-          if (isAutoHead) {
-            return attachRouteHandlerMiddlewareContext(new Response(null, {
-              status: response.status,
-              statusText: response.statusText,
-              headers: newHeaders,
-            }));
-          }
-          return attachRouteHandlerMiddlewareContext(new Response(response.body, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: newHeaders,
-          }));
-        }
-
-        if (isAutoHead) {
-          // Strip body for auto-HEAD, preserve headers and status
-          return attachRouteHandlerMiddlewareContext(new Response(null, {
-            status: response.status,
-            statusText: response.statusText,
-            headers: response.headers,
-          }));
-        }
-        return attachRouteHandlerMiddlewareContext(response);
+        return __applyRouteHandlerMiddlewareContext(
+          __finalizeRouteHandlerResponse(response, {
+            pendingCookies,
+            draftCookie,
+            isHead: isAutoHead,
+          }),
+          _mwCtx,
+        );
       } catch (err) {
         getAndClearPendingCookies(); // Clear any pending cookies on error
         // Catch redirect() / notFound() thrown from route handlers
@@ -2446,16 +2407,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
             setHeadersContext(null);
             setNavigationContext(null);
-            return attachRouteHandlerMiddlewareContext(new Response(null, {
-              status: statusCode,
-              headers: { Location: new URL(redirectUrl, request.url).toString() },
-            }));
+            return __applyRouteHandlerMiddlewareContext(
+              new Response(null, {
+                status: statusCode,
+                headers: { Location: new URL(redirectUrl, request.url).toString() },
+              }),
+              _mwCtx,
+            );
           }
           if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
             const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
             setHeadersContext(null);
             setNavigationContext(null);
-            return attachRouteHandlerMiddlewareContext(new Response(null, { status: statusCode }));
+            return __applyRouteHandlerMiddlewareContext(new Response(null, { status: statusCode }), _mwCtx);
           }
         }
         setHeadersContext(null);
@@ -2466,16 +2430,19 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
           { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
         );
-        return attachRouteHandlerMiddlewareContext(new Response(null, { status: 500 }));
+        return __applyRouteHandlerMiddlewareContext(new Response(null, { status: 500 }), _mwCtx);
       } finally {
         setHeadersAccessPhase(previousHeadersPhase);
       }
     }
     setHeadersContext(null);
     setNavigationContext(null);
-    return attachRouteHandlerMiddlewareContext(new Response(null, {
-      status: 405,
-    }));
+    return __applyRouteHandlerMiddlewareContext(
+      new Response(null, {
+        status: 405,
+      }),
+      _mwCtx,
+    );
   }
 
   // Build the component tree: layouts wrapping the page
