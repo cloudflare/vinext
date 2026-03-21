@@ -3629,18 +3629,23 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain('"next/cache"');
   });
 
-  it("generated code emits X-Vinext-Cache: MISS header on first render", () => {
+  it("generated code delegates page response policy to typed helpers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain('"X-Vinext-Cache": "MISS"');
+    expect(code).toContain("buildAppPageHtmlResponse as __buildAppPageHtmlResponse");
+    expect(code).toContain("buildAppPageRscResponse as __buildAppPageRscResponse");
+    expect(code).toContain(
+      "resolveAppPageHtmlResponsePolicy as __resolveAppPageHtmlResponsePolicy",
+    );
+    expect(code).toContain("resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy");
   });
 
-  it("generated code delegates X-Vinext-Cache: HIT responses to the page-cache helper", () => {
+  it("generated code delegates page cache HIT handling to a typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("readAppPageCacheResponse as __readAppPageCacheResponse");
     expect(code).toContain("await __readAppPageCacheResponse({");
   });
 
-  it("generated code delegates X-Vinext-Cache: STALE responses to the page-cache helper", () => {
+  it("generated code delegates page cache STALE handling to the same helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("readAppPageCacheResponse as __readAppPageCacheResponse");
     expect(code).toContain("scheduleBackgroundRegeneration: __triggerBackgroundRegeneration");
@@ -3721,9 +3726,9 @@ describe("generateRscEntry ISR code generation", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     // __rscForResponse must be assigned before the RSC response is returned so
     // the tee branch (__rscB) is also consumed (populating the ISR cache).
-    // The RSC response is: new Response(__rscForResponse, ...)
+    // The RSC response is now built via the typed page-response helper.
     const teeAssignIdx = code.indexOf("let __rscForResponse");
-    const rscResponseIdx = code.indexOf("return new Response(__rscForResponse");
+    const rscResponseIdx = code.indexOf("const __rscResponse = __buildAppPageRscResponse(");
     expect(teeAssignIdx).toBeGreaterThan(-1);
     expect(rscResponseIdx).toBeGreaterThan(-1);
     expect(teeAssignIdx).toBeLessThan(rscResponseIdx);
