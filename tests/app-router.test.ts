@@ -3684,6 +3684,17 @@ describe("generateRscEntry ISR code generation", () => {
     );
   });
 
+  it("generated code delegates page HTML stream plumbing to typed helpers", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("createAppPageFontData as __createAppPageFontData");
+    expect(code).toContain("renderAppPageHtmlResponse as __renderAppPageHtmlResponse");
+    expect(code).toContain("renderAppPageHtmlStream as __renderAppPageHtmlStream");
+    expect(code).toContain(
+      "shouldRerenderAppPageWithGlobalError as __shouldRerenderAppPageWithGlobalError",
+    );
+    expect(code).toContain("createAppPageRscErrorTracker as __createAppPageRscErrorTracker");
+  });
+
   it("generated code delegates page cache HIT handling to a typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("readAppPageCacheResponse as __readAppPageCacheResponse");

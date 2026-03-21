@@ -59,6 +59,9 @@ const appPageResponsePath = fileURLToPath(
 const appPageExecutionPath = fileURLToPath(
   new URL("../server/app-page-execution.js", import.meta.url),
 ).replace(/\\/g, "/");
+const appPageStreamPath = fileURLToPath(
+  new URL("../server/app-page-stream.js", import.meta.url),
+).replace(/\\/g, "/");
 const appRouteHandlerResponsePath = fileURLToPath(
   new URL("../server/app-route-handler-response.js", import.meta.url),
 ).replace(/\\/g, "/");
@@ -385,6 +388,13 @@ import {
   resolveAppPageSpecialError as __resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture as __teeAppPageRscStreamForCapture,
 } from ${JSON.stringify(appPageExecutionPath)};
+import {
+  createAppPageFontData as __createAppPageFontData,
+  createAppPageRscErrorTracker as __createAppPageRscErrorTracker,
+  renderAppPageHtmlResponse as __renderAppPageHtmlResponse,
+  renderAppPageHtmlStream as __renderAppPageHtmlStream,
+  shouldRerenderAppPageWithGlobalError as __shouldRerenderAppPageWithGlobalError,
+} from ${JSON.stringify(appPageStreamPath)};
 import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
 } from ${JSON.stringify(appRouteHandlerResponsePath)};
@@ -877,22 +887,23 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
     route?.pattern ?? _pathname,
   );
   const rscStream = renderToReadableStream(element, { onError: onRenderError });
-  // Collect font data from RSC environment
-  const fontData = {
-    links: _getSSRFontLinks(),
-    styles: _getSSRFontStyles(),
-    preloads: _getSSRFontPreloads(),
-  };
+  const fontData = __createAppPageFontData({
+    getLinks: _getSSRFontLinks,
+    getPreloads: _getSSRFontPreloads,
+    getStyles: _getSSRFontStyles,
+  });
   const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-  const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
-  setHeadersContext(null);
-  setNavigationContext(null);
-  const _respHeaders = { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" };
-  const _fontLinkHeader = __buildAppPageFontLinkHeader(fontData.preloads);
-  if (_fontLinkHeader) _respHeaders["Link"] = _fontLinkHeader;
-  return new Response(htmlStream, {
+  return __renderAppPageHtmlResponse({
+    clearRequestContext() {
+      setHeadersContext(null);
+      setNavigationContext(null);
+    },
+    fontData,
+    fontLinkHeader: __buildAppPageFontLinkHeader(fontData.preloads),
+    navigationContext: _getNavigationContext(),
+    rscStream,
+    ssrHandler: ssrEntry,
     status: statusCode,
-    headers: _respHeaders,
   });
 }
 
@@ -1017,22 +1028,23 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
 
   // HTML (full page load) response — render through RSC → SSR pipeline
   const rscStream = renderToReadableStream(element, { onError: onRenderError });
-  // Collect font data from RSC environment so error pages include font styles
-  const fontData = {
-    links: _getSSRFontLinks(),
-    styles: _getSSRFontStyles(),
-    preloads: _getSSRFontPreloads(),
-  };
+  const fontData = __createAppPageFontData({
+    getLinks: _getSSRFontLinks,
+    getPreloads: _getSSRFontPreloads,
+    getStyles: _getSSRFontStyles,
+  });
   const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-  const htmlStream = await ssrEntry.handleSsr(rscStream, _getNavigationContext(), fontData);
-  setHeadersContext(null);
-  setNavigationContext(null);
-  const _errHeaders = { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" };
-  const _errFontLinkHeader = __buildAppPageFontLinkHeader(fontData.preloads);
-  if (_errFontLinkHeader) _errHeaders["Link"] = _errFontLinkHeader;
-  return new Response(htmlStream, {
+  return __renderAppPageHtmlResponse({
+    clearRequestContext() {
+      setHeadersContext(null);
+      setNavigationContext(null);
+    },
+    fontData,
+    fontLinkHeader: __buildAppPageFontLinkHeader(fontData.preloads),
+    navigationContext: _getNavigationContext(),
+    rscStream,
+    ssrHandler: ssrEntry,
     status: 200,
-    headers: _errHeaders,
   });
 }
 
@@ -2711,14 +2723,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // Track non-navigation RSC errors so we can detect when the in-tree global
   // ErrorBoundary catches during SSR (producing double <html>/<body>) and
   // re-render with renderErrorBoundaryPage (which skips layouts for global-error).
-  let _rscErrorForRerender = null;
   const _baseOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
-  const onRenderError = function(error, requestInfo, errorContext) {
-    if (!(error && typeof error === "object" && "digest" in error)) {
-      _rscErrorForRerender = error;
-    }
-    return _baseOnError(error, requestInfo, errorContext);
-  };
+  const _rscErrorTracker = __createAppPageRscErrorTracker(_baseOnError);
+  const onRenderError = _rscErrorTracker.onRenderError;
   const rscStream = renderToReadableStream(element, { onError: onRenderError });
 
   // For ISR pages in production: tee the RSC stream immediately after creation so we
@@ -2789,11 +2796,11 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // Collect font data from RSC environment before passing to SSR
   // (Fonts are loaded during RSC rendering when layout.tsx calls Geist() etc.)
-  const fontData = {
-    links: _getSSRFontLinks(),
-    styles: _getSSRFontStyles(),
-    preloads: _getSSRFontPreloads(),
-  };
+  const fontData = __createAppPageFontData({
+    getLinks: _getSSRFontLinks,
+    getPreloads: _getSSRFontPreloads,
+    getStyles: _getSSRFontStyles,
+  });
 
   // Build HTTP Link header for font preloading.
   // This lets the browser (and CDN) start fetching font files before parsing HTML,
@@ -2809,7 +2816,12 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   let htmlStream;
   try {
     const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-    htmlStream = await ssrEntry.handleSsr(__rscForResponse, _getNavigationContext(), fontData);
+    htmlStream = await __renderAppPageHtmlStream({
+      fontData,
+      navigationContext: _getNavigationContext(),
+      rscStream: __rscForResponse,
+      ssrHandler: ssrEntry,
+    });
     // Shell render complete; Suspense boundaries stream asynchronously
     if (process.env.NODE_ENV !== "production") __renderEnd = performance.now();
   } catch (ssrErr) {
@@ -2828,12 +2840,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   ${
     globalErrorVar
       ? `
-  if (_rscErrorForRerender && !isRscRequest) {
-    const _hasLocalBoundary = !!(route?.error?.default) || !!(route?.errors && route.errors.some(function(e) { return e?.default; }));
-    if (!_hasLocalBoundary) {
-      const cleanResp = await renderErrorBoundaryPage(route, _rscErrorForRerender, false, request, params);
+  const _capturedRscError = _rscErrorTracker.getCapturedError();
+  if (__shouldRerenderAppPageWithGlobalError({
+    capturedError: _capturedRscError,
+    hasLocalBoundary: !!(route?.error?.default) || !!(route?.errors && route.errors.some(function(e) { return e?.default; })),
+  })) {
+      const cleanResp = await renderErrorBoundaryPage(route, _capturedRscError, false, request, params);
       if (cleanResp) return cleanResp;
-    }
   }
   `
       : ""
