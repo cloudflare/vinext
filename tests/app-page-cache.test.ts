@@ -1,0 +1,209 @@
+import { describe, expect, it, vi } from "vite-plus/test";
+import {
+  buildAppPageCachedResponse,
+  readAppPageCacheResponse,
+} from "../packages/vinext/src/server/app-page-cache.js";
+import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
+import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
+
+function buildISRCacheEntry(value: CachedAppPageValue, isStale = false): ISRCacheEntry {
+  return {
+    isStale,
+    value: {
+      lastModified: Date.now(),
+      value,
+    },
+  };
+}
+
+function buildCachedAppPageValue(
+  html: string,
+  rscData?: ArrayBuffer,
+  status?: number,
+): CachedAppPageValue {
+  return {
+    kind: "APP_PAGE",
+    html,
+    rscData,
+    headers: undefined,
+    postponed: undefined,
+    status,
+  };
+}
+
+describe("app page cache helpers", () => {
+  it("builds cached HTML and RSC responses", async () => {
+    const rscData = new TextEncoder().encode("flight").buffer;
+    const cachedValue = buildCachedAppPageValue("<h1>cached</h1>", rscData, 201);
+
+    const htmlResponse = buildAppPageCachedResponse(cachedValue, {
+      cacheState: "HIT",
+      isRscRequest: false,
+      revalidateSeconds: 60,
+    });
+    expect(htmlResponse?.status).toBe(201);
+    expect(htmlResponse?.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(htmlResponse?.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(htmlResponse?.text()).resolves.toBe("<h1>cached</h1>");
+
+    const rscResponse = buildAppPageCachedResponse(cachedValue, {
+      cacheState: "STALE",
+      isRscRequest: true,
+      revalidateSeconds: 60,
+    });
+    expect(rscResponse?.headers.get("content-type")).toBe("text/x-component; charset=utf-8");
+    expect(rscResponse?.headers.get("cache-control")).toBe("s-maxage=0, stale-while-revalidate");
+    expect(await rscResponse?.arrayBuffer()).toEqual(rscData);
+  });
+
+  it("returns null when a cached entry lacks the requested HTML or RSC payload", () => {
+    const htmlOnly = buildCachedAppPageValue("<h1>cached</h1>");
+    const rscOnly = buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer);
+
+    expect(
+      buildAppPageCachedResponse(htmlOnly, {
+        cacheState: "HIT",
+        isRscRequest: true,
+        revalidateSeconds: 60,
+      }),
+    ).toBeNull();
+    expect(
+      buildAppPageCachedResponse(rscOnly, {
+        cacheState: "HIT",
+        isRscRequest: false,
+        revalidateSeconds: 60,
+      }),
+    ).toBeNull();
+  });
+
+  it("returns cached HIT responses and clears request state", async () => {
+    let didClearRequestContext = false;
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/cached",
+      clearRequestContext() {
+        didClearRequestContext = true;
+      },
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedAppPageValue("<h1>cached</h1>"));
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("should not render");
+      },
+      scheduleBackgroundRegeneration() {
+        throw new Error("should not schedule regeneration");
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response?.text()).resolves.toBe("<h1>cached</h1>");
+    expect(didClearRequestContext).toBe(true);
+  });
+
+  it("serves stale entries and regenerates HTML and RSC cache keys", async () => {
+    const scheduledRegenerations: Array<() => Promise<void>> = [];
+    const isrSetCalls: Array<{
+      key: string;
+      html: string;
+      hasRscData: boolean;
+      revalidateSeconds: number;
+      tags: string[];
+    }> = [];
+    const rscData = new TextEncoder().encode("fresh-flight").buffer;
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/stale",
+      clearRequestContext() {},
+      isRscRequest: true,
+      async isrGet() {
+        return buildISRCacheEntry(buildCachedAppPageValue("", rscData), true);
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet(key, data, revalidateSeconds, tags) {
+        isrSetCalls.push({
+          key,
+          html: data.html,
+          hasRscData: Boolean(data.rscData),
+          revalidateSeconds,
+          tags,
+        });
+      },
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        return {
+          html: "<h1>fresh</h1>",
+          rscData,
+          tags: ["/stale", "_N_T_/stale"],
+        };
+      },
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRegenerations.push(renderFn);
+      },
+    });
+
+    expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
+    expect(scheduledRegenerations).toHaveLength(1);
+
+    await scheduledRegenerations[0]();
+
+    expect(isrSetCalls).toEqual([
+      {
+        key: "html:/stale",
+        html: "<h1>fresh</h1>",
+        hasRscData: false,
+        revalidateSeconds: 60,
+        tags: ["/stale", "_N_T_/stale"],
+      },
+      {
+        key: "rsc:/stale",
+        html: "",
+        hasRscData: true,
+        revalidateSeconds: 60,
+        tags: ["/stale", "_N_T_/stale"],
+      },
+    ]);
+  });
+
+  it("falls through and logs on cache read errors", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/broken",
+      clearRequestContext() {},
+      isRscRequest: false,
+      async isrGet() {
+        throw new Error("cache failed");
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        throw new Error("should not render");
+      },
+      scheduleBackgroundRegeneration() {},
+    });
+
+    expect(response).toBeNull();
+    expect(errorSpy).toHaveBeenCalledOnce();
+    errorSpy.mockRestore();
+  });
+});
