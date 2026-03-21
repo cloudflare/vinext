@@ -505,8 +505,9 @@ export async function resolveNextConfig(
   );
 
   // Resolve optimizePackageImports from experimental config
-  const optimizePackageImports = Array.isArray(experimental?.optimizePackageImports)
-    ? (experimental.optimizePackageImports as string[])
+  const rawOptimize = experimental?.optimizePackageImports;
+  const optimizePackageImports: string[] = Array.isArray(rawOptimize)
+    ? rawOptimize.filter((x): x is string => typeof x === "string")
     : [];
 
   // Resolve serverExternalPackages — support the current top-level key and the

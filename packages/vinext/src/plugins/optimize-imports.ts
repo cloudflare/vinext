@@ -178,24 +178,29 @@ function resolveExportsValue(value: ExportsValue): string | null {
 }
 
 /**
- * Resolve a package name to its ESM entry file path.
- * Checks `exports["."]` → `module` → `main`, then falls back to require.resolve.
- *
+ * Result of resolving a package, including the directory and parsed package.json.
+ * Used internally by resolvePackageInfo.
+ */
+interface PackageInfo {
+  pkgDir: string;
+  pkgJson: PackageJson;
+}
+
+/**
+ * Resolve a package name to its directory and parsed package.json.
  * Handles packages with strict `exports` fields that don't expose `./package.json`
  * by first resolving the main entry, then walking up to find the package root.
  */
-function resolvePackageEntry(packageName: string, projectRoot: string): string | null {
+function resolvePackageInfo(packageName: string, projectRoot: string): PackageInfo | null {
   try {
     const req = createRequire(path.join(projectRoot, "package.json"));
 
     // Try resolving package.json directly (works for packages without strict exports)
-    let pkgDir: string | null = null;
-    let pkgJson: PackageJson | null = null;
-
     try {
       const pkgJsonPath = req.resolve(`${packageName}/package.json`);
-      pkgDir = path.dirname(pkgJsonPath);
-      pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as PackageJson;
+      const pkgDir = path.dirname(pkgJsonPath);
+      const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as PackageJson;
+      return { pkgDir, pkgJson };
     } catch {
       // Package has strict exports — resolve main entry and walk up to find package.json
       try {
@@ -207,9 +212,7 @@ function resolvePackageEntry(packageName: string, projectRoot: string): string |
           if (fs.existsSync(candidate)) {
             const parsed = JSON.parse(fs.readFileSync(candidate, "utf-8")) as PackageJson;
             if (parsed.name === packageName) {
-              pkgDir = dir;
-              pkgJson = parsed;
-              break;
+              return { pkgDir: dir, pkgJson: parsed };
             }
           }
           const parent = path.dirname(dir);
@@ -221,13 +224,24 @@ function resolvePackageEntry(packageName: string, projectRoot: string): string |
       }
     }
 
-    if (!pkgDir || !pkgJson) return null;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve a package name to its ESM entry file path.
+ * Checks `exports["."]` → `module` → `main`, then falls back to require.resolve.
+ */
+function resolvePackageEntry(packageName: string, projectRoot: string): string | null {
+  try {
+    const info = resolvePackageInfo(packageName, projectRoot);
+    if (!info) return null;
+    const { pkgDir, pkgJson } = info;
 
     if (pkgJson.exports) {
-      // TODO: Some packages export their barrel from a non-root subpath (e.g.
-      // exports["./index"] or exports["./*"]). Only exports["."] is checked here,
-      // which covers the vast majority of packages in the default list. User-provided
-      // packages with non-standard export maps may need manual sub-module imports.
+      // Check exports["."] for the barrel entry
       const dotExport = pkgJson.exports["."];
       if (dotExport) {
         const entryPath = resolveExportsValue(dotExport);
@@ -242,6 +256,7 @@ function resolvePackageEntry(packageName: string, projectRoot: string): string |
       return path.resolve(pkgDir, entryField).split(path.sep).join("/");
     }
 
+    const req = createRequire(path.join(projectRoot, "package.json"));
     return req.resolve(packageName).split(path.sep).join("/");
   } catch {
     return null;
@@ -249,32 +264,36 @@ function resolvePackageEntry(packageName: string, projectRoot: string): string |
 }
 
 /**
- * Build a map of exported names → source sub-module for a barrel package.
+ * Build a map of exported names → source sub-module for a barrel file.
  *
- * Parses the barrel entry file AST and extracts the export map.
- * Handles: `export * as X from`, `export { A } from`, `import * as X; export { X }`.
- * Does NOT recursively resolve `export * from` (wildcard) — those imports are left unchanged.
+ * Internal recursive helper used by buildBarrelExportMap. Parses a single file's
+ * AST and populates `exportMap` with resolved entries. Handles:
+ *   - `export * as Name from "sub-pkg"` — namespace re-export
+ *   - `export { A, B } from "sub-pkg"` — named re-export
+ *   - `import * as X; export { X }` — indirect namespace re-export
+ *   - `export * from "./sub"` — wildcard: recursively parse sub-module and merge exports
  */
-export function buildBarrelExportMap(
-  packageName: string,
-  resolveEntry: (pkg: string) => string | null,
+function buildExportMapFromFile(
+  filePath: string,
   readFile: (filepath: string) => string | null,
-  cache?: Map<string, BarrelExportMap>,
-): BarrelExportMap | null {
-  const entryPath = resolveEntry(packageName);
-  if (!entryPath) return null;
+  cache: Map<string, BarrelExportMap>,
+  visited: Set<string>,
+): BarrelExportMap {
+  // Guard against circular re-exports
+  if (visited.has(filePath)) return new Map();
+  visited.add(filePath);
 
-  const cached = cache?.get(entryPath);
+  const cached = cache.get(filePath);
   if (cached) return cached;
 
-  const content = readFile(entryPath);
-  if (!content) return null;
+  const content = readFile(filePath);
+  if (!content) return new Map();
 
   let ast: ReturnType<typeof parseAst>;
   try {
     ast = parseAst(content);
   } catch {
-    return null;
+    return new Map();
   }
 
   const exportMap: BarrelExportMap = new Map();
@@ -285,61 +304,153 @@ export function buildBarrelExportMap(
     { source: string; isNamespace: boolean; originalName?: string }
   >();
 
+  const fileDir = path.dirname(filePath);
+
   for (const node of ast.body as AstBodyNode[]) {
-    if (node.type === "ImportDeclaration") {
-      const source = node.source!.value as string;
-      for (const spec of node.specifiers!) {
-        if (spec.type === "ImportNamespaceSpecifier") {
-          importBindings.set(spec.local.name, { source, isNamespace: true });
-        } else if (spec.type === "ImportSpecifier") {
-          const imported = astName(spec.imported!);
-          importBindings.set(spec.local.name, {
-            source,
-            isNamespace: false,
-            originalName: imported,
-          });
-        } else if (spec.type === "ImportDefaultSpecifier") {
-          importBindings.set(spec.local.name, {
-            source,
-            isNamespace: false,
-            originalName: "default",
-          });
+    switch (node.type) {
+      case "ImportDeclaration": {
+        const source = typeof node.source?.value === "string" ? node.source.value : null;
+        if (!source) break;
+        for (const spec of node.specifiers ?? []) {
+          switch (spec.type) {
+            case "ImportNamespaceSpecifier":
+              importBindings.set(spec.local.name, { source, isNamespace: true });
+              break;
+            case "ImportSpecifier":
+              if (spec.imported) {
+                importBindings.set(spec.local.name, {
+                  source,
+                  isNamespace: false,
+                  originalName: astName(spec.imported),
+                });
+              }
+              break;
+            case "ImportDefaultSpecifier":
+              importBindings.set(spec.local.name, {
+                source,
+                isNamespace: false,
+                originalName: "default",
+              });
+              break;
+          }
         }
+        break;
       }
-    } else if (node.type === "ExportAllDeclaration" && node.exported) {
-      // export * as Name from "sub-pkg"
-      const name = astName(node.exported);
-      exportMap.set(name, { source: node.source!.value as string, isNamespace: true });
-    } else if (node.type === "ExportNamedDeclaration" && node.source) {
-      // export { A, B } from "sub-pkg"
-      for (const spec of node.specifiers!) {
-        const exported = astName(spec.exported!);
-        const local = astName(spec.local);
-        exportMap.set(exported, {
-          source: node.source.value as string,
-          isNamespace: false,
-          originalName: local,
-        });
-      }
-    } else if (node.type === "ExportNamedDeclaration" && !node.source && node.specifiers) {
-      // export { X } — look up X in importBindings
-      for (const spec of node.specifiers) {
-        const exported = astName(spec.exported!);
-        const local = astName(spec.local);
-        const binding = importBindings.get(local);
-        if (binding) {
-          exportMap.set(exported, {
-            source: binding.source,
-            isNamespace: binding.isNamespace,
-            originalName: binding.isNamespace ? undefined : binding.originalName,
-          });
+
+      case "ExportAllDeclaration": {
+        const source = typeof node.source?.value === "string" ? node.source.value : null;
+        if (!source) break;
+
+        if (node.exported) {
+          // export * as Name from "sub-pkg" — namespace re-export
+          const name = astName(node.exported);
+          exportMap.set(name, { source, isNamespace: true });
+        } else {
+          // export * from "./sub" — wildcard: recursively merge sub-module exports
+          if (source.startsWith(".")) {
+            const subPath = path.resolve(fileDir, source).split(path.sep).join("/");
+            // Try with the path as-is first, then with common extensions
+            const candidates = [subPath, `${subPath}.js`, `${subPath}.mjs`, `${subPath}.ts`];
+            for (const candidate of candidates) {
+              if (readFile(candidate) !== null) {
+                const subMap = buildExportMapFromFile(candidate, readFile, cache, visited);
+                for (const [name, entry] of subMap) {
+                  if (!exportMap.has(name)) {
+                    exportMap.set(name, entry);
+                  }
+                }
+                break;
+              }
+            }
+          }
+          // Non-relative wildcard re-exports (e.g. `export * from "other-pkg"`) are
+          // intentionally skipped — they'd require resolving an external package which
+          // is out of scope for the barrel optimization pass.
         }
+        break;
+      }
+
+      case "ExportNamedDeclaration": {
+        const source = typeof node.source?.value === "string" ? node.source.value : null;
+        if (source) {
+          // export { A, B } from "sub-pkg"
+          for (const spec of node.specifiers ?? []) {
+            if (spec.exported) {
+              const exported = astName(spec.exported);
+              const local = astName(spec.local);
+              exportMap.set(exported, {
+                source,
+                isNamespace: false,
+                originalName: local,
+              });
+            }
+          }
+        } else if (node.specifiers && node.specifiers.length > 0) {
+          // export { X } — look up X in importBindings
+          for (const spec of node.specifiers) {
+            if (!spec.exported) continue;
+            const exported = astName(spec.exported);
+            const local = astName(spec.local);
+            const binding = importBindings.get(local);
+            if (binding) {
+              exportMap.set(exported, {
+                source: binding.source,
+                isNamespace: binding.isNamespace,
+                originalName: binding.isNamespace ? undefined : binding.originalName,
+              });
+            }
+          }
+        }
+        break;
       }
     }
-    // export * from "sub-pkg" — not resolved eagerly (left unchanged at transform time)
   }
 
-  cache?.set(entryPath, exportMap);
+  cache.set(filePath, exportMap);
+  return exportMap;
+}
+
+/**
+ * Build a map of exported names → source sub-module for a barrel package.
+ *
+ * Parses the barrel entry file AST and extracts the export map.
+ * Handles: `export * as X from`, `export { A } from`, `import * as X; export { X }`,
+ * and `export * from "./sub"` (recursively resolves wildcard re-exports).
+ *
+ * Returns null if the entry cannot be resolved, the file cannot be read, or
+ * the file has a parse error. Returns an empty map if the file is valid but
+ * exports nothing.
+ */
+export function buildBarrelExportMap(
+  packageName: string,
+  resolveEntry: (pkg: string) => string | null,
+  readFile: (filepath: string) => string | null,
+  cache?: Map<string, BarrelExportMap>,
+): BarrelExportMap | null {
+  const entryPath = resolveEntry(packageName);
+  if (!entryPath) return null;
+
+  const exportMapCache = cache ?? new Map<string, BarrelExportMap>();
+
+  const cached = exportMapCache.get(entryPath);
+  if (cached) return cached;
+
+  // Verify the entry file is readable and parseable before delegating to the
+  // recursive helper. This lets us return null (instead of an empty map) for
+  // unresolvable or unparseable entries.
+  const content = readFile(entryPath);
+  if (!content) return null;
+  try {
+    parseAst(content);
+  } catch {
+    return null;
+  }
+
+  const visited = new Set<string>();
+  const exportMap = buildExportMapFromFile(entryPath, readFile, exportMapCache, visited);
+
+  // Store under the entry path key so the transform handler's cache lookup hits
+  exportMapCache.set(entryPath, exportMap);
   return exportMap;
 }
 
@@ -393,7 +504,7 @@ export function createOptimizeImportsPlugin(
     async resolveId(source) {
       // Only apply on server environments (RSC/SSR). The client uses Vite's
       // dep optimizer which handles barrel CJS→ESM conversion correctly.
-      if (this.environment?.name === "client") return;
+      if ((this as { environment?: { name?: string } }).environment?.name === "client") return;
       // Resolve sub-package specifiers that were introduced by barrel optimization.
       // In pnpm strict mode, sub-packages like @radix-ui/react-slot are only
       // resolvable from the barrel package's location, not from user code.
@@ -413,7 +524,8 @@ export function createOptimizeImportsPlugin(
       handler(code, id) {
         // Only apply on server environments (RSC/SSR). The client uses Vite's
         // dep optimizer which handles barrel imports correctly.
-        if (this.environment?.name === "client") return null;
+        const env = (this as { environment?: { name?: string } }).environment;
+        if (env?.name === "client") return null;
         // Skip virtual modules
         if (id.startsWith("\0")) return null;
 
@@ -444,8 +556,8 @@ export function createOptimizeImportsPlugin(
         for (const node of ast.body as AstBodyNode[]) {
           if (node.type !== "ImportDeclaration") continue;
 
-          const importSource = node.source!.value as string;
-          if (!packages.has(importSource)) continue;
+          const importSource = typeof node.source?.value === "string" ? node.source.value : null;
+          if (!importSource || !packages.has(importSource)) continue;
 
           // Build or retrieve the barrel export map for this package.
           // Cache the resolved entry path to avoid repeated FS work.
@@ -486,25 +598,32 @@ export function createOptimizeImportsPlugin(
           // Check if ALL specifiers can be resolved. If any can't, leave the import unchanged.
           const specifiers: Array<{ local: string; imported: string }> = [];
           let allResolved = true;
-          for (const spec of node.specifiers!) {
-            if (spec.type === "ImportSpecifier") {
-              const imported = astName(spec.imported!);
-              specifiers.push({ local: spec.local.name, imported });
-              if (!exportMap.has(imported)) {
-                allResolved = false;
+          for (const spec of node.specifiers ?? []) {
+            switch (spec.type) {
+              case "ImportSpecifier": {
+                if (!spec.imported) {
+                  allResolved = false;
+                  break;
+                }
+                const imported = astName(spec.imported);
+                specifiers.push({ local: spec.local.name, imported });
+                if (!exportMap.has(imported)) {
+                  allResolved = false;
+                }
                 break;
               }
-            } else if (spec.type === "ImportDefaultSpecifier") {
-              specifiers.push({ local: spec.local.name, imported: "default" });
-              if (!exportMap.has("default")) {
+              case "ImportDefaultSpecifier":
+                specifiers.push({ local: spec.local.name, imported: "default" });
+                if (!exportMap.has("default")) {
+                  allResolved = false;
+                }
+                break;
+              case "ImportNamespaceSpecifier":
+                // import * as X from "pkg" — can't optimize namespace imports
                 allResolved = false;
                 break;
-              }
-            } else if (spec.type === "ImportNamespaceSpecifier") {
-              // import * as X from "pkg" — can't optimize namespace imports
-              allResolved = false;
-              break;
             }
+            if (!allResolved) break;
           }
 
           if (!allResolved || specifiers.length === 0) continue;
@@ -520,7 +639,8 @@ export function createOptimizeImportsPlugin(
           >();
           const barrelDir = path.dirname(barrelEntry);
           for (const { local, imported } of specifiers) {
-            const entry = exportMap.get(imported)!;
+            const entry = exportMap.get(imported);
+            if (!entry) continue;
             // Resolve relative sources against the barrel entry's directory so
             // that `./chunk.js` in `/node_modules/lodash-es/index.js` becomes
             // `/node_modules/lodash-es/chunk.js` — not resolved against the

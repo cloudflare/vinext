@@ -8,7 +8,11 @@ import { describe, it, expect, afterEach } from "vite-plus/test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import vinext, { _buildBarrelExportMap } from "../packages/vinext/src/index.js";
+import {
+  buildBarrelExportMap,
+  createOptimizeImportsPlugin,
+  DEFAULT_OPTIMIZE_PACKAGES,
+} from "../packages/vinext/src/plugins/optimize-imports.js";
 import type { Plugin } from "vite-plus";
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -17,14 +21,6 @@ import type { Plugin } from "vite-plus";
 // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
 function unwrapHook(hook: any): ((...args: any[]) => any) | undefined {
   return typeof hook === "function" ? hook : hook?.handler;
-}
-
-/** Extract the vinext:optimize-imports plugin from the plugin array */
-function getOptimizeImportsPlugin(): Plugin {
-  const plugins = vinext() as Plugin[];
-  const plugin = plugins.find((p) => p.name === "vinext:optimize-imports");
-  if (!plugin) throw new Error("vinext:optimize-imports plugin not found");
-  return plugin;
 }
 
 let testId = 0;
@@ -36,8 +32,11 @@ function uniquePath(name: string): string {
 // ── Plugin existence ─────────────────────────────────────────
 
 describe("vinext:optimize-imports plugin", () => {
-  it("exists in the plugin array", () => {
-    const plugin = getOptimizeImportsPlugin();
+  it("exists and has the correct name", () => {
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => "/fake/root",
+    ) as Plugin;
     expect(plugin.name).toBe("vinext:optimize-imports");
     // No enforce — runs after JSX transform so parseAst gets plain JS
     expect(plugin.enforce).toBeUndefined();
@@ -46,7 +45,10 @@ describe("vinext:optimize-imports plugin", () => {
   // ── Guard clauses ────────────────────────────────────────────
 
   it("returns null for virtual modules", () => {
-    const plugin = getOptimizeImportsPlugin();
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => "/fake/root",
+    ) as Plugin;
     const transform = unwrapHook(plugin.transform)!;
     const code = `import { Slot } from "radix-ui";`;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call
@@ -55,7 +57,10 @@ describe("vinext:optimize-imports plugin", () => {
   });
 
   it("returns null for files without barrel imports", () => {
-    const plugin = getOptimizeImportsPlugin();
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => "/fake/root",
+    ) as Plugin;
     const transform = unwrapHook(plugin.transform)!;
     const code = `import React from 'react';\nconst x = 1;`;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call
@@ -64,13 +69,23 @@ describe("vinext:optimize-imports plugin", () => {
   });
 
   it("returns null when barrel package mentioned but no resolvable entry", () => {
-    const plugin = getOptimizeImportsPlugin();
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => "/nonexistent/root",
+    ) as Plugin;
     const transform = unwrapHook(plugin.transform)!;
     // "radix-ui" is in DEFAULT_OPTIMIZE_PACKAGES but since we're not in a real
     // project, resolvePackageEntry will return null → buildBarrelExportMap returns null
     const code = `import { Slot } from "radix-ui";`;
+    // buildStart must be called first to initialize optimizedPackages
+    const buildStart = unwrapHook((plugin as any).buildStart);
+    if (buildStart) buildStart.call(plugin);
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-    const result = (transform as any).call(plugin, code, "/app/page.tsx");
+    const result = (transform as any).call(
+      { ...plugin, environment: { name: "rsc" } },
+      code,
+      "/app/page.tsx",
+    );
     expect(result).toBeNull();
   });
 });
@@ -83,7 +98,7 @@ describe("buildBarrelExportMap", () => {
     const barrelCode = `export * as Slot from "@radix-ui/react-slot";
 export * as Tooltip from "@radix-ui/react-tooltip";`;
 
-    const map = _buildBarrelExportMap(
+    const map = buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
       () => barrelCode,
@@ -105,7 +120,7 @@ export * as Tooltip from "@radix-ui/react-tooltip";`;
     const barrelCode = `export { Button, buttonVariants } from "./button";
 export { Input } from "./input";`;
 
-    const map = _buildBarrelExportMap(
+    const map = buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
       () => barrelCode,
@@ -133,7 +148,7 @@ export { Input } from "./input";`;
     const entryPath = uniquePath("default-reexport");
     const barrelCode = `export { default as Calendar } from "./calendar";`;
 
-    const map = _buildBarrelExportMap(
+    const map = buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
       () => barrelCode,
@@ -152,7 +167,7 @@ export { Input } from "./input";`;
     const barrelCode = `import * as AlertDialog from "@radix-ui/react-alert-dialog";
 export { AlertDialog };`;
 
-    const map = _buildBarrelExportMap(
+    const map = buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
       () => barrelCode,
@@ -170,7 +185,7 @@ export { AlertDialog };`;
     const barrelCode = `import { format } from "date-fns/format";
 export { format };`;
 
-    const map = _buildBarrelExportMap(
+    const map = buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
       () => barrelCode,
@@ -185,7 +200,7 @@ export { format };`;
   });
 
   it("returns null when entry cannot be resolved", () => {
-    const map = _buildBarrelExportMap(
+    const map = buildBarrelExportMap(
       "nonexistent-pkg",
       () => null,
       () => null,
@@ -195,7 +210,7 @@ export { format };`;
 
   it("returns null when entry file cannot be read", () => {
     const entryPath = uniquePath("unreadable");
-    const map = _buildBarrelExportMap(
+    const map = buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
       () => null,
@@ -205,7 +220,7 @@ export { format };`;
 
   it("returns null when entry file has syntax errors", () => {
     const entryPath = uniquePath("syntax-error");
-    const map = _buildBarrelExportMap(
+    const map = buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
       () => "export { unclosed",
@@ -213,21 +228,96 @@ export { format };`;
     expect(map).toBeNull();
   });
 
-  it("does not resolve wildcard export * from 'sub-pkg'", () => {
+  it("resolves wildcard export * from './sub' by merging sub-module exports", () => {
+    // Barrel: export * from "./utils" + export { Button } from "./button"
+    // Sub-module ./utils exports: { format, parse }
+    const entryPath = "/fake/wildcard-test/index.js";
+    const subPath = "/fake/wildcard-test/utils.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export * from "./utils";\nexport { Button } from "./button";`,
+      [subPath]: `export { format } from "./format";\nexport { parse } from "./parse";`,
+    };
+
+    const map = buildBarrelExportMap(
+      "test-pkg",
+      () => entryPath,
+      (fp) => files[fp] ?? null,
+    );
+
+    expect(map).not.toBeNull();
+    // Button from the barrel
+    expect(map!.get("Button")).toEqual({
+      source: "./button",
+      isNamespace: false,
+      originalName: "Button",
+    });
+    // format and parse hoisted from ./utils via wildcard
+    expect(map!.get("format")).toBeDefined();
+    expect(map!.get("parse")).toBeDefined();
+  });
+
+  it("does not overwrite existing exports when wildcard sub-module has same name", () => {
+    // If the barrel already defines `format` explicitly, the wildcard should not overwrite it
+    const entryPath = "/fake/wildcard-nooverwrite/index.js";
+    const subPath = "/fake/wildcard-nooverwrite/utils.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export { format } from "./explicit";\nexport * from "./utils";`,
+      [subPath]: `export { format } from "./other-format";`,
+    };
+
+    const map = buildBarrelExportMap(
+      "test-pkg",
+      () => entryPath,
+      (fp) => files[fp] ?? null,
+    );
+
+    expect(map).not.toBeNull();
+    // The explicit export wins over the wildcard
+    expect(map!.get("format")).toEqual({
+      source: "./explicit",
+      isNamespace: false,
+      originalName: "format",
+    });
+  });
+
+  it("handles circular wildcard re-exports without infinite loop", () => {
+    // a.js re-exports from b.js; b.js re-exports from a.js (circular)
+    const entryPath = "/fake/circular/a.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export * from "./b";\nexport { A } from "./a-impl";`,
+      "/fake/circular/b.js": `export * from "./a";\nexport { B } from "./b-impl";`,
+    };
+
+    // Should not throw or hang
+    expect(() => {
+      buildBarrelExportMap(
+        "test-pkg",
+        () => entryPath,
+        (fp) => files[fp] ?? null,
+      );
+    }).not.toThrow();
+  });
+
+  it("does not resolve wildcard export * from 'sub-pkg' (external package)", () => {
     const entryPath = uniquePath("wildcard");
-    const barrelCode = `export * from "./utils";
+    const barrelCode = `export * from "some-external-pkg";
 export { Button } from "./button";`;
 
-    const map = _buildBarrelExportMap(
+    const map = buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
       () => barrelCode,
     );
 
     expect(map).not.toBeNull();
-    // Only Button is in the map, not anything from ./utils
-    expect(map!.size).toBe(1);
+    // Only Button is in the map (external wildcard is skipped)
     expect(map!.has("Button")).toBe(true);
+  });
+
+  it("DEFAULT_OPTIMIZE_PACKAGES includes expected packages", () => {
+    expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("lucide-react");
+    expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("radix-ui");
+    expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("antd");
   });
 });
 
@@ -235,14 +325,10 @@ export { Button } from "./button";`;
 //
 // To exercise actual import rewriting (MagicString output), we create a minimal
 // fake barrel package in a tmp node_modules directory, wire the plugin up via
-// its `config` + `buildStart` hooks, and call the transform handler directly.
+// its `buildStart` hook, and call the transform handler directly.
 
 describe("vinext:optimize-imports transform", () => {
   let tmpDir: string;
-
-  function getAllPlugins(): Plugin[] {
-    return (vinext() as Plugin[]).flat(10) as Plugin[];
-  }
 
   /**
    * Set up a fake barrel package in a tmp project root, initialize the plugin,
@@ -268,29 +354,21 @@ describe("vinext:optimize-imports transform", () => {
     );
     fs.writeFileSync(path.join(pkgDir, "index.js"), barrelContents);
 
-    const plugins = getAllPlugins();
-    const configPlugin = plugins.find((p) => p.name === "vinext:config");
-    const optimizePlugin = plugins.find((p) => p.name === "vinext:optimize-imports");
-    if (!configPlugin || !optimizePlugin) throw new Error("required plugin not found");
-
-    // Wire up root via the config hook
-    const configHook = unwrapHook(configPlugin.config);
-    if (configHook)
-      await configHook.call(
-        configPlugin,
-        { root: tmpDir },
-        { command: "serve", mode: "development" },
-      );
+    let capturedRoot = tmpDir;
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => capturedRoot,
+    ) as Plugin;
 
     // Initialize optimizedPackages via buildStart
-    const buildStartHook = unwrapHook(optimizePlugin.buildStart);
-    if (buildStartHook) await buildStartHook.call(optimizePlugin);
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
 
-    const transform = unwrapHook(optimizePlugin.transform)!;
+    const transform = unwrapHook(plugin.transform)!;
     // Return a caller that fakes the environment context as RSC (server)
     return (code: string, id: string) =>
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-      (transform as any).call({ ...optimizePlugin, environment: { name: "rsc" } }, code, id);
+      (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
   }
 
   afterEach(() => {
@@ -376,14 +454,18 @@ describe("vinext:optimize-imports transform", () => {
       path.join(tmpDir, "package.json"),
       JSON.stringify({ name: "test-app", type: "module" }),
     );
-    const plugins = getAllPlugins();
-    const optimizePlugin = plugins.find((p) => p.name === "vinext:optimize-imports")!;
-    const transform = unwrapHook(optimizePlugin.transform)!;
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
     // lucide-react is in DEFAULT_OPTIMIZE_PACKAGES — use it to hit the env guard
     const code = `import { Sun } from "lucide-react";`;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call
     const result = (transform as any).call(
-      { ...optimizePlugin, environment: { name: "client" } },
+      { ...plugin, environment: { name: "client" } },
       code,
       "/app/page.tsx",
     );
@@ -486,5 +568,49 @@ describe("vinext:optimize-imports transform", () => {
     expect(result!.code).not.toContain(`from "ramda"`);
     // Must not contain named import syntax for the default specifier
     expect(result!.code).not.toContain("{ MyFoo }");
+  });
+
+  it("rewrites imports from wildcard re-exports in barrels", async () => {
+    // antd is in DEFAULT_OPTIMIZE_PACKAGES.
+    // Barrel uses `export * from "./button"` — the plugin should recurse and resolve
+    // `Button` via the sub-module.
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+    const pkgDir = path.join(tmpDir, "node_modules", "antd");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name: "antd", type: "module", main: "./index.js" }),
+    );
+    // Barrel uses wildcard re-export
+    fs.writeFileSync(path.join(pkgDir, "index.js"), `export * from "./components";`);
+    // Sub-module exports Button
+    fs.writeFileSync(
+      path.join(pkgDir, "components.js"),
+      `export { Button } from "./button";\nexport { Input } from "./input";`,
+    );
+
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+    const call = (code: string, id: string) =>
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+      (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+
+    const code = `import { Button } from "antd";`;
+    const result = call(code, "/app/page.tsx");
+    expect(result).not.toBeNull();
+    // Button should be resolved through the wildcard chain to an absolute path
+    expect(result!.code).not.toContain(`from "antd"`);
+    expect(result!.code).toContain("import");
+    // Must use an absolute path, not a relative one
+    expect(result!.code).not.toContain(`from "./`);
   });
 });
