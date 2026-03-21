@@ -3772,14 +3772,15 @@ describe("generateRscEntry ISR code generation", () => {
     expect(teeAssignIdx).toBeLessThan(rscResponseIdx);
   });
 
-  it("RSC path guards ISR cache write with consumeDynamicUsage check", () => {
+  it("RSC path guards ISR cache write with two-phase consumeDynamicUsage check", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // The RSC path must call consumeDynamicUsage() and use the result to skip
-    // ISR cache writes for pages that opted into dynamic rendering (e.g. via
-    // searchParams access). Without this guard, dynamic pages get ISR-cached
-    // and subsequent RSC requests return stale data.
+    // Phase 1: early check catches dynamic APIs called during element construction
+    // (e.g. searchParams access in buildPageElement)
     expect(code).toContain("const __dynamicUsedInRsc = consumeDynamicUsage()");
     expect(code).toContain("&& !__dynamicUsedInRsc");
+    // Phase 2: deferred check inside the cache write promise catches dynamic APIs
+    // called during stream rendering (e.g. headers(), cookies(), noStore())
+    expect(code).toContain("RSC cache write skipped (dynamic usage during render)");
   });
 
   // Route handler ISR code generation tests

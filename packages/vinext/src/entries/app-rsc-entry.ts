@@ -3045,6 +3045,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // HTML is stored under a separate key (written by the HTML path below) so
     // these writes never race or clobber each other.
     // Skip when dynamic APIs were used — the page opted into dynamic rendering.
+    // Two-phase check: __dynamicUsedInRsc catches APIs called during element
+    // construction (e.g. searchParams access). The deferred consumeDynamicUsage()
+    // inside the write promise catches APIs called during stream rendering
+    // (e.g. headers(), cookies(), noStore()) which fire after the response is sent.
     if (process.env.NODE_ENV === "production" && __isrRscDataPromise && !__dynamicUsedInRsc) {
       responseHeaders["X-Vinext-Cache"] = "MISS";
       const __isrKeyRsc = __isrRscKey(cleanPathname);
@@ -3052,6 +3056,10 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       const __rscWritePromise = (async () => {
         try {
           const __rscDataForCache = await __isrRscDataPromise;
+          if (consumeDynamicUsage()) {
+            __isrDebug?.("RSC cache write skipped (dynamic usage during render)", __isrKeyRsc);
+            return;
+          }
           const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
           await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc, __pageTags);
           __isrDebug?.("RSC cache written", __isrKeyRsc);
