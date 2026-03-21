@@ -3732,6 +3732,19 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("const __pageBuildResult = await __buildAppPageElement({");
   });
 
+  it("generated code delegates page boundary rendering to typed helpers", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("renderAppPageBoundaryResponse as __renderAppPageBoundaryResponse");
+    expect(code).toContain("resolveAppPageErrorBoundary as __resolveAppPageErrorBoundary");
+    expect(code).toContain(
+      "resolveAppPageHttpAccessBoundaryComponent as __resolveAppPageHttpAccessBoundaryComponent",
+    );
+    expect(code).toContain("wrapAppPageBoundaryElement as __wrapAppPageBoundaryElement");
+    expect(code).toContain("__resolveAppPageHttpAccessBoundaryComponent({");
+    expect(code).toContain("element = __wrapAppPageBoundaryElement({");
+    expect(code).toContain("return __renderAppPageBoundaryResponse({");
+  });
+
   it("generated code delegates page cache HIT handling to a typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("readAppPageCacheResponse as __readAppPageCacheResponse");

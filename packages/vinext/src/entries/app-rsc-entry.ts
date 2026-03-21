@@ -59,6 +59,9 @@ const appPageResponsePath = fileURLToPath(
 const appPageExecutionPath = fileURLToPath(
   new URL("../server/app-page-execution.js", import.meta.url),
 ).replace(/\\/g, "/");
+const appPageBoundaryPath = fileURLToPath(
+  new URL("../server/app-page-boundary.js", import.meta.url),
+).replace(/\\/g, "/");
 const appPageStreamPath = fileURLToPath(
   new URL("../server/app-page-stream.js", import.meta.url),
 ).replace(/\\/g, "/");
@@ -391,6 +394,12 @@ import {
   resolveAppPageSpecialError as __resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture as __teeAppPageRscStreamForCapture,
 } from ${JSON.stringify(appPageExecutionPath)};
+import {
+  renderAppPageBoundaryResponse as __renderAppPageBoundaryResponse,
+  resolveAppPageErrorBoundary as __resolveAppPageErrorBoundary,
+  resolveAppPageHttpAccessBoundaryComponent as __resolveAppPageHttpAccessBoundaryComponent,
+  wrapAppPageBoundaryElement as __wrapAppPageBoundaryElement,
+} from ${JSON.stringify(appPageBoundaryPath)};
 import {
   createAppPageFontData as __createAppPageFontData,
   createAppPageRscErrorTracker as __createAppPageRscErrorTracker,
@@ -774,19 +783,20 @@ const rootLayouts = [${rootLayoutVars.join(", ")}];
  * @param opts.layouts - Override the layouts to wrap with (for layout-level notFound, excludes the throwing layout)
  */
 async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, opts) {
-  // Determine which boundary component to use based on status code
-  let BoundaryComponent = opts?.boundaryComponent ?? null;
-  if (!BoundaryComponent) {
-    let boundaryModule;
-    if (statusCode === 403) {
-      boundaryModule = route?.forbidden ?? rootForbiddenModule;
-    } else if (statusCode === 401) {
-      boundaryModule = route?.unauthorized ?? rootUnauthorizedModule;
-    } else {
-      boundaryModule = route?.notFound ?? rootNotFoundModule;
-    }
-    BoundaryComponent = boundaryModule?.default ?? null;
-  }
+  const BoundaryComponent =
+    opts?.boundaryComponent ??
+    __resolveAppPageHttpAccessBoundaryComponent({
+      getDefaultExport(boundaryModule) {
+        return boundaryModule?.default ?? null;
+      },
+      rootForbiddenModule: rootForbiddenModule,
+      rootNotFoundModule: rootNotFoundModule,
+      rootUnauthorizedModule: rootUnauthorizedModule,
+      routeForbiddenModule: route?.forbidden,
+      routeNotFoundModule: route?.notFound,
+      routeUnauthorizedModule: route?.unauthorized,
+      statusCode,
+    });
   const layouts = opts?.layouts ?? route?.layouts ?? rootLayouts;
   if (!BoundaryComponent) return null;
 
@@ -823,94 +833,67 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   if (resolvedMetadata) headElements.push(createElement(MetadataHead, { metadata: resolvedMetadata }));
   headElements.push(createElement(ViewportHead, { viewport: resolvedViewport }));
   let element = createElement(Fragment, null, ...headElements, createElement(BoundaryComponent));
-  if (isRscRequest) {
-    // For RSC requests (client-side navigation), wrap the element with the same
-    // component wrappers that buildPageElement() uses. Without these wrappers,
-    // React's reconciliation would see a mismatched tree structure between the
-    // old fiber tree (ErrorBoundary > LayoutSegmentProvider > html > body > NotFoundBoundary > ...)
-    // and the new tree (html > body > ...), causing it to destroy and recreate
-    // the entire DOM tree, resulting in a blank white page.
-    //
-    // We wrap each layout with LayoutSegmentProvider and add GlobalErrorBoundary
-    // to match the wrapping order in buildPageElement(), ensuring smooth
-    // client-side tree reconciliation.
-    const _treePositions = route?.layoutTreePositions;
-    const _routeSegs = route?.routeSegments || [];
-    const _fallbackParams = opts?.matchedParams ?? route?.params ?? {};
-    const _asyncFallbackParams = makeThenableParams(_fallbackParams);
-    for (let i = layouts.length - 1; i >= 0; i--) {
-      const LayoutComponent = layouts[i]?.default;
-      if (LayoutComponent) {
-        element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParams });
-        const _tp = _treePositions ? _treePositions[i] : 0;
-        const _cs = __resolveChildSegments(_routeSegs, _tp, _fallbackParams);
-        element = createElement(LayoutSegmentProvider, { childSegments: _cs }, element);
-      }
-    }
-    ${
-      globalErrorVar
-        ? `
-    const _GlobalErrorComponent = ${globalErrorVar}.default;
-    if (_GlobalErrorComponent) {
-      element = createElement(ErrorBoundary, {
-        fallback: _GlobalErrorComponent,
-        children: element,
-      });
-    }
-    `
-        : ""
-    }
-    const _pathname = new URL(request.url).pathname;
-    const onRenderError = createRscOnErrorHandler(
-      request,
-      _pathname,
-      route?.pattern ?? _pathname,
-    );
-    const rscStream = renderToReadableStream(element, { onError: onRenderError });
-    // Do NOT clear context here — the RSC stream is consumed lazily by the client.
-    // Clearing context now would cause async server components (e.g. NextIntlClientProviderServer)
-    // that run during stream consumption to see null headers/navigation context and throw,
-    // resulting in missing provider context on the client (e.g. next-intl useTranslations fails
-    // with "context from NextIntlClientProvider was not found").
-    // Context is cleared naturally when the ALS scope from runWithRequestContext unwinds.
-    return new Response(rscStream, {
-      status: statusCode,
-      headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
-    });
-  }
-  // For HTML (full page load) responses, wrap with layouts only (no client-side
-  // wrappers needed since SSR generates the complete HTML document).
-  const _fallbackParamsHtml = opts?.matchedParams ?? route?.params ?? {};
-  const _asyncFallbackParamsHtml = makeThenableParams(_fallbackParamsHtml);
-  for (let i = layouts.length - 1; i >= 0; i--) {
-    const LayoutComponent = layouts[i]?.default;
-    if (LayoutComponent) {
-      element = createElement(LayoutComponent, { children: element, params: _asyncFallbackParamsHtml });
-    }
-  }
-  const _pathname = new URL(request.url).pathname;
-  const onRenderError = createRscOnErrorHandler(
-    request,
-    _pathname,
-    route?.pattern ?? _pathname,
-  );
-  const rscStream = renderToReadableStream(element, { onError: onRenderError });
-  const fontData = __createAppPageFontData({
-    getLinks: _getSSRFontLinks,
-    getPreloads: _getSSRFontPreloads,
-    getStyles: _getSSRFontStyles,
-  });
-  const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-  return __renderAppPageHtmlResponse({
-    clearRequestContext() {
-      setHeadersContext(null);
-      setNavigationContext(null);
+  element = __wrapAppPageBoundaryElement({
+    element,
+    getDefaultExport(layoutModule) {
+      return layoutModule?.default ?? null;
     },
-    fontData,
-    fontLinkHeader: __buildAppPageFontLinkHeader(fontData.preloads),
-    navigationContext: _getNavigationContext(),
-    rscStream,
-    ssrHandler: ssrEntry,
+    globalErrorComponent: ${globalErrorVar ? `${globalErrorVar}.default` : "null"},
+    includeGlobalErrorBoundary: true,
+    isRscRequest,
+    layoutModules: layouts,
+    layoutTreePositions: route?.layoutTreePositions,
+    makeThenableParams,
+    matchedParams: _fallbackParams,
+    renderErrorBoundary(GlobalErrorComponent, children) {
+      return createElement(ErrorBoundary, {
+        fallback: GlobalErrorComponent,
+        children,
+      });
+    },
+    renderLayout(LayoutComponent, children, asyncParams) {
+      return createElement(LayoutComponent, { children, params: asyncParams });
+    },
+    renderLayoutSegmentProvider(childSegments, children) {
+      return createElement(LayoutSegmentProvider, { childSegments }, children);
+    },
+    resolveChildSegments(routeSegments, treePosition, boundaryParams) {
+      return __resolveChildSegments(routeSegments, treePosition, boundaryParams);
+    },
+    routeSegments: route?.routeSegments || [],
+  });
+  const _pathname = new URL(request.url).pathname;
+  return __renderAppPageBoundaryResponse({
+    async createHtmlResponse(rscStream, responseStatus) {
+      const fontData = __createAppPageFontData({
+        getLinks: _getSSRFontLinks,
+        getPreloads: _getSSRFontPreloads,
+        getStyles: _getSSRFontStyles,
+      });
+      const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+      return __renderAppPageHtmlResponse({
+        clearRequestContext() {
+          setHeadersContext(null);
+          setNavigationContext(null);
+        },
+        fontData,
+        fontLinkHeader: __buildAppPageFontLinkHeader(fontData.preloads),
+        navigationContext: _getNavigationContext(),
+        rscStream,
+        ssrHandler: ssrEntry,
+        status: responseStatus,
+      });
+    },
+    createRscOnErrorHandler() {
+      return createRscOnErrorHandler(
+        request,
+        _pathname,
+        route?.pattern ?? _pathname,
+      );
+    },
+    element,
+    isRscRequest,
+    renderToReadableStream,
     status: statusCode,
   });
 }
@@ -928,29 +911,15 @@ async function renderNotFoundPage(route, isRscRequest, request, matchedParams) {
  * by the boundary). This matches that behavior intentionally.
  */
 async function renderErrorBoundaryPage(route, error, isRscRequest, request, matchedParams) {
-  // Resolve the error boundary component: leaf error.tsx first, then walk per-layout
-  // errors from innermost to outermost (matching ancestor inheritance), then global-error.tsx.
-  let ErrorComponent = route?.error?.default ?? null;
-  let _isGlobalError = false;
-  if (!ErrorComponent && route?.errors) {
-    for (let i = route.errors.length - 1; i >= 0; i--) {
-      if (route.errors[i]?.default) {
-        ErrorComponent = route.errors[i].default;
-        break;
-      }
-    }
-  }
-  ${
-    globalErrorVar
-      ? `
-  if (!ErrorComponent) {
-    ErrorComponent = ${globalErrorVar}?.default ?? null;
-    _isGlobalError = !!ErrorComponent;
-  }
-  `
-      : ""
-  }
-  if (!ErrorComponent) return null;
+  const __errorBoundary = __resolveAppPageErrorBoundary({
+    getDefaultExport(errorModule) {
+      return errorModule?.default ?? null;
+    },
+    globalErrorModule: ${globalErrorVar ? globalErrorVar : "null"},
+    layoutErrorModules: route?.errors,
+    pageErrorModule: route?.error,
+  });
+  if (!__errorBoundary.component) return null;
 
   const rawError = error instanceof Error ? error : new Error(String(error));
   // Sanitize the error in production to avoid leaking internal details
@@ -961,97 +930,73 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
   // can't be serialized through RSC. The error.tsx component will receive reset=undefined
   // during SSR, which is fine — onClick={undefined} is harmless, and the real reset
   // function is only meaningful after hydration.
-  let element = createElement(ErrorComponent, {
+  let element = createElement(__errorBoundary.component, {
     error: errorObj,
   });
-
-  // global-error.tsx provides its own <html> and <body> (it replaces the root
-  // layout). Skip layout wrapping when rendering it to avoid double <html> tags.
-  if (!_isGlobalError) {
-    const layouts = route?.layouts ?? rootLayouts;
-    if (isRscRequest) {
-      // For RSC requests (client-side navigation), wrap with the same component
-      // wrappers that buildPageElement() uses (LayoutSegmentProvider, GlobalErrorBoundary).
-      // This ensures React can reconcile the tree without destroying the DOM.
-      // Same rationale as renderHTTPAccessFallbackPage — see comment there.
-      const _errTreePositions = route?.layoutTreePositions;
-      const _errRouteSegs = route?.routeSegments || [];
-      const _errParams = matchedParams ?? route?.params ?? {};
-      const _asyncErrParams = makeThenableParams(_errParams);
-      for (let i = layouts.length - 1; i >= 0; i--) {
-        const LayoutComponent = layouts[i]?.default;
-        if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParams });
-          const _etp = _errTreePositions ? _errTreePositions[i] : 0;
-          const _ecs = __resolveChildSegments(_errRouteSegs, _etp, _errParams);
-          element = createElement(LayoutSegmentProvider, { childSegments: _ecs }, element);
-        }
-      }
-      ${
-        globalErrorVar
-          ? `
-      const _ErrGlobalComponent = ${globalErrorVar}.default;
-      if (_ErrGlobalComponent) {
-        element = createElement(ErrorBoundary, {
-          fallback: _ErrGlobalComponent,
-          children: element,
-        });
-      }
-      `
-          : ""
-      }
-    } else {
-      // For HTML (full page load) responses, wrap with layouts only.
-      const _errParamsHtml = matchedParams ?? route?.params ?? {};
-      const _asyncErrParamsHtml = makeThenableParams(_errParamsHtml);
-      for (let i = layouts.length - 1; i >= 0; i--) {
-        const LayoutComponent = layouts[i]?.default;
-        if (LayoutComponent) {
-          element = createElement(LayoutComponent, { children: element, params: _asyncErrParamsHtml });
-        }
-      }
-    }
-  }
+  const _errParams = matchedParams ?? route?.params ?? {};
+  element = __wrapAppPageBoundaryElement({
+    element,
+    getDefaultExport(layoutModule) {
+      return layoutModule?.default ?? null;
+    },
+    globalErrorComponent: ${globalErrorVar ? `${globalErrorVar}.default` : "null"},
+    includeGlobalErrorBoundary: !__errorBoundary.isGlobalError,
+    isRscRequest,
+    layoutModules: route?.layouts ?? rootLayouts,
+    layoutTreePositions: route?.layoutTreePositions,
+    makeThenableParams,
+    matchedParams: _errParams,
+    renderErrorBoundary(GlobalErrorComponent, children) {
+      return createElement(ErrorBoundary, {
+        fallback: GlobalErrorComponent,
+        children,
+      });
+    },
+    renderLayout(LayoutComponent, children, asyncParams) {
+      return createElement(LayoutComponent, { children, params: asyncParams });
+    },
+    renderLayoutSegmentProvider(childSegments, children) {
+      return createElement(LayoutSegmentProvider, { childSegments }, children);
+    },
+    resolveChildSegments(routeSegments, treePosition, boundaryParams) {
+      return __resolveChildSegments(routeSegments, treePosition, boundaryParams);
+    },
+    routeSegments: route?.routeSegments || [],
+    skipLayoutWrapping: __errorBoundary.isGlobalError,
+  });
 
   const _pathname = new URL(request.url).pathname;
-  const onRenderError = createRscOnErrorHandler(
-    request,
-    _pathname,
-    route?.pattern ?? _pathname,
-  );
-
-  if (isRscRequest) {
-    const rscStream = renderToReadableStream(element, { onError: onRenderError });
-    // Do NOT clear context here — the RSC stream is consumed lazily by the client.
-    // Clearing context now would cause async server components (e.g. NextIntlClientProviderServer)
-    // that run during stream consumption to see null headers/navigation context and throw,
-    // resulting in missing provider context on the client (e.g. next-intl useTranslations fails
-    // with "context from NextIntlClientProvider was not found").
-    // Context is cleared naturally when the ALS scope from runWithRequestContext unwinds.
-    return new Response(rscStream, {
-      status: 200,
-      headers: { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" },
-    });
-  }
-
-  // HTML (full page load) response — render through RSC → SSR pipeline
-  const rscStream = renderToReadableStream(element, { onError: onRenderError });
-  const fontData = __createAppPageFontData({
-    getLinks: _getSSRFontLinks,
-    getPreloads: _getSSRFontPreloads,
-    getStyles: _getSSRFontStyles,
-  });
-  const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-  return __renderAppPageHtmlResponse({
-    clearRequestContext() {
-      setHeadersContext(null);
-      setNavigationContext(null);
+  return __renderAppPageBoundaryResponse({
+    async createHtmlResponse(rscStream, responseStatus) {
+      const fontData = __createAppPageFontData({
+        getLinks: _getSSRFontLinks,
+        getPreloads: _getSSRFontPreloads,
+        getStyles: _getSSRFontStyles,
+      });
+      const ssrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
+      return __renderAppPageHtmlResponse({
+        clearRequestContext() {
+          setHeadersContext(null);
+          setNavigationContext(null);
+        },
+        fontData,
+        fontLinkHeader: __buildAppPageFontLinkHeader(fontData.preloads),
+        navigationContext: _getNavigationContext(),
+        rscStream,
+        ssrHandler: ssrEntry,
+        status: responseStatus,
+      });
     },
-    fontData,
-    fontLinkHeader: __buildAppPageFontLinkHeader(fontData.preloads),
-    navigationContext: _getNavigationContext(),
-    rscStream,
-    ssrHandler: ssrEntry,
+    createRscOnErrorHandler() {
+      return createRscOnErrorHandler(
+        request,
+        _pathname,
+        route?.pattern ?? _pathname,
+      );
+    },
+    element,
+    isRscRequest,
+    renderToReadableStream,
     status: 200,
   });
 }
