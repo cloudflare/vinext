@@ -380,20 +380,32 @@ function buildExportMapFromFile(
           // export * from "./sub" — wildcard: recursively merge sub-module exports
           if (rawSource.startsWith(".")) {
             const subPath = path.resolve(fileDir, rawSource).split(path.sep).join("/");
-            // Try with the path as-is first, then with common extensions
+            // Try with the path as-is first, then with common extensions.
+            // Include .tsx for TypeScript-first internal libraries, and /index.mjs
+            // for ESM-first packages where the directory index is a .mjs file.
             const candidates = [
               subPath,
               `${subPath}.js`,
               `${subPath}.mjs`,
               `${subPath}.ts`,
+              `${subPath}.tsx`,
               // Directory-style sub-modules: `export * from "./components"` where
               // `components/` is a directory with an index file.
               `${subPath}/index.js`,
+              `${subPath}/index.mjs`,
               `${subPath}/index.ts`,
+              `${subPath}/index.tsx`,
             ];
             for (const candidate of candidates) {
-              if (readFile(candidate) !== null) {
-                const subMap = buildExportMapFromFile(candidate, readFile, cache, visited);
+              const candidateContent = readFile(candidate);
+              if (candidateContent !== null) {
+                const subMap = buildExportMapFromFile(
+                  candidate,
+                  readFile,
+                  cache,
+                  visited,
+                  candidateContent,
+                );
                 for (const [name, entry] of subMap) {
                   if (!exportMap.has(name)) {
                     exportMap.set(name, entry);
@@ -517,6 +529,10 @@ export function createOptimizeImportsPlugin(
   // Pre-built quoted forms used for the per-file quick-check. Computed once in
   // buildStart so the transform loop doesn't allocate template literals per file.
   let quotedPackages: string[] = [];
+  // Tracks barrel entries whose sub-package origins have already been registered,
+  // so repeated imports of the same barrel (across many files) don't redundantly
+  // iterate the full export map.
+  const registeredBarrels = new Set<string>();
 
   // `satisfies Plugin` gives a structural type-check at the object literal in addition
   // to the `: Plugin` return type annotation on the function, catching hook name typos
@@ -543,6 +559,7 @@ export function createOptimizeImportsPlugin(
       entryPathCache.clear();
       barrelCaches.exportMapCache.clear();
       barrelCaches.subpkgOrigin.clear();
+      registeredBarrels.clear();
     },
 
     async resolveId(source) {
@@ -599,6 +616,16 @@ export function createOptimizeImportsPlugin(
         const s = new MagicString(code);
         let hasChanges = false;
         const root = getRoot();
+        // Hoist the readFile closure so a single function is reused across all
+        // import declarations in the file, rather than allocating an identical
+        // closure for each barrel import encountered.
+        const readFileSafe = (filepath: string): string | null => {
+          try {
+            return fs.readFileSync(filepath, "utf-8");
+          } catch {
+            return null;
+          }
+        };
 
         for (const node of ast.body as AstBodyNode[]) {
           if (node.type !== "ImportDeclaration") continue;
@@ -619,14 +646,10 @@ export function createOptimizeImportsPlugin(
           }
           const exportMap = buildBarrelExportMap(
             importSource,
+            // Entry already resolved above via entryPathCache; the callback is a
+            // no-op resolver that simply returns the pre-resolved barrelEntry.
             () => barrelEntry,
-            (filepath) => {
-              try {
-                return fs.readFileSync(filepath, "utf-8");
-              } catch {
-                return null;
-              }
-            },
+            readFileSafe,
             barrelCaches.exportMapCache,
           );
           if (!exportMap || !barrelEntry) continue;
@@ -635,20 +658,25 @@ export function createOptimizeImportsPlugin(
           // the barrel's context (needed for pnpm strict hoisting).
           // Only bare specifiers (npm packages) need this — absolute paths are
           // already fully resolved and don't require context-aware resolution.
-          for (const entry of exportMap.values()) {
-            if (
-              !entry.source.startsWith("/") &&
-              !entry.source.startsWith(".") &&
-              !barrelCaches.subpkgOrigin.has(entry.source)
-            ) {
-              // First barrel to register this specifier wins. This is safe because the
-              // sub-package specifier (e.g. "@radix-ui/react-slot") resolves to the same
-              // path regardless of which barrel we resolve from — only the importer context
-              // differs, not the target. In pnpm strict mode there is exactly one copy of
-              // each sub-package, so any barrel's context reaches the same file.
-              // (In a monorepo with nested node_modules, two barrels could in theory see
-              // different versions; that edge case is out of scope for the default package list.)
-              barrelCaches.subpkgOrigin.set(entry.source, barrelEntry);
+          // Gate with registeredBarrels so files that all import from the same
+          // barrel don't each re-iterate the full export map.
+          if (!registeredBarrels.has(barrelEntry)) {
+            registeredBarrels.add(barrelEntry);
+            for (const entry of exportMap.values()) {
+              if (
+                !entry.source.startsWith("/") &&
+                !entry.source.startsWith(".") &&
+                !barrelCaches.subpkgOrigin.has(entry.source)
+              ) {
+                // First barrel to register this specifier wins. This is safe because the
+                // sub-package specifier (e.g. "@radix-ui/react-slot") resolves to the same
+                // path regardless of which barrel we resolve from — only the importer context
+                // differs, not the target. In pnpm strict mode there is exactly one copy of
+                // each sub-package, so any barrel's context reaches the same file.
+                // (In a monorepo with nested node_modules, two barrels could in theory see
+                // different versions; that edge case is out of scope for the default package list.)
+                barrelCaches.subpkgOrigin.set(entry.source, barrelEntry);
+              }
             }
           }
 
