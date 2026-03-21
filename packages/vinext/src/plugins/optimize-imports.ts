@@ -69,6 +69,11 @@ type AstBodyNode = {
   declaration?: unknown;
 };
 
+// Vite doesn't publicly type `this.environment` on plugin hooks yet.
+// This cast type is used consistently across resolveId and transform handlers
+// so that when Vite adds proper typing it can be removed in one place.
+type PluginCtx = { environment?: { name?: string } };
+
 /**
  * Packages whose barrel imports are automatically optimized.
  * Matches Next.js's built-in optimizePackageImports defaults plus radix-ui.
@@ -500,10 +505,10 @@ export function buildBarrelExportMap(
   const visited = new Set<string>();
   // Pass the already-read content so buildExportMapFromFile skips the redundant
   // readFile call for the entry file (it would otherwise read it a second time).
+  // buildExportMapFromFile also stores the result in exportMapCache (keyed by
+  // filePath === entryPath), so no additional cache.set is needed here.
   const exportMap = buildExportMapFromFile(entryPath, readFile, exportMapCache, visited, content);
 
-  // Store under the entry path key so the transform handler's cache lookup hits
-  exportMapCache.set(entryPath, exportMap);
   return exportMap;
 }
 
@@ -565,7 +570,7 @@ export function createOptimizeImportsPlugin(
     async resolveId(source) {
       // Only apply on server environments (RSC/SSR). The client uses Vite's
       // dep optimizer which handles barrel CJS→ESM conversion correctly.
-      if ((this as { environment?: { name?: string } }).environment?.name === "client") return;
+      if ((this as PluginCtx).environment?.name === "client") return;
       // Resolve sub-package specifiers that were introduced by barrel optimization.
       // In pnpm strict mode, sub-packages like @radix-ui/react-slot are only
       // resolvable from the barrel package's location, not from user code.
@@ -585,7 +590,7 @@ export function createOptimizeImportsPlugin(
       handler(code, id) {
         // Only apply on server environments (RSC/SSR). The client uses Vite's
         // dep optimizer which handles barrel imports correctly.
-        const env = (this as { environment?: { name?: string } }).environment;
+        const env = (this as PluginCtx).environment;
         if (env?.name === "client") return null;
         // "react-server" export condition should only be preferred in the RSC environment.
         // SSR renders with the full React runtime and must NOT resolve react-server entries.
