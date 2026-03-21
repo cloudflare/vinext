@@ -56,6 +56,19 @@ describe("app page cache helpers", () => {
     expect(await rscResponse?.arrayBuffer()).toEqual(rscData);
   });
 
+  it("falls back to 200 for falsy cached status values", () => {
+    const response = buildAppPageCachedResponse(
+      buildCachedAppPageValue("<h1>cached</h1>", undefined, 0),
+      {
+        cacheState: "HIT",
+        isRscRequest: false,
+        revalidateSeconds: 60,
+      },
+    );
+
+    expect(response?.status).toBe(200);
+  });
+
   it("returns null when a cached entry lacks the requested HTML or RSC payload", () => {
     const htmlOnly = buildCachedAppPageValue("<h1>cached</h1>");
     const rscOnly = buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer);
@@ -176,6 +189,52 @@ describe("app page cache helpers", () => {
         tags: ["/stale", "_N_T_/stale"],
       },
     ]);
+  });
+
+  it("still schedules stale regeneration when the stale payload is unusable for this request", async () => {
+    const debugCalls: Array<[string, string]> = [];
+    const scheduledRegenerations: Array<() => Promise<void>> = [];
+
+    const response = await readAppPageCacheResponse({
+      cleanPathname: "/stale-html-miss",
+      clearRequestContext() {
+        throw new Error("should not clear request context when falling through");
+      },
+      isRscRequest: false,
+      async isrGet() {
+        return buildISRCacheEntry(
+          buildCachedAppPageValue("", new TextEncoder().encode("flight").buffer),
+          true,
+        );
+      },
+      isrDebug(event, detail) {
+        debugCalls.push([event, detail]);
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet() {},
+      revalidateSeconds: 60,
+      async renderFreshPageForCache() {
+        return {
+          html: "<h1>fresh</h1>",
+          rscData: new TextEncoder().encode("fresh-flight").buffer,
+          tags: ["/stale-html-miss", "_N_T_/stale-html-miss"],
+        };
+      },
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRegenerations.push(renderFn);
+      },
+    });
+
+    expect(response).toBeNull();
+    expect(scheduledRegenerations).toHaveLength(1);
+    expect(debugCalls).toContainEqual(["STALE MISS (empty stale entry)", "/stale-html-miss"]);
+
+    await expect(scheduledRegenerations[0]()).resolves.toBeUndefined();
   });
 
   it("falls through and logs on cache read errors", async () => {

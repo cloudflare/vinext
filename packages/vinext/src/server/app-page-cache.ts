@@ -56,7 +56,9 @@ export function buildAppPageCachedResponse(
   cachedValue: CachedAppPageValue,
   options: BuildAppPageCachedResponseOptions,
 ): Response | null {
-  const status = cachedValue.status ?? 200;
+  // Preserve the legacy fallback semantics from the generated entry: invalid
+  // falsy statuses still fall back to 200 rather than being forwarded through.
+  const status = cachedValue.status || 200;
   const headers = {
     "Cache-Control": buildAppPageCacheControl(options.cacheState, options.revalidateSeconds),
     Vary: "RSC, Accept",
@@ -121,6 +123,9 @@ export async function readAppPageCacheResponse(
     }
 
     if (cached?.isStale && cachedValue) {
+      // Preserve the legacy behavior from the inline generator: stale entries
+      // still trigger background regeneration even if this request cannot use
+      // the stale payload and will fall through to a fresh render.
       options.scheduleBackgroundRegeneration(options.cleanPathname, async () => {
         const revalidatedPage = await options.renderFreshPageForCache();
 
