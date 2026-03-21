@@ -38,8 +38,8 @@ describe("App SSR stream helpers", () => {
 
   describe("fixFlightHints", () => {
     it("rewrites stylesheet hints in Flight HL records", () => {
-      expect(fixFlightHints('2:HL["/assets/index.css","stylesheet"]')).toBe(
-        '2:HL["/assets/index.css","style"]',
+      expect(fixFlightHints(':HL["/assets/index.css","stylesheet"]')).toBe(
+        ':HL["/assets/index.css","style"]',
       );
 
       expect(fixFlightHints('2:HL["/assets/index.css","stylesheet",{"crossOrigin":""}]')).toBe(
