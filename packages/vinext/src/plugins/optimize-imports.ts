@@ -807,6 +807,27 @@ export function createOptimizeImportsPlugin(
 
           // If any specifier couldn't be resolved, leave the entire import unchanged.
           if (!allResolved || specifiers.length === 0) {
+            if (allResolved === false) {
+              for (const spec of node.specifiers ?? []) {
+                if (spec.type === "ImportSpecifier" && spec.imported) {
+                  const imported = astName(spec.imported);
+                  if (imported !== null && !exportMap.has(imported)) {
+                    console.debug(
+                      `[vinext:optimize-imports] skipping "${importSource}": could not resolve specifier "${imported}" in barrel export map`,
+                    );
+                    break;
+                  }
+                } else if (spec.type === "ImportDefaultSpecifier" && !exportMap.has("default")) {
+                  console.debug(
+                    `[vinext:optimize-imports] skipping "${importSource}": default export not found in barrel export map`,
+                  );
+                  break;
+                } else if (spec.type === "ImportNamespaceSpecifier") {
+                  // Namespace imports are intentionally not optimized — no log needed.
+                  break;
+                }
+              }
+            }
             continue;
           }
 
