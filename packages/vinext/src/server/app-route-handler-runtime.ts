@@ -11,9 +11,9 @@ export const ROUTE_HANDLER_HTTP_METHODS = [
   "OPTIONS",
 ] as const;
 
-type RouteHandlerHttpMethod = (typeof ROUTE_HANDLER_HTTP_METHODS)[number];
+export type RouteHandlerHttpMethod = (typeof ROUTE_HANDLER_HTTP_METHODS)[number];
 
-type RouteHandlerModule = Partial<Record<RouteHandlerHttpMethod | "default", unknown>>;
+export type RouteHandlerModule = Partial<Record<RouteHandlerHttpMethod | "default", unknown>>;
 
 export function collectRouteHandlerMethods(handler: RouteHandlerModule): RouteHandlerHttpMethod[] {
   const methods = ROUTE_HANDLER_HTTP_METHODS.filter(

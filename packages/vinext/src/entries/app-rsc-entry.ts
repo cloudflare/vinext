@@ -41,6 +41,9 @@ const requestContextShimPath = fileURLToPath(
 const appRouteHandlerRuntimePath = fileURLToPath(
   new URL("../server/app-route-handler-runtime.js", import.meta.url),
 ).replace(/\\/g, "/");
+const appRouteHandlerPolicyPath = fileURLToPath(
+  new URL("../server/app-route-handler-policy.js", import.meta.url),
+).replace(/\\/g, "/");
 const appRouteHandlerResponsePath = fileURLToPath(
   new URL("../server/app-route-handler-response.js", import.meta.url),
 ).replace(/\\/g, "/");
@@ -335,12 +338,19 @@ ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifes
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
 import {
-  buildRouteHandlerAllowHeader,
-  collectRouteHandlerMethods,
   createTrackedAppRouteRequest as __createTrackedAppRouteRequest,
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
   markKnownDynamicAppRoute as __markKnownDynamicAppRoute,
 } from ${JSON.stringify(appRouteHandlerRuntimePath)};
+import {
+  getAppRouteHandlerRevalidateSeconds as __getAppRouteHandlerRevalidateSeconds,
+  hasAppRouteHandlerDefaultExport as __hasAppRouteHandlerDefaultExport,
+  resolveAppRouteHandlerMethod as __resolveAppRouteHandlerMethod,
+  resolveAppRouteHandlerSpecialError as __resolveAppRouteHandlerSpecialError,
+  shouldApplyAppRouteHandlerRevalidateHeader as __shouldApplyAppRouteHandlerRevalidateHeader,
+  shouldReadAppRouteHandlerCache as __shouldReadAppRouteHandlerCache,
+  shouldWriteAppRouteHandlerCache as __shouldWriteAppRouteHandlerCache,
+} from ${JSON.stringify(appRouteHandlerPolicyPath)};
 import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
   applyRouteHandlerRevalidateHeader as __applyRouteHandlerRevalidateHeader,
@@ -2199,19 +2209,21 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   if (route.routeHandler) {
     const handler = route.routeHandler;
     const method = request.method.toUpperCase();
-    const revalidateSeconds = typeof handler.revalidate === "number" && handler.revalidate > 0 && handler.revalidate !== Infinity ? handler.revalidate : null;
-    if (typeof handler["default"] === "function" && process.env.NODE_ENV === "development") {
+    const revalidateSeconds = __getAppRouteHandlerRevalidateSeconds(handler);
+    if (__hasAppRouteHandlerDefaultExport(handler) && process.env.NODE_ENV === "development") {
       console.error(
         "[vinext] Detected default export in route handler " + route.pattern + ". Export a named export for each HTTP method instead.",
       );
     }
 
-    // Collect exported HTTP methods for OPTIONS auto-response and Allow header
-    const exportedMethods = collectRouteHandlerMethods(handler);
-    const allowHeaderForOptions = buildRouteHandlerAllowHeader(exportedMethods);
+    const {
+      allowHeaderForOptions,
+      handlerFn,
+      isAutoHead,
+      shouldAutoRespondToOptions,
+    } = __resolveAppRouteHandlerMethod(handler, method);
 
-    // OPTIONS auto-implementation: respond with Allow header and 204
-    if (method === "OPTIONS" && typeof handler["OPTIONS"] !== "function") {
+    if (shouldAutoRespondToOptions) {
       setHeadersContext(null);
       setNavigationContext(null);
       return __applyRouteHandlerMiddlewareContext(
@@ -2223,26 +2235,21 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
       );
     }
 
-    // HEAD auto-implementation: run GET handler and strip body
-    let handlerFn = handler[method];
-    let isAutoHead = false;
-    if (method === "HEAD" && typeof handler["HEAD"] !== "function" && typeof handler["GET"] === "function") {
-      handlerFn = handler["GET"];
-      isAutoHead = true;
-    }
-
     // ISR cache read for route handlers (production only).
     // Only GET/HEAD (auto-HEAD) with finite revalidate > 0 are ISR-eligible.
     // Known-dynamic handlers skip the read entirely so stale cache entries
     // from earlier requests do not replay once the process has learned they
     // access request-specific data.
     if (
-      process.env.NODE_ENV === "production" &&
-      revalidateSeconds !== null &&
-      handler.dynamic !== "force-dynamic" &&
-      !__isKnownDynamicAppRoute(route.pattern) &&
-      (method === "GET" || isAutoHead) &&
-      typeof handlerFn === "function"
+      __shouldReadAppRouteHandlerCache({
+        dynamicConfig: handler.dynamic,
+        handlerFn,
+        isAutoHead,
+        isKnownDynamic: __isKnownDynamicAppRoute(route.pattern),
+        isProduction: process.env.NODE_ENV === "production",
+        method,
+        revalidateSeconds,
+      })
     ) {
       const __routeKey = __isrRouteKey(cleanPathname);
       try {
@@ -2347,10 +2354,13 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         // Runtime request APIs like headers() / cookies() make GET handlers dynamic,
         // so only attach ISR headers when the handler stayed static.
         if (
-          revalidateSeconds !== null &&
-          !dynamicUsedInHandler &&
-          (method === "GET" || isAutoHead) &&
-          !handlerSetCacheControl
+          __shouldApplyAppRouteHandlerRevalidateHeader({
+            dynamicUsedInHandler,
+            handlerSetCacheControl,
+            isAutoHead,
+            method,
+            revalidateSeconds,
+          })
         ) {
           __applyRouteHandlerRevalidateHeader(response, revalidateSeconds);
         }
@@ -2359,12 +2369,15 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         // Store the raw handler response before cookie/middleware transforms
         // (those are request-specific and shouldn't be cached).
         if (
-          process.env.NODE_ENV === "production" &&
-          revalidateSeconds !== null &&
-          handler.dynamic !== "force-dynamic" &&
-          !dynamicUsedInHandler &&
-          (method === "GET" || isAutoHead) &&
-          !handlerSetCacheControl
+          __shouldWriteAppRouteHandlerCache({
+            dynamicConfig: handler.dynamic,
+            dynamicUsedInHandler,
+            handlerSetCacheControl,
+            isAutoHead,
+            isProduction: process.env.NODE_ENV === "production",
+            method,
+            revalidateSeconds,
+          })
         ) {
           __markRouteHandlerCacheMiss(response);
           const __routeClone = response.clone();
@@ -2398,29 +2411,23 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         );
       } catch (err) {
         getAndClearPendingCookies(); // Clear any pending cookies on error
-        // Catch redirect() / notFound() thrown from route handlers
-        if (err && typeof err === "object" && "digest" in err) {
-          const digest = String(err.digest);
-          if (digest.startsWith("NEXT_REDIRECT;")) {
-            const parts = digest.split(";");
-            const redirectUrl = decodeURIComponent(parts[2]);
-            const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
-            setHeadersContext(null);
-            setNavigationContext(null);
+        const specialError = __resolveAppRouteHandlerSpecialError(err, request.url);
+        if (specialError) {
+          setHeadersContext(null);
+          setNavigationContext(null);
+          if (specialError.kind === "redirect") {
             return __applyRouteHandlerMiddlewareContext(
               new Response(null, {
-                status: statusCode,
-                headers: { Location: new URL(redirectUrl, request.url).toString() },
+                status: specialError.statusCode,
+                headers: { Location: specialError.location },
               }),
               _mwCtx,
             );
           }
-          if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-            const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
-            setHeadersContext(null);
-            setNavigationContext(null);
-            return __applyRouteHandlerMiddlewareContext(new Response(null, { status: statusCode }), _mwCtx);
-          }
+          return __applyRouteHandlerMiddlewareContext(
+            new Response(null, { status: specialError.statusCode }),
+            _mwCtx,
+          );
         }
         setHeadersContext(null);
         setNavigationContext(null);
