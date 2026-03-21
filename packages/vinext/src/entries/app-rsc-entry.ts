@@ -2973,12 +2973,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // The RSC stream is consumed lazily - components render when chunks are read.
     // If we clear context now, headers()/cookies() will fail during rendering.
     // Context will be cleared when the next request starts (via runWithRequestContext).
+
+    // Check if any dynamic API was used during element construction (e.g.
+    // searchParams access in buildPageElement). Dynamic pages must not be
+    // ISR-cached — this mirrors the HTML path's consumeDynamicUsage() check.
+    const __dynamicUsedInRsc = consumeDynamicUsage();
+
     const responseHeaders = { "Content-Type": "text/x-component; charset=utf-8", "Vary": "RSC, Accept" };
     // Include matched route params so the client can hydrate useParams()
     if (params && Object.keys(params).length > 0) {
       responseHeaders["X-Vinext-Params"] = JSON.stringify(params);
     }
-    if (isForceDynamic) {
+    if (isForceDynamic || __dynamicUsedInRsc) {
       responseHeaders["Cache-Control"] = "no-store, must-revalidate";
     } else if ((isForceStatic || isDynamicError) && !revalidateSeconds) {
       responseHeaders["Cache-Control"] = "s-maxage=31536000, stale-while-revalidate";
@@ -3038,7 +3044,8 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // For ISR-eligible RSC requests in production: write rscData to its own key.
     // HTML is stored under a separate key (written by the HTML path below) so
     // these writes never race or clobber each other.
-    if (process.env.NODE_ENV === "production" && __isrRscDataPromise) {
+    // Skip when dynamic APIs were used — the page opted into dynamic rendering.
+    if (process.env.NODE_ENV === "production" && __isrRscDataPromise && !__dynamicUsedInRsc) {
       responseHeaders["X-Vinext-Cache"] = "MISS";
       const __isrKeyRsc = __isrRscKey(cleanPathname);
       const __revalSecsRsc = revalidateSeconds;
