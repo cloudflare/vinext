@@ -602,7 +602,10 @@ export function createOptimizeImportsPlugin(
   let quotedPackages: string[] = [];
   // Tracks barrel entries whose sub-package origins have already been registered,
   // so repeated imports of the same barrel (across many files) don't redundantly
-  // iterate the full export map.
+  // iterate the full export map. Keys are `${envKey}:${barrelEntry}` so that RSC
+  // and SSR each maintain their own registration — if both environments share the
+  // same barrel entry path, RSC registering first must not prevent SSR from
+  // running its own inner loop and populating its own subpkgOrigin map.
   const registeredBarrels = new Set<string>();
 
   // `satisfies Plugin` gives a structural type-check at the object literal in addition
@@ -641,8 +644,10 @@ export function createOptimizeImportsPlugin(
       // In pnpm strict mode, sub-packages like @radix-ui/react-slot are only
       // resolvable from the barrel package's location, not from user code.
       // Use Vite's own resolver (not createRequire) so it picks the ESM entry.
-      // subpkgOrigin is keyed by environment; check both rsc and ssr maps since
-      // the same sub-package can appear in either environment's barrel.
+      // subpkgOrigin is keyed by environment; prefer the current env's map but
+      // fall back to the other env's map for the case where only one environment
+      // has transformed files that import from a given barrel (e.g. a barrel
+      // only reachable from the RSC graph may still need resolving from SSR).
       const envName = (this as PluginCtx).environment?.name ?? "ssr";
       const barrelEntry =
         barrelCaches.subpkgOrigin.get(envName)?.get(source) ??
@@ -728,9 +733,15 @@ export function createOptimizeImportsPlugin(
           // barrel don't each re-iterate the full export map.
           // subpkgOrigin is keyed by environment ("rsc"/"ssr") so that divergent
           // barrel entries (e.g. react-server vs import condition) stay isolated.
+          // registeredBarrels is likewise keyed by `${envKey}:${barrelEntry}` so
+          // that RSC and SSR each get their own registration — if both environments
+          // share the same barrel entry path (common when the package has no
+          // react-server export condition), RSC registers first, but SSR must still
+          // run the inner loop so it populates its own subpkgOrigin map.
           const envKey = preferReactServer ? "rsc" : "ssr";
-          if (!registeredBarrels.has(barrelEntry)) {
-            registeredBarrels.add(barrelEntry);
+          const registeredKey = `${envKey}:${barrelEntry}`;
+          if (!registeredBarrels.has(registeredKey)) {
+            registeredBarrels.add(registeredKey);
             let envOriginMap = barrelCaches.subpkgOrigin.get(envKey);
             if (!envOriginMap) {
               envOriginMap = new Map<string, string>();

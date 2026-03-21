@@ -749,6 +749,61 @@ describe("vinext:optimize-imports transform", () => {
     expect(result!.code).not.toContain(`from "./`);
   });
 
+  it("populates subpkgOrigin independently for RSC and SSR when they share the same barrel entry", async () => {
+    // Regression test: registeredBarrels used to be keyed only by barrelEntry (not envKey:barrelEntry).
+    // When RSC and SSR share the same barrel entry path (common — most packages have no react-server
+    // export condition), RSC would register the barrel first, and SSR would skip the inner loop
+    // entirely, leaving the SSR subpkgOrigin map empty. Subsequent resolveId calls from SSR would
+    // fall through to the cross-env fallback instead of hitting SSR's own map.
+    // After the fix, each environment maintains its own registeredBarrels key so both RSC and SSR
+    // independently populate their own subpkgOrigin maps.
+    tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+    // Use a package with no react-server condition so RSC and SSR resolve the same entry.
+    const pkgDir = path.join(tmpDir, "node_modules", "lucide-react");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "lucide-react",
+        type: "module",
+        main: "./index.js",
+      }),
+    );
+    // Barrel exports a named re-export from a scoped sub-package.
+    fs.writeFileSync(path.join(pkgDir, "index.js"), `export { Slot } from "@radix-ui/react-slot";`);
+
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+
+    const rscCall = async (code: string, id: string) =>
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+    const ssrCall = async (code: string, id: string) =>
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-call
+      await (transform as any).call({ ...plugin, environment: { name: "ssr" } }, code, id);
+
+    // RSC processes the barrel first — this registers `rsc:<barrelEntry>`.
+    const rscResult = await rscCall(`import { Slot } from "lucide-react";`, "/app/page.tsx");
+    expect(rscResult).not.toBeNull();
+    expect(rscResult!.code).toContain(`from "@radix-ui/react-slot"`);
+
+    // SSR processes the same barrel next — with the bug it would skip the inner loop
+    // (barrelEntry already in registeredBarrels) and leave its subpkgOrigin map empty.
+    // With the fix it registers `ssr:<barrelEntry>` and populates its own map.
+    const ssrResult = await ssrCall(`import { Slot } from "lucide-react";`, "/app/layout.tsx");
+    expect(ssrResult).not.toBeNull();
+    expect(ssrResult!.code).toContain(`from "@radix-ui/react-slot"`);
+  });
+
   it("prefers react-server export condition in RSC but not in SSR", async () => {
     // Simulates a package (like react-dom) that exposes different barrel entries
     // under "react-server" vs "import" export conditions.
