@@ -1798,6 +1798,55 @@ describe("App Router Production server (startProdServer)", () => {
     const body = await headRes.text();
     expect(body).toBe("");
   });
+
+  // Page-level ISR + searchParams dynamic usage tests
+  // Fixture: /isr-dynamic-search exports revalidate=60 AND reads searchParams.
+  // searchParams access is a Request-time API that opts the page into dynamic
+  // rendering — the ISR cache must NOT store the response.
+  // Ported from Next.js: using searchParams opts the page into dynamic rendering
+  // at request time (docs/01-app/03-api-reference/03-file-conventions/page.mdx)
+
+  it("page ISR + searchParams: RSC request is not ISR-cached when searchParams are present", async () => {
+    // Use distinctive filter values that won't appear elsewhere in the RSC payload
+    const res1 = await fetch(`${baseUrl}/isr-dynamic-search?filter=crimson`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res1.status).toBe(200);
+    expect(res1.headers.get("content-type")).toContain("text/x-component");
+    const rsc1 = await res1.text();
+    expect(rsc1).toContain("crimson");
+
+    // Second RSC request with different filter — must render fresh, not return cached data
+    const res2 = await fetch(`${baseUrl}/isr-dynamic-search?filter=indigo`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res2.status).toBe(200);
+    const rsc2 = await res2.text();
+    expect(rsc2).toContain("indigo");
+    expect(rsc2).not.toContain("crimson");
+  });
+
+  it("page ISR + searchParams: RSC response has no X-Vinext-Cache header (dynamic, not ISR-cached)", async () => {
+    const res = await fetch(`${baseUrl}/isr-dynamic-search?filter=x`, {
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    // Dynamic pages should not have ISR cache headers
+    expect(res.headers.get("x-vinext-cache")).toBeNull();
+  });
+
+  it("page ISR + searchParams: HTML response also skips ISR cache", async () => {
+    const res1 = await fetch(`${baseUrl}/isr-dynamic-search?filter=alpha`);
+    expect(res1.status).toBe(200);
+    const html1 = await res1.text();
+    expect(html1).toContain("alpha");
+
+    const res2 = await fetch(`${baseUrl}/isr-dynamic-search?filter=beta`);
+    expect(res2.status).toBe(200);
+    const html2 = await res2.text();
+    expect(html2).toContain("beta");
+    expect(html2).not.toContain('"filter">alpha<');
+  });
 });
 
 describe("App Router Production server worker entry compatibility", () => {
@@ -3721,6 +3770,16 @@ describe("generateRscEntry ISR code generation", () => {
     expect(teeAssignIdx).toBeGreaterThan(-1);
     expect(rscResponseIdx).toBeGreaterThan(-1);
     expect(teeAssignIdx).toBeLessThan(rscResponseIdx);
+  });
+
+  it("RSC path guards ISR cache write with consumeDynamicUsage check", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    // The RSC path must call consumeDynamicUsage() and use the result to skip
+    // ISR cache writes for pages that opted into dynamic rendering (e.g. via
+    // searchParams access). Without this guard, dynamic pages get ISR-cached
+    // and subsequent RSC requests return stale data.
+    expect(code).toContain("const __dynamicUsedInRsc = consumeDynamicUsage()");
+    expect(code).toContain("&& !__dynamicUsedInRsc");
   });
 
   // Route handler ISR code generation tests
