@@ -11,7 +11,7 @@ export interface RscEmbedTransform {
  * the HTML spec requires as="style" for <link rel="preload">.
  */
 export function fixFlightHints(text: string): string {
-  return text.replace(/(\d+:HL\[.*?),"stylesheet"(\]|,)/g, '$1,"style"$2');
+  return text.replace(/(\d*:HL\[.*?),"stylesheet"(\]|,)/g, '$1,"style"$2');
 }
 
 /**

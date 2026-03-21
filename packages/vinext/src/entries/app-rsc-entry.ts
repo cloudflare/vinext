@@ -315,7 +315,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 // Flight lines are newline-delimited, so we buffer partial lines across chunks
 // to guarantee the regex never sees a split hint.
 function renderToReadableStream(model, options) {
-  const _hlFixRe = /(\\d+:HL\\[.*?),"stylesheet"(\\]|,)/g;
+  const _hlFixRe = /(\\d*:HL\\[.*?),"stylesheet"(\\]|,)/g;
   const stream = _renderToReadableStream(model, options);
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
