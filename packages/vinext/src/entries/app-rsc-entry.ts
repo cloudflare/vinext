@@ -56,6 +56,9 @@ const appPageCachePath = fileURLToPath(
 const appPageResponsePath = fileURLToPath(
   new URL("../server/app-page-response.js", import.meta.url),
 ).replace(/\\/g, "/");
+const appPageExecutionPath = fileURLToPath(
+  new URL("../server/app-page-execution.js", import.meta.url),
+).replace(/\\/g, "/");
 const appRouteHandlerResponsePath = fileURLToPath(
   new URL("../server/app-route-handler-response.js", import.meta.url),
 ).replace(/\\/g, "/");
@@ -374,6 +377,15 @@ import {
   resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy,
 } from ${JSON.stringify(appPageResponsePath)};
 import {
+  buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
+  buildAppPageSpecialErrorResponse as __buildAppPageSpecialErrorResponse,
+  probeAppPageComponent as __probeAppPageComponent,
+  probeAppPageLayouts as __probeAppPageLayouts,
+  readAppPageTextStream as __readAppPageTextStream,
+  resolveAppPageSpecialError as __resolveAppPageSpecialError,
+  teeAppPageRscStreamForCapture as __teeAppPageRscStreamForCapture,
+} from ${JSON.stringify(appPageExecutionPath)};
+import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
 } from ${JSON.stringify(appRouteHandlerResponsePath)};
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
@@ -581,15 +593,8 @@ function __errorDigest(str) {
 // unchanged since their digests are used for client-side routing.
 function __sanitizeErrorForClient(error) {
   // Navigation errors must pass through with their digest intact
-  if (error && typeof error === "object" && "digest" in error) {
-    const digest = String(error.digest);
-    if (
-      digest.startsWith("NEXT_REDIRECT;") ||
-      digest === "NEXT_NOT_FOUND" ||
-      digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")
-    ) {
-      return error;
-    }
+  if (__resolveAppPageSpecialError(error)) {
+    return error;
   }
   // In development, pass through the original error for debugging
   if (process.env.NODE_ENV !== "production") {
@@ -883,8 +888,8 @@ async function renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, req
   setHeadersContext(null);
   setNavigationContext(null);
   const _respHeaders = { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" };
-  const _linkParts = (fontData.preloads || []).map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; });
-  if (_linkParts.length > 0) _respHeaders["Link"] = _linkParts.join(", ");
+  const _fontLinkHeader = __buildAppPageFontLinkHeader(fontData.preloads);
+  if (_fontLinkHeader) _respHeaders["Link"] = _fontLinkHeader;
   return new Response(htmlStream, {
     status: statusCode,
     headers: _respHeaders,
@@ -1023,8 +1028,8 @@ async function renderErrorBoundaryPage(route, error, isRscRequest, request, matc
   setHeadersContext(null);
   setNavigationContext(null);
   const _errHeaders = { "Content-Type": "text/html; charset=utf-8", "Vary": "RSC, Accept" };
-  const _errLinkParts = (fontData.preloads || []).map(function(p) { return "<" + p.href + ">; rel=preload; as=font; type=" + p.type + "; crossorigin"; });
-  if (_errLinkParts.length > 0) _errHeaders["Link"] = _errLinkParts.join(", ");
+  const _errFontLinkHeader = __buildAppPageFontLinkHeader(fontData.preloads);
+  if (_errFontLinkHeader) _errHeaders["Link"] = _errFontLinkHeader;
   return new Response(htmlStream, {
     status: 200,
     headers: _errHeaders,
@@ -2450,41 +2455,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
           const __revalElement = await buildPageElement(route, params, undefined, new URLSearchParams());
           const __revalOnError = createRscOnErrorHandler(request, cleanPathname, route.pattern);
           const __revalRscStream = renderToReadableStream(__revalElement, { onError: __revalOnError });
-          // Tee RSC stream: one for SSR, one to capture rscData
-          const [__revalRscForSsr, __revalRscForCapture] = __revalRscStream.tee();
-          // Capture rscData bytes in parallel with SSR
-          const __rscDataPromise = (async () => {
-            const __rscReader = __revalRscForCapture.getReader();
-            const __rscChunks = [];
-            let __rscTotal = 0;
-            for (;;) {
-              const { done, value } = await __rscReader.read();
-              if (done) break;
-              __rscChunks.push(value);
-              __rscTotal += value.byteLength;
-            }
-            const __rscBuf = new Uint8Array(__rscTotal);
-            let __rscOff = 0;
-            for (const c of __rscChunks) { __rscBuf.set(c, __rscOff); __rscOff += c.byteLength; }
-            return __rscBuf.buffer;
-          })();
+          const __revalRscCapture = __teeAppPageRscStreamForCapture(__revalRscStream, true);
           const __revalFontData = { links: _getSSRFontLinks(), styles: _getSSRFontStyles(), preloads: _getSSRFontPreloads() };
           const __revalSsrEntry = await import.meta.viteRsc.loadModule("ssr", "index");
-          const __revalHtmlStream = await __revalSsrEntry.handleSsr(__revalRscForSsr, _getNavigationContext(), __revalFontData);
+          const __revalHtmlStream = await __revalSsrEntry.handleSsr(
+            __revalRscCapture.responseStream,
+            _getNavigationContext(),
+            __revalFontData,
+          );
           setHeadersContext(null);
           setNavigationContext(null);
-          // Collect the full HTML string from the stream
-          const __revalReader = __revalHtmlStream.getReader();
-          const __revalDecoder = new TextDecoder();
-          const __revalChunks = [];
-          for (;;) {
-            const { done, value } = await __revalReader.read();
-            if (done) break;
-            __revalChunks.push(__revalDecoder.decode(value, { stream: true }));
-          }
-          __revalChunks.push(__revalDecoder.decode());
-          const __freshHtml = __revalChunks.join("");
-          const __freshRscData = await __rscDataPromise;
+          const __freshHtml = await __readAppPageTextStream(__revalHtmlStream);
+          const __freshRscData = await __revalRscCapture.capturedRscDataPromise;
           const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
           return { html: __freshHtml, rscData: __freshRscData, tags: __pageTags };
         });
@@ -2576,26 +2558,21 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   try {
     element = await buildPageElement(route, params, interceptOpts, url.searchParams);
   } catch (buildErr) {
-    // Check for redirect/notFound/forbidden/unauthorized thrown during metadata resolution or async components
-    if (buildErr && typeof buildErr === "object" && "digest" in buildErr) {
-      const digest = String(buildErr.digest);
-      if (digest.startsWith("NEXT_REDIRECT;")) {
-        const parts = digest.split(";");
-        const redirectUrl = decodeURIComponent(parts[2]);
-        const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
-        setHeadersContext(null);
-        setNavigationContext(null);
-        return Response.redirect(new URL(redirectUrl, request.url), statusCode);
-      }
-      if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-        const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
-        const fallbackResp = await renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, { matchedParams: params });
-        if (fallbackResp) return fallbackResp;
-        setHeadersContext(null);
-        setNavigationContext(null);
-        const statusText = statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
-        return new Response(statusText, { status: statusCode });
-      }
+    const __buildSpecialError = __resolveAppPageSpecialError(buildErr);
+    if (__buildSpecialError) {
+      return __buildAppPageSpecialErrorResponse({
+        clearRequestContext() {
+          setHeadersContext(null);
+          setNavigationContext(null);
+        },
+        renderFallbackPage(statusCode) {
+          return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
+            matchedParams: params,
+          });
+        },
+        requestUrl: request.url,
+        specialError: __buildSpecialError,
+      });
     }
     // Non-special error (e.g. generateMetadata() threw) — render error.tsx if available
     const errorBoundaryResp = await renderErrorBoundaryPage(route, buildErr, isRscRequest, request, params);
@@ -2608,25 +2585,21 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
   // Helper: check if an error is a redirect/notFound/forbidden/unauthorized thrown by the navigation shim
   async function handleRenderError(err) {
-    if (err && typeof err === "object" && "digest" in err) {
-      const digest = String(err.digest);
-      if (digest.startsWith("NEXT_REDIRECT;")) {
-        const parts = digest.split(";");
-        const redirectUrl = decodeURIComponent(parts[2]);
-        const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
-        setHeadersContext(null);
-        setNavigationContext(null);
-        return Response.redirect(new URL(redirectUrl, request.url), statusCode);
-      }
-      if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-        const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
-        const fallbackResp = await renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, { matchedParams: params });
-        if (fallbackResp) return fallbackResp;
-        setHeadersContext(null);
-        setNavigationContext(null);
-        const statusText = statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
-        return new Response(statusText, { status: statusCode });
-      }
+    const specialError = __resolveAppPageSpecialError(err);
+    if (specialError) {
+      return __buildAppPageSpecialErrorResponse({
+        clearRequestContext() {
+          setHeadersContext(null);
+          setNavigationContext(null);
+        },
+        renderFallbackPage(statusCode) {
+          return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
+            matchedParams: params,
+          });
+        },
+        requestUrl: request.url,
+        specialError,
+      });
     }
     return null;
   }
@@ -2645,59 +2618,55 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // layouts itself throws notFound() during the fallback rendering (causing a 500).
   if (route.layouts && route.layouts.length > 0) {
     const asyncParams = makeThenableParams(params);
-    // Run inside ALS context so the module-level console.error patch suppresses
-    // "Invalid hook call" only for this request's probe — concurrent requests
-    // each have their own ALS store and are unaffected.
-    const _layoutProbeResult = await _suppressHookWarningAls.run(true, async () => {
-      for (let li = route.layouts.length - 1; li >= 0; li--) {
-        const LayoutComp = route.layouts[li]?.default;
-        if (!LayoutComp) continue;
-        try {
-          const lr = LayoutComp({ params: asyncParams, children: null });
-          if (lr && typeof lr === "object" && typeof lr.then === "function") await lr;
-        } catch (layoutErr) {
-          if (layoutErr && typeof layoutErr === "object" && "digest" in layoutErr) {
-            const digest = String(layoutErr.digest);
-             if (digest.startsWith("NEXT_REDIRECT;")) {
-               const parts = digest.split(";");
-               const redirectUrl = decodeURIComponent(parts[2]);
-               const statusCode = parts[3] ? parseInt(parts[3], 10) : 307;
-               setHeadersContext(null);
-               setNavigationContext(null);
-               return Response.redirect(new URL(redirectUrl, request.url), statusCode);
-            }
-            if (digest === "NEXT_NOT_FOUND" || digest.startsWith("NEXT_HTTP_ERROR_FALLBACK;")) {
-              const statusCode = digest === "NEXT_NOT_FOUND" ? 404 : parseInt(digest.split(";")[1], 10);
-              // Find the not-found component from the parent level (the boundary that
-              // would catch this in Next.js). Walk up from the throwing layout to find
-              // the nearest not-found at a parent layout's directory.
-              let parentNotFound = null;
-              if (route.notFounds) {
-                for (let pi = li - 1; pi >= 0; pi--) {
-                  if (route.notFounds[pi]?.default) {
-                    parentNotFound = route.notFounds[pi].default;
-                    break;
-                  }
+    const _layoutProbeResult = await __probeAppPageLayouts({
+      layoutCount: route.layouts.length,
+      async onLayoutError(layoutErr, li) {
+        const __layoutSpecialError = __resolveAppPageSpecialError(layoutErr);
+        if (!__layoutSpecialError) {
+          return null;
+        }
+
+        return __buildAppPageSpecialErrorResponse({
+          clearRequestContext() {
+            setHeadersContext(null);
+            setNavigationContext(null);
+          },
+          renderFallbackPage(statusCode) {
+            // Find the not-found component from the parent level (the boundary that
+            // would catch this in Next.js). Walk up from the throwing layout to find
+            // the nearest not-found at a parent layout's directory.
+            let parentNotFound = null;
+            if (route.notFounds) {
+              for (let pi = li - 1; pi >= 0; pi--) {
+                if (route.notFounds[pi]?.default) {
+                  parentNotFound = route.notFounds[pi].default;
+                  break;
                 }
               }
-              if (!parentNotFound) parentNotFound = ${rootNotFoundVar ? `${rootNotFoundVar}?.default` : "null"};
-              // Wrap in only the layouts above the throwing one
-              const parentLayouts = route.layouts.slice(0, li);
-              const fallbackResp = await renderHTTPAccessFallbackPage(
-                route, statusCode, isRscRequest, request,
-                { boundaryComponent: parentNotFound, layouts: parentLayouts, matchedParams: params }
-              );
-              if (fallbackResp) return fallbackResp;
-              setHeadersContext(null);
-              setNavigationContext(null);
-              const statusText = statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
-              return new Response(statusText, { status: statusCode });
             }
-          }
-          // Not a special error — let it propagate through normal RSC rendering
-        }
-      }
-      return null;
+            if (!parentNotFound) parentNotFound = ${rootNotFoundVar ? `${rootNotFoundVar}?.default` : "null"};
+            const parentLayouts = route.layouts.slice(0, li);
+            return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
+              boundaryComponent: parentNotFound,
+              layouts: parentLayouts,
+              matchedParams: params,
+            });
+          },
+          requestUrl: request.url,
+          specialError: __layoutSpecialError,
+        });
+      },
+      probeLayoutAt(li) {
+        const LayoutComp = route.layouts[li]?.default;
+        if (!LayoutComp) return null;
+        return LayoutComp({ params: asyncParams, children: null });
+      },
+      runWithSuppressedHookWarning(probe) {
+        // Run inside ALS context so the module-level console.error patch suppresses
+        // "Invalid hook call" only for this request's probe — concurrent requests
+        // each have their own ALS store and are unaffected.
+        return _suppressHookWarningAls.run(true, probe);
+      },
     });
     if (_layoutProbeResult instanceof Response) return _layoutProbeResult;
   }
@@ -2715,30 +2684,23 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // trigger "Invalid hook call" console.error in dev. The module-level ALS patch
   // suppresses the warning only within this request's execution context.
   const _hasLoadingBoundary = !!(route.loading && route.loading.default);
-  const _pageProbeResult = await _suppressHookWarningAls.run(true, async () => {
-    try {
-      const testResult = PageComponent({ params });
-      // If it's a promise (async component), only await if there's no loading boundary.
-      // With a loading boundary, the Suspense streaming pipeline handles async resolution
-      // and any redirect/notFound errors via rscOnError.
-      if (testResult && typeof testResult === "object" && typeof testResult.then === "function") {
-        if (!_hasLoadingBoundary) {
-          await testResult;
-        } else {
-          // Suppress unhandled promise rejection — with a loading boundary,
-          // redirect/notFound errors are handled by rscOnError during streaming.
-          testResult.catch(() => {});
-        }
-      }
-    } catch (preRenderErr) {
+  const _pageProbeResult = await __probeAppPageComponent({
+    awaitAsyncResult: !_hasLoadingBoundary,
+    async onError(preRenderErr) {
       const specialResponse = await handleRenderError(preRenderErr);
       if (specialResponse) return specialResponse;
       // Non-special errors from the pre-render test are expected (e.g. use() hook
       // fails outside React's render cycle, client references can't execute on server).
       // Only redirect/notFound/forbidden/unauthorized are actionable here — other
       // errors will be properly caught during actual RSC/SSR rendering below.
-    }
-    return null;
+      return null;
+    },
+    probePage() {
+      return PageComponent({ params });
+    },
+    runWithSuppressedHookWarning(probe) {
+      return _suppressHookWarningAls.run(true, probe);
+    },
   });
   if (_pageProbeResult instanceof Response) return _pageProbeResult;
 
@@ -2765,27 +2727,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // paths can use the captured bytes when writing to the ISR cache.
   //   __rscForResponse  → sent to the client (RSC response) or to SSR (HTML response)
   //   __isrRscDataPromise → resolves to ArrayBuffer of captured RSC wire bytes
-  let __rscForResponse = rscStream;
-  let __isrRscDataPromise = null;
-  if (process.env.NODE_ENV === "production" && revalidateSeconds !== null && revalidateSeconds > 0 && revalidateSeconds !== Infinity && !isForceDynamic) {
-    const [__rscA, __rscB] = rscStream.tee();
-    __rscForResponse = __rscA;
-    __isrRscDataPromise = (async () => {
-      const __rscReader = __rscB.getReader();
-      const __rscChunks = [];
-      let __rscTotal = 0;
-      for (;;) {
-        const { done, value } = await __rscReader.read();
-        if (done) break;
-        __rscChunks.push(value);
-        __rscTotal += value.byteLength;
-      }
-      const __rscBuf = new Uint8Array(__rscTotal);
-      let __rscOff = 0;
-      for (const c of __rscChunks) { __rscBuf.set(c, __rscOff); __rscOff += c.byteLength; }
-      return __rscBuf.buffer;
-    })();
-  }
+  const __rscCapture = __teeAppPageRscStreamForCapture(
+    rscStream,
+    process.env.NODE_ENV === "production" &&
+      revalidateSeconds !== null &&
+      revalidateSeconds > 0 &&
+      revalidateSeconds !== Infinity &&
+      !isForceDynamic,
+  );
+  const __rscForResponse = __rscCapture.responseStream;
+  const __isrRscDataPromise = __rscCapture.capturedRscDataPromise;
 
   if (isRscRequest) {
     // Direct RSC stream response (for client-side navigation)
@@ -2847,12 +2798,7 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // Build HTTP Link header for font preloading.
   // This lets the browser (and CDN) start fetching font files before parsing HTML,
   // eliminating the CSS → woff2 download waterfall.
-  const fontPreloads = fontData.preloads || [];
-  const fontLinkHeaderParts = [];
-  for (const preload of fontPreloads) {
-    fontLinkHeaderParts.push("<" + preload.href + ">; rel=preload; as=font; type=" + preload.type + "; crossorigin");
-  }
-  const fontLinkHeader = fontLinkHeaderParts.length > 0 ? fontLinkHeaderParts.join(", ") : "";
+  const fontLinkHeader = __buildAppPageFontLinkHeader(fontData.preloads);
 
   // __rscForResponse was already teed above (before isRscRequest) for ISR pages in
   // production. For non-ISR or dev, __rscForResponse === rscStream (no tee).

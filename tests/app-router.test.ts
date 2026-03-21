@@ -3674,6 +3674,16 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy");
   });
 
+  it("generated code delegates page probes and special-error handling to typed helpers", () => {
+    const code = generateRscEntry("/tmp/test/app", minimalRoutes);
+    expect(code).toContain("probeAppPageLayouts as __probeAppPageLayouts");
+    expect(code).toContain("probeAppPageComponent as __probeAppPageComponent");
+    expect(code).toContain("resolveAppPageSpecialError as __resolveAppPageSpecialError");
+    expect(code).toContain(
+      "buildAppPageSpecialErrorResponse as __buildAppPageSpecialErrorResponse",
+    );
+  });
+
   it("generated code delegates page cache HIT handling to a typed helper", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
     expect(code).toContain("readAppPageCacheResponse as __readAppPageCacheResponse");
@@ -3692,13 +3702,12 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("_getRequestExecutionContext()?.waitUntil");
   });
 
-  it("generated code tees the RSC stream to capture rscData for cache", () => {
+  it("generated code delegates page RSC capture and streamed text collection to typed helpers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // There must be at least two .tee() calls:
-    //  1) RSC stream tee (before SSR) to capture rscData
-    //  2) HTML response stream tee (to collect html while streaming to client)
-    const teeCount = (code.match(/\.tee\(\)/g) || []).length;
-    expect(teeCount).toBeGreaterThanOrEqual(2);
+    expect(code).toContain("teeAppPageRscStreamForCapture as __teeAppPageRscStreamForCapture");
+    expect(code).toContain("readAppPageTextStream as __readAppPageTextStream");
+    expect(code).toContain("const __revalRscCapture = __teeAppPageRscStreamForCapture(");
+    expect(code).toContain("const __rscCapture = __teeAppPageRscStreamForCapture(");
   });
 
   it("generated code stores rscData in the ISR cache entry", () => {
@@ -3763,10 +3772,9 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("RSC stream tee for rscData capture happens before the RSC response is returned", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // __rscForResponse must be assigned before the RSC response is returned so
-    // the tee branch (__rscB) is also consumed (populating the ISR cache).
-    // The RSC response is now built via the typed page-response helper.
-    const teeAssignIdx = code.indexOf("let __rscForResponse");
+    // The RSC capture helper must run before the RSC response is returned so the
+    // captured branch can populate the ISR cache while the response streams.
+    const teeAssignIdx = code.indexOf("const __rscCapture = __teeAppPageRscStreamForCapture(");
     const rscResponseIdx = code.indexOf("const __rscResponse = __buildAppPageRscResponse(");
     expect(teeAssignIdx).toBeGreaterThan(-1);
     expect(rscResponseIdx).toBeGreaterThan(-1);
