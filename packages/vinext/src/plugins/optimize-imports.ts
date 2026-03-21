@@ -20,25 +20,6 @@ import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 
 /**
- * True when the DEBUG environment variable includes "vinext:optimize-imports"
- * or any vinext namespace wildcard (e.g. DEBUG=vinext:* or DEBUG=*).
- * Used to gate verbose console.debug output that would otherwise be noisy in
- * projects with many barrel imports.
- */
-const isDebugEnabled = (() => {
-  const debugEnv = process.env.DEBUG ?? "";
-  if (!debugEnv) return false;
-  return debugEnv.split(",").some((ns) => {
-    const trimmed = ns.trim();
-    return (
-      trimmed === "*" ||
-      trimmed === "vinext:optimize-imports" ||
-      (trimmed.endsWith(":*") && "vinext:optimize-imports".startsWith(trimmed.slice(0, -1)))
-    );
-  });
-})();
-
-/**
  * Read a file's contents, returning null on any error.
  * Module-level so a single function instance is shared across all transform calls.
  */
@@ -825,33 +806,7 @@ export function createOptimizeImportsPlugin(
           }
 
           // If any specifier couldn't be resolved, leave the entire import unchanged.
-          // Emit a debug log so developers can diagnose optimization gaps — e.g. a name
-          // that comes through `export * from` wildcard or an inline `export const`.
           if (!allResolved || specifiers.length === 0) {
-            if (allResolved === false && isDebugEnabled) {
-              // Find the first unresolved name to name it in the log message.
-              // Only emitted when DEBUG=vinext:* (or DEBUG=vinext:optimize-imports) is set
-              // so it doesn't appear in normal output for projects with many barrel imports.
-              for (const spec of node.specifiers ?? []) {
-                if (spec.type === "ImportSpecifier" && spec.imported) {
-                  const imported = astName(spec.imported);
-                  if (imported !== null && !exportMap.has(imported)) {
-                    console.debug(
-                      `[vinext:optimize-imports] skipping "${importSource}": could not resolve specifier "${imported}" in barrel export map`,
-                    );
-                    break;
-                  }
-                } else if (spec.type === "ImportDefaultSpecifier" && !exportMap.has("default")) {
-                  console.debug(
-                    `[vinext:optimize-imports] skipping "${importSource}": default export not found in barrel export map`,
-                  );
-                  break;
-                } else if (spec.type === "ImportNamespaceSpecifier") {
-                  // Namespace imports are intentionally not optimized — no log needed.
-                  break;
-                }
-              }
-            }
             continue;
           }
 
