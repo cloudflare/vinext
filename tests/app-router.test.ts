@@ -1736,6 +1736,30 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res2.headers.get("x-vinext-cache")).toBeNull();
   });
 
+  it("route handler ISR: direct request.headers access is not cached", async () => {
+    const res1 = await fetch(`${baseUrl}/api/dynamic-request-headers`, {
+      headers: { "x-test-ping": "a" },
+    });
+    const res2 = await fetch(`${baseUrl}/api/dynamic-request-headers`, {
+      headers: { "x-test-ping": "b" },
+    });
+
+    expect(await res1.json()).toEqual({ ping: "a" });
+    expect(await res2.json()).toEqual({ ping: "b" });
+    expect(res1.headers.get("x-vinext-cache")).toBeNull();
+    expect(res2.headers.get("x-vinext-cache")).toBeNull();
+  });
+
+  it("route handler ISR: request.url query access is not cached", async () => {
+    const res1 = await fetch(`${baseUrl}/api/dynamic-request-url?ping=a`);
+    const res2 = await fetch(`${baseUrl}/api/dynamic-request-url?ping=b`);
+
+    expect(await res1.json()).toEqual({ ping: "a" });
+    expect(await res2.json()).toEqual({ ping: "b" });
+    expect(res1.headers.get("x-vinext-cache")).toBeNull();
+    expect(res2.headers.get("x-vinext-cache")).toBeNull();
+  });
+
   it("route handler ISR: handler-set Cache-Control skips ISR caching", async () => {
     // /api/custom-cache exports revalidate=60 but sets its own Cache-Control
     const res1 = await fetch(`${baseUrl}/api/custom-cache`);

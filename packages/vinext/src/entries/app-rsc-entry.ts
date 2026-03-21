@@ -38,34 +38,13 @@ const requestPipelinePath = fileURLToPath(
 const requestContextShimPath = fileURLToPath(
   new URL("../shims/request-context.js", import.meta.url),
 ).replace(/\\/g, "/");
+const appRouteHandlerRuntimePath = fileURLToPath(
+  new URL("../server/app-route-handler-runtime.js", import.meta.url),
+).replace(/\\/g, "/");
 const routeTriePath = fileURLToPath(new URL("../routing/route-trie.js", import.meta.url)).replace(
   /\\/g,
   "/",
 );
-
-// Canonical order of HTTP method handlers supported by route.ts modules.
-const ROUTE_HANDLER_HTTP_METHODS = ["GET", "HEAD", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"];
-
-// Runtime helpers injected into the generated RSC entry so OPTIONS/Allow handling
-// logic stays alongside the route handler pipeline.
-const routeHandlerHelperCode = String.raw`
-// Duplicated from the build-time constant above via JSON.stringify.
-const ROUTE_HANDLER_HTTP_METHODS = ${JSON.stringify(ROUTE_HANDLER_HTTP_METHODS)};
-
-function collectRouteHandlerMethods(handler) {
-  const methods = ROUTE_HANDLER_HTTP_METHODS.filter((method) => typeof handler[method] === "function");
-  if (methods.includes("GET") && !methods.includes("HEAD")) {
-    methods.push("HEAD");
-  }
-  return methods;
-}
-
-function buildRouteHandlerAllowHeader(exportedMethods) {
-  const allow = new Set(exportedMethods);
-  allow.add("OPTIONS");
-  return Array.from(allow).sort().join(", ");
-}
-`;
 
 /**
  * Resolved config options relevant to App Router request handling.
@@ -352,6 +331,13 @@ ${instrumentationPath ? `import * as _instrumentation from ${JSON.stringify(inst
 ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifestToJson } from ${JSON.stringify(fileURLToPath(new URL("../server/metadata-routes.js", import.meta.url)).replace(/\\/g, "/"))};` : ""}
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
+import {
+  buildRouteHandlerAllowHeader,
+  collectRouteHandlerMethods,
+  createTrackedAppRouteRequest as __createTrackedAppRouteRequest,
+  isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
+  markKnownDynamicAppRoute as __markKnownDynamicAppRoute,
+} from ${JSON.stringify(appRouteHandlerRuntimePath)};
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
 import { ensureFetchPatch as _ensureFetchPatch, getCollectedFetchTags } from "vinext/fetch-cache";
@@ -365,7 +351,6 @@ import { getSSRFontStyles as _getSSRFontStylesLocal, getSSRFontPreloads as _getS
 function _getSSRFontStyles() { return [..._getSSRFontStylesGoogle(), ..._getSSRFontStylesLocal()]; }
 function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._getSSRFontPreloadsLocal()]; }
 ${hasPagesDir ? `// Note: pageRoutes loaded lazily via SSR env in /__vinext/prerender/pages-static-paths handler` : ""}
-${routeHandlerHelperCode}
 
 // ALS used to suppress the expected "Invalid hook call" dev warning when
 // layout/page components are probed outside React's render cycle. Patching
@@ -2257,11 +2242,14 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
 
     // ISR cache read for route handlers (production only).
     // Only GET/HEAD (auto-HEAD) with finite revalidate > 0 are ISR-eligible.
-    // This runs before handler execution so a cache HIT skips the handler entirely.
+    // Known-dynamic handlers skip the read entirely so stale cache entries
+    // from earlier requests do not replay once the process has learned they
+    // access request-specific data.
     if (
       process.env.NODE_ENV === "production" &&
       revalidateSeconds !== null &&
       handler.dynamic !== "force-dynamic" &&
+      !__isKnownDynamicAppRoute(route.pattern) &&
       (method === "GET" || isAutoHead) &&
       typeof handlerFn === "function"
     ) {
@@ -2299,11 +2287,24 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             await _runWithUnifiedCtx(__revalUCtx, async () => {
               _ensureFetchPatch();
               setNavigationContext({ pathname: cleanPathname, searchParams: __revalSearchParams, params: __revalParams });
-              const __syntheticReq = new Request(__revalUrl, { method: "GET" });
-              const __revalResponse = await __revalHandlerFn(__syntheticReq, { params: __revalParams });
+              consumeDynamicUsage();
+              const __trackedRevalRequest = __createTrackedAppRouteRequest(
+                new Request(__revalUrl, { method: "GET" }),
+                {
+                  basePath: __basePath,
+                  i18n: __i18nConfig,
+                  onDynamicAccess: function() {
+                    markDynamicUsage();
+                  },
+                },
+              );
+              const __revalResponse = await __revalHandlerFn(__trackedRevalRequest.request, {
+                params: __revalParams,
+              });
               const __regenDynamic = consumeDynamicUsage();
               setNavigationContext(null);
               if (__regenDynamic) {
+                __markKnownDynamicAppRoute(route.pattern);
                 __isrDebug?.("route regen skipped (dynamic usage)", cleanPathname);
                 return;
               }
@@ -2337,9 +2338,21 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     if (typeof handlerFn === "function") {
       const previousHeadersPhase = setHeadersAccessPhase("route-handler");
       try {
-        const response = await handlerFn(request, { params });
+        consumeDynamicUsage();
+        const __trackedRouteRequest = __createTrackedAppRouteRequest(request, {
+          basePath: __basePath,
+          i18n: __i18nConfig,
+          onDynamicAccess: function() {
+            markDynamicUsage();
+          },
+        });
+        const response = await handlerFn(__trackedRouteRequest.request, { params });
         const dynamicUsedInHandler = consumeDynamicUsage();
         const handlerSetCacheControl = response.headers.has("cache-control");
+
+        if (dynamicUsedInHandler) {
+          __markKnownDynamicAppRoute(route.pattern);
+        }
 
         // Apply Cache-Control from route segment config (export const revalidate = N).
         // Runtime request APIs like headers() / cookies() make GET handlers dynamic,
