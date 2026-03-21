@@ -44,6 +44,9 @@ const appRouteHandlerRuntimePath = fileURLToPath(
 const appRouteHandlerPolicyPath = fileURLToPath(
   new URL("../server/app-route-handler-policy.js", import.meta.url),
 ).replace(/\\/g, "/");
+const appRouteHandlerExecutionPath = fileURLToPath(
+  new URL("../server/app-route-handler-execution.js", import.meta.url),
+).replace(/\\/g, "/");
 const appRouteHandlerResponsePath = fileURLToPath(
   new URL("../server/app-route-handler-response.js", import.meta.url),
 ).replace(/\\/g, "/");
@@ -338,7 +341,6 @@ ${effectiveMetaRoutes.length > 0 ? `import { sitemapToXml, robotsToText, manifes
 import { requestContextFromRequest, normalizeHost, matchRedirect, matchRewrite, matchHeaders, isExternalUrl, proxyExternalRequest, sanitizeDestination } from ${JSON.stringify(configMatchersPath)};
 import { validateCsrfOrigin, validateImageUrl, guardProtocolRelativeUrl, hasBasePath, stripBasePath, normalizeTrailingSlash, processMiddlewareHeaders } from ${JSON.stringify(requestPipelinePath)};
 import {
-  createTrackedAppRouteRequest as __createTrackedAppRouteRequest,
   isKnownDynamicAppRoute as __isKnownDynamicAppRoute,
   markKnownDynamicAppRoute as __markKnownDynamicAppRoute,
 } from ${JSON.stringify(appRouteHandlerRuntimePath)};
@@ -346,18 +348,16 @@ import {
   getAppRouteHandlerRevalidateSeconds as __getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport as __hasAppRouteHandlerDefaultExport,
   resolveAppRouteHandlerMethod as __resolveAppRouteHandlerMethod,
-  resolveAppRouteHandlerSpecialError as __resolveAppRouteHandlerSpecialError,
-  shouldApplyAppRouteHandlerRevalidateHeader as __shouldApplyAppRouteHandlerRevalidateHeader,
   shouldReadAppRouteHandlerCache as __shouldReadAppRouteHandlerCache,
-  shouldWriteAppRouteHandlerCache as __shouldWriteAppRouteHandlerCache,
 } from ${JSON.stringify(appRouteHandlerPolicyPath)};
 import {
+  executeAppRouteHandler as __executeAppRouteHandler,
+  runAppRouteHandler as __runAppRouteHandler,
+} from ${JSON.stringify(appRouteHandlerExecutionPath)};
+import {
   applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext,
-  applyRouteHandlerRevalidateHeader as __applyRouteHandlerRevalidateHeader,
   buildAppRouteCacheValue as __buildAppRouteCacheValue,
   buildRouteHandlerCachedResponse as __buildRouteHandlerCachedResponse,
-  finalizeRouteHandlerResponse as __finalizeRouteHandlerResponse,
-  markRouteHandlerCacheMiss as __markRouteHandlerCacheMiss,
 } from ${JSON.stringify(appRouteHandlerResponsePath)};
 import { _consumeRequestScopedCacheLife, getCacheHandler } from "next/cache";
 import { getRequestExecutionContext as _getRequestExecutionContext } from ${JSON.stringify(requestContextShimPath)};
@@ -2286,21 +2286,18 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
             await _runWithUnifiedCtx(__revalUCtx, async () => {
               _ensureFetchPatch();
               setNavigationContext({ pathname: cleanPathname, searchParams: __revalSearchParams, params: __revalParams });
-              consumeDynamicUsage();
-              const __trackedRevalRequest = __createTrackedAppRouteRequest(
-                new Request(__revalUrl, { method: "GET" }),
-                {
-                  basePath: __basePath,
-                  i18n: __i18nConfig,
-                  onDynamicAccess: function() {
-                    markDynamicUsage();
-                  },
-                },
-              );
-              const __revalResponse = await __revalHandlerFn(__trackedRevalRequest.request, {
+              const {
+                dynamicUsedInHandler: __regenDynamic,
+                response: __revalResponse,
+              } = await __runAppRouteHandler({
+                basePath: __basePath,
+                consumeDynamicUsage,
+                handlerFn: __revalHandlerFn,
+                i18n: __i18nConfig,
+                markDynamicUsage,
                 params: __revalParams,
+                request: new Request(__revalUrl, { method: "GET" }),
               });
-              const __regenDynamic = consumeDynamicUsage();
               setNavigationContext(null);
               if (__regenDynamic) {
                 __markKnownDynamicAppRoute(route.pattern);
@@ -2332,115 +2329,37 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     }
 
     if (typeof handlerFn === "function") {
-      const previousHeadersPhase = setHeadersAccessPhase("route-handler");
-      try {
-        consumeDynamicUsage();
-        const __trackedRouteRequest = __createTrackedAppRouteRequest(request, {
-          basePath: __basePath,
-          i18n: __i18nConfig,
-          onDynamicAccess: function() {
-            markDynamicUsage();
-          },
-        });
-        const response = await handlerFn(__trackedRouteRequest.request, { params });
-        const dynamicUsedInHandler = consumeDynamicUsage();
-        const handlerSetCacheControl = response.headers.has("cache-control");
-
-        if (dynamicUsedInHandler) {
-          __markKnownDynamicAppRoute(route.pattern);
-        }
-
-        // Apply Cache-Control from route segment config (export const revalidate = N).
-        // Runtime request APIs like headers() / cookies() make GET handlers dynamic,
-        // so only attach ISR headers when the handler stayed static.
-        if (
-          __shouldApplyAppRouteHandlerRevalidateHeader({
-            dynamicUsedInHandler,
-            handlerSetCacheControl,
-            isAutoHead,
-            method,
-            revalidateSeconds,
-          })
-        ) {
-          __applyRouteHandlerRevalidateHeader(response, revalidateSeconds);
-        }
-
-        // ISR cache write for route handlers (production, MISS).
-        // Store the raw handler response before cookie/middleware transforms
-        // (those are request-specific and shouldn't be cached).
-        if (
-          __shouldWriteAppRouteHandlerCache({
-            dynamicConfig: handler.dynamic,
-            dynamicUsedInHandler,
-            handlerSetCacheControl,
-            isAutoHead,
-            isProduction: process.env.NODE_ENV === "production",
-            method,
-            revalidateSeconds,
-          })
-        ) {
-          __markRouteHandlerCacheMiss(response);
-          const __routeClone = response.clone();
-          const __routeKey = __isrRouteKey(cleanPathname);
-          const __revalSecs = revalidateSeconds;
-          const __routeTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-          const __routeWritePromise = (async () => {
-            try {
-              const __routeCacheValue = await __buildAppRouteCacheValue(__routeClone);
-              await __isrSet(__routeKey, __routeCacheValue, __revalSecs, __routeTags);
-              __isrDebug?.("route cache written", __routeKey);
-            } catch (__cacheErr) {
-              console.error("[vinext] ISR route cache write error:", __cacheErr);
-            }
-          })();
-          _getRequestExecutionContext()?.waitUntil(__routeWritePromise);
-        }
-
-        // Collect any Set-Cookie headers from cookies().set()/delete() calls
-        const pendingCookies = getAndClearPendingCookies();
-        const draftCookie = getDraftModeCookieHeader();
-        setHeadersContext(null);
-        setNavigationContext(null);
-        return __applyRouteHandlerMiddlewareContext(
-          __finalizeRouteHandlerResponse(response, {
-            pendingCookies,
-            draftCookie,
-            isHead: isAutoHead,
-          }),
-          _mwCtx,
-        );
-      } catch (err) {
-        getAndClearPendingCookies(); // Clear any pending cookies on error
-        const specialError = __resolveAppRouteHandlerSpecialError(err, request.url);
-        if (specialError) {
+      return __executeAppRouteHandler({
+        basePath: __basePath,
+        buildPageCacheTags: __pageCacheTags,
+        cleanPathname,
+        clearRequestContext: function() {
           setHeadersContext(null);
           setNavigationContext(null);
-          if (specialError.kind === "redirect") {
-            return __applyRouteHandlerMiddlewareContext(
-              new Response(null, {
-                status: specialError.statusCode,
-                headers: { Location: specialError.location },
-              }),
-              _mwCtx,
-            );
-          }
-          return __applyRouteHandlerMiddlewareContext(
-            new Response(null, { status: specialError.statusCode }),
-            _mwCtx,
-          );
-        }
-        setHeadersContext(null);
-        setNavigationContext(null);
-        console.error("[vinext] Route handler error:", err);
-        _reportRequestError(
-          err instanceof Error ? err : new Error(String(err)),
-          { path: cleanPathname, method: request.method, headers: Object.fromEntries(request.headers.entries()) },
-          { routerKind: "App Router", routePath: route.pattern, routeType: "route" },
-        );
-        return __applyRouteHandlerMiddlewareContext(new Response(null, { status: 500 }), _mwCtx);
-      } finally {
-        setHeadersAccessPhase(previousHeadersPhase);
-      }
+        },
+        consumeDynamicUsage,
+        executionContext: _getRequestExecutionContext(),
+        getAndClearPendingCookies,
+        getCollectedFetchTags,
+        getDraftModeCookieHeader,
+        handler,
+        handlerFn,
+        i18n: __i18nConfig,
+        isAutoHead,
+        isProduction: process.env.NODE_ENV === "production",
+        isrDebug: __isrDebug,
+        isrRouteKey: __isrRouteKey,
+        isrSet: __isrSet,
+        markDynamicUsage,
+        method,
+        middlewareContext: _mwCtx,
+        params,
+        reportRequestError: _reportRequestError,
+        request,
+        revalidateSeconds,
+        routePattern: route.pattern,
+        setHeadersAccessPhase,
+      });
     }
     setHeadersContext(null);
     setNavigationContext(null);

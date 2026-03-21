@@ -3763,8 +3763,10 @@ describe("generateRscEntry ISR code generation", () => {
 
   it("generated code contains APP_ROUTE ISR cache write for route handlers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    // Route handler ISR writes now flow through the typed cache-value helper.
-    expect(code).toContain("__buildAppRouteCacheValue(__routeClone)");
-    expect(code).toContain("__isrSet(__routeKey, __routeCacheValue");
+    // Route handler ISR writes now flow through the typed execution helper.
+    expect(code).toContain("executeAppRouteHandler as __executeAppRouteHandler");
+    expect(code).toContain("return __executeAppRouteHandler({");
+    expect(code).toContain("isrRouteKey: __isrRouteKey");
+    expect(code).toContain("isrSet: __isrSet");
   });
 });
