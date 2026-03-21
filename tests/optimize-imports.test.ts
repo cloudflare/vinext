@@ -44,7 +44,7 @@ describe("vinext:optimize-imports plugin", () => {
 
   // ── Guard clauses ────────────────────────────────────────────
 
-  it("returns null for virtual modules", () => {
+  it("returns null for virtual modules", async () => {
     const plugin = createOptimizeImportsPlugin(
       () => undefined,
       () => "/fake/root",
@@ -52,11 +52,11 @@ describe("vinext:optimize-imports plugin", () => {
     const transform = unwrapHook(plugin.transform)!;
     const code = `import { Slot } from "radix-ui";`;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-    const result = (transform as any).call(plugin, code, "\0virtual:something");
+    const result = await (transform as any).call(plugin, code, "\0virtual:something");
     expect(result).toBeNull();
   });
 
-  it("returns null for files without barrel imports", () => {
+  it("returns null for files without barrel imports", async () => {
     const plugin = createOptimizeImportsPlugin(
       () => undefined,
       () => "/fake/root",
@@ -64,11 +64,11 @@ describe("vinext:optimize-imports plugin", () => {
     const transform = unwrapHook(plugin.transform)!;
     const code = `import React from 'react';\nconst x = 1;`;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-    const result = (transform as any).call(plugin, code, "/app/page.tsx");
+    const result = await (transform as any).call(plugin, code, "/app/page.tsx");
     expect(result).toBeNull();
   });
 
-  it("returns null when barrel package mentioned but no resolvable entry", () => {
+  it("returns null when barrel package mentioned but no resolvable entry", async () => {
     const plugin = createOptimizeImportsPlugin(
       () => undefined,
       () => "/nonexistent/root",
@@ -81,7 +81,7 @@ describe("vinext:optimize-imports plugin", () => {
     const buildStart = unwrapHook((plugin as any).buildStart);
     if (buildStart) buildStart.call(plugin);
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-    const result = (transform as any).call(
+    const result = await (transform as any).call(
       { ...plugin, environment: { name: "rsc" } },
       code,
       "/app/page.tsx",
@@ -93,15 +93,15 @@ describe("vinext:optimize-imports plugin", () => {
 // ── buildBarrelExportMap ────────────────────────────────────────
 
 describe("buildBarrelExportMap", () => {
-  it("handles export * as Name from 'sub-pkg'", () => {
+  it("handles export * as Name from 'sub-pkg'", async () => {
     const entryPath = uniquePath("namespace-reexport");
     const barrelCode = `export * as Slot from "@radix-ui/react-slot";
 export * as Tooltip from "@radix-ui/react-tooltip";`;
 
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      () => barrelCode,
+      () => Promise.resolve(barrelCode),
     );
 
     expect(map).not.toBeNull();
@@ -115,16 +115,16 @@ export * as Tooltip from "@radix-ui/react-tooltip";`;
     });
   });
 
-  it("handles export { A, B } from 'sub-pkg'", () => {
+  it("handles export { A, B } from 'sub-pkg'", async () => {
     const entryPath = uniquePath("named-reexport");
     const entryDir = path.dirname(entryPath);
     const barrelCode = `export { Button, buttonVariants } from "./button";
 export { Input } from "./input";`;
 
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      () => barrelCode,
+      () => Promise.resolve(barrelCode),
     );
 
     expect(map).not.toBeNull();
@@ -146,15 +146,15 @@ export { Input } from "./input";`;
     });
   });
 
-  it("handles export { default as Name } from 'sub-pkg'", () => {
+  it("handles export { default as Name } from 'sub-pkg'", async () => {
     const entryPath = uniquePath("default-reexport");
     const entryDir = path.dirname(entryPath);
     const barrelCode = `export { default as Calendar } from "./calendar";`;
 
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      () => barrelCode,
+      () => Promise.resolve(barrelCode),
     );
 
     expect(map).not.toBeNull();
@@ -165,15 +165,15 @@ export { Input } from "./input";`;
     });
   });
 
-  it("handles import * as X; export { X }", () => {
+  it("handles import * as X; export { X }", async () => {
     const entryPath = uniquePath("import-ns-reexport");
     const barrelCode = `import * as AlertDialog from "@radix-ui/react-alert-dialog";
 export { AlertDialog };`;
 
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      () => barrelCode,
+      () => Promise.resolve(barrelCode),
     );
 
     expect(map).not.toBeNull();
@@ -183,15 +183,15 @@ export { AlertDialog };`;
     });
   });
 
-  it("handles import { X }; export { X }", () => {
+  it("handles import { X }; export { X }", async () => {
     const entryPath = uniquePath("import-named-reexport");
     const barrelCode = `import { format } from "date-fns/format";
 export { format };`;
 
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      () => barrelCode,
+      () => Promise.resolve(barrelCode),
     );
 
     expect(map).not.toBeNull();
@@ -202,40 +202,40 @@ export { format };`;
     });
   });
 
-  it("returns null when entry cannot be resolved", () => {
-    const map = buildBarrelExportMap(
+  it("returns null when entry cannot be resolved", async () => {
+    const map = await buildBarrelExportMap(
       "nonexistent-pkg",
       () => null,
-      () => null,
+      () => Promise.resolve(null),
     );
     expect(map).toBeNull();
   });
 
-  it("returns null when entry file cannot be read", () => {
+  it("returns null when entry file cannot be read", async () => {
     const entryPath = uniquePath("unreadable");
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      () => null,
+      () => Promise.resolve(null),
     );
     expect(map).toBeNull();
   });
 
-  it("returns an empty map when entry file has syntax errors", () => {
+  it("returns an empty map when entry file has syntax errors", async () => {
     // Parse errors produce an empty map (safe fallback — leaves the import
     // unchanged in the transform), not null. Null is only returned when the
     // entry path itself cannot be resolved or the file cannot be read.
     const entryPath = uniquePath("syntax-error");
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      () => "export { unclosed",
+      () => Promise.resolve("export { unclosed"),
     );
     expect(map).not.toBeNull();
     expect(map!.size).toBe(0);
   });
 
-  it("resolves wildcard export * from './sub' by merging sub-module exports", () => {
+  it("resolves wildcard export * from './sub' by merging sub-module exports", async () => {
     // Barrel: export * from "./utils" + export { Button } from "./button"
     // Sub-module ./utils exports: { format, parse }
     const entryPath = "/fake/wildcard-test/index.js";
@@ -245,10 +245,10 @@ export { format };`;
       [subPath]: `export { format } from "./format";\nexport { parse } from "./parse";`,
     };
 
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      (fp) => files[fp] ?? null,
+      (fp) => Promise.resolve(files[fp] ?? null),
     );
 
     expect(map).not.toBeNull();
@@ -263,7 +263,7 @@ export { format };`;
     expect(map!.get("parse")).toBeDefined();
   });
 
-  it("does not overwrite existing exports when wildcard sub-module has same name", () => {
+  it("does not overwrite existing exports when wildcard sub-module has same name", async () => {
     // If the barrel already defines `format` explicitly, the wildcard should not overwrite it
     const entryPath = "/fake/wildcard-nooverwrite/index.js";
     const subPath = "/fake/wildcard-nooverwrite/utils.js";
@@ -272,10 +272,10 @@ export { format };`;
       [subPath]: `export { format } from "./other-format";`,
     };
 
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      (fp) => files[fp] ?? null,
+      (fp) => Promise.resolve(files[fp] ?? null),
     );
 
     expect(map).not.toBeNull();
@@ -287,7 +287,7 @@ export { format };`;
     });
   });
 
-  it("handles circular wildcard re-exports without infinite loop", () => {
+  it("handles circular wildcard re-exports without infinite loop", async () => {
     // a.js re-exports from b.js; b.js re-exports from a.js (circular)
     const entryPath = "/fake/circular/a.js";
     const files: Record<string, string> = {
@@ -296,24 +296,24 @@ export { format };`;
     };
 
     // Should not throw or hang
-    expect(() => {
+    await expect(
       buildBarrelExportMap(
         "test-pkg",
         () => entryPath,
-        (fp) => files[fp] ?? null,
-      );
-    }).not.toThrow();
+        (fp) => Promise.resolve(files[fp] ?? null),
+      ),
+    ).resolves.not.toThrow();
   });
 
-  it("does not resolve wildcard export * from 'sub-pkg' (external package)", () => {
+  it("does not resolve wildcard export * from 'sub-pkg' (external package)", async () => {
     const entryPath = uniquePath("wildcard");
     const barrelCode = `export * from "some-external-pkg";
 export { Button } from "./button";`;
 
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      () => barrelCode,
+      () => Promise.resolve(barrelCode),
     );
 
     expect(map).not.toBeNull();
@@ -327,7 +327,7 @@ export { Button } from "./button";`;
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("antd");
   });
 
-  it("resolves nested subdirectory wildcard re-exports to the correct absolute path", () => {
+  it("resolves nested subdirectory wildcard re-exports to the correct absolute path", async () => {
     // Simulates an antd-style structure:
     //   index.js         → export * from "./components"
     //   components/index.js → export { Button } from "./Button"
@@ -343,10 +343,10 @@ export { Button } from "./button";`;
       "/fake/nested/components/Button.js": `export function Button() {}`,
     };
 
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      (fp) => files[fp] ?? null,
+      (fp) => Promise.resolve(files[fp] ?? null),
     );
 
     expect(map).not.toBeNull();
@@ -357,7 +357,7 @@ export { Button } from "./button";`;
     expect(buttonEntry!.source).not.toBe("/fake/nested/Button");
   });
 
-  it("resolves wildcard export * from './components' where components/ is a directory with index.js", () => {
+  it("resolves wildcard export * from './components' where components/ is a directory with index.js", async () => {
     // Tests the `/index.js` candidate added to the wildcard resolution path.
     // `export * from "./components"` with no extension — the resolver must
     // try `components/index.js` when `components.js` does not exist.
@@ -368,10 +368,10 @@ export { Button } from "./button";`;
       "/fake/dir-wildcard/components/Button.js": `export function Button() {}`,
     };
 
-    const map = buildBarrelExportMap(
+    const map = await buildBarrelExportMap(
       "test-pkg",
       () => entryPath,
-      (fp) => files[fp] ?? null,
+      (fp) => Promise.resolve(files[fp] ?? null),
     );
 
     expect(map).not.toBeNull();
@@ -398,7 +398,7 @@ describe("vinext:optimize-imports transform", () => {
   async function setupTransform(
     packageName: string,
     barrelContents: string,
-  ): Promise<(code: string, id: string) => ReturnType<(...args: any[]) => any>> {
+  ): Promise<(code: string, id: string) => Promise<ReturnType<(...args: any[]) => any>>> {
     // Create tmp project with a fake package in node_modules.
     // The package name must be in DEFAULT_OPTIMIZE_PACKAGES (or configured via
     // next.config.js) for the plugin's buildStart to include it.
@@ -427,9 +427,9 @@ describe("vinext:optimize-imports transform", () => {
 
     const transform = unwrapHook(plugin.transform)!;
     // Return a caller that fakes the environment context as RSC (server)
-    return (code: string, id: string) =>
+    return async (code: string, id: string) =>
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-      (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
   }
 
   afterEach(() => {
@@ -445,7 +445,7 @@ describe("vinext:optimize-imports transform", () => {
       `export * as Slot from "@radix-ui/react-slot";\nexport * as Dialog from "@radix-ui/react-dialog";`,
     );
     const code = `import { Slot, Dialog } from "lucide-react";\nconst x = Slot;`;
-    const result = call(code, "/app/component.tsx");
+    const result = await call(code, "/app/component.tsx");
     expect(result).not.toBeNull();
     expect(result!.code).toContain(`import * as Slot from "@radix-ui/react-slot"`);
     expect(result!.code).toContain(`import * as Dialog from "@radix-ui/react-dialog"`);
@@ -461,7 +461,7 @@ describe("vinext:optimize-imports transform", () => {
       `export { Button, buttonVariants } from "./button";\nexport { Input } from "./input";`,
     );
     const code = `import { Button, Input } from "date-fns";`;
-    const result = call(code, "/app/page.tsx");
+    const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
     // Expect absolute paths rooted at the package dir, not relative paths
     const pkgDir = path.join(tmpDir, "node_modules", "date-fns");
@@ -484,7 +484,7 @@ describe("vinext:optimize-imports transform", () => {
       `export * as A from "./a";\nexport * as B from "./b";`,
     );
     const code = `import { A, B } from "lodash-es";`;
-    const result = call(code, "/app/page.tsx");
+    const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
     // Every replacement statement should end with a semicolon
     const lines = result!.code
@@ -505,7 +505,7 @@ describe("vinext:optimize-imports transform", () => {
     const call = await setupTransform("rxjs", `export * as Slot from "@radix-ui/react-slot";`);
     // "Unknown" is not exported from the barrel
     const code = `import { Slot, Unknown } from "rxjs";`;
-    const result = call(code, "/app/page.tsx");
+    const result = await call(code, "/app/page.tsx");
     expect(result).toBeNull();
   });
 
@@ -517,7 +517,7 @@ describe("vinext:optimize-imports transform", () => {
       `export * as Slot from "@radix-ui/react-slot";\nexport * as Dialog from "@radix-ui/react-dialog";`,
     );
     const code = `import * as LucideReact from "lucide-react";`;
-    const result = call(code, "/app/page.tsx");
+    const result = await call(code, "/app/page.tsx");
     // ImportNamespaceSpecifier sets allResolved = false → import left unchanged
     expect(result).toBeNull();
   });
@@ -538,7 +538,7 @@ describe("vinext:optimize-imports transform", () => {
     // lucide-react is in DEFAULT_OPTIMIZE_PACKAGES — use it to hit the env guard
     const code = `import { Sun } from "lucide-react";`;
     // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-    const result = (transform as any).call(
+    const result = await (transform as any).call(
       { ...plugin, environment: { name: "client" } },
       code,
       "/app/page.tsx",
@@ -553,7 +553,7 @@ describe("vinext:optimize-imports transform", () => {
       `export { Button, buttonVariants } from "./button";`,
     );
     const code = `import { Button, buttonVariants } from "ramda";`;
-    const result = call(code, "/app/page.tsx");
+    const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
     // Both should be in a single import from the resolved absolute path
     const importLines = result!.code.split("\n").filter((l: string) => l.includes("from"));
@@ -582,7 +582,7 @@ describe("vinext:optimize-imports transform", () => {
     );
     // Import both in a single statement
     const code = `import { Chunk, chunkHelper } from "lodash-es";`;
-    const result = call(code, "/app/page.tsx");
+    const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
 
     const importLines = result!.code
@@ -613,7 +613,7 @@ describe("vinext:optimize-imports transform", () => {
     // `import Calendar from "./calendar"` (a default import), not `import { default as Calendar }`.
     const call = await setupTransform("rxjs", `export { default as Calendar } from "./calendar";`);
     const code = `import { Calendar } from "rxjs";`;
-    const result = call(code, "/app/page.tsx");
+    const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
 
     const absCalendar = path.resolve(path.join(tmpDir, "node_modules", "rxjs"), "calendar");
@@ -633,7 +633,7 @@ describe("vinext:optimize-imports transform", () => {
       [`import Foo from "./foo";`, `export { Foo as default };`].join("\n"),
     );
     const code = `import MyFoo from "ramda";`;
-    const result = call(code, "/app/page.tsx");
+    const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
 
     const absFoo = path.resolve(path.join(tmpDir, "node_modules", "ramda"), "foo");
@@ -674,12 +674,12 @@ describe("vinext:optimize-imports transform", () => {
     const buildStartHook = unwrapHook((plugin as any).buildStart);
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
-    const call = (code: string, id: string) =>
+    const call = async (code: string, id: string) =>
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-      (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
 
     const code = `import { Button } from "antd";`;
-    const result = call(code, "/app/page.tsx");
+    const result = await call(code, "/app/page.tsx");
     expect(result).not.toBeNull();
     // Button should be resolved through the wildcard chain to an absolute path
     expect(result!.code).not.toContain(`from "antd"`);
@@ -731,26 +731,26 @@ describe("vinext:optimize-imports transform", () => {
     const transform = unwrapHook(plugin.transform)!;
 
     // RSC environment: should use react-server entry → knows about RscButton
-    const rscCall = (code: string, id: string) =>
+    const rscCall = async (code: string, id: string) =>
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-      (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
     // SSR environment: should use import entry → knows about Button, not RscButton
-    const ssrCall = (code: string, id: string) =>
+    const ssrCall = async (code: string, id: string) =>
       // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-      (transform as any).call({ ...plugin, environment: { name: "ssr" } }, code, id);
+      await (transform as any).call({ ...plugin, environment: { name: "ssr" } }, code, id);
 
     // RSC: RscButton is exported from the react-server barrel → rewrite succeeds
-    const rscResult = rscCall(`import { RscButton } from "antd";`, "/app/page.tsx");
+    const rscResult = await rscCall(`import { RscButton } from "antd";`, "/app/page.tsx");
     expect(rscResult).not.toBeNull();
     expect(rscResult!.code).not.toContain(`from "antd"`);
     expect(rscResult!.code).toContain("rsc-btn");
 
     // SSR: RscButton is NOT in the standard barrel → rewrite must be skipped
-    const ssrResultUnknown = ssrCall(`import { RscButton } from "antd";`, "/app/page.tsx");
+    const ssrResultUnknown = await ssrCall(`import { RscButton } from "antd";`, "/app/page.tsx");
     expect(ssrResultUnknown).toBeNull();
 
     // SSR: Button IS in the standard barrel → rewrite succeeds
-    const ssrResultKnown = ssrCall(`import { Button } from "antd";`, "/app/page.tsx");
+    const ssrResultKnown = await ssrCall(`import { Button } from "antd";`, "/app/page.tsx");
     expect(ssrResultKnown).not.toBeNull();
     expect(ssrResultKnown!.code).not.toContain(`from "antd"`);
     expect(ssrResultKnown!.code).toContain("btn");

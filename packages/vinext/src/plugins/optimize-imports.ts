@@ -14,7 +14,7 @@
 import type { Plugin } from "vite";
 import { parseAst } from "vite";
 import { createRequire } from "node:module";
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
@@ -23,9 +23,9 @@ import type { ResolvedNextConfig } from "../config/next-config.js";
  * Read a file's contents, returning null on any error.
  * Module-level so a single function instance is shared across all transform calls.
  */
-function readFileSafe(filepath: string): string | null {
+async function readFileSafe(filepath: string): Promise<string | null> {
   try {
-    return fs.readFileSync(filepath, "utf-8");
+    return await fs.readFile(filepath, "utf-8");
   } catch {
     return null;
   }
@@ -211,7 +211,10 @@ interface PackageInfo {
  * Handles packages with strict `exports` fields that don't expose `./package.json`
  * by first resolving the main entry, then walking up to find the package root.
  */
-function resolvePackageInfo(packageName: string, projectRoot: string): PackageInfo | null {
+async function resolvePackageInfo(
+  packageName: string,
+  projectRoot: string,
+): Promise<PackageInfo | null> {
   try {
     const req = createRequire(path.join(projectRoot, "package.json"));
 
@@ -219,7 +222,7 @@ function resolvePackageInfo(packageName: string, projectRoot: string): PackageIn
     try {
       const pkgJsonPath = req.resolve(`${packageName}/package.json`);
       const pkgDir = path.dirname(pkgJsonPath);
-      const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8")) as PackageJson;
+      const pkgJson = JSON.parse(await fs.readFile(pkgJsonPath, "utf-8")) as PackageJson;
       return { pkgDir, pkgJson };
     } catch {
       // Package has strict exports — resolve main entry and walk up to find package.json
@@ -229,11 +232,13 @@ function resolvePackageInfo(packageName: string, projectRoot: string): PackageIn
         // Walk up until we find package.json with matching name
         for (let i = 0; i < 10; i++) {
           const candidate = path.join(dir, "package.json");
-          if (fs.existsSync(candidate)) {
-            const parsed = JSON.parse(fs.readFileSync(candidate, "utf-8")) as PackageJson;
+          try {
+            const parsed = JSON.parse(await fs.readFile(candidate, "utf-8")) as PackageJson;
             if (parsed.name === packageName) {
               return { pkgDir: dir, pkgJson: parsed };
             }
+          } catch {
+            // file doesn't exist or isn't parseable — keep walking up
           }
           const parent = path.dirname(dir);
           if (parent === dir) break;
@@ -256,13 +261,13 @@ function resolvePackageInfo(packageName: string, projectRoot: string): PackageIn
  * Pass `preferReactServer: true` in the RSC environment to prefer the "react-server"
  * export condition over "node"/"import" when resolving the barrel entry.
  */
-function resolvePackageEntry(
+async function resolvePackageEntry(
   packageName: string,
   projectRoot: string,
   preferReactServer: boolean,
-): string | null {
+): Promise<string | null> {
   try {
-    const info = resolvePackageInfo(packageName, projectRoot);
+    const info = await resolvePackageInfo(packageName, projectRoot);
     if (!info) return null;
     const { pkgDir, pkgJson } = info;
 
@@ -308,13 +313,13 @@ function resolvePackageEntry(
  *   `readFile` call for the entry file — avoids a redundant read when the caller
  *   already has the content in hand.
  */
-function buildExportMapFromFile(
+async function buildExportMapFromFile(
   filePath: string,
-  readFile: (filepath: string) => string | null,
+  readFile: (filepath: string) => Promise<string | null>,
   cache: Map<string, BarrelExportMap>,
   visited: Set<string>,
   initialContent?: string,
-): BarrelExportMap {
+): Promise<BarrelExportMap> {
   // Guard against circular re-exports
   if (visited.has(filePath)) return new Map();
   visited.add(filePath);
@@ -322,7 +327,7 @@ function buildExportMapFromFile(
   const cached = cache.get(filePath);
   if (cached) return cached;
 
-  const content = initialContent ?? readFile(filePath);
+  const content = initialContent ?? (await readFile(filePath));
   if (!content) return new Map();
 
   let ast: ReturnType<typeof parseAst>;
@@ -414,9 +419,9 @@ function buildExportMapFromFile(
               `${subPath}/index.tsx`,
             ];
             for (const candidate of candidates) {
-              const candidateContent = readFile(candidate);
+              const candidateContent = await readFile(candidate);
               if (candidateContent !== null) {
-                const subMap = buildExportMapFromFile(
+                const subMap = await buildExportMapFromFile(
                   candidate,
                   readFile,
                   cache,
@@ -491,12 +496,12 @@ function buildExportMapFromFile(
  * the file has a parse error. Returns an empty map if the file is valid but
  * exports nothing.
  */
-export function buildBarrelExportMap(
+export async function buildBarrelExportMap(
   packageName: string,
   resolveEntry: (pkg: string) => string | null,
-  readFile: (filepath: string) => string | null,
+  readFile: (filepath: string) => Promise<string | null>,
   cache?: Map<string, BarrelExportMap>,
-): BarrelExportMap | null {
+): Promise<BarrelExportMap | null> {
   const entryPath = resolveEntry(packageName);
   if (!entryPath) return null;
 
@@ -511,7 +516,7 @@ export function buildBarrelExportMap(
   // Parse errors in the entry file are handled gracefully by buildExportMapFromFile
   // (returns an empty map), which causes the transform to leave all imports unchanged —
   // the correct safe fallback.
-  const content = readFile(entryPath);
+  const content = await readFile(entryPath);
   if (!content) return null;
 
   const visited = new Set<string>();
@@ -519,7 +524,13 @@ export function buildBarrelExportMap(
   // readFile call for the entry file (it would otherwise read it a second time).
   // buildExportMapFromFile also stores the result in exportMapCache (keyed by
   // filePath === entryPath), so no additional cache.set is needed here.
-  const exportMap = buildExportMapFromFile(entryPath, readFile, exportMapCache, visited, content);
+  const exportMap = await buildExportMapFromFile(
+    entryPath,
+    readFile,
+    exportMapCache,
+    visited,
+    content,
+  );
 
   return exportMap;
 }
@@ -538,7 +549,7 @@ export function createOptimizeImportsPlugin(
     exportMapCache: new Map<string, BarrelExportMap>(),
     subpkgOrigin: new Map<string, string>(),
   };
-  // Cache resolved entry paths — resolvePackageEntry does readFileSync/existsSync
+  // Cache resolved entry paths — resolvePackageEntry does require.resolve, file I/O,
   // and dir-walking on every call; caching avoids repeating that work for each
   // file that imports from the same barrel package.
   const entryPathCache = new Map<string, string | null>();
@@ -599,7 +610,7 @@ export function createOptimizeImportsPlugin(
           include: /\.(tsx?|jsx?|mjs)$/,
         },
       },
-      handler(code, id) {
+      async handler(code, id) {
         // Only apply on server environments (RSC/SSR). The client uses Vite's
         // dep optimizer which handles barrel imports correctly.
         const env = (this as PluginCtx).environment;
@@ -648,14 +659,14 @@ export function createOptimizeImportsPlugin(
           const cacheKey = `${preferReactServer ? "rsc" : "ssr"}:${importSource}`;
           let barrelEntry: string | null | undefined = entryPathCache.get(cacheKey);
           if (barrelEntry === undefined) {
-            barrelEntry = resolvePackageEntry(importSource, root, preferReactServer);
-            entryPathCache.set(cacheKey, barrelEntry);
+            barrelEntry = await resolvePackageEntry(importSource, root, preferReactServer);
+            entryPathCache.set(cacheKey, barrelEntry ?? null);
           }
-          const exportMap = buildBarrelExportMap(
+          const exportMap = await buildBarrelExportMap(
             importSource,
             // Entry already resolved above via entryPathCache; the callback is a
             // no-op resolver that simply returns the pre-resolved barrelEntry.
-            () => barrelEntry,
+            () => barrelEntry ?? null,
             readFileSafe,
             barrelCaches.exportMapCache,
           );
@@ -718,8 +729,34 @@ export function createOptimizeImportsPlugin(
             if (!allResolved) break;
           }
 
-          // TODO: consider debug logging which specifier was unresolved
-          if (!allResolved || specifiers.length === 0) continue;
+          // If any specifier couldn't be resolved, leave the entire import unchanged.
+          // Emit a debug log so developers can diagnose optimization gaps — e.g. a name
+          // that comes through `export * from` wildcard or an inline `export const`.
+          if (!allResolved || specifiers.length === 0) {
+            if (allResolved === false) {
+              // Find the first unresolved name to name it in the log message.
+              for (const spec of node.specifiers ?? []) {
+                if (spec.type === "ImportSpecifier" && spec.imported) {
+                  const imported = astName(spec.imported);
+                  if (!exportMap.has(imported)) {
+                    console.debug(
+                      `[vinext:optimize-imports] skipping "${importSource}": could not resolve specifier "${imported}" in barrel export map`,
+                    );
+                    break;
+                  }
+                } else if (spec.type === "ImportDefaultSpecifier" && !exportMap.has("default")) {
+                  console.debug(
+                    `[vinext:optimize-imports] skipping "${importSource}": default export not found in barrel export map`,
+                  );
+                  break;
+                } else if (spec.type === "ImportNamespaceSpecifier") {
+                  // Namespace imports are intentionally not optimized — no log needed.
+                  break;
+                }
+              }
+            }
+            continue;
+          }
 
           // Group specifiers by their resolved source module
           const bySource = new Map<
