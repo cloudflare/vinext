@@ -3701,14 +3701,14 @@ describe("generateRscEntry ISR code generation", () => {
     expect(code).toContain("resolveAppPageRscResponsePolicy as __resolveAppPageRscResponsePolicy");
   });
 
-  it("generated code delegates page probes and special-error handling to typed helpers", () => {
+  it("generated code delegates page probe orchestration to typed helpers", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes);
-    expect(code).toContain("probeAppPageLayouts as __probeAppPageLayouts");
-    expect(code).toContain("probeAppPageComponent as __probeAppPageComponent");
+    expect(code).toContain("probeAppPageBeforeRender as __probeAppPageBeforeRender");
     expect(code).toContain("resolveAppPageSpecialError as __resolveAppPageSpecialError");
     expect(code).toContain(
       "buildAppPageSpecialErrorResponse as __buildAppPageSpecialErrorResponse",
     );
+    expect(code).toContain("const __preRenderResponse = await __probeAppPageBeforeRender({");
   });
 
   it("generated code delegates page HTML stream plumbing to typed helpers", () => {

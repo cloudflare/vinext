@@ -59,6 +59,9 @@ const appPageResponsePath = fileURLToPath(
 const appPageExecutionPath = fileURLToPath(
   new URL("../server/app-page-execution.js", import.meta.url),
 ).replace(/\\/g, "/");
+const appPageProbePath = fileURLToPath(
+  new URL("../server/app-page-probe.js", import.meta.url),
+).replace(/\\/g, "/");
 const appPageBoundaryPath = fileURLToPath(
   new URL("../server/app-page-boundary.js", import.meta.url),
 ).replace(/\\/g, "/");
@@ -388,12 +391,13 @@ import {
 import {
   buildAppPageFontLinkHeader as __buildAppPageFontLinkHeader,
   buildAppPageSpecialErrorResponse as __buildAppPageSpecialErrorResponse,
-  probeAppPageComponent as __probeAppPageComponent,
-  probeAppPageLayouts as __probeAppPageLayouts,
   readAppPageTextStream as __readAppPageTextStream,
   resolveAppPageSpecialError as __resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture as __teeAppPageRscStreamForCapture,
 } from ${JSON.stringify(appPageExecutionPath)};
+import {
+  probeAppPageBeforeRender as __probeAppPageBeforeRender,
+} from ${JSON.stringify(appPageProbePath)};
 import {
   renderAppPageBoundaryResponse as __renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary as __resolveAppPageErrorBoundary,
@@ -2544,10 +2548,51 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
   // Note: CSS is automatically injected by @vitejs/plugin-rsc's
   // rscCssTransform — no manual loadCss() call needed.
 
-  // Helper: check if an error is a redirect/notFound/forbidden/unauthorized thrown by the navigation shim
-  async function handleRenderError(err) {
-    const specialError = __resolveAppPageSpecialError(err);
-    if (specialError) {
+  const _hasLoadingBoundary = !!(route.loading && route.loading.default);
+  const _asyncLayoutParams = makeThenableParams(params);
+  const __preRenderResponse = await __probeAppPageBeforeRender({
+    hasLoadingBoundary: _hasLoadingBoundary,
+    layoutCount: route.layouts?.length ?? 0,
+    probeLayoutAt(li) {
+      const LayoutComp = route.layouts[li]?.default;
+      if (!LayoutComp) return null;
+      return LayoutComp({ params: _asyncLayoutParams, children: null });
+    },
+    probePage() {
+      return PageComponent({ params });
+    },
+    async renderLayoutSpecialError(__layoutSpecialError, li) {
+      return __buildAppPageSpecialErrorResponse({
+        clearRequestContext() {
+          setHeadersContext(null);
+          setNavigationContext(null);
+        },
+        renderFallbackPage(statusCode) {
+          // Find the not-found component from the parent level (the boundary that
+          // would catch this in Next.js). Walk up from the throwing layout to find
+          // the nearest not-found at a parent layout's directory.
+          let parentNotFound = null;
+          if (route.notFounds) {
+            for (let pi = li - 1; pi >= 0; pi--) {
+              if (route.notFounds[pi]?.default) {
+                parentNotFound = route.notFounds[pi].default;
+                break;
+              }
+            }
+          }
+          if (!parentNotFound) parentNotFound = ${rootNotFoundVar ? `${rootNotFoundVar}?.default` : "null"};
+          const parentLayouts = route.layouts.slice(0, li);
+          return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
+            boundaryComponent: parentNotFound,
+            layouts: parentLayouts,
+            matchedParams: params,
+          });
+        },
+        requestUrl: request.url,
+        specialError: __layoutSpecialError,
+      });
+    },
+    async renderPageSpecialError(specialError) {
       return __buildAppPageSpecialErrorResponse({
         clearRequestContext() {
           setHeadersContext(null);
@@ -2561,109 +2606,16 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
         requestUrl: request.url,
         specialError,
       });
-    }
-    return null;
-  }
-
-  // Pre-render layout components to catch notFound()/redirect() thrown from layouts.
-  // In Next.js, each layout level has its own NotFoundBoundary. When a layout throws
-  // notFound(), the parent layout's boundary catches it and renders the parent's
-  // not-found.tsx. Since React Flight doesn't activate client error boundaries during
-  // RSC rendering, we catch layout-level throws here and render the appropriate
-  // fallback page with only the layouts above the throwing one.
-  //
-  // IMPORTANT: Layout pre-render runs BEFORE page pre-render. In Next.js, layouts
-  // render before their children — if a layout throws notFound(), the page never
-  // executes. By checking layouts first, we avoid a bug where the page's notFound()
-  // triggers renderHTTPAccessFallbackPage with ALL route layouts, but one of those
-  // layouts itself throws notFound() during the fallback rendering (causing a 500).
-  if (route.layouts && route.layouts.length > 0) {
-    const asyncParams = makeThenableParams(params);
-    const _layoutProbeResult = await __probeAppPageLayouts({
-      layoutCount: route.layouts.length,
-      async onLayoutError(layoutErr, li) {
-        const __layoutSpecialError = __resolveAppPageSpecialError(layoutErr);
-        if (!__layoutSpecialError) {
-          return null;
-        }
-
-        return __buildAppPageSpecialErrorResponse({
-          clearRequestContext() {
-            setHeadersContext(null);
-            setNavigationContext(null);
-          },
-          renderFallbackPage(statusCode) {
-            // Find the not-found component from the parent level (the boundary that
-            // would catch this in Next.js). Walk up from the throwing layout to find
-            // the nearest not-found at a parent layout's directory.
-            let parentNotFound = null;
-            if (route.notFounds) {
-              for (let pi = li - 1; pi >= 0; pi--) {
-                if (route.notFounds[pi]?.default) {
-                  parentNotFound = route.notFounds[pi].default;
-                  break;
-                }
-              }
-            }
-            if (!parentNotFound) parentNotFound = ${rootNotFoundVar ? `${rootNotFoundVar}?.default` : "null"};
-            const parentLayouts = route.layouts.slice(0, li);
-            return renderHTTPAccessFallbackPage(route, statusCode, isRscRequest, request, {
-              boundaryComponent: parentNotFound,
-              layouts: parentLayouts,
-              matchedParams: params,
-            });
-          },
-          requestUrl: request.url,
-          specialError: __layoutSpecialError,
-        });
-      },
-      probeLayoutAt(li) {
-        const LayoutComp = route.layouts[li]?.default;
-        if (!LayoutComp) return null;
-        return LayoutComp({ params: asyncParams, children: null });
-      },
-      runWithSuppressedHookWarning(probe) {
-        // Run inside ALS context so the module-level console.error patch suppresses
-        // "Invalid hook call" only for this request's probe — concurrent requests
-        // each have their own ALS store and are unaffected.
-        return _suppressHookWarningAls.run(true, probe);
-      },
-    });
-    if (_layoutProbeResult instanceof Response) return _layoutProbeResult;
-  }
-
-  // Pre-render the page component to catch redirect()/notFound() thrown synchronously.
-  // Server Components are just functions — we can call PageComponent directly to detect
-  // these special throws before starting the RSC stream.
-  //
-  // For routes with a loading.tsx Suspense boundary, we skip awaiting async components.
-  // The Suspense boundary + rscOnError will handle redirect/notFound thrown during
-  // streaming, and blocking here would defeat streaming (the slow component's delay
-  // would be hit before the RSC stream even starts).
-  //
-  // Because this calls the component outside React's render cycle, hooks like use()
-  // trigger "Invalid hook call" console.error in dev. The module-level ALS patch
-  // suppresses the warning only within this request's execution context.
-  const _hasLoadingBoundary = !!(route.loading && route.loading.default);
-  const _pageProbeResult = await __probeAppPageComponent({
-    awaitAsyncResult: !_hasLoadingBoundary,
-    async onError(preRenderErr) {
-      const specialResponse = await handleRenderError(preRenderErr);
-      if (specialResponse) return specialResponse;
-      // Non-special errors from the pre-render test are expected (e.g. use() hook
-      // fails outside React's render cycle, client references can't execute on server).
-      // Only redirect/notFound/forbidden/unauthorized are actionable here — other
-      // errors will be properly caught during actual RSC/SSR rendering below.
-      return null;
     },
-    probePage() {
-      return PageComponent({ params });
-    },
+    resolveSpecialError: __resolveAppPageSpecialError,
     runWithSuppressedHookWarning(probe) {
+      // Run inside ALS context so the module-level console.error patch suppresses
+      // "Invalid hook call" only for this request's probe — concurrent requests
+      // each have their own ALS store and are unaffected.
       return _suppressHookWarningAls.run(true, probe);
     },
   });
-  if (_pageProbeResult instanceof Response) return _pageProbeResult;
+  if (__preRenderResponse) return __preRenderResponse;
 
   // Mark end of compile phase: route matching, middleware, tree building are done.
   if (process.env.NODE_ENV !== "production") __compileEnd = performance.now();
