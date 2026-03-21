@@ -365,6 +365,7 @@ import { readAppRouteHandlerCacheResponse as __readAppRouteHandlerCacheResponse 
 import {
   finalizeAppPageHtmlCacheResponse as __finalizeAppPageHtmlCacheResponse,
   readAppPageCacheResponse as __readAppPageCacheResponse,
+  scheduleAppPageRscCacheWrite as __scheduleAppPageRscCacheWrite,
 } from ${JSON.stringify(appPageCachePath)};
 import {
   buildAppPageHtmlResponse as __buildAppPageHtmlResponse,
@@ -2792,7 +2793,9 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // The RSC stream is consumed lazily - components render when chunks are read.
     // If we clear context now, headers()/cookies() will fail during rendering.
     // Context will be cleared when the next request starts (via runWithRequestContext).
+    const __dynamicUsedInRsc = consumeDynamicUsage();
     const __rscResponsePolicy = __resolveAppPageRscResponsePolicy({
+      dynamicUsedDuringBuild: __dynamicUsedInRsc,
       isDynamicError,
       isForceDynamic,
       isForceStatic,
@@ -2814,21 +2817,22 @@ async function _handleRequest(request, __reqCtx, _mwCtx) {
     // For ISR-eligible RSC requests in production: write rscData to its own key.
     // HTML is stored under a separate key (written by the HTML path below) so
     // these writes never race or clobber each other.
-    if (process.env.NODE_ENV === "production" && __isrRscDataPromise) {
-      const __isrKeyRsc = __isrRscKey(cleanPathname);
-      const __revalSecsRsc = revalidateSeconds;
-      const __rscWritePromise = (async () => {
-        try {
-          const __rscDataForCache = await __isrRscDataPromise;
-          const __pageTags = __pageCacheTags(cleanPathname, getCollectedFetchTags());
-          await __isrSet(__isrKeyRsc, { kind: "APP_PAGE", html: "", rscData: __rscDataForCache, headers: undefined, postponed: undefined, status: 200 }, __revalSecsRsc, __pageTags);
-          __isrDebug?.("RSC cache written", __isrKeyRsc);
-        } catch (__rscWriteErr) {
-          console.error("[vinext] ISR RSC cache write error:", __rscWriteErr);
-        }
-      })();
-      _getRequestExecutionContext()?.waitUntil(__rscWritePromise);
-    }
+    __scheduleAppPageRscCacheWrite({
+      capturedRscDataPromise: process.env.NODE_ENV === "production" ? __isrRscDataPromise : null,
+      cleanPathname,
+      consumeDynamicUsage,
+      dynamicUsedDuringBuild: __dynamicUsedInRsc,
+      getPageTags() {
+        return __pageCacheTags(cleanPathname, getCollectedFetchTags());
+      },
+      isrDebug: __isrDebug,
+      isrRscKey: __isrRscKey,
+      isrSet: __isrSet,
+      revalidateSeconds,
+      waitUntil(promise) {
+        _getRequestExecutionContext()?.waitUntil(promise);
+      },
+    });
     return __rscResponse;
   }
 

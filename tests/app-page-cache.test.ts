@@ -3,6 +3,7 @@ import {
   buildAppPageCachedResponse,
   finalizeAppPageHtmlCacheResponse,
   readAppPageCacheResponse,
+  scheduleAppPageRscCacheWrite,
 } from "../packages/vinext/src/server/app-page-cache.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
@@ -342,5 +343,103 @@ describe("app page cache helpers", () => {
       },
     ]);
     expect(debugCalls).toEqual([["HTML cache written", "html:/fresh"]]);
+  });
+
+  it("schedules RSC cache writes when the page stayed static through stream consumption", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const debugCalls: Array<[string, string]> = [];
+    const isrSetCalls: Array<{
+      key: string;
+      html: string;
+      hasRscData: boolean;
+      revalidateSeconds: number;
+      tags: string[];
+    }> = [];
+
+    const didSchedule = scheduleAppPageRscCacheWrite({
+      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      cleanPathname: "/fresh-rsc",
+      consumeDynamicUsage() {
+        return false;
+      },
+      dynamicUsedDuringBuild: false,
+      getPageTags() {
+        return ["/fresh-rsc", "_N_T_/fresh-rsc"];
+      },
+      isrDebug(event, detail) {
+        debugCalls.push([event, detail]);
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      async isrSet(key, data, revalidateSeconds, tags) {
+        isrSetCalls.push({
+          key,
+          html: data.html,
+          hasRscData: Boolean(data.rscData),
+          revalidateSeconds,
+          tags,
+        });
+      },
+      revalidateSeconds: 60,
+      waitUntil(promise) {
+        pendingCacheWrites.push(promise);
+      },
+    });
+
+    expect(didSchedule).toBe(true);
+    expect(pendingCacheWrites).toHaveLength(1);
+
+    await pendingCacheWrites[0];
+
+    expect(isrSetCalls).toEqual([
+      {
+        key: "rsc:/fresh-rsc",
+        html: "",
+        hasRscData: true,
+        revalidateSeconds: 60,
+        tags: ["/fresh-rsc", "_N_T_/fresh-rsc"],
+      },
+    ]);
+    expect(debugCalls).toEqual([["RSC cache written", "rsc:/fresh-rsc"]]);
+  });
+
+  it("skips RSC cache writes when dynamic usage appears during stream rendering", async () => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const debugCalls: Array<[string, string]> = [];
+    const isrSet = vi.fn();
+
+    const didSchedule = scheduleAppPageRscCacheWrite({
+      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      cleanPathname: "/dynamic-rsc",
+      consumeDynamicUsage() {
+        return true;
+      },
+      dynamicUsedDuringBuild: false,
+      getPageTags() {
+        return ["/dynamic-rsc", "_N_T_/dynamic-rsc"];
+      },
+      isrDebug(event, detail) {
+        debugCalls.push([event, detail]);
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      isrSet,
+      revalidateSeconds: 60,
+      waitUntil(promise) {
+        pendingCacheWrites.push(promise);
+      },
+    });
+
+    expect(didSchedule).toBe(true);
+    expect(pendingCacheWrites).toHaveLength(1);
+
+    await pendingCacheWrites[0];
+
+    expect(isrSet).not.toHaveBeenCalled();
+    expect(debugCalls).toEqual([
+      ["RSC cache write skipped (dynamic usage during render)", "rsc:/dynamic-rsc"],
+    ]);
   });
 });

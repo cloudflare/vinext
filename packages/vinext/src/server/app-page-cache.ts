@@ -49,6 +49,19 @@ export interface FinalizeAppPageHtmlCacheResponseOptions {
   waitUntil?: (promise: Promise<void>) => void;
 }
 
+export interface ScheduleAppPageRscCacheWriteOptions {
+  capturedRscDataPromise: Promise<ArrayBuffer> | null;
+  cleanPathname: string;
+  consumeDynamicUsage: () => boolean;
+  dynamicUsedDuringBuild: boolean;
+  getPageTags: () => string[];
+  isrDebug?: AppPageDebugLogger;
+  isrRscKey: (pathname: string) => string;
+  isrSet: AppPageCacheSetter;
+  revalidateSeconds: number;
+  waitUntil?: (promise: Promise<void>) => void;
+}
+
 function buildAppPageCacheControl(
   cacheState: BuildAppPageCachedResponseOptions["cacheState"],
   revalidateSeconds: number,
@@ -249,4 +262,43 @@ export function finalizeAppPageHtmlCacheResponse(
     statusText: response.statusText,
     headers: response.headers,
   });
+}
+
+export function scheduleAppPageRscCacheWrite(
+  options: ScheduleAppPageRscCacheWriteOptions,
+): boolean {
+  const capturedRscDataPromise = options.capturedRscDataPromise;
+  if (!capturedRscDataPromise || options.dynamicUsedDuringBuild) {
+    return false;
+  }
+
+  const rscKey = options.isrRscKey(options.cleanPathname);
+  const cachePromise = (async () => {
+    try {
+      const rscData = await capturedRscDataPromise;
+
+      // Two-phase dynamic detection:
+      // 1. dynamicUsedDuringBuild catches searchParams-driven opt-in before the
+      //    RSC response is sent.
+      // 2. consumeDynamicUsage() here catches APIs that fire while the RSC
+      //    stream is consumed (headers(), cookies(), noStore()).
+      if (options.consumeDynamicUsage()) {
+        options.isrDebug?.("RSC cache write skipped (dynamic usage during render)", rscKey);
+        return;
+      }
+
+      await options.isrSet(
+        rscKey,
+        buildAppPageCacheValue("", rscData, 200),
+        options.revalidateSeconds,
+        options.getPageTags(),
+      );
+      options.isrDebug?.("RSC cache written", rscKey);
+    } catch (cacheError) {
+      console.error("[vinext] ISR RSC cache write error:", cacheError);
+    }
+  })();
+
+  options.waitUntil?.(cachePromise);
+  return true;
 }

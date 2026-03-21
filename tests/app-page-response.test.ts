@@ -19,6 +19,7 @@ describe("app page response helpers", () => {
   it("resolves RSC response policy for static and ISR responses", () => {
     expect(
       resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: true,
@@ -32,6 +33,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -47,6 +49,7 @@ describe("app page response helpers", () => {
   it("resolves RSC response policy for force-dynamic, infinity, and default cases", () => {
     expect(
       resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
         isDynamicError: false,
         isForceDynamic: true,
         isForceStatic: false,
@@ -59,6 +62,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -72,6 +76,7 @@ describe("app page response helpers", () => {
 
     expect(
       resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: false,
@@ -79,6 +84,21 @@ describe("app page response helpers", () => {
         revalidateSeconds: null,
       }),
     ).toEqual({});
+  });
+
+  it("resolves RSC response policy as no-store when dynamic usage is detected during build", () => {
+    expect(
+      resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: true,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: false,
+        isProduction: true,
+        revalidateSeconds: 60,
+      }),
+    ).toEqual({
+      cacheControl: "no-store, must-revalidate",
+    });
   });
 
   it("resolves HTML response policy precedence", () => {
@@ -147,6 +167,7 @@ describe("app page response helpers", () => {
   it("treats force-static with explicit revalidate as ISR in both policy helpers", () => {
     expect(
       resolveAppPageRscResponsePolicy({
+        dynamicUsedDuringBuild: false,
         isDynamicError: false,
         isForceDynamic: false,
         isForceStatic: true,

@@ -15,7 +15,7 @@ export interface AppPageResponsePolicy {
   cacheState?: "MISS" | "STATIC";
 }
 
-export interface ResolveAppPageRscResponsePolicyOptions {
+interface ResolveAppPageResponsePolicyBaseOptions {
   isDynamicError: boolean;
   isForceDynamic: boolean;
   isForceStatic: boolean;
@@ -23,7 +23,11 @@ export interface ResolveAppPageRscResponsePolicyOptions {
   revalidateSeconds: number | null;
 }
 
-export interface ResolveAppPageHtmlResponsePolicyOptions extends ResolveAppPageRscResponsePolicyOptions {
+export interface ResolveAppPageRscResponsePolicyOptions extends ResolveAppPageResponsePolicyBaseOptions {
+  dynamicUsedDuringBuild: boolean;
+}
+
+export interface ResolveAppPageHtmlResponsePolicyOptions extends ResolveAppPageResponsePolicyBaseOptions {
   dynamicUsedDuringRender: boolean;
 }
 
@@ -74,7 +78,7 @@ function applyTimingHeader(headers: Headers, timing?: AppPageResponseTiming): vo
 export function resolveAppPageRscResponsePolicy(
   options: ResolveAppPageRscResponsePolicyOptions,
 ): AppPageResponsePolicy {
-  if (options.isForceDynamic) {
+  if (options.isForceDynamic || options.dynamicUsedDuringBuild) {
     return { cacheControl: NO_STORE_CACHE_CONTROL };
   }
 
