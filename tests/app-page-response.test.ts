@@ -144,6 +144,36 @@ describe("app page response helpers", () => {
     });
   });
 
+  it("treats force-static with explicit revalidate as ISR in both policy helpers", () => {
+    expect(
+      resolveAppPageRscResponsePolicy({
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: true,
+        revalidateSeconds: 60,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=60, stale-while-revalidate",
+      cacheState: "MISS",
+    });
+
+    expect(
+      resolveAppPageHtmlResponsePolicy({
+        dynamicUsedDuringRender: false,
+        isDynamicError: false,
+        isForceDynamic: false,
+        isForceStatic: true,
+        isProduction: true,
+        revalidateSeconds: 60,
+      }),
+    ).toEqual({
+      cacheControl: "s-maxage=60, stale-while-revalidate",
+      cacheState: "MISS",
+      shouldWriteToCache: true,
+    });
+  });
+
   it("builds RSC responses with params, middleware headers, and timing", async () => {
     const middlewareHeaders = new Headers();
     middlewareHeaders.set("cache-control", "private, max-age=5");

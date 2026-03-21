@@ -178,6 +178,10 @@ export function buildAppPageRscResponse(
       if (lowerKey === "set-cookie" || lowerKey === "vary") {
         headers.append(key, value);
       } else {
+        // Keep parity with the old inline RSC path: middleware owns singular
+        // response headers like Cache-Control here, while Set-Cookie and Vary
+        // are accumulated. The HTML helper intentionally keeps its legacy
+        // append-for-everything behavior below.
         headers.set(key, value);
       }
     }
