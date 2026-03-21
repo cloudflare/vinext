@@ -34,6 +34,9 @@ export function createRscEmbedTransform(
         const result = await reader.read();
         if (result.done) break;
         const text = decoder.decode(result.value, { stream: true });
+        // The RSC entry already fixes HL hints at the source. Keep this second
+        // pass as defense in depth for any embed stream that bypasses that
+        // wrapper; the rewrite is idempotent, so double-application is safe.
         pendingChunks.push(fixFlightHints(text));
       }
     } catch (error) {

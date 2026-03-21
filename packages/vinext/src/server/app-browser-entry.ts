@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 import type { ReactNode } from "react";
 import type { Root } from "react-dom/client";
 import {
@@ -182,7 +184,7 @@ async function main(): Promise<void> {
   reactRoot = hydrateRoot(
     document,
     root as ReactNode,
-    process.env.NODE_ENV !== "production" ? { onCaughtError() {} } : undefined,
+    import.meta.env.DEV ? { onCaughtError() {} } : undefined,
   );
 
   window.__VINEXT_RSC_ROOT__ = reactRoot;

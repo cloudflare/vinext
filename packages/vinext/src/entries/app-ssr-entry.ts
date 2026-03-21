@@ -1,16 +1,4 @@
-import fs from "node:fs";
-import { fileURLToPath } from "node:url";
-
-function resolveRuntimeEntryModule(name: string): string {
-  for (const ext of [".ts", ".js", ".mts", ".mjs"]) {
-    const filePath = fileURLToPath(new URL(`../server/${name}${ext}`, import.meta.url));
-    if (fs.existsSync(filePath)) {
-      return filePath.replace(/\\/g, "/");
-    }
-  }
-
-  return fileURLToPath(new URL(`../server/${name}.js`, import.meta.url)).replace(/\\/g, "/");
-}
+import { resolveRuntimeEntryModule } from "./runtime-entry-module.js";
 
 /**
  * Generate the virtual SSR entry module.

@@ -84,6 +84,27 @@ describe("App browser stream helpers", () => {
     expect(listeners.has("DOMContentLoaded")).toBe(true);
   });
 
+  it("streams every chunk when push receives multiple arguments", async () => {
+    setGlobalDocument({
+      readyState: "loading",
+      addEventListener: vi.fn(),
+    } as unknown as Document);
+
+    vinext.__VINEXT_RSC_CHUNKS__ = [];
+    vinext.__VINEXT_RSC_DONE__ = false;
+
+    const reader = createProgressiveRscStream().getReader();
+
+    vinext.__VINEXT_RSC_CHUNKS__!.push("alpha", "beta");
+    expect(await readText(reader)).toEqual({ done: false, text: "alpha" });
+    expect(await readText(reader)).toEqual({ done: false, text: "beta" });
+
+    vinext.__VINEXT_RSC_DONE__ = true;
+    vinext.__VINEXT_RSC_CHUNKS__!.push("omega");
+    expect(await readText(reader)).toEqual({ done: false, text: "omega" });
+    expect(await readText(reader)).toEqual({ done: true, text: undefined });
+  });
+
   it("closes truncated streams on DOMContentLoaded", async () => {
     let onDomContentLoaded: (() => void) | undefined;
     setGlobalDocument({
