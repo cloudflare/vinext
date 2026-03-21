@@ -5,7 +5,5 @@ declare module "vite-plugin-commonjs" {
     [key: string]: unknown;
   }
 
-  export default function commonjs(
-    options?: CommonJsPluginOptions,
-  ): Plugin;
+  export default function commonjs(options?: CommonJsPluginOptions): Plugin;
 }

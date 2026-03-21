@@ -15,10 +15,7 @@ import {
 } from "../shims/navigation.js";
 import { runWithNavigationContext } from "../shims/navigation-state.js";
 import { safeJsonStringify } from "./html.js";
-import {
-  createRscEmbedTransform,
-  createTickBufferedTransform,
-} from "./app-ssr-stream.js";
+import { createRscEmbedTransform, createTickBufferedTransform } from "./app-ssr-stream.js";
 
 export interface FontPreload {
   href: string;
@@ -107,8 +104,7 @@ function renderFontHtml(fontData?: FontData): string {
   }
 
   for (const preload of fontData.preloads ?? []) {
-    fontHTML +=
-      `<link rel="preload" href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
+    fontHTML += `<link rel="preload" href="${escapeHtmlAttr(preload.href)}" as="font" type="${escapeHtmlAttr(preload.type)}" crossorigin />\n`;
   }
 
   if (fontData.styles && fontData.styles.length > 0) {
@@ -139,14 +135,10 @@ function buildHeadInjectionHtml(
     "</script>";
   const navPayload = {
     pathname: navContext?.pathname ?? "/",
-    searchParams: navContext?.searchParams
-      ? [...navContext.searchParams.entries()]
-      : [],
+    searchParams: navContext?.searchParams ? [...navContext.searchParams.entries()] : [],
   };
   const navScript =
-    "<script>self.__VINEXT_RSC_NAV__=" +
-    safeJsonStringify(navPayload) +
-    "</script>";
+    "<script>self.__VINEXT_RSC_NAV__=" + safeJsonStringify(navPayload) + "</script>";
 
   return (
     paramsScript +
@@ -193,8 +185,7 @@ export async function handleSsr(
           )
         : root;
 
-      const bootstrapScriptContent =
-        await import.meta.viteRsc.loadBootstrapScriptContent("index");
+      const bootstrapScriptContent = await import.meta.viteRsc.loadBootstrapScriptContent("index");
 
       const htmlStream = await renderToReadableStream(ssrRoot, {
         bootstrapScriptContent,

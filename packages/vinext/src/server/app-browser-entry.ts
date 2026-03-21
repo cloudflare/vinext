@@ -109,11 +109,7 @@ async function readInitialRscStream(): Promise<ReadableStream<Uint8Array>> {
     }
   }
 
-  restoreHydrationNavigationContext(
-    window.location.pathname,
-    window.location.search,
-    params,
-  );
+  restoreHydrationNavigationContext(window.location.pathname, window.location.search, params);
 
   if (!rscResponse.body) {
     throw new Error("[vinext] Initial RSC response had no body");
@@ -127,14 +123,11 @@ function registerServerActionCallback(): void {
     const temporaryReferences = createTemporaryReferenceSet();
     const body = await encodeReply(args, { temporaryReferences });
 
-    const fetchResponse = await fetch(
-      toRscUrl(window.location.pathname + window.location.search),
-      {
-        method: "POST",
-        headers: { "x-rsc-action": id },
-        body,
-      },
-    );
+    const fetchResponse = await fetch(toRscUrl(window.location.pathname + window.location.search), {
+      method: "POST",
+      headers: { "x-rsc-action": id },
+      body,
+    });
 
     const actionRedirect = fetchResponse.headers.get("x-action-redirect");
     if (actionRedirect) {
@@ -189,9 +182,7 @@ async function main(): Promise<void> {
   reactRoot = hydrateRoot(
     document,
     root as ReactNode,
-    process.env.NODE_ENV !== "production"
-      ? { onCaughtError() {} }
-      : undefined,
+    process.env.NODE_ENV !== "production" ? { onCaughtError() {} } : undefined,
   );
 
   window.__VINEXT_RSC_ROOT__ = reactRoot;
