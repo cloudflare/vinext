@@ -20,6 +20,25 @@ import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 
 /**
+ * True when the DEBUG environment variable includes "vinext:optimize-imports"
+ * or any vinext namespace wildcard (e.g. DEBUG=vinext:* or DEBUG=*).
+ * Used to gate verbose console.debug output that would otherwise be noisy in
+ * projects with many barrel imports.
+ */
+const isDebugEnabled = (() => {
+  const debugEnv = process.env.DEBUG ?? "";
+  if (!debugEnv) return false;
+  return debugEnv.split(",").some((ns) => {
+    const trimmed = ns.trim();
+    return (
+      trimmed === "*" ||
+      trimmed === "vinext:optimize-imports" ||
+      (trimmed.endsWith(":*") && "vinext:optimize-imports".startsWith(trimmed.slice(0, -1)))
+    );
+  });
+})();
+
+/**
  * Read a file's contents, returning null on any error.
  * Module-level so a single function instance is shared across all transform calls.
  */
@@ -31,11 +50,12 @@ async function readFileSafe(filepath: string): Promise<string | null> {
   }
 }
 
-/** Extract the string name from an Identifier ({name}) or Literal ({value}) AST node. */
-function astName(node: { name?: string; value?: string | boolean | number | null }): string {
+/** Extract the string name from an Identifier ({name}) or Literal ({value}) AST node.
+ * Returns null for unexpected node shapes so callers can degrade gracefully rather than crash. */
+function astName(node: { name?: string; value?: string | boolean | number | null }): string | null {
   if (node.name !== undefined) return node.name;
   if (typeof node.value === "string") return node.value;
-  throw new Error(`Unexpected AST node: no name or string value`);
+  return null;
 }
 
 /** Nested conditional exports value (string path or nested conditions). */
@@ -61,8 +81,14 @@ type BarrelExportMap = Map<string, BarrelExportEntry>;
 interface BarrelCaches {
   /** Barrel export maps keyed by resolved entry file path. */
   exportMapCache: Map<string, BarrelExportMap>;
-  /** Maps sub-package specifiers to the barrel entry path they were derived from. */
-  subpkgOrigin: Map<string, string>;
+  /**
+   * Maps sub-package specifiers to the barrel entry path they were derived from,
+   * keyed by environment name ("rsc" | "ssr") so that divergent RSC/SSR barrel
+   * entries don't cross-contaminate each other's sub-package origin mappings.
+   * Using a per-environment map is consistent with entryPathCache, which is
+   * already environment-keyed via the "rsc:"/"ssr:" prefix on its cache keys.
+   */
+  subpkgOrigin: Map<string, Map<string, string>>;
 }
 
 // Shared with Vite's internal AST node types (not publicly exported)
@@ -371,11 +397,14 @@ async function buildExportMapFromFile(
               break;
             case "ImportSpecifier":
               if (spec.imported) {
-                importBindings.set(spec.local.name, {
-                  source,
-                  isNamespace: false,
-                  originalName: astName(spec.imported),
-                });
+                const name = astName(spec.imported);
+                if (name !== null) {
+                  importBindings.set(spec.local.name, {
+                    source,
+                    isNamespace: false,
+                    originalName: name,
+                  });
+                }
               }
               break;
             case "ImportDefaultSpecifier":
@@ -397,26 +426,37 @@ async function buildExportMapFromFile(
         if (node.exported) {
           // export * as Name from "sub-pkg" — namespace re-export
           const name = astName(node.exported);
-          exportMap.set(name, { source: normalizeSource(rawSource), isNamespace: true });
+          if (name !== null) {
+            exportMap.set(name, { source: normalizeSource(rawSource), isNamespace: true });
+          }
         } else {
           // export * from "./sub" — wildcard: recursively merge sub-module exports
           if (rawSource.startsWith(".")) {
             const subPath = path.resolve(fileDir, rawSource).split(path.sep).join("/");
             // Try with the path as-is first, then with common extensions.
-            // Include .tsx for TypeScript-first internal libraries, and /index.mjs
-            // for ESM-first packages where the directory index is a .mjs file.
+            // Includes TypeScript-first (.ts/.tsx/.cts/.mts) and JSX (.jsx) extensions
+            // for TypeScript-first internal libraries and monorepo packages that may
+            // not compile to .js. Also includes .cjs for CommonJS-style re-export files.
             const candidates = [
               subPath,
               `${subPath}.js`,
               `${subPath}.mjs`,
+              `${subPath}.cjs`,
               `${subPath}.ts`,
               `${subPath}.tsx`,
+              `${subPath}.jsx`,
+              `${subPath}.mts`,
+              `${subPath}.cts`,
               // Directory-style sub-modules: `export * from "./components"` where
               // `components/` is a directory with an index file.
               `${subPath}/index.js`,
               `${subPath}/index.mjs`,
+              `${subPath}/index.cjs`,
               `${subPath}/index.ts`,
               `${subPath}/index.tsx`,
+              `${subPath}/index.jsx`,
+              `${subPath}/index.mts`,
+              `${subPath}/index.cts`,
             ];
             for (const candidate of candidates) {
               const candidateContent = await readFile(candidate);
@@ -453,11 +493,13 @@ async function buildExportMapFromFile(
             if (spec.exported) {
               const exported = astName(spec.exported);
               const local = astName(spec.local);
-              exportMap.set(exported, {
-                source,
-                isNamespace: false,
-                originalName: local,
-              });
+              if (exported !== null) {
+                exportMap.set(exported, {
+                  source,
+                  isNamespace: false,
+                  originalName: local ?? undefined,
+                });
+              }
             }
           }
         } else if (node.specifiers && node.specifiers.length > 0) {
@@ -466,6 +508,7 @@ async function buildExportMapFromFile(
             if (!spec.exported) continue;
             const exported = astName(spec.exported);
             const local = astName(spec.local);
+            if (exported === null || local === null) continue;
             const binding = importBindings.get(local);
             if (binding) {
               exportMap.set(exported, {
@@ -547,7 +590,7 @@ export function createOptimizeImportsPlugin(
 ): Plugin {
   const barrelCaches: BarrelCaches = {
     exportMapCache: new Map<string, BarrelExportMap>(),
-    subpkgOrigin: new Map<string, string>(),
+    subpkgOrigin: new Map<string, Map<string, string>>(),
   };
   // Cache resolved entry paths — resolvePackageEntry does require.resolve, file I/O,
   // and dir-walking on every call; caching avoids repeating that work for each
@@ -598,7 +641,12 @@ export function createOptimizeImportsPlugin(
       // In pnpm strict mode, sub-packages like @radix-ui/react-slot are only
       // resolvable from the barrel package's location, not from user code.
       // Use Vite's own resolver (not createRequire) so it picks the ESM entry.
-      const barrelEntry = barrelCaches.subpkgOrigin.get(source);
+      // subpkgOrigin is keyed by environment; check both rsc and ssr maps since
+      // the same sub-package can appear in either environment's barrel.
+      const envName = (this as PluginCtx).environment?.name ?? "ssr";
+      const barrelEntry =
+        barrelCaches.subpkgOrigin.get(envName)?.get(source) ??
+        barrelCaches.subpkgOrigin.get(envName === "rsc" ? "ssr" : "rsc")?.get(source);
       if (!barrelEntry) return;
       const resolved = await this.resolve(source, barrelEntry, { skipSelf: true });
       return resolved ?? undefined;
@@ -678,22 +726,26 @@ export function createOptimizeImportsPlugin(
           // already fully resolved and don't require context-aware resolution.
           // Gate with registeredBarrels so files that all import from the same
           // barrel don't each re-iterate the full export map.
+          // subpkgOrigin is keyed by environment ("rsc"/"ssr") so that divergent
+          // barrel entries (e.g. react-server vs import condition) stay isolated.
+          const envKey = preferReactServer ? "rsc" : "ssr";
           if (!registeredBarrels.has(barrelEntry)) {
             registeredBarrels.add(barrelEntry);
+            let envOriginMap = barrelCaches.subpkgOrigin.get(envKey);
+            if (!envOriginMap) {
+              envOriginMap = new Map<string, string>();
+              barrelCaches.subpkgOrigin.set(envKey, envOriginMap);
+            }
             for (const entry of exportMap.values()) {
               if (
                 !entry.source.startsWith("/") &&
                 !entry.source.startsWith(".") &&
-                !barrelCaches.subpkgOrigin.has(entry.source)
+                !envOriginMap.has(entry.source)
               ) {
-                // First barrel to register this specifier wins. This is safe because the
-                // sub-package specifier (e.g. "@radix-ui/react-slot") resolves to the same
-                // path regardless of which barrel we resolve from — only the importer context
-                // differs, not the target. In pnpm strict mode there is exactly one copy of
-                // each sub-package, so any barrel's context reaches the same file.
-                // (In a monorepo with nested node_modules, two barrels could in theory see
-                // different versions; that edge case is out of scope for the default package list.)
-                barrelCaches.subpkgOrigin.set(entry.source, barrelEntry);
+                // First barrel to register this specifier (within this environment) wins.
+                // Sub-package specifiers are keyed per environment so that RSC and SSR
+                // barrel entries don't cross-contaminate each other's resolution context.
+                envOriginMap.set(entry.source, barrelEntry);
               }
             }
           }
@@ -709,6 +761,11 @@ export function createOptimizeImportsPlugin(
                   break;
                 }
                 const imported = astName(spec.imported);
+                if (imported === null) {
+                  // Malformed AST node — degrade gracefully by skipping the import
+                  allResolved = false;
+                  break;
+                }
                 specifiers.push({ local: spec.local.name, imported });
                 if (!exportMap.has(imported)) {
                   allResolved = false;
@@ -733,12 +790,14 @@ export function createOptimizeImportsPlugin(
           // Emit a debug log so developers can diagnose optimization gaps — e.g. a name
           // that comes through `export * from` wildcard or an inline `export const`.
           if (!allResolved || specifiers.length === 0) {
-            if (allResolved === false) {
+            if (allResolved === false && isDebugEnabled) {
               // Find the first unresolved name to name it in the log message.
+              // Only emitted when DEBUG=vinext:* (or DEBUG=vinext:optimize-imports) is set
+              // so it doesn't appear in normal output for projects with many barrel imports.
               for (const spec of node.specifiers ?? []) {
                 if (spec.type === "ImportSpecifier" && spec.imported) {
                   const imported = astName(spec.imported);
-                  if (!exportMap.has(imported)) {
+                  if (imported !== null && !exportMap.has(imported)) {
                     console.debug(
                       `[vinext:optimize-imports] skipping "${importSource}": could not resolve specifier "${imported}" in barrel export map`,
                     );

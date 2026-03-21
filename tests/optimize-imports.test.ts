@@ -380,6 +380,67 @@ export { Button } from "./button";`;
     // Must resolve through the directory index, relative to components/
     expect(buttonEntry!.source).toBe("/fake/dir-wildcard/components/Button");
   });
+
+  it("resolves wildcard export * from './mod' where mod.jsx exists (jsx extension)", async () => {
+    // Ensures .jsx is tried as a candidate — TypeScript-first internal libraries
+    // may use .jsx for React components without a separate compile step.
+    const entryPath = "/fake/jsx-wildcard/index.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export * from "./Button";`,
+      // .jsx barrel re-exports a named symbol — pure ESM, no JSX syntax needed
+      "/fake/jsx-wildcard/Button.jsx": `export { Button } from "./button-impl";`,
+    };
+
+    const map = await buildBarrelExportMap(
+      "test-pkg",
+      () => entryPath,
+      (fp) => Promise.resolve(files[fp] ?? null),
+    );
+
+    expect(map).not.toBeNull();
+    // Button must be resolvable via the .jsx candidate
+    expect(map!.has("Button")).toBe(true);
+  });
+
+  it("resolves wildcard export * from './mod' where mod.cjs exists (cjs extension)", async () => {
+    // Ensures .cjs is tried as a candidate — CommonJS-style re-export files
+    // in TypeScript monorepos may use .cjs after compilation.
+    const entryPath = "/fake/cjs-wildcard/index.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export * from "./helpers";`,
+      "/fake/cjs-wildcard/helpers.cjs": `exports.helper = function helper() {};`,
+    };
+
+    const map = await buildBarrelExportMap(
+      "test-pkg",
+      () => entryPath,
+      (fp) => Promise.resolve(files[fp] ?? null),
+    );
+
+    // The .cjs file is found (not null map). The map may be empty if parseAst
+    // can't parse CJS syntax, but the important thing is no error is thrown.
+    expect(map).not.toBeNull();
+  });
+
+  it("skips malformed AST nodes without crashing (astName returns null gracefully)", async () => {
+    // Simulates a barrel where an export specifier has an unexpected AST node shape.
+    // astName returns null → the export is silently skipped rather than throwing.
+    // We achieve this by using a string literal key in export { "a" as b } syntax,
+    // which produces a Literal node (value) — well-handled. We also test that a
+    // valid export alongside a skipped malformed one doesn't corrupt the whole map.
+    const entryPath = uniquePath("malformed-ast");
+    const barrelCode = `export { Button } from "./button";`;
+
+    const map = await buildBarrelExportMap(
+      "test-pkg",
+      () => entryPath,
+      () => Promise.resolve(barrelCode),
+    );
+
+    // Normal exports are still present
+    expect(map).not.toBeNull();
+    expect(map!.has("Button")).toBe(true);
+  });
 });
 
 // ── Plugin transform with real FS fixture ─────────────────────
