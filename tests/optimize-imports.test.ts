@@ -441,6 +441,70 @@ export { Button } from "./button";`;
     expect(map).not.toBeNull();
     expect(map!.has("Button")).toBe(true);
   });
+
+  it("resolves export function declaration in sub-module (date-fns style)", async () => {
+    // date-fns barrel: `export * from "./formatDistanceToNow.js"`
+    // sub-module:      `export function formatDistanceToNow(...) {}`
+    // The function is declared inline — no re-export specifier, no source.
+    // buildBarrelExportMap must recurse into the sub-module and register the
+    // inline declaration, mapping "formatDistanceToNow" → the sub-module file.
+    const entryPath = "/fake/date-fns/index.js";
+    const subPath = "/fake/date-fns/formatDistanceToNow.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export * from "./formatDistanceToNow.js";`,
+      [subPath]: `export function formatDistanceToNow(date, options) { return date; }`,
+    };
+
+    const map = await buildBarrelExportMap(
+      "date-fns",
+      () => entryPath,
+      (fp) => Promise.resolve(files[fp] ?? null),
+    );
+
+    expect(map).not.toBeNull();
+    const entry = map!.get("formatDistanceToNow");
+    expect(entry).toBeDefined();
+    expect(entry!.source).toBe(subPath);
+    expect(entry!.isNamespace).toBe(false);
+  });
+
+  it("resolves multiple export const declarations in a single VariableDeclaration", async () => {
+    // `export const x = 1, y = 2` → VariableDeclaration with two declarators.
+    const entryPath = "/fake/multi-const/index.js";
+    const subPath = "/fake/multi-const/utils.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export * from "./utils.js";`,
+      [subPath]: `export const add = (a, b) => a + b, subtract = (a, b) => a - b;`,
+    };
+
+    const map = await buildBarrelExportMap(
+      "test-pkg",
+      () => entryPath,
+      (fp) => Promise.resolve(files[fp] ?? null),
+    );
+
+    expect(map).not.toBeNull();
+    expect(map!.get("add")).toMatchObject({ source: subPath, isNamespace: false });
+    expect(map!.get("subtract")).toMatchObject({ source: subPath, isNamespace: false });
+  });
+
+  it("resolves export class declaration in sub-module", async () => {
+    const entryPath = "/fake/class-export/index.js";
+    const subPath = "/fake/class-export/MyClass.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export * from "./MyClass.js";`,
+      [subPath]: `export class MyClass {}`,
+    };
+
+    const map = await buildBarrelExportMap(
+      "test-pkg",
+      () => entryPath,
+      (fp) => Promise.resolve(files[fp] ?? null),
+    );
+
+    expect(map).not.toBeNull();
+    expect(map!.get("MyClass")).toMatchObject({ source: subPath, isNamespace: false });
+  });
 });
 
 // ── Plugin transform with real FS fixture ─────────────────────

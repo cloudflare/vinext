@@ -104,7 +104,17 @@ type AstBodyNode = {
     exported?: { name?: string; value?: string | boolean | number | null };
   }>;
   exported?: { name?: string; value?: string | boolean | number | null };
-  declaration?: unknown;
+  /**
+   * Present on `ExportNamedDeclaration` when the export is an inline declaration:
+   *   export function foo() {}         → FunctionDeclaration  { id: { name } }
+   *   export class Foo {}              → ClassDeclaration     { id: { name } }
+   *   export const x = 1, y = 2       → VariableDeclaration  { declarations: [{ id: { name } }] }
+   */
+  declaration?: {
+    type: string;
+    id?: { name: string } | null;
+    declarations?: Array<{ id: { name: string } }>;
+  } | null;
 };
 
 // Vite doesn't publicly type `this.environment` on plugin hooks yet.
@@ -516,6 +526,23 @@ async function buildExportMapFromFile(
                 isNamespace: binding.isNamespace,
                 originalName: binding.isNamespace ? undefined : binding.originalName,
               });
+            }
+          }
+        } else if (node.declaration) {
+          // export function foo() {} / export class Foo {} / export const x = 1
+          // Inline declarations export names directly from this file.
+          // Record the file itself as the source so the transform can rewrite
+          // `import { foo } from "barrel"` → `import { foo } from "/abs/path/to/foo.js"`.
+          const decl = node.declaration;
+          if (decl.id?.name) {
+            // FunctionDeclaration or ClassDeclaration — single named export
+            exportMap.set(decl.id.name, { source: filePath, isNamespace: false });
+          } else if (decl.declarations) {
+            // VariableDeclaration — may declare multiple bindings: export const x = 1, y = 2
+            for (const d of decl.declarations) {
+              if (d.id?.name) {
+                exportMap.set(d.id.name, { source: filePath, isNamespace: false });
+              }
             }
           }
         }
