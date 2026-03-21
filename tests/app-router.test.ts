@@ -3139,14 +3139,7 @@ describe("App Router middleware with NextRequest", () => {
   });
 });
 
-describe("SSR entry CSS preload fix", () => {
-  it("generateSsrEntry includes fixPreloadAs function", async () => {
-    const { generateSsrEntry } = await import("../packages/vinext/src/entries/app-ssr-entry.js");
-    const code = generateSsrEntry();
-    expect(code).toContain("fixPreloadAs");
-    expect(code).toContain('as="style"');
-  });
-
+describe("RSC Flight hint fix", () => {
   it("generateRscEntry wraps renderToReadableStream with HL hint fix", () => {
     // The RSC entry should shadow renderToReadableStream with a wrapper that
     // rewrites Flight HL hint "stylesheet" → "style" at the stream source,
@@ -3174,47 +3167,6 @@ describe("SSR entry CSS preload fix", () => {
     const code = generateRscEntry("/tmp/test/app", [route]);
     expect(code).toContain("_renderToReadableStream");
     expect(code).toContain('"style"$2');
-  });
-
-  it('fixPreloadAs regex correctly replaces as="stylesheet" with as="style"', () => {
-    // Replicate the fixPreloadAs function from the generated SSR entry
-    function fixPreloadAs(html: string): string {
-      return html.replace(/<link(?=[^>]*\srel="preload")[^>]*>/g, function (tag) {
-        return tag.replace(' as="stylesheet"', ' as="style"');
-      });
-    }
-
-    // Test: basic case from the issue
-    expect(
-      fixPreloadAs('<link rel="preload" href="/assets/index-hG1v95Xi.css" as="stylesheet"/>'),
-    ).toBe('<link rel="preload" href="/assets/index-hG1v95Xi.css" as="style"/>');
-
-    // Test: as attribute before rel
-    expect(fixPreloadAs('<link as="stylesheet" rel="preload" href="/file.css"/>')).toBe(
-      '<link as="style" rel="preload" href="/file.css"/>',
-    );
-
-    // Test: should NOT modify <link rel="stylesheet"> (no preload)
-    expect(fixPreloadAs('<link rel="stylesheet" href="/file.css" as="stylesheet"/>')).toBe(
-      '<link rel="stylesheet" href="/file.css" as="stylesheet"/>',
-    );
-
-    // Test: should NOT modify other preload types
-    expect(fixPreloadAs('<link rel="preload" href="/font.woff2" as="font"/>')).toBe(
-      '<link rel="preload" href="/font.woff2" as="font"/>',
-    );
-
-    // Test: multiple link tags in one chunk
-    const multi =
-      '<link rel="preload" href="/a.css" as="stylesheet"/><link rel="preload" href="/b.css" as="stylesheet"/>';
-    expect(fixPreloadAs(multi)).toBe(
-      '<link rel="preload" href="/a.css" as="style"/><link rel="preload" href="/b.css" as="style"/>',
-    );
-
-    // Test: no change needed
-    expect(fixPreloadAs('<link rel="preload" href="/a.css" as="style"/>')).toBe(
-      '<link rel="preload" href="/a.css" as="style"/>',
-    );
   });
 
   it('fixFlightHints regex correctly replaces "stylesheet" with "style" in RSC Flight HL hints', () => {
@@ -3261,40 +3213,6 @@ describe("SSR entry CSS preload fix", () => {
     ).toBe('0:D{"name":"page"}\n2:HL["/app.css","style"]\n3:["$","div",null,{}]');
   });
 });
-
-describe("Tick-buffered RSC delivery", () => {
-  it("generateSsrEntry uses setTimeout-based tick buffering for RSC scripts", async () => {
-    const { generateSsrEntry } = await import("../packages/vinext/src/entries/app-ssr-entry.js");
-    const code = generateSsrEntry();
-    // Should use setTimeout(0) for tick buffering instead of emitting
-    // RSC scripts synchronously between HTML chunks
-    expect(code).toContain("setTimeout");
-    expect(code).toContain("buffered");
-    expect(code).toContain("timeoutId");
-    // Should cancel pending timeout in flush() to avoid race condition
-    expect(code).toContain("clearTimeout");
-    // Should still call rscEmbed.flush() for progressive delivery
-    expect(code).toContain("rscEmbed.flush()");
-    // Should call rscEmbed.finalize() in the TransformStream flush handler
-    expect(code).toContain("rscEmbed.finalize()");
-  });
-
-  it("generateBrowserEntry uses monkey-patched push() instead of polling", async () => {
-    const { generateBrowserEntry } =
-      await import("../packages/vinext/src/entries/app-browser-entry.js");
-    const code = generateBrowserEntry();
-    // Should override push() for immediate chunk delivery
-    expect(code).toContain("arr.push = function");
-    expect(code).toContain("Array.prototype.push.call");
-    // Should guard against double-close
-    expect(code).toContain("closeOnce");
-    // Should have DOMContentLoaded safety net for truncated responses
-    expect(code).toContain("DOMContentLoaded");
-    // Should NOT use setTimeout-based polling
-    expect(code).not.toContain("setTimeout(resolve, 1)");
-  });
-});
-
 // ── Client reference preloading (Issue #256) ─────────────────────────────────
 //
 // On the first SSR request after server start, client reference modules are
@@ -3364,7 +3282,6 @@ describe("Client reference preloading (Issue #256)", () => {
     expect(loadCounts.get("comp-c")).toBe(1);
   });
 });
-
 // ── Auto-registration of @vitejs/plugin-rsc ─────────────────────────────────
 
 describe("RSC plugin auto-registration", () => {

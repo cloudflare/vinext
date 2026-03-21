@@ -1,168 +1,21 @@
 /**
  * Behavioral tests for tick-buffered RSC streaming.
  *
- * The tick-buffered TransformStream in entries/app-ssr-entry.ts interleaves RSC
+ * The tick-buffered TransformStream in server/app-ssr-stream.ts interleaves RSC
  * <script> tags into the HTML stream between React Fizz flush cycles. These
- * tests exercise the actual TransformStream algorithm (replicated from the
- * generated SSR entry) to verify:
+ * tests exercise the real production helpers directly to verify:
  *
  * 1. RSC scripts are interleaved between HTML flush cycles
  * 2. No RSC scripts are injected mid-HTML-chunk (DOM corruption case)
  * 3. The __VINEXT_RSC_DONE__ signal appears after all content
  * 4. Head injection happens correctly
  * 5. Multiple HTML chunks in the same macrotask are batched correctly
- *
- * This complements the string-matching tests in app-router.test.ts which
- * verify the generated code contains the right constructs, but don't
- * exercise the actual streaming behavior.
- *
- * NOTE: The helpers below replicate the core algorithm from generateSsrEntry()
- * rather than importing it, because the production code is emitted as a
- * string literal inside a generated module — it's not importable as a
- * function. Two production behaviors are intentionally omitted here since
- * they are orthogonal to the streaming/interleaving logic being tested:
- *   - fixFlightHints(): rewrites as="stylesheet" → as="style" in RSC hints
- *   - fixPreloadAs(): rewrites as="stylesheet" → as="style" in HTML preloads
  */
 import { describe, it, expect } from "vite-plus/test";
-import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-/**
- * Replicate createRscEmbedTransform from the generated SSR entry.
- * This reads from an RSC embed stream in the background and provides
- * flush()/finalize() methods to emit <script> tags.
- */
-function createRscEmbedTransform(embedStream: ReadableStream<Uint8Array>) {
-  const reader = embedStream.getReader();
-  const decoder = new TextDecoder();
-  let _done = false;
-  let pendingChunks: string[] = [];
-  let reading = false;
-
-  async function pumpReader() {
-    if (reading) return;
-    reading = true;
-    try {
-      while (true) {
-        const result = await reader.read();
-        if (result.done) {
-          _done = true;
-          break;
-        }
-        pendingChunks.push(decoder.decode(result.value, { stream: true }));
-      }
-    } catch {
-      _done = true;
-    }
-    reading = false;
-  }
-
-  const pumpPromise = pumpReader();
-
-  return {
-    flush() {
-      if (pendingChunks.length === 0) return "";
-      const chunks = pendingChunks;
-      pendingChunks = [];
-      let scripts = "";
-      for (const chunk of chunks) {
-        scripts +=
-          "<script>self.__VINEXT_RSC_CHUNKS__=self.__VINEXT_RSC_CHUNKS__||[];self.__VINEXT_RSC_CHUNKS__.push(" +
-          safeJsonStringify(chunk) +
-          ")</script>";
-      }
-      return scripts;
-    },
-
-    async finalize() {
-      await pumpPromise;
-      let scripts = this.flush();
-      scripts += "<script>self.__VINEXT_RSC_DONE__=true</script>";
-      return scripts;
-    },
-  };
-}
-
-/**
- * Create the tick-buffered TransformStream that interleaves RSC scripts
- * between HTML flush cycles. Replicated from the generated SSR entry
- * in entries/app-ssr-entry.ts.
- */
-function createTickBufferedTransform(
-  rscEmbed: ReturnType<typeof createRscEmbedTransform>,
-  injectHTML: string = "",
-) {
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
-  let injected = false;
-  let buffered: string[] = [];
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-
-  return new TransformStream<Uint8Array, Uint8Array>({
-    transform(chunk, controller) {
-      const text = decoder.decode(chunk, { stream: true });
-      buffered.push(text);
-
-      if (timeoutId !== null) return;
-
-      timeoutId = setTimeout(() => {
-        for (const buf of buffered) {
-          if (!injected) {
-            const headEnd = buf.indexOf("</head>");
-            if (headEnd !== -1) {
-              const before = buf.slice(0, headEnd);
-              const after = buf.slice(headEnd);
-              controller.enqueue(encoder.encode(before + injectHTML + after));
-              injected = true;
-              continue;
-            }
-          }
-          controller.enqueue(encoder.encode(buf));
-        }
-        buffered = [];
-
-        const rscScripts = rscEmbed.flush();
-        if (rscScripts) {
-          controller.enqueue(encoder.encode(rscScripts));
-        }
-
-        timeoutId = null;
-      }, 0);
-    },
-    async flush(controller) {
-      if (timeoutId !== null) {
-        clearTimeout(timeoutId);
-        timeoutId = null;
-      }
-
-      for (const buf of buffered) {
-        if (!injected) {
-          const headEnd = buf.indexOf("</head>");
-          if (headEnd !== -1) {
-            const before = buf.slice(0, headEnd);
-            const after = buf.slice(headEnd);
-            controller.enqueue(encoder.encode(before + injectHTML + after));
-            injected = true;
-            continue;
-          }
-        }
-        controller.enqueue(encoder.encode(buf));
-      }
-      buffered = [];
-
-      if (!injected && injectHTML) {
-        controller.enqueue(encoder.encode(injectHTML));
-      }
-
-      const finalScripts = await rscEmbed.finalize();
-      if (finalScripts) {
-        controller.enqueue(encoder.encode(finalScripts));
-      }
-    },
-  });
-}
+import {
+  createRscEmbedTransform,
+  createTickBufferedTransform,
+} from "../packages/vinext/src/server/app-ssr-stream.js";
 
 /**
  * Create a ReadableStream from an array of string chunks, with optional
