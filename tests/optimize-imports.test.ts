@@ -509,6 +509,19 @@ describe("vinext:optimize-imports transform", () => {
     expect(result).toBeNull();
   });
 
+  it("leaves namespace import unchanged: import * as Pkg from 'barrel' cannot be optimized", async () => {
+    // Namespace imports capture the entire barrel module — there's no safe sub-module
+    // to redirect to, so the import must be left unchanged.
+    const call = await setupTransform(
+      "lucide-react",
+      `export * as Slot from "@radix-ui/react-slot";\nexport * as Dialog from "@radix-ui/react-dialog";`,
+    );
+    const code = `import * as LucideReact from "lucide-react";`;
+    const result = call(code, "/app/page.tsx");
+    // ImportNamespaceSpecifier sets allResolved = false → import left unchanged
+    expect(result).toBeNull();
+  });
+
   it("skips transform on client environment", async () => {
     tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-")));
     fs.writeFileSync(

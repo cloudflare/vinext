@@ -19,6 +19,18 @@ import path from "node:path";
 import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 
+/**
+ * Read a file's contents, returning null on any error.
+ * Module-level so a single function instance is shared across all transform calls.
+ */
+function readFileSafe(filepath: string): string | null {
+  try {
+    return fs.readFileSync(filepath, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
 /** Extract the string name from an Identifier ({name}) or Literal ({value}) AST node. */
 function astName(node: { name?: string; value?: string | boolean | number | null }): string {
   if (node.name !== undefined) return node.name;
@@ -621,16 +633,6 @@ export function createOptimizeImportsPlugin(
         const s = new MagicString(code);
         let hasChanges = false;
         const root = getRoot();
-        // Hoist the readFile closure so a single function is reused across all
-        // import declarations in the file, rather than allocating an identical
-        // closure for each barrel import encountered.
-        const readFileSafe = (filepath: string): string | null => {
-          try {
-            return fs.readFileSync(filepath, "utf-8");
-          } catch {
-            return null;
-          }
-        };
 
         for (const node of ast.body as AstBodyNode[]) {
           if (node.type !== "ImportDeclaration") continue;
